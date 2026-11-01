@@ -102,7 +102,7 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
         service::ArchiveMode::Standalone,
         polylogue_engine::Lifetime::UntilStopped,
     )
-        .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())?;
     let invoke = |command: &str, arguments: Value| -> Result<Value, String> {
         let declaration =
             commands::command(command).ok_or_else(|| format!("no command {command}"))?;

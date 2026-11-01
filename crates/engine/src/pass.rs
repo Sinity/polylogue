@@ -240,8 +240,8 @@ impl Engine {
             .filter(|(p, s)| {
                 sources
                     && (discover
-                    || s.origin.is_row_dump(p)
-                    || paths.iter().any(|path| p.starts_with(path)))
+                        || s.origin.is_row_dump(p)
+                        || paths.iter().any(|path| p.starts_with(path)))
                     && s.facts.is_some()
                     && !seen.contains(*p)
                     && !p.exists()
@@ -1560,7 +1560,9 @@ impl Engine {
         summary.imports += 1;
         match &report {
             Ok(report) => summary.work.add(report.pass.clone()),
-            Err(ImportFailure::Import(error)) => summary.work.errors.push(format!("import: {error}")),
+            Err(ImportFailure::Import(error)) => {
+                summary.work.errors.push(format!("import: {error}"))
+            }
             Err(ImportFailure::Parent(_)) => {}
         }
         let _ = reply.send(report);

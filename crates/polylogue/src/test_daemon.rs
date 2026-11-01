@@ -30,7 +30,12 @@ pub(crate) fn start_runtime(
     mode: service::ArchiveMode,
 ) -> std::io::Result<service::Runtime> {
     let deployment = crate::config::Config::for_test(&engine, root);
-    service::start(deployment, engine, mode, polylogue_engine::Lifetime::UntilStopped)
+    service::start(
+        deployment,
+        engine,
+        mode,
+        polylogue_engine::Lifetime::UntilStopped,
+    )
 }
 
 pub(crate) struct ReadObservation {
@@ -109,8 +114,7 @@ fn start_with_clock_and_workers(
     if let Some(day) = day {
         deployment = deployment.standalone_for_archive(root, day).unwrap();
     }
-    let runtime =
-        service::start(
+    let runtime = service::start(
         deployment,
         config.clone(),
         service::ArchiveMode::Standalone,

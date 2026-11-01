@@ -176,8 +176,14 @@ fn a_consistent_archive_has_no_problems_and_counts_every_class() {
         .iter()
         .map(|database| (database.schema.as_str(), database.result.clone()))
         .collect();
-    assert!(schemas.contains(&("main", vec!["ok".to_string()])), "{schemas:?}");
-    assert!(schemas.contains(&("a", vec!["ok".to_string()])), "{schemas:?}");
+    assert!(
+        schemas.contains(&("main", vec!["ok".to_string()])),
+        "{schemas:?}"
+    );
+    assert!(
+        schemas.contains(&("a", vec!["ok".to_string()])),
+        "{schemas:?}"
+    );
     assert_eq!(found.manifest, None);
 }
 
@@ -260,7 +266,11 @@ fn a_corrupted_stored_byte_is_named_and_left_as_it_is() {
         .map(|line| line.split('\t').take(2).collect::<Vec<_>>().join("#"))
         .collect();
     assert_eq!(inputs, ["growing#1", "whole#1"]);
-    assert_eq!(std::fs::read(&segment).unwrap(), bytes, "verify rewrote a segment");
+    assert_eq!(
+        std::fs::read(&segment).unwrap(),
+        bytes,
+        "verify rewrote a segment"
+    );
 }
 
 /// law: verify-reads-only
@@ -371,5 +381,8 @@ fn verification_stops_when_its_pace_refuses() {
             }
         },
     );
-    assert!(matches!(result, Err(StoreError::ReadCancelled)), "{result:?}");
+    assert!(
+        matches!(result, Err(StoreError::ReadCancelled)),
+        "{result:?}"
+    );
 }

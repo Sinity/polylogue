@@ -30,10 +30,7 @@ fn verify_through_the_daemon_checks_the_archive_and_writes_a_new_manifest() {
         transcript.len(),
         blake3::hash(&transcript).to_hex()
     );
-    assert!(
-        text.lines().any(|line| line.ends_with(&expected)),
-        "{text}"
-    );
+    assert!(text.lines().any(|line| line.ends_with(&expected)), "{text}");
 
     // An existing file is never replaced, and no partial file is left.
     let again = crate::client::send(&socket, &request).unwrap();

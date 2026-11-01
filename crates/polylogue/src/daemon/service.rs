@@ -1572,8 +1572,7 @@ impl Runtime {
         if self.daemon.stopping.load(Ordering::Acquire) {
             return None;
         }
-        if self.engine.as_ref().is_some_and(JoinHandle::is_finished)
-            && self.idle.borrow().is_none()
+        if self.engine.as_ref().is_some_and(JoinHandle::is_finished) && self.idle.borrow().is_none()
         {
             return Some("engine worker terminated");
         }

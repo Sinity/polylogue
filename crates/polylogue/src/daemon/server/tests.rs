@@ -369,7 +369,10 @@ fn a_daemon_run_until_idle_exits_with_its_summary_and_reads_sources_only_when_as
     assert!(sourceless.work.errors.is_empty(), "{sourceless:?}");
     assert_eq!(sourceless.work.inputs_seen, 0);
     assert_eq!(inputs(), 0);
-    assert!(!root.join("daemon.sock").exists(), "the socket outlived the run");
+    assert!(
+        !root.join("daemon.sock").exists(),
+        "the socket outlived the run"
+    );
     // The archive lock was released: a second run opens the same archive.
     let read = serve(
         &startup,

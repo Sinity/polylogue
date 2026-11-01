@@ -133,7 +133,12 @@ pub enum ProblemKind {
 }
 
 impl Verification {
-    fn problem(&mut self, kind: ProblemKind, subject: impl Into<String>, detail: impl Into<String>) {
+    fn problem(
+        &mut self,
+        kind: ProblemKind,
+        subject: impl Into<String>,
+        detail: impl Into<String>,
+    ) {
         self.problems.push(Problem {
             kind,
             subject: subject.into(),
@@ -208,11 +213,11 @@ fn rows(pool: &ReadPool, found: &mut Verification) -> Result<()> {
             })?
             .collect::<rusqlite::Result<_>>()?)
     };
-    found.observation_classes = classes(
-        "SELECT class, count(*) FROM source_observation GROUP BY class ORDER BY class",
+    found.observation_classes =
+        classes("SELECT class, count(*) FROM source_observation GROUP BY class ORDER BY class")?;
+    found.revision_kinds = classes(
+        "SELECT produced, count(*) FROM source_revision GROUP BY produced ORDER BY produced",
     )?;
-    found.revision_kinds =
-        classes("SELECT produced, count(*) FROM source_revision GROUP BY produced ORDER BY produced")?;
 
     // The counters `status` reads instead of counting.
     let kept: Vec<(String, i64)> = conn
@@ -297,7 +302,11 @@ fn databases(pool: &ReadPool, found: &mut Verification) -> Result<()> {
         .query_map([], |row| Ok((row.get(1)?, row.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
     for (schema, file) in attached {
-        if schema == "temp" || !schema.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        if schema == "temp"
+            || !schema
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
             continue;
         }
         let result: Vec<String> = conn
@@ -353,7 +362,11 @@ fn blob_bytes(
                 Ok(extent) => extent,
                 Err(error) => {
                     found.blobs.mismatched += 1;
-                    found.problem(ProblemKind::BlobCatalog, name, format!("descriptor: {error}"));
+                    found.problem(
+                        ProblemKind::BlobCatalog,
+                        name,
+                        format!("descriptor: {error}"),
+                    );
                     continue;
                 }
             };
@@ -523,9 +536,8 @@ fn hash_prefixes(
                 .expect("buffer length fits");
             let n = match reader.read(&mut buffer[..want]) {
                 Ok(0) => {
-                    let error = StoreError::Invalid(format!(
-                        "stored bytes end at {at}, before {length}"
-                    ));
+                    let error =
+                        StoreError::Invalid(format!("stored bytes end at {at}, before {length}"));
                     return Ok((hashes, at, Some(error)));
                 }
                 Ok(n) => n,
@@ -541,10 +553,12 @@ fn hash_prefixes(
 
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
 }
 
 #[cfg(test)]

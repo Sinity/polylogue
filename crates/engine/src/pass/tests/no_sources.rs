@@ -62,7 +62,9 @@ fn without_sources_a_fresh_archive_records_no_input_and_writes_nothing_under_hom
     home.append("present.jsonl", &claude_user("one", "present", "on disk"));
     // A hook spool beside the transcript: a spool is a source too.
     let spool = crate::test_config().spool_dir(polylogue_sources::hook_spool::ORIGIN);
-    let spool = home.home.join(spool.strip_prefix("/synthetic/home").unwrap());
+    let spool = home
+        .home
+        .join(spool.strip_prefix("/synthetic/home").unwrap());
     std::fs::create_dir_all(&spool).unwrap();
     std::fs::write(
         spool.join("4242.ndjson"),
@@ -77,7 +79,11 @@ fn without_sources_a_fresh_archive_records_no_input_and_writes_nothing_under_hom
     assert_eq!(summary.work.full_scans, 0);
     assert_eq!(summary.work.inputs_seen, 0);
     assert_eq!(rows(&home), [0, 0, 0]);
-    assert_eq!(files(&home.home), before, "a sourceless loop wrote under home");
+    assert_eq!(
+        files(&home.home),
+        before,
+        "a sourceless loop wrote under home"
+    );
 }
 
 /// law: no-sources-parses-what-is-stored
@@ -142,7 +148,10 @@ fn without_sources_an_import_is_stored_and_the_loop_then_becomes_idle() {
     assert_eq!(report.refused.len(), 0, "{report:?}");
     assert_eq!(report.imported.len(), 1, "{report:?}");
     assert_eq!(summary.imports, 1);
-    assert!(summary.passes >= 2, "the import is followed by a pass: {summary:?}");
+    assert!(
+        summary.passes >= 2,
+        "the import is followed by a pass: {summary:?}"
+    );
     // The import is the archive's only input: the transcript was never read.
     assert_eq!(home.count("SELECT count(*) AS n FROM a.input"), 1);
     assert!(home.texts("unread").is_empty());
