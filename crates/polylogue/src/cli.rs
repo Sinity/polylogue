@@ -367,7 +367,12 @@ pub fn run(
         None => crate::protocol::operations::request(cmd, values.clone(), request_id, deadline),
     };
     if let Action::Stream { cli, .. } = cmd.action {
-        return cli(&values, &request, startup, &call);
+        let form = if raw.is_some() {
+            crate::commands::CallForm::Literal
+        } else {
+            crate::commands::CallForm::Flags
+        };
+        return cli(&values, &request, startup, &call, form);
     }
     let root = startup.config.archive.clone();
     let result = if cmd.register.is_some() {

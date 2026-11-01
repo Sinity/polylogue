@@ -1,4 +1,5 @@
-//! Durable Begin and immutable Outcome for one accepted execution.
+//! Durable Begin and immutable Outcome for one accepted execution, both
+//! committed before the execution's answer returns.
 use super::Failure;
 use polylogue_model::{
     BlobHash, Timestamp,
@@ -46,15 +47,18 @@ pub(super) fn record<T>(
             .ok()
             .and_then(|completed| completed.next.clone()),
     };
-    let completion = writer.finish_query_run(outcome).map_err(Failure::from);
+    // The answer cites `run:<id>`, so its outcome is committed before the
+    // answer returns: a caller that reads the run next sees how it ended.
+    let committed = writer.finish_query_run(outcome).and_then(|receipt| {
+        receipt
+            .recv()
+            .map_err(|_| polylogue_store::StoreError::WriterGone)?
+    });
     match result {
         Ok(completed) => {
-            drop(completion?);
+            committed?;
             Ok(completed.value)
         }
-        Err(error) => {
-            drop(completion);
-            Err(error)
-        }
+        Err(error) => Err(error),
     }
 }

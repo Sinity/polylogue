@@ -28,6 +28,34 @@ pub enum Kind {
     Special,
 }
 
+impl Kind {
+    /// The stored form of one comparison value for a number, amount or
+    /// duration field, or why the value cannot be one. Preparation refuses a
+    /// value by this rule and compilation stores the same normalised form.
+    /// Kinds other than amounts and durations compare as numbers.
+    pub fn scalar(self, field: &str, text: &str) -> Result<String, String> {
+        match self {
+            Kind::Money => crate::time::money_nusd(text)
+                .map(|n| n.to_string())
+                .ok_or_else(|| format!("{field} is an amount in dollars such as 2.90")),
+            Kind::Duration => crate::time::duration_ms(text)
+                .map(|n| n.to_string())
+                .ok_or_else(|| format!("{field} is a duration such as 90s, 5m or 2h")),
+            _ => {
+                if let Ok(n) = text.parse::<i64>() {
+                    Ok(n.to_string())
+                } else if let Ok(f) = text.parse::<f64>()
+                    && f.is_finite()
+                {
+                    Ok(format!("{f}"))
+                } else {
+                    Err(format!("{field} is a number"))
+                }
+            }
+        }
+    }
+}
+
 pub struct Field {
     pub unit: Unit,
     pub name: &'static str,

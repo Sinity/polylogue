@@ -946,31 +946,14 @@ impl<'a> Compiler<'a> {
         text: &str,
         span: Span,
     ) -> Result<String, QueryError> {
-        let bad = |message: String| QueryError::BadValue {
-            field: def.name.to_owned(),
-            value: text.to_owned(),
-            position: span.start,
-            message,
-        };
-        match def.kind {
-            Kind::Money => time::money_nusd(text)
-                .map(|n| n.to_string())
-                .ok_or_else(|| bad(format!("{} is an amount in dollars such as 2.90", def.name))),
-            Kind::Duration => time::duration_ms(text)
-                .map(|n| n.to_string())
-                .ok_or_else(|| bad(format!("{} is a duration such as 90s, 5m or 2h", def.name))),
-            _ => {
-                if let Ok(n) = text.parse::<i64>() {
-                    Ok(n.to_string())
-                } else if let Ok(f) = text.parse::<f64>()
-                    && f.is_finite()
-                {
-                    Ok(format!("{f}"))
-                } else {
-                    Err(bad(format!("{} is a number", def.name)))
-                }
-            }
-        }
+        def.kind
+            .scalar(def.name, text)
+            .map_err(|message| QueryError::BadValue {
+                field: def.name.to_owned(),
+                value: text.to_owned(),
+                position: span.start,
+                message,
+            })
     }
 
     pub(super) fn time(&self, field: &str, text: &str, span: Span) -> Result<Time, QueryError> {

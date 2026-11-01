@@ -8,6 +8,7 @@ use query_language::{
 use serde::Serialize;
 use std::collections::BTreeMap;
 mod objects;
+mod values;
 pub use objects::{
     catalog_fingerprint, question_id_from_reference, referenced_question_ids,
     referenced_saved_names, replay, saved_query_bindings, validate_object,
@@ -144,6 +145,7 @@ fn prepare_inner(
     canonical_references(&mut query)?;
     let original =
         query_language::bind::bind(&query, &catalog).map_err(|e| QueryError::language(e, text))?;
+    values::check(&original)?;
     let mut identity = original.query().clone();
     let names = std::cell::RefCell::new(Vec::<String>::new());
     walk(
