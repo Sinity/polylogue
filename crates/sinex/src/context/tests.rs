@@ -16,7 +16,7 @@ fn available() -> PublicContext {
             zone: "Europe/Warsaw".into(),
             start: "04:00".parse().unwrap(),
         },
-        quiet_hours: Some(signals::QuietHours {
+        quiet_hours: Some(shared_signals::QuietHours {
             from: 1320,
             to: 420,
         }),

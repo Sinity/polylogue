@@ -4,10 +4,7 @@
 use crate::{BlobHash, Timestamp, authored::ExecutionEligibility, user};
 use serde::{Deserialize, Serialize};
 use shared_signals::notifications::{Notice, NotificationReceipt, NotificationState};
-use shared_signals::{
-    ActiveRule, Delivery, DeliveryOutcome, DeliveryReceipt, Evaluator, FiredIntent, HostPolicy,
-};
-use std::collections::BTreeMap;
+use shared_signals::{ActiveRule, Delivery, DeliveryReceipt, Evaluator, HostPolicy};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -16,17 +13,12 @@ pub struct Checkpoint {
     pub owner: String,
     pub evaluator: Evaluator,
     pub rules: Vec<ActiveRule>,
-    /// Source revision identities for the local monotone adoption ordinal.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub rule_sources: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub rule_revisions: BTreeMap<String, u64>,
-    /// Present only for the standalone host deliverer. Primary uses Forward.
+    /// Present only for the standalone host deliverer. In primary mode the
+    /// evaluator's reports go to Sinex, whose deliverer decides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<HostPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notifications: Option<NotificationState>,
-    pub outlet_attempts: BTreeMap<String, DeliveryOutcome>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -40,10 +32,10 @@ pub struct Outlet {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Metadata {
+    /// The host policy's handoff record: the firing, its decision and the
+    /// attention it was decided under.
     pub delivery: Delivery,
     pub notice: Notice,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub forward: Option<FiredIntent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outlet: Option<Outlet>,
     pub execution: ExecutionEligibility,
@@ -73,7 +65,7 @@ pub enum Event {
 impl Event {
     pub fn delivery_id(&self) -> &str {
         match self {
-            Self::HostDecision { delivery } => &delivery.id,
+            Self::HostDecision { delivery } => delivery.id(),
             Self::Desktop { receipt } => &receipt.delivery_id,
             Self::Outlet { receipt } => &receipt.delivery_id,
         }

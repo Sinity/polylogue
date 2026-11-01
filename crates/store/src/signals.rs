@@ -45,20 +45,13 @@ pub(crate) fn events(conn: &Connection, source: Source, id: &str) -> Result<Vec<
         .collect()
 }
 fn identity(value: &Metadata) -> Result<()> {
-    let delivery = &value.delivery;
-    if delivery.id != delivery.trigger.delivery_id()
-        || value.notice.delivery_id != delivery.id
-        || value.notice.product != delivery.trigger.rule.product
+    let fired = &value.delivery.fired;
+    if fired.id != fired.trigger.delivery_id()
+        || value.notice.delivery_id != fired.id
+        || value.notice.product != fired.trigger.rule.product
     {
         return Err(StoreError::Invalid(
             "signal outbox identity disagrees with its trigger".into(),
-        ));
-    }
-    if let Some(intent) = &value.forward
-        && (intent.delivery != *delivery || intent.current != value.notice.current)
-    {
-        return Err(StoreError::Invalid(
-            "forwarded signal disagrees with its frozen outbox".into(),
         ));
     }
     Ok(())
@@ -89,7 +82,7 @@ pub(crate) fn write(
                 "signal delivery must retain its typed sender".into(),
             ));
         }
-        let id = outbox.metadata.delivery.id.clone();
+        let id = outbox.metadata.delivery.id().to_owned();
         if !ids.insert(id.clone()) || outbox.metadata.execution != ExecutionEligibility::Live {
             return Err(StoreError::Invalid(
                 "new signal outbox must have one live identity".into(),
@@ -115,7 +108,8 @@ pub(crate) fn write(
         let base = metadata(conn, source, id)?
             .ok_or_else(|| StoreError::NotFound(format!("signal delivery {id}")))?;
         if let polylogue_model::signal::Event::HostDecision { delivery } = event
-            && (delivery.trigger != base.delivery.trigger || delivery.id != base.delivery.id)
+            && (delivery.fired.trigger != base.delivery.fired.trigger
+                || delivery.id() != base.delivery.id())
         {
             return Err(StoreError::Invalid(
                 "host signal decision changed occurrence identity".into(),
@@ -234,7 +228,7 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
     for change in &effect.deliveries {
         if let Some(metadata) = &change.delivery.signal {
             identity(metadata)?;
-            if change.delivery.id != metadata.delivery.id {
+            if change.delivery.id != metadata.delivery.id() {
                 return Err(StoreError::Invalid(
                     "signal delivery row identity differs".into(),
                 ));
@@ -258,7 +252,7 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
             .and_then(|d| d.delivery.signal.as_ref())
             .ok_or_else(|| StoreError::Invalid("signal event has no frozen delivery".into()))?;
         if let polylogue_model::signal::Event::HostDecision { delivery } = &event.event
-            && delivery.trigger != metadata.delivery.trigger
+            && delivery.fired.trigger != metadata.delivery.fired.trigger
         {
             return Err(StoreError::Invalid(
                 "signal decision changes occurrence".into(),
@@ -294,7 +288,7 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
             }
             for outbox in &commit.outbox {
                 if !effect.deliveries.iter().any(|d| {
-                    d.delivery.id == outbox.metadata.delivery.id
+                    d.delivery.id == outbox.metadata.delivery.id()
                         && d.delivery.signal.as_ref() == Some(&outbox.metadata)
                         && d.delivery.prepared == outbox.record
                 }) {

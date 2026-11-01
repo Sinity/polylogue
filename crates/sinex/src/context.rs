@@ -13,7 +13,7 @@ pub struct ResolvedContext {
     pub settings_identity: String,
     pub owner_revision: u64,
     pub day: query_language::time::DaySetting,
-    pub quiet_hours: Option<signals::QuietHours>,
+    pub quiet_hours: Option<shared_signals::QuietHours>,
     pub interrupt_budget: sinex_protocol::PublicInterruptBudget,
     pub observed_at: sinex_model::Timestamp,
     pub received_seconds_ago: f64,
@@ -202,7 +202,7 @@ impl Cache {
 fn valid(
     identity: &str,
     token: &str,
-    quiet: Option<&signals::QuietHours>,
+    quiet: Option<&shared_signals::QuietHours>,
     budget: &sinex_protocol::PublicInterruptBudget,
 ) -> bool {
     !identity.is_empty()

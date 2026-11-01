@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_model::{signal::Metadata, user::Delivery};
+use polylogue_model::signal::Outbox;
 
 #[test]
 fn rule_duration_uses_shared_parser_without_overflow() {
@@ -106,70 +106,12 @@ fn incomplete_timer_does_not_write_a_clock_heartbeat() {
 }
 
 pub(super) fn outbox(name: &str) -> Outbox {
-    use shared_signals::{Channel, Occurrence, RuleVersion, Trigger};
-    let trigger = Trigger {
-        rule: RuleVersion {
-            product: "polylogue".into(),
-            id: "synthetic".into(),
-            revision: 1,
-        },
-        occurrence: Occurrence {
-            id: name.into(),
-            episode: "one".into(),
-        },
-    };
-    let id = trigger.delivery_id();
-    let delivery = shared_signals::Delivery {
-        id: id.clone(),
-        trigger,
-        matched: 0,
-        at: 0,
-        basis: vec![],
-        channel: Channel::Interrupt,
-        downgrade: None,
-        change: None,
-        value: None,
-        scope: None,
-    };
-    let notice = shared_signals::notifications::Notice {
-        delivery_id: id,
-        product: "polylogue".into(),
-        icon: String::new(),
-        rule: name.into(),
-        occurrence: name.into(),
-        summary: name.into(),
-        body: String::new(),
-        reference: "repo:synthetic".into(),
-        command_hint: String::new(),
-        interrupt: true,
-        current: false,
-        data_loss: false,
-        budget_passive_count: None,
-    };
-    Outbox {
-        record: Delivery {
-            recipient_kind: "operator".into(),
-            recipient_id: None,
-            sender: "signal".into(),
-            event: "signal".into(),
-            cwd: None,
-            text: name.into(),
-            refs: vec![],
-            left_out: vec![],
-        },
-        metadata: Metadata {
-            delivery,
-            notice,
-            forward: None,
-            outlet: None,
-            execution: ExecutionEligibility::Live,
-        },
-    }
+    polylogue_store::fixture::signals::outbox("synthetic", name, 0, true)
 }
 
 #[test]
 fn restart_recovers_confirmed_outbox_and_preserves_unknown_attempt() {
-    use shared_signals::notifications::{NotificationState, Route};
+    use shared_signals::notifications::NotificationState;
     let mut fixture = crate::test_daemon::start_with_clock(
         "synthetic",
         polylogue_model::WallClock::fixed(
@@ -179,17 +121,17 @@ fn restart_recovers_confirmed_outbox_and_preserves_unknown_attempt() {
     fixture.pause_signals();
     let ready = outbox("confirmed-before-worker");
     let unknown = outbox("interrupted-after-unknown");
-    let ready_id = ready.metadata.delivery.id.clone();
-    let unknown_id = unknown.metadata.delivery.id.clone();
+    let ready_id = ready.metadata.delivery.id().to_owned();
+    let unknown_id = unknown.metadata.delivery.id().to_owned();
     let mut state = NotificationState::default();
-    let began = state.begin(unknown.metadata.notice.clone(), Route::Dbus);
+    let began = state.begin(unknown.metadata.notice.clone());
     let context = operation(&fixture.daemon).unwrap();
     let reader = fixture.daemon.reads.reader().unwrap();
     let attention = local_attention(&reader, &context).unwrap();
     drop(reader);
     let mut checkpoint = load(&fixture.daemon)
         .unwrap()
-        .unwrap_or_else(|| initial(&context, Some(&attention)).unwrap());
+        .unwrap_or_else(|| initial(&fixture.daemon, &context, Some(&attention)).unwrap());
     let prior = load(&fixture.daemon)
         .unwrap()
         .map(|c| c.identity().unwrap());
@@ -216,7 +158,7 @@ fn restart_recovers_confirmed_outbox_and_preserves_unknown_attempt() {
             .and_then(|c| c.notifications)
             .and_then(|state| state.attempt(&ready_id).cloned())
             .is_some_and(|attempt| {
-                attempt.dbus
+                attempt.desktop
                     == Some(shared_signals::DeliveryOutcome::NotSent(
                         "no_notification_server".into(),
                     ))
@@ -230,7 +172,7 @@ fn restart_recovers_confirmed_outbox_and_preserves_unknown_attempt() {
         .unwrap();
     let preserved = state.attempt(&unknown_id).unwrap();
     assert_eq!(
-        preserved.dbus,
+        preserved.desktop,
         Some(shared_signals::DeliveryOutcome::Unknown)
     );
     assert!(!preserved.retried);
@@ -445,9 +387,7 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
 
 #[test]
 fn unavailable_assertion_closure_preserves_pending_state_without_author_exemption() {
-    use shared_signals::{
-        ActiveRule, Evaluation, EvaluationMode, Occurrence, Origin, Row, RuleVersion,
-    };
+    use shared_signals::{ActiveRule, Evaluation, Occurrence, Origin, Row, RuleVersion};
     use std::sync::atomic::{AtomicI64, Ordering};
     let at = Arc::new(AtomicI64::new(1_792_332_000_000));
     let sampled = Arc::clone(&at);
@@ -463,7 +403,7 @@ fn unavailable_assertion_closure_preserves_pending_state_without_author_exemptio
     let prior = load(&fixture.daemon)
         .unwrap()
         .map(|checkpoint| checkpoint.identity().unwrap());
-    let mut checkpoint = initial(&context, Some(&attention)).unwrap();
+    let mut checkpoint = initial(&fixture.daemon, &context, Some(&attention)).unwrap();
     let calendar = DayCalendar::new(context.clock.day.clone());
     let now = context.clock.now.as_millisecond();
     let active = ActiveRule {
@@ -479,9 +419,9 @@ fn unavailable_assertion_closure_preserves_pending_state_without_author_exemptio
         author: shared_signals::Author::Operator,
         via: "historical-claim".into(),
         live: true,
+        shipped: Default::default(),
     };
-    checkpoint.evaluator =
-        Evaluator::new(now, vec![active.clone()], Policy::default(), &calendar).unwrap();
+    checkpoint.evaluator = Evaluator::new(now, vec![active.clone()], &calendar).unwrap();
     checkpoint
         .evaluator
         .observe(Evaluation {
@@ -492,7 +432,7 @@ fn unavailable_assertion_closure_preserves_pending_state_without_author_exemptio
             rows: vec![Row {
                 occurrence: Occurrence {
                     id: "waiting".into(),
-                    episode: "one".into(),
+                    period: "one".into(),
                 },
                 reference: "session:synthetic".into(),
                 observed: now,
@@ -503,22 +443,17 @@ fn unavailable_assertion_closure_preserves_pending_state_without_author_exemptio
             }],
         })
         .unwrap();
+    let host = checkpoint.host.as_mut().unwrap();
     assert!(
         checkpoint
             .evaluator
-            .advance_in_mode(now, &calendar, EvaluationMode::Forward)
+            .advance(now, &calendar, host)
             .unwrap()
-            .intents
+            .deliveries
             .is_empty()
     );
     assert_eq!(checkpoint.evaluator.pending_count(), 1);
     checkpoint.rules = vec![active];
-    checkpoint
-        .rule_sources
-        .insert("authored:retained".into(), "old-source".into());
-    checkpoint
-        .rule_revisions
-        .insert("authored:retained".into(), 7);
     assert!(
         persist(
             &fixture.daemon,

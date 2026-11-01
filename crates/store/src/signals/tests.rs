@@ -3,14 +3,10 @@ use crate::primary::authored::{apply, prepare, restore};
 use polylogue_model::{
     Author, Timestamp,
     authored::{ImportAttribution, PendingAuthored},
-    signal::{Event, Outbox},
-    user::{Delivery as PreparedDelivery, UserWrite},
+    signal::Event,
+    user::UserWrite,
 };
-use shared_signals::notifications::Notice;
-use shared_signals::{
-    Calendar, Channel, Delivery, DeliveryOutcome, DeliveryReceipt, Evaluator, Occurrence, Policy,
-    RuleVersion, Trigger,
-};
+use shared_signals::{Calendar, DeliveryOutcome, DeliveryReceipt, Evaluator};
 
 struct CalendarFixture;
 impl Calendar for CalendarFixture {
@@ -29,13 +25,10 @@ impl Calendar for CalendarFixture {
 fn checkpoint_value() -> Checkpoint {
     Checkpoint {
         owner: "host".into(),
-        evaluator: Evaluator::new(0, vec![], Policy::default(), &CalendarFixture).unwrap(),
+        evaluator: Evaluator::new(0, vec![], &CalendarFixture).unwrap(),
         rules: vec![],
-        rule_sources: Default::default(),
-        rule_revisions: Default::default(),
         host: None,
         notifications: None,
-        outlet_attempts: Default::default(),
     }
 }
 fn cache() -> Connection {
@@ -79,67 +72,12 @@ fn prepare_pending(
     )
 }
 fn initial() -> Commit {
-    let trigger = Trigger {
-        rule: RuleVersion {
-            product: "polylogue".into(),
-            id: "rule".into(),
-            revision: 1,
-        },
-        occurrence: Occurrence {
-            id: "session".into(),
-            episode: "waiting".into(),
-        },
-    };
-    let id = trigger.delivery_id();
-    let delivery = Delivery {
-        id: id.clone(),
-        trigger,
-        matched: 50,
-        at: 100,
-        basis: vec![],
-        channel: Channel::Value,
-        downgrade: None,
-        change: None,
-        value: Some(2.0),
-        scope: None,
-    };
-    let notice = Notice {
-        delivery_id: id,
-        product: "polylogue".into(),
-        icon: String::new(),
-        rule: "rule".into(),
-        occurrence: "session".into(),
-        summary: "waiting".into(),
-        body: String::new(),
-        reference: "session:synthetic".into(),
-        command_hint: String::new(),
-        interrupt: false,
-        current: false,
-        data_loss: false,
-        budget_passive_count: None,
-    };
     Commit {
         prior: None,
         checkpoint: checkpoint_value(),
-        outbox: vec![Outbox {
-            record: PreparedDelivery {
-                recipient_kind: "operator".into(),
-                recipient_id: None,
-                sender: "signal".into(),
-                event: "signal".into(),
-                cwd: None,
-                text: "waiting".into(),
-                refs: vec![],
-                left_out: vec![],
-            },
-            metadata: Metadata {
-                delivery,
-                notice,
-                forward: None,
-                outlet: None,
-                execution: ExecutionEligibility::Live,
-            },
-        }],
+        outbox: vec![crate::fixture::signals::outbox(
+            "rule", "session", 100, false,
+        )],
         events: vec![],
     }
 }
@@ -157,7 +95,7 @@ fn signal_checkpoint_outbox_and_receipt_freeze_once_across_pending_and_restart()
     conn.execute_batch(&crate::source::schema().unwrap().ddl)
         .unwrap();
     let first = initial();
-    let id = first.outbox[0].metadata.delivery.id.clone();
+    let id = first.outbox[0].metadata.delivery.id().to_owned();
     let p = prepare_pending(&conn, &request("first", first.clone()), &[]).unwrap();
     assert!(checkpoint(&conn, Source::Cache, "host").unwrap().is_none());
     let mut next = first.clone();
@@ -167,7 +105,7 @@ fn signal_checkpoint_outbox_and_receipt_freeze_once_across_pending_and_restart()
         receipt: DeliveryReceipt {
             delivery_id: id.clone(),
             at: 101,
-            route: "value".into(),
+            outlet: "value".into(),
             outcome: DeliveryOutcome::Unknown,
         },
     }];
@@ -206,7 +144,7 @@ fn signal_checkpoint_outbox_and_receipt_freeze_once_across_pending_and_restart()
 fn signal_historical_reverse_snapshots_preserve_receipts_without_authorizing_effects() {
     let mut origin = cache();
     let first = initial();
-    let id = first.outbox[0].metadata.delivery.id.clone();
+    let id = first.outbox[0].metadata.delivery.id().to_owned();
     let p = prepare_pending(&origin, &request("first", first.clone()), &[]).unwrap();
     admit(&mut origin, &p, 1);
     let mut next = first.clone();
@@ -216,7 +154,7 @@ fn signal_historical_reverse_snapshots_preserve_receipts_without_authorizing_eff
         receipt: DeliveryReceipt {
             delivery_id: id.clone(),
             at: 101,
-            route: "value".into(),
+            outlet: "value".into(),
             outcome: DeliveryOutcome::Unknown,
         },
     }];

@@ -113,7 +113,7 @@ fn continuation_stages_original_source3_group_and_exact_retry_reuses_it_after_re
 }
 
 struct Calendar;
-impl ::signals::Calendar for Calendar {
+impl shared_signals::Calendar for Calendar {
     fn logical_day(&self, _: i64) -> String {
         "synthetic-day".into()
     }
@@ -130,14 +130,10 @@ fn retained_original_bytes_cannot_bypass_the_existing_derived_signal_publication
     let mut case = oracle().cases.remove(0);
     let checkpoint = polylogue_model::signal::Checkpoint {
         owner: "fixture-machine".into(),
-        evaluator: ::signals::Evaluator::new(0, vec![], ::signals::Policy::default(), &Calendar)
-            .unwrap(),
+        evaluator: shared_signals::Evaluator::new(0, vec![], &Calendar).unwrap(),
         rules: vec![],
-        rule_sources: Default::default(),
-        rule_revisions: Default::default(),
         host: None,
         notifications: None,
-        outlet_attempts: Default::default(),
     };
     let mut body: Value = crate::spool::decode_json(case.body.as_bytes()).unwrap();
     body["effect"]["signal_checkpoints"] = serde_json::to_value([checkpoint.clone()]).unwrap();

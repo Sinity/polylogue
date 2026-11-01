@@ -219,14 +219,19 @@ fn output_and_grammar_inputs_need_no_deployment_or_machine_identity() {
 fn outlets_use_typed_arguments_and_stable_resolved_identity() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("signals.toml");
-    std::fs::write(&path, "[notifications]\nroute='command'\ncommand={program='./bin/../notify',arguments=['a b','literal;$HOME']}\n[value_targets.answer]\npath='./state/../answer'\n[action_commands.refresh]\nprogram='bin/refresh'\narguments=['--mode','once']\n").unwrap();
+    std::fs::write(&path, "[notifications]\naway_command={program='./bin/../notify',arguments=['a b','literal;$HOME']}\n[value_targets.answer]\npath='./state/../answer'\n[action_commands.refresh]\nprogram='bin/refresh'\narguments=['--mode','once']\n").unwrap();
     let config = SignalDeployment::load(&path).unwrap();
     assert_eq!(
-        config.notifications.command.as_ref().unwrap().arguments,
+        config
+            .notifications
+            .away_command
+            .as_ref()
+            .unwrap()
+            .arguments,
         ["a b", "literal;$HOME"]
     );
     assert_eq!(
-        config.notifications.command.as_ref().unwrap().program,
+        config.notifications.away_command.as_ref().unwrap().program,
         root.path().join("notify")
     );
     assert_eq!(
@@ -243,7 +248,10 @@ fn outlets_use_typed_arguments_and_stable_resolved_identity() {
         config.identity().unwrap(),
         SignalDeployment::load(&path).unwrap().identity().unwrap()
     );
+    // The route function decides where a notice goes; no route is configured.
     std::fs::write(&path, "[notifications]\nroute='command'\n").unwrap();
+    assert!(SignalDeployment::load(&path).is_err());
+    std::fs::write(&path, "[notifications]\naway_command={program=' '}\n").unwrap();
     assert!(SignalDeployment::load(&path).is_err());
     std::fs::write(&path, "[value_targets.answer]\npath=''\n").unwrap();
     assert!(SignalDeployment::load(&path).is_err());

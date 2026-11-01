@@ -11,6 +11,7 @@
 
 pub mod authored;
 pub mod query_objects;
+pub mod signals;
 pub mod text_search;
 pub mod writer;
 

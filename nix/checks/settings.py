@@ -22,8 +22,7 @@ assert files(sys.argv[1]) == {
     },
     "signals": {
         "notifications": {
-            "route": "both",
-            "command": {"program": "/bin/notify", "arguments": ["two words", "--"]},
+            "away_command": {"program": "/bin/notify", "arguments": ["two words", "--"]},
             "deadline_ms": 1200,
         },
         "value_targets": {"result": {"path": "/var/lib/results/value"}},
