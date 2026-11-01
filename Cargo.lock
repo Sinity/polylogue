@@ -530,7 +530,6 @@ dependencies = [
 [[package]]
 name = "credential-masking"
 version = "0.1.1"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#db1ee87b8fadfbc616490b509d52d3d0d531c4e7"
 dependencies = [
  "hmac",
  "sha2",
@@ -650,7 +649,6 @@ dependencies = [
 [[package]]
 name = "devkit"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#db1ee87b8fadfbc616490b509d52d3d0d531c4e7"
 dependencies = [
  "blake3",
  "clap",
@@ -668,7 +666,6 @@ dependencies = [
 [[package]]
 name = "devkit-macros"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#db1ee87b8fadfbc616490b509d52d3d0d531c4e7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -953,13 +950,13 @@ dependencies = [
 [[package]]
 name = "hashed-blobs"
 version = "0.1.1"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#db1ee87b8fadfbc616490b509d52d3d0d531c4e7"
 dependencies = [
  "blake3",
  "chacha20poly1305",
  "hkdf",
  "libc",
  "sha2",
+ "tempfile",
  "zstd",
 ]
 
@@ -1742,6 +1739,7 @@ dependencies = [
  "blake3",
  "credential-masking",
  "jiff",
+ "query-language",
  "schemars",
  "serde",
  "serde_json",
@@ -1826,7 +1824,6 @@ dependencies = [
  "memchr",
  "polylogue-model",
  "rusqlite",
- "schemars",
  "serde",
  "serde_json",
  "tempfile",
@@ -1932,6 +1929,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "200b9ff220857e53e184257720a14553b2f4aa02577d2ed9842d45d4b9654810"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "query-language"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "jiff",
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

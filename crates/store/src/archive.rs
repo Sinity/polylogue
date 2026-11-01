@@ -71,9 +71,11 @@ impl Archive {
 
     pub fn blob_reader(&self) -> crate::blobs::Blobs {
         let root = self.sinex_store.as_ref().unwrap_or(&self.root);
-        let (catalog,layout)=if self.is_primary() {
-            (self.index_db(),crate::blobs::BlobCatalog::Projection)
-        } else {(self.archive_db(),crate::blobs::BlobCatalog::Archive)};
+        let (catalog, layout) = if self.is_primary() {
+            (self.index_db(), crate::blobs::BlobCatalog::Projection)
+        } else {
+            (self.archive_db(), crate::blobs::BlobCatalog::Archive)
+        };
         crate::blobs::Blobs::new(root.clone(), catalog, layout)
     }
 
