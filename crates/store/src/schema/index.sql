@@ -759,7 +759,7 @@ CREATE TABLE live_interval (
   end_at     INTEGER NOT NULL,
   closed_by  TEXT NOT NULL,                 -- the kind of the evidence that closed it
   PRIMARY KEY (session_pk, aspect, start_at)
-) STRICT, WITHOUT ROWID;
+) STRICT;
 CREATE INDEX live_interval_end ON live_interval(end_at);
 
 -- Processes of live sessions from the process watcher's lines: the harness
@@ -777,4 +777,4 @@ CREATE TABLE process (
   ended_at   INTEGER,
   role       TEXT NOT NULL,                 -- harness | child
   PRIMARY KEY (session_pk, boot_id, pid, start)
-) STRICT, WITHOUT ROWID;
+) STRICT;

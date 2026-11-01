@@ -305,7 +305,7 @@ impl Caller {
 }
 
 /// The live view as a query: what `polylogue live` runs.
-pub const LIVE: &str = "sessions where -live:ended | sort by live_rank, last_event_at desc";
+pub const LIVE: &str = "sessions where running:true | sort by live_rank, last_event_at desc";
 /// Sessions waiting on the operator, the longest wait first.
 pub const WAITING: &str = "sessions where waiting:true | sort by live_since";
 /// Signal notices as a query: what `polylogue notices` runs.
@@ -994,7 +994,7 @@ const WRITTEN: &[Command] = &[
     }),
     typed_command!(LiveOperation, crate::protocol::query_aliases::Live, crate::protocol::query::Rows, {
         name: "live",
-        help: "Sessions running now and what each is doing: the query `sessions where -live:ended | sort by live_rank, last_event_at desc`",
+        help: "Sessions running now and what each is doing: the query `sessions where running:true | sort by live_rank, last_event_at desc`",
         reason: "Show the current running-session view",
         latency: command_surface::LatencyClass::Read,
         args: &[WHY, CURSOR, FIELDS],

@@ -318,3 +318,26 @@ fn hook_evidence_without_a_process_holds_for_the_window() {
     let v = view(Some(&facts), None, 300 * MIN);
     assert_eq!((v.state, v.until), (LiveState::Idle, None));
 }
+
+/// Evidence passing through a value at one instant leaves no interval, so
+/// no two intervals of one aspect share a start.
+#[test]
+fn an_instant_leaves_no_interval() {
+    let (_, closed) = run(&[
+        ("hook_user_prompt_submit", 0, hook(json!({}))),
+        ("hook_permission_request", MIN, hook(json!({}))),
+        ("hook_post_tool_use", MIN, hook(json!({}))),
+        ("hook_stop", 2 * MIN, hook(json!({}))),
+    ]);
+    let compact: Vec<_> = closed
+        .iter()
+        .map(|i| (i.aspect, i.value.as_str(), i.start / MIN, i.end / MIN))
+        .collect();
+    assert_eq!(
+        compact,
+        vec![
+            (Aspect::Activity, "working", 0, 1),
+            (Aspect::Activity, "working", 1, 2),
+        ]
+    );
+}

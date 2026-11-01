@@ -20,7 +20,7 @@ CREATE TABLE live_interval (
   end_at     INTEGER NOT NULL,
   closed_by  TEXT NOT NULL,
   PRIMARY KEY (session_pk, aspect, start_at)
-) STRICT, WITHOUT ROWID;
+) STRICT;
 CREATE INDEX live_interval_end ON live_interval(end_at);
 CREATE TABLE process (
   session_pk INTEGER NOT NULL REFERENCES session(pk),
@@ -35,7 +35,7 @@ CREATE TABLE process (
   ended_at   INTEGER,
   role       TEXT NOT NULL,
   PRIMARY KEY (session_pk, boot_id, pid, start)
-) STRICT, WITHOUT ROWID;
+) STRICT;
 -- Every session with live evidence is folded again by its next derivation.
 UPDATE session SET live_reparse = 1 WHERE pk IN (
   SELECT session_pk FROM event WHERE session_pk IS NOT NULL

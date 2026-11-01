@@ -257,7 +257,7 @@ A subagent's live state is its parent's process plus its own `SubagentStart`/`Su
 **Task.** A session's live task is set only by explicit structured task evidence: a hook line `TaskClaimed` with `{"task": ID}` sent for the session (`polylogue hook TaskClaimed`), cleared by `TaskReleased` naming the same task. A command's name or arguments, including a tracker's exact claim command, establish no task state. A tracker ID mentioned in prose stays a reference. The harness's in-progress todo item is shown as text (`todo`), never as a task.
 
 **Surfaces.**
-- `polylogue live` lists sessions that have not ended, waiting first (`sessions where -live:ended | sort by live_rank, last_event_at desc`); `polylogue waiting` lists what waits on the operator, the longest wait first (`sessions where waiting:true | sort by live_since`).
+- `polylogue live` lists running sessions, waiting first (`sessions where running:true | sort by live_rank, last_event_at desc`); `polylogue waiting` lists what waits on the operator, the longest wait first (`sessions where waiting:true | sort by live_since`).
 - `polylogue QUERY follow` prints a line per new message or tool call and per live-state change (`→ waiting: permission for Bash`).
 - `read --view live` shows the process tree: harness, children with argv and age.
 - The brief's other-agents section lists each live session here with its state, wait, directory, task and the number of uncommitted edits.

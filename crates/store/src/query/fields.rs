@@ -467,7 +467,7 @@ f(ToolCalls,"input").custom(custom::input),
 f(ToolCalls,"output").custom(custom::output),
 f(ToolCalls,"path").custom(custom::tool_call_text).sql("{t}.path"),
 f(ToolCalls,"outcome").sql(
-        "CASE WHEN {t}.result_block_pk IS NULL AND {t}.outcome = 'unknown' AND {s}.live_open_tool_pk = {t}.pk \
+        "CASE WHEN {t}.result_block_pk IS NULL AND {t}.outcome = 'unknown' AND json_extract({s}.live_facts, '$.open_call.call_id') = {t}.call_id \
              THEN 'pending' ELSE {t}.outcome END",
     ),
 f(ToolCalls,"exit_code").sql("{t}.exit_code"),

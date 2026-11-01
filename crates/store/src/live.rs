@@ -6,9 +6,11 @@
 //! is computed when asked, from the facts and the time (`pl_live`); nothing
 //! here looks at the clock.
 //!
-//! Evidence that arrives older than what a session has already folded
+//! Evidence that arrives no later than what a session has already folded
 //! marks the session for a refold, which the session derivation runs over
-//! every stored line in (time, line) order. Both paths give the same rows.
+//! every stored line in (time, input, byte offset) order: lines at one
+//! instant may arrive in any order, and a line stored again must not fold
+//! twice. Both paths give the same rows.
 
 use crate::Result;
 use polylogue_model::Json;
@@ -110,7 +112,7 @@ fn record_process(tx: &Transaction<'_>, session_pk: i64, kind: &str, at: i64, da
 }
 
 /// Folds one stored live evidence event into `session_pk`'s facts. An
-/// event older than the facts already folded marks the session for a
+/// event no later than the facts already folded marks the session for a
 /// refold instead, so the result never depends on arrival order.
 pub(crate) fn apply(
     tx: &Transaction<'_>,
@@ -128,7 +130,7 @@ pub(crate) fn apply(
         return Ok(());
     };
     let (mut facts, last) = load(tx, session_pk)?;
-    if last.is_some_and(|last| at < last) {
+    if last.is_some_and(|last| at <= last) {
         tx.prepare_cached("UPDATE session SET live_reparse = 1 WHERE pk = ?1")?
             .execute([session_pk])?;
         return Ok(());
@@ -149,7 +151,7 @@ pub(crate) fn refold(tx: &Transaction<'_>, session_pk: i64, counter: i64) -> Res
     let mut facts = LiveFacts::default();
     let mut statement = tx.prepare(&format!(
         "SELECT kind, at, data FROM event WHERE session_pk = ?1 AND at IS NOT NULL AND {EVIDENCE_KINDS}
-         ORDER BY at, id"
+         ORDER BY at, input_pk, source_start, id"
     ))?;
     let events = statement.query_map([session_pk], |r| {
         Ok((

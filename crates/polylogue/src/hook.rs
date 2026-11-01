@@ -36,9 +36,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-/// How long a hook that brings context waits for the daemon. A brief the
-/// daemon cannot prepare in time is recorded `not_sent:timeout` and the
-/// harness carries on without it.
+/// How long a hook that brings context waits for the daemon; past it the
+/// harness carries on without the context.
 const CONTEXT_BUDGET: Duration = Duration::from_millis(300);
 
 /// A harness that calls the hook command.

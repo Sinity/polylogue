@@ -62,7 +62,8 @@ fn stat_lines_with_spaces_and_parentheses_in_the_name_parse() {
         Some(Stat {
             ppid: 7,
             start: 98765,
-            comm: "tmux: server (1)".into()
+            comm: "tmux: server (1)".into(),
+            zombie: false,
         })
     );
 }
@@ -119,6 +120,25 @@ fn a_root_from_another_boot_or_start_time_is_written_gone() {
     assert_eq!(lines[0]["route"], "process");
     assert_eq!(lines[0]["session_id"], "old");
     assert!(w.watched.is_empty());
+    // Until the evidence stops naming them, gone roots are not written again.
+    assert!(
+        w.update_roots(&[root("old", 10, 500, "b1"), root("reused", 10, 500, "b2")], now())
+            .is_empty()
+    );
+}
+
+#[test]
+fn an_exited_root_waiting_to_be_reaped_is_gone() {
+    let dir = tempfile::tempdir().unwrap();
+    let proc_root = dir.path().join("proc");
+    fake_proc(&proc_root, &[(10, 1, 500, "claude")]);
+    let stat = proc_root.join("10").join("stat");
+    let text = std::fs::read_to_string(&stat).unwrap().replace(") S ", ") Z ");
+    std::fs::write(&stat, text).unwrap();
+    let mut w = Watcher::new(proc_root, "b1".into(), None);
+    let roots = [root("s", 10, 500, "b1")];
+    assert_eq!(events(&w.update_roots(&roots, now())), [("RootGone".into(), 10)]);
+    assert!(w.update_roots(&roots, now()).is_empty());
 }
 
 /// law: pl.live.root-gone-prompt

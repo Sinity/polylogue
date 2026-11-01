@@ -50,6 +50,8 @@ pub(crate) struct Paths {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Stat {
     pub ppid: u32,
+    /// An exited process not yet reaped by its parent.
+    pub zombie: bool,
     /// Clock ticks after boot (field 22).
     pub start: u64,
     pub comm: String,
@@ -64,10 +66,15 @@ pub(crate) fn parse_stat(line: &str) -> Option<Stat> {
     let comm = line.get(open + 1..close)?.to_owned();
     let mut rest = line.get(close + 1..)?.split_whitespace();
     // Fields after the name: 3 state, 4 ppid, …, 22 start time.
-    let _state = rest.next()?;
+    let zombie = rest.next()? == "Z";
     let ppid = rest.next()?.parse().ok()?;
     let start = rest.nth(17)?.parse().ok()?;
-    Some(Stat { ppid, start, comm })
+    Some(Stat {
+        ppid,
+        start,
+        comm,
+        zombie,
+    })
 }
 
 fn stat(proc_root: &Path, pid: u32) -> Option<Stat> {
@@ -186,6 +193,9 @@ pub(crate) struct Watcher {
     boot: String,
     boot_time_ms: Option<i64>,
     watched: BTreeMap<String, Watched>,
+    /// Roots already written gone, until their `RootGone` is committed and
+    /// the evidence stops naming them.
+    reported_gone: BTreeSet<(String, ProcessIdentity)>,
 }
 
 impl Watcher {
@@ -195,6 +205,7 @@ impl Watcher {
             boot,
             boot_time_ms,
             watched: BTreeMap::new(),
+            reported_gone: BTreeSet::new(),
         }
     }
 
@@ -208,7 +219,15 @@ impl Watcher {
         let mut out = Vec::new();
         let wanted: BTreeSet<&str> = roots.iter().map(|r| r.session.as_str()).collect();
         self.watched.retain(|s, _| wanted.contains(s.as_str()));
+        let named: BTreeSet<(String, ProcessIdentity)> = roots
+            .iter()
+            .map(|r| (r.session.clone(), r.root.clone()))
+            .collect();
+        self.reported_gone.retain(|k| named.contains(k));
         for r in roots {
+            if self.reported_gone.contains(&(r.session.clone(), r.root.clone())) {
+                continue;
+            }
             let Ok(session) = SessionId::parse(&r.session) else {
                 continue;
             };
@@ -219,6 +238,9 @@ impl Watcher {
                 continue;
             }
             self.watched.remove(&r.session);
+            if !self.alive(&r.root) {
+                self.reported_gone.insert((r.session.clone(), r.root.clone()));
+            }
             if r.root.boot != self.boot {
                 // The process belonged to an earlier boot: it ended then.
                 let at = self
@@ -228,8 +250,7 @@ impl Watcher {
                 out.push(line("process", "RootGone", &session, at, identity_payload(&r.root)));
                 continue;
             }
-            let alive = stat(&self.proc_root, r.root.pid).is_some_and(|s| s.start == r.root.start);
-            if !alive {
+            if !self.alive(&r.root) {
                 out.push(line("process", "RootGone", &session, now, identity_payload(&r.root)));
                 continue;
             }
@@ -257,6 +278,13 @@ impl Watcher {
         out
     }
 
+    /// Whether `root` runs now on this boot: same pid and start time, and
+    /// not an exited process waiting to be reaped.
+    fn alive(&self, root: &ProcessIdentity) -> bool {
+        root.boot == self.boot
+            && stat(&self.proc_root, root.pid).is_some_and(|s| s.start == root.start && !s.zombie)
+    }
+
     /// Lines for roots whose pidfd reports an exit, or, without pidfd
     /// support, whose process is gone at a sample.
     pub(crate) fn exited(&mut self, ready: &BTreeSet<String>, now: jiff::Timestamp) -> Vec<Value> {
@@ -266,14 +294,13 @@ impl Watcher {
             .iter()
             .filter(|(session, w)| {
                 ready.contains(*session)
-                    || (w.pidfd.is_none()
-                        && !stat(&self.proc_root, w.root.pid)
-                            .is_some_and(|s| s.start == w.root.start))
+                    || (w.pidfd.is_none() && !self.alive(&w.root))
             })
             .map(|(s, _)| s.clone())
             .collect();
         for session_key in gone {
             let w = self.watched.remove(&session_key).expect("listed above");
+            self.reported_gone.insert((session_key.clone(), w.root.clone()));
             let Ok(session) = SessionId::parse(&session_key) else {
                 continue;
             };
@@ -485,15 +512,18 @@ pub(crate) fn run(
         let _ = append(&paths.spool, "process", &boot, &process_lines);
         let registry_lines = registry.read(now, identity);
         let _ = append(&paths.spool, "registry", &boot, &registry_lines);
+        // Wake for the next sample, a root's exit, new roots (at most a
+        // second later) or the stop signal.
         let wake = watcher.next_wake().min(SAMPLE_OPEN_CALL);
-        let ready = watcher.wait(wake);
+        let polled = watcher.watched.values().any(|w| w.pidfd.is_some());
+        let ready = if polled {
+            watcher.wait(wake)
+        } else {
+            BTreeSet::new()
+        };
         let gone = watcher.exited(&ready, clock.now());
         let _ = append(&paths.spool, "process", &boot, &gone);
-        match stop.recv_timeout(if ready.is_empty() && watcher.watched.is_empty() {
-            SAMPLE_OPEN_CALL
-        } else {
-            Duration::ZERO
-        }) {
+        match stop.recv_timeout(if polled { Duration::ZERO } else { wake }) {
             Err(RecvTimeoutError::Timeout) => {}
             Ok(()) | Err(RecvTimeoutError::Disconnected) => return,
         }

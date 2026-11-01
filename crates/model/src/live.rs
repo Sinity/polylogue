@@ -362,6 +362,16 @@ fn stop_failure(data: &Json) -> Stall {
     }
 }
 
+fn continue_open(open: &mut Vec<OpenInterval>, aspect: Aspect, value: Option<&str>, at: i64) {
+    if let Some(value) = value {
+        open.push(OpenInterval {
+            aspect,
+            value: value.to_owned(),
+            start: at,
+        });
+    }
+}
+
 impl LiveFacts {
     fn set_activity(&mut self, activity: Activity, at: i64) {
         if self.hook_activity.map(|a| a.value) != Some(activity) {
@@ -404,6 +414,8 @@ impl LiveFacts {
         {
             self.root = Some(identity);
             self.root_gone_at = None;
+            // The registry word belonged to the earlier process.
+            self.harness_status = None;
         }
     }
 
@@ -517,10 +529,12 @@ impl LiveFacts {
 
     fn apply_registry(&mut self, at: i64, data: &Json) {
         let identity = ProcessIdentity::from_line(data, "pid", "start");
+        // The reader names the process that owns the pid when it reads the
+        // file, so a registry line never chooses the root; it only speaks
+        // for a root the hooks established, or for a session with none.
         if !self.same_root(identity.as_ref()) {
             return;
         }
-        self.adopt_root(identity);
         if let Some(word) = data.get("status").and_then(Json::as_str) {
             self.harness_status = Some(HarnessStatus {
                 word: word.to_owned(),
@@ -572,6 +586,12 @@ impl LiveFacts {
             }
             if let Some(i) = open {
                 let o = self.open_intervals.remove(i);
+                // Evidence at one instant that passes through a value
+                // measures no time and leaves no interval.
+                if o.start == at {
+                    continue_open(&mut self.open_intervals, aspect, value, at);
+                    continue;
+                }
                 closed.push(LiveInterval {
                     aspect,
                     value: o.value,
