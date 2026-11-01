@@ -216,7 +216,7 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
         };
         for line in &lines {
             let change = &line["change"];
-            if change["kind"] == "session" || change["kind"] == "note" {
+            if change["kind"] == "session" || change["kind"] == "assertion" {
                 staged.insert(format!(
                     "{}:{}",
                     change["kind"].as_str().unwrap(),
@@ -267,7 +267,7 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
         .collect();
     let mut prior = old.clone();
     prior.insert("session:claude-code:stale-local-reference".into());
-    prior.insert("note:stale-note-reference".into());
+    prior.insert("assertion:stale-assertion-reference".into());
     for prefix in positions.iter().take(positions.len() - 1) {
         assert!(apply_if_complete(&output[..*prefix], &prior, Some(&checkpoint)).is_none());
         assert!(prior.contains("session:claude-code:stale-local-reference"));

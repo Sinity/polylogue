@@ -97,10 +97,16 @@ fn public_morrow_tour_matches_current_query_examples() {
         .collect();
     assert_eq!(unknown, expected_unknown);
     assert_eq!(steps[8]["result"]["rows"].as_array().unwrap().len(), 1);
+    // A takeover names an assertion by another author that the operator has
+    // not accepted, without quoting it (docs/agents.md, Brief).
+    let takeover = steps[9]["result"].to_string();
     assert!(
-        steps[9]["result"]
-            .to_string()
-            .contains("Use chrono for date parsing.")
+        takeover.contains("Assertions by other authors, not yet accepted: 1;"),
+        "{takeover}"
+    );
+    assert!(
+        !takeover.contains("Use chrono for date parsing."),
+        "{takeover}"
     );
     assert!(
         steps

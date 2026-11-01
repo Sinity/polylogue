@@ -52,12 +52,16 @@ pub(crate) fn line(out: &mut dyn Write, args: fmt::Arguments<'_>) -> io::Result<
 
 /// Add a fixed heading style after escaping at the displaying client.
 pub fn heading(text: &str, color: bool) -> String {
-    let text = escape(text);
+    bold_first_line(&escape(text), color)
+}
+
+/// Style the first line of already escaped terminal text as the heading.
+pub fn bold_first_line(escaped: &str, color: bool) -> String {
     if color {
-        let (first, rest) = text.split_once('\n').unwrap_or((&text, ""));
+        let (first, rest) = escaped.split_once('\n').unwrap_or((escaped, ""));
         format!("\x1b[1m{first}\x1b[0m\n{rest}")
     } else {
-        text
+        escaped.to_owned()
     }
 }
 

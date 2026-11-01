@@ -178,13 +178,19 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
         "provenance":{"captured_at":"2026-10-24T00:00:00Z","source_url":"https://chatgpt.com/c/passage"},
         "session":{"provider":"chatgpt","provider_session_id":"passage","turns":[{"provider_turn_id":"native-message","role":"assistant","text":"Exact  selected\nquote"}]}});
     assert_eq!(native("/v1/captures", &capture).0, 200);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         let status = command().args(["status", "--json"]).output().unwrap();
         assert!(status.status.success(), "{status:?}");
         let status: Value = serde_json::from_slice(&status.stdout).unwrap();
-        if status["store"]["messages"] == 1 {
+        if status["value"]["store"]["messages"] == 1 && status["value"]["busy"] == false {
             break;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the capture was not stored: {status}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
     let note = json!({"request_id":"019c6e27-e55b-73d1-87d8-4e01f1f75043","body":"My edited annotation","quote":"Exact  selected\nquote",
         "source":{"provider":"chatgpt","conversation_id":"passage","message_id":"native-message","page_url":"https://chatgpt.com/c/passage","selected_at":"2026-10-24T00:00:00Z"}});
@@ -203,15 +209,14 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
     assert_eq!(retried["note"]["repeat"], true);
     let output = command()
         .args([
-            "query",
-            r#"assertions where about:"session:chatgpt:passage""#,
             "--json",
+            r#"assertions where about:"session:chatgpt:passage""#,
         ])
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let notes = &answer["rows"];
+    let notes = &answer["value"]["rows"];
     assert_eq!(notes.as_array().unwrap().len(), 1);
     assert_eq!(notes[0]["id"], note["request_id"]);
     assert_eq!(notes[0]["author"], "operator");

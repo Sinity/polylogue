@@ -1012,17 +1012,17 @@ pub static FIELDS: &[Field] = &[
     v(
         Changes,
         "kind",
-        &["session", "removed", "note"],
+        &["session", "removed", "assertion"],
         "what changed",
     ),
-    f(Changes, "ref", Prefix, "the session or note ID"),
+    f(Changes, "ref", Prefix, "the session or assertion ID"),
     f(
         Changes,
         "seq",
         Number,
-        "the write counter of the change: index.db's for sessions, archive.db's for notes",
+        "the write counter of the change: index.db's for sessions, archive.db's for assertions",
     ),
-    f(Changes, "assertion_kind", Match, "a note's kind"),
+    f(Changes, "assertion_kind", Match, "an assertion's kind"),
     sp(
         Changes,
         "after",

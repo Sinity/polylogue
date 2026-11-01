@@ -38,10 +38,19 @@ fn msg<'a>(
     }
 }
 
+/// A message ID in its session's origin, as every stored message has.
+fn scoped(session: &str, native: &str) -> String {
+    use polylogue_model::{MessageId, NativeId, SessionId};
+    MessageId::new(
+        SessionId::parse(session).unwrap().origin().clone(),
+        NativeId::new(native).unwrap(),
+    )
+    .to_string()
+}
+
 /// #1–#8 as the example's FACTS table has them, reduced to what the
 /// queries below read.
 fn morrow() -> TestArchive {
-    use polylogue_model::{MessageId, NativeId, Reference, SessionId};
     let dir = tempfile::tempdir().unwrap();
     let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();
     let cc = |n: u8| format!("claude-code:7f3a2c10-000{n}-4000-8000-00000000000{n}");
@@ -62,7 +71,7 @@ fn morrow() -> TestArchive {
             .message(
                 s1,
                 msg(
-                    &format!("m1p{i}"),
+                    &scoped(&ids[0], &format!("m1p{i}")),
                     "user",
                     "human",
                     "please fix the parser",
@@ -76,7 +85,7 @@ fn morrow() -> TestArchive {
                 MessageFacts {
                     cost_nusd: Some(420_000_000),
                     ..msg(
-                        &format!("m1a{i}"),
+                        &scoped(&ids[0], &format!("m1a{i}")),
                         "assistant",
                         "model",
                         "done",
@@ -115,14 +124,10 @@ fn morrow() -> TestArchive {
             ..SessionFacts::default()
         })
         .unwrap();
-    let decision_message = MessageId::new(
-        SessionId::parse(&ids[1]).unwrap().origin().clone(),
-        NativeId::new("m2p0").unwrap(),
-    );
     fx.message(
         s2,
         msg(
-            &decision_message.to_string(),
+            &scoped(&ids[1], "m2p0"),
             "user",
             "human",
             "let's use chrono, not time",
@@ -132,18 +137,33 @@ fn morrow() -> TestArchive {
     .unwrap();
     fx.message(
         s2,
-        msg("m2p1", "user", "human", "now run the tests", at(2, 10)),
+        msg(
+            &scoped(&ids[1], "m2p1"),
+            "user",
+            "human",
+            "now run the tests",
+            at(2, 10),
+        ),
     )
     .unwrap();
-    fx.message(s2, msg("m2p2", "user", "human", "ship it", at(2, 11)))
-        .unwrap();
+    fx.message(
+        s2,
+        msg(
+            &scoped(&ids[1], "m2p2"),
+            "user",
+            "human",
+            "ship it",
+            at(2, 11),
+        ),
+    )
+    .unwrap();
     let a2 = fx
         .message(
             s2,
             MessageFacts {
                 cost_nusd: Some(2_850_000_000),
                 ..msg(
-                    "m2a0",
+                    &scoped(&ids[1], "m2a0"),
                     "assistant",
                     "model",
                     "Switching to chrono.",
@@ -211,7 +231,7 @@ fn morrow() -> TestArchive {
             model: Some("claude-opus-5-5"),
             cost_nusd: Some(160_000_000),
             ..msg(
-                "m3a0",
+                &scoped(&ids[2], "m3a0"),
                 "assistant",
                 "model",
                 "searched the docs for chrono",
@@ -235,7 +255,7 @@ fn morrow() -> TestArchive {
         fx.message(
             s4,
             msg(
-                &format!("m4p{i}"),
+                &scoped(&ids[3], &format!("m4p{i}")),
                 "user",
                 "human",
                 "continue",
@@ -249,7 +269,13 @@ fn morrow() -> TestArchive {
             s4,
             MessageFacts {
                 cost_nusd: Some(1_590_000_000),
-                ..msg("m4a0", "assistant", "model", "continuing", at(3, 10))
+                ..msg(
+                    &scoped(&ids[3], "m4a0"),
+                    "assistant",
+                    "model",
+                    "continuing",
+                    at(3, 10),
+                )
             },
         )
         .unwrap();
@@ -284,7 +310,13 @@ fn morrow() -> TestArchive {
         s5,
         MessageFacts {
             cost_nusd: None,
-            ..msg("m5a0", "assistant", "model", "codex answer five", at(5, 9))
+            ..msg(
+                &scoped("codex:01a20000-0005-7000-8000-000000000005", "m5a0"),
+                "assistant",
+                "model",
+                "codex answer five",
+                at(5, 9),
+            )
         },
     )
     .unwrap();
@@ -299,7 +331,13 @@ fn morrow() -> TestArchive {
         .unwrap();
     fx.message(
         s6,
-        msg("m6a0", "assistant", "model", "codex answer six", at(6, 9)),
+        msg(
+            &scoped("codex:01a20000-0006-7000-8000-000000000006", "m6a0"),
+            "assistant",
+            "model",
+            "codex answer six",
+            at(6, 9),
+        ),
     )
     .unwrap();
     fx.link(
@@ -318,13 +356,28 @@ fn morrow() -> TestArchive {
             ..SessionFacts::default()
         })
         .unwrap();
-    fx.message(s7, msg("m7p0", "user", "human", "dates", at(4, 9)))
-        .unwrap();
+    fx.message(
+        s7,
+        msg(
+            &scoped("chatgpt:abc-7", "m7p0"),
+            "user",
+            "human",
+            "dates",
+            at(4, 9),
+        ),
+    )
+    .unwrap();
     fx.message(
         s7,
         MessageFacts {
             on_active_path: Some(false),
-            ..msg("m7p1", "user", "human", "edited dates", at(4, 9))
+            ..msg(
+                &scoped("chatgpt:abc-7", "m7p1"),
+                "user",
+                "human",
+                "edited dates",
+                at(4, 9),
+            )
         },
     )
     .unwrap();
@@ -332,7 +385,13 @@ fn morrow() -> TestArchive {
         s7,
         MessageFacts {
             on_active_path: Some(false),
-            ..msg("m7a1", "assistant", "model", "abandoned", at(4, 9))
+            ..msg(
+                &scoped("chatgpt:abc-7", "m7a1"),
+                "assistant",
+                "model",
+                "abandoned",
+                at(4, 9),
+            )
         },
     )
     .unwrap();
@@ -347,7 +406,7 @@ fn morrow() -> TestArchive {
     fx.message(
         s8,
         msg(
-            "m8p0",
+            &scoped("claude-ai:abc-8", "m8p0"),
             "user",
             "human",
             "Shorter, and mention chrono.",
@@ -369,7 +428,7 @@ fn morrow() -> TestArchive {
         "decision",
         None,
         Some("decided: chrono, not time"),
-        &Reference::Message(decision_message).to_string(),
+        &format!("message:{}", scoped(&ids[1], "m2p0")),
     )
     .unwrap();
     TestArchive { _dir: dir, fx }
@@ -1099,7 +1158,7 @@ fn attached_rows_follow_each_session() {
         assert_eq!(m.len(), 1, "{row}");
         assert_eq!(m[0]["role"], "assistant");
     }
-    assert_eq!(v["rows"][1]["messages"][0]["id"], "m2a0");
+    assert_eq!(v["rows"][1]["messages"][0]["id"], "claude-code:m2a0");
 }
 
 #[test]
