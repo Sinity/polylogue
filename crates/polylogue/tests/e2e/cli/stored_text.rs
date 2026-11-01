@@ -40,8 +40,8 @@ fn wait_for_source(fixture: &crate::Fixture, messages: usize) {
                 if error.kind == command_surface::FailureKind::Timeout
                     && error.code.as_deref() == Some("deadline_exceeded")
                     && error.retryable => {}
-            command_surface::Answer::Ok { value, .. }
-            | command_surface::Answer::Degraded { value, .. } => {
+            // A standalone archive's status is current, so never degraded.
+            command_surface::Answer::Ok { value, .. } => {
                 if value["busy"] == false && value["store"]["messages"] == messages {
                     return;
                 }

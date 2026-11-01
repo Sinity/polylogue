@@ -76,21 +76,13 @@ fn seeded() -> ClaudeHome {
     w
 }
 
-fn data(request: Request, runtime: &Runtime) -> serde_json::Value {
-    match handle(request, &runtime.daemon) {
-        command_surface::Answer::Ok { value: data, .. }
-        | command_surface::Answer::Empty { value: data, .. }
-        | command_surface::Answer::Degraded { value: data, .. } => data,
-        other => panic!("read refused: {other:?}"),
-    }
-}
-
 fn blocked(runtime: &Runtime, path: &std::path::Path) {
     assert!(runtime.daemon.writes.is_none());
     assert!(runtime.engine.is_none());
     assert!(runtime.signals.is_none());
     assert!(runtime.signals_stop.is_none());
-    let status = data(Request::Status, runtime);
+    // Sinex is unavailable while the configuration is broken, so status is degraded.
+    let (status, _) = crate::test_answers::degraded(handle(Request::Status, &runtime.daemon));
     assert_eq!(status["mode"]["state"], "blocked");
     assert_eq!(status["mode"]["path"], path.to_str().unwrap());
     assert!(!status["mode"]["error"].as_str().unwrap().is_empty());
@@ -175,15 +167,15 @@ fn malformed_config_keeps_primary_status_and_refuses_reads_and_writes() {
             matches!(handle(read_request(), &runtime.daemon), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("sinex_unavailable"))
         );
         assert!(
-            data(
+            crate::test_answers::ok(handle(
                 Request::Setting {
                     request_id: None,
                     key: Some("browser.actions".into()),
                     value: None,
                     machine: None
                 },
-                &runtime
-            )["authored"]
+                &runtime.daemon
+            ))["authored"]
                 .is_null()
         );
         assert!(w.file("pending.jsonl").exists());
@@ -211,7 +203,7 @@ fn missing_config_is_standalone() {
     let runtime = launch(startup).unwrap();
     assert!(runtime.daemon.writes.is_some());
     assert_eq!(
-        data(Request::Status, &runtime)["mode"]["state"],
+        crate::test_answers::ok(handle(Request::Status, &runtime.daemon))["mode"]["state"],
         "standalone"
     );
 }
@@ -233,7 +225,9 @@ fn primary_outage_preserves_raw_custody_without_standalone_fallback_or_owner_day
         let runtime = launch(startup).unwrap();
         assert!(runtime.daemon.archive.is_primary());
         assert!(runtime.daemon.writes.is_some());
-        assert_eq!(data(Request::Status, &runtime)["mode"]["state"], "primary");
+        // Sinex is not running, so status is degraded.
+        let (status, _) = crate::test_answers::degraded(handle(Request::Status, &runtime.daemon));
+        assert_eq!(status["mode"]["state"], "primary");
         assert!(
             matches!(handle(read_request(), &runtime.daemon), command_surface::Answer::Error { error, .. }
             if matches!(error.code.as_deref(), Some("primary_context_missing" | "primary_context_unavailable")))

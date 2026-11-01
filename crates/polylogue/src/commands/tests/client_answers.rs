@@ -44,7 +44,11 @@ const LEFT_OUT: &[(&str, &str)] = &[(
 /// An answer as the client shows it: the daemon's data, or its refusal.
 type Answer = Result<Value, String>;
 
-fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str]) -> Answer {
+/// The exit code that names an answer's outcome: 0 ok, 1 empty, 5 degraded,
+/// or the refusal's code. A refusal before the request is sent has none.
+type Exit = Option<u8>;
+
+fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str]) -> (Answer, Exit) {
     let (c, values) = crate::cli::parse(argv).unwrap();
     let (Action::Request(build) | Action::Stream { build, .. }) = c.action else {
         panic!("{} is local", c.name)
@@ -54,17 +58,20 @@ fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str]) -> Answer {
         cwd: std::env::current_dir().ok(),
         json: true,
     };
-    let request = build(c, &values, &caller).map_err(|e| format!("bad_request: {e}"))?;
-    match crate::client::send(&w.daemon.archive.socket(), &request).unwrap() {
-        command_surface::Answer::Ok { value: data, .. }
-        | command_surface::Answer::Empty { value: data, .. }
-        | command_surface::Answer::Degraded { value: data, .. } => Ok(data),
-        command_surface::Answer::Error { error, .. } => Err(format!(
+    let request = match build(c, &values, &caller) {
+        Ok(request) => request,
+        Err(e) => return (Err(format!("bad_request: {e}")), None),
+    };
+    let answer = crate::client::send(&w.daemon.archive.socket(), &request).unwrap();
+    let exit = answer.exit_code();
+    let shown = crate::protocol::into_value(answer).map_err(|error| {
+        format!(
             "{}: {}",
             error.code.as_deref().unwrap_or_default(),
             error.message
-        )),
-    }
+        )
+    });
+    (shown, Some(exit))
 }
 
 fn mcp_answer(w: &test_daemon::TestDaemon, c: &Command, values: &Values) -> Answer {
@@ -104,7 +111,7 @@ fn encoded(text: &str) -> String {
         .collect()
 }
 
-fn http_answer(web: &Arc<crate::web::Web>, c: &Command, values: &Values) -> Answer {
+fn http_answer(web: &Arc<crate::web::Web>, c: &Command, values: &Values) -> (Answer, Exit) {
     let mut pairs: Vec<String> = Vec::new();
     let names: Vec<&str> = c.args_for(Surface::Http).map(|a| a.name).collect();
     for (name, value) in values
@@ -148,12 +155,10 @@ fn http_answer(web: &Arc<crate::web::Web>, c: &Command, values: &Values) -> Answ
         serde_json::from_slice(&bytes).unwrap()
     });
     let answer: command_surface::Answer<Value> = serde_json::from_value(body).unwrap();
-    match answer {
-        command_surface::Answer::Error { error, .. } => {
-            Err(format!("{}: {}", error.code.unwrap(), error.message))
-        }
-        answer => Ok(answer.value().unwrap().clone()),
-    }
+    let exit = answer.exit_code();
+    let shown = crate::protocol::into_value(answer)
+        .map_err(|error| format!("{}: {}", error.code.unwrap(), error.message));
+    (shown, Some(exit))
 }
 
 // The socket peer is this actual fixture process; HTTP has the trusted Web
@@ -264,11 +269,19 @@ fn every_client_answers_the_same_request_identically() {
         argv.extend(*args);
         let (c, values) = crate::cli::parse(&argv).unwrap();
         let cli_position = (*name == "read").then(|| read_position(&w));
-        let cli = cli_answer(&w, &argv);
+        let (cli, cli_exit) = cli_answer(&w, &argv);
         let mcp_position = (*name == "read").then(|| read_position(&w));
         let mcp = mcp_answer(&w, c, &values);
         let http_position = (*name == "read").then(|| read_position(&w));
-        let http = http_answer(&web, c, &values);
+        let (http, http_exit) = http_answer(&web, c, &values);
+        if cli_exit.is_some() {
+            assert_eq!(
+                cli_exit,
+                http_exit,
+                "`{}`: the command line and HTTP name different outcomes",
+                argv.join(" ")
+            );
+        }
         assert_transport_authorship(&cli, name, &socket_author);
         assert_transport_authorship(&mcp, name, &socket_author);
         assert_transport_authorship(&http, name, &web_author);

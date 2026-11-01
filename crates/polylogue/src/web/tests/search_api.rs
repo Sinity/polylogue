@@ -4,8 +4,9 @@ use super::*;
 use polylogue_render::html::encode_path_segment as enc;
 use serde_json::{Value, json};
 
+/// The rows of a query that matches something.
 fn data(r: &Reader, text: &str, cursor: Option<String>) -> Value {
-    match handle(
+    crate::test_answers::ok(handle(
         Request::Query {
             text: text.into(),
             cursor,
@@ -15,12 +16,7 @@ fn data(r: &Reader, text: &str, cursor: Option<String>) -> Value {
             fields: vec![],
         },
         &r.web.daemon,
-    ) {
-        command_surface::Answer::Ok { value: data, .. }
-        | command_surface::Answer::Empty { value: data, .. }
-        | command_surface::Answer::Degraded { value: data, .. } => data,
-        other => panic!("{text}: {other:?}"),
-    }
+    ))
 }
 
 #[test]
