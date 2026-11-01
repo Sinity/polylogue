@@ -281,9 +281,18 @@ fn import_members_and_asset_rows_move_their_import_counters() {
         };
         project_member(&conn, &member, None, None).unwrap();
     }
-    assert_eq!((counter("import-a"), counter("import-b")), (Some(1), Some(1)));
+    assert_eq!(
+        (counter("import-a"), counter("import-b")),
+        (Some(1), Some(1))
+    );
     count_input_change(&conn, "shared-input").unwrap();
-    assert_eq!((counter("import-a"), counter("import-b")), (Some(2), Some(2)));
+    assert_eq!(
+        (counter("import-a"), counter("import-b")),
+        (Some(2), Some(2))
+    );
     count_input_change(&conn, "unrelated-input").unwrap();
-    assert_eq!((counter("import-a"), counter("import-b")), (Some(2), Some(2)));
+    assert_eq!(
+        (counter("import-a"), counter("import-b")),
+        (Some(2), Some(2))
+    );
 }

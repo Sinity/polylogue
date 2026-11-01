@@ -520,6 +520,7 @@ fn visit(
                 options.inherited,
                 record_start.as_ref(),
                 &mut |record, evidence, record_position| {
+                    polylogue_store::read::limit::ReadLimit::set_stage("read layout");
                     let at = SelectionLocator {
                         row: row_number,
                         record: record_position,
@@ -760,6 +761,7 @@ pub(super) fn page(
                 )?;
             }
             scope.check().map_err(|e| store_error(&e))?;
+            polylogue_store::read::limit::ReadLimit::set_stage("read page footer");
             let upper = pager.upper_position().copied();
             let document = pager
                 .finish_with(|position| {

@@ -5,7 +5,7 @@ use polylogue_model::{
     bundle::*,
     read::{ProjectionEvidence, ReadRecordKind, ReadRecordLocator, ReadTarget},
 };
-use polylogue_store::Reader;
+use polylogue_store::{Reader, read::limit::ReadLimit};
 use std::ops::ControlFlow;
 
 pub(super) enum SelectedRecord {
@@ -289,8 +289,10 @@ fn session(
             Default::default()
         };
         let mut result = Ok(true);
+        ReadLimit::set_stage("read records: messages");
         selected
             .visit_from_with_record_evidence(from, |message, projection, commit, order| {
+                ReadLimit::set_stage("read records: messages");
                 let reference = format!("message:{}", message.id);
                 let next = admission(commit, &reference).and_then(|commit| {
                     let evidence = ProjectionEvidence {
@@ -324,8 +326,10 @@ fn session(
             .map_or(0, |s| s.ordinal);
         let mut seen = false;
         let mut result = Ok(true);
+        ReadLimit::set_stage("read records: events");
         reader
             .visit_event_records_from_ordinal(id, ordinal, |event| {
+                ReadLimit::set_stage("read records: events");
                 seen = true;
                 let current = locator(Event, ordinal);
                 let next = ordinal
@@ -360,9 +364,11 @@ fn session(
         .map_or(0, |s| s.ordinal);
     let mut seen = false;
     let mut result = Ok(true);
+    ReadLimit::set_stage("read records: links");
     reader
         .visit_links_from_ordinal(id, ordinal, |link| {
             seen = true;
+            ReadLimit::set_stage("read records: link admission");
             let reference = LinkRecord::reference(&link);
             let next = reader
                 .link_commit(&link)

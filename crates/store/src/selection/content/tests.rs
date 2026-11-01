@@ -349,7 +349,10 @@ fn a_session_version_reads_import_counters_never_import_members() {
         )
         .unwrap();
     index
-        .execute("UPDATE import_change SET changed=changed+1 WHERE import_id='import-a'", [])
+        .execute(
+            "UPDATE import_change SET changed=changed+1 WHERE import_id='import-a'",
+            [],
+        )
         .unwrap();
     drop(index);
     assert_ne!(version(), before);

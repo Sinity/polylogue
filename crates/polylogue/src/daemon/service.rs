@@ -102,8 +102,7 @@ impl Daemon {
                 )
             })?;
         let description = table
-            .descriptions()
-            .into_iter()
+            .describe()
             .find(|description| description.spec.name == request.operation)
             .ok_or_else(|| Failure::new(FailureKind::BadRequest, "unknown operation"))?;
         let command =
@@ -133,7 +132,7 @@ impl Daemon {
                     "GET"
                 }
                 .into(),
-                path: description.spec.http_route,
+                path: description.spec.http_route.clone(),
                 arguments: serde_json::to_value(request).expect("request serializes"),
             },
         })
