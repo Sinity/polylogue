@@ -33,8 +33,9 @@ pub(crate) fn run(
     request: &Request,
     startup: &crate::config::Startup,
     accepted: &command_surface::RunnableRequest,
+    form: crate::commands::CallForm,
 ) -> ExitCode {
-    match deliver(values, request, startup, accepted) {
+    match deliver(values, request, startup, accepted, form) {
         Ok(code) => ExitCode::from(code),
         Err(DeliveryError::Text(error)) => fail(
             startup.output,
@@ -81,10 +82,16 @@ fn invalid(message: impl ToString) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_string())
 }
 
+/// The call the client sends. A literal call goes exactly as the caller wrote
+/// it; a call from flags states the format and delivery the client will use.
 fn call(
     request: &Request,
     accepted: &command_surface::RunnableRequest,
+    form: crate::commands::CallForm,
 ) -> Result<command_surface::RunnableRequest, DeliveryError> {
+    if form == crate::commands::CallForm::Literal {
+        return Ok(accepted.clone());
+    }
     let arguments = crate::protocol::read::Arguments::from_request(request)?;
     let mut call = accepted.clone();
     call.arguments = serde_json::to_value(arguments).map_err(|e| e.to_string())?;
@@ -95,6 +102,7 @@ fn deliver(
     request: &Request,
     startup: &crate::config::Startup,
     accepted: &command_surface::RunnableRequest,
+    form: crate::commands::CallForm,
 ) -> Result<u8, DeliveryError> {
     let archive = Archive::at(&startup.config.archive);
     let mut request = request.clone();
@@ -105,9 +113,7 @@ fn deliver(
     };
     let destination = values.text("to").map(PathBuf::from);
     if destination.is_none() && delivery == ReadDelivery::Page {
-        // The daemon defaults an unnamed format to JSON for its own callers;
-        // the CLI states the format it will print.
-        let call = call(&request, accepted)?;
+        let call = call(&request, accepted, form)?;
         let answer = crate::client::call_ready(&archive, &call).map_err(|e| e.to_string())?;
         let code = answer.exit_code();
         if values.flag("json") {
@@ -154,6 +160,7 @@ fn deliver(
     else {
         return Err("stream delivery requires a full read request".into());
     };
+    let requested_delivery = *delivery;
     *delivery = ReadDelivery::Stream;
     let format = polylogue_render::Format::parse(format).ok_or("unknown read format")?;
     let directory = destination
@@ -170,7 +177,14 @@ fn deliver(
         return Err("directory delivery requires json, jsonl, markdown or html".into());
     }
     let with_blobs = *with_blobs;
-    let call = call(&request, accepted)?;
+    // Writing to a destination changes a page read into a stream, so that
+    // call is the client's own even when the caller's arguments were literal.
+    let form = if requested_delivery == ReadDelivery::Stream {
+        form
+    } else {
+        crate::commands::CallForm::Flags
+    };
+    let call = call(&request, accepted, form)?;
     consume(
         destination.as_deref(),
         directory,

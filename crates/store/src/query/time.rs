@@ -3,18 +3,8 @@
 //! Native temporal predicates compare canonical evidence at nanosecond precision.
 //! Millisecond conversions remain for derived point fields and broad candidates.
 use polylogue_query::QueryError;
+pub use polylogue_query::time::money_nusd;
 pub use query_language::time::{Clock, ResolvedTime, Time, duration_ms, resolve};
-
-/// Dollars to the product's integer nano-dollar storage unit.
-pub fn money_nusd(text: &str) -> Option<i64> {
-    let text = text.trim().to_ascii_lowercase();
-    let text = text
-        .strip_suffix("usd")
-        .unwrap_or(&text)
-        .trim_start_matches('$');
-    let n: f64 = text.parse().ok()?;
-    n.is_finite().then(|| (n * 1e9).round() as i64)
-}
 
 pub trait Milliseconds {
     fn start_ms(self) -> i64;

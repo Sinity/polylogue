@@ -19,6 +19,7 @@ pub fn run(
     request: &Request,
     startup: &crate::config::Startup,
     call: &command_surface::RunnableRequest,
+    _: crate::commands::CallForm,
 ) -> ExitCode {
     let timeout = call
         .deadline
