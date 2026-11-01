@@ -49,6 +49,9 @@ pub fn tools() -> Vec<Value> {
         .collect()
 }
 
+/// An argument's distinct schemas, each with the operations that use it.
+type ArgumentTypes<'a> = Vec<(Value, Vec<&'a str>)>;
+
 /// A tool's input: `operation` naming the command (required when the tool
 /// has several), `arguments` holding the listed arguments of its operations
 /// merged by name, and the request's identity and deadline. An argument two
@@ -57,7 +60,7 @@ pub fn tools() -> Vec<Value> {
 /// unlisted ones included, when it is called.
 fn input_schema(tool: Tool) -> Value {
     let rows: Vec<&Command> = operations(tool).collect();
-    let mut fields: Vec<(&str, Vec<(Value, Vec<&str>)>)> = Vec::new();
+    let mut fields: Vec<(&str, ArgumentTypes<'_>)> = Vec::new();
     for row in &rows {
         for arg in row
             .args_for(Surface::Mcp)
