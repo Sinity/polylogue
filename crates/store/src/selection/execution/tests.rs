@@ -81,7 +81,9 @@ fn execution_binding_replays_captured_options_and_refuses_a_changed_basis() {
             },
             None,
         ),
-        binding,
+        binding: polylogue_model::query_objects::RunBinding::Original {
+            execution: Box::new(binding),
+        },
     };
     let replay = reader
         .prepare_query_run_selection(
@@ -100,9 +102,11 @@ fn execution_binding_replays_captured_options_and_refuses_a_changed_basis() {
         })
         .unwrap();
     assert_eq!(rows, vec![serde_json::json!({"id":"test:message"})]);
-    assert!(run.binding.query_options.why);
+    assert!(run.binding.original().unwrap().query_options.why);
     assert_eq!(
         run.binding
+            .original()
+            .unwrap()
             .query_options
             .self_session
             .as_ref()
@@ -111,7 +115,12 @@ fn execution_binding_replays_captured_options_and_refuses_a_changed_basis() {
         "test:caller"
     );
     assert_eq!(
-        run.binding.accepted_request.as_ref().unwrap()["id"],
+        run.binding
+            .original()
+            .unwrap()
+            .accepted_request
+            .as_ref()
+            .unwrap()["id"],
         "accepted-operation"
     );
     assert_eq!(
@@ -149,7 +158,7 @@ fn execution_binding_replays_captured_options_and_refuses_a_changed_basis() {
             .kind(),
         "not_built"
     );
-    let mut wrong = run.binding.query_options.clone();
+    let mut wrong = run.binding.original().unwrap().query_options.clone();
     wrong.fields.push("role".into());
     assert_eq!(
         prepared
@@ -202,7 +211,9 @@ fn acknowledged_direct_range_restores_presentation_without_changing_question_ide
             ExecutionPresentation::Read {
                 options: Default::default(),
                 delivery: Default::default(),
-                normalized_span: None,
+                format: polylogue_model::read::Format::Json,
+                page_budget: Some(Default::default()),
+                direct_source: None,
             },
             None,
         )
@@ -226,15 +237,21 @@ fn acknowledged_direct_range_restores_presentation_without_changing_question_ide
             },
             None,
         ),
-        binding,
+        binding: polylogue_model::query_objects::RunBinding::Original {
+            execution: Box::new(binding),
+        },
     };
     let replay = reader
         .prepare_query_run_selection(&object, &run, &options.clock, None, None)
         .unwrap();
     assert_eq!(replay.direct_reference(), direct.direct_reference());
     let mut forged = run.clone();
-    forged.binding.query_options.direct_reference =
-        Some(Reference::Message("test:a".parse().unwrap()));
+    forged
+        .binding
+        .original_mut()
+        .unwrap()
+        .query_options
+        .direct_reference = Some(Reference::Message("test:a".parse().unwrap()));
     assert_eq!(
         reader
             .prepare_query_run_selection(&object, &forged, &options.clock, None, None)
@@ -244,7 +261,12 @@ fn acknowledged_direct_range_restores_presentation_without_changing_question_ide
         "conflict"
     );
     let mut old_scope = run;
-    old_scope.binding.replay.scope_fingerprint = Some("another-grant".into());
+    old_scope
+        .binding
+        .original_mut()
+        .unwrap()
+        .replay
+        .scope_fingerprint = Some("another-grant".into());
     assert_eq!(
         reader
             .prepare_query_run_selection(&object, &old_scope, &options.clock, None, None)
