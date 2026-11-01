@@ -208,11 +208,7 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
     assert_eq!(status, 200, "{retried}");
     assert_eq!(retried["note"]["repeat"], true);
     let output = command()
-        .args([
-            "query",
-            r#"assertions where about:"session:chatgpt:passage""#,
-            "--json",
-        ])
+        .args(["--json", r#"assertions where about:"session:chatgpt:passage""#])
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");

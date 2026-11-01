@@ -1450,14 +1450,6 @@ fn query_targets_in(
                             "the query population is incomplete; no assertion was written",
                         ));
                     }
-                    if let Some(container) = container
-                        && !reader.selection_contains(&selection, container, Some(near))?
-                    {
-                        return Err(error(
-                            "conflict",
-                            "the supplied message does not belong to the supplied conversation",
-                        ));
-                    }
                     let mut row_count = 0_u64;
                     let mut targets = Vec::new();
                     let mut seen = HashSet::new();
