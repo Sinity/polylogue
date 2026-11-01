@@ -982,11 +982,19 @@ impl OlderArchive {
     }
 }
 
+/// The deliveries an archive holds, and their events as
+/// `(delivery, outcome, time)`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct StoredDeliveries {
+    pub ids: BTreeSet<String>,
+    pub events: BTreeSet<(String, String, i64)>,
+}
+
 impl crate::read::Reader<'_> {
     /// The deliveries this archive holds, and their events as
     /// `(delivery, outcome, time)`: what an older archive's import actually
     /// stored, whichever request carried it.
-    pub fn stored_deliveries(&self) -> Result<(BTreeSet<String>, BTreeSet<(String, String, i64)>)> {
+    pub fn stored_deliveries(&self) -> Result<StoredDeliveries> {
         let conn = self.conn()?;
         let ids = conn
             .prepare("SELECT id FROM source_delivery")?
@@ -996,7 +1004,7 @@ impl crate::read::Reader<'_> {
             .prepare("SELECT delivery, what, at FROM source_delivery_event")?
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?;
-        Ok((ids, events))
+        Ok(StoredDeliveries { ids, events })
     }
 }
 

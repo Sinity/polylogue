@@ -632,15 +632,15 @@ impl Engine {
         };
         for delivery in &deliveries {
             let outcome = match (&before, &after) {
-                (Some((held, _)), Some((stored, _))) => {
-                    if !stored.contains(&delivery.id) {
+                (Some(before), Some(after)) => {
+                    if !after.ids.contains(&delivery.id) {
                         Restored::Refused(
                             not_stored
                                 .get(&delivery.id)
                                 .cloned()
                                 .unwrap_or_else(|| "no request carrying it stored it".to_owned()),
                         )
-                    } else if held.contains(&delivery.id) {
+                    } else if before.ids.contains(&delivery.id) {
                         Restored::Present
                     } else {
                         Restored::Stored
@@ -658,10 +658,10 @@ impl Engine {
                 let event_outcome = match (&before, &after, &outcome) {
                     // An event is refused with its delivery.
                     (_, _, Restored::Refused(_)) | (None, _, _) | (_, None, _) => outcome.clone(),
-                    (Some((_, held)), Some((_, stored)), _) => {
-                        if !stored.contains(&key) {
+                    (Some(before), Some(after), _) => {
+                        if !after.events.contains(&key) {
                             Restored::Refused("no request carrying its delivery stored it".into())
-                        } else if held.contains(&key) {
+                        } else if before.events.contains(&key) {
                             Restored::Present
                         } else {
                             Restored::Stored

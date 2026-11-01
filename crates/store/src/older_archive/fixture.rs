@@ -230,6 +230,20 @@ impl Builder {
     }
 }
 
+/// One observation [`standard`] writes: ID, input, path, class, revision,
+/// length, inode, details and seen time.
+type ObservationFixture<'a> = (
+    &'a str,
+    &'a str,
+    &'a str,
+    &'a str,
+    Option<i64>,
+    Option<i64>,
+    i64,
+    Option<String>,
+    i64,
+);
+
 /// What [`standard`] wrote, for tests to check against.
 pub struct Standard {
     pub root: PathBuf,
@@ -329,17 +343,7 @@ pub fn standard(root: &Path) -> Standard {
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 64, ?8, ?7, ?9, ?9, ?10, '0.9.0', ?11, ?12)";
     let none: Option<String> = None;
     let no_revision: Option<i64> = None;
-    let rows: [(
-        &str,
-        &str,
-        &str,
-        &str,
-        Option<i64>,
-        Option<i64>,
-        i64,
-        Option<String>,
-        i64,
-    ); 9] = [
+    let rows: [ObservationFixture; 9] = [
         (
             "o1",
             watched,
