@@ -61,13 +61,15 @@ fn completion_reads_declared_values_and_refreshes_observed_models() {
                 && v["replace"]["start"] == 5
                 && v["replace"]["end"] == 5)
     );
-    // No session names a model yet, so nothing is offered.
-    assert!(
-        !crate::test_answers::empty(values("model:"))
+    // No session names a model yet: only the field's wildcard and unknown word are offered.
+    assert_eq!(
+        crate::test_answers::ok(values("model:"))
             .as_array()
             .unwrap()
             .iter()
-            .any(|value| value["value"] == "\"model with spaces\"")
+            .map(|value| value["value"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["*", "unknown"]
     );
     let mut message: serde_json::Value = serde_json::from_str(
         &polylogue_testkit::claude_assistant("a1", "s1", "synthetic answer"),
