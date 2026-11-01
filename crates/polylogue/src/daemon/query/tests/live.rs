@@ -376,3 +376,49 @@ fn the_change_feed_continues_from_its_cursor() {
 }
 
 mod change_generation;
+
+/// law: pl.live.fold
+#[test]
+fn stored_facts_equal_the_fold_of_stored_lines_with_ties_and_late_lines() {
+    let lines = [
+        ("f", "user_prompt_submit", 1, json!({})),
+        ("f", "permission_request", 2, json!({})),
+        ("f", "post_tool_use", 2, json!({})),
+        ("f", "stop", 4, json!({})),
+        // Arrives after the stop but happened before it.
+        ("f", "pre_tool_use", 3, json!({"tool_name": "Bash", "tool_use_id": "t"})),
+    ];
+    let mut w = WriterArchive::new();
+    // One line per step, so equal and late instants arrive separately.
+    for line in &lines {
+        hooks(&mut w, std::slice::from_ref(line));
+    }
+    w.writer.derive().unwrap();
+    // The expected rows: the fold over the lines in (time, offset) order.
+    let mut ordered: Vec<_> = lines.iter().enumerate().collect();
+    ordered.sort_by_key(|(i, (_, _, min, _))| (*min, *i));
+    let mut facts = polylogue_model::live::LiveFacts::default();
+    let mut closed = Vec::new();
+    for (_, (_, kind, min, data)) in ordered {
+        closed.extend(polylogue_model::live::fold(
+            &mut facts,
+            &format!("hook_{kind}"),
+            T0 + min * MIN,
+            data,
+        ));
+    }
+    let stored = w.rows("SELECT live_facts, live_reparse FROM session WHERE id = 'claude-code:f'");
+    assert_eq!(stored[0]["live_reparse"], 0);
+    let stored_facts: polylogue_model::live::LiveFacts =
+        serde_json::from_str(stored[0]["live_facts"].as_str().unwrap()).unwrap();
+    assert_eq!(stored_facts, facts);
+    let intervals = w.rows(
+        "SELECT aspect, value, start_at, end_at FROM live_interval ORDER BY start_at, aspect",
+    );
+    closed.sort_by(|a, b| (a.start, a.aspect.as_str()).cmp(&(b.start, b.aspect.as_str())));
+    let expected: Vec<Value> = closed
+        .iter()
+        .map(|i| json!({"aspect": i.aspect.as_str(), "value": i.value, "start_at": i.start, "end_at": i.end}))
+        .collect();
+    assert_eq!(intervals, expected);
+}
