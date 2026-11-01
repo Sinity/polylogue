@@ -299,9 +299,9 @@ impl crate::primary::Sinex for Producer {
             position: 1,
             output_index: 0,
             event: String::new(),
-            change: ConfirmedChange::Control(Box::new(
-            crate::primary::ReplayControl::Completion { position: 1 },
-        )),
+            change: ConfirmedChange::Control(Box::new(crate::primary::ReplayControl::Completion {
+                position: 1,
+            })),
         });
         Ok(events)
     }

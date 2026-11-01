@@ -28,12 +28,8 @@ impl Inner {
                     "a scope reset must be a separate control page".into(),
                 ));
             }
-            if crate::primary::scope::reset(
-                &mut self.index,
-                &self.location,
-                &self.resolver,
-                scope,
-            )? {
+            if crate::primary::scope::reset(&mut self.index, &self.location, &self.resolver, scope)?
+            {
                 self.commits.committed();
                 self.derive_due = false;
                 self.derived_version = None;

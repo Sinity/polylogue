@@ -88,12 +88,8 @@ pub(crate) struct Material {
 #[serde(tag = "kind", content = "fields", rename_all = "snake_case")]
 pub(crate) enum Payload {
     Material(Material),
-    Events {
-        group: Option<Group>,
-    },
-    ReplaySequence {
-        group: Option<Group>,
-    },
+    Events { group: Option<Group> },
+    ReplaySequence { group: Option<Group> },
     Signals,
     RegisterKinds,
     Chunk,

@@ -442,8 +442,8 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
                 output_index: 0,
                 event: String::new(),
                 change: crate::primary::ConfirmedChange::Control(Box::new(
-            crate::primary::ReplayControl::Completion { position: 0 },
-        )),
+                    crate::primary::ReplayControl::Completion { position: 0 },
+                )),
             }])
             .unwrap();
         let after_checkpoint = writer
@@ -576,10 +576,9 @@ fn an_imported_attachment_binding_is_sent_to_sinex_and_reaches_the_index_only_fr
         )
         .unwrap();
     writer.import_assets(staged).unwrap();
-    let sent: Vec<crate::primary::ProductWrite> = serde_json::from_reader(
-        std::fs::File::open(producer_root.join("products.json")).unwrap(),
-    )
-    .unwrap();
+    let sent: Vec<crate::primary::ProductWrite> =
+        serde_json::from_reader(std::fs::File::open(producer_root.join("products.json")).unwrap())
+            .unwrap();
     assert_eq!(sent.len(), 1);
     assert_eq!(
         sent[0].product,
@@ -719,9 +718,11 @@ fn pending_export_fork_is_refused_before_semantic_preparation_or_publication() {
 #[test]
 fn an_idle_primary_writer_records_a_failed_stream_read() {
     let directory = tempfile::tempdir().unwrap();
-    let (archive, _lock) =
-        Archive::open_primary(&directory.path().join("cache"), &directory.path().join("bytes"))
-            .unwrap();
+    let (archive, _lock) = Archive::open_primary(
+        &directory.path().join("cache"),
+        &directory.path().join("bytes"),
+    )
+    .unwrap();
     let producer = Arc::new(OfflineProducer {
         root: directory.path().join("producer"),
     });

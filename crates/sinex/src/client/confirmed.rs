@@ -184,8 +184,7 @@ impl Client {
         // The durable consumer is provisioned once per connection; later pages
         // only ask for the head and scope. Provisioning again would restart a
         // consumer whose acknowledgements are not at a completed position.
-        let provisioned =
-            self.consumer.is_some() && self.consumer_cache.as_deref() == Some(cache);
+        let provisioned = self.consumer.is_some() && self.consumer_cache.as_deref() == Some(cache);
         let reply: ConfirmedConsumerReply = self
             .request(
                 self.subjects.confirmed_consumer(&self.producer),
@@ -219,7 +218,9 @@ impl Client {
         if state.scope.as_deref() != Some(reply.scope.as_str()) {
             self.consumer = None;
             self.consumer_cache = None;
-            return Ok(vec![control_fact(ReplayControl::Reset { scope: reply.scope })]);
+            return Ok(vec![control_fact(ReplayControl::Reset {
+                scope: reply.scope,
+            })]);
         }
         if !provisioned {
             let instance = reply
@@ -313,9 +314,8 @@ impl Client {
                 sinex_protocol::Confirmed::Excised {
                     event, commit_seq, ..
                 } => Confirmed {
-                    position: commit_seq.ok_or_else(|| {
-                        Error::Invalid("a tombstone has no position".into())
-                    })?,
+                    position: commit_seq
+                        .ok_or_else(|| Error::Invalid("a tombstone has no position".into()))?,
                     event: event.to_string(),
                     output_index: 0,
                     native: None,

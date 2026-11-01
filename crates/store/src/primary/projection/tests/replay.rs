@@ -61,10 +61,20 @@ fn a_restarted_consumer_redelivers_applied_positions_without_changing_them() {
     let mut index = cache(&dir.path().join("index.db"));
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
-    apply(&mut index, &resolver, &[input(2, "source"), barrier(2), delivered(9)]).unwrap();
+    apply(
+        &mut index,
+        &resolver,
+        &[input(2, "source"), barrier(2), delivered(9)],
+    )
+    .unwrap();
     assert_eq!(checkpoint(&index).unwrap(), Some(2));
     // Sinex provisioned the consumer again: it starts over from sequence 1.
-    apply(&mut index, &resolver, &[input(2, "source"), barrier(2), delivered(4)]).unwrap();
+    apply(
+        &mut index,
+        &resolver,
+        &[input(2, "source"), barrier(2), delivered(4)],
+    )
+    .unwrap();
     assert_eq!(checkpoint(&index).unwrap(), Some(2));
     assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 1);
     assert_eq!(rows(&index, "SELECT count(*) FROM primary_pending"), 0);
@@ -111,20 +121,20 @@ fn an_event_erased_before_this_index_read_it_is_recorded_as_tombstoned() {
     assert_eq!(product, None);
     // A tombstoned event never becomes live again.
     let refused = apply(
-            &mut index,
-            &resolver,
-            &[
-                Confirmed {
-                    native: None,
-                    position: 3,
-                    output_index: 0,
-                    event: "event-erased".into(),
-                    change: ConfirmedChange::Live(Box::new(input_product("x"))),
-                },
-                barrier(3),
-            ],
-        )
-        .unwrap_err();
+        &mut index,
+        &resolver,
+        &[
+            Confirmed {
+                native: None,
+                position: 3,
+                output_index: 0,
+                event: "event-erased".into(),
+                change: ConfirmedChange::Live(Box::new(input_product("x"))),
+            },
+            barrier(3),
+        ],
+    )
+    .unwrap_err();
     assert!(refused.to_string().contains("tombstoned"), "{refused}");
     assert_eq!(checkpoint(&index).unwrap(), Some(2));
 }

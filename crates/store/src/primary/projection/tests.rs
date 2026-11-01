@@ -36,9 +36,9 @@ fn barrier(position: i64) -> Confirmed {
         position,
         output_index: 0,
         event: String::new(),
-        change: ConfirmedChange::Control(Box::new(
-            crate::primary::ReplayControl::Completion { position },
-        )),
+        change: ConfirmedChange::Control(Box::new(crate::primary::ReplayControl::Completion {
+            position,
+        })),
     }
 }
 

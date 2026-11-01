@@ -99,7 +99,10 @@ pub(super) fn stage_control(
             if *position < 0 {
                 return Err(invalid("a completed position cannot be negative"));
             }
-            if state.applied_position.is_some_and(|applied| *position < applied) {
+            if state
+                .applied_position
+                .is_some_and(|applied| *position < applied)
+            {
                 return Err(invalid("a completion moved behind the applied position"));
             }
             conn.execute(

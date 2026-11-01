@@ -454,8 +454,12 @@ impl StateChange {
     fn selection(self, kind: &str) -> Option<String> {
         match self {
             Self::Unchanged => None,
-            Self::Appended => Some(format!("SELECT c.product,c.admitted,c.source_order FROM primary_candidate c WHERE c.kind='{kind}' AND c.state='live' AND NOT EXISTS(SELECT 1 FROM main.primary_fact f WHERE f.event=c.event) ORDER BY c.admitted,c.source_order,c.event")),
-            Self::Rewritten => Some(format!("SELECT product,admitted,source_order FROM primary_next WHERE kind='{kind}' AND state='live' ORDER BY admitted,source_order,event")),
+            Self::Appended => Some(format!(
+                "SELECT c.product,c.admitted,c.source_order FROM primary_candidate c WHERE c.kind='{kind}' AND c.state='live' AND NOT EXISTS(SELECT 1 FROM main.primary_fact f WHERE f.event=c.event) ORDER BY c.admitted,c.source_order,c.event"
+            )),
+            Self::Rewritten => Some(format!(
+                "SELECT product,admitted,source_order FROM primary_next WHERE kind='{kind}' AND state='live' ORDER BY admitted,source_order,event"
+            )),
         }
     }
 }

@@ -265,7 +265,10 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
         ) > 0
     );
     assert_eq!(
-        sinex_rows(&running.socket, "events where event_type = polylogue.assertion"),
+        sinex_rows(
+            &running.socket,
+            "events where event_type = polylogue.assertion"
+        ),
         1
     );
 

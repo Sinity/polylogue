@@ -22,9 +22,9 @@ pub use replay::{
 pub(crate) mod projection;
 pub(crate) mod scope;
 pub use products::{
-    Capture, CaptureGroup, CapturedInput, CapturedReading, Confirmed,
-    ConfirmedChange, ExportReadingKey, Material, PendingCapture, PreparedInput, PreparedWrite,
-    Product, ProductWrite, Reading, SourceLocation,
+    Capture, CaptureGroup, CapturedInput, CapturedReading, Confirmed, ConfirmedChange,
+    ExportReadingKey, Material, PendingCapture, PreparedInput, PreparedWrite, Product,
+    ProductWrite, Reading, SourceLocation,
 };
 
 use crate::{Result, StoreError};
