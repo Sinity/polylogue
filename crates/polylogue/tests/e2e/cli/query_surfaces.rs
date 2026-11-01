@@ -265,7 +265,7 @@ fn every_surface_refuses_command_words_and_values_outside_a_set() {
             "sessions | group by origin | count",
             "date parsing",
             "bug fix",
-            "test output",
+            "test \"output\"",
             "walrus",
             "tool_calls where outcome:unknown",
             "messages where role:assistant",
@@ -276,6 +276,10 @@ fn every_surface_refuses_command_words_and_values_outside_a_set() {
                 panic!("{surface}: {text} refused: {failure:?}");
             }
         }
+        // A field name is never a search word; quoted, it is one.
+        let failure = answer(&env, &archive, &mut mcp, surface, "test output").unwrap_err();
+        assert_eq!(failure.kind, command_surface::FailureKind::InvalidQuery);
+        assert_eq!(failure.position.as_ref().unwrap().offset, 5);
     }
 }
 
