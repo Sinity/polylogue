@@ -290,7 +290,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     write(UserWrite::KeepResult {
         name: Some("kept".into()),
         query: "sessions".into(),
-        rows_json: "[]".into(),
+        rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
         read_at: "{}".into(),
     });
     let delivery = write(UserWrite::Deliver(Delivery {

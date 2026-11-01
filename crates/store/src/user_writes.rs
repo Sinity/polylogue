@@ -314,6 +314,7 @@ pub(crate) fn apply_using(
             rows_json,
             read_at,
         } => {
+            crate::selection::check_kept_body(tx, &r.id, rows_json)?;
             tx.execute(
                 &source.sql(
                     "INSERT INTO @source.kept_result(id, name, query, ran_at, read_at, rows_json)

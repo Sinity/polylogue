@@ -245,17 +245,26 @@ fn semantic_seals_ignore_receiver_receipts_but_bind_original_event_identities_an
     assert!(step.validate_export().is_err());
 }
 
+/// An index at version 13: the frozen version-15 declarations, which
+/// migrations 14 and 15 left unchanged outside the primary cache.
+fn version_13_index(path: &std::path::Path) -> Connection {
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(include_str!("../../schema/fixtures/index_15.sql"))
+        .unwrap();
+    crate::archive::generation::create(&conn).unwrap();
+    conn.execute_batch(
+        "INSERT INTO input_ref(pk,id,format) VALUES(1,'input','fixture');
+         PRAGMA user_version=13;",
+    )
+    .unwrap();
+    conn
+}
+
 #[test]
 fn index14_preserves_byte_receipt_geometry_and_marks_legacy_export_controls_unknown() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("index.db");
-    let conn = Connection::open(&path).unwrap();
-    crate::schema::ensure_index(&conn).unwrap();
-    conn.execute(
-        "INSERT INTO input_ref(pk,id,format) VALUES(1,'input','fixture')",
-        [],
-    )
-    .unwrap();
+    let conn = version_13_index(&path);
     let receipt = serde_json::json!({"sequence":3,"id":"original","input":"input","chain":1,"start":0,"end":0,"observation":"old","observed_at_ms":null});
     let reading = serde_json::json!({"input":"input","parsed_upto":2,"length":2,"at_end":true,"unreadable":0,"no_parser_yet":false,"prefix_missing":false,"first":receipt,"last":receipt,"last_start":0,"last_end":2,"last_hash":"original-hash"});
     conn.execute(
@@ -274,12 +283,11 @@ fn index14_preserves_byte_receipt_geometry_and_marks_legacy_export_controls_unkn
         [shape.to_string()],
     )
     .unwrap();
-    conn.pragma_update(None, "user_version", 13).unwrap();
     crate::schema::ensure_index(&conn).unwrap();
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
             .unwrap(),
-        14
+        crate::schema::INDEX_VERSION
     );
     drop(conn);
     let conn = Connection::open(&path).unwrap();
@@ -312,9 +320,12 @@ fn index14_preserves_byte_receipt_geometry_and_marks_legacy_export_controls_unkn
     let mut malformed = serde_json::json!({"input":"input","first":{"sequence":3,"input":"input","chain":1,"start":3,"end":1}});
     malformed["last"] = receipt;
     let original = malformed.to_string();
-    conn.execute("UPDATE wire_reading SET state=?1", [&original])
-        .unwrap();
-    conn.pragma_update(None, "user_version", 13).unwrap();
+    let conn = version_13_index(&directory.path().join("malformed.db"));
+    conn.execute(
+        "INSERT INTO wire_reading VALUES(1,1,'crate::export::VERSION=1','fixture',1,?1)",
+        [&original],
+    )
+    .unwrap();
     assert!(crate::schema::ensure_index(&conn).is_err());
     assert_eq!(state(&conn), original);
     assert_eq!(

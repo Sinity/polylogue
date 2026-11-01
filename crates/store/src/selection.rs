@@ -804,9 +804,34 @@ pub(crate) fn kept_results(
     conn: &rusqlite::Connection,
     source: crate::source::Source,
 ) -> crate::Result<BTreeMap<String, polylogue_query::Kept>> {
-    let sql = source.sql("WITH kept AS (SELECT id,json_valid(rows_json) AS valid,CASE WHEN json_valid(rows_json) THEN rows_json ELSE '{}' END AS body FROM @source.kept_result) SELECT id,json_extract(body,'$.unit'),json_extract(body,'$.columns'),json_extract(body,'$.match_columns'),json_type(body,'$.match_columns'),valid FROM kept");
+    let sql = source.sql(&kept_sql("SELECT id,rows_json FROM @source.kept_result"));
     let mut statement = conn.prepare_cached(&sql)?;
-    let mut rows = statement.query([])?;
+    decode_kept(statement.query([])?)
+}
+
+/// Refuses a kept body that [`kept_results`] cannot decode, so a stored kept
+/// result can always be read back by every later preparation.
+pub(crate) fn check_kept_body(
+    conn: &rusqlite::Connection,
+    id: &str,
+    rows_json: &str,
+) -> crate::Result<()> {
+    let mut statement = conn.prepare_cached(&kept_sql("SELECT ?1 AS id,?2 AS rows_json"))?;
+    match decode_kept(statement.query(rusqlite::params![id, rows_json])?) {
+        Ok(_) => Ok(()),
+        Err(StoreError::Json(error)) => Err(StoreError::Invalid(error.to_string())),
+        Err(error) => Err(error),
+    }
+}
+
+/// The kept-column query over `stored`, which yields `id` and `rows_json`.
+fn kept_sql(stored: &str) -> String {
+    format!("WITH stored AS ({stored}), kept AS (SELECT id,json_valid(rows_json) AS valid,CASE WHEN json_valid(rows_json) THEN rows_json ELSE '{{}}' END AS body FROM stored) SELECT id,json_extract(body,'$.unit'),json_extract(body,'$.columns'),json_extract(body,'$.match_columns'),json_type(body,'$.match_columns'),valid FROM kept")
+}
+
+fn decode_kept(
+    mut rows: rusqlite::Rows<'_>,
+) -> crate::Result<BTreeMap<String, polylogue_query::Kept>> {
     let mut values = BTreeMap::new();
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;

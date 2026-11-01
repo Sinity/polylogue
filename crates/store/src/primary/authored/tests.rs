@@ -486,7 +486,7 @@ fn complete_authored_records_roundtrip_and_pending_is_never_canonical() {
             UserWrite::KeepResult {
                 name: Some("kept".into()),
                 query: "sessions".into(),
-                rows_json: "[{\"id\":1}]".into(),
+                rows_json: "{\"unit\":\"sessions\",\"columns\":[{\"name\":\"id\",\"kind\":\"number\"}],\"rows\":[{\"id\":1}]}".into(),
                 read_at: "{\"now\":3}".into(),
             },
         ),

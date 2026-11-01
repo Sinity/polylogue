@@ -498,6 +498,115 @@ fn sparse_unsigned_ordinals_are_not_renumbered_by_attachment_or_tool_reads() {
     );
 }
 
+/// Replaces the index's declarations with the frozen version-1 schema and
+/// carries over every row of each table and column that version 1 declares.
+/// Tables the version-1 schema fills when it is created are copied last, so
+/// their rows are the written ones and not those counted while copying.
+fn rewrite_as_version_one(index: &rusqlite::Connection) {
+    let snapshot_dir = tempfile::tempdir().unwrap();
+    let snapshot = snapshot_dir.path().join("current.db");
+    let snapshot = snapshot.to_str().unwrap();
+    index.execute("VACUUM INTO ?1", [snapshot]).unwrap();
+    let foreign_keys: bool = index
+        .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+        .unwrap();
+    index.pragma_update(None, "foreign_keys", false).unwrap();
+    let names = |sql: &str| -> Vec<String> {
+        index
+            .prepare(sql)
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    let virtual_tables = "SELECT name FROM main.sqlite_master
+        WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%'";
+    let ordinary_tables = "SELECT name FROM main.sqlite_master
+        WHERE type='table' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'
+        AND name NOT LIKE 'sqlite~_%' ESCAPE '~'";
+    for table in names(virtual_tables) {
+        index
+            .execute_batch(&format!("DROP TABLE IF EXISTS \"{table}\""))
+            .unwrap();
+    }
+    for view in names("SELECT name FROM main.sqlite_master WHERE type='view'") {
+        index.execute_batch(&format!("DROP VIEW \"{view}\"")).unwrap();
+    }
+    for table in names(ordinary_tables) {
+        index.execute_batch(&format!("DROP TABLE \"{table}\"")).unwrap();
+    }
+    index
+        .execute_batch(include_str!("../../schema/fixtures/index_1.sql"))
+        .unwrap();
+    index
+        .execute("ATTACH DATABASE ?1 AS current", [snapshot])
+        .unwrap();
+    let virtual_tables = names(virtual_tables);
+    let mut seeded = Vec::new();
+    let mut tables = Vec::new();
+    for table in names(ordinary_tables) {
+        // Full-text shadow tables belong to their virtual table.
+        if virtual_tables
+            .iter()
+            .any(|parent| table.starts_with(&format!("{parent}_")))
+        {
+            continue;
+        }
+        let filled: bool = index
+            .query_row(&format!("SELECT EXISTS(SELECT 1 FROM main.\"{table}\")"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        if filled {
+            seeded.push(table);
+        } else {
+            tables.push(table);
+        }
+    }
+    for (table, replace) in tables
+        .into_iter()
+        .map(|table| (table, false))
+        .chain(seeded.into_iter().map(|table| (table, true)))
+    {
+        let columns = |schema: &str| -> Vec<String> {
+            index
+                .prepare("SELECT name FROM pragma_table_info(?1, ?2)")
+                .unwrap()
+                .query_map([table.as_str(), schema], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let current = columns("current");
+        if current.is_empty() {
+            continue;
+        }
+        let shared = columns("main")
+            .into_iter()
+            .filter(|column| current.contains(column))
+            .map(|column| format!("\"{column}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        if replace {
+            index
+                .execute_batch(&format!("DELETE FROM main.\"{table}\""))
+                .unwrap();
+        }
+        index
+            .execute_batch(&format!(
+                "INSERT INTO main.\"{table}\"({shared}) SELECT {shared} FROM current.\"{table}\""
+            ))
+            .unwrap();
+    }
+    index
+        .execute_batch("DETACH DATABASE current; PRAGMA user_version=1;")
+        .unwrap();
+    index
+        .pragma_update(None, "foreign_keys", foreign_keys)
+        .unwrap();
+}
+
 #[test]
 fn sparse_index_migration_keeps_native_versions_and_infers_dense_positions() {
     let w = test_archive();
@@ -568,18 +677,9 @@ fn sparse_index_migration_keeps_native_versions_and_infers_dense_positions() {
                 .unwrap();
         }
     }
-    // Include the scanner metadata retired by migration four.
-    index.execute_batch("DROP TABLE message_injection_field; DROP TABLE attachment_binding;
-        DROP TABLE text_fragment_source; DROP TABLE text_fragment;
-        DROP INDEX block_original_ordinal;
-        DROP TABLE message_projection; ALTER TABLE block DROP COLUMN ordinal;
-        ALTER TABLE session_record DROP COLUMN admitted; ALTER TABLE document_source DROP COLUMN admitted;
-        ALTER TABLE event_source DROP COLUMN admitted; ALTER TABLE link_source DROP COLUMN admitted;
-        ALTER TABLE parse_state DROP COLUMN commit_seq;
-        ALTER TABLE parse_state DROP COLUMN checkpoint;
-        ALTER TABLE message ADD COLUMN pem INTEGER NOT NULL DEFAULT 0;
-        CREATE INDEX message_pem ON message(session_pk) WHERE pem <> 0;
-        PRAGMA user_version=1;").unwrap();
+    // The frozen version-1 declarations, including the scanner metadata
+    // retired by migration four, with the rows written above.
+    rewrite_as_version_one(&index);
     crate::schema::ensure_index(&index).unwrap();
     assert_eq!(
         crate::schema::version(&index).unwrap(),
