@@ -403,7 +403,7 @@ impl polylogue_store::primary::Sinex for Sinex {
         cache: &str,
     ) -> polylogue_store::Result<Vec<polylogue_store::primary::Confirmed>> {
         let page = self.with(async |client| client.confirmed(state, cache).await)?;
-        self.resume_publication();
+        self.send_pending();
         Ok(page)
     }
     fn acknowledge(

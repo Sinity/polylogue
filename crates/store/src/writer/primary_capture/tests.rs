@@ -551,7 +551,6 @@ fn serialized_binding() -> crate::assets::bindings::AttachmentBindingRecord {
     record
 }
 
-/// law: rebuild-from-stream
 #[test]
 fn an_imported_attachment_binding_is_sent_to_sinex_and_reaches_the_index_only_from_the_stream() {
     let directory = tempfile::tempdir().unwrap();
@@ -589,14 +588,36 @@ fn an_imported_attachment_binding_is_sent_to_sinex_and_reaches_the_index_only_fr
         }
     );
     assert!(sent[0].parents.is_empty());
-    let index = Connection::open(archive.index_db()).unwrap();
-    assert_eq!(
-        index
-            .query_row("SELECT count(*) FROM attachment_binding", [], |row| row
-                .get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
+    let bindings = || {
+        Connection::open(archive.index_db())
+            .unwrap()
+            .query_row("SELECT count(*) FROM attachment_binding", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(bindings(), 0);
+    writer
+        .apply_confirmed(vec![
+            crate::primary::Confirmed {
+                native: None,
+                position: 1,
+                output_index: 0,
+                event: "binding-event".into(),
+                change: crate::primary::ConfirmedChange::Live(Box::new(sent[0].product.clone())),
+            },
+            crate::primary::Confirmed {
+                native: None,
+                position: 0,
+                output_index: 0,
+                event: String::new(),
+                change: crate::primary::ConfirmedChange::Control(Box::new(
+                    crate::primary::ReplayControl::Completion { position: 1 },
+                )),
+            },
+        ])
+        .unwrap();
+    assert_eq!(bindings(), 1);
 }
 
 #[test]

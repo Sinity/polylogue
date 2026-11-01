@@ -84,12 +84,8 @@ pub(super) fn stage_control(
             if delivery.stream_instance.is_empty() || delivery.stream_sequence == 0 {
                 return Err(invalid("a staged delivery needs its stream receipt"));
             }
-            if state.staged_delivery.as_ref().is_some_and(|old| {
-                old.stream_instance == delivery.stream_instance
-                    && old.stream_sequence > delivery.stream_sequence
-            }) {
-                return Err(invalid("a staged delivery moved backwards"));
-            }
+            // A consumer Sinex provisions again starts over from the stream's
+            // beginning; its redeliveries at applied positions are skipped.
             state.staged_delivery = Some(delivery.clone());
         }
         ReplayControl::Completion { position } => {

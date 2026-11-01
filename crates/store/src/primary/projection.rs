@@ -350,7 +350,7 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                 }
                 None => None,
             },
-            // An event erased before this index read it keeps its reference.
+            // An event erased before this index read it is recorded as tombstoned.
             ConfirmedChange::Tombstoned => Some(match old {
                 Some(mut fact) => {
                     fact.state = "tombstoned".into();

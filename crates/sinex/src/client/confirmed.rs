@@ -161,25 +161,31 @@ impl Client {
         state: &ReplayState,
         cache: &str,
     ) -> Result<Vec<Confirmed>> {
-        if !self.pending.is_empty() {
-            return Err(Error::Invalid(
-                "the previous stream page has not been saved locally".into(),
-            ));
-        }
+        // A page that was not saved (its application failed) is delivered again.
+        self.release_pending().await;
         let result = self.page(state, cache).await;
         if result.is_err() {
-            for message in &self.pending {
-                let _ = message
-                    .ack_with(jetstream::AckKind::Nak(Some(Duration::from_secs(1))))
-                    .await;
-            }
-            self.pending.clear();
+            self.release_pending().await;
         }
         result
     }
 
+    async fn release_pending(&mut self) {
+        for message in &self.pending {
+            let _ = message
+                .ack_with(jetstream::AckKind::Nak(Some(Duration::from_secs(1))))
+                .await;
+        }
+        self.pending.clear();
+    }
+
     async fn page(&mut self, state: &ReplayState, cache: &str) -> Result<Vec<Confirmed>> {
         let after = state.applied_position.unwrap_or(0);
+        // The durable consumer is provisioned once per connection; later pages
+        // only ask for the head and scope. Provisioning again would restart a
+        // consumer whose acknowledgements are not at a completed position.
+        let provisioned =
+            self.consumer.is_some() && self.consumer_cache.as_deref() == Some(cache);
         let reply: ConfirmedConsumerReply = self
             .request(
                 self.subjects.confirmed_consumer(&self.producer),
@@ -187,7 +193,7 @@ impl Client {
                     basis: None,
                     after,
                     cache: cache.into(),
-                    status_only: false,
+                    status_only: provisioned,
                 },
             )
             .await?;
@@ -215,14 +221,13 @@ impl Client {
             self.consumer_cache = None;
             return Ok(vec![control_fact(ReplayControl::Reset { scope: reply.scope })]);
         }
-        let instance = reply
-            .stream_instance
-            .filter(|instance| !instance.is_empty())
-            .ok_or_else(|| Error::Invalid("confirmed stream incarnation is unavailable".into()))?;
-        if self.consumer.is_none()
-            || self.consumer_cache.as_deref() != Some(cache)
-            || self.consumer_instance.as_deref() != Some(instance.as_str())
-        {
+        if !provisioned {
+            let instance = reply
+                .stream_instance
+                .filter(|instance| !instance.is_empty())
+                .ok_or_else(|| {
+                    Error::Invalid("confirmed stream incarnation is unavailable".into())
+                })?;
             self.consumer = Some(
                 jetstream::new(self.client.clone())
                     .get_consumer_from_stream(reply.consumer, reply.stream)
@@ -230,8 +235,12 @@ impl Client {
                     .map_err(|error| Error::Unreachable(error.to_string()))?,
             );
             self.consumer_cache = Some(cache.into());
-            self.consumer_instance = Some(instance.clone());
+            self.consumer_instance = Some(instance);
         }
+        let instance = self
+            .consumer_instance
+            .clone()
+            .expect("a provisioned consumer has its stream incarnation");
         let mut messages = self
             .consumer
             .as_ref()

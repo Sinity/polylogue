@@ -117,7 +117,6 @@ fn exact_waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
     assert!(!raw.caught_up());
 }
 
-/// law: rebuild-from-stream
 #[test]
 fn primary_projection_is_complete_once_the_stream_has_been_applied() {
     let root = tempfile::tempdir().unwrap();

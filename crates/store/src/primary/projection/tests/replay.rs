@@ -56,25 +56,30 @@ fn a_staged_delivery_survives_reopen_without_advancing_the_applied_position() {
 }
 
 #[test]
-fn a_delivery_cursor_never_moves_backwards() {
+fn a_restarted_consumer_redelivers_applied_positions_without_changing_them() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
-    apply(&mut index, &resolver, &[delivered(9)]).unwrap();
-    assert!(apply(&mut index, &resolver, &[delivered(4)]).is_err());
+    apply(&mut index, &resolver, &[input(2, "source"), barrier(2), delivered(9)]).unwrap();
+    assert_eq!(checkpoint(&index).unwrap(), Some(2));
+    // Sinex provisioned the consumer again: it starts over from sequence 1.
+    apply(&mut index, &resolver, &[input(2, "source"), barrier(2), delivered(4)]).unwrap();
+    assert_eq!(checkpoint(&index).unwrap(), Some(2));
+    assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 1);
+    assert_eq!(rows(&index, "SELECT count(*) FROM primary_pending"), 0);
     assert_eq!(
         replay_state(&index)
             .unwrap()
             .staged_delivery
             .map(|delivery| delivery.stream_sequence),
-        Some(9)
+        Some(4)
     );
 }
 
 /// law: lifecycle-reaches-index
 #[test]
-fn an_event_erased_before_this_index_read_it_keeps_a_tombstoned_reference() {
+fn an_event_erased_before_this_index_read_it_is_recorded_as_tombstoned() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
@@ -105,8 +110,7 @@ fn an_event_erased_before_this_index_read_it_keeps_a_tombstoned_reference() {
     assert_eq!(state, "tombstoned");
     assert_eq!(product, None);
     // A tombstoned event never becomes live again.
-    assert!(
-        apply(
+    let refused = apply(
             &mut index,
             &resolver,
             &[
@@ -120,8 +124,9 @@ fn an_event_erased_before_this_index_read_it_keeps_a_tombstoned_reference() {
                 barrier(3),
             ],
         )
-        .is_err()
-    );
+        .unwrap_err();
+    assert!(refused.to_string().contains("tombstoned"), "{refused}");
+    assert_eq!(checkpoint(&index).unwrap(), Some(2));
 }
 
 #[test]

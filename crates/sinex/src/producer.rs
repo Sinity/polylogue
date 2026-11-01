@@ -16,7 +16,7 @@ mod reading;
 mod requests;
 
 impl Sinex {
-    pub(crate) fn resume_publication(&self) {
+    pub(crate) fn send_pending(&self) {
         let result = self.with(async |client| client.retry_prepared().await);
         if result.is_ok() {
             let result = self
