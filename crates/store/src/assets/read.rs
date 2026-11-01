@@ -99,107 +99,13 @@ impl Reader<'_> {
                 binding,
             });
         }
-        let mut scopes = conn.prepare(
-            "SELECT DISTINCT own.import_id FROM import_member own
-            JOIN source_observation o ON o.id=own.observation AND o.input=own.input
-            LEFT JOIN source_revision r ON r.input=o.input AND r.number=o.revision
-            WHERE own.input=?1 AND coalesce(o.chain,r.chain)=?2
-              AND json_extract(o.details_json,'$.import.import_id')=own.import_id
-            ORDER BY own.import_id",
-        )?;
-        let scopes = scopes
-            .query_map(params![source_input, source_chain], |r| {
-                r.get::<_, String>(0)
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let scopes = import_scopes(conn, &source_input, source_chain)?;
         let mut matches = std::collections::BTreeMap::<String, AssetMatch>::new();
         let mut known = std::collections::HashMap::<String, Option<AssetSource>>::new();
         let identity = source.source_id.as_deref().filter(|id| !id.is_empty());
         if let Some(source_id) = identity {
-            let mut stmt = conn.prepare(
-                "SELECT DISTINCT m.input,m.member,m.observation FROM import_member m
-                WHERE m.import_id=?1 AND m.source_id=?2
-                  AND EXISTS(SELECT 1 FROM source_revision r WHERE r.input=m.input)
-                ORDER BY m.input,m.member,m.observation",
-            )?;
             for scope in &scopes {
-                for row in stmt.query_map(params![scope, source_id], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                    ))
-                })? {
-                    let (input, member, observation) = row?;
-                    if !known.contains_key(&input) {
-                        known.insert(input.clone(), asset_source(conn, conn, "source_", &input)?);
-                    }
-                    let Some(mut current) = known[&input].clone() else {
-                        continue;
-                    };
-                    if current.length == 0 {
-                        let Some(bound) = super::empty::source(
-                            conn,
-                            conn,
-                            "source_",
-                            &input,
-                            current.chain,
-                            Some(&observation),
-                            None,
-                        )?
-                        else {
-                            continue;
-                        };
-                        current = bound;
-                    }
-                    let asset = matches.entry(input.clone()).or_insert_with(|| AssetMatch {
-                        input,
-                        chain: current.chain,
-                        blob: current.blob,
-                        source_version: current.version.clone(),
-                        size: current.length,
-                        members: Vec::new(),
-                        names: Vec::new(),
-                        media_types: Vec::new(),
-                        declared_sizes: Vec::new(),
-                    });
-                    asset.members.push(member);
-                    let mut meta=conn.prepare_cached("SELECT x.name,x.media_type,x.size,m.input,s.source_version FROM import_member m
-                        JOIN import_asset_metadata x ON x.input=m.input AND x.sidecar=m.sidecar
-                        JOIN import_asset_sidecar s ON s.input=x.input AND s.sidecar=x.sidecar AND s.error IS NULL
-                        WHERE m.import_id=?1 AND x.source_id=?2 AND m.sidecar IS NOT NULL
-                          AND EXISTS(SELECT 1 FROM source_revision r WHERE r.input=m.input)
-                        ORDER BY m.input,x.ordinal")?;
-                    for row in meta.query_map(params![scope, source_id], |r| {
-                        Ok((
-                            r.get::<_, Option<String>>(0)?,
-                            r.get::<_, Option<String>>(1)?,
-                            r.get::<_, Option<String>>(2)?,
-                            r.get::<_, String>(3)?,
-                            r.get::<_, String>(4)?,
-                        ))
-                    })? {
-                        let (name, media, size, input, recorded) = row?;
-                        if !known.contains_key(&input) {
-                            known.insert(
-                                input.clone(),
-                                asset_source(conn, conn, "source_", &input)?,
-                            );
-                        }
-                        if known[&input].as_ref().map(|source| source.version.as_str())
-                            != Some(recorded.as_str())
-                        {
-                            continue;
-                        }
-                        asset.names.extend(name);
-                        asset.media_types.extend(media);
-                        if let Some(size) = size {
-                            asset.declared_sizes.push(size.parse().map_err(|_| {
-                                StoreError::Invalid("invalid declared asset size".into())
-                            })?);
-                        }
-                    }
-                }
+                scope_matches(conn, scope, source_id, &mut known, &mut matches)?;
             }
         }
         let mut matches = matches.into_values().collect::<Vec<_>>();
@@ -235,6 +141,218 @@ impl Reader<'_> {
             matches,
             binding,
         })
+    }
+}
+
+/// The import namespaces under which a message's source input was read.
+pub(super) fn import_scopes(conn: &Connection, input: &str, chain: i64) -> Result<Vec<String>> {
+    let mut scopes = conn.prepare(
+        "SELECT DISTINCT own.import_id FROM import_member own
+        JOIN source_observation o ON o.id=own.observation AND o.input=own.input
+        LEFT JOIN source_revision r ON r.input=o.input AND r.number=o.revision
+        WHERE own.input=?1 AND coalesce(o.chain,r.chain)=?2
+          AND json_extract(o.details_json,'$.import.import_id')=own.import_id
+        ORDER BY own.import_id",
+    )?;
+    let scopes = scopes
+        .query_map(params![input, chain], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(scopes)
+}
+
+/// Members of one import namespace that carry `source_id`, grouped by the
+/// input holding their bytes, with the names the namespace's sidecars give.
+pub(super) fn scope_matches(
+    conn: &Connection,
+    scope: &str,
+    source_id: &str,
+    known: &mut std::collections::HashMap<String, Option<AssetSource>>,
+    matches: &mut std::collections::BTreeMap<String, AssetMatch>,
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT m.input,m.member,m.observation FROM import_member m
+        WHERE m.import_id=?1 AND m.source_id=?2
+          AND EXISTS(SELECT 1 FROM source_revision r WHERE r.input=m.input)
+        ORDER BY m.input,m.member,m.observation",
+    )?;
+    for row in stmt.query_map(params![scope, source_id], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })? {
+        let (input, member, observation) = row?;
+        if !known.contains_key(&input) {
+            known.insert(input.clone(), asset_source(conn, conn, "source_", &input)?);
+        }
+        let Some(mut current) = known[&input].clone() else {
+            continue;
+        };
+        if current.length == 0 {
+            let Some(bound) = super::empty::source(
+                conn,
+                conn,
+                "source_",
+                &input,
+                current.chain,
+                Some(&observation),
+                None,
+            )?
+            else {
+                continue;
+            };
+            current = bound;
+        }
+        let asset = matches.entry(input.clone()).or_insert_with(|| AssetMatch {
+            input,
+            chain: current.chain,
+            blob: current.blob,
+            source_version: current.version.clone(),
+            size: current.length,
+            members: Vec::new(),
+            names: Vec::new(),
+            media_types: Vec::new(),
+            declared_sizes: Vec::new(),
+        });
+        asset.members.push(member);
+        let mut meta=conn.prepare_cached("SELECT x.name,x.media_type,x.size,m.input,s.source_version FROM import_member m
+            JOIN import_asset_metadata x ON x.input=m.input AND x.sidecar=m.sidecar
+            JOIN import_asset_sidecar s ON s.input=x.input AND s.sidecar=x.sidecar AND s.error IS NULL
+            WHERE m.import_id=?1 AND x.source_id=?2 AND m.sidecar IS NOT NULL
+              AND EXISTS(SELECT 1 FROM source_revision r WHERE r.input=m.input)
+            ORDER BY m.input,x.ordinal")?;
+        for row in meta.query_map(params![scope, source_id], |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })? {
+            let (name, media, size, input, recorded) = row?;
+            if !known.contains_key(&input) {
+                known.insert(
+                    input.clone(),
+                    asset_source(conn, conn, "source_", &input)?,
+                );
+            }
+            if known[&input].as_ref().map(|source| source.version.as_str())
+                != Some(recorded.as_str())
+            {
+                continue;
+            }
+            asset.names.extend(name);
+            asset.media_types.extend(media);
+            if let Some(size) = size {
+                asset.declared_sizes.push(size.parse().map_err(|_| {
+                    StoreError::Invalid("invalid declared asset size".into())
+                })?);
+            }
+        }
+    }
+    Ok(())
+}
+
+impl Reader<'_> {
+    /// Claims describing the stored bytes behind a message's attachments, for
+    /// slots no retained binding covers. Each import namespace that read the
+    /// message's shown source makes one claim per slot: its candidates are the
+    /// complete bytes of the members carrying the slot's source ID, and none
+    /// when no such member is stored.
+    pub fn current_attachment_claims(
+        &self,
+        message: &MessageId,
+        source_version: BlobHash,
+        slots: &[polylogue_model::attachment_binding::AttachmentSlot],
+    ) -> Result<Vec<polylogue_model::attachment_binding::AttachmentBinding>> {
+        use polylogue_model::attachment_binding::{
+            AttachmentBinding, AttachmentCandidate, AttachmentNamespace, AttachmentSourceClaim,
+        };
+        if slots.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn()?;
+        let mut shown = conn.prepare(
+            "SELECT i.id,s.chain FROM message m
+             JOIN message_source s ON s.message_pk=m.pk
+             JOIN input_ref i ON i.pk=s.input_pk
+             WHERE m.id=?1 AND s.version_hash=?2 AND s.shown=1 ORDER BY i.id,s.chain",
+        )?;
+        let shown = shown
+            .query_map(params![message.to_string(), source_version.0.as_slice()], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut claims = Vec::new();
+        for (input, chain) in shown {
+            for scope in import_scopes(conn, &input, chain)? {
+                let namespace = AttachmentNamespace {
+                    input: input.clone(),
+                    chain,
+                    import_id: scope.clone(),
+                };
+                for slot in slots {
+                    let mut known = std::collections::HashMap::new();
+                    let mut matches = std::collections::BTreeMap::new();
+                    scope_matches(conn, &scope, &slot.source_id, &mut known, &mut matches)?;
+                    let mut candidates =
+                        std::collections::BTreeMap::<([u8; 32], u64), AttachmentCandidate>::new();
+                    for (_, mut asset) in matches {
+                        unique(&mut asset.members);
+                        unique(&mut asset.names);
+                        unique(&mut asset.media_types);
+                        unique(&mut asset.declared_sizes);
+                        let hash = match asset.blob {
+                            Some(hash) => hash,
+                            None => {
+                                let pin = AssetSource {
+                                    chain: asset.chain,
+                                    length: asset.size,
+                                    version: asset.source_version.clone(),
+                                    blob: None,
+                                };
+                                super::bindings::hash_member(self, &asset.input, asset.chain, &pin)?
+                            }
+                        };
+                        candidates
+                            .entry((hash.0, asset.size))
+                            .or_insert_with(|| AttachmentCandidate {
+                                hash,
+                                size: asset.size,
+                                sources: Vec::new(),
+                            })
+                            .sources
+                            .push(AttachmentSourceClaim {
+                                namespace: Some(AttachmentNamespace {
+                                    input: asset.input.clone(),
+                                    chain: asset.chain,
+                                    import_id: scope.clone(),
+                                }),
+                                input: asset.input,
+                                chain: asset.chain,
+                                source_version: asset.source_version,
+                                members: asset.members,
+                                names: asset.names,
+                                media_types: asset.media_types,
+                                declared_sizes: asset.declared_sizes,
+                            });
+                    }
+                    claims.push(AttachmentBinding {
+                        source_version,
+                        namespace: namespace.clone(),
+                        exported_from: namespace.clone(),
+                        prior_exports: Vec::new(),
+                        block: slot.block,
+                        attachment: slot.attachment,
+                        source_id: slot.source_id.clone(),
+                        candidates: candidates.into_values().collect(),
+                    });
+                }
+            }
+        }
+        Ok(claims)
     }
 }
 

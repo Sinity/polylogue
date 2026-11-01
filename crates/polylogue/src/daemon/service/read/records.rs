@@ -452,6 +452,26 @@ pub(super) fn message_record(
             bindings.push(claim);
         }
     }
+    let covered: std::collections::HashSet<_> = bindings
+        .iter()
+        .map(|claim| (claim.block, claim.attachment))
+        .collect();
+    let uncovered: Vec<_> =
+        polylogue_model::attachment_binding::attachment_slots(&message.blocks, &projection.block_ordinals)
+            .into_iter()
+            .filter(|slot| !covered.contains(&(slot.block, slot.attachment)))
+            .collect();
+    for claim in reader
+        .current_attachment_claims(&message.id, projection.source_version, &uncovered)
+        .map_err(|e| store_error(&e))?
+    {
+        claim
+            .validate()
+            .map_err(|e| store_error(&polylogue_store::StoreError::Invalid(e.to_string())))?;
+        if seen.insert(claim.clone()) {
+            bindings.push(claim);
+        }
+    }
     Ok(Record::Message(Box::new(MessageRecord {
         reference: format!("message:{}", message.id),
         commit,

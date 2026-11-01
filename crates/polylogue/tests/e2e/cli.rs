@@ -317,7 +317,18 @@ fn ai_studio_import_and_drive_title_read_identically_after_a_rebuild_from_stored
     use polylogue_model::read::{ItemKind, ReadHeader, ReadItem, ReadPage, ValueState};
 
     fn reading(env: &crate::Fixture) -> (ReadHeader, Vec<ReadItem>) {
-        let mut out = cli(env, &["--json", "read", "session:ai-studio:drive-id"]);
+        // The system instruction is a harness message, which a default read
+        // collapses to an indicator (docs/reading.md, harness messages).
+        let mut out = cli(
+            env,
+            &[
+                "--json",
+                "read",
+                "session:ai-studio:drive-id",
+                "--harness",
+                "full",
+            ],
+        );
         let mut items = read_current::Items::default();
         let mut header = None;
         let mut continuations = std::collections::BTreeSet::new();
