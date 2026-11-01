@@ -1,5 +1,5 @@
 use super::claude_account_text::{
-    document, import_report, joined_items, portable, reading, records,
+    document, import_report, joined_items, joined_items_with_options, portable, reading, records,
 };
 use super::*;
 use polylogue_model::bundle::Record;
@@ -418,10 +418,12 @@ fn hermes_atif_documents_preserve_roles_unknown_media_and_exact_ordered_parts() 
             assert_eq!(doc["metadata"]["llm_call_count"], 0);
             assert_eq!(doc["blocks"][3]["call_id"], "native-call");
             assert_eq!(doc["blocks"][3]["outcome"]["kind"], "unknown");
-            let joined = joined_items(&env, &reference, "24");
+            // Tool output is shown in full only with `--tools full`
+            // (docs/reading.md, tools).
+            let joined = joined_items_with_options(&env, &reference, "24", &["--tools", "full"]);
             assert_eq!(
                 joined,
-                reading(&env, &reference, &["--budget", "100000"])
+                reading(&env, &reference, &["--tools", "full", "--budget", "100000"])
                     .document
                     .items
             );

@@ -184,7 +184,7 @@ pub(super) fn declared(
     };
     let name = if kind("mapping", Kind::Object)
         && has(&["current_node"])
-        && (kind("conversation_id", Kind::String) || kind("id", Kind::String))
+        && kind("conversation_id", Kind::String)
     {
         Some("chatgpt")
     } else if kind("uuid", Kind::String)

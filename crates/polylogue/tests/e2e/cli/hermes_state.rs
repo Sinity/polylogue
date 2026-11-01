@@ -73,7 +73,34 @@ fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_p
     // A supplied compression predecessor is retained as a link, rather than
     // a fork whose messages are prepended to the child's active reading.
     let own = reading(&env, child, &[]);
-    assert_eq!(inherited.document.items, own.document.items);
+    // Only the session card differs: reading the parent prefix reports whether
+    // the lineage was complete (docs/reading.md, lineage).
+    let mut inherited_items = inherited.document.items.clone();
+    let mut own_items = own.document.items.clone();
+    for (items, expected) in [
+        (
+            &mut inherited_items,
+            polylogue_model::read::ValueState::known(true),
+        ),
+        (
+            &mut own_items,
+            polylogue_model::read::ValueState::NotApplicable,
+        ),
+    ] {
+        match &mut items[0].kind {
+            polylogue_model::read::ItemKind::Card { card } => match card.as_mut() {
+                polylogue_model::read::Card::Session {
+                    lineage_complete, ..
+                } => {
+                    assert_eq!(*lineage_complete, expected);
+                    *lineage_complete = polylogue_model::read::ValueState::NotApplicable;
+                }
+                other => panic!("first item is a session card, not {other:?}"),
+            },
+            other => panic!("first item is a card, not {other:?}"),
+        }
+    }
+    assert_eq!(inherited_items, own_items);
     let exported = records(&env, child);
     let mut exported_messages: Vec<_> = exported
         .iter()
