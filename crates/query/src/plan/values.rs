@@ -68,18 +68,19 @@ fn condition(c: &Condition, typing: &Typing, path: NodePath) -> Result<(), Query
         ConditionKind::Match { value, .. } => {
             values(typing, &at.field("field"), value, position)?;
         }
-        ConditionKind::Compare { operand, value, .. } => {
-            if let Operand::Field { .. } = operand {
-                values(typing, &at.field("operand"), value, position)?;
-            }
-        }
+        ConditionKind::Compare {
+            operand: Operand::Field { .. },
+            value,
+            ..
+        } => values(typing, &at.field("operand"), value, position)?,
         ConditionKind::Between {
-            operand, from, to, ..
+            operand: Operand::Field { .. },
+            from,
+            to,
+            ..
         } => {
-            if let Operand::Field { .. } = operand {
-                values(typing, &at.field("operand"), from, position)?;
-                values(typing, &at.field("operand"), to, position)?;
-            }
+            values(typing, &at.field("operand"), from, position)?;
+            values(typing, &at.field("operand"), to, position)?;
         }
         ConditionKind::In { query: q, .. } => query(q, typing, at.field("query"))?,
         ConditionKind::Exists {
