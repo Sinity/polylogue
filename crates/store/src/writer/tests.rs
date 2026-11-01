@@ -1441,3 +1441,61 @@ fn recorded_message_sessions_preserve_ambiguity_after_shown_row_deduplication() 
         .unwrap();
     assert!(!absent);
 }
+
+/// law: one refused reading in a group of independent inputs costs only itself
+#[cfg(feature = "faults")]
+#[test]
+fn a_refused_reading_in_a_group_of_independent_inputs_costs_only_itself() {
+    let w = test_archive();
+    let mut group = Vec::new();
+    for (input, session, text, byte) in [
+        ("refused-group-input", "refused", "refused body", b'a'),
+        ("accepted-group-input", "accepted", "accepted body", b'b'),
+    ] {
+        let mut reading = batch(
+            input,
+            0,
+            0,
+            vec![row(
+                0,
+                text_message(
+                    &format!("{session}-message"),
+                    session,
+                    Role::User,
+                    text,
+                    None,
+                ),
+            )],
+            &[session],
+        );
+        let (blob, file) = w.archive.prepare_blob(&[byte; 100]).unwrap();
+        reading.new_blob = Some(blob);
+        group.push(crate::staging::PreparedBatch {
+            batch: reading,
+            files: file.into_iter().collect(),
+        });
+    }
+    crate::fault::arm(
+        "write.input",
+        "refused-group-input",
+        crate::fault::Action::Fail,
+        0,
+        64,
+    );
+    let results = w
+        .writer
+        .sender()
+        .unwrap()
+        .store_group(group, std::sync::Arc::new(w.archive.blobs().unwrap()))
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(results[0].is_err(), "{results:?}");
+    assert_eq!(
+        results[1].as_ref().map(|stored| stored.input.as_str()).ok(),
+        Some("accepted-group-input"),
+        "{results:?}"
+    );
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    assert!(texts(&w, "refused").is_empty());
+    assert_eq!(texts(&w, "accepted"), ["accepted body"]);
+}
