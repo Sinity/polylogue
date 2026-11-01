@@ -62,8 +62,14 @@ fn the_checkout_this_crate_is_built_from_reads_as_a_repository() {
         return; // a build outside a checkout (the Nix package)
     };
     let l = read(&repo, &mut Cache::default());
-    let root = l.root_commit.expect("a full clone has a root commit");
-    assert_eq!(root.len(), 40);
+    // A shallow clone (cloud sessions, CI) does not hold the root commit, and
+    // the lookup reports none rather than the shallow boundary.
+    if git(&repo, &["rev-parse", "--is-shallow-repository"]) == "true" {
+        assert!(l.root_commit.is_none());
+    } else {
+        let root = l.root_commit.expect("a full clone has a root commit");
+        assert_eq!(root.len(), 40);
+    }
     if let Some(remote) = l.remote {
         assert!(!remote.contains('@') || !remote.contains("://"), "{remote}");
     }
