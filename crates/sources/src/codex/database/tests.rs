@@ -6,13 +6,14 @@ use serde_json::json;
 fn names_its_databases_and_their_exports() {
     assert!(is_database(Path::new("/h/.codex/state_5.sqlite")));
     assert!(is_database(Path::new("/h/.codex/thread_history_1.sqlite")));
-    assert!(!is_database(Path::new("/h/.codex/logs_2.sqlite")));
+    assert!(is_database(Path::new("/h/.codex/logs_2.sqlite")));
+    assert!(is_database(Path::new("/h/.codex/queue_1.sqlite")));
     assert!(!is_database(Path::new("/h/.codex/state_5.sqlite-wal")));
     assert!(recognize(
         Path::new("/a/exports/codex-database/goals_1.sqlite.jsonl"),
         b"{"
     ));
-    assert!(!recognize(
+    assert!(recognize(
         Path::new("/a/exports/codex-database/logs_2.sqlite.jsonl"),
         b"{"
     ));

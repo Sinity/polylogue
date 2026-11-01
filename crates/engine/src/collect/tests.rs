@@ -122,3 +122,57 @@ fn a_tool_directory_variable_moves_the_root() {
         recursive: true
     }));
 }
+
+#[test]
+fn health_reports_unknown_files_and_does_not_follow_directory_symlink_cycles() {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join(".codex");
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let unknown = root.join("sessions/rollout-new.encoding");
+    fs::write(&unknown, "new tool format").unwrap();
+    std::os::unix::fs::symlink(&root, root.join("cycle")).unwrap();
+    let config = config(home.path());
+    let (found, unreadable) = scan(&config);
+    assert!(unreadable.is_empty());
+    let reports = coverage(&config, &found);
+    let report = reports.iter().find(|r| r.root == root).unwrap();
+    assert_eq!(report.files, 2);
+    assert!(report.unmatched.contains(&unknown));
+    assert!(report.unmatched.contains(&root.join("cycle")));
+}
+
+#[test]
+fn all_declared_session_context_directories_are_collected() {
+    let home = tempfile::tempdir().unwrap();
+    for relative in [
+        ".claude/paste-cache/paste.txt",
+        ".claude/teams/team/config.json",
+        ".claude/usage-data/session-meta/session.json",
+        ".claude/history-summaries/summary.md",
+        ".claude/remote-agents/agent.meta.json",
+        ".claude/jobs/job/prompt.md",
+        ".claude/shell-snapshots/shell.sh",
+        ".claude/debug/session.txt",
+        ".claude/mcp-logs/project/server/log.txt",
+        ".claude/projects/project/memory/nested/notes.md",
+        ".codex/attachments/session/pasted.txt",
+        ".codex/memories/nested/notes.md",
+        ".codex/shell_snapshots/session.sh",
+        ".codex/dictation-history/record.json",
+        ".codex/visualizations/chart.html",
+    ] {
+        let path = home.path().join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "{}").unwrap();
+    }
+    let config = config(home.path());
+    let (found, unreadable) = scan(&config);
+    assert!(unreadable.is_empty());
+    assert_eq!(found.len(), 15);
+    assert!(found.iter().all(recognize));
+    assert!(
+        coverage(&config, &found)
+            .iter()
+            .all(|r| r.unmatched.is_empty())
+    );
+}

@@ -174,3 +174,29 @@ fn history_lines_with_a_session_become_events() {
     assert_eq!(step.output.events[0].kind, "prompt_history");
     assert!(step.output.events[0].at.is_some());
 }
+
+#[test]
+fn paste_history_preserves_exact_content_hash_only_evidence_and_malformed_neighbors() {
+    let bytes = concat!(
+        "not JSON\n",
+        "{\"display\":\"before pasted after\",\"sessionId\":\"s1\",\"pastedContents\":{\"1\":{\"type\":\"text\",\"content\":\"pasted\"},\"2\":{\"type\":\"text\"}}}\n",
+        "{\"display\":\"ordinary\",\"sessionId\":\"s1\",\"pastedContents\":{}}\n"
+    );
+    let step = run(&History, &mut (), bytes.as_bytes(), 0).unwrap();
+    let pastes: Vec<_> = step
+        .output
+        .events
+        .iter()
+        .filter(|e| e.kind == "paste_span")
+        .collect();
+    assert_eq!(pastes.len(), 2);
+    assert_eq!(pastes[0].data["span"], serde_json::json!([7, 13]));
+    assert_eq!(pastes[0].data["boundary"], "exact");
+    assert_eq!(pastes[1].data["boundary"], "hash_only");
+    assert!(
+        pastes
+            .iter()
+            .all(|p| p.session.as_ref().unwrap().to_string() == "claude-code:s1")
+    );
+    assert_eq!(step.counts.records, 3);
+}

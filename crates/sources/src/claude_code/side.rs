@@ -360,6 +360,35 @@ impl Parser for History {
         let Some(session) = session_id(sid) else {
             return RecordOutcome::unreadable("session ID is not valid");
         };
+        if let Some(pastes) = v.get("pastedContents").and_then(Json::as_object) {
+            let display = v.get("display").and_then(Json::as_str).unwrap_or("");
+            for (marker, paste) in pastes {
+                let Some(paste) = paste.as_object() else {
+                    continue;
+                };
+                let content = paste
+                    .get("content")
+                    .and_then(Json::as_str)
+                    .filter(|s| !s.is_empty());
+                let span = content.and_then(|text| {
+                    let mut matches = display.match_indices(text);
+                    let (start, _) = matches.next()?;
+                    matches
+                        .next()
+                        .is_none()
+                        .then_some((start, start + text.len()))
+                });
+                out.events.push(Event {
+                    session: Some(session.clone()), kind: "paste_span".into(),
+                    at: v.get("timestamp").and_then(Json::as_i64).and_then(Timestamp::from_unix_ms),
+                    after: None, range: Some(super::range(record)),
+                    data: serde_json::json!({
+                        "source_marker": marker, "paste": paste, "span": span,
+                        "boundary": if span.is_some() { "exact" } else if content.is_some() { "content" } else { "hash_only" },
+                    }),
+                });
+            }
+        }
         out.events.push(Event {
             session: Some(session),
             kind: "prompt_history".to_owned(),

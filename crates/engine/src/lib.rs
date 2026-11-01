@@ -13,6 +13,8 @@
 //! next changes, never all at start-up.
 
 pub mod collect;
+mod compressed;
+mod local_files;
 pub mod pool;
 pub mod read;
 pub mod repo_lookup;
@@ -192,6 +194,7 @@ pub struct Pass {
     pub sessions_derived: u64,
     pub seconds: f64,
     pub unreadable_roots: Vec<PathBuf>,
+    pub capture_health: Vec<collect::Coverage>,
     pub errors: Vec<String>,
     /// A SQLite capture has more cooperative work to do.
     pub capture_pending: bool,

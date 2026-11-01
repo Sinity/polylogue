@@ -46,6 +46,11 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 
 /// Keys a ChatGPT conversation object starts with, across export versions.
 const CONVERSATION_KEYS: &[&str] = &[
+    "async_status",
+    "atlas_mode_enabled",
+    "context_scopes",
+    "conversation_origin",
+    "conversation_template_id",
     "title",
     "conversation_id",
     "id",

@@ -21,15 +21,23 @@ use std::path::Path;
 pub const ROOT: Root = super::ROOT;
 
 /// The databases captured, by file name prefix (`state_5.sqlite`). The
-/// `logs` database is Codex's own diagnostic log and `queue` its pending
-/// submissions; neither holds session content.
-const DATABASES: &[&str] = &["state_", "goals_", "memories_", "thread_history_"];
+/// `logs` carries session diagnostics and `queue` pending prompts.
+const DATABASES: &[&str] = &[
+    "state_",
+    "goals_",
+    "memories_",
+    "thread_history_",
+    "logs_",
+    "queue_",
+];
 
 pub const LOCATIONS: &[&str] = &[
     "state_*.sqlite",
     "goals_*.sqlite",
     "memories_*.sqlite",
     "thread_history_*.sqlite",
+    "logs_*.sqlite",
+    "queue_*.sqlite",
 ];
 
 /// The database a file is, or the database its export is of.
@@ -107,6 +115,17 @@ impl Parser for Database {
         }
         let row = v.get("r").unwrap_or(&Json::Null);
         match table {
+            "logs" | "queued_items" | "queued_thread_revisions" => {
+                out.events.push(Event {
+                    session: row_session(row, "thread_id"),
+                    kind: table.to_owned(),
+                    at: None,
+                    after: None,
+                    range: Some((record.offset, record.offset + record.bytes.len() as u64)),
+                    data: row.clone(),
+                });
+                RecordOutcome::Used
+            }
             "threads" => {
                 let Some(id) = row_session(row, "id") else {
                     return RecordOutcome::unreadable("thread row without an ID");

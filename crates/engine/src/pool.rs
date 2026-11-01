@@ -87,6 +87,7 @@ pub struct Done {
     /// The last bytes read, kept to check the next growth.
     pub tail: Vec<u8>,
     pub stored: u64,
+    pub local_files: Vec<PathBuf>,
     pub error: Option<String>,
 }
 
@@ -322,6 +323,7 @@ fn run(
         parser_state: job.parser_state.take(),
         tail: Vec::new(),
         stored: 0,
+        local_files: Vec::new(),
         error: None,
     };
     let started = std::time::Instant::now();
@@ -387,6 +389,12 @@ fn run(
             });
             match step {
                 Ok((steps, parser_state)) => {
+                    if job.origin.name == "codex" {
+                        let cwd = out.parser_state.as_ref().and_then(|state| state.get("session"))
+                            .and_then(|session| session.get("cwd")).and_then(Json::as_array)
+                            .and_then(|dirs| dirs.last()).and_then(Json::as_str);
+                        out.local_files = crate::local_files::references(&bytes, cwd);
+                    }
                     out.parser_state = Some(parser_state);
                     let mut parsed = Vec::new();
                     for mut step in steps {

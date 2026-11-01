@@ -422,3 +422,5 @@ mod polylogue_export;
 mod openrouter;
 
 mod input_events;
+
+mod provider_shapes;

@@ -33,7 +33,7 @@ pub(crate) fn requires_scan(event: &notify::Event) -> bool {
 fn collected() -> impl Iterator<Item = &'static OriginSpec> {
     ORIGINS
         .iter()
-        .filter(|o| o.support == Support::Parsed && o.arrival != Arrival::Import)
+        .filter(|o| o.support != Support::Declared && o.arrival != Arrival::Import)
 }
 
 /// Every file matching a live or spool location, and the directories that
@@ -68,6 +68,71 @@ fn scan_origins(
     found.sort_by(|a, b| a.path.cmp(&b.path));
     found.dedup_by(|a, b| a.path == b.path);
     (found, unreadable)
+}
+
+/// Coverage of one source root at the most recent full scan. Paths with no
+/// matching declaration and files rejected by recognition remain visible.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct Coverage {
+    pub root: PathBuf,
+    pub files: u64,
+    pub matched: u64,
+    pub unmatched: Vec<PathBuf>,
+    pub rejected: Vec<PathBuf>,
+    pub unreadable: Vec<PathBuf>,
+}
+
+/// Reads each source root once for a health report. Home and XDG state are
+/// shared roots: only the tool's directory is covered there.
+pub fn coverage(config: &Config, found: &[Found]) -> Vec<Coverage> {
+    let mut roots = std::collections::BTreeSet::new();
+    for origin in collected() {
+        let base = config.root(origin.root);
+        if !origin.root.default.is_empty() && origin.root != polylogue_sources::Root::STATE {
+            roots.insert(base);
+        } else if let Some(spool) = origin.spool_dir() {
+            roots.insert(base.join(spool));
+        } else {
+            for pattern in origin.locations {
+                if let Some(first) = pattern.split('/').next().filter(|p| !p.contains('*')) {
+                    let path = base.join(first);
+                    roots.insert(if path.is_file() { base.clone() } else { path });
+                }
+            }
+        }
+    }
+    let matched: std::collections::HashSet<_> = found.iter().map(|f| &f.path).collect();
+    roots
+        .into_iter()
+        .map(|root| {
+            let mut report = Coverage {
+                root: root.clone(),
+                ..Coverage::default()
+            };
+            let mut files = Vec::new();
+            census(&root, &mut files, &mut report.unreadable);
+            for path in files {
+                report.files += 1;
+                if matched.contains(&path) {
+                    report.matched += 1;
+                } else {
+                    report.unmatched.push(path);
+                }
+            }
+            report.unmatched.sort();
+            report
+        })
+        .collect()
+}
+
+fn census(dir: &Path, files: &mut Vec<PathBuf>, unreadable: &mut Vec<PathBuf>) {
+    for path in entries(dir, unreadable) {
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => census(&path, files, unreadable),
+            Ok(_) => files.push(path),
+            Err(_) => unreadable.push(path),
+        }
+    }
 }
 
 /// Whether `found.origin` claims the file, from its path and first bytes.
@@ -123,7 +188,7 @@ fn walk(dir: &Path, segs: &[&str], out: &mut Vec<PathBuf>, unreadable: &mut Vec<
     if *seg == "**" {
         walk(dir, rest, out, unreadable);
         for sub in entries(dir, unreadable) {
-            if sub.is_dir() {
+            if fs::symlink_metadata(&sub).is_ok_and(|m| m.is_dir()) {
                 walk(&sub, segs, out, unreadable);
             }
         }
@@ -136,7 +201,7 @@ fn walk(dir: &Path, segs: &[&str], out: &mut Vec<PathBuf>, unreadable: &mut Vec<
             if p.is_file() {
                 out.push(p);
             }
-        } else if p.is_dir() {
+        } else if fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()) {
             walk(&p, rest, out, unreadable);
         }
         return;
@@ -152,7 +217,7 @@ fn walk(dir: &Path, segs: &[&str], out: &mut Vec<PathBuf>, unreadable: &mut Vec<
             if p.is_file() {
                 out.push(p);
             }
-        } else if p.is_dir() {
+        } else if fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()) {
             walk(&p, rest, out, unreadable);
         }
     }
@@ -160,7 +225,15 @@ fn walk(dir: &Path, segs: &[&str], out: &mut Vec<PathBuf>, unreadable: &mut Vec<
 
 fn entries(dir: &Path, unreadable: &mut Vec<PathBuf>) -> Vec<PathBuf> {
     match fs::read_dir(dir) {
-        Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+        Ok(rd) => rd
+            .filter_map(|entry| match entry {
+                Ok(entry) => Some(entry.path()),
+                Err(_) => {
+                    unreadable.push(dir.to_path_buf());
+                    None
+                }
+            })
+            .collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(_) => {
             unreadable.push(dir.to_path_buf());

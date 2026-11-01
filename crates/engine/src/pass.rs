@@ -99,6 +99,9 @@ impl Engine {
             total.sessions_derived += next.sessions_derived;
             total.seconds += next.seconds;
             total.unreadable_roots = next.unreadable_roots;
+            if !next.capture_health.is_empty() {
+                total.capture_health = next.capture_health;
+            }
             total.pending_inputs = next.pending_inputs;
             total.errors.extend(next.errors);
             total.capture_pending = next.capture_pending;
@@ -124,7 +127,13 @@ impl Engine {
         } else {
             (Vec::new(), Vec::new(), Vec::new())
         };
+        let capture_health = if discover {
+            collect::coverage(&self.config, &found)
+        } else {
+            Vec::new()
+        };
         let mut pass = Pass {
+            capture_health,
             pending_inputs,
             unreadable_roots: unreadable,
             errors,
@@ -169,6 +178,15 @@ impl Engine {
             .filter(|f| f.origin.capture != Capture::RowDump)
             .collect();
         found.extend(self.capture_outputs());
+        found.extend(
+            self.inputs
+                .iter()
+                .filter(|(_, s)| s.origin.name == "codex-local-file")
+                .map(|(path, s)| collect::Found {
+                    path: path.clone(),
+                    origin: s.origin,
+                }),
+        );
         let mut seen = HashSet::new();
         let mut plans = self.plan_found(found, &mut pass, &mut seen)?;
         // Paths seen before and gone now: an observation, never a delete.
@@ -329,7 +347,17 @@ impl Engine {
             };
             pass.inputs_seen += 1;
             let now = FileFacts::of(&meta);
+            if f.origin.name == "codex-compressed" {
+                seen.insert(f.path.with_extension(""));
+            }
             if !self.track(&f) {
+                if let Some(root) = pass
+                    .capture_health
+                    .iter_mut()
+                    .find(|r| f.path.starts_with(&r.root))
+                {
+                    root.rejected.push(f.path.clone());
+                }
                 continue;
             }
             let pending = pass
@@ -337,6 +365,10 @@ impl Engine {
                 .iter()
                 .any(|u| u.input == self.inputs[&f.path].input_id);
             if let Some(plan) = self.plan(&f.path, now, pending)? {
+                plans.push(plan);
+            } else if f.origin.name == "codex-compressed"
+                && let Some(plan) = self.stored_plan(&f.path.with_extension(""))?
+            {
                 plans.push(plan);
             }
         }
@@ -383,7 +415,10 @@ impl Engine {
         found.extend(
             self.inputs
                 .iter()
-                .filter(|(_, st)| st.origin.arrival == polylogue_sources::Arrival::Live)
+                .filter(|(_, st)| {
+                    st.origin.arrival == polylogue_sources::Arrival::Live
+                        && st.origin.name != "codex-compressed"
+                })
                 .filter(|(_, st)| st.facts.is_some_and(|f| now_ns - f.mtime_ns < RECENT_NS))
                 .map(|(path, st)| collect::Found {
                     path: path.clone(),
@@ -754,6 +789,29 @@ impl Engine {
         plans.sort_by_key(|p| (p.priority == Priority::Bulk, std::cmp::Reverse(p.size)));
         let mut ordinary = Vec::new();
         for mut plan in plans {
+            if plan.origin.name == "codex-compressed" {
+                self.execute_pool(std::mem::take(&mut ordinary), pass)?;
+                let found = collect::Found {
+                    path: plan.path.clone(),
+                    origin: plan.origin,
+                };
+                let result = self.capture_compressed(
+                    &found,
+                    plan.facts.expect("compressed file facts"),
+                    pass,
+                );
+                match result {
+                    Ok(Some(decoded)) => self.execute_pool(vec![decoded], pass)?,
+                    Ok(None) => {}
+                    Err(error) => {
+                        pass.errors
+                            .push(format!("capture {}: {error}", plan.path.display()));
+                        plan.failed = true;
+                        self.finish_plan(plan);
+                    }
+                }
+                continue;
+            }
             if let Some(polylogue_sources::parse::Parse::Export(mut parser)) =
                 (plan.origin.open)(&plan.path)
             {
@@ -853,11 +911,46 @@ impl Engine {
                 continue;
             };
             pass.bytes_stored += d.stored;
+            let local_files = d.local_files.clone();
             if let Some(e) = &d.error {
                 pass.errors.push(e.clone());
             }
             let parsed = plan.origin.support == Support::Parsed;
             plan.apply(d, parsed);
+            let origin =
+                polylogue_sources::origin::by_name("codex-local-file").expect("declared origin");
+            for path in local_files {
+                if path.is_relative() {
+                    pass.errors.push(format!("local attachment {} has no recorded working directory", path.display()));
+                    continue;
+                }
+                if running.contains_key(&path) || waiting.iter().any(|p| p.path == path) {
+                    continue;
+                }
+                let found = collect::Found {
+                    path: path.clone(),
+                    origin,
+                };
+                let facts = match std::fs::metadata(&path) {
+                    Ok(meta) if meta.is_file() => FileFacts::of(&meta),
+                    Ok(_) => {
+                        pass.errors
+                            .push(format!("local attachment {} is not a file", path.display()));
+                        continue;
+                    }
+                    Err(error) => {
+                        pass.errors
+                            .push(format!("local attachment {}: {error}", path.display()));
+                        continue;
+                    }
+                };
+                if self.refused.contains(&path) || !self.track(&found) {
+                    continue;
+                }
+                if let Some(attached) = self.plan(&path, facts, false)? {
+                    waiting.push_front(attached);
+                }
+            }
             if plan.finished() {
                 self.finish_plan(plan);
             } else {
@@ -957,6 +1050,10 @@ impl Engine {
                 }
             };
             if let Ok(mut s) = status.lock() {
+                let mut finished = finished;
+                if finished.capture_health.is_empty() {
+                    finished.capture_health = s.last_pass.capture_health.clone();
+                }
                 s.last_pass = finished;
                 s.passes += 1;
                 s.busy = pending;

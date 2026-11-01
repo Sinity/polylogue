@@ -2571,6 +2571,7 @@ dependencies = [
  "thiserror 2.0.21",
  "uuid",
  "zip",
+ "zstd",
 ]
 
 [[package]]

@@ -75,6 +75,9 @@ read that needs one of those indexes scans instead.
 
 ## Storing bytes
 
+[Capture coverage](capture.md) lists the fixed locations, compressed rollout
+identity, side-file decisions, health report and manual export imports.
+
 [Import](../crates/engine/src/import.rs) and the loop store the bytes before
 anything parses them. A pass feeds its plans to the parse pool a few at a
 time; every two seconds it looks at Polylogue's own spools (hook events,
