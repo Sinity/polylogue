@@ -1,7 +1,11 @@
 use super::*;
 use crate::{
     Archive, ArchiveLock, Batch, Change, ImportMember, InputKey, Observation, ParseStep, ReadPool,
-    Writer, assets::AssetRow, export_items::ExportItems, staging::PreparedBatch,
+    Writer,
+    assets::AssetRow,
+    export_items::ExportItems,
+    primary::{AcquisitionReceipt, AcquisitionRoute, RawRange, SourceSelector},
+    staging::PreparedBatch,
 };
 use polylogue_model::{
     Message, MessageRow, Output, RecordCounts, RecordOutcome, Session, SessionKind,
@@ -98,17 +102,35 @@ impl Fixture {
             import_id: namespace.into(),
         }
     }
+    /// A received member as an explicit import stores it: with the
+    /// acquisition receipt that names its source and its whole byte range.
     fn member(&self, input: &str, namespace: &str, bytes: &[u8]) {
-        self.capture(
-            raw(
-                input,
-                Some(namespace),
-                "blobs/received",
-                Change::First,
-                bytes.len(),
-            ),
-            bytes,
+        let mut batch = raw(
+            input,
+            Some(namespace),
+            "blobs/received",
+            Change::First,
+            bytes.len(),
         );
+        batch.acquisition = Some(AcquisitionReceipt {
+            version: AcquisitionReceipt::VERSION,
+            route: AcquisitionRoute::ExplicitImport,
+            source: SourceSelector {
+                origin: batch.input.format.clone(),
+                machine: "synthetic".into(),
+                path_bytes: format!("/synthetic/{input}").into_bytes(),
+            },
+            range: RawRange {
+                start: 0,
+                end: bytes.len() as u64,
+            },
+            hash: BlobHash::of(bytes),
+            observed_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
+            generation: None,
+            raw_total: None,
+            raw_predecessor: None,
+        });
+        self.capture(batch, bytes);
     }
     fn refresh(&self) -> Vec<ObservedMember> {
         let (members, through) = self

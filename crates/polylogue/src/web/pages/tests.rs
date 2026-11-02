@@ -25,15 +25,15 @@ fn identical_cell_text_links_only_by_its_column_reference() {
         {"name":"session","kind":"text","reference":"session"},
         {"name":"document","kind":"text","reference":"document"},
         {"name":"message","kind":"text","reference":"message"},
-        {"name":"note","kind":"text","reference":"note"},
+        {"name":"assertion","kind":"text","reference":"assertion"},
         {"name":"id","kind":"text"}],
-        "rows":[{"session":id,"document":id,"message":id,"note":id,"id":id}],"count":1});
+        "rows":[{"session":id,"document":id,"message":id,"assertion":id,"id":id}],"count":1});
     let page = results_table(&data);
     assert_eq!(page.matches("href=\"/s/same%3Aopaque\"").count(), 1);
     assert_eq!(page.matches("href=\"/d/same%3Aopaque\"").count(), 1);
     assert_eq!(page.matches("<td>same:opaque</td>").count(), 1);
     assert_eq!(page.matches("href=\"/m/same%3Aopaque\"").count(), 1);
-    assert_eq!(page.matches("href=\"/n/same%3Aopaque\"").count(), 1);
+    assert_eq!(page.matches("href=\"/a/same%3Aopaque\"").count(), 1);
     assert!(!page.contains("dedicated readers are unavailable"));
     let old = json!({"unit":"sessions","shape":"rows","columns":[{"name":"id","kind":"text"}],"rows":[{"id":id}],"count":1});
     assert!(

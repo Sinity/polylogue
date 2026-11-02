@@ -288,7 +288,7 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
         UserWrite::KeepResult {
             name: Some("before".into()),
             query: "assertions".into(),
-            rows_json: "[]".into(),
+            rows_json: "{\"unit\":\"assertions\",\"columns\":[],\"rows\":[]}".into(),
             read_at: "{\"now\":1}".into(),
         },
     );

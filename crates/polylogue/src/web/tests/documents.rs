@@ -117,7 +117,7 @@ fn message_note_group_and_string_columns_do_not_become_session_links() {
             assertions: vec![NewAssertion {
                 kind: AssertionKind::Tag,
                 key: Some("claude-code:s1".into()),
-                value: Some(json!("claude-code:s1")),
+                value: Some(json!({"value": "claude-code:s1"})),
                 links: vec![NewAssertionLink {
                     role: LinkRole::About,
                     reference: Reference::Session(

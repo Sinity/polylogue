@@ -486,7 +486,7 @@ fn complete_authored_records_roundtrip_and_pending_is_never_canonical() {
             UserWrite::KeepResult {
                 name: Some("kept".into()),
                 query: "sessions".into(),
-                rows_json: "[{\"id\":1}]".into(),
+                rows_json: "{\"unit\":\"sessions\",\"columns\":[{\"name\":\"id\",\"kind\":\"number\"}],\"rows\":[{\"id\":1}]}".into(),
                 read_at: "{\"now\":3}".into(),
             },
         ),
@@ -555,6 +555,34 @@ fn complete_authored_records_roundtrip_and_pending_is_never_canonical() {
         Err(StoreError::Invalid(_))
     ));
 }
+#[test]
+fn a_kept_body_later_preparations_cannot_decode_is_refused_through_primary_apply() {
+    let conn = cache();
+    let kept = request(
+        "kept",
+        1,
+        UserWrite::KeepResult {
+            name: None,
+            query: "sessions".into(),
+            rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
+            read_at: "{\"now\":1}".into(),
+        },
+    );
+    let mut malformed = prepare_with(&conn, &kept, &[], &[]).unwrap();
+    if let UserWrite::KeepResult { rows_json, .. } = &mut malformed.request.write {
+        *rows_json = "[]".into();
+    }
+    malformed.effect.kept_results[0].rows_json = "[]".into();
+    let mut fresh = cache();
+    let tx = fresh.transaction().unwrap();
+    assert!(matches!(
+        apply(&tx, &malformed, 1),
+        Err(StoreError::Invalid(message)) if message.starts_with("kept result \"kept\" field unit: ")
+    ));
+    drop(tx);
+    assert_eq!(count(&fresh, "kept_result"), 0);
+}
+
 #[test]
 fn historical_restore_preserves_history_but_cannot_authorize_execution() {
     let mut source = cache();

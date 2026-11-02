@@ -184,10 +184,16 @@ fn source_lifecycle_preserves_independent_frozen_authored_effects() {
                 .unwrap(),
             present
         );
-        assert!(index.query_row(
-            "SELECT json_extract(value,'$.value') FROM source_assertion WHERE kind='setting' AND key='browser.actions'",
-            [],|row|row.get::<_,bool>(0),
-        ).unwrap());
+        let setting: String = index.query_row(
+            "SELECT json(value) FROM source_assertion WHERE kind='setting' AND key='browser.actions'",
+            [],|row|row.get(0),
+        ).unwrap();
+        let setting: polylogue_model::assertion::values::Setting =
+            serde_json::from_str(&setting).unwrap();
+        assert_eq!(
+            setting.value,
+            polylogue_model::settings::Value::Boolean(true)
+        );
     }
     assert!(
         apply(

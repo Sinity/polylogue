@@ -17,7 +17,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
         UserWrite::KeepResult {
             name: Some("example".into()),
             query: "sessions".into(),
-            rows_json: "[]".into(),
+            rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
             read_at: "{\"now\":1}".into(),
         },
     );
@@ -65,7 +65,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
         reader
             .query("SELECT rows_json FROM a.kept_result WHERE id='kept'", &[])
             .unwrap()[0]["rows_json"],
-        "[]"
+        "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}"
     );
     assert_eq!(
         reader
@@ -82,6 +82,62 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
             .and_then(serde_json::Value::as_str),
         Some("sessions")
     );
+}
+
+#[test]
+fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_request() {
+    let w = crate::fixture::writer::WriterArchive::new();
+    for (id, rows_json, field) in [
+        ("rows-array", "[]", "unit"),
+        ("not-json", "not JSON", "rows_json"),
+        (
+            "bad-columns",
+            "{\"unit\":\"sessions\",\"columns\":{}}",
+            "columns",
+        ),
+    ] {
+        let request = crate::fixture::authored::operator_request(
+            id.into(),
+            UserWrite::KeepResult {
+                name: None,
+                query: "sessions".into(),
+                rows_json: rows_json.into(),
+                read_at: "{\"now\":1}".into(),
+            },
+        );
+        let prefix = format!("kept result {id:?} field {field}: ");
+        assert!(
+            matches!(
+                w.writer.user(request),
+                Err(StoreError::Invalid(message)) if message.starts_with(&prefix)
+            ),
+            "{id}"
+        );
+        let reads = crate::ReadPool::open(&w.archive).unwrap();
+        let reader = reads.reader().unwrap();
+        assert!(reader.user_request(id).unwrap().is_none());
+        assert_eq!(
+            reader
+                .query("SELECT count(*) AS n FROM a.kept_result", &[])
+                .unwrap()[0]["n"],
+            0
+        );
+    }
+    let saved = crate::fixture::authored::operator_request(
+        "saved-after-refusal".into(),
+        UserWrite::SaveQuery {
+            name: "after".into(),
+            text: "sessions".into(),
+            denominator: None,
+        },
+    );
+    w.writer
+        .user_preparing(
+            saved,
+            PreparationContext::new(vec!["codex".into()], Vec::new()),
+            None,
+        )
+        .unwrap();
 }
 
 #[test]
