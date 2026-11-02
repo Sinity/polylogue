@@ -206,7 +206,7 @@ fn one_operation_makes_one_request_on_every_surface() {
             ("target".into(), "claude-code:s1".into()),
             ("view".into(), "dialogue".into()),
             ("budget".into(), "100".into()),
-            ("inherited".into(), "true".into()),
+            ("show".into(), "inherited".into()),
         ],
     )
     .unwrap();

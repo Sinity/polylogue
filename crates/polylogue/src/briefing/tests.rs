@@ -344,7 +344,7 @@ fn recall_pages_continue_by_cursor() {
         f.message(
             s,
             MessageFacts {
-                id: &format!("claude-code:m{i:02}"),
+                id: &format!("m{i:02}"),
                 role: "user",
                 written_by: "human",
                 text: Some("the wombat burrow"),

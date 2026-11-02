@@ -614,7 +614,7 @@ fn cost_uses_public_accounting_and_session_scope() {
         // Accounting is checked against the exact scoped cost report above;
         // the typed reading declares lineage rather than a retired cost panel.
         use polylogue_model::read::{Card, ItemKind, ValueState};
-        let items = read_items(&r, "session:claude-code:s1", &[("inherited", "true")]).await;
+        let items = read_items(&r, "session:claude-code:s1", &[("show", "inherited")]).await;
         assert!(items.iter().any(|item| matches!(&item.kind,
             ItemKind::Card { card } if matches!(card.as_ref(), Card::Session { session, lineage_complete, .. }
                 if session.id.to_string()=="claude-code:s1" && lineage_complete==&ValueState::known(true)))));
@@ -676,7 +676,7 @@ fn session_parent_links_are_scoped_and_missing_parent_stays_incomplete() {
         let (status, _, html) = send_html(&r, "/s/claude-code:orphan?view=links").await;
         assert_eq!(status, StatusCode::OK, "{html}");
         assert!(html.contains("href=\"/s/claude-code%3Amissing\""), "{html}");
-        let items=read_items(&r,"session:claude-code:orphan",&[("inherited","true")]).await;
+        let items=read_items(&r,"session:claude-code:orphan",&[("show","inherited")]).await;
         let issues:Vec<_>=items.iter().filter_map(|item|match &item.kind {ItemKind::LinkIssue {issue}=>Some(issue.clone()),_=>None}).collect();
         assert_eq!(issues,[ParentIssue::MissingParent {child:polylogue_model::SessionId::parse("claude-code:orphan").unwrap(),parent:polylogue_model::SessionId::parse("claude-code:missing").unwrap()}]);
         assert_eq!(serde_json::to_value(&issues[0]).unwrap()["kind"],"missing_parent");

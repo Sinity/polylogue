@@ -329,7 +329,7 @@ fn inheritance_is_an_explicit_shared_read_option() {
         let (status, _, inherited) = send_html(&r, "/s/claude-code:child?inherited=true").await;
         assert_eq!(status, StatusCode::OK, "{inherited}");
         assert!(inherited.contains("&lt;script&gt;alert"));
-        let page = read_page(&r, "session:claude-code:child", &[("inherited", "true")]).await;
+        let page = read_page(&r, "session:claude-code:child", &[("show", "inherited")]).await;
         assert!(page.document.items.iter().any(|item| item.source.inherited));
     });
 }
