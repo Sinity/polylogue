@@ -365,21 +365,20 @@ fn every_stored_assertion_has_author_channel_machine_and_time() {
     let mut world = World::new();
     world.note("noted");
     let db = world.archive_db();
-    let nulls: i64 = db
-        .query_row(
-            "SELECT count(*) FROM assertion WHERE author IS NULL OR via IS NULL OR machine IS NULL OR created_at IS NULL",
+    for (column, row) in [
+        ("author", "NULL,'cli','host',1"),
+        ("via", "'operator',NULL,'host',1"),
+        ("machine", "'operator','cli',NULL,1"),
+        ("created_at", "'operator','cli','host',NULL"),
+    ] {
+        let refused = db.execute(
+            &format!(
+                "INSERT INTO assertion(id,root,kind,author,via,machine,created_at,commit_seq) VALUES('x','x','note',{row},1)"
+            ),
             [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(nulls, 0);
-    assert!(
-        db.execute(
-            "INSERT INTO assertion(id,root,kind,author,via,machine,created_at,commit_seq) VALUES('x','x','note',NULL,'cli','host',1,1)",
-            [],
-        )
-        .is_err()
-    );
+        );
+        assert!(refused.is_err(), "a null {column} was stored");
+    }
 }
 
 /// law: currency.read-cost

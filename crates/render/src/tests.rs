@@ -2100,7 +2100,6 @@ fn authored_selection_preserves_the_complete_frozen_request_and_explicit_coverag
         reference: "request:synthetic".into(),
         commit: 9,
         prepared: PreparedRequest {
-            original: None,
             request,
             outcome: UserOutcome {
                 id: "synthetic.0".into(),

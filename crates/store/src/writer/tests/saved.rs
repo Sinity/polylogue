@@ -58,7 +58,7 @@ fn saved_acceptance_retains_objects_and_frozen_dependencies_before_publishing_as
     let mut native = bindings();
     let alpha = plan("sessions", &native);
     native
-        .add_saved("alpha", &alpha, "batch.0", "batch.0")
+        .add_saved("alpha", &alpha, "batch.1", "batch.1")
         .unwrap();
     let beta = plan("query:alpha", &native);
     let batch = request(

@@ -178,7 +178,7 @@ fn archive_counter_peers_arrive_in_local_order_without_cross_component_clock_cla
     let mut db = rusqlite::Connection::open(fixture.archive.archive_db()).unwrap();
     let tx = db.transaction().unwrap();
     for id in ["a", "b"] {
-        tx.execute("INSERT INTO assertion(id,root,kind,value,author,machine,created_at,commit_seq) VALUES (?1,?1,'note',json_quote('synthetic'),'operator','test','1970-01-01T00:00:00Z',1)",[id]).unwrap();
+        tx.execute("INSERT INTO assertion(id,root,kind,value,author,via,machine,created_at,commit_seq) VALUES (?1,?1,'note',json_quote('synthetic'),'operator','cli','test',0,1)",[id]).unwrap();
     }
     tx.execute(
         "INSERT INTO meta VALUES ('write_counter','1') ON CONFLICT(key) DO UPDATE SET value='1'",

@@ -117,7 +117,7 @@ fn frozen_authored(w: &ClaudeHome) -> Vec<polylogue_model::authored::PreparedReq
     w.reads()
         .reader()
         .unwrap()
-        .visit_authored(&mut |prepared, _| {
+        .visit_authored(&mut |prepared| {
             records.push(prepared.clone());
             Ok(())
         })

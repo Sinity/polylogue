@@ -60,7 +60,7 @@ fn refused_index_keeps_the_archive(change: &str) {
     drop(index);
     let archive_conn = open_archive_writer(&archive).unwrap();
     let value = "archive note value independent of row dictionary";
-    archive_conn.execute("INSERT INTO assertion(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('note','note','note',json_quote(?1),'operator','synthetic','1970-01-01T00:00:00.001Z',1)", [&value]).unwrap();
+    archive_conn.execute("INSERT INTO assertion(id,root,kind,value,author,via,machine,created_at,commit_seq) VALUES ('note','note','note',json_quote(?1),'operator','cli','synthetic',1,1)", [&value]).unwrap();
     archive_conn
         .execute(
             "INSERT INTO input(id,format) VALUES ('kept-input','synthetic')",

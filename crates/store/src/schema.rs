@@ -170,11 +170,12 @@ pub fn building(conn: &Connection) -> Result<bool> {
 /// Creates `archive.db` in an empty file and brings an older one forward.
 pub fn ensure_archive(conn: &Connection) -> Result<()> {
     check_format(conn, "archive")?;
-    ensure(conn, "archive", &[ARCHIVE], ARCHIVE_MIGRATIONS)?;
-    if format_id(conn)? != FORMAT_ID {
+    // An empty file takes the identity before its tables, so no crash can
+    // leave a versioned archive without it.
+    if version(conn)? == 0 && format_id(conn)? != FORMAT_ID {
         conn.pragma_update(None, "application_id", FORMAT_ID)?;
     }
-    Ok(())
+    ensure(conn, "archive", &[ARCHIVE], ARCHIVE_MIGRATIONS)
 }
 
 /// Creates `embeddings.db` in an empty file; refuses one with other tables.

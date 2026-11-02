@@ -25,7 +25,7 @@ fn prepared(write: UserWrite) -> PreparedRequest {
     let mut record = None;
     pool.reader()
         .unwrap()
-        .visit_authored(&mut |prepared, _| {
+        .visit_authored(&mut |prepared| {
             record = Some(prepared.clone());
             Ok(())
         })

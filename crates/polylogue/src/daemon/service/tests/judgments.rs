@@ -251,7 +251,7 @@ fn frozen_history_preserves_the_note_and_judgment_authors() {
     let reader = d.daemon.reads.reader().unwrap();
     let mut requests = Vec::new();
     reader
-        .visit_authored(&mut |prepared, _imports| {
+        .visit_authored(&mut |prepared| {
             if matches!(prepared.request.id.as_str(), "r1" | "r2") {
                 requests.push(prepared.request.clone());
             }
