@@ -69,7 +69,7 @@ fn session(messages: usize) -> Vec<Message> {
     (0..messages)
         .map(|n| {
             let n = n as u32;
-            if n % 2 == 0 {
+            if n.is_multiple_of(2) {
                 message(
                     n,
                     Role::User,

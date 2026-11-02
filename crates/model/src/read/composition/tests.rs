@@ -31,7 +31,7 @@ fn message(session: &str, n: u32, role: Role) -> Message {
 fn entries(session: &str, messages: u32) -> Vec<IndexEntry> {
     (0..messages)
         .flat_map(|n| {
-            let role = if n % 2 == 0 {
+            let role = if n.is_multiple_of(2) {
                 Role::User
             } else {
                 Role::Assistant
