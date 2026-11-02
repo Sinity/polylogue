@@ -47,11 +47,15 @@ pub(crate) fn recompute(conn: &Connection, roots: BTreeSet<String>) -> Result<()
             states.push(currency.root_state(root).map_err(currency_error)?);
         }
     }
-    for state in states {
+    // Every root's old rows go first: a revision that moved between two of
+    // the roots must not meet its old row.
+    for state in &states {
         conn.execute(
             &source.sql("DELETE FROM @source.revision_state WHERE root=?1"),
             [&state.root],
         )?;
+    }
+    for state in states {
         for revision in &state.revisions {
             conn.execute(
                 &source.sql("INSERT INTO @source.revision_state(id,root,current,withdrawn) VALUES(?1,?2,?3,?4)"),

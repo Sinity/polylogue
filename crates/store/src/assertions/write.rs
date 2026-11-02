@@ -297,15 +297,15 @@ pub(crate) fn write_preparing(
 }
 
 /// Inserts one write of the request being checked, under the ID it will
-/// take, and recomputes its family's currency. Only `accept`'s rolled-back
-/// savepoint calls this.
+/// take, recomputes its family's currency and returns the family root. Only
+/// `accept` calls this, and it removes every preview again.
 fn preview(
     conn: &Connection,
     request: &UserRequest,
     id: &str,
     statement: &NewAssertion,
     counter: i64,
-) -> Result<()> {
+) -> Result<String> {
     let mut root = id.to_owned();
     for link in &statement.links {
         if let (LinkRole::Revises, Reference::Assertion(base)) = (link.role, &link.reference) {
@@ -325,7 +325,29 @@ fn preview(
     let fact =
         AssertionFact::from_request(id.into(), root.clone(), statement.clone(), links, request);
     insert(conn, Source::of(conn)?, &fact, &[], counter)?;
-    currency::recompute(conn, [root].into())
+    currency::recompute(conn, [root.clone()].into())?;
+    Ok(root)
+}
+
+/// Removes previewed writes and restores their families' currency.
+fn remove_previews(conn: &Connection, previews: Vec<(String, String)>) -> Result<()> {
+    if previews.is_empty() {
+        return Ok(());
+    }
+    let source = Source::of(conn)?;
+    let mut roots = std::collections::BTreeSet::new();
+    for (id, root) in previews {
+        conn.execute(
+            &source.sql("DELETE FROM @source.link WHERE record=?1"),
+            [&id],
+        )?;
+        conn.execute(
+            &source.sql("DELETE FROM @source.assertion WHERE id=?1"),
+            [&id],
+        )?;
+        roots.insert(root);
+    }
+    currency::recompute(conn, roots)
 }
 
 fn accept(
@@ -349,9 +371,11 @@ fn accept(
     // request's earlier writes, so a later write may name an earlier one (a
     // saved query using one defined before it, an annotation of a rubric
     // written before it). The earlier writes are previewed under their final
-    // IDs inside a savepoint that is always rolled back; the plan below then
-    // places them all against the archive as it was.
-    conn.execute_batch("SAVEPOINT request_preview")?;
+    // IDs and removed again before the plan below places them all against the
+    // archive as it was. The removal is explicit rather than a savepoint
+    // rollback: the preparation scratch runs with `journal_mode=OFF`, where
+    // a rollback does not undo writes.
+    let mut previews = Vec::new();
     let previewed = (|| -> Result<Vec<Prepared>> {
         let mut prepared = Vec::with_capacity(statements.len());
         for (index, original) in statements.iter().enumerate() {
@@ -395,18 +419,17 @@ fn accept(
             let unique = statement
                 .unique(&value, &request.authorship.author, rubric.as_ref())
                 .map_err(|error| invalid(&error.to_string()))?;
-            preview(
-                conn,
-                request,
-                &authored::write_id(&request.id, index + 1, statements.len()),
-                &statement,
-                counter,
-            )?;
+            // Only a write that a later one could name is previewed.
+            if index + 1 < statements.len() {
+                let id = authored::write_id(&request.id, index + 1, statements.len());
+                let root = preview(conn, request, &id, &statement, counter)?;
+                previews.push((id, root));
+            }
             prepared.push(Prepared { statement, unique });
         }
         Ok(prepared)
     })();
-    conn.execute_batch("ROLLBACK TO request_preview; RELEASE request_preview")?;
+    remove_previews(conn, previews)?;
     let prepared = previewed?;
     let arrival = Arrival {
         author: request.authorship.author.to_string(),
