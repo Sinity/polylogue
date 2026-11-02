@@ -58,6 +58,14 @@ pub(crate) fn admit_export(
 }
 
 fn admit(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Result<bool> {
+    // A failure carries no records and moves no cursor, so it switches
+    // neither an export reading nor ordinary byte control.
+    if matches!(
+        step.progress,
+        polylogue_model::batch::StepProgress::Failed { .. }
+    ) {
+        return Ok(true);
+    }
     let Some(delivery) = step.delivery.as_ref() else {
         if previous.is_some_and(|old| old.cursor.is_some() || old.refused) {
             return invalid("an export reading cannot switch to ordinary byte control");
