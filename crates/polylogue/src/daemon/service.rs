@@ -1672,13 +1672,12 @@ impl ModeState {
     /// Writes are paused until the Sinex configuration is fixed or Sinex
     /// can be reached.
     fn blocked(&self) -> bool {
-        #[cfg(feature = "sinex")]
-        {
-            matches!(self, Self::Blocked { .. })
-        }
-        #[cfg(not(feature = "sinex"))]
-        {
-            false
+        match self {
+            Self::Standalone => false,
+            #[cfg(feature = "sinex")]
+            Self::Primary { .. } => false,
+            #[cfg(feature = "sinex")]
+            Self::Blocked { .. } => true,
         }
     }
 

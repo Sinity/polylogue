@@ -20,6 +20,16 @@ provides an unpacked Chrome extension; the overlay adds both packages. Package
 builds set `POLYLOGUE_REVISION` at compile time, and `--version` shows it.
 `--version` and `--help` load no deployment file.
 
+`cargo xtask check` builds the test binaries once, for the whole workspace
+with the `sinex` feature and the store's and engine's `faults` features, and
+nextest runs every test from them; `cargo xtask test` and `scenarios` build
+the same set and select tests with nextest filters, so a focused run after a
+check recompiles only what changed. Clippy lints every target with the same
+features, then the application without `sinex` as a compile check of the
+standalone build. Workspace crates build unoptimized with line tables in
+development and test builds; dependencies are optimized at level 2, which
+keeps SQLite, JSON and compression fast in tests.
+
 The package, Clippy and nextest outputs share one Crane dependency build.
 Clippy checks the primary and standalone configurations separately. The
 nextest check runs the standalone workspace with the same engine and store

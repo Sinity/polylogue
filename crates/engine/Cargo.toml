@@ -40,3 +40,8 @@ rusqlite.workspace = true
 
 [lints]
 workspace = true
+
+# Its unit tests run with the other tests; the other examples are only compiled.
+[[example]]
+name = "first_build"
+test = true

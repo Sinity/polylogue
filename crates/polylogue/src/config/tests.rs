@@ -403,3 +403,20 @@ fn captured_terminal_hints_disable_both_sinks_without_environment_rereads() {
     assert!(!output.stdout_color());
     assert!(!output.stderr_color());
 }
+
+#[test]
+fn a_build_without_primary_mode_refuses_any_other_sinex_mode() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("sinex.toml");
+    refuse_primary_mode(&path).unwrap();
+    std::fs::write(&path, "mode='standalone'\n").unwrap();
+    refuse_primary_mode(&path).unwrap();
+    std::fs::write(&path, "mode='primary'\nnats='nats://127.0.0.1:1'\n").unwrap();
+    let refused = refuse_primary_mode(&path).unwrap_err().to_string();
+    assert!(
+        refused.contains("requires a build with primary-mode support"),
+        "{refused}"
+    );
+    std::fs::write(&path, "mode = [").unwrap();
+    assert!(matches!(refuse_primary_mode(&path), Err(Error::Invalid(_))));
+}

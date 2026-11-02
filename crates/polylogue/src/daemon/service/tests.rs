@@ -487,3 +487,17 @@ fn read_derived_write_keeps_its_selected_scope_after_reader_release() {
             .is_some()
     );
 }
+
+#[test]
+fn only_a_blocked_daemon_pauses_writes() {
+    assert!(!ModeState::Standalone.blocked());
+    #[cfg(feature = "sinex")]
+    assert!(
+        ModeState::Blocked {
+            configured: Some("primary"),
+            path: "sinex.toml".into(),
+            error: "unreachable".into(),
+        }
+        .blocked()
+    );
+}

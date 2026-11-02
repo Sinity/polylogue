@@ -2,15 +2,16 @@
 //! home directory.
 //!
 //! - `cli`: the binary as a daemon, driven through the CLI;
-//! - `browser_host`: the binary as Chrome's native messaging host.
+//! - `browser_host`: the binary as Chrome's native messaging host;
+//! - `completion`: the shell's completion callbacks over an offline catalog.
 
 mod browser_host;
 mod cli;
+mod completion;
 mod onboarding;
 
 const BIN: &str = env!("CARGO_BIN_EXE_polylogue");
 
-#[path = "../support/process.rs"]
 mod process;
 use process::Fixture;
 

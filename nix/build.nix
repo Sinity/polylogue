@@ -89,9 +89,10 @@ let
       application
       // {
         cargoExtraArgs = "--locked --workspace --exclude polylogue-sinex --features polylogue-engine/faults,polylogue-store/faults";
-        # The real-process application tests require an OS identity. The VM below
-        # exercises package transports; the native full check retains every e2e.
-        cargoNextestExtraArgs = "-E 'not (package(polylogue) and binary(e2e))'";
+        # The real-process application tests require an OS identity; the shell
+        # completion callbacks do not. The VM below exercises package
+        # transports; the native full check retains every e2e.
+        cargoNextestExtraArgs = "-E 'not (package(polylogue) and binary(e2e) and not test(/^completion::/))'";
         nativeBuildInputs = common.nativeBuildInputs ++ [
           pkgs.git
           pkgs.python3
