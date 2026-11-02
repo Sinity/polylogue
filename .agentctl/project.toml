@@ -116,7 +116,7 @@ cache = "none"
 cap = "cargo"
 
 [operations.measure]
-description = "Run a performance driver in the measure queue"
+description = "Build and run a performance driver in the measure queue; for a run that compiles nothing, use measure_run"
 exec = ["nix", "develop", "--command"]
 arguments = "required"
 pool = "measure"
@@ -125,6 +125,16 @@ timeout_seconds = 7200
 scratch = "nvme"
 cache = "none"
 cap = "cargo"
+
+[operations.measure_run]
+description = "Run a measurement that compiles nothing (a database restore, a benchmark of prebuilt binaries) in the measure queue; it holds no cargo cap place"
+exec = ["nix", "develop", "--command"]
+arguments = "required"
+pool = "measure"
+result = "exit"
+timeout_seconds = 7200
+scratch = "nvme"
+cache = "none"
 
 [operations.fmt]
 description = "Format the workspace"
