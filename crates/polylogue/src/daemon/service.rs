@@ -120,21 +120,18 @@ impl Daemon {
                 &request.request_id,
             )?;
         }
-        let tool = command.tool.ok_or_else(|| {
-            Failure::new(
-                FailureKind::BadRequest,
-                format!("`{}` is not offered over MCP", request.operation),
-            )
-        })?;
-        let call = crate::protocol::operations::ToolCall {
-            operation: Some(request.operation.clone()),
-            arguments: request.arguments.clone(),
-            request_id: request.request_id.clone(),
-            deadline: request.deadline,
-        };
+        let mcp = command.tool.map_or(serde_json::Value::Null, |tool| {
+            let call = crate::protocol::operations::ToolCall {
+                operation: Some(request.operation.clone()),
+                arguments: request.arguments.clone(),
+                request_id: request.request_id.clone(),
+                deadline: request.deadline,
+            };
+            serde_json::json!({"name": tool.name(), "arguments": call})
+        });
         Ok(polylogue_model::read::ReadyCall {
             cli: table.cli_command(request)?,
-            mcp: serde_json::json!({"name": tool.name(), "arguments": call}),
+            mcp,
             http: polylogue_model::read::HttpCall {
                 method: if description.spec.write {
                     "POST"

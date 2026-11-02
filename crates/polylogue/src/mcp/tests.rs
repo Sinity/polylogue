@@ -590,6 +590,18 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
     );
     assert_eq!(ready.mcp["name"], "polylogue_read");
     assert_eq!(ready.mcp["arguments"]["operation"], "query");
+    // An operation MCP does not offer has no MCP form; its other forms stay.
+    let sql = daemon
+        .daemon
+        .ready_call(&command_surface::Request {
+            operation: "sql".into(),
+            arguments: json!({"statement":"SELECT 1"}),
+            request_id: "mcp-ready-sql".into(),
+            deadline: command_surface::Deadline::None,
+        })
+        .unwrap();
+    assert_eq!(sql.mcp, Value::Null);
+    assert_eq!(sql.http.path, "/api/v1/sql");
     let legacy = call_with_limit(
         &daemon.daemon.archive,
         "polylogue_read",
