@@ -12,6 +12,7 @@ impl Sinex {
     ) -> Result<()> {
         key.validate()?;
         let through = self.queue()?.raw_cut()?;
+        self.queue()?.require_known_exports(key, through)?;
         eprintln!("DEBUGEXPORT visit through={through}");
         let mut after = None;
         loop {
