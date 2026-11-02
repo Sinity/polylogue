@@ -297,7 +297,7 @@ fn operator_notes(
         assertions::about(&targets)
     );
     if let Some(after) = after_seq {
-        conditions.push_str(&format!(" write_counter:>{after}"));
+        conditions.push_str(&format!(" write_counter > {after}"));
     }
     let notes = assertions::list(reader, &conditions, context)?;
     Ok(notes
