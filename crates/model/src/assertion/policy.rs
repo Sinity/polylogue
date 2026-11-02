@@ -53,6 +53,17 @@ fn withdrawal_target(reference: &Reference) -> bool {
     )
 }
 
+/// A saved-query name that `query:NAME` can say: ASCII letters, digits, `_`,
+/// `-` and `.`. A new save is refused under any other name; names are also
+/// never entirely hexadecimal, which [`validate_links`] checks for every
+/// `saved_query` key.
+pub fn sayable_query_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
 /// Checks the kind declaration and relation address shapes without changing
 /// authored content. Waiting targets are valid; existence is not inferred.
 pub fn validate_links<'a>(

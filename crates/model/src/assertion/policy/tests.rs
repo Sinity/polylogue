@@ -28,6 +28,25 @@ fn saved_names_do_not_occupy_the_query_hash_namespace() {
 }
 
 #[test]
+fn a_new_saved_query_name_is_one_query_name_can_say() {
+    for name in ["research", "cost-30d", "v1.2_final", "A-b.c_9"] {
+        assert!(sayable_query_name(name), "{name}");
+    }
+    for name in [
+        "",
+        "two words",
+        "a(b)",
+        "a,b",
+        "a:b",
+        "caf\u{e9}",
+        "a|b",
+        "\"quoted\"",
+    ] {
+        assert!(!sayable_query_name(name), "{name:?}");
+    }
+}
+
+#[test]
 fn authored_target_shapes_preserve_exact_judgments_and_page_membership() {
     assert!(
         check(

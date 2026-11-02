@@ -508,7 +508,7 @@ f(Assertions,"id").sql("{r}.id"),
 f(Assertions,"reference").sql_ref("pl_assertion_ref({r}.root,{r}.id)", ColumnReference::Assertion),
 f(Assertions,"kind").sql("{r}.kind"),
 f(Assertions,"key").sql("{r}.key"),
-f(Assertions,"value").custom(custom::assertion_value).sql("{r}.value"),
+f(Assertions,"value").sql("{r}.value"),
 f(Assertions,"author").sql("{r}.author"),
 f(Assertions,"agent").sql("({r}.author = 'agent' OR {r}.author LIKE 'agent:%')"),
 f(Assertions,"judged").sql_fn(notes_judged),
@@ -536,7 +536,7 @@ f(Deliveries,"bytes").sql("{r}.bytes"),
 f(Changes,"kind").sql("{r}.kind"),
 f(Changes,"ref").sql("{r}.ref"),
 f(Changes,"seq").sql("{r}.seq"),
-f(Changes,"note_kind").sql("{r}.note_kind"),
+f(Changes,"assertion_kind").sql("{r}.assertion_kind"),
 f(Changes,"after").custom(custom::changes_after),
 f(Changes,"sessions").custom(custom::selection),
 f(Changes,"messages").custom(custom::selection),
@@ -800,11 +800,11 @@ fn notes_current(a: &Aliases) -> String {
     format!("({})", current_assertion(&a.row))
 }
 
-/// The key of the operator's latest live `judgment` note on this exact
-/// revision: `accepted` or `rejected`.
+/// The operator's judgment of this exact revision: the key of the latest
+/// non-withdrawn operator `judgment` about it, latest by `(created_at, id)`.
 fn notes_judged(a: &Aliases) -> String {
     format!(
-        "(SELECT CASE WHEN count(*)=1 THEN min(j.key) END FROM source_assertion j JOIN temp.assertion_about jt ON jt.assertion=j.id WHERE jt.ref='assertion:' || {r}.root || '@' || {r}.id AND j.kind='judgment' AND j.author='operator' AND {live})",
+        "(SELECT j.key FROM source_assertion j JOIN temp.assertion_about jt ON jt.assertion=j.id WHERE jt.ref='assertion:' || {r}.root || '@' || {r}.id AND j.kind='judgment' AND j.author='operator' AND {live} ORDER BY pl_recorded_time(j.created_at) DESC, j.id DESC LIMIT 1)",
         r = a.row,
         live = live_assertion("j"),
     )

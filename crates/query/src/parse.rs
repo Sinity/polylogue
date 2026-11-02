@@ -1,5 +1,9 @@
 //! Product catalog binding for the shared parser.
-use crate::{QueryError, ast::Query, catalog};
+use crate::{
+    QueryError,
+    ast::{ConditionKind, Query, Source, Value},
+    catalog,
+};
 
 pub fn parse(text: &str) -> Result<Query, QueryError> {
     with_catalog(text, &catalog::catalog(&[], &[]))
@@ -28,7 +32,7 @@ pub fn with_catalog(
             _ => {}
         }
     }
-    query_language::parse::parse(text, catalog).map_err(|mut error| {
+    let mut query = query_language::parse::parse(text, catalog).map_err(|mut error| {
         if error.kind == query_language::ErrorKind::UnknownField
             && text
                 .get(error.position..error.position + 5)
@@ -45,7 +49,45 @@ pub fn with_catalog(
             error.hint = Some("use similar: for semantic ranking".into());
         }
         QueryError::language(error, text)
-    })
+    })?;
+    bind_lone_reference(&mut query);
+    Ok(query)
+}
+
+/// A query that is only an exact assertion revision (`assertion:R@X`) reads
+/// the assertions unit: the revision is one row whatever the default unit.
+/// Every other lone reference stays a condition on the default unit.
+fn bind_lone_reference(query: &mut Query) {
+    if !query.stages.is_empty() || !query.attach.is_empty() {
+        return;
+    }
+    let Source::Unit {
+        unit,
+        implicit,
+        condition: Some(condition),
+    } = &mut query.source
+    else {
+        return;
+    };
+    if !*implicit {
+        return;
+    }
+    let text = match &condition.kind {
+        ConditionKind::Reference { reference } => reference.clone(),
+        ConditionKind::Match {
+            field,
+            value: Value::Scalar { text, .. },
+        } => format!("{field}:{text}"),
+        _ => return,
+    };
+    if let Ok(polylogue_model::Reference::Assertion(revision)) =
+        polylogue_model::Reference::parse(&text)
+        && revision.revision.is_some()
+    {
+        // Explicit, so the unit survives formatting the query back to text.
+        *unit = crate::units::Unit::Assertions.name().to_owned();
+        *implicit = false;
+    }
 }
 
 #[cfg(test)]

@@ -266,3 +266,89 @@ fn frozen_history_preserves_the_note_and_judgment_authors() {
     assert_eq!(requests[0].authorship.author, Author::Agent(None));
     assert_eq!(requests[1].authorship.author, Author::Operator);
 }
+
+#[test]
+fn a_rejudged_revision_reads_its_latest_operator_judgment_everywhere() {
+    let d = test_daemon::start("first prompt");
+    let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
+    let agent = ok_as(
+        &d,
+        Request::Assert {
+            request_id: "lesson".into(),
+            assertions: vec![assertion(vec![session], "prefer the short path")],
+        },
+        Author::Agent(None),
+    );
+    let target = format!("assertion:{}", agent["id"].as_str().unwrap());
+    for (request_id, accepted) in [("j1", true), ("j2", false), ("j3", true)] {
+        ok(
+            &d,
+            Request::Judge {
+                request_id: request_id.into(),
+                note: target.clone(),
+                accepted,
+                reason: None,
+            },
+        );
+    }
+    assert_eq!(
+        crate::test_answers::ok(query(&d, "assertions where judged:accepted"))["count"],
+        1
+    );
+    assert_eq!(
+        crate::test_answers::empty(query(&d, "assertions where judged:rejected"))["count"],
+        0
+    );
+    assert_eq!(
+        crate::test_answers::empty(query(&d, "assertions where agent:true judged:unknown"))["count"],
+        0
+    );
+    let grouped = crate::test_answers::ok(query(
+        &d,
+        "assertions where agent:true | group by judged | count",
+    ));
+    assert_eq!(grouped["rows"][0]["judged"], "accepted", "{grouped}");
+    assert_eq!(grouped["rows"][0]["count"], 1, "{grouped}");
+}
+
+#[test]
+fn changes_select_assertions_by_their_kind() {
+    let d = test_daemon::start("first prompt");
+    let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
+    ok(
+        &d,
+        Request::Assert {
+            request_id: "lesson".into(),
+            assertions: vec![assertion(vec![session], "a lesson")],
+        },
+    );
+    let lessons = crate::test_answers::ok(query(&d, "changes where assertion_kind:lesson"));
+    assert_eq!(lessons["count"], 1, "{lessons}");
+    assert_eq!(lessons["rows"][0]["kind"], "assertion", "{lessons}");
+    assert_eq!(lessons["rows"][0]["assertion_kind"], "lesson", "{lessons}");
+    assert_eq!(
+        crate::test_answers::empty(query(&d, "changes where assertion_kind:tag"))["count"],
+        0
+    );
+}
+
+#[test]
+fn a_structured_value_matches_by_its_text() {
+    let d = test_daemon::start("first prompt");
+    let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
+    ok(
+        &d,
+        Request::Assert {
+            request_id: "lesson".into(),
+            assertions: vec![assertion(vec![session], "use the fast path")],
+        },
+    );
+    assert_eq!(
+        crate::test_answers::ok(query(&d, "assertions where value:\"use the fast path\""))["count"],
+        1
+    );
+    assert_eq!(
+        crate::test_answers::ok(query(&d, "assertions where value:\"the fast\""))["count"],
+        1
+    );
+}

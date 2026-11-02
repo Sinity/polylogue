@@ -36,7 +36,7 @@ Every query error carries `kind`, `message`, `position` (byte offset, shown with
 
 ### References inside queries
 
-A reference names exactly one thing and drops the reachability defaults (subagent, hidden, duplicate, active path) for that match. The reference forms and their resolution are in [references.md](references.md#forms); the command line's own forms (`@N`, `@last`) are in [interfaces.md](interfaces.md#addressing). An ID-shaped word or unique prefix resolves to exactly one session or message, or is `not_found` or `ambiguous` naming the matches; it never silently becomes search text. `self` is the calling session; `last` and `latest` are the most recently active main session in scope, never the calling session.
+A reference names exactly one thing and drops the reachability defaults (subagent, hidden, duplicate, active path) for that match. The reference forms and their resolution are in [references.md](references.md#forms); the command line's own forms (`@N`, `@last`) are in [interfaces.md](interfaces.md#addressing). A query that is only an exact assertion revision (`assertion:R@X`) reads the `assertions` unit, since the revision is one row; every other lone reference is a condition on the default unit. An ID-shaped word or unique prefix resolves to exactly one session or message, or is `not_found` or `ambiguous` naming the matches; it never silently becomes search text. `self` is the calling session; `last` and `latest` are the most recently active main session in scope, never the calling session.
 
 ## Units and fields
 
@@ -129,7 +129,7 @@ Queries, their runs, kept results, figures and findings are stored objects with 
 ### Identity
 
 - **`query:<hash>`** is the BLAKE3 hash of the query's normal form: the parsed AST after resolving surface references to their stored forms and saved-query names to the hashes they resolved to, with operands sorted where order carries no meaning and spelling variants removed. Two texts with one normal form have one hash. The normal form and the hash function belong to the shared language, so Sinex hashes its queries the same way.
-- `query:<hash>` accepts the full 64-hex hash or a unique prefix of at least 12 hex characters. Saved-query names cannot be all hex.
+- `query:<hash>` accepts the full 64-hex hash or a unique prefix of at least 12 hex characters. A saved-query name is what `query:NAME` can say: ASCII letters, digits, `_`, `-` and `.`; a save under any other name is refused. Saved-query names cannot be all hex.
 - Relative times stay as expressions in the normal form (`since:7d`, not an instant); each run records what they resolved to.
 
 ### Names and composition

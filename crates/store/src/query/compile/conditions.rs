@@ -580,6 +580,11 @@ impl<'a> Compiler<'a> {
         {
             return self.native_time_condition(def.name, &native, op, span);
         }
+        // A structured value matches by its JSON scalar, so a string value
+        // matches its text rather than its quoted JSON spelling.
+        if def.column_kind() == ColKind::Json {
+            return self.typed(def, &format!("json_extract({expr}, '$')"), op, span);
+        }
         self.typed(def, &expr, op, span)
     }
 

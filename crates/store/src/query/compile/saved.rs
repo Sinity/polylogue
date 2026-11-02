@@ -202,12 +202,21 @@ pub(super) fn compile_kept(
         implicit: false,
         condition: None,
     };
-    let unit = Unit::all()
-        .find(|u| u.name() == kept.unit)
-        .unwrap_or(Unit::Sessions);
+    let native = Unit::all().find(|u| u.name() == kept.unit);
+    let unit = native.unwrap_or(Unit::Sessions);
+    // Kept rows of a native unit carry that unit's identity, stored beside
+    // the rows, so each row read back names the row it was.
+    let identity: Vec<String> = native
+        .filter(|_| part == "rows")
+        .map(|unit| {
+            (0..units::spec(unit).identity.len())
+                .map(|i| format!("_identity{i}"))
+                .collect()
+        })
+        .unwrap_or_default();
     let mut c = Compiler::new(text, opts);
     let id_param = c.text_param(id);
-    let select: Vec<String> = columns
+    let mut select: Vec<String> = columns
         .iter()
         .map(|col| {
             if matches!(col.kind, ColKind::Ids | ColKind::Json) {
@@ -217,6 +226,9 @@ pub(super) fn compile_kept(
             }
         })
         .collect();
+    select.extend(identity.iter().enumerate().map(|(i, name)| {
+        format!("json_extract(k.rows_json, '$.identities[' || j.key || '][{i}]') AS {name}")
+    }));
     let rel = MatchRel {
         sql: format!(
             "SELECT j.key AS _pk, {} FROM source_kept_result k, json_each(k.rows_json, '$.{part}') j \
@@ -232,6 +244,12 @@ pub(super) fn compile_kept(
         program.shape = Shape::Rows;
         program.unit = unit;
         program.columns = columns.clone();
+        if let Some(unit) = native {
+            program.row_basis = RowBasis::Native {
+                unit,
+                columns: identity,
+            };
+        }
     }
     Ok(Some(program))
 }
