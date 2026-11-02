@@ -52,7 +52,12 @@ fn primary(home: &ClaudeHome) -> crate::config::Startup {
 }
 
 fn launch(startup: crate::config::Startup) -> std::io::Result<Runtime> {
-    start(startup.config, startup.engine, startup.mode)
+    start(
+        startup.config,
+        startup.engine,
+        startup.mode,
+        polylogue_engine::Lifetime::UntilStopped,
+    )
 }
 
 fn read_request() -> Request {
