@@ -742,7 +742,7 @@ pub enum Queued {
     Committing(Receiver<Result<polylogue_model::user::UserOutcome>>),
     /// The queue was full: the request and its read scope, handed back.
     Full(
-        polylogue_model::user::UserRequest,
+        Box<polylogue_model::user::UserRequest>,
         Option<crate::ReadScopeToken>,
     ),
 }
@@ -936,7 +936,7 @@ impl WriterSender {
             reply,
         )) {
             Ok(()) => Ok(Queued::Committing(wait)),
-            Err(Some(UserMsg::Request(request, scope, ..))) => Ok(Queued::Full(*request, scope)),
+            Err(Some(UserMsg::Request(request, scope, ..))) => Ok(Queued::Full(request, scope)),
             Err(_) => Err(StoreError::WriterGone),
         }
     }

@@ -103,7 +103,7 @@ fn hand_over(state: &mut State, writes: &WriterSender) -> Result<(), StoreError>
             }
             Queued::Full(request, scope) => {
                 state.waiting.push_front(Waiting {
-                    request,
+                    request: *request,
                     scope,
                     recipient: next.recipient,
                 });

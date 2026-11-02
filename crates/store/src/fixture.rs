@@ -378,7 +378,7 @@ impl Fixture {
                 let answered = n + spec.answered >= spec.sessions;
                 for m in 0..spec.messages {
                     // The last message is always a model answer.
-                    let model = (spec.messages - 1 - m) % 2 == 0;
+                    let model = (spec.messages - 1 - m).is_multiple_of(2);
                     self.seq += 1;
                     message.execute(params![
                         format!("many-{n}-{m}"),
