@@ -157,25 +157,6 @@ impl TestDaemon {
         self.restart_after_stop(|| {});
     }
 
-    /// Reopen a physically fresh derived index over this fixture's retained archive.
-    pub(crate) fn restart_rebuilding_index(&mut self) {
-        let index = self.daemon.archive.index_db();
-        assert!(index.is_absolute() && index.starts_with(self._dir.path()));
-        self.restart_after_stop(move || {
-            for suffix in ["", "-wal", "-shm"] {
-                let mut path = index.as_os_str().to_owned();
-                path.push(suffix);
-                match std::fs::remove_file(std::path::PathBuf::from(path)) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => panic!("synthetic index reset failed: {error}"),
-                }
-            }
-            assert!(!index.exists());
-        });
-        assert!(self.daemon.archive.index_db().exists());
-    }
-
     fn restart_after_stop(&mut self, reset: impl FnOnce()) {
         self.runtime.stop_accepting();
         self.server.shutdown().unwrap();
