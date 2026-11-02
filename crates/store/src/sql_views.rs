@@ -41,8 +41,9 @@ pub const VIEWS: &[(&str, &str)] = &[
     (
         "v1_assertions",
         "SELECT a.id,a.root,a.kind,a.key,a.value,a.author,a.via,a.machine,a.created_at,a.valid_until, \
-         (SELECT group_concat(ref,' ') FROM (SELECT ref FROM temp.assertion_about WHERE assertion=a.id ORDER BY ref)) AS about, \
-         ac.current,ac.withdrawn,ac.conflict FROM source_assertion a JOIN temp.assertion_currency ac ON ac.id=a.id AND ac.root=a.root",
+         (SELECT group_concat(ref,' ') FROM (SELECT ref FROM source_link WHERE record=a.id AND role='about' ORDER BY ref)) AS about, \
+         rs.current,rs.withdrawn,(SELECT count(*) FROM source_revision_state c WHERE c.root=a.root AND c.current=1)>1 AS conflict \
+         FROM source_assertion a JOIN source_revision_state rs ON rs.id=a.id",
     ),
 ];
 

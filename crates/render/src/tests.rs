@@ -2090,6 +2090,7 @@ fn authored_selection_preserves_the_complete_frozen_request_and_explicit_coverag
                     role: LinkRole::About,
                     reference: target.clone(),
                     seen_hash: None,
+                    quote: None,
                 }],
                 &request,
             )
@@ -2111,7 +2112,6 @@ fn authored_selection_preserves_the_complete_frozen_request_and_explicit_coverag
                 ..Default::default()
             },
         },
-        imports: vec![],
     };
     let record = Record::Authored(Box::new(row.clone()));
     record.validate().unwrap();

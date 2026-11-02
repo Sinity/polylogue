@@ -25,33 +25,10 @@ pub(super) fn visit(
                 crate::spool::decode_json(queue.body(&entry.identity)?)?;
             for write in writes {
                 let pending = match write.product {
-                    Product::RestoredRequest {
-                        prepared,
-                        claims,
-                        current,
-                    } => PendingAuthored::Restore {
-                        prepared,
-                        claims,
-                        current,
-                    },
-                    Product::RestoredHistory {
-                        evidence,
-                        claims,
-                        current,
-                    } => PendingAuthored::RestoreHistory {
-                        evidence,
-                        claims,
-                        current,
-                    },
-                    Product::RestoredAssertion {
-                        fact,
-                        claims,
-                        current,
-                    } => PendingAuthored::RestoreAssertion {
-                        fact,
-                        claims,
-                        current,
-                    },
+                    Product::RestoredRequest { prepared } => PendingAuthored::Restore { prepared },
+                    Product::RestoredAssertion { fact } => {
+                        PendingAuthored::RestoreAssertion { fact }
+                    }
                     _ => {
                         return Err(Error::Invalid(
                             "non-restoration product in authored restore frame".into(),

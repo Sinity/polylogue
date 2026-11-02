@@ -40,7 +40,7 @@ A pack turns a selection into context for a recipient and a purpose: `polylogue 
 
 A pack holds:
 - exact passages, and the assertions on them with author and judgment state;
-- open questions and blockers;
+- open questions and problems, and whatever a current assertion `blocks`;
 - **contrary evidence:** every assertion that `challenges` or `corrects` an included item is included with it;
 - the repository state of the selected sessions ("HEAD is N commits past <anchor>");
 - applicable methods, as nominations with their assessment ([assertions.md#memory](assertions.md#memory));
@@ -88,7 +88,7 @@ The session-start brief is injected by the `SessionStart` hook (and Hermes's fir
 
 1. Header ([Trust rendering](#trust-rendering)).
 2. The agent manual ([Agent manual](#agent-manual)), on `startup`, `clear` and `compact` only.
-3. **Assertions:** the operator's assertions and operator-accepted agent assertions (decisions, lessons, handoffs, blockers, goals, questions, findings) scoped to the repository, the directory and the listed sessions. Unjudged agent, script and unattributed assertions are counted, with the query that lists them, and not inlined. Ruling, 2026-10-18: "for now, I think acutally don't inject those" (cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-18T14:13:05). The way to have them inlined is judgment: by the operator, or by a calibrated annotation pass.
+3. **Assertions:** the operator's assertions and operator-accepted agent assertions (decisions, lessons, handoffs, problems, goals, questions, findings) scoped to the repository, the directory and the listed sessions. Unjudged agent, script and unattributed assertions are counted, with the query that lists them, and not inlined. Ruling, 2026-10-18: "for now, I think acutally don't inject those" (cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-18T14:13:05). The way to have them inlined is judgment: by the operator, or by a calibrated annotation pass.
 4. **Other agents working in this repository now** ([Live sessions](#live-sessions)): worktree, live state, task, last event; the caller excluded; "⚠ 2 agents in this worktree" when a peer shares the worktree.
 5. **Open tasks here:** tracker items claimed in this repository and not closed or released.
 6. **Recent sessions**, newest first, until the budget is full: title; time and harness; tool-call status; commits, pull requests and files changed; the task it still holds open; the last substantive operator prompt (at least six words, not a command or bare paste); the first lines of the last answer, datamarked.

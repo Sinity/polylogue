@@ -18,9 +18,9 @@ fn fact(id: &str, name: &str, hash: u8, base: Option<&str>) -> AssertionFact {
             .unwrap(),
         ),
         author: Author::Unattributed,
-        via: None,
-        machine: None,
-        created_at: None,
+        via: polylogue_model::authorship::Channel::Import,
+        machine: "synthetic-host".into(),
+        created_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
         valid_until: None,
         links: base
             .into_iter()
@@ -28,6 +28,7 @@ fn fact(id: &str, name: &str, hash: u8, base: Option<&str>) -> AssertionFact {
                 role: LinkRole::Revises,
                 reference: r(base),
                 seen_hash: None,
+                quote: None,
             })
             .collect(),
     }

@@ -5,7 +5,7 @@
 //!
 //! A session-start brief brings an agent up to speed on its directory:
 //! - notes the operator wrote, or agents wrote and the operator accepted:
-//!   lessons, handoffs, decisions, blockers and goals on this directory,
+//!   lessons, handoffs, decisions, problems and goals on this directory,
 //!   its repository, or the session itself;
 //! - other agents working here now;
 //! - Beads claimed here in the last week that the claiming session has not
@@ -248,7 +248,7 @@ fn operator_notes(
         AssertionKind::Lesson,
         AssertionKind::Handoff,
         AssertionKind::Decision,
-        AssertionKind::Blocker,
+        AssertionKind::Problem,
         AssertionKind::Goal,
     ]
     .map(|k| format!("kind:{}", k.as_str()))
@@ -317,7 +317,7 @@ fn note_line(n: &Assertion) -> String {
         "- [{label}] {} ({}, {}{by})  assertion:{}@{}",
         n.fact.text().unwrap_or("").trim(),
         targets.join(", "),
-        day(n.fact.created_at),
+        day(Some(n.fact.created_at)),
         n.fact.root,
         n.fact.id
     )
@@ -633,7 +633,7 @@ fn session_start(
     recent.retain(|s| after(s.last_activity));
     let more_sessions = recent.len() as u64 > RECENT_SESSIONS;
     recent.truncate(RECENT_SESSIONS as usize);
-    // Handoffs and blockers on the sessions listed belong with them.
+    // Handoffs and problems on the sessions listed belong with them.
     targets.extend(recent.iter().map(|s| Reference::Session(s.id.clone())));
     let notes = operator_notes(
         reader,

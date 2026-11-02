@@ -685,26 +685,26 @@ pub static UNITS: &[UnitSpec] = &[
                 crate::query::compile::ColKind::Json,
             ),
             ("author", T("{r}.author"), Text),
-            ("created_at", T("pl_recorded_time({r}.created_at)"), Time),
+            ("created_at", T("{r}.created_at"), Time),
             ("root", T("{r}.root"), Text),
             (
                 "about",
                 T(
-                    "(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM temp.assertion_about nt WHERE nt.assertion = {r}.id ORDER BY nt.ref))",
+                    "(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM source_link nt WHERE nt.record = {r}.id AND nt.role = 'about' ORDER BY nt.ref))",
                 ),
                 Text,
             ),
         ],
-        time: "pl_recorded_time({r}.created_at)",
+        time: "{r}.created_at",
         newest_first: true,
         session_order: false,
-        since: Some("pl_recorded_time({r}.created_at) >= {v}"),
-        until: Some("pl_recorded_time({r}.created_at) < {v}"),
+        since: Some("{r}.created_at >= {v}"),
+        until: Some("{r}.created_at < {v}"),
         in_session: false,
         session_pk: "{r}.session_pk",
         session_scope: Some(
-            "EXISTS (SELECT 1 FROM temp.assertion_about snt JOIN session ss ON 'session:' || ss.id = snt.ref \
-             WHERE snt.assertion = {r}.id AND ss.pk IN ({sessions}))",
+            "EXISTS (SELECT 1 FROM source_link snt JOIN session ss ON 'session:' || ss.id = snt.ref \
+             WHERE snt.record = {r}.id AND snt.role = 'about' AND ss.pk IN ({sessions}))",
         ),
         search: Search::Substring("{r}.value"),
         defaults: &[

@@ -162,12 +162,16 @@ pub(crate) fn apply_using(
         ),
         _ => Ok(None),
     };
+    let quote = |reference: &polylogue_model::Reference| {
+        crate::reference::link_quote(original, tx, reference)
+    };
     let mut saved = crate::assertions::SavedPreparation::new(original, tx, r, preparation);
     let mut resolve_saved = |input: crate::assertions::SavedInput<'_>| saved.resolve(input);
     let context = crate::assertions::WriteContext {
         request: r,
         counter: seq,
         hash: &hash,
+        quote: &quote,
         owner,
     };
     let outcome = match &r.write {
@@ -187,6 +191,16 @@ pub(crate) fn apply_using(
                     .any(|link| link.role == LinkRole::About)
             {
                 return Err(StoreError::Invalid("a query assertion needs resolved targets and cannot supply its own about links".into()));
+            }
+            // One deliberate write of a single-valued mark revises it; a bulk
+            // write over several rows never does. Systematic labelling goes
+            // through a rubric field, whose slot includes its author.
+            if assertion.kind.spec().single_valued_mark() && resolved.len() > 1 {
+                return Err(StoreError::Invalid(format!(
+                    "single_valued_bulk: `{}` holds one value per target and is not written over {} rows; label rows with a rubric field (annotation) instead",
+                    assertion.kind.as_str(),
+                    resolved.len()
+                )));
             }
             let mut targets = std::collections::BTreeSet::new();
             let mut statements = Vec::with_capacity(resolved.len());

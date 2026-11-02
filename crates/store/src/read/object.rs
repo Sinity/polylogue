@@ -62,9 +62,6 @@ impl Reader<'_> {
                 Some(super::authored_evidence::AuthoredReadEvidence::Local { record, .. }) => {
                     Record::Authored(record)
                 }
-                Some(super::authored_evidence::AuthoredReadEvidence::Historical {
-                    record, ..
-                }) => Record::Historical(record),
                 Some(super::authored_evidence::AuthoredReadEvidence::Incomplete { issue }) => {
                     return Err(StoreError::ReferenceUnavailable {
                         reference: reference.to_string(),
@@ -73,30 +70,9 @@ impl Reader<'_> {
                 }
                 None => return Err(StoreError::NotFound(reference.to_string())),
             },
-            Reference::Run(id) => {
-                let (run, commit) = crate::query_objects::historical_run_on(self.conn()?, id)?
-                    .ok_or_else(|| StoreError::ReferenceUnavailable {
-                        reference: reference.to_string(),
-                        reason: "this run has no retained historical metadata object".into(),
-                    })?;
-                let imports = run
-                    .imports
-                    .observed
-                    .iter()
-                    .chain(&run.imports.declared)
-                    .cloned()
-                    .collect();
-                Record::Historical(Box::new(polylogue_model::bundle::HistoricalRecord {
-                    reference: reference.to_string(),
-                    commit,
-                    evidence: polylogue_model::historical::HistoricalRecord::Run(Box::new(run)),
-                    imports,
-                }))
-            }
             _ => {
                 return Err(StoreError::Invalid(
-                    "exact object preparation requires a request or historical run reference"
-                        .into(),
+                    "exact object preparation requires a request reference".into(),
                 ));
             }
         };
@@ -109,11 +85,7 @@ impl Reader<'_> {
             check: &check,
             error: None,
         };
-        digest.hash.update(match reference {
-            Reference::Request(_) => b"polylogue-exact-request-read-v1\0".as_slice(),
-            Reference::Run(_) => b"polylogue-exact-historical-run-read-v1\0".as_slice(),
-            _ => unreachable!(),
-        });
+        digest.hash.update(b"polylogue-exact-request-read-v1\0");
         let encoded = serde_json::to_writer(&mut digest, &record);
         if let Some(error) = digest.error {
             return Err(error);

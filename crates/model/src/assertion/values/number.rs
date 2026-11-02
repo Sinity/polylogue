@@ -189,3 +189,18 @@ pub(super) fn integer(number: &Number) -> bool {
             .cmp(&Integer::parse(&(decimal.digits.len() - 1).to_string()))
             != Ordering::Less
 }
+/// One text for every spelling of a number: `1`, `1.0` and `10e-1` give the
+/// same text, and numbers that compare unequal give different texts.
+pub(super) fn canonical(number: &Number) -> String {
+    let decimal = Decimal::new(number);
+    if decimal.digits.is_empty() {
+        return "0".into();
+    }
+    format!(
+        "{}0.{}e{}{}",
+        if decimal.negative { "-" } else { "" },
+        decimal.digits,
+        if decimal.order.negative { "-" } else { "" },
+        decimal.order.digits
+    )
+}

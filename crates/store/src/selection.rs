@@ -2,7 +2,7 @@
 pub use crate::query::{Param, Program, RowBasis};
 use crate::{ReadScopeToken, Reader, SqlValue, StoreError};
 use polylogue_model::read::ReadTarget;
-use polylogue_model::{DocumentId, MessageId, Reference, SessionId};
+use polylogue_model::{DocumentId, MessageId, Reference, RevisionReference, SessionId};
 use polylogue_query::catalog::{reference_unit, target_unit};
 pub use polylogue_query::plan::{Plan, ResolvedDefinition};
 use polylogue_query::{
@@ -314,10 +314,15 @@ impl Reader<'_> {
     /// assertion family binds its current revision, other kinds are refused.
     fn bind_direct_reference(&self, reference: Reference) -> Result<ReadTarget, SelectionError> {
         let reference = match reference {
-            Reference::Assertion(revision) if revision.revision.is_none() => self
-                .assertion_evidence(&revision)?
-                .ok_or_else(|| invalid("not_found", "assertion family has no current revision"))?
-                .reference(),
+            Reference::Assertion(revision) if revision.revision.is_none() => {
+                let row = self.assertion(&revision)?.ok_or_else(|| {
+                    invalid("not_found", "assertion family has no current revision")
+                })?;
+                Reference::Assertion(RevisionReference {
+                    root: row.fact.root,
+                    revision: Some(row.fact.id),
+                })
+            }
             reference => reference,
         };
         ReadTarget::try_from(reference).map_err(|error| invalid("invalid_query", error.to_string()))

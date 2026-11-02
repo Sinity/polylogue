@@ -1,11 +1,4 @@
 //! Questions and their executions, shared by the writer and the confirmed stream.
-mod historical;
-#[cfg(test)]
-use historical::apply_historical_run;
-pub use historical::conserve_historical_run;
-pub(crate) use historical::{
-    historical_run_on, prepare_historical_run_restore, restore_historical_run,
-};
 
 use crate::{Reader, Result, StoreError, primary::Product, source::Source};
 use polylogue_model::query_objects::{
@@ -536,28 +529,6 @@ pub(crate) fn lookup_run(
     id: &polylogue_model::RunId,
     pending: Option<&dyn crate::primary::Sinex>,
 ) -> Result<Option<QueryLookup<QueryRun>>> {
-    let unavailable: Option<Vec<u8>> = conn
-        .query_row(
-            &source.sql(
-                "SELECT historical FROM @source.query_run WHERE id=?1 AND historical IS NOT NULL",
-            ),
-            [id.as_str()],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if let Some(body) = unavailable {
-        let record: polylogue_model::query_objects::HistoricalQueryRun =
-            crate::encoding::unpack_json(&body)?;
-        record.validate().map_err(invalid)?;
-        if let polylogue_model::query_objects::HistoricalRunReplay::Unavailable { reason } =
-            record.replay
-        {
-            return Err(StoreError::ReferenceUnavailable {
-                reference: format!("run:{id}"),
-                reason,
-            });
-        }
-    }
     let stored:Option<(Vec<u8>,String,String)>=conn.query_row(
         &source.sql("SELECT run,binding_hash,run_hash FROM @source.query_run WHERE id=?1 AND run IS NOT NULL"),
         [id.as_str()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)),

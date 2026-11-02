@@ -20,70 +20,12 @@ fn definition(id: &str, name: &str, text: &str, hash: QuestionId) -> AssertionFa
             .unwrap(),
         ),
         author: Author::Unattributed,
-        via: None,
-        machine: None,
-        created_at: None,
+        via: polylogue_model::authorship::Channel::Import,
+        machine: "synthetic-host".into(),
+        created_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
         valid_until: None,
         links: vec![],
     }
-}
-
-#[test]
-fn historical_saved_name_without_identity_refuses_only_when_used() {
-    use polylogue_model::historical::{
-        HistoricalAssertionEvidence, NoteKind, RecordedKind, SourceSchema,
-    };
-    let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
-
-    crate::assertions::apply_historical(
-        &conn,
-        &HistoricalAssertionEvidence {
-            predecessor: None,
-            id: "old-definition".into(),
-            root: "old-definition".into(),
-            source: SourceSchema::PolylogueArchive { version: 4 },
-            kind: RecordedKind::Known(NoteKind::SavedQuery),
-            key: Some("historical".into()),
-            value: Some("sessions where repo:old".into()),
-            recorded_author: None,
-            machine: None,
-            created_at: None,
-            valid_until: None,
-            targets: vec![],
-            relations: vec![],
-            links: vec![],
-        },
-        1,
-    )
-    .unwrap();
-    conn.execute_batch("BEGIN").unwrap();
-    let native = Bindings::default();
-    assert!(
-        saved_queries_on(&conn, &conn, None, None)
-            .unwrap()
-            .is_empty()
-    );
-    prepare_query_plan_on(&conn, &conn, "sessions", &native, None, None, None).unwrap();
-    prepare_query_plan_on(
-        &conn,
-        &conn,
-        "sessions where repo:historical",
-        &native,
-        None,
-        None,
-        None,
-    )
-    .unwrap();
-    let refused =
-        prepare_query_plan_on(&conn, &conn, "query:historical", &native, None, None, None)
-            .unwrap_err();
-    assert_eq!(refused.kind(), "not_yet_available");
-    assert!(
-        refused
-            .to_string()
-            .contains("assertion:old-definition@old-definition")
-    );
 }
 
 #[test]

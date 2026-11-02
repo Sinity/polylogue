@@ -99,6 +99,7 @@ The schema tools describe the real shape of an origin's stored inputs without in
 - **index-never-deleted**: opening an index with a mismatched schema migrates it or refuses with an error naming the deliberate rebuild; it never deletes the index.
 - **inputs-never-rewritten**: no code path deletes or rewrites stored inputs or blobs.
 - **migration-keeps-rows**: an archive at the previous version keeps every row through each migration.
+- **one-baseline**: an empty archive and index are created at version 1 with exactly the declared tables; a file at another version or with other tables is refused unchanged.
 - **goldens-hand-written**: there is a hand-written golden for each format era of each origin, and the test harness has no mode that writes expected files.
 - **unused-leaf-counted**: an unknown leaf below a declared path is counted as `unused` with its full path.
 - **outcomes-sum**: malformed lines are counted `unreadable` with a reason, and record outcomes sum to the records read.

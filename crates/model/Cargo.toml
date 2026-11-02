@@ -14,6 +14,7 @@ tempfile.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+authored.workspace = true
 jiff.workspace = true
 blake3.workspace = true
 unicode-normalization.workspace = true

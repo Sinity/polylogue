@@ -7,9 +7,7 @@ use crate::{ParseStep, Result, StoreError};
 use polylogue_model::WireShape;
 use polylogue_model::batch::{ExportCursor, ExportDeliverySource, ReadingFootprint};
 mod export;
-pub(crate) use export::{
-    ExportPrefix, admit_export, advance_prefix, is_refusal, load_prefix, migrate_receipts,
-};
+pub(crate) use export::{ExportPrefix, admit_export, advance_prefix, is_refusal, load_prefix};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -217,8 +215,6 @@ struct Reading {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     export_cursor: Option<ExportCursor>,
     #[serde(default)]
-    legacy_export: bool,
-    #[serde(default)]
     refused_export: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     export_refusals: Option<ExportRefusals>,
@@ -245,9 +241,7 @@ struct Shape {
 }
 impl Reading {
     fn status(&self) -> CoverageStatus {
-        if self.legacy_export {
-            CoverageStatus::Unknown
-        } else if self.no_parser_yet {
+        if self.no_parser_yet {
             CoverageStatus::NoParserYet
         } else if self.unreadable > 0 {
             CoverageStatus::Unreadable
@@ -430,7 +424,6 @@ fn apply_inner(
         last_start: step.start,
         last_end: step.parsed_upto,
         last_hash: hash,
-        legacy_export: export::historical_export(&step.reading_version),
         refused_export: export::is_refusal(step),
         export_refusals,
         export_cursor: if export::is_refusal(step) {

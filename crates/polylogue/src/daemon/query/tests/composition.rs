@@ -128,8 +128,8 @@ fn save(w: &mut TestArchive, name: &str, text: &str) {
 fn parameterized_saved_references_agree_with_direct_references() {
     let mut w = morrow();
     w.fx.note(
-        "tag",
-        Some("hidden"),
+        "hidden",
+        None,
         None,
         "session:claude-code:7f3a2c10-0002-4000-8000-000000000002",
     )
@@ -267,54 +267,6 @@ fn saved_relation_errors_reach_the_query_error_path() {
             }
         }
     }
-    let baseline = q(&w, "sessions")["count"].clone();
-    // These predecessor definitions could never obtain current frozen custody.
-    // Preserve their raw evidence, while refusing execution of only a used name.
-    for (name, text) in [
-        ("missing", "query:absent"),
-        ("ambiguous", "query:twice"),
-        ("cycle", "query:cycle"),
-        ("cycle-a", "query:cycle-b"),
-        ("cycle-b", "query:cycle-a"),
-        ("broken", "sessions where ("),
-        ("invalid-field", "sessions where invented_field:true"),
-        ("invalid-value", "sessions where cost > nonsense"),
-    ] {
-        let pool = w.fx.reads().unwrap();
-        let reader = pool.reader().unwrap();
-        let opts = options(&reader, &ask(text), 7).unwrap();
-        assert!(
-            reader.prepare_query_plan(text, &opts).is_err(),
-            "{name}: {text}"
-        );
-        drop(reader);
-        let id = w.fx.historical_saved_query(name, text).unwrap();
-        let pool = w.fx.reads().unwrap();
-        let reader = pool.reader().unwrap();
-        let evidence = reader
-            .assertion_evidence(&polylogue_model::RevisionReference::exact(id.clone(), id))
-            .unwrap()
-            .unwrap();
-        let polylogue_model::historical::AssertionEvidence::Historical { fact, .. } = evidence
-        else {
-            panic!("historical definition was reauthored");
-        };
-        assert_eq!(fact.value.as_deref(), Some(text));
-        drop(reader);
-        for query in [
-            format!("query:{name}"),
-            format!("sessions where query:{name}"),
-        ] {
-            let failure = run_q(&w, ask(&query)).unwrap_err();
-            assert_eq!(
-                failure.code(),
-                "not_yet_available",
-                "{query}: {}",
-                failure.message
-            );
-        }
-    }
-    assert_eq!(q(&w, "sessions")["count"], baseline);
     // Native diagnostic details remain available before any definition is saved.
     for (text, kind, message) in [
         (

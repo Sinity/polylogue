@@ -345,13 +345,23 @@ fn narrow_canonical_schema_uses_the_existing_sqlite_namespace_rewriter() {
             |row| row.get::<_, i64>(0)
         )
         .unwrap(),
-        2
+        4
     );
-    conn.execute("INSERT INTO source_assertion(id,root,kind,author,commit_seq) VALUES('fact','fact','note','operator',1)",[]).unwrap();
-    conn.execute("INSERT INTO source_assertion_link(assertion,role,ref) VALUES('fact','about','session:codex:s')",[]).unwrap();
-    assert!(conn.execute("INSERT INTO source_assertion_link(assertion,role,ref) VALUES('absent','about','session:codex:s')",[]).is_err());
+    conn.execute("INSERT INTO source_assertion(id,root,kind,author,via,machine,created_at,commit_seq) VALUES('fact','fact','note','operator','cli','host',1,1)",[]).unwrap();
+    conn.execute(
+        "INSERT INTO source_link(record,role,ref) VALUES('fact','about','session:codex:s')",
+        [],
+    )
+    .unwrap();
+    assert!(
+        conn.execute(
+            "INSERT INTO source_link(record,role,ref) VALUES('absent','about','session:codex:s')",
+            []
+        )
+        .is_err()
+    );
     assert_eq!(
-        conn.query_row("SELECT assertion FROM source_assertion_link", [], |row| row
+        conn.query_row("SELECT record FROM source_link", [], |row| row
             .get::<_, String>(0))
             .unwrap(),
         "fact"

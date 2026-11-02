@@ -23,9 +23,10 @@ const USER_STATE: &[(&str, &str)] = &[
     ("client_request", "id, content_hash, created_at, request"),
     (
         "assertion",
-        "id,root,kind,key,value,author,via,machine,created_at,valid_until,historical",
+        "id,root,kind,key,value,author,via,machine,created_at,valid_until",
     ),
-    ("assertion_link", "assertion,role,ref,seen_hash"),
+    ("link", "record,role,ref,seen_hash,quote"),
+    ("revision_state", "*"),
     ("kept_result", "*"),
     (
         "delivery",
@@ -181,12 +182,11 @@ fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
         })
         .collect();
     reader
-        .visit_authored(&mut |prepared, imports| {
+        .visit_authored(&mut |prepared| {
             records.push(Record::Authored(Box::new(AuthoredRecord {
                 reference: format!("request:{}", prepared.request.id),
                 commit: commits[&prepared.request.id],
                 prepared: prepared.clone(),
-                imports: imports.to_vec(),
             })));
             counts.authored += 1;
             Ok(())

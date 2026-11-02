@@ -29,14 +29,15 @@ fn a_deliberate_index_rebuild_keeps_authored_rows_and_vectors() {
             key: None,
             value: Some(serde_json::json!("exact authored value")),
             author: polylogue_model::Author::Operator,
-            via: None,
-            machine: Some("synthetic".into()),
+            via: polylogue_model::authorship::Channel::Import,
+            machine: "synthetic".into(),
             created_at: polylogue_model::Timestamp::from_unix_ms(1),
             valid_until: None,
             links: vec![AssertionLink {
                 role: LinkRole::About,
                 reference: Reference::parse("message:claude-code:stable").unwrap(),
                 seen_hash: None,
+                quote: None,
             }],
         }],
         1,
@@ -55,7 +56,8 @@ fn a_deliberate_index_rebuild_keeps_authored_rows_and_vectors() {
     drop(index);
     let queries = [
         "SELECT * FROM assertion ORDER BY id",
-        "SELECT * FROM assertion_link ORDER BY assertion,role,ref",
+        "SELECT * FROM link ORDER BY record,role,ref",
+        "SELECT * FROM revision_state ORDER BY id",
     ];
     let before: Vec<_> = queries.iter().map(|sql| rows(&archive_conn, sql)).collect();
     let vectors = open_read(&archive.embeddings_db()).unwrap();

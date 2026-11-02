@@ -211,19 +211,6 @@ pub struct AuthoredRecord {
     pub reference: String,
     pub commit: u64,
     pub prepared: crate::authored::PreparedRequest,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub imports: Vec<crate::authored::ImportAttribution>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct HistoricalRecord {
-    #[serde(rename = "ref")]
-    pub reference: String,
-    pub commit: u64,
-    pub evidence: crate::historical::HistoricalRecord,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub imports: Vec<crate::authored::ImportAttribution>,
 }
 
 /// A stream starts with exactly one manifest. All remaining values are
@@ -244,7 +231,6 @@ pub enum Record {
     Document(DocumentRecord),
     Authored(Box<AuthoredRecord>),
     Assertion(Box<crate::assertion::AssertionRecord>),
-    Historical(Box<HistoricalRecord>),
     Variant(VariantRecord),
     VariantPart(VariantPartRecord),
     TextFragment(Box<TextFragmentRecord>),
@@ -261,7 +247,6 @@ impl Record {
             Self::Link(r) => &r.reference,
             Self::Document(r) => &r.reference,
             Self::Authored(r) => &r.reference,
-            Self::Historical(r) => &r.reference,
             Self::Assertion(r) => &r.reference,
             Self::Variant(r) => &r.reference,
             Self::VariantPart(r) => &r.reference,
@@ -279,7 +264,6 @@ impl Record {
             Self::Link(r) => r.commit,
             Self::Document(r) => r.commit,
             Self::Authored(r) => r.commit,
-            Self::Historical(r) => r.commit,
             Self::Variant(r) => r.commit,
             Self::VariantPart(r) => r.commit,
             Self::TextFragment(r) => r.commit,
@@ -294,14 +278,6 @@ impl Record {
             Self::Event(r) => r.validate(),
             Self::Link(r) => r.validate(),
             Self::Document(r) => r.validate(),
-            Self::Historical(r) => {
-                if r.reference != r.evidence.reference() {
-                    return Err(BundleError::ReferenceMismatch);
-                }
-                r.evidence
-                    .validate()
-                    .map_err(|error| BundleError::Assertion(error.to_string()))
-            }
             Self::Authored(r) => {
                 if r.reference != format!("request:{}", r.prepared.request.id) {
                     return Err(BundleError::ReferenceMismatch);

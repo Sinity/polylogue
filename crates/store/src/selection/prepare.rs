@@ -68,21 +68,6 @@ pub(crate) fn prepare_query_plan_on(
         kept: kept_results(authored, crate::source::Source::reading(authored)?)?,
     };
     let parsed = polylogue_query::parse::with_catalog(text, &bindings.catalog())?;
-    for name in polylogue_query::plan::referenced_saved_names(&parsed) {
-        if let Some(references) = definitions.unavailable.get(&name) {
-            return Err(QueryError::Unavailable {
-                what: format!(
-                    "historical saved query {name:?} has no recorded semantic identity: {}",
-                    references
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            }
-            .into());
-        }
-    }
     for id in polylogue_query::plan::referenced_question_ids(&parsed) {
         if bindings.saved.contains_key(&id.to_string()) {
             continue;

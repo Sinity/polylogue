@@ -105,6 +105,10 @@ pub enum StoreError {
         "{database}.db at version {found} has tables this Polylogue build has no migration from"
     )]
     NoMigration { database: &'static str, found: u32 },
+    /// A database written before the baseline (no Polylogue format identity).
+    /// The importer lane matches this wording.
+    #[error("older format: import with `polylogue import --from-archive PATH`")]
+    OlderFormat { database: &'static str },
     #[error(
         "index format {found} is not {wanted}; stop the daemon, move index.db and its WAL/SHM files aside, then restart the daemon to rebuild from stored bytes"
     )]

@@ -166,6 +166,7 @@ fn withdrawn_and_revised_tags_change_counts_without_derivation() {
             revision: Some(note.clone()),
         }),
         seen_hash: None,
+        quote: None,
     });
     let tx = conn.transaction().unwrap();
     crate::assertions::apply(&tx, std::slice::from_ref(&revision), 2).unwrap();
@@ -191,6 +192,7 @@ fn withdrawn_and_revised_tags_change_counts_without_derivation() {
             revision: None,
         }),
         seen_hash: None,
+        quote: None,
     }];
     let tx = conn.transaction().unwrap();
     crate::assertions::apply(&tx, &[withdrawal], 3).unwrap();

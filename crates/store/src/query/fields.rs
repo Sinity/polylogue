@@ -251,7 +251,7 @@ pub const SESSION_HAS: [Has; 8] = [
         name: "note",
         sql: |s| {
             format!(
-                "EXISTS (SELECT 1 FROM source_assertion hn JOIN temp.assertion_about ht ON ht.assertion = hn.id \
+                "EXISTS (SELECT 1 FROM source_assertion hn JOIN source_link ht ON ht.record = hn.id AND ht.role = 'about' \
                  WHERE (ht.ref = 'session:' || {s}.id OR ht.ref IN (SELECT 'message:' || xm.id FROM message xm WHERE xm.session_pk = {s}.pk)) \
                  AND {})",
                 live_assertion("hn")
@@ -262,7 +262,7 @@ pub const SESSION_HAS: [Has; 8] = [
         name: "conflict",
         sql: |s| {
             format!(
-                "EXISTS (SELECT 1 FROM source_assertion hn JOIN temp.assertion_about ht ON ht.assertion = hn.id \
+                "EXISTS (SELECT 1 FROM source_assertion hn JOIN source_link ht ON ht.record = hn.id AND ht.role = 'about' \
                  WHERE ht.ref = 'session:' || {s}.id AND {} \
                  GROUP BY hn.root HAVING count(*) > 1)",
                 current_assertion("hn")
@@ -512,12 +512,12 @@ f(Assertions,"value").custom(custom::assertion_value).sql("{r}.value"),
 f(Assertions,"author").sql("{r}.author"),
 f(Assertions,"agent").sql("({r}.author = 'agent' OR {r}.author LIKE 'agent:%')"),
 f(Assertions,"judged").sql_fn(notes_judged),
-f(Assertions,"about").custom(custom::assertion_about).sql("(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM temp.assertion_about nt WHERE nt.assertion = {r}.id ORDER BY nt.ref))"),
+f(Assertions,"about").custom(custom::assertion_about).sql("(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM source_link nt WHERE nt.record = {r}.id AND nt.role = 'about' ORDER BY nt.ref))"),
 f(Assertions,"write_counter").sql("{r}.commit_seq"),
-f(Assertions,"created_at").sql("pl_recorded_time({r}.created_at)"),
+f(Assertions,"created_at").sql("{r}.created_at"),
 f(Assertions,"root").sql("{r}.root"),
 f(Assertions,"current").sql_fn(notes_current),
-f(Assertions,"conflict").sql("EXISTS(SELECT 1 FROM temp.assertion_currency ac WHERE ac.id={r}.id AND ac.conflict=1)"),
+f(Assertions,"conflict").sql("(SELECT count(*) FROM source_revision_state ac WHERE ac.root={r}.root AND ac.current=1)>1"),
 f(Assertions,"withdrawn").sql_fn(notes_withdrawn),
 f(Assertions,"since").custom(custom::since),
 f(Assertions,"evidence_until").custom(custom::evidence_until),
@@ -682,7 +682,7 @@ fn sessions_hidden(a: &Aliases) -> String {
 
 fn sessions_outcome(a: &Aliases) -> String {
     format!(
-        "(SELECT CASE WHEN count(*)=0 THEN 'none' WHEN count(*)=1 AND max(n.historical IS NOT NULL)=0 THEN min(lower(CASE json_type(n.value) WHEN 'text' THEN json_extract(n.value,'$') ELSE json_extract(n.value,'$.text') END)) ELSE NULL END FROM source_assertion n JOIN temp.assertion_about nt ON nt.assertion=n.id WHERE n.kind='outcome' AND nt.ref='session:' || {s}.id AND {live})",
+        "(SELECT CASE WHEN count(*)=0 THEN 'none' WHEN count(*)=1 THEN min(lower(CASE json_type(n.value) WHEN 'text' THEN json_extract(n.value,'$') ELSE json_extract(n.value,'$.text') END)) ELSE NULL END FROM source_assertion n JOIN source_link nt ON nt.record=n.id AND nt.role='about' WHERE n.kind='outcome' AND nt.ref='session:' || {s}.id AND {live})",
         s = a.s,
         live = live_assertion("n"),
     )
@@ -708,7 +708,7 @@ fn deliveries_detail(a: &Aliases) -> String {
 
 fn turns_corrected(a: &Aliases) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM source_assertion nc JOIN temp.assertion_about nct ON nct.assertion = nc.id \
+        "EXISTS (SELECT 1 FROM source_assertion nc JOIN source_link nct ON nct.record = nc.id AND nct.role = 'about' \
          WHERE nc.kind = 'correction' AND nct.ref = 'message:' || {r}.answer \
          AND {} AND NOT {})",
         current_assertion("nc"),
@@ -804,7 +804,7 @@ fn notes_current(a: &Aliases) -> String {
 /// revision: `accepted` or `rejected`.
 fn notes_judged(a: &Aliases) -> String {
     format!(
-        "(SELECT CASE WHEN count(*)=1 THEN min(j.key) END FROM source_assertion j JOIN temp.assertion_about jt ON jt.assertion=j.id WHERE jt.ref='assertion:' || {r}.root || '@' || {r}.id AND j.kind='judgment' AND j.author='operator' AND {live})",
+        "(SELECT CASE WHEN count(*)=1 THEN min(j.key) END FROM source_assertion j JOIN source_link jt ON jt.record=j.id AND jt.role='about' WHERE jt.ref='assertion:' || {r}.root || '@' || {r}.id AND j.kind='judgment' AND j.author='operator' AND {live})",
         r = a.row,
         live = live_assertion("j"),
     )
@@ -860,8 +860,8 @@ pub fn event_first_seen(a: &Aliases) -> String {
 /// A current `hidden` note targets the session.
 pub fn hidden(s: &str) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM source_assertion hn JOIN temp.assertion_about ht ON ht.assertion = hn.id \
-         WHERE hn.kind = 'tag' AND hn.key = 'hidden' AND ht.ref = 'session:' || {s}.id AND {})",
+        "EXISTS (SELECT 1 FROM source_assertion hn JOIN source_link ht ON ht.record = hn.id AND ht.role = 'about' \
+         WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || {s}.id AND {})",
         live_assertion("hn")
     )
 }

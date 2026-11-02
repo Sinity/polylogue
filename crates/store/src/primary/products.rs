@@ -116,18 +116,9 @@ pub enum Product {
     Request(PreparedRequest),
     RestoredRequest {
         prepared: PreparedRequest,
-        claims: Vec<polylogue_model::authored::ImportAttribution>,
-        current: polylogue_model::authored::ImportAttribution,
-    },
-    RestoredHistory {
-        evidence: polylogue_model::historical::HistoricalRecord,
-        claims: Vec<polylogue_model::authored::ImportAttribution>,
-        current: polylogue_model::authored::ImportAttribution,
     },
     RestoredAssertion {
         fact: polylogue_model::assertion::AssertionFact,
-        claims: Vec<polylogue_model::authored::ImportAttribution>,
-        current: polylogue_model::authored::ImportAttribution,
     },
     Coverage(polylogue_model::capture::Coverage),
 }
@@ -153,7 +144,6 @@ impl Product {
             | Self::Request(_)
             | Self::RestoredRequest { .. }
             | Self::RestoredAssertion { .. }
-            | Self::RestoredHistory { .. }
             | Self::Coverage(_) => None,
         }
     }

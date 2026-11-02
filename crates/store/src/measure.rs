@@ -141,8 +141,8 @@ pub(crate) fn hidden_sessions(reader: &Reader<'_>, selection: &Selection) -> Res
     let sql = format!(
         "SELECT count(DISTINCT s.pk) FROM message m JOIN session s ON s.pk = m.session_pk
          WHERE {cond} AND EXISTS (
-           SELECT 1 FROM source_assertion hn JOIN temp.assertion_about ht ON ht.assertion = hn.id
-           WHERE hn.kind = 'tag' AND hn.key = 'hidden' AND ht.ref = 'session:' || s.id
+           SELECT 1 FROM source_assertion hn JOIN source_link ht ON ht.record = hn.id AND ht.role = 'about'
+           WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || s.id
              AND {} )",
         crate::assertions::sql::live_assertion("hn")
     );

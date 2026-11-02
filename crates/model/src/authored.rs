@@ -6,6 +6,8 @@ use crate::user::{
 use crate::{Author, DeliveryOutcome, Timestamp};
 use serde::{Deserialize, Serialize};
 
+/// Whether an action may run here. Actions restored from another archive keep
+/// their state but never run: the receiving host computes this, never a bundle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionEligibility {
@@ -58,38 +60,27 @@ pub struct PreparedRequest {
     pub request: UserRequest,
     pub outcome: UserOutcome,
     pub effect: AuthoredEffect,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub original: Option<crate::historical::AcceptedEncoding>,
 }
 
 /// A durable authored operation waiting for confirmation keeps its authority.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum PendingAuthored {
-    RestoreHistory {
-        evidence: crate::historical::HistoricalRecord,
-        claims: Vec<ImportAttribution>,
-        current: ImportAttribution,
-    },
     Live {
         prepared: PreparedRequest,
     },
     Restore {
         prepared: PreparedRequest,
-        claims: Vec<ImportAttribution>,
-        current: ImportAttribution,
     },
     RestoreAssertion {
         fact: crate::assertion::AssertionFact,
-        claims: Vec<ImportAttribution>,
-        current: ImportAttribution,
     },
 }
 impl PendingAuthored {
     pub fn prepared(&self) -> Option<&PreparedRequest> {
         match self {
             Self::Live { prepared } | Self::Restore { prepared, .. } => Some(prepared),
-            Self::RestoreHistory { .. } | Self::RestoreAssertion { .. } => None,
+            Self::RestoreAssertion { .. } => None,
         }
     }
 }

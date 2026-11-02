@@ -1,6 +1,6 @@
 use crate::{Archive, ReadPool, StoreError, Writer};
 use polylogue_model::{
-    Author, Json, Reference, RevisionReference, Timestamp,
+    Json, Reference, RevisionReference, Timestamp,
     assertion::{AssertionKind, AssertionPatch, Change, LinkRole, NewAssertion, NewAssertionLink},
     user::UserWrite,
 };
@@ -120,7 +120,7 @@ fn a_withdrawal_names_its_family_and_keeps_exact_facts_readable() {
         .conn()
         .unwrap()
         .query_row(
-            "SELECT ref FROM a.assertion_link WHERE assertion=?1 AND role='withdraws'",
+            "SELECT ref FROM a.link WHERE record=?1 AND role='withdraws'",
             [&withdrawal.id],
             |row| row.get(0),
         )
@@ -153,7 +153,7 @@ fn a_withdrawal_names_its_family_and_keeps_exact_facts_readable() {
             .assertion_family_currency(&family)
             .unwrap()
             .unwrap()
-            .withdrawn
+            .withdrawn()
     );
 }
 
@@ -384,18 +384,11 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
     let (_dir2, archive2, _lock2, _replay, replay_reads) = setup();
     let mut destination = crate::archive::open_write(&archive2.archive_db(), 1).unwrap();
     let tx = destination.transaction().unwrap();
-    let attribution = polylogue_model::authored::ImportAttribution {
-        input: "frozen-import".into(),
-        chain: 1,
-        machine: "receiving-machine".into(),
-        actor: Author::Operator,
-        at: Timestamp::from_unix_ms(1).unwrap(),
-    };
     reads
         .reader()
         .unwrap()
-        .visit_authored(&mut |prepared, imports| {
-            crate::primary::authored::restore(&tx, prepared, imports, &attribution, 1)?;
+        .visit_authored(&mut |prepared| {
+            crate::primary::authored::restore(&tx, prepared, 1)?;
             Ok(())
         })
         .unwrap();
@@ -416,9 +409,8 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
     replay_reads
         .reader()
         .unwrap()
-        .visit_authored(&mut |prepared, imports| {
+        .visit_authored(&mut |prepared| {
             if prepared.request.id == "resolved" {
-                assert_eq!(imports, std::slice::from_ref(&attribution));
                 assert_eq!(
                     prepared.effect.assertions.as_slice(),
                     std::slice::from_ref(&restored.fact)

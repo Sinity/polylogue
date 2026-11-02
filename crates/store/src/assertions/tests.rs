@@ -17,9 +17,9 @@ fn assertion(
         key: None,
         value: Some(Json::String(format!("text {id}"))),
         author: Author::Unattributed,
-        via: Some(Channel::Import),
-        machine: Some("synthetic".into()),
-        created_at: Some(Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z").unwrap()),
+        via: Channel::Import,
+        machine: "synthetic".into(),
+        created_at: Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z").unwrap(),
         valid_until: None,
         links: links
             .iter()
@@ -27,6 +27,7 @@ fn assertion(
                 role: *role,
                 reference: r(reference),
                 seen_hash: role.uses_text_hash().then_some(BlobHash([3; 32])),
+                quote: None,
             })
             .collect(),
     };
@@ -37,6 +38,7 @@ fn assertion(
             role: LinkRole::About,
             reference: r("session:codex:subject"),
             seen_hash: None,
+            quote: None,
         });
     }
     fact
@@ -49,81 +51,6 @@ fn archive() -> Connection {
     conn
 }
 
-#[test]
-fn historical_assertion_keeps_its_recorded_kind_without_claiming_current_value_schema() {
-    use polylogue_model::historical::{
-        AssertionEvidence, HistoricalAssertionEvidence, NoteKind, RecordedKind, SourceSchema,
-    };
-    let conn = archive();
-    let fact = HistoricalAssertionEvidence {
-        predecessor: None,
-        id: "forecast".into(),
-        root: "forecast".into(),
-        source: SourceSchema::PolylogueArchive { version: 4 },
-        kind: RecordedKind::Known(NoteKind::Forecast),
-        key: Some("weather".into()),
-        value: Some("rain tomorrow".into()),
-        recorded_author: Some("operator".into()),
-        machine: None,
-        created_at: None,
-        valid_until: None,
-        targets: vec!["repo:morrow".into()],
-        relations: vec![],
-        links: vec![AssertionLink {
-            role: LinkRole::About,
-            reference: r("repo:morrow"),
-            seen_hash: None,
-        }],
-    };
-    apply_historical(&conn, &fact, 7).unwrap();
-    assert!(matches!(
-        get(&conn, "forecast"),
-        Err(StoreError::ReferenceUnavailable { .. })
-    ));
-    let Some(AssertionEvidence::Historical {
-        fact: stored,
-        commit_seq,
-        imports,
-    }) = get_evidence(&conn, "forecast").unwrap()
-    else {
-        panic!("the original historical fact must remain readable")
-    };
-    assert_eq!(stored, fact);
-    assert_eq!(commit_seq, 7);
-    assert!(imports.observed.is_empty());
-    assert!(imports.declared.is_empty());
-    assert_eq!(
-        heads(&conn, &r("assertion:forecast")).unwrap(),
-        [r("assertion:forecast@forecast")]
-    );
-    let mut changed = fact.clone();
-    changed.value = Some("sunny tomorrow".into());
-    assert!(matches!(
-        apply_historical(&conn, &changed, 8),
-        Err(StoreError::Conflict(_))
-    ));
-    let destination = archive();
-    copy(&conn, &destination).unwrap();
-    let Some(AssertionEvidence::Historical {
-        fact: copied,
-        commit_seq,
-        ..
-    }) = get_evidence(&destination, "forecast").unwrap()
-    else {
-        panic!("scratch must retain the same historical form")
-    };
-    assert_eq!(copied, fact);
-    assert_eq!(commit_seq, 0);
-    let mut duplicate = fact.clone();
-    duplicate.id = "duplicate-links".into();
-    duplicate.root = duplicate.id.clone();
-    duplicate.links.push(duplicate.links[0].clone());
-    assert!(matches!(
-        apply_historical(&conn, &duplicate, 9),
-        Err(StoreError::Invalid(_))
-    ));
-    assert_eq!(get_evidence(&conn, &duplicate.id).unwrap(), None);
-}
 #[test]
 fn frozen_assertions_replay_exact_facts_and_first_admission() {
     let conn = archive();
@@ -138,7 +65,7 @@ fn frozen_assertions_replay_exact_facts_and_first_admission() {
         ],
     );
     original.author = Author::AgentOrigin(polylogue_model::Origin::new("codex").unwrap());
-    original.valid_until = original.created_at;
+    original.valid_until = Some(original.created_at);
     original.value =
         Some(serde_json::json!({"text":"exact text","check":{"query":"messages","expect":"rows"}}));
     apply(&conn, std::slice::from_ref(&original), 7).unwrap();
@@ -278,8 +205,18 @@ fn canonical_withdrawals_cover_variant_roots_and_restore_through_the_same_graph(
     );
 }
 
+fn states(conn: &Connection, root: &str) -> Vec<(String, bool, bool)> {
+    conn.prepare("SELECT id,current,withdrawn FROM revision_state WHERE root=?1 ORDER BY id")
+        .unwrap()
+        .query_map([root], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+/// law: currency.index-equals-function
 #[test]
-fn pinned_currency_relation_preserves_all_fork_heads_and_exact_status() {
+fn stored_currency_keeps_every_fork_head_and_follows_withdrawal_and_restoration() {
     let conn = archive();
     apply(
         &conn,
@@ -302,39 +239,15 @@ fn pinned_currency_relation_preserves_all_fork_heads_and_exact_status() {
         1,
     )
     .unwrap();
-    conn.execute_batch("BEGIN").unwrap();
-    currency::prepare_root(&conn, "family").unwrap();
-    let states: Vec<(String, bool, bool, bool)> = conn
-        .prepare("SELECT id,current,withdrawn,conflict FROM temp.assertion_currency ORDER BY id")
-        .unwrap()
-        .query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-        })
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
     assert_eq!(
-        states,
+        states(&conn, "family"),
         vec![
-            ("first".into(), false, false, true),
-            ("left".into(), true, false, true),
-            ("right".into(), true, false, true)
+            ("first".into(), false, false),
+            ("left".into(), true, false),
+            ("right".into(), true, false)
         ]
     );
-    // Preparing a second indexed candidate cannot change the first family.
-    currency::prepare_root(&conn, "other").unwrap();
-    currency::prepare_root(&conn, "family").unwrap();
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM temp.assertion_currency", [], |row| {
-            row.get::<_, i64>(0)
-        })
-        .unwrap(),
-        4
-    );
-    conn.execute_batch("ROLLBACK").unwrap();
-    assert_eq!(conn.query_row("SELECT count(*) FROM sqlite_temp_schema WHERE name IN ('assertion_currency','assertion_family_state','assertion_revision_state')",[],|row|row.get::<_,i64>(0)).unwrap(),0);
-
-    // A reused connection computes the new snapshot, including restoration.
+    assert_eq!(states(&conn, "other"), vec![("other".into(), true, false)]);
     apply(
         &conn,
         &[assertion(
@@ -349,26 +262,15 @@ fn pinned_currency_relation_preserves_all_fork_heads_and_exact_status() {
         2,
     )
     .unwrap();
-    conn.execute_batch("BEGIN").unwrap();
-    currency::prepare_root(&conn, "family").unwrap();
-    let current: String = conn
-        .query_row(
-            "SELECT id FROM temp.assertion_currency WHERE current=1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(current, "first");
     assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM temp.assertion_currency WHERE withdrawn=1",
-            [],
-            |row| row.get::<_, i64>(0)
-        )
-        .unwrap(),
-        2
+        states(&conn, "family"),
+        vec![
+            ("first".into(), true, false),
+            ("left".into(), false, true),
+            ("right".into(), false, true)
+        ]
     );
-    conn.execute_batch("ROLLBACK").unwrap();
+    // Withdrawing the withdrawal, by its root, reaches the family it named.
     apply(
         &conn,
         &[assertion(
@@ -380,151 +282,41 @@ fn pinned_currency_relation_preserves_all_fork_heads_and_exact_status() {
         3,
     )
     .unwrap();
-    conn.execute_batch("BEGIN").unwrap();
-    currency::prepare_root(&conn, "family").unwrap();
     assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM temp.assertion_currency WHERE current=1 AND conflict=1",
-            [],
-            |row| row.get::<_, i64>(0)
-        )
-        .unwrap(),
-        2
+        states(&conn, "family"),
+        vec![
+            ("first".into(), false, false),
+            ("left".into(), true, false),
+            ("right".into(), true, false)
+        ]
     );
-    conn.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(
+        states(&conn, "withdraw"),
+        vec![("withdraw".into(), false, true)]
+    );
 }
 
 #[test]
-fn incomplete_currency_build_is_invisible_and_rebuilt_on_the_same_snapshot() {
+fn an_annotation_applied_before_its_rubric_takes_the_rubric_it_was_derived_from() {
     let conn = archive();
-    apply(
-        &conn,
-        &[assertion("root", "first", AssertionKind::Note, &[])],
-        1,
-    )
-    .unwrap();
-    assert!(currency::prepare_root(&conn, "root").is_err());
-    conn.execute_batch("BEGIN").unwrap();
-    currency::prepare_root(&conn, "missing").unwrap();
-    // Simulate interruption after inserting a revision but before its family
-    // marker. The same published view is used by query and association reads.
-    conn.execute(
-        "INSERT INTO temp.assertion_revision_state VALUES('partial','root',1,0)",
-        [],
-    )
-    .unwrap();
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM temp.assertion_currency", [], |row| {
-            row.get::<_, i64>(0)
-        })
-        .unwrap(),
-        0
+    let mut annotation = assertion(
+        "answer",
+        "answer",
+        AssertionKind::Annotation,
+        &[
+            (LinkRole::About, "message:codex:row"),
+            (LinkRole::DerivedFrom, "assertion:rubric@rubric"),
+        ],
     );
-    currency::prepare_root(&conn, "root").unwrap();
-    let id: String = conn
-        .query_row("SELECT id FROM temp.assertion_currency", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(id, "first");
-    assert!(
-        !conn
-            .query_row(
-                "SELECT present FROM temp.assertion_family_state WHERE root='missing'",
-                [],
-                |row| row.get::<_, bool>(0)
-            )
-            .unwrap()
-    );
-    conn.execute_batch("ROLLBACK").unwrap();
-}
-
-#[test]
-fn historical_assertion_unknowns_and_provenance_survive_without_a_fabricated_receipt() {
-    let conn = archive();
-    let mut fact = assertion("historical", "historical", AssertionKind::Note, &[]);
-    fact.via = None;
-    fact.machine = None;
-    fact.created_at = None;
-    fact.value = Some(
-        serde_json::json!({"text":"original body","predecessor":{"id":"note:old","author":"operator","machine":"claimed-host","created_at":"claimed time","extra":[1,"kept"]}}),
-    );
-    apply(&conn, std::slice::from_ref(&fact), 17).unwrap();
-    let row = get(&conn, "historical").unwrap().unwrap();
-    assert_eq!(row.fact, fact);
-    assert_eq!(row.commit_seq, 17);
-    assert_eq!(row.fact.text(), Some("original body"));
-    let raw: (Option<String>, Option<String>, Option<String>) = conn
+    annotation.key = Some("clear".into());
+    annotation.value = Some(serde_json::json!({"value": true}));
+    apply(&conn, std::slice::from_ref(&annotation), 1).unwrap();
+    let slots: i64 = conn
         .query_row(
-            "SELECT via,machine,created_at FROM assertion WHERE id='historical'",
+            "SELECT count(*) FROM assertion_slot WHERE id='answer'",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(raw, (None, None, None));
-    let wire = serde_json::to_value(&fact).unwrap();
-    assert!(wire.get("commit_seq").is_none());
-    assert_eq!(wire["created_at"], Json::Null);
-    let mut changed = fact.clone();
-    changed.value.as_mut().unwrap()["predecessor"]["extra"] = serde_json::json!([2, "changed"]);
-    assert!(matches!(
-        apply(&conn, &[changed], 18),
-        Err(StoreError::Conflict(_))
-    ));
-    apply(&conn, std::slice::from_ref(&fact), 99).unwrap();
-    assert_eq!(get(&conn, "historical").unwrap(), Some(row));
-}
-
-#[test]
-fn independent_restore_preserves_declared_authorship_and_first_observed_ingress() {
-    use polylogue_model::authored::ImportAttribution;
-    let conn = archive();
-    let mut fact = assertion("legacy", "legacy", AssertionKind::Note, &[]);
-    fact.author = Author::Operator;
-    fact.via = None;
-    fact.machine = None;
-    fact.created_at = None;
-    fact.value = Some(
-        serde_json::json!({"text":"historical text","predecessor":{"old_id":"note:legacy","extra":"retained"}}),
-    );
-    let current = ImportAttribution {
-        machine: "receiver".into(),
-        input: "incoming".into(),
-        chain: 0,
-        actor: Author::Agent(None),
-        at: Timestamp::from_unix_ms(100).unwrap(),
-    };
-    let declared = ImportAttribution {
-        machine: "sender".into(),
-        input: "earlier".into(),
-        chain: 1,
-        actor: Author::Script("exporter".into()),
-        at: Timestamp::from_unix_ms(900).unwrap(),
-    };
-    restore(&conn, &fact, std::slice::from_ref(&declared), &current, 20).unwrap();
-    let mut rollback = current.clone();
-    rollback.at = Timestamp::from_unix_ms(1).unwrap();
-    restore(&conn, &fact, std::slice::from_ref(&rollback), &rollback, 30).unwrap();
-    let actual = get(&conn, "legacy").unwrap().unwrap();
-    assert_eq!(actual.fact, fact);
-    assert_eq!(actual.commit_seq, 20);
-    assert_eq!(actual.imports.observed, vec![current]);
-    assert_eq!(actual.imports.declared, vec![declared, rollback]);
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM client_request", [], |row| row
-            .get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
-    let overlay = archive();
-    copy(&conn, &overlay).unwrap();
-    copy(&conn, &overlay).unwrap();
-    let copied = get(&overlay, "legacy").unwrap().unwrap();
-    assert_eq!(copied.fact, fact);
-    assert_eq!(copied.imports, actual.imports);
-    assert_eq!(copied.commit_seq, 0);
-    let before = conn.total_changes();
-    let receiver = actual.imports.observed[0].clone();
-    restore(&conn, &fact, &actual.imports.declared, &receiver, 40).unwrap();
-    assert_eq!(conn.total_changes(), before);
+    assert_eq!(slots, 1);
 }

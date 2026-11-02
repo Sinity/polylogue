@@ -76,35 +76,6 @@ fn stage_record(
                 current.identity.sources.sort();
                 current.identity.sources.dedup();
             }
-            (Record::Authored(current), Record::Authored(previous))
-                if current.prepared == previous.prepared =>
-            {
-                for claim in previous.imports {
-                    if !current.imports.contains(&claim) {
-                        current.imports.push(claim);
-                    }
-                }
-            }
-            (Record::Assertion(current), Record::Assertion(previous))
-                if current.assertion == previous.assertion =>
-            {
-                for claim in previous.imports {
-                    if !current.imports.contains(&claim) {
-                        current.imports.push(claim);
-                    }
-                }
-            }
-            (Record::Historical(current), Record::Historical(previous))
-                if current.evidence == previous.evidence
-                    && current.reference == previous.reference
-                    && current.commit == previous.commit =>
-            {
-                for claim in previous.imports {
-                    if !current.imports.contains(&claim) {
-                        current.imports.push(claim);
-                    }
-                }
-            }
             (current, previous) if *current == previous => {}
             _ => return Err(format!("bundle has conflicting records for {key}")),
         }
@@ -121,11 +92,6 @@ fn count(counts: &mut Counts, record: &Record) {
         Record::Event(_) => counts.events += 1,
         Record::Document(_) => counts.documents += 1,
         Record::Link(_) => counts.links += 1,
-        Record::Historical(record) => match &record.evidence {
-            polylogue_model::historical::HistoricalRecord::Accepted(_) => counts.authored += 1,
-            polylogue_model::historical::HistoricalRecord::Assertion(_) => counts.assertions += 1,
-            polylogue_model::historical::HistoricalRecord::Run(_) => counts.runs += 1,
-        },
         Record::Authored(_) => counts.authored += 1,
         Record::Assertion(_) => counts.assertions += 1,
         Record::TextFragment(_) => counts.text_fragments += 1,

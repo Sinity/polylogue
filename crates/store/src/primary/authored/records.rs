@@ -426,48 +426,25 @@ pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
         }
     }
     crate::signals::copy(from, to)?;
-    let sql=source.sql("SELECT id,content_hash,created_at,request,outcome,effect,imports,historical,original FROM @source.client_request ORDER BY id");
+    let sql = source.sql(
+        "SELECT id,content_hash,created_at,request,outcome,effect FROM @source.client_request ORDER BY id",
+    );
     let mut statement = from.prepare(&sql)?;
     let mut rows = statement.query([])?;
     let target = Source::of(to)?;
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
         let hash: Vec<u8> = row.get(1)?;
-        let at: Option<i64> = row.get(2)?;
-        let request: Option<Vec<u8>> = row.get(3)?;
+        let at: i64 = row.get(2)?;
+        let request: Vec<u8> = row.get(3)?;
         let outcome: Option<Vec<u8>> = row.get(4)?;
         let effect: Option<Vec<u8>> = row.get(5)?;
-        let imports: String = row.get(6)?;
-        let historical: Option<Vec<u8>> = row.get(7)?;
-        let original: Option<Vec<u8>> = row.get(8)?;
         // Decode complete records before admitting them to the private view.
         let missing = || StoreError::Invalid(format!("request {id} has no frozen record"));
-        if let Some(body) = &historical {
-            let record: polylogue_model::historical::HistoricalAcceptedRequest =
-                crate::encoding::unpack_json(body)?;
-            record
-                .validate()
-                .map_err(|error| StoreError::Invalid(error.to_string()))?;
-            if record.id != id || record.content_hash.0.as_slice() != hash {
-                return Err(StoreError::Conflict(id));
-            }
-        } else {
-            let request: UserRequest =
-                crate::encoding::unpack_json(request.as_ref().ok_or_else(missing)?)?;
-            let outcome: UserOutcome =
-                crate::encoding::unpack_json(outcome.as_ref().ok_or_else(missing)?)?;
-            let _: AuthoredEffect =
-                crate::encoding::unpack_json(effect.as_ref().ok_or_else(missing)?)?;
-            if let Some(original) = &original {
-                let original: polylogue_model::historical::AcceptedEncoding =
-                    crate::encoding::unpack_json(original)?;
-                original
-                    .validate(&request, &outcome)
-                    .map_err(|error| StoreError::Invalid(error.to_string()))?;
-            }
-        }
-        let _: ImportHistory = serde_json::from_str(&imports)?;
-        to.execute(&target.sql("INSERT INTO @source.client_request(id,content_hash,created_at,request,outcome,effect,imports,historical,original,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,0)"),params![id,hash,at,request,outcome,effect,imports,historical,original])?;
+        let _: UserRequest = crate::encoding::unpack_json(&request)?;
+        let _: UserOutcome = crate::encoding::unpack_json(outcome.as_ref().ok_or_else(missing)?)?;
+        let _: AuthoredEffect = crate::encoding::unpack_json(effect.as_ref().ok_or_else(missing)?)?;
+        to.execute(&target.sql("INSERT INTO @source.client_request(id,content_hash,created_at,request,outcome,effect,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,0)"),params![id,hash,at,request,outcome,effect])?;
     }
     Ok(())
 }

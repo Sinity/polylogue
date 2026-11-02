@@ -113,11 +113,10 @@ impl Inner {
                         None,
                     ),
                     Product::Request(prepared) => (None, Some(prepared.request.machine.clone())),
-                    Product::RestoredRequest { current, .. }
-                    | Product::RestoredAssertion { current, .. }
-                    | Product::RestoredHistory { current, .. } => {
-                        (None, Some(current.machine.clone()))
+                    Product::RestoredRequest { prepared } => {
+                        (None, Some(prepared.request.machine.clone()))
                     }
+                    Product::RestoredAssertion { fact } => (None, Some(fact.machine.clone())),
                     _ => unreachable!(),
                 }
             };

@@ -217,10 +217,10 @@ pub struct Current {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Authored {
     pub reference: crate::Reference,
-    pub machine: Option<String>,
+    pub machine: String,
     pub author: crate::Author,
-    pub via: Option<crate::authorship::Channel>,
-    pub at: Option<crate::Timestamp>,
+    pub via: crate::authorship::Channel,
+    pub at: crate::Timestamp,
 }
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {

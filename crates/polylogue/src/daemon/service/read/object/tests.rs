@@ -1,7 +1,7 @@
 use super::*;
 use crate::test_daemon;
 use polylogue_model::{
-    Author, Timestamp,
+    Author,
     assertion::{AssertionKind, NewAssertion},
     authorship::{Authorship, Channel},
     bundle::Record,
@@ -166,60 +166,6 @@ fn actual_no_effect_request_read_records_one_object_run_and_roundtrips_through_d
         panic!("import lost the accepted no-effect object")
     };
     assert_eq!(record.prepared, expected);
-    assert_eq!(record.imports.len(), 1);
-}
-
-#[test]
-fn actual_historical_no_effect_read_exports_original_bytes_without_current_reacceptance() {
-    use polylogue_model::historical::{ConservedAccepted, HistoricalRecord, SourceSchema};
-    let mut d = test_daemon::start("synthetic input");
-    d.pause_signals();
-    let request = br#"{"id":"historical-no-effect","machine":"old-machine","at":"1970-01-01T00:00:00.001Z","write":{"write":"withdraw","note":"already-withdrawn"}}"#;
-    let intent = br#"["old-machine",{"write":"withdraw","note":"already-withdrawn"}]"#;
-    let outcome = br#"{"id":"historical-no-effect","repeat":false,"pending":false}"#;
-    let effect = br#"{"notes":[],"withdrawals":[],"settings":[],"variants":{"variants":[],"variant_parts":[]},"kept_results":[],"deliveries":[],"chats":[],"backfills":[]}"#;
-    let ConservedAccepted::Historical(original) =
-        polylogue_store::assertions::conversion::conserve_request(
-            SourceSchema::PolylogueArchive { version: 4 },
-            request,
-            Some(outcome),
-            Some(effect),
-            Some(BlobHash::of(intent)),
-            None,
-        )
-        .unwrap()
-    else {
-        panic!("retired intent must stay historical")
-    };
-    d.daemon
-        .writes
-        .as_ref()
-        .unwrap()
-        .restore_history(
-            HistoricalRecord::Accepted(original.clone()),
-            vec![],
-            polylogue_model::authored::ImportAttribution {
-                input: "historical-source".into(),
-                chain: 1,
-                machine: "receiver".into(),
-                actor: Author::Operator,
-                at: Timestamp::from_unix_ms(2).unwrap(),
-            },
-        )
-        .unwrap();
-    let (begin, record, complete) = streamed(&d.daemon, "historical-no-effect");
-    assert_single_object_run(&d.daemon, "request:historical-no-effect", &begin);
-    assert_eq!(complete.counts.authored, 1);
-    let Some(Record::Historical(row)) = record.record() else {
-        panic!("historical object was replaced by a current action")
-    };
-    let HistoricalRecord::Accepted(record) = &row.evidence else {
-        panic!("wrong object grain")
-    };
-    assert_eq!(record.original, original.original);
-    assert_eq!(record.conserved_effects, original.conserved_effects);
-    assert_eq!(record.outcome, original.outcome);
-    assert_eq!(record.authorship, None);
 }
 
 struct Interrupt<'a> {
@@ -285,5 +231,3 @@ fn actual_object_stream_stops_on_scope_reset_and_cancellation_before_record_body
         );
     }
 }
-
-mod historical_runs;

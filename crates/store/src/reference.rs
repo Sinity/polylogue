@@ -278,11 +278,7 @@ impl<'a> ReferenceText<'a> {
                     .clone()
                     .ok_or_else(|| StoreError::Invalid("assertion head is not exact".into()))?
             } else {
-                use polylogue_model::assertion::currency::RevisionLinks;
-                if !crate::assertions::Graph::new(self.authored)?
-                    .revisions(&reference)?
-                    .is_empty()
-                {
+                if crate::assertions::family_present(self.authored, &revision.root)? {
                     return Err(unavailable(
                         &reference,
                         "the assertion family has no current text",
@@ -291,18 +287,6 @@ impl<'a> ReferenceText<'a> {
                 return Ok(TextState::Missing);
             }
         };
-        if let Some(polylogue_model::historical::AssertionEvidence::Historical { fact, .. }) =
-            crate::assertions::get_evidence(self.authored, &id)?
-        {
-            if fact.root != revision.root {
-                return Ok(TextState::Missing);
-            }
-            let text = fact.value.as_deref().ok_or_else(|| {
-                unavailable(&reference, "the historical text body was not recorded")
-            })?;
-            let _ = visit(text)?;
-            return Ok(TextState::Present);
-        }
         let Some(assertion) = crate::assertions::get(self.authored, &id)?
             .filter(|assertion| assertion.fact.root == revision.root)
         else {
@@ -414,6 +398,45 @@ impl<'a> ReferenceText<'a> {
             Ok(ControlFlow::Continue(()))
         })
     }
+}
+
+/// The quote a link to a span keeps: the span's exact text and up to 32
+/// characters on either side, from the container's current text. `None` when
+/// the reference is not a span or its container has no recorded text yet.
+pub(crate) fn link_quote(
+    original: &rusqlite::Connection,
+    authored: &rusqlite::Connection,
+    reference: &Reference,
+) -> Result<Option<polylogue_model::assertion::Quote>> {
+    let Reference::Span {
+        container,
+        unit,
+        start,
+        end,
+    } = reference
+    else {
+        return Ok(None);
+    };
+    pinned(original)?;
+    let view = ReferenceText::new(original, authored);
+    let mut bounds = SpanBounds::new(*unit, *start, *end).map_err(span_error)?;
+    let mut text = String::new();
+    let found = view.reference_text(container, true, &mut |chunk| {
+        bounds.push(chunk).map_err(span_error)?;
+        text.push_str(chunk);
+        Ok(ControlFlow::Continue(()))
+    })?;
+    if !found {
+        return Ok(None);
+    }
+    let range = bounds.finish().map_err(span_error)?;
+    let span =
+        |position: u64| usize::try_from(position).map_err(|_| span_error(SpanError::Overflow));
+    Ok(polylogue_model::assertion::Quote::of(
+        &text,
+        span(range.start)?,
+        span(range.end)?,
+    ))
 }
 
 /// Full-text hashes require the caller's existing original-source snapshot.

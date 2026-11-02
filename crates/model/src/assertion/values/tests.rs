@@ -395,7 +395,6 @@ fn kind_shapes_decode_every_declared_value_and_refuse_malformed_static_values() 
         K::Question,
         K::Goal,
         K::Problem,
-        K::Blocker,
         K::Handoff,
         K::Correction,
         K::Memory,
@@ -517,16 +516,16 @@ fn checked_claims_and_experiment_assignments_keep_their_declared_shapes() {
 }
 
 #[test]
-fn canonical_historical_text_preserves_content_and_detaches_predecessor_claims() {
+fn canonical_predecessor_text_preserves_content_and_detaches_predecessor_claims() {
     use super::super::{AssertionFact, AssertionKind as K};
     let original = "original a\u{301}\n\rβ";
     let metadata = serde_json::json!({"id":"note:older","author":"operator","scope":"repo:claimed","text":"not the body","unknown":{"nested":[1,"kept"]}});
     let raw = serde_json::json!({"text":original,"predecessor":metadata});
-    let historical = decode(K::Note, None, Some(&raw)).unwrap();
+    let carried = decode(K::Note, None, Some(&raw)).unwrap();
     let plain = decode(K::Note, None, Some(&serde_json::json!(original))).unwrap();
-    assert_eq!(historical, plain);
-    let Value::Text(text) = historical else {
-        panic!("historical text")
+    assert_eq!(carried, plain);
+    let Value::Text(text) = carried else {
+        panic!("predecessor text")
     };
     assert_eq!(serde_json::to_value(text).unwrap(), raw);
     assert!(decode_live(K::Note, None, Some(&raw)).is_err());
@@ -538,9 +537,9 @@ fn canonical_historical_text_preserves_content_and_detaches_predecessor_claims()
         key: None,
         value: Some(raw.clone()),
         author: crate::Author::Unattributed,
-        via: Some(crate::authorship::Channel::Import),
-        machine: Some("historical-host".into()),
-        created_at: Some(crate::Timestamp::from_unix_ms(0).unwrap()),
+        via: crate::authorship::Channel::Import,
+        machine: "importing-host".into(),
+        created_at: crate::Timestamp::from_unix_ms(0).unwrap(),
         valid_until: None,
         links: Vec::new(),
     };
@@ -561,18 +560,18 @@ fn canonical_historical_text_preserves_content_and_detaches_predecessor_claims()
     assert!(decode(K::Note, None, Some(&absent)).is_err());
 }
 #[test]
-fn historical_structured_metadata_cannot_override_canonical_fields_or_validation() {
+fn predecessor_structured_metadata_cannot_override_canonical_fields_or_validation() {
     use super::super::AssertionKind as K;
     let plain = serde_json::json!({"value":"blue","confidence":0.5});
-    let historical = serde_json::json!({"value":"blue","confidence":0.5,"predecessor":{"author":"operator","value":"red","confidence":2,"scope":"repo:other"}});
+    let carried = serde_json::json!({"value":"blue","confidence":0.5,"predecessor":{"author":"operator","value":"red","confidence":2,"scope":"repo:other"}});
     assert_eq!(
         decode(K::Tag, Some("colour"), Some(&plain)).unwrap(),
-        decode(K::Tag, Some("colour"), Some(&historical)).unwrap()
+        decode(K::Tag, Some("colour"), Some(&carried)).unwrap()
     );
-    let typed: Structured<Tag> = serde_json::from_value(historical.clone()).unwrap();
+    let typed: Structured<Tag> = serde_json::from_value(carried.clone()).unwrap();
     assert_eq!(typed.fields.value, Some(serde_json::json!("blue")));
-    assert_eq!(serde_json::to_value(typed).unwrap(), historical);
-    assert!(decode_live(K::Tag, Some("colour"), Some(&historical)).is_err());
+    assert_eq!(serde_json::to_value(typed).unwrap(), carried);
+    assert!(decode_live(K::Tag, Some("colour"), Some(&carried)).is_err());
     assert!(
         decode(
             K::Tag,
@@ -622,7 +621,7 @@ fn historical_structured_metadata_cannot_override_canonical_fields_or_validation
     );
 }
 #[test]
-fn annotation_field_objects_and_historical_provenance_have_distinct_addresses() {
+fn annotation_field_objects_and_predecessor_provenance_have_distinct_addresses() {
     use super::super::AssertionKind as K;
     let field = serde_json::json!({"predecessor":{"author":"operator"},"score":1});
     let raw = serde_json::json!({"value":field,"predecessor":{"legacy_id":"old"}});
@@ -655,7 +654,7 @@ fn annotation_field_objects_and_historical_provenance_have_distinct_addresses() 
 }
 
 #[test]
-fn accepting_and_canonical_schemas_distinguish_historical_metadata() {
+fn accepting_and_canonical_schemas_distinguish_predecessor_metadata() {
     fn value<'a>(schema: &'a Json, kind: &str) -> &'a Json {
         &schema["allOf"]
             .as_array()
@@ -682,16 +681,16 @@ fn accepting_and_canonical_schemas_distinguish_historical_metadata() {
     assert_eq!(live["additionalProperties"], false);
     assert!(live["properties"].get("author").is_none());
     assert_eq!(value(&live, "note")["type"], "string");
-    let mut historical_text = false;
+    let mut predecessor_text = false;
     objects(value(&canonical, "note"), |object| {
         if object.get("properties").is_some_and(|properties| {
             properties.get("text").is_some() && properties.get("predecessor").is_some()
         }) {
             assert_eq!(object.get("additionalProperties"), Some(&Json::Bool(false)));
-            historical_text = true;
+            predecessor_text = true;
         }
     });
-    assert!(historical_text);
+    assert!(predecessor_text);
     let mut canonical_tag = false;
     objects(value(&canonical, "tag"), |object| {
         if object

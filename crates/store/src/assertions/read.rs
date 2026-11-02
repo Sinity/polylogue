@@ -1,4 +1,4 @@
-//! Typed reads use the pinned Reader's sole currency projection. Direct
+//! Typed reads of assertions over the stored currency index. Direct
 //! association is exact; container membership belongs to the query backend.
 use super::*;
 use crate::Reader;
@@ -6,8 +6,8 @@ use rusqlite::OptionalExtension;
 use std::ops::ControlFlow;
 
 impl Reader<'_> {
-    /// An assertion revision is immutable; only its admission position and
-    /// the imports that carried it change after it is written.
+    /// An assertion revision is immutable; only its admission position
+    /// changes the version a reader binds.
     pub(crate) fn fold_assertion_content_version(
         &self,
         root: &str,
@@ -15,12 +15,12 @@ impl Reader<'_> {
         hash: &mut blake3::Hasher,
     ) -> Result<()> {
         let source = Source::reading(self.conn()?)?;
-        let row: Option<(i64, String, bool)> = self
+        let row: Option<i64> = self
             .conn()?
-            .prepare_cached(&source.sql(
-                "SELECT commit_seq,imports,historical IS NOT NULL FROM @source.assertion WHERE id=?1 AND root=?2",
-            ))?
-            .query_row([revision, root], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .prepare_cached(
+                &source.sql("SELECT commit_seq FROM @source.assertion WHERE id=?1 AND root=?2"),
+            )?
+            .query_row([revision, root], |row| row.get(0))
             .optional()?;
         let row =
             row.ok_or_else(|| StoreError::NotFound(format!("assertion:{root}@{revision}")))?;
@@ -50,25 +50,8 @@ impl Reader<'_> {
         }
     }
 
-    /// Exact revisions remain readable when superseded or withdrawn. A current
-    /// kind consumer refuses a historical value outside its validated schema.
+    /// Exact revisions remain readable when superseded or withdrawn.
     pub fn assertion(&self, reference: &RevisionReference) -> Result<Option<Assertion>> {
-        match self.assertion_evidence(reference)? {
-            Some(polylogue_model::historical::AssertionEvidence::Current(row)) => Ok(Some(row)),
-            Some(historical) => Err(StoreError::ReferenceUnavailable {
-                reference: historical.reference().to_string(),
-                reason: "the recorded historical value has no validated current-kind schema".into(),
-            }),
-            None => Ok(None),
-        }
-    }
-
-    /// Object reads expose the original typed historical form without treating
-    /// its old value schema as a current native assertion.
-    pub fn assertion_evidence(
-        &self,
-        reference: &RevisionReference,
-    ) -> Result<Option<polylogue_model::historical::AssertionEvidence>> {
         let Some(exact) = self.resolved_assertion_revision(reference)? else {
             return Ok(None);
         };
@@ -76,8 +59,7 @@ impl Reader<'_> {
             .revision
             .as_ref()
             .ok_or_else(|| invalid("assertion revision is not exact"))?;
-        let row = get_evidence(self.conn()?, id)?
-            .filter(|row| row.reference() == Reference::Assertion(exact.clone()));
+        let row = get(self.conn()?, id)?.filter(|row| row.fact.root == exact.root);
         self.check()?;
         Ok(row)
     }
@@ -92,7 +74,7 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let source = Source::reading(conn)?;
         let mut statement = conn.prepare_cached(&source.sql(
-            "SELECT a.root,a.id FROM temp.assertion_about l JOIN @source.assertion a ON a.id=l.assertion WHERE l.ref=?1 ORDER BY a.root,a.id",
+            "SELECT a.root,a.id FROM @source.link l JOIN @source.assertion a ON a.id=l.record WHERE l.ref=?1 AND l.role='about' ORDER BY a.root,a.id",
         ))?;
         let mut rows = statement.query([reference.to_string()])?;
         while let Some(row) = rows.next()? {

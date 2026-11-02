@@ -1,41 +1,32 @@
-//! Historical canonical authored records are restored without executing intent.
+//! Authored records a bundle carried are restored unchanged; their intent is
+//! never resolved or run again.
 use polylogue_model::bundle::{AuthoredRecord, Record};
 
-pub(super) enum Historical {
+pub(super) enum Carried {
     Request(Box<AuthoredRecord>),
-    History(Box<polylogue_model::bundle::HistoricalRecord>),
     Assertion(Box<polylogue_model::assertion::AssertionRecord>),
 }
-impl Historical {
+impl Carried {
     pub(super) fn restore(
         self,
         writer: &polylogue_store::Writer,
-        current: polylogue_model::authored::ImportAttribution,
     ) -> polylogue_store::Result<polylogue_model::user::UserOutcome> {
         match self {
-            Self::History(record) => {
-                writer.restore_history(record.evidence, record.imports, current)
-            }
-            Self::Request(record) => {
-                writer.restore_authored(record.prepared, record.imports, current)
-            }
-            Self::Assertion(record) => {
-                writer.restore_assertion(record.assertion, record.imports, current)
-            }
+            Self::Request(record) => writer.restore_authored(record.prepared),
+            Self::Assertion(record) => writer.restore_assertion(record.assertion),
         }
     }
 }
 
 pub(super) fn replay(
     reader: impl std::io::Read,
-    mut apply: impl FnMut(Historical) -> Result<(), String>,
+    mut apply: impl FnMut(Carried) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut reader = std::io::BufReader::new(reader);
     polylogue_sources::polylogue_bundle::visit(&mut reader, |_, record, _| {
         match record {
-            Record::Authored(record) => apply(Historical::Request(record))?,
-            Record::Historical(record) => apply(Historical::History(record))?,
-            Record::Assertion(record) => apply(Historical::Assertion(record))?,
+            Record::Authored(record) => apply(Carried::Request(record))?,
+            Record::Assertion(record) => apply(Carried::Assertion(record))?,
             _ => {}
         }
         Ok(())

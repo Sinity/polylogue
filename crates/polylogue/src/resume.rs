@@ -65,13 +65,13 @@ pub fn plan(reader: &Reader<'_>, session: &SessionId) -> Result<Plan, StoreError
 pub struct ResumableSession {
     pub session: polylogue_store::NearbySession,
     pub open: OpenItems,
-    /// Operator notes on it that ask for follow-up (handoffs, blockers).
+    /// Operator notes on it that ask for follow-up (handoffs, problems).
     pub follow_ups: Vec<String>,
     pub harness_command: Option<Command>,
 }
 
 /// Sessions under `cwd`, newest first, that left something open or carry
-/// a handoff or blocker; sessions with nothing open are left out.
+/// a handoff or problem; sessions with nothing open are left out.
 pub fn resumable(
     reader: &Reader<'_>,
     cwd: &Path,
@@ -90,7 +90,7 @@ pub fn resumable(
             "{} (kind:{} OR kind:{}) author:operator",
             assertions::about(&[Reference::Session(s.id.clone())]),
             AssertionKind::Handoff.as_str(),
-            AssertionKind::Blocker.as_str(),
+            AssertionKind::Problem.as_str(),
         );
         let follow_ups: Vec<String> = assertions::list(reader, &conditions, context)?
             .into_iter()

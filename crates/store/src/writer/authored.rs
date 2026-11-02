@@ -1,12 +1,11 @@
-//! Historical authored copies preserve frozen effects and computed local ingress.
+//! Requests a bundle carried are restored with their frozen effects; nothing
+//! in them is resolved or run again.
 use super::*;
-use polylogue_model::authored::{ImportAttribution, ImportHistory, PreparedRequest};
+use polylogue_model::authored::PreparedRequest;
 use polylogue_model::user::UserOutcome;
 
 pub(super) struct Restoration {
     pub prepared: PreparedRequest,
-    pub claims: Vec<ImportAttribution>,
-    pub current: ImportAttribution,
 }
 
 pub(super) fn restore_via(queue: &WriterQueue, restoration: Restoration) -> Result<UserOutcome> {
@@ -17,35 +16,18 @@ pub(super) fn restore_via(queue: &WriterQueue, restoration: Restoration) -> Resu
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
-fn observed(conn: &Connection, restoration: &Restoration) -> Result<bool> {
+/// Whether the request is already stored; a different request under its ID
+/// is a conflict.
+fn stored(conn: &Connection, restoration: &Restoration) -> Result<bool> {
     let Some(known) =
         crate::primary::authored::frozen_request(conn, &restoration.prepared.request.id)?
     else {
         return Ok(false);
     };
-    if !crate::primary::authored::same_prepared(&known, &restoration.prepared) {
+    if known != restoration.prepared {
         return Err(StoreError::Conflict(known.request.id));
     }
-    if !crate::primary::authored::restored_contains(&known, &restoration.prepared) {
-        return Ok(false);
-    }
-    let source = crate::source::Source::of(conn)?;
-    let imports: String = conn.query_row(
-        &source.sql("SELECT imports FROM @source.client_request WHERE id=?1"),
-        [&known.request.id],
-        |row| row.get(0),
-    )?;
-    let imports: ImportHistory = serde_json::from_str(&imports)?;
-    let current = &restoration.current;
-    Ok(imports.observed.iter().any(|prior| {
-        prior.input == current.input
-            && prior.chain == current.chain
-            && prior.machine == current.machine
-            && prior.actor == current.actor
-    }) && restoration
-        .claims
-        .iter()
-        .all(|claim| imports.declared.contains(claim)))
+    Ok(true)
 }
 
 impl Inner {
@@ -64,62 +46,31 @@ impl Inner {
         Ok(())
     }
 
-    pub(super) fn restore_authored(&mut self, mut restoration: Restoration) -> Result<UserOutcome> {
+    pub(super) fn restore_authored(&mut self, restoration: Restoration) -> Result<UserOutcome> {
         if let Some(sinex) = self.sinex.as_ref().map(Arc::clone) {
             self.primary_cache_ready()?;
             let mut outcome = restoration.prepared.outcome.clone();
-            if observed(&self.index, &restoration)? {
+            if stored(&self.index, &restoration)? {
                 outcome.repeat = true;
                 return Ok(outcome);
             }
-            let mut original = None;
-            sinex.visit_pending_requests(&mut |pending| {
-                if let polylogue_model::authored::PendingAuthored::Restore {
-                    prepared,
-                    claims,
-                    current,
-                } = pending
-                    && prepared == &restoration.prepared
-                    && claims == &restoration.claims
-                    && current.input == restoration.current.input
-                    && current.chain == restoration.current.chain
-                    && current.machine == restoration.current.machine
-                    && current.actor == restoration.current.actor
-                {
-                    original = Some(current.clone());
-                }
-                Ok(())
-            })?;
-            if let Some(original) = original {
-                restoration.current = original;
-            }
             let product = crate::primary::Product::RestoredRequest {
                 prepared: restoration.prepared.clone(),
-                claims: restoration.claims.clone(),
-                current: restoration.current.clone(),
             };
             let writes = self.product_writes(vec![product])?;
             let identity = format!(
                 "authored-restore:{}",
-                blake3::hash(&serde_json::to_vec(&(
-                    &restoration.prepared,
-                    &restoration.claims,
-                    &restoration.current.input,
-                    restoration.current.chain,
-                    &restoration.current.machine,
-                    &restoration.current.actor
-                ))?)
-                .to_hex()
+                blake3::hash(&serde_json::to_vec(&restoration.prepared)?).to_hex()
             );
             sinex.prepare_named_products(&identity, &writes)?;
             match self.poll_primary() {
-                Ok(_) => outcome.pending = !observed(&self.index, &restoration)?,
+                Ok(_) => outcome.pending = !stored(&self.index, &restoration)?,
                 Err(StoreError::Sinex(_)) => outcome.pending = true,
                 Err(error) => return Err(error),
             }
             return Ok(outcome);
         }
-        if observed(&self.archive, &restoration)? {
+        if stored(&self.archive, &restoration)? {
             self.project_variant_text()?;
             let mut outcome = restoration.prepared.outcome;
             outcome.repeat = true;
@@ -127,14 +78,7 @@ impl Inner {
         }
         let tx = self.archive.transaction()?;
         let counter = bump_counter(&tx)?;
-        let outcome = crate::primary::authored::restore(
-            &tx,
-            &restoration.prepared,
-            &restoration.claims,
-            &restoration.current,
-            counter,
-        )?;
-        // Repeated content can still add a newly observed import provenance.
+        let outcome = crate::primary::authored::restore(&tx, &restoration.prepared, counter)?;
         crate::write_lock::commit(tx)?;
         self.commits.committed();
         self.project_variant_text()?;

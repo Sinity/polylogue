@@ -2,14 +2,9 @@
 use super::Reader;
 use crate::{Result, StoreError};
 use polylogue_model::{
-    Reference, RevisionReference,
-    authored::{ImportHistory, PreparedRequest},
-    bundle::AuthoredRecord,
+    Reference, RevisionReference, authored::PreparedRequest, bundle::AuthoredRecord,
 };
 use rusqlite::{Connection, OptionalExtension};
-
-#[cfg(test)]
-mod tests;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AuthoredReadIssue {
@@ -28,10 +23,6 @@ pub enum AuthoredReadIssue {
 /// Local admission is not a Sinex event or a certificate for a native source.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AuthoredReadEvidence {
-    Historical {
-        selected: Reference,
-        record: Box<polylogue_model::bundle::HistoricalRecord>,
-    },
     Local {
         selected: Reference,
         record: Box<AuthoredRecord>,
@@ -94,13 +85,6 @@ impl Target {
             },
         }
     }
-    fn matches_historical(
-        &self,
-        record: &polylogue_model::historical::HistoricalAcceptedRequest,
-    ) -> bool {
-        record.conserved_effects.as_ref().is_some_and(|effects| self.matches_effect(&effects.current)
-            || matches!(self, Self::Assertion { id, root, .. } if effects.historical_assertions.iter().any(|fact| fact.id == *id && fact.root == *root)))
-    }
     fn candidate_key(&self) -> (&'static str, &str, String) {
         match self {
             Self::Assertion { id, root, .. } => ("assertion", id, root.clone()),
@@ -146,7 +130,6 @@ impl Reader<'_> {
         };
         let conn = self.conn()?;
         let mut found = None;
-        let mut historical = None;
         prepare_membership(conn, &mut || self.check())?;
         let (kind, id, member) = target.candidate_key();
         let mut statement = conn.prepare_cached("SELECT request FROM temp.authored_effect_request WHERE kind=?1 AND id=?2 AND member=?3 ORDER BY request")?;
@@ -154,17 +137,6 @@ impl Reader<'_> {
         while let Some(row) = rows.next()? {
             self.check()?;
             let id: String = row.get(0)?;
-            if let Some(record) = crate::primary::authored::historical::get(conn, &id)? {
-                if target.matches_historical(&record) {
-                    if found.is_some() || historical.is_some() {
-                        return Ok(Some(AuthoredReadEvidence::Incomplete {
-                            issue: AuthoredReadIssue::CompetingAssociations,
-                        }));
-                    }
-                    historical = Some(record);
-                }
-                continue;
-            }
             let Some(request) = self.user_request(&id)? else {
                 continue;
             };
@@ -173,7 +145,7 @@ impl Reader<'_> {
                 continue;
             };
             if target.matches(&prepared) {
-                if found.is_some() || historical.is_some() {
+                if found.is_some() {
                     return Ok(Some(AuthoredReadEvidence::Incomplete {
                         issue: AuthoredReadIssue::CompetingAssociations,
                     }));
@@ -183,64 +155,25 @@ impl Reader<'_> {
         }
         drop(rows);
         drop(statement);
-        if let Some(record) = historical {
-            let commit: i64 = conn.query_row(
-                "SELECT commit_seq FROM source_client_request WHERE id=?1",
-                [&record.id],
-                |row| row.get(0),
-            )?;
-            if commit <= 0 {
-                return Ok(Some(AuthoredReadEvidence::Incomplete {
-                    issue: AuthoredReadIssue::LocalAdmissionUnavailable,
-                }));
-            }
-            let imports = record
-                .imports
-                .observed
-                .iter()
-                .chain(&record.imports.declared)
-                .cloned()
-                .collect();
-            let reference = format!("request:{}", record.id);
-            self.check()?;
-            return Ok(Some(AuthoredReadEvidence::Historical {
-                selected: target.selected().clone(),
-                record: Box::new(polylogue_model::bundle::HistoricalRecord {
-                    reference,
-                    commit: commit as u64,
-                    evidence: polylogue_model::historical::HistoricalRecord::Accepted(Box::new(
-                        record,
-                    )),
-                    imports,
-                }),
-            }));
-        }
         let Some(prepared) = found else {
             return Ok(Some(AuthoredReadEvidence::Incomplete {
                 issue: AuthoredReadIssue::MissingAssociation,
             }));
         };
-        let (commit, imports): (i64, String) = conn.query_row(
-            "SELECT commit_seq,imports FROM source_client_request WHERE id=?1",
+        let commit: i64 = conn.query_row(
+            "SELECT commit_seq FROM source_client_request WHERE id=?1",
             [&prepared.request.id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| row.get(0),
         )?;
         if commit <= 0 {
             return Ok(Some(AuthoredReadEvidence::Incomplete {
                 issue: AuthoredReadIssue::LocalAdmissionUnavailable,
             }));
         }
-        let commit = commit as u64;
-        let imports: ImportHistory = serde_json::from_str(&imports)?;
         let record = AuthoredRecord {
             reference: format!("request:{}", prepared.request.id),
-            commit,
+            commit: commit as u64,
             prepared,
-            imports: imports
-                .observed
-                .into_iter()
-                .chain(imports.declared)
-                .collect(),
         };
         self.conn()?;
         Ok(Some(AuthoredReadEvidence::Local {
@@ -251,57 +184,39 @@ impl Reader<'_> {
 
     fn exact_authored_request(&self, id: &str) -> Result<Option<AuthoredReadEvidence>> {
         let conn = self.conn()?;
-        let header: Option<(i64, String, bool)> = conn.query_row(
-            "SELECT commit_seq,imports,historical IS NULL AND (request IS NULL OR outcome IS NULL OR effect IS NULL) FROM source_client_request WHERE id=?1", [id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ).optional()?;
-        let Some((commit, imports, missing)) = header else {
+        let commit: Option<i64> = conn
+            .query_row(
+                "SELECT commit_seq FROM source_client_request WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(commit) = commit else {
             self.check()?;
             return Ok(None);
         };
-        let incomplete = |issue| Ok(Some(AuthoredReadEvidence::Incomplete { issue }));
         if commit <= 0 {
             self.check()?;
-            return incomplete(AuthoredReadIssue::LocalAdmissionUnavailable);
+            return Ok(Some(AuthoredReadEvidence::Incomplete {
+                issue: AuthoredReadIssue::LocalAdmissionUnavailable,
+            }));
         }
-        if missing {
-            self.check()?;
-            return incomplete(AuthoredReadIssue::MissingContent);
-        }
-        let imports: ImportHistory = serde_json::from_str(&imports)?;
-        let imports = imports
-            .observed
-            .into_iter()
-            .chain(imports.declared)
-            .collect();
         let selected = Reference::Request(id.into());
         let reference = selected.to_string();
-        let result = if let Some(record) = crate::primary::authored::historical::get(conn, id)? {
-            AuthoredReadEvidence::Historical {
-                selected,
-                record: Box::new(polylogue_model::bundle::HistoricalRecord {
-                    reference,
-                    commit: commit as u64,
-                    evidence: polylogue_model::historical::HistoricalRecord::Accepted(Box::new(
-                        record,
-                    )),
-                    imports,
-                }),
-            }
-        } else if let Some(prepared) = crate::primary::authored::frozen_request(conn, id)? {
-            AuthoredReadEvidence::Local {
-                selected,
-                record: Box::new(AuthoredRecord {
-                    reference,
-                    commit: commit as u64,
-                    prepared,
-                    imports,
-                }),
-            }
-        } else {
-            return incomplete(AuthoredReadIssue::MissingContent);
+        let Some(prepared) = crate::primary::authored::frozen_request(conn, id)? else {
+            return Ok(Some(AuthoredReadEvidence::Incomplete {
+                issue: AuthoredReadIssue::MissingContent,
+            }));
         };
         self.check()?;
-        Ok(Some(result))
+        Ok(Some(AuthoredReadEvidence::Local {
+            selected,
+            record: Box::new(AuthoredRecord {
+                reference,
+                commit: commit as u64,
+                prepared,
+            }),
+        }))
     }
 
     fn authored_target(
@@ -398,24 +313,8 @@ fn prepare_membership(conn: &Connection, check: &mut dyn FnMut() -> Result<()>) 
     }
     conn.execute("DELETE FROM temp.authored_effect_request", [])?;
     let mut insert=conn.prepare_cached("INSERT OR IGNORE INTO temp.authored_effect_request(kind,id,member,request) VALUES(?1,?2,?3,?4)")?;
-    crate::primary::authored::visit(conn, &mut |prepared, _| {
+    crate::primary::authored::visit(conn, &mut |prepared| {
         index_effect(&mut insert, &prepared.request.id, &prepared.effect, check)
-    })?;
-    crate::primary::authored::historical::visit(conn, &mut |record| {
-        check()?;
-        if let Some(effects) = &record.conserved_effects {
-            index_effect(&mut insert, &record.id, &effects.current, check)?;
-            for fact in &effects.historical_assertions {
-                check()?;
-                insert.execute(rusqlite::params![
-                    "assertion",
-                    fact.id,
-                    fact.root,
-                    record.id
-                ])?;
-            }
-        }
-        Ok(())
     })?;
     check()?;
     conn.execute("INSERT INTO temp.authored_membership_ready VALUES(1)", [])?;

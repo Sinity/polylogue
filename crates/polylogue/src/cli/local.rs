@@ -22,6 +22,7 @@ pub fn daemon(_: &Command, _: &Values, startup: &crate::config::Startup, _: bool
                         inner,
                         polylogue_store::StoreError::NewerSchema { .. }
                             | polylogue_store::StoreError::NoMigration { .. }
+                            | polylogue_store::StoreError::OlderFormat { .. }
                             | polylogue_store::StoreError::IndexVersion { .. }
                     )
                 });

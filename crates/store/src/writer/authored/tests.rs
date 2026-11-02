@@ -8,15 +8,6 @@ use polylogue_model::user::{NewChatAction, UserRequest, UserWrite};
 use polylogue_model::{Author, BlobHash, NewVariant, NewVariantPart, VariantKind, VariantRelation};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-fn current(input: &str, at: i64) -> ImportAttribution {
-    ImportAttribution {
-        input: input.into(),
-        chain: 1,
-        machine: "receiving-machine".into(),
-        actor: Author::Operator,
-        at: Timestamp::from_unix_ms(at).unwrap(),
-    }
-}
 fn prepared(write: UserWrite) -> PreparedRequest {
     let archive = crate::fixture::writer::WriterArchive::new();
     let request = UserRequest {
@@ -61,42 +52,42 @@ fn rendition() -> PreparedRequest {
     })
 }
 #[test]
-fn writer_restore_changes_provenance_snapshot_once_and_projects_frozen_variant_text() {
+fn writer_restore_changes_the_snapshot_once_and_projects_frozen_variant_text() {
     let original = rendition();
     let destination = crate::fixture::writer::WriterArchive::new();
     let pool = crate::ReadPool::open(&destination.archive).unwrap();
     destination
         .writer
-        .restore_authored(original.clone(), vec![], current("first-import", 10))
+        .restore_authored(original.clone())
         .unwrap();
     let first = pool.reader().unwrap().change_position().unwrap();
     assert!(
         destination
             .writer
-            .restore_authored(original.clone(), vec![], current("first-import", 20))
+            .restore_authored(original.clone())
             .unwrap()
             .repeat
     );
     assert_eq!(pool.reader().unwrap().change_position().unwrap(), first);
-    let second = current("second-import", 30);
+    // A request carries no record of which bundles delivered it, so a second
+    // import of the same request changes nothing.
     assert!(
         destination
             .writer
-            .restore_authored(original.clone(), vec![], second.clone())
+            .restore_authored(original.clone())
             .unwrap()
             .repeat
     );
-    assert_ne!(pool.reader().unwrap().change_position().unwrap(), first);
+    assert_eq!(pool.reader().unwrap().change_position().unwrap(), first);
     let mut copies = Vec::new();
     pool.reader()
         .unwrap()
-        .visit_authored(&mut |record, imports| {
-            assert_eq!(record, &original);
-            copies.extend_from_slice(imports);
+        .visit_authored(&mut |record| {
+            copies.push(record.clone());
             Ok(())
         })
         .unwrap();
-    assert_eq!(copies, vec![current("first-import", 10), second]);
+    assert_eq!(copies, vec![original.clone()]);
     let mut results = Vec::new();
     pool.reader()
         .unwrap()
@@ -238,17 +229,8 @@ impl crate::primary::Sinex for Producer {
     ) -> Result<()> {
         if let Some((_, writes)) = self.original() {
             for write in writes {
-                if let Product::RestoredRequest {
-                    prepared,
-                    claims,
-                    current,
-                } = write.product
-                {
-                    visit(&PendingAuthored::Restore {
-                        prepared,
-                        claims,
-                        current,
-                    })?;
+                if let Product::RestoredRequest { prepared } = write.product {
+                    visit(&PendingAuthored::Restore { prepared })?;
                 }
             }
         }
@@ -336,7 +318,7 @@ fn a_pending_scope_reset_cannot_resolve_or_publish_authored_work_from_old_cache(
         Err(StoreError::ScopeChanged)
     ));
     assert!(matches!(
-        writer.restore_authored(original.clone(), vec![], current("import", 10)),
+        writer.restore_authored(original.clone()),
         Err(StoreError::ScopeChanged)
     ));
     assert_eq!(producer.live_calls.load(Ordering::SeqCst), 0);
@@ -375,18 +357,8 @@ fn primary_restore_stays_pending_across_reopen_and_cannot_publish_a_live_retry()
         let (archive, _lock) = Archive::open_primary(&root, &bytes).unwrap();
         let writer = Writer::start_on_sinex(&archive, producer.clone()).unwrap();
         let commits = writer.sender().unwrap().completion_commits();
-        assert!(
-            writer
-                .restore_authored(original.clone(), vec![], current("import", 10))
-                .unwrap()
-                .pending
-        );
-        assert!(
-            writer
-                .restore_authored(original.clone(), vec![], current("import", 20))
-                .unwrap()
-                .pending
-        );
+        assert!(writer.restore_authored(original.clone()).unwrap().pending);
+        assert!(writer.restore_authored(original.clone()).unwrap().pending);
         assert!(writer.user(original.request.clone()).unwrap().pending);
         assert_eq!(producer.live_calls.load(Ordering::SeqCst), 0);
         assert!(matches!(
@@ -424,19 +396,14 @@ fn primary_restore_stays_pending_across_reopen_and_cannot_publish_a_live_retry()
     let mut copies = Vec::new();
     pool.reader()
         .unwrap()
-        .visit_authored(&mut |record, imports| {
+        .visit_authored(&mut |record| {
             assert_eq!(record, &original);
-            copies.extend_from_slice(imports);
+            copies.push(record.clone());
             Ok(())
         })
         .unwrap();
-    assert_eq!(copies, vec![current("import", 10)]);
-    assert!(
-        writer
-            .restore_authored(original, vec![], current("import", 30))
-            .unwrap()
-            .repeat
-    );
+    assert_eq!(copies.len(), 1);
+    assert!(writer.restore_authored(original).unwrap().repeat);
     assert_eq!(producer.live_calls.load(Ordering::SeqCst), 0);
 }
 
