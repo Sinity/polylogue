@@ -1826,6 +1826,7 @@ pub fn start(
         busy: engine.is_some(),
         ..LoopStatus::default()
     }));
+    let mail = crate::mailbox::dir(&archive.root);
     let daemon = Arc::new(Daemon {
         config: deployment,
         operations: std::sync::OnceLock::new(),
@@ -1837,7 +1838,7 @@ pub fn start(
         ),
         warm: super::warm::Warm::default(),
         acts: crate::live_acts::Acts::new(
-            crate::mailbox::dir(&archive.root),
+            mail,
             polylogue_sources::origin::by_name("codex")
                 .map(|origin| {
                     settings

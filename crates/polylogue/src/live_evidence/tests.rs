@@ -333,16 +333,22 @@ fn the_live_clock_announces_each_transition_once() {
             .into_iter()
             .collect()
     };
+    // One step of the worker: take what passed, then remember a reading.
     let mut clock = LiveClock::default();
-    let (due, wait) = clock.due(&reading(1_000), 1_000);
+    let mut step = |now: i64| {
+        let due = clock.take_due(now);
+        clock.remember(&reading(now));
+        (due, clock.wait(now))
+    };
+    let (due, wait) = step(1_000);
     assert!(due.is_empty());
     assert_eq!(wait, Some(Duration::from_millis((LIVE_WINDOW_MS + 1 - 1_000) as u64)));
     // Before the instant: nothing.
-    assert!(clock.due(&reading(LIVE_WINDOW_MS), LIVE_WINDOW_MS).0.is_empty());
+    assert!(step(LIVE_WINDOW_MS).0.is_empty());
     // After it: the session is announced once.
     let after = LIVE_WINDOW_MS + 5;
-    assert_eq!(clock.due(&reading(after), after).0, ["claude-code:a"]);
-    assert!(clock.due(&reading(after + 10), after + 10).0.is_empty());
+    assert_eq!(step(after).0, ["claude-code:a"]);
+    assert!(step(after + 10).0.is_empty());
 }
 
 fn git_in(repo: &Path, args: &[&str]) {
