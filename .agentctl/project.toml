@@ -34,7 +34,6 @@ result = "exit"
 timeout_seconds = 1200
 scratch = "tmpfs"
 cache = "none"
-cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.baseline]
@@ -45,7 +44,6 @@ result = "exit"
 timeout_seconds = 1200
 scratch = "tmpfs"
 cache = "none"
-cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.scenarios]
@@ -56,7 +54,6 @@ result = "exit"
 timeout_seconds = 1800
 scratch = "tmpfs"
 cache = "none"
-cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.compile]
@@ -79,7 +76,6 @@ result = "exit"
 timeout_seconds = 1800
 scratch = "tmpfs"
 cache = "none"
-cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.package]
@@ -90,7 +86,6 @@ result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
 cache = "none"
-cap = "cargo"
 
 [operations.exec]
 description = "Run a command in the Nix development shell"
@@ -101,7 +96,6 @@ result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
 cache = "none"
-cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.bench]
@@ -113,7 +107,6 @@ result = "exit"
 timeout_seconds = 7200
 scratch = "nvme"
 cache = "none"
-cap = "cargo"
 
 [operations.measure]
 description = "Build and run a performance driver in the measure queue; for a run that compiles nothing, use measure_run"
@@ -124,10 +117,9 @@ result = "exit"
 timeout_seconds = 7200
 scratch = "nvme"
 cache = "none"
-cap = "cargo"
 
 [operations.measure_run]
-description = "Run a measurement that compiles nothing (a database restore, a benchmark of prebuilt binaries) in the measure queue; it holds no cargo cap place"
+description = "Run a measurement that compiles nothing (a database restore, a benchmark of prebuilt binaries) in the measure queue"
 exec = ["nix", "develop", "--command"]
 arguments = "required"
 pool = "measure"
@@ -181,5 +173,4 @@ result = "exit"
 timeout_seconds = 1200
 scratch = "tmpfs"
 cache = "none"
-cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
