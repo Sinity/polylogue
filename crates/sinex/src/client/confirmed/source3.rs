@@ -17,6 +17,37 @@ use polylogue_model::historical::SourceSchema;
 use polylogue_store::primary::Product;
 use sinex_protocol::ConfirmedEvent;
 
+/// The kinds embedding a parser reading. Their Source3 declarations are also
+/// the ones the last build before the single progress value registered, so
+/// an event of such a kind at that version reads through its frozen
+/// declaration, with the reading's two flags mapped onto its progress value.
+const READING_KINDS: &[&str] = &[
+    "polylogue.session",
+    "polylogue.message",
+    "polylogue.document",
+    "polylogue.fragment",
+    "polylogue.event",
+    "polylogue.link",
+    "polylogue.background",
+    "polylogue.repository",
+    "polylogue.parse_progress",
+];
+
+/// The frozen declaration of a reading kind at the version that stored its
+/// reading as two flags.
+pub(super) fn reading_declaration(
+    name: &str,
+    version: u64,
+) -> Result<Option<&'static sinex_model::KindDeclaration>> {
+    if !READING_KINDS.contains(&name) {
+        return Ok(None);
+    }
+    Ok(contract::declaration()?
+        .kinds
+        .iter()
+        .find(|kind| kind.kind.name == name && kind.kind.version == version))
+}
+
 pub(super) fn decode(event: &ConfirmedEvent) -> Result<Option<Product>> {
     if let Some(product) = queries::decode(event)? {
         return Ok(Some(product));

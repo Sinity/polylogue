@@ -29,24 +29,38 @@ fn decode_event(event: &sinex_protocol::ConfirmedEvent) -> Result<Confirmed> {
                 reason: "historical source does not match its frozen native contract".into(),
             });
         }
-        let declaration = crate::kinds::declarations("polylogue")
+        let current = crate::kinds::declarations("polylogue")
             .into_iter()
             .find(|declaration| {
                 declaration.kind.name == event.event_type
                     && declaration.kind.version == event.kind_version
-            })
-            .ok_or_else(|| {
-                Error::Invalid(format!(
+            });
+        // A version that stored its reading as two flags is a stored format,
+        // read through its frozen declaration.
+        let earlier = match current {
+            Some(_) => None,
+            None => source3::reading_declaration(&event.event_type, event.kind_version)?,
+        };
+        let hash = match (&current, earlier) {
+            (Some(declaration), _) => declaration.definition_hash(),
+            (None, Some(declaration)) => declaration.definition_hash(),
+            (None, None) => {
+                return Err(Error::Invalid(format!(
                     "unsupported indexed kind {}@{}",
                     event.event_type, event.kind_version
-                ))
-            })?;
-        if declaration.definition_hash() != event.kind_definition_hash {
+                )));
+            }
+        };
+        if hash != event.kind_definition_hash {
             return Err(Error::Invalid(
                 "fetched indexed kind differs from the supported immutable schema".into(),
             ));
         }
-        crate::products::decode(&event.event_type, event.payload.clone())?
+        let mut payload = event.payload.clone();
+        if earlier.is_some() {
+            crate::earlier_readings::rewrite_event(&mut payload)?;
+        }
+        crate::products::decode(&event.event_type, payload)?
     };
     if matches!(
         &product,
@@ -697,3 +711,6 @@ fn raw_coverage(coverage: sinex_protocol::CoverageStatus) -> local::RawInputCove
         sinex_protocol::CoverageStatus::NotRequested => local::RawInputCoverage::NotRequested,
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -153,13 +153,14 @@ fn the_query_contract_is_unchanged_and_reading_kinds_take_new_versions() {
 }
 
 #[test]
-fn source3_raw_facts_at_their_frozen_versions_are_refused_not_misread() {
+fn unchanged_source3_raw_facts_decode_with_original_versions_hashes_and_reading_data() {
     for product in raw_products() {
         let name = crate::products::kind(&product).unwrap();
         let version = match name {
             "polylogue.message" => 5,
             _ => 4,
         };
+        // Source3 stored the reading's progress as two flags.
         let mut payload = crate::products::payload(&product, 0).unwrap();
         let reading = payload["record"]["reading"].as_object_mut().unwrap();
         assert_eq!(reading.remove("progress"), Some(json!("at_end")));
@@ -177,12 +178,12 @@ fn source3_raw_facts_at_their_frozen_versions_are_refused_not_misread() {
             .validate(&event.payload)
             .unwrap();
         let before = serde_json::to_vec(&event).unwrap();
-        let refused = super::super::super::decode_event(&event).unwrap_err();
-        assert!(
-            matches!(&refused, crate::Error::Invalid(message)
-                if *message == format!("unsupported indexed kind {name}@{version}")),
-            "{refused:?}"
-        );
+        let confirmed = super::super::super::decode_event(&event).unwrap();
+        assert!(matches!(confirmed.change,ConfirmedChange::Live(actual) if *actual==product));
+        let native = confirmed.native.unwrap();
+        assert_eq!(native.kind.version, version);
+        assert_eq!(native.kind_definition_hash, event.kind_definition_hash);
+        assert_eq!(native.origin.source_fingerprint, event.source_fingerprint);
         assert_eq!(serde_json::to_vec(&event).unwrap(), before);
     }
 }

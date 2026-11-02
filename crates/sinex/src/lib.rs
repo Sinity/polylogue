@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 mod client;
 mod context;
+mod earlier_readings;
 pub use context::{ContextFailure, ContextFailureKind, ResolvedContext};
 pub use sinex_protocol::PublicInterruptBudget;
 pub mod kinds;

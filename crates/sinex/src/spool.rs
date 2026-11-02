@@ -358,7 +358,7 @@ impl PinnedCapture {
         };
         let prepared =
             hashed_blobs::Prepared::from_encoded(file, descriptor, None, ReadLimits::default())?;
-        let capture: Capture = decode_json(prepared.reader(None, ReadLimits::default())?)?;
+        let capture = decode_capture(prepared.reader(None, ReadLimits::default())?)?;
         if capture_header(&capture) != self.header {
             return invalid("capture sidecar differs from its queue header");
         }
@@ -1947,14 +1947,25 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
         Err(error) => Err(error),
     }
 }
-fn read_checked<T: serde::de::DeserializeOwned + Serialize>(path: &Path) -> Result<Option<T>> {
-    let Some(checked) = read_json::<Checked<T>>(path)? else {
+/// Reads a capture sidecar. Sidecars written before a reading carried one
+/// progress value hold its two flags instead, and read as that value.
+fn decode_capture(reader: impl Read) -> Result<Capture> {
+    let mut capture: serde_json::Value = decode_json(reader)?;
+    crate::earlier_readings::rewrite_capture(&mut capture)?;
+    Ok(serde_json::from_value(capture)?)
+}
+
+/// The checksum covers the stored bytes of the value, so a record written by
+/// an earlier build verifies even where the current type no longer keeps one
+/// of its fields.
+fn read_checked<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
+    let Some(checked) = read_json::<Checked<Box<serde_json::value::RawValue>>>(path)? else {
         return Ok(None);
     };
-    if encoded_hash(&checked.value)?.0 != checked.digest {
+    if hash_name(blake3::hash(checked.value.get().as_bytes())) != checked.digest {
         return invalid("spool metadata checksum differs from its contents");
     }
-    Ok(Some(checked.value))
+    Ok(Some(serde_json::from_str(checked.value.get())?))
 }
 fn write_checked(path: &Path, value: &impl Serialize) -> Result<()> {
     write_json(
