@@ -6,7 +6,7 @@
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
       # The package build proves a clean, locked build. Tests run through
-      # `cargo run -p xtask -- check`, which reuses incremental builds.
+      # `cargo run -p xtask -- check`, which reuses the development target.
       polylogue = pkgs.rustPlatform.buildRustPackage {
         pname = "polylogue";
         version = "0.1.0";
@@ -33,7 +33,10 @@
         # mold links the test binaries several times faster than the default
         # linker: on a cold test build the workspace's test binaries took
         # 169 s of linking with ld and 37 s with mold.
-        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
+        # Compressed debug sections keep file and line numbers in backtraces
+        # and shrink what each test link writes: the 16 standalone test
+        # binaries went from 731 MB to 430 MB.
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold -C link-arg=-Wl,--compress-debug-sections=zlib";
         shellHook = ''
           # Optional host placement; an explicitly set target directory is kept.
           if [ -z "''${CARGO_TARGET_DIR:-}" ] && command -v sinnix-cargo-target >/dev/null 2>&1; then
