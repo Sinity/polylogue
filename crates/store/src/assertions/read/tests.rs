@@ -239,7 +239,7 @@ fn query_assertion_retries_and_replay_keep_the_original_resolved_targets() {
             resolved: vec![original.clone()],
         },
     );
-    writer.user(request).unwrap();
+    writer.user(request.clone()).unwrap();
     assert_eq!(
         reads.reader().unwrap().user_request("annotated").unwrap(),
         Some(request.clone())
@@ -288,7 +288,7 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
             read_at: "{\"now\":1}".into(),
         },
     );
-    writer.user(request).unwrap();
+    writer.user(request.clone()).unwrap();
     let mut changed = request.clone();
     if let UserWrite::KeepResult {
         rows_json, read_at, ..
