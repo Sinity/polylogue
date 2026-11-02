@@ -543,10 +543,8 @@ impl LiveFacts {
             "task_claimed" => {
                 self.task = data.get("task").and_then(Json::as_str).map(str::to_owned);
             }
-            "task_released" => {
-                if self.task.as_deref() == data.get("task").and_then(Json::as_str) {
-                    self.task = None;
-                }
+            "task_released" if self.task.as_deref() == data.get("task").and_then(Json::as_str) => {
+                self.task = None;
             }
             _ => {}
         }
