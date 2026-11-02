@@ -1,25 +1,31 @@
 //! The read contract shared by selection, view projection, layout and delivery.
 //! Canonical source records stay separate from presentation substitutions.
+mod composition;
+mod cursor;
 mod delivery;
 mod evidence;
 mod format;
 mod fragments;
+mod item_index;
 mod items;
 mod options;
 mod parents;
-mod position;
+
 mod presentation;
 mod projection;
 mod target;
 mod tokens;
+pub use composition::*;
+pub use cursor::*;
 pub use delivery::*;
 pub use evidence::*;
 pub use format::*;
 pub use fragments::*;
+pub use item_index::*;
 pub use items::*;
 pub use options::*;
 pub use parents::*;
-pub use position::*;
+
 pub use presentation::*;
 pub use projection::*;
 pub use target::*;
@@ -57,6 +63,8 @@ pub enum ReadError {
     },
     #[error("invalid read evidence: {0}")]
     InvalidEvidence(String),
+    #[error("unknown fold {word:?}; kinds: {kinds}")]
+    UnknownFold { word: String, kinds: String },
 }
 
 #[cfg(test)]

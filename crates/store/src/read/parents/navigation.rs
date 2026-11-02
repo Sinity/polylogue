@@ -1,16 +1,5 @@
-//! Metadata-only positions and outline entries for the shared reader.
+//! Metadata-only positions for the shared reader.
 use super::*;
-
-#[derive(Debug, Clone, Serialize)]
-pub struct OutlineEntry {
-    #[serde(skip)]
-    pub key: i64,
-    pub message: polylogue_model::MessageId,
-    pub session: SessionId,
-    pub at: Option<Timestamp>,
-    pub kinds: Vec<String>,
-    pub events: Vec<String>,
-}
 
 fn message_count(count: i64) -> Result<usize> {
     usize::try_from(count)
@@ -167,92 +156,6 @@ impl MessageSelection<'_, '_> {
             }
         }
         Ok(None)
-    }
-
-    /// Continue after an order key, within the selected parent-session order.
-    pub fn outline(&self, after: Option<i64>, size: usize) -> Result<Vec<OutlineEntry>> {
-        let conn = self.reader.conn()?;
-        let mut entries = Vec::new();
-        let sessions = self.sessions();
-        let mut begun = after.is_none();
-        for (session, members) in sessions {
-            let members = members.map(|keys| keys.into_iter().collect::<HashSet<_>>());
-            let anchor = if !begun {
-                let belongs = match &members {
-                    Some(keys) => keys.contains(&after.unwrap()),
-                    None => conn.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1 AND session_pk=?2)",
-                        params![after, session],
-                        |row| row.get(0),
-                    )?,
-                };
-                if !belongs {
-                    continue;
-                }
-                begun = true;
-                after
-            } else {
-                None
-            };
-            // Candidate sets are computed once, rather than looked up again for
-            // every message. The message order index seeks past the anchor.
-            let seek = if anchor.is_some() {
-                "AND (m.order_input_id,m.seq,m.record_position,m.id) > (SELECT order_input_id,seq,record_position,id FROM message WHERE pk=?2)"
-            } else {
-                ""
-            };
-            let sql = format!("WITH failures AS MATERIALIZED (
-                SELECT DISTINCT b.message_pk FROM tool_call t JOIN block b ON b.pk=t.call_block_pk WHERE t.session_pk=?1 AND t.outcome='error'),
-                compactions AS MATERIALIZED (SELECT after_message_pk FROM event WHERE session_pk=?1 AND kind IN ('compaction','microcompaction'))
-                SELECT m.pk,m.id,s.id,m.at,pl_is_prompt(m.role,m.prompt_kind),m.pk IN failures,EXISTS(SELECT 1 FROM link WHERE branch_point=m.id)
-                FROM message m JOIN session s ON s.pk=m.session_pk
-                WHERE m.session_pk=?1 AND m.duplicate_of IS NULL {seek} AND
-                (pl_is_prompt(m.role,m.prompt_kind) OR m.pk IN failures OR EXISTS(SELECT 1 FROM link WHERE branch_point=m.id) OR m.pk IN compactions)
-                ORDER BY m.order_input_id,m.seq,m.record_position,m.id");
-            let mut statement = conn.prepare_cached(&sql)?;
-            let mut rows = if anchor.is_some() {
-                statement.query(params![session, anchor])?
-            } else {
-                statement.query([session])?
-            };
-            while let Some(row) = rows.next()? {
-                let pk: i64 = row.get(0)?;
-                if members
-                    .as_ref()
-                    .is_some_and(|members| !members.contains(&pk))
-                {
-                    continue;
-                }
-                let mut kinds = Vec::new();
-                if row.get::<_, bool>(4)? {
-                    kinds.push("prompt".into());
-                }
-                if row.get::<_, bool>(5)? {
-                    kinds.push("tool failure".into());
-                }
-                if row.get::<_, bool>(6)? {
-                    kinds.push("branch point".into());
-                }
-                let events=conn.prepare_cached("SELECT id FROM event WHERE after_message_pk=?1 AND kind IN ('compaction','microcompaction') ORDER BY seq,id")?.query_map([pk],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-                if !events.is_empty() {
-                    kinds.push("compaction".into());
-                }
-                entries.push(OutlineEntry {
-                    key: pk,
-                    message: polylogue_model::MessageId::parse(&row.get::<_, String>(1)?)
-                        .map_err(|e| StoreError::Invalid(e.to_string()))?,
-                    session: SessionId::parse(&row.get::<_, String>(2)?)
-                        .map_err(|e| StoreError::Invalid(e.to_string()))?,
-                    at: ts(row.get(3)?),
-                    kinds,
-                    events,
-                });
-                if entries.len() == size {
-                    return Ok(entries);
-                }
-            }
-        }
-        Ok(entries)
     }
 
     /// The closest preceding visible message, seeking backwards in source order.

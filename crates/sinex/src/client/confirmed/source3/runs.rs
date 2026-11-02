@@ -4,7 +4,6 @@ use crate::{Error, Result};
 use polylogue_model::{
     BlobHash,
     historical::{NativeProjectionHistory, NativeProjectionObservation, SourceSchema},
-    query_objects::HistoricalRunReplay,
 };
 use polylogue_store::primary::Product;
 use query_language::identity::QuestionId;
@@ -69,42 +68,14 @@ pub(super) fn decode(event: &ConfirmedEvent) -> Result<Option<Product>> {
             provenance: provenance::from_event(event, encoded_payload.clone())?,
         })
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    let mut run = polylogue_store::query_objects::conserve_historical_run(
+    let run = polylogue_store::query_objects::conserve_historical_run(
         source,
         record.run.get().as_bytes(),
         payload.binding_hash,
         payload.run_hash,
         native,
     )?;
-    if !locator_supported(&body)? {
-        run.replay = HistoricalRunReplay::Unavailable {
-            reason: "the recorded Run2 locator is outside its frozen reading contract".into(),
-        };
-    }
     Ok(Some(Product::HistoricalQueryRun { run: Box::new(run) }))
-}
-
-fn locator_supported(body: &serde_json::Value) -> Result<bool> {
-    if body
-        .pointer("/binding/kind")
-        .and_then(serde_json::Value::as_str)
-        != Some("continuation")
-    {
-        return Ok(true);
-    }
-    let supported = contract::declaration()?
-        .kinds
-        .iter()
-        .find(|kind| kind.kind.name == "polylogue.query_run" && kind.kind.version == 2)
-        .and_then(|kind| kind.payload_schema.as_ref())
-        .and_then(|schema| schema.pointer("/$defs/ReadRecordKind/enum"))
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| {
-            Error::Invalid("frozen Run2 declaration lacks its locator vocabulary".into())
-        })?;
-    Ok(body
-        .pointer("/binding/seek/anchor/selection/record/kind")
-        .is_some_and(|kind| supported.contains(kind)))
 }
 
 #[cfg(test)]

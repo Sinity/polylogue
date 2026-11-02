@@ -39,17 +39,6 @@ fn page_navigation_and_message_routes_use_the_shared_selection() {
         let (status, _, body) = send_html(&r, &path).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(!body.contains("history.back"));
-        let (status, _, body) = send(
-            &r,
-            authed(get("/api/v1/outline?session=claude-code:s1&page_size=1"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let data: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(data["entries"][0]["message"], "claude-code:u1");
-        assert!(!body.contains("alert"));
     });
 }
 

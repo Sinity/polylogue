@@ -144,17 +144,6 @@ pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
                 .validate()
                 .map_err(|error| invalid(error.to_string()))
         }
-        RunBinding::Continuation { root, .. } => {
-            if run.question.is_none() {
-                return Err(invalid("a query continuation requires its question"));
-            }
-            if root == &run.id {
-                return Err(invalid(
-                    "a continuation cannot name itself as its original root",
-                ));
-            }
-            Ok(())
-        }
     }
 }
 fn validate_execution(run: &QueryRun, execution: &ExecutionBinding) -> Result<()> {
@@ -191,52 +180,6 @@ fn validate_execution(run: &QueryRun, execution: &ExecutionBinding) -> Result<()
         .validate_presentation()
         .map_err(|error| invalid(error.to_string()))?;
     Ok(())
-}
-
-pub(crate) fn validate_child_root(run: &QueryRun, original: &QueryRun) -> Result<()> {
-    let RunBinding::Continuation {
-        root, binding_hash, ..
-    } = &run.binding
-    else {
-        return Ok(());
-    };
-    if root == &run.id || root != &original.id {
-        return Err(invalid("continuation does not name its original root"));
-    }
-    validate_run(original)?;
-    let Some(execution) = original.binding.original() else {
-        return Err(invalid("continuation roots cannot be chained"));
-    };
-    if !matches!(
-        &execution.presentation,
-        polylogue_model::query_objects::ExecutionPresentation::Read {
-            delivery: polylogue_model::read::ReadDelivery::Page,
-            ..
-        }
-    ) {
-        return Err(invalid("continuation requires an original paged reading"));
-    }
-    if run.question != original.question || *binding_hash != original.binding_hash()? {
-        return Err(StoreError::Conflict(format!("run:{}", run.id)));
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_root_reference(
-    conn: &Connection,
-    run: &QueryRun,
-    pending: Option<&dyn crate::primary::Sinex>,
-) -> Result<()> {
-    let RunBinding::Continuation { root, .. } = &run.binding else {
-        return Ok(());
-    };
-    let original = lookup_run(conn, Source::of(conn)?, root, pending)?.ok_or_else(|| {
-        StoreError::ReferenceUnavailable {
-            reference: format!("run:{}", run.id),
-            reason: "original root binding is not retained".into(),
-        }
-    })?;
-    validate_child_root(run, &original.value)
 }
 
 pub(crate) fn equivalent(left: &QueryObject, right: &QueryObject) -> bool {
@@ -693,31 +636,6 @@ impl Reader<'_> {
         let found = lookup_run(self.conn()?, Source::Cache, id, pending)?;
         self.conn()?;
         Ok(found)
-    }
-
-    /// Resolves at most one original root. Custody is data, not authorization;
-    /// the replay factory must authenticate its seal and current grant/context.
-    pub fn query_run_root(
-        &self,
-        id: &polylogue_model::RunId,
-        pending: Option<&dyn crate::primary::Sinex>,
-    ) -> Result<Option<QueryLookup<QueryRun>>> {
-        let Some(requested) = self.query_run(id, pending)? else {
-            return Ok(None);
-        };
-        validate_run(&requested.value)?;
-        let RunBinding::Continuation { root, .. } = &requested.value.binding else {
-            return Ok(Some(requested));
-        };
-        let original =
-            self.query_run(root, pending)?
-                .ok_or_else(|| StoreError::ReferenceUnavailable {
-                    reference: format!("run:{id}"),
-                    reason: "original root binding is not retained in the current view".into(),
-                })?;
-        validate_child_root(&requested.value, &original.value)?;
-        self.conn()?;
-        Ok(Some(original))
     }
 
     pub fn query_run_outcome(

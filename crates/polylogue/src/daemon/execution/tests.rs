@@ -62,13 +62,14 @@ fn expired_requests_never_start_any_read_operation() {
     let daemon = test_daemon::start("synthetic limits");
     let requests = [
         Request::Status,
-        Request::ReadResume {
-            root_run: polylogue_model::RunId::parse("019a0000-0000-7000-8000-000000000001")
-                .unwrap(),
-            cursor: query_language::cursor::SealedCursor::from_wire(
-                "never-open-an-expired-request",
-            ),
+        Request::Read {
+            target: "session:claude-code:s1".into(),
+            options: polylogue_model::read::ReadOptions::default(),
+            delivery: polylogue_model::read::ReadDelivery::Page,
+            format: "json".into(),
             budget: None,
+            with_blobs: false,
+            cursor: Some("never-open-an-expired-request".into()),
         },
         Request::Read {
             target: "session:claude-code:s1".into(),
@@ -77,6 +78,7 @@ fn expired_requests_never_start_any_read_operation() {
             format: "json".into(),
             budget: None,
             with_blobs: false,
+            cursor: None,
         },
         Request::Context {
             request_id: "synthetic-recall".into(),
@@ -172,6 +174,7 @@ fn streamed_read_has_no_default_deadline_and_explicit_deadlines_still_apply() {
         format: "json".into(),
         budget: None,
         with_blobs: false,
+        cursor: None,
     };
     let limit = limit_for(&request, None, Default::default());
     assert!(limit.check().is_ok());
@@ -250,11 +253,15 @@ fn an_authored_write_commits_with_an_expired_cancelled_read_budget() {
 }
 
 #[test]
-fn resumed_read_is_always_a_page_with_an_ordinary_read_deadline() {
-    let request = Request::ReadResume {
-        root_run: polylogue_model::RunId::parse("019a0000-0000-7000-8000-000000000001").unwrap(),
-        cursor: query_language::cursor::SealedCursor::from_wire("opaque-awaiting-owner-validation"),
+fn continued_read_is_a_page_with_an_ordinary_read_deadline() {
+    let request = Request::Read {
+        target: "session:claude-code:s1".into(),
+        options: polylogue_model::read::ReadOptions::default(),
+        delivery: polylogue_model::read::ReadDelivery::Page,
+        format: "json".into(),
         budget: None,
+        with_blobs: false,
+        cursor: Some("opaque-awaiting-owner-validation".into()),
     };
     assert!(request.read_only());
     assert!(!request.streaming());

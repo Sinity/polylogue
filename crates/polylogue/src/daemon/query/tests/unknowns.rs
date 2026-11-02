@@ -202,7 +202,13 @@ fn session_has_calls_and_errors_reads_only_its_own_messages() {
             session,
             MessageFacts {
                 on_active_path: Some(false),
-                ..msg("abandoned", "assistant", "model", "discarded", None)
+                ..msg(
+                    "claude-code:abandoned",
+                    "assistant",
+                    "model",
+                    "discarded",
+                    None,
+                )
             },
         )
         .unwrap();
@@ -217,7 +223,13 @@ fn session_has_calls_and_errors_reads_only_its_own_messages() {
     .unwrap();
     fx.message(
         session,
-        msg("active", "user", "human", "keep this path", None),
+        msg(
+            "claude-code:active",
+            "user",
+            "human",
+            "keep this path",
+            None,
+        ),
     )
     .unwrap();
     let mut w = TestArchive { _dir: dir, fx };
@@ -232,7 +244,13 @@ fn session_has_calls_and_errors_reads_only_its_own_messages() {
     let active =
         w.fx.message(
             session,
-            msg("active-call", "assistant", "model", "continue", None),
+            msg(
+                "claude-code:active-call",
+                "assistant",
+                "model",
+                "continue",
+                None,
+            ),
         )
         .unwrap();
     w.fx.tool_call(

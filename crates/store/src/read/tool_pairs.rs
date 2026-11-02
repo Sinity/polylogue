@@ -3,12 +3,11 @@
 //! a matching name elsewhere in the archive supplies a result.
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
-    BlobHash, Block, MessageId, SessionId,
+    Block, MessageId, SessionId,
     bundle::MessageProjection,
     read::{Source, SourceBlock, ToolPair, ValueState},
 };
 use rusqlite::{Row, params};
-use std::collections::BTreeSet;
 
 struct BlockFact {
     pk: i64,
@@ -57,20 +56,6 @@ impl BlockFact {
     }
     fn source(&self) -> Source {
         Source::block(&self.message, &self.session, self.ordinal, false)
-    }
-    fn fold(&self, hash: &mut blake3::Hasher) -> Result<()> {
-        fold(
-            hash,
-            &(
-                &self.message,
-                &self.session,
-                self.ordinal,
-                &self.call_id,
-                &self.version,
-                &self.layout,
-                self.visible()?,
-            ),
-        )
     }
 }
 struct PairFact {
@@ -227,38 +212,6 @@ impl Reader<'_> {
         Ok(Some(pair))
     }
 
-    /// Commits to the same relation and current shown versions without reading
-    /// block, text or structured result payloads. Original positions are supplied
-    /// by the already selected message/block; this does not compile a selection.
-    pub fn message_tool_pair_fingerprint(
-        &self,
-        message: &MessageId,
-        selected_ordinals: &[u64],
-    ) -> Result<BlobHash> {
-        self.check()?;
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"polylogue.read.tool-pair-dependencies.v1\0");
-        fold(&mut hash, message)?;
-        for ordinal in selected_ordinals.iter().copied().collect::<BTreeSet<_>>() {
-            self.check()?;
-            fold(&mut hash, &ordinal)?;
-            if let Some(fact) = self.tool_pair_fact(message, ordinal)? {
-                fold(&mut hash, &true)?;
-                fact.call.fold(&mut hash)?;
-                fold(&mut hash, &fact.matched)?;
-                if let Some(result) = fact.result {
-                    result.fold(&mut hash)?;
-                } else {
-                    fold(&mut hash, &false)?;
-                }
-            } else {
-                fold(&mut hash, &false)?;
-            }
-        }
-        self.check()?;
-        Ok(BlobHash(*hash.finalize().as_bytes()))
-    }
-
     fn tool_pair_fact(&self, message: &MessageId, ordinal: u64) -> Result<Option<PairFact>> {
         let conn = self.conn()?;
         let mut input = conn.prepare_cached(
@@ -388,7 +341,6 @@ impl Reader<'_> {
 fn invalid(message: &str) -> StoreError {
     StoreError::Invalid(message.into())
 }
-use super::fold_serialized as fold;
 
 #[cfg(test)]
 #[path = "tool_pairs/tests.rs"]

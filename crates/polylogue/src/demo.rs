@@ -192,7 +192,7 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
         "Read the continuation with its parents",
         "Inherited messages appear with the continuation when requested.",
         "read",
-        json!({"target": format!("session:{RESUME}"), "inherited": true, "format": "markdown"}),
+        json!({"target": format!("session:{RESUME}"), "show": ["inherited"], "format": "markdown"}),
     )?;
     step(
         "Keep unknown costs visible",

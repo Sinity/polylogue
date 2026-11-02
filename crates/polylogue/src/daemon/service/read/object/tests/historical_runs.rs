@@ -14,6 +14,7 @@ fn raw_read(id: &polylogue_model::RunId) -> Request {
         format: "jsonl".into(),
         budget: None,
         with_blobs: false,
+        cursor: None,
     }
 }
 fn seed(d: &Daemon) -> polylogue_model::query_objects::HistoricalQueryRun {
@@ -207,7 +208,7 @@ fn raw_historical_run_page_preserves_record_and_small_budget_offers_streaming() 
         panic!("{response:?}")
     };
     let page: ReadPage = serde_json::from_value(data).unwrap();
-    assert!(page.document.footer.position.is_none());
+    assert!(page.document.footer.next.is_none());
     let exported = page
         .document
         .items

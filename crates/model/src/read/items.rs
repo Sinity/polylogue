@@ -1,4 +1,4 @@
-use super::{BranchState, ReadPosition, View};
+use super::{BranchState, ItemPlace, View};
 use crate::{Author, Block, MessageId, Session, SessionId, TimeEvidence, Timestamp};
 use serde::{Deserialize, Serialize};
 
@@ -158,7 +158,8 @@ pub enum HeaderKind {
     },
     Logical {
         root: SessionId,
-        physical_sessions: ValueState<u64>,
+        /// The physical sessions the reading joins, in reading order.
+        physical_sessions: Vec<SessionId>,
         own_messages: ValueState<u64>,
         inherited_messages: ValueState<u64>,
     },
@@ -212,6 +213,11 @@ pub struct MessageHeader {
     pub inherited: bool,
     #[serde(default)]
     pub branch: BranchState,
+    /// The context meter, when the reading shows it: the provider-reported
+    /// input (`value`), the running estimate since the last boundary
+    /// (`inferred`), or `unknown`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ValueState<u64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -283,7 +289,7 @@ pub enum ItemKind {
     /// the acknowledged query, not the original native record inside the JSON.
     Fragment {
         text: String,
-        position: ReadPosition,
+        position: ItemPlace,
         until: u64,
         total: u64,
     },
@@ -482,8 +488,10 @@ pub struct ReadFooter {
     pub next: Option<ReadyCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous: Option<ReadyCall>,
+    /// On the last page of a session reading: the call that reads what is
+    /// appended after it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub position: Option<ReadPosition>,
+    pub follow: Option<ReadyCall>,
     /// Layout items emitted on this page. Selection counts belong in header figures.
     pub shown: u64,
     /// Total layout items, only when known without scanning the selection.

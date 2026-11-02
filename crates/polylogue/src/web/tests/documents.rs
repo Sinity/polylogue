@@ -75,6 +75,7 @@ fn native_documents_search_and_read_through_one_typed_http_operation() {
                 format: "json".into(),
                 budget: None,
                 with_blobs: false,
+                cursor: None,
             },
             &r.web.daemon,
         )) else {

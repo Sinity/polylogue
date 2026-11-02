@@ -291,6 +291,7 @@ pub fn visit_record(
                         variant: mark,
                         inherited: evidence.inherited,
                         branch: evidence.branch.clone(),
+                        context: None,
                     }),
                 },
             }) {
@@ -387,13 +388,18 @@ pub fn visit_record(
             }
         }
         Record::Event(row) if options.view != View::Changes => {
-            if !visit(ReadItem {
-                source,
-                kind: ItemKind::Other {
+            let kind = match event_indicator(&row.event) {
+                Some((indicator, text)) => ItemKind::Indicator {
+                    indicator,
+                    text,
+                    expand: None,
+                },
+                None => ItemKind::Other {
                     type_name: row.event.kind.clone(),
                     data: json!({"event":row.event,"identity":row.identity}),
                 },
-            }) {
+            };
+            if !visit(ReadItem { source, kind }) {
                 return Ok(());
             }
         }
@@ -1042,4 +1048,91 @@ fn root_text(
             text: text.into_owned(),
         },
     }))
+}
+
+/// Context boundaries and other in-place events read as one line at their
+/// position; figures the source did not record say so.
+fn event_indicator(event: &polylogue_model::Event) -> Option<(IndicatorKind, String)> {
+    let number = |pointers: &[&str]| {
+        pointers
+            .iter()
+            .find_map(|pointer| event.data.pointer(pointer).and_then(Value::as_u64))
+    };
+    let text_of = |pointers: &[&str]| {
+        pointers
+            .iter()
+            .find_map(|pointer| event.data.pointer(pointer).and_then(Value::as_str))
+            .map(str::to_owned)
+    };
+    let tokens = |n: u64| {
+        if n >= 1000 {
+            format!("{:.1}k", n as f64 / 1000.0)
+        } else {
+            n.to_string()
+        }
+    };
+    match event.kind.as_str() {
+        "compaction" => {
+            let before = number(&["/compactMetadata/preTokens", "/pre_tokens"]);
+            let after = number(&["/compactMetadata/postTokens", "/post_tokens"]);
+            let trigger = text_of(&["/compactMetadata/trigger", "/trigger"]);
+            let figures = match (before, after) {
+                (Some(before), Some(after)) => {
+                    format!("{} → {} tokens", tokens(before), tokens(after))
+                }
+                (Some(before), None) => format!("{} tokens before", tokens(before)),
+                (None, Some(after)) => format!("{} tokens after", tokens(after)),
+                _ => "tokens not recorded".into(),
+            };
+            let mut text = format!("compacted ({figures})");
+            if let Some(trigger) = trigger {
+                text.push_str(" · ");
+                text.push_str(&trigger);
+            }
+            Some((IndicatorKind::Compacted, text))
+        }
+        "microcompaction" => {
+            let saved = number(&["/microcompactMetadata/tokensSaved", "/tokens_saved"]);
+            Some((
+                IndicatorKind::Microcompacted,
+                match saved {
+                    Some(saved) => format!(
+                        "tool results removed from context (−{} tokens)",
+                        tokens(saved)
+                    ),
+                    None => "tool results removed from context".into(),
+                },
+            ))
+        }
+        "compaction_summary" => {
+            let summary = text_of(&["/message/content", "/content", "/summary"]).or_else(|| {
+                event
+                    .data
+                    .pointer("/message/content")
+                    .and_then(Value::as_array)
+                    .and_then(|parts| {
+                        parts
+                            .iter()
+                            .find_map(|part| part.get("text").and_then(Value::as_str))
+                    })
+                    .map(str::to_owned)
+            });
+            Some((
+                IndicatorKind::Harness,
+                match summary {
+                    Some(text) => format!(
+                        "compaction summary: {}",
+                        text.lines()
+                            .next()
+                            .unwrap_or_default()
+                            .chars()
+                            .take(80)
+                            .collect::<String>()
+                    ),
+                    None => "compaction summary not recorded".into(),
+                },
+            ))
+        }
+        _ => None,
+    }
 }

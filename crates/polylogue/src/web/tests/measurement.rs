@@ -60,13 +60,6 @@ fn hundred_thousand_message_html_cost() {
             .unwrap()
             .replace("&amp;", "&");
         measure(&r, "previous-from-latest", &previous, 100000).await;
-        measure(
-            &r,
-            "outline",
-            "/api/v1/outline?session=claude-code%3As1&page_size=50",
-            100000,
-        )
-        .await;
     });
 }
 

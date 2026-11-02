@@ -1,16 +1,16 @@
-//! One pinned selection, with bounded page layout and complete record transfer.
+//! Paged reads. A session, a message or a message range is read over the
+//! session item index (`session`); documents, events, authored records
+//! and query rows are read row by row, resumed by a row's order values.
+//! A read writes nothing: no run, no query object, no proof of content.
 use super::{Daemon, Failure, error};
 use crate::daemon::Request;
 use command_surface::Answer;
-use polylogue_model::{BlobHash, RunId, bundle::ReadSnapshot, query_objects::*, read::*};
+use polylogue_model::{bundle::ReadSnapshot, read::*};
 use polylogue_render::pager::{PageBuilder, PageError, Push};
-use polylogue_store::{
-    Reader,
-    selection::{PreparedSelection, RunReplayContext},
-};
-use query_language::cursor::{Continuation, CursorContext, CursorSeal};
+use polylogue_store::{Reader, selection::PreparedSelection};
+use query_language::cursor::OrderPosition;
 use serde_json::Value;
-use std::{io::Write, num::NonZeroU64, ops::ControlFlow, sync::Arc};
+use std::{collections::BTreeMap, io::Write, num::NonZeroU64, ops::ControlFlow, sync::Arc};
 
 mod attachment_evidence;
 mod authored;
@@ -20,9 +20,27 @@ mod blobs;
 mod documents;
 mod evidence;
 mod object;
-mod outline;
 mod output;
 mod records;
+mod session;
+
+/// What read cursors are sealed with: this index generation's key and the
+/// generation.
+fn cursor_seal(reader: &polylogue_store::Reader<'_>) -> Result<CursorSeal, Failure> {
+    Ok(CursorSeal {
+        key: reader.cursor_key()?,
+        generation: reader.change_position()?.generation,
+    })
+}
+
+/// A cursor of an earlier generation is `stale_cursor`; a broken one, or
+/// one of another reading, is `invalid_query` (docs/query.md, Paging).
+fn cursor_failure(error: CursorError) -> Failure {
+    match error {
+        CursorError::Stale => Failure::new("stale_cursor", error),
+        CursorError::Invalid | CursorError::OtherReading(_) => Failure::new("invalid_query", error),
+    }
+}
 
 fn page_error(error: PageError) -> Failure {
     let kind = if matches!(error, PageError::ItemChanged | PageError::InvalidPosition) {
@@ -32,364 +50,170 @@ fn page_error(error: PageError) -> Failure {
     };
     Failure::new(kind, error)
 }
-pub(super) fn outline(
-    reader: &Reader<'_>,
-    id: &polylogue_model::SessionId,
-    parents: bool,
-    size: usize,
-    cursor: Option<&str>,
-) -> Answer<Value> {
-    outline::run(reader, id, parents, size, cursor)
+
+/// The order values of each row a page visited, by the row's number on
+/// that page, so a cursor names its row by key.
+#[derive(Default)]
+struct RowKeys {
+    keys: BTreeMap<u64, OrderPosition>,
 }
 
-struct Execution {
-    root: RunId,
-    hash: BlobHash,
-    context: CursorContext,
+/// The resolved reading of a row-path request.
+struct Reading {
     options: ReadOptions,
     format: Format,
     budget: Option<PageBudget>,
     target: String,
-    deadline: command_surface::Deadline,
-}
-fn pending(d: &Daemon) -> Option<&dyn polylogue_store::primary::Sinex> {
-    match &d.mode {
-        super::ModeState::Standalone => None,
-        #[cfg(feature = "sinex")]
-        super::ModeState::Primary { connection } => Some(connection.as_ref()),
-        #[cfg(feature = "sinex")]
-        super::ModeState::Blocked { .. } => None,
-    }
-}
-fn accepted(operation: &crate::operation::Context) -> Result<Option<serde_json::Value>, Failure> {
-    operation
-        .accepted_request()
-        .map(serde_json::to_value)
-        .transpose()
-        .map_err(|e| Failure::new("internal", e))
-}
-fn layout_contract(options: &ReadOptions, format: Format) -> Result<String, Failure> {
-    // External evidence participates in the prepared selection commitment.
-    // Version three gives document blocks their original-ordinal page coordinates.
-    let bytes = serde_json::to_vec(&("canonical-read-layout-v3", options, format))
-        .map_err(|e| Failure::new("internal", e))?;
-    Ok(blake3::hash(&bytes).to_hex().to_string())
+    digest: String,
 }
 
+fn reading(request: &Request) -> Result<(Reading, Option<&str>), Failure> {
+    let Request::Read {
+        target,
+        options,
+        delivery,
+        format,
+        budget,
+        cursor,
+        ..
+    } = request
+    else {
+        return Err(Failure::new("bad_request", "a read request is required"));
+    };
+    options
+        .validate()
+        .map_err(|e| Failure::new("bad_request", e))?;
+    let format =
+        Format::parse(format).ok_or_else(|| Failure::new("bad_request", "unknown read format"))?;
+    let budget = if *delivery == ReadDelivery::Page {
+        let mut resolved = PageBudget::default();
+        if let Some(tokens) = budget {
+            resolved.tokens = NonZeroU64::new(*tokens as u64)
+                .ok_or_else(|| Failure::new("bad_request", "read budget must be positive"))?;
+        }
+        Some(resolved)
+    } else {
+        None
+    };
+    if cursor.is_some() && budget.is_none() {
+        return Err(Failure::new(
+            "bad_request",
+            "streaming reads do not have paged continuations",
+        ));
+    }
+    Ok((
+        Reading {
+            digest: options_digest(&(options, format, budget)),
+            options: options.clone(),
+            format,
+            budget,
+            target: target.clone(),
+        },
+        cursor.as_deref(),
+    ))
+}
+
+/// Prepare a row reading: compile the target against this reader and run
+/// `run` over the selection. The seed is the target's, so a sampled or
+/// shuffled reading keeps its order across pages.
 fn prepared<T>(
     reader: &Reader<'_>,
     d: &Daemon,
-    request: &Request,
     operation: &Arc<crate::operation::Context>,
+    reading: &Reading,
     run: impl FnOnce(
         &PreparedSelection,
-        &Execution,
-        Option<ReadSeek>,
         ReadSnapshot,
         ReadHeader,
         Option<&polylogue_store::selection::NearFn<'_>>,
-        &Arc<crate::operation::Context>,
-    ) -> Result<(T, ReadFooter), Failure>,
+    ) -> Result<T, Failure>,
 ) -> Result<T, Failure> {
     crate::daemon::query::with_ranking(
         reader,
         &d.warm,
         &d.config,
         |embeddings, ranking_identity, near| {
-            let writer = d.writes.as_ref().ok_or_else(|| {
-                Failure::new("not_yet_available", "read execution custody is unavailable")
-            })?;
-            let versions = operation.cursor_versions();
-            let id = crate::operation::new_run_id();
-            let (selection, binding, root, start, budget_override) = match request {
-                Request::Read {
-                    target,
-                    options,
-                    delivery,
-                    format,
-                    budget,
-                    ..
-                } => {
-                    polylogue_store::read::limit::ReadLimit::set_stage("read preparation");
-                    options
-                        .validate()
-                        .map_err(|e| Failure::new("bad_request", e))?;
-                    let format = Format::parse(format)
-                        .ok_or_else(|| Failure::new("bad_request", "unknown read format"))?;
-                    let logical_budget = if *delivery == ReadDelivery::Page {
-                        let mut resolved = PageBudget::default();
-                        if let Some(tokens) = budget {
-                            resolved.tokens = NonZeroU64::new(*tokens as u64).ok_or_else(|| {
-                                Failure::new("bad_request", "read budget must be positive")
-                            })?;
-                        }
-                        Some(resolved)
-                    } else {
-                        None
-                    };
-                    let ask = crate::daemon::query::Ask {
-                        text: target,
-                        cursor: None,
-                        page_size: None,
-                        why: false,
-                        session: None,
-                        context: Arc::clone(operation),
-                        embeddings,
-                        ranking_identity: ranking_identity.clone(),
-                        near: Some(near),
-                        fields: &[],
-                    };
-                    let compile = crate::daemon::query::options(
-                        reader,
-                        &ask,
-                        uuid::Uuid::now_v7().as_u128() as u64,
-                    )?;
-                    let selection = reader.prepare_selection(target, &compile)?;
-                    let object = selection.query_object()?;
-                    let query_options = polylogue_store::query::execute::options_snapshot(
-                        &compile,
-                        false,
-                        ranking_identity.clone(),
-                    )?;
-                    let mut binding = selection.execution_binding(
-                        query_options,
-                        ExecutionPresentation::Read {
-                            options: options.clone(),
-                            delivery: *delivery,
-                            format,
-                            page_budget: logical_budget,
-                            direct_source: None,
-                        },
-                        accepted(operation)?,
-                    )?;
-                    binding.replay.context.versions.extend(versions.clone());
-                    let content = reader.selection_content_fingerprint(
-                        &selection,
-                        options.inherited,
-                        Some(near),
-                    )?;
-                    binding
-                        .replay
-                        .context
-                        .versions
-                        .insert("read_content".into(), content);
-                    binding
-                        .replay
-                        .context
-                        .versions
-                        .insert("read_layout".into(), layout_contract(options, format)?);
-                    operation.check_parent_admission()?;
-                    match operation.parent_lifetime() {
-                        Some(parent) => writer.query_object_with_parent(object, parent),
-                        None => writer.query_object(object),
-                    }?;
-                    (selection, binding, id.clone(), None, None)
-                }
-                Request::ReadResume {
-                    root_run,
-                    cursor,
-                    budget,
-                } => {
-                    polylogue_store::read::limit::ReadLimit::set_stage("read continuation");
-                    let (selection, position) = reader.prepare_authenticated_run_selection(
-                        cursor,
-                        root_run,
-                        pending(d),
-                        RunReplayContext {
-                            current_clock: &operation.clock,
-                            current_versions: &versions,
-                            ranking_identity: ranking_identity.as_deref(),
-                            page_size: None,
-                            near: Some(near),
-                        },
-                    )?;
-                    let position = ReadSeek::from_order_position(&position)
-                        .map_err(|e| Failure::new("stale_cursor", e))?;
-                    let (root, binding) = selection.authenticated_execution(reader)?;
-                    let root = root.clone();
-                    let binding = binding.clone();
-                    (selection, binding, root, Some(position), *budget)
-                }
-                _ => return Err(Failure::new("bad_request", "a read request is required")),
+            polylogue_store::read::limit::ReadLimit::set_stage("read preparation");
+            let ask = crate::daemon::query::Ask {
+                text: &reading.target,
+                cursor: None,
+                page_size: None,
+                why: false,
+                session: None,
+                context: Arc::clone(operation),
+                embeddings,
+                ranking_identity,
+                near: Some(near),
+                fields: &[],
             };
-            let (options, format, mut budget) = match &binding.presentation {
-                ExecutionPresentation::Read {
-                    options,
-                    format,
-                    page_budget,
-                    ..
-                } => (options.clone(), *format, *page_budget),
-                ExecutionPresentation::Query => {
-                    return Err(Failure::new(
-                        "bad_request",
-                        "the root execution is not a read",
-                    ));
-                }
-            };
-            if binding.replay.context.versions.get("read_layout")
-                != Some(&layout_contract(&options, format)?)
-            {
-                return Err(Failure::new(
-                    "stale_cursor",
-                    "the captured read layout changed",
-                ));
-            }
-            if let Some(tokens) = budget_override {
-                budget
-                    .as_mut()
-                    .ok_or_else(|| {
-                        Failure::new(
-                            "bad_request",
-                            "streaming reads do not have paged continuations",
-                        )
-                    })?
-                    .tokens = tokens;
-            }
-            let evaluation =
-                Arc::new(operation.replay_clock(selection.cursor_context().clock.clone())?);
-            let target = binding
-                .query_options
-                .direct_reference
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| binding.replay.original_text.clone());
-            let deadline = binding
-                .accepted_request
-                .as_ref()
-                .map(|value| {
-                    serde_json::from_value::<command_surface::RunnableRequest>(value.clone())
-                })
-                .transpose()
-                .map_err(|e| Failure::from(polylogue_store::StoreError::Invalid(e.to_string())))?
-                .map_or(command_surface::Deadline::Default, |request| {
-                    request.deadline
-                });
-            let hash = binding.hash().map_err(|e| Failure::new("internal", e))?;
-            let mut context = selection.cursor_context().clone();
-            context.read_positions = binding.replay.context.read_positions.clone();
-            context.versions = binding.replay.context.versions.clone();
-            context
-                .versions
-                .insert("read_root_run".into(), root.to_string());
-            context
-                .versions
-                .insert("read_binding".into(), hash.to_string());
-            polylogue_store::query::continuation::compact_resolved_times(&mut context)?;
-            let run_binding = if let Some(seek) = start {
-                RunBinding::Continuation {
-                    root: root.clone(),
-                    binding_hash: hash,
-                    seek,
-                    accepted_request: accepted(operation)?,
-                }
-            } else {
-                RunBinding::Original {
-                    execution: Box::new(binding),
-                }
-            };
+            let compile = crate::daemon::query::options(reader, &ask, seed(&reading.target))?;
+            let selection = reader.prepare_selection(&reading.target, &compile)?;
             let positions = reader.change_position()?;
-            let page_run = QueryRun {
-                id,
-                question: Some(selection.question_id()),
-                at: operation.ran_at,
-                read_at: positions.clone(),
-                machine: operation.machine.clone(),
-                authorship: operation.authorship.clone(),
-                binding: run_binding,
+            // A stream (a bundle) states a consistent snapshot, so it asks
+            // at its own position, counted once per position; a page reports
+            // what the count worker last found, without a scan.
+            let caught_up = if reading.budget.is_none() {
+                d.warm.caught_up(reader, &positions.to_string())?
+            } else {
+                d.warm.caught_up_for_read(reader, &positions.to_string())?
             };
-            let execution = Execution {
-                root,
-                hash,
-                context,
-                options,
-                format,
-                budget,
-                target,
-                deadline,
+            let snapshot = ReadSnapshot {
+                query: format!("query:{}", selection.question_id()),
+                query_text: reading.target.clone(),
+                ran_at: operation.ran_at,
+                caught_up,
+                read_at: positions,
+                currency: d.currency(reader)?,
+                enabled_variants: reading.options.variants.clone(),
+                author: operation.authorship.author.clone(),
+                notes: selection.program().notes.clone(),
+                incomplete: selection.program().incomplete.clone(),
             };
-            operation.check_parent_admission()?;
-            super::execution::record(
-                writer,
-                operation.parent_lifetime(),
-                page_run,
-                execution.hash,
-                || d.config.requests.now(),
-                || {
-                    polylogue_store::read::limit::ReadLimit::set_stage("read snapshot");
-                    let caught_up = d.warm.caught_up(reader, &positions.to_string())?;
-                    let snapshot = ReadSnapshot {
-                        query: format!("query:{}", selection.question_id()),
-                        query_text: execution.target.clone(),
-                        ran_at: operation.ran_at,
-                        caught_up,
-                        read_at: positions,
-                        currency: d.currency(reader)?,
-                        enabled_variants: execution.options.variants.clone(),
-                        author: operation.authorship.author.clone(),
-                        notes: selection.program().notes.clone(),
-                        incomplete: selection.program().incomplete.clone(),
-                    };
-                    let (title, kind) = match selection.direct_target() {
-                        Some(ReadTarget::Session(id)) => {
-                            let session = reader.session(id)?.ok_or_else(|| {
-                                Failure::new("not_found", format!("no session {id}"))
-                            })?;
-                            let title = reader
-                                .display_title(id)?
-                                .map(ValueState::known)
-                                .unwrap_or_default();
-                            (
-                                title,
-                                HeaderKind::Session {
-                                    session: Box::new(session),
-                                },
-                            )
-                        }
-                        Some(target) => (
-                            ValueState::NotApplicable,
-                            HeaderKind::Record {
-                                record_type: target
-                                    .to_string()
-                                    .split_once(':')
-                                    .map_or("record", |(kind, _)| kind)
-                                    .into(),
-                            },
-                        ),
-                        None => (
-                            ValueState::NotApplicable,
-                            HeaderKind::Record {
-                                record_type: "query".into(),
-                            },
-                        ),
-                    };
-                    // A direct read names what it reads; a query read names its question.
-                    let header = ReadHeader {
-                        target: selection
-                            .direct_target()
-                            .map_or_else(|| snapshot.query.clone(), ToString::to_string),
-                        view: execution.options.view,
+            let (title, kind) = match selection.direct_target() {
+                Some(ReadTarget::Session(id)) => {
+                    let session = reader
+                        .session(id)?
+                        .ok_or_else(|| Failure::new("not_found", format!("no session {id}")))?;
+                    let title = reader
+                        .display_title(id)?
+                        .map(ValueState::known)
+                        .unwrap_or_default();
+                    (
                         title,
-                        kind,
-                        figures: Vec::new(),
-                    };
-                    polylogue_store::read::limit::ReadLimit::set_stage("read records");
-                    run(
-                        &selection,
-                        &execution,
-                        start,
-                        snapshot,
-                        header,
-                        Some(near),
-                        &evaluation,
+                        HeaderKind::Session {
+                            session: Box::new(session),
+                        },
                     )
-                    .map(|(value, footer)| super::execution::Completed {
-                        value,
-                        count: None,
-                        exact: false,
-                        next: footer.next,
-                    })
-                },
-            )
+                }
+                Some(target) => (
+                    ValueState::NotApplicable,
+                    HeaderKind::Record {
+                        record_type: target
+                            .to_string()
+                            .split_once(':')
+                            .map_or("record", |(kind, _)| kind)
+                            .into(),
+                    },
+                ),
+                None => (
+                    ValueState::NotApplicable,
+                    HeaderKind::Record {
+                        record_type: "query".into(),
+                    },
+                ),
+            };
+            // A direct read names what it reads; a query read names its question.
+            let header = ReadHeader {
+                target: selection
+                    .direct_target()
+                    .map_or_else(|| snapshot.query.clone(), ToString::to_string),
+                view: reading.options.view,
+                title,
+                kind,
+                figures: Vec::new(),
+            };
+            polylogue_store::read::limit::ReadLimit::set_stage("read records");
+            run(&selection, snapshot, header, Some(near))
         },
     )
 }
@@ -428,124 +252,138 @@ fn visit(
     reader: &Reader<'_>,
     selection: &PreparedSelection,
     rendering: &Rendering<'_>,
-    start: Option<ReadPosition>,
+    from: Option<(&OrderPosition, ItemPlace)>,
+    rows: &mut RowKeys,
     footer: &mut ReadFooter,
     mut emit: impl FnMut(&ReadRecord, SelectionLocator, Option<u64>) -> Result<bool, Failure>,
 ) -> Result<(), Failure> {
+    let start = from.map(|(_, place)| place);
     let options = rendering.options;
     let near = rendering.near;
     let mixed = selection.direct_target().is_none();
-    let start_row = start.map_or(0, |p| p.selection.row);
     let mut pending = start.map(|p| p.selection);
-    reader.visit_selection_from::<Failure>(selection, start_row, near, |row_number, row| {
-        let record_start = pending.filter(|p| p.row == row_number).map(|p| p.record);
-        let keep = if let Some(target) = row.target {
-            if rendering.page
-                && let ReadTarget::Document(id) = &target
-            {
-                let selected = |_: &Source| Ok(false);
-                let evidence = ProjectionEvidence::default();
-                let layout = evidence::Layout {
-                    options,
-                    evidence: &evidence,
-                    selected: &selected,
-                    ready_attachment: rendering.ready_attachment,
-                    backwards: false,
-                    anchor: None,
-                };
-                let position = start.filter(|start| start.selection.row == row_number);
-                let keep = if let Some(record) =
-                    output::document_omission(&target.to_string(), options, mixed, footer)?
+    let mut row_number = 0u64;
+    reader.visit_selection_from_row::<Failure>(
+        selection,
+        from.map(|(row, _)| row),
+        near,
+        |row| {
+            let row_number = {
+                let at = row_number;
+                row_number += 1;
+                rows.keys.insert(at, row.position.clone());
+                at
+            };
+            let record_start = pending.filter(|p| p.row == row_number).map(|p| p.record);
+            let keep = if let Some(target) = row.target {
+                if rendering.page
+                    && let ReadTarget::Document(id) = &target
                 {
-                    let at = SelectionLocator {
-                        row: row_number,
-                        record: ReadRecordLocator {
-                            kind: ReadRecordKind::Presentation,
-                            ordinal: 0,
-                        },
-                    };
-                    if position
-                        .is_some_and(|position| position.selection != at || position.item != 0)
-                    {
-                        return Err(Failure::new(
-                            "stale_cursor",
-                            "the continued document omission changed",
-                        ));
-                    }
-                    emit(&record, at, Some(0))?
-                } else {
-                    documents::visit(reader, id, row_number, position, &layout, &mut emit)?
-                };
-                pending = None;
-                return Ok(if keep {
-                    ControlFlow::Continue(())
-                } else {
-                    ControlFlow::Break(())
-                });
-            }
-            records::reference(
-                reader,
-                &target,
-                options.inherited,
-                record_start.as_ref(),
-                &mut |record, evidence, record_position| {
-                    polylogue_store::read::limit::ReadLimit::set_stage("read layout");
-                    let at = SelectionLocator {
-                        row: row_number,
-                        record: record_position,
-                    };
-                    if let Some(expected) = pending {
-                        if expected != at {
-                            return Err(Failure::new(
-                                "stale_cursor",
-                                "the continued record coordinate changed",
-                            ));
-                        }
-                        pending = None;
-                    }
-                    let Some(record) = output::project(record, options, &evidence, mixed, footer)?
-                    else {
-                        return Ok(true);
-                    };
-                    let selected = |source: &Source| {
-                        selected_source(reader, selection, Some(&target), options, near, source)
-                    };
+                    let selected = |_: &Source| Ok(false);
+                    let evidence = ProjectionEvidence::default();
                     let layout = evidence::Layout {
                         options,
                         evidence: &evidence,
                         selected: &selected,
                         ready_attachment: rendering.ready_attachment,
                         backwards: false,
-                        anchor: start
-                            .filter(|start| start.selection == at)
-                            .map(|start| start.item),
+                        anchor: None,
                     };
-                    output::emit_record(reader, &record, at, &layout, &mut emit)
-                },
-            )?
-        } else {
-            let at = SelectionLocator {
-                row: row_number,
-                record: ReadRecordLocator {
-                    kind: ReadRecordKind::Presentation,
-                    ordinal: 0,
-                },
+                    let position = start.filter(|start| start.selection.row == row_number);
+                    let keep = if let Some(record) =
+                        output::document_omission(&target.to_string(), options, mixed, footer)?
+                    {
+                        let at = SelectionLocator {
+                            row: row_number,
+                            record: ReadRecordLocator {
+                                kind: ReadRecordKind::Presentation,
+                                ordinal: 0,
+                            },
+                        };
+                        if position
+                            .is_some_and(|position| position.selection != at || position.item != 0)
+                        {
+                            return Err(Failure::new(
+                                "stale_cursor",
+                                "the continued document omission changed",
+                            ));
+                        }
+                        emit(&record, at, Some(0))?
+                    } else {
+                        documents::visit(reader, id, row_number, position, &layout, &mut emit)?
+                    };
+                    pending = None;
+                    return Ok(if keep {
+                        ControlFlow::Continue(())
+                    } else {
+                        ControlFlow::Break(())
+                    });
+                }
+                records::reference(
+                    reader,
+                    &target,
+                    options.inherited,
+                    record_start.as_ref(),
+                    &mut |record, evidence, record_position| {
+                        polylogue_store::read::limit::ReadLimit::set_stage("read layout");
+                        let at = SelectionLocator {
+                            row: row_number,
+                            record: record_position,
+                        };
+                        if let Some(expected) = pending {
+                            if expected != at {
+                                return Err(Failure::new(
+                                    "stale_cursor",
+                                    "the continued record coordinate changed",
+                                ));
+                            }
+                            pending = None;
+                        }
+                        let Some(record) =
+                            output::project(record, options, &evidence, mixed, footer)?
+                        else {
+                            return Ok(true);
+                        };
+                        let selected = |source: &Source| {
+                            selected_source(reader, selection, Some(&target), options, near, source)
+                        };
+                        let layout = evidence::Layout {
+                            options,
+                            evidence: &evidence,
+                            selected: &selected,
+                            ready_attachment: rendering.ready_attachment,
+                            backwards: false,
+                            anchor: start
+                                .filter(|start| start.selection == at)
+                                .map(|start| start.item),
+                        };
+                        output::emit_record(reader, &record, at, &layout, &mut emit)
+                    },
+                )?
+            } else {
+                let at = SelectionLocator {
+                    row: row_number,
+                    record: ReadRecordLocator {
+                        kind: ReadRecordKind::Presentation,
+                        ordinal: 0,
+                    },
+                };
+                if pending.is_some_and(|expected| expected != at) {
+                    return Err(Failure::new(
+                        "stale_cursor",
+                        "the continued result row changed",
+                    ));
+                }
+                pending = None;
+                emit(&presentation(selection, &row.values), at, Some(0))?
             };
-            if pending.is_some_and(|expected| expected != at) {
-                return Err(Failure::new(
-                    "stale_cursor",
-                    "the continued result row changed",
-                ));
-            }
-            pending = None;
-            emit(&presentation(selection, &row.values), at, Some(0))?
-        };
-        Ok(if keep {
-            ControlFlow::Continue(())
-        } else {
-            ControlFlow::Break(())
-        })
-    })?;
+            Ok(if keep {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            })
+        },
+    )?;
     if pending.is_some() {
         return Err(Failure::new(
             "stale_cursor",
@@ -579,7 +417,6 @@ fn presentation(selection: &PreparedSelection, values: &serde_json::Value) -> Re
 
 fn attachment_call(
     d: &Daemon,
-    execution: &Execution,
     message: &polylogue_model::MessageId,
     block: u64,
     attachment: u64,
@@ -594,48 +431,178 @@ fn attachment_call(
         cursor: None,
     })
     .map_err(|e| Failure::new("internal", e))?;
-    let identity = serde_json::to_vec(&(execution.hash, &execution.root, &arguments))
-        .map_err(|e| Failure::new("internal", e))?;
+    let identity = blake3::hash(arguments.to_string().as_bytes());
     d.ready_call(&command_surface::RunnableRequest {
         operation: "attachment".into(),
         arguments,
-        request_id: format!("read-attachment-{}", blake3::hash(&identity).to_hex()),
-        deadline: execution.deadline,
+        request_id: format!("read-attachment-{}", identity.to_hex()),
+        deadline: command_surface::Deadline::Default,
     })
     .map_err(Failure::from)
 }
 
-fn next_call(
+/// Record the reading's question and run after the answer, as the
+/// operations log does for every query: the records are handed to the
+/// writer without waiting, so nothing on the answer path writes. Only the
+/// first page of a reading is a run; continuations are pages of it.
+fn record_run(
     reader: &Reader<'_>,
     d: &Daemon,
-    execution: &Execution,
-    seek: ReadSeek,
-) -> Result<ReadyCall, Failure> {
-    let after = seek
-        .to_order_position()
-        .map_err(|e| Failure::new("internal", e))?;
-    let cursor = CursorSeal::new(reader.cursor_key()?).seal(&Continuation {
-        context: execution.context.clone(),
-        after,
-    })?;
-    let request = Request::ReadResume {
-        root_run: execution.root.clone(),
-        cursor,
-        budget: execution.budget.map(|b| b.tokens),
+    operation: &Arc<crate::operation::Context>,
+    request: &Request,
+    reading: &Reading,
+) -> Result<(), Failure> {
+    use polylogue_model::query_objects::{
+        ExecutionPresentation, QueryRun, QueryRunOutcome, RunBinding, RunOutcome,
     };
-    let arguments = crate::protocol::read::Arguments::from_request(&request)
+    let Request::Read { delivery, .. } = request else {
+        return Ok(());
+    };
+    let Some(writer) = d.writes.as_ref() else {
+        return Ok(());
+    };
+    crate::daemon::query::with_ranking(
+        reader,
+        &d.warm,
+        &d.config,
+        |embeddings, ranking_identity, near| {
+            let ask = crate::daemon::query::Ask {
+                text: &reading.target,
+                cursor: None,
+                page_size: None,
+                why: false,
+                session: None,
+                context: Arc::clone(operation),
+                embeddings,
+                ranking_identity: ranking_identity.clone(),
+                near: Some(near),
+                fields: &[],
+            };
+            let compile = crate::daemon::query::options(reader, &ask, seed(&reading.target))?;
+            let target = reading
+                .target
+                .strip_prefix("root:")
+                .unwrap_or(&reading.target);
+            let selection = reader.prepare_selection(target, &compile)?;
+            let object = selection.query_object()?;
+            let query_options = polylogue_store::query::execute::options_snapshot(
+                &compile,
+                false,
+                ranking_identity,
+            )?;
+            let accepted = operation
+                .accepted_request()
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|e| Failure::new("internal", e))?;
+            let mut binding = selection.execution_binding(
+                query_options,
+                ExecutionPresentation::Read {
+                    options: reading.options.clone(),
+                    delivery: *delivery,
+                    format: reading.format,
+                    page_budget: reading.budget,
+                    direct_source: None,
+                },
+                accepted,
+            )?;
+            binding
+                .replay
+                .context
+                .versions
+                .extend(operation.cursor_versions());
+            let run = QueryRun {
+                id: crate::operation::new_run_id(),
+                question: Some(selection.question_id()),
+                at: operation.ran_at,
+                read_at: reader.change_position()?,
+                machine: operation.machine.clone(),
+                authorship: operation.authorship.clone(),
+                binding: RunBinding::Original {
+                    execution: Box::new(binding),
+                },
+            };
+            let outcome = QueryRunOutcome {
+                run: run.id.clone(),
+                binding_hash: run
+                    .binding_hash()
+                    .map_err(|e| Failure::new("internal", e))?,
+                run_hash: run.record_hash().map_err(|e| Failure::new("internal", e))?,
+                at: d.config.requests.now(),
+                outcome: RunOutcome::Ok,
+                count: None,
+                exact: false,
+                next: None,
+            };
+            // The writer's queue can be full while it works through a batch;
+            // the read does not wait for room.
+            let writer = writer.clone();
+            std::thread::spawn(move || writer.record_after_answer(object, run, outcome));
+            Ok(())
+        },
+    )
+}
+
+/// A reading's seed is its target's, so a sampled or shuffled reading
+/// keeps its order across pages.
+fn seed(target: &str) -> u64 {
+    u64::from_le_bytes(
+        blake3::hash(target.as_bytes()).as_bytes()[..8]
+            .try_into()
+            .expect("eight bytes"),
+    )
+}
+
+/// The deadline the caller asked for, carried to every continuation.
+fn deadline(operation: &crate::operation::Context) -> command_surface::Deadline {
+    operation
+        .accepted_request()
+        .map_or(command_surface::Deadline::Default, |request| {
+            request.deadline
+        })
+}
+
+/// The ready call that continues this reading at `cursor`.
+fn next_call(
+    d: &Daemon,
+    request: &Request,
+    cursor: String,
+    deadline: command_surface::Deadline,
+) -> Result<ReadyCall, Failure> {
+    let Request::Read {
+        target,
+        options,
+        delivery,
+        format,
+        budget,
+        with_blobs,
+        ..
+    } = request
+    else {
+        return Err(Failure::new("internal", "a read request is required"));
+    };
+    let continued = Request::Read {
+        target: target.clone(),
+        options: options.clone(),
+        delivery: *delivery,
+        format: format.clone(),
+        budget: *budget,
+        with_blobs: *with_blobs,
+        cursor: Some(cursor),
+    };
+    let arguments = crate::protocol::read::Arguments::from_request(&continued)
         .map_err(|e| Failure::new("internal", e))?;
     let arguments = serde_json::to_value(arguments).map_err(|e| Failure::new("internal", e))?;
-    let identity = serde_json::to_vec(&(execution.hash, seek, execution.budget))
-        .map_err(|e| Failure::new("internal", e))?;
-    let call = command_surface::RunnableRequest {
+    let identity = blake3::hash(arguments.to_string().as_bytes());
+    d.ready_call(&command_surface::RunnableRequest {
         operation: "read".into(),
         arguments,
-        request_id: format!("read-page-{}", blake3::hash(&identity).to_hex()),
-        deadline: execution.deadline,
-    };
-    d.ready_call(&call).map_err(Failure::from)
+        request_id: format!("read-page-{}", identity.to_hex()),
+        deadline,
+    })
+    .map_err(Failure::from)
 }
+
 pub(super) fn page(
     reader: &Reader<'_>,
     d: &Daemon,
@@ -654,26 +621,98 @@ pub(super) fn page(
     if let Some(response) = self::object::page(reader, d, request, operation) {
         return response;
     }
-    let result = prepared(
+    let result = (|| {
+        let (reading, cursor) = reading(request)?;
+        if reading.budget.is_none() {
+            return Err(Failure::new(
+                "bad_request",
+                "streaming reads require stream delivery",
+            ));
+        }
+        let page = match session::scope(reader, &reading.target)? {
+            Some(scope)
+                if matches!(
+                    reading.options.view,
+                    View::Transcript | View::Dialogue | View::Context | View::Raw | View::Changes
+                ) =>
+            {
+                session::page(reader, d, request, operation, scope)?
+            }
+            Some(scope) if reading.options.view == View::Links => {
+                session::links_page(reader, d, request, operation, scope)?
+            }
+            _ => rows_page(reader, d, request, operation, &reading, cursor)?,
+        };
+        if cursor.is_none() {
+            // The answer stands whatever happens to its run record;
+            // building it needs this reader, storing it happens after.
+            let _ = record_run(reader, d, operation, request, &reading);
+        }
+        Ok(page)
+    })();
+    match result {
+        Ok(page) => match serde_json::to_value(&page) {
+            Ok(value) => crate::protocol::read(value, &page.snapshot.currency),
+            Err(problem) => error("internal", problem),
+        },
+        Err(failure) => failure.answer(),
+    }
+}
+
+/// The base row number of a backward page's anchor row: rows before it count
+/// down from here, so every row of the page has its own number.
+const BACKWARD_ANCHOR_ROW: u64 = 1 << 32;
+
+fn rows_page(
+    reader: &Reader<'_>,
+    d: &Daemon,
+    request: &Request,
+    operation: &Arc<crate::operation::Context>,
+    reading: &Reading,
+    cursor: Option<&str>,
+) -> Result<ReadPage, Failure> {
+    let key = cursor_seal(reader)?;
+    let opened = cursor
+        .map(|text| {
+            let opened = PageCursor::open(text, &key).map_err(cursor_failure)?;
+            opened
+                .check(&reading.target, &reading.digest)
+                .map_err(cursor_failure)?;
+            if opened.direction == ReadDirection::Past {
+                return Err(Failure::new(
+                    "invalid_query",
+                    "a row reading continues forward or backward only",
+                ));
+            }
+            match opened.position {
+                PagePosition::Record { anchor_row, place } => {
+                    Ok::<_, Failure>((anchor_row, place, opened.direction))
+                }
+                PagePosition::Entry { .. } | PagePosition::Node { .. } => Err(Failure::new(
+                    "invalid_query",
+                    "the cursor names a session place, not a row position",
+                )),
+            }
+        })
+        .transpose()?;
+    prepared(
         reader,
         d,
-        request,
         operation,
-        |selection, execution, start, snapshot, header, near, _evaluation| {
+        reading,
+        |selection, snapshot, header, near| {
             let ready_attachment =
                 |message: &polylogue_model::MessageId, block, index, input: Option<&str>| {
-                    attachment_call(d, execution, message, block, index, input)
+                    attachment_call(d, message, block, index, input)
                 };
             let rendering = Rendering {
-                options: &execution.options,
+                options: &reading.options,
                 near,
                 ready_attachment: &ready_attachment,
                 page: true,
             };
             let scope = selection.scope_token();
-            let mut budget = execution.budget.ok_or_else(|| {
-                Failure::new("bad_request", "streaming reads require stream delivery")
-            })?;
+            let mut budget = reading.budget.expect("a paged reading has a budget");
             let snapshot_bytes = serde_json::to_vec(&ReadPageSnapshot::from(&snapshot))
                 .map_err(|e| Failure::new("internal", e))?
                 .len();
@@ -685,8 +724,15 @@ pub(super) fn page(
             let framing = ReadFraming::Query {
                 question: selection.question_id(),
             };
-            let anchor = start.map(|seek| seek.anchor);
-            let backwards = start.is_some_and(|seek| seek.direction == ReadDirection::Before);
+            let backwards = opened
+                .as_ref()
+                .is_some_and(|(_, _, direction)| *direction == ReadDirection::Before);
+            // The anchor place, numbered as this page numbers its rows.
+            let anchor = opened.as_ref().map(|(_, place, _)| {
+                let mut place = *place;
+                place.selection.row = if backwards { BACKWARD_ANCHOR_ROW } else { 0 };
+                place
+            });
             let mut pager = if backwards {
                 PageBuilder::new_before(
                     header,
@@ -699,6 +745,7 @@ pub(super) fn page(
             }
             .map_err(page_error)?;
             let mut footer = ReadFooter::default();
+            let mut rows = RowKeys::default();
             let mut emit = |record: &ReadRecord, at: SelectionLocator, ordinal: Option<u64>| {
                 let Some(ordinal) = ordinal else {
                     return Ok(true);
@@ -714,12 +761,15 @@ pub(super) fn page(
                     .map_err(page_error)?
                     != Push::Full)
             };
+            let anchor_row = opened.as_ref().and_then(|(row, _, _)| row.clone());
             if backwards {
                 before::visit(
                     reader,
                     selection,
                     &rendering,
                     anchor.expect("Before has an anchor"),
+                    anchor_row.as_ref(),
+                    &mut rows,
                     &mut footer,
                     &mut emit,
                 )?;
@@ -728,7 +778,8 @@ pub(super) fn page(
                     reader,
                     selection,
                     &rendering,
-                    anchor,
+                    anchor_row.as_ref().zip(anchor),
+                    &mut rows,
                     &mut footer,
                     &mut emit,
                 )?;
@@ -736,50 +787,53 @@ pub(super) fn page(
             scope.check()?;
             polylogue_store::read::limit::ReadLimit::set_stage("read page footer");
             let upper = pager.upper_position().copied();
+            let seal = |place: &ItemPlace, direction| -> Result<ReadyCall, PageError> {
+                let row = rows.keys.get(&place.selection.row).cloned();
+                let mut place = *place;
+                place.selection.row = 0;
+                let cursor = PageCursor {
+                    target: reading.target.clone(),
+                    options: reading.digest.clone(),
+                    versions: Vec::new(),
+                    position: PagePosition::Record {
+                        anchor_row: row,
+                        place,
+                    },
+                    direction,
+                };
+                next_call(d, request, cursor.seal(&key), deadline(operation))
+                    .map_err(|e| PageError::Serialization(format!("{e:?}")))
+            };
             let document = pager
                 .finish_with(|position| {
                     let mut footer = footer.clone();
-                    let ready = |direction, anchor| {
-                        next_call(reader, d, execution, ReadSeek { direction, anchor })
-                            .map_err(|e| PageError::Serialization(format!("{e:?}")))
-                    };
                     if let Some(upper) = upper {
-                        footer.next = Some(ready(ReadDirection::After, upper)?);
+                        footer.next = Some(seal(&upper, ReadDirection::After)?);
                         footer.previous = position
-                            .map(|position| ready(ReadDirection::Before, *position))
+                            .map(|position| seal(position, ReadDirection::Before))
                             .transpose()?;
                     } else {
                         footer.next = position
-                            .map(|position| ready(ReadDirection::After, *position))
+                            .map(|position| seal(position, ReadDirection::After))
                             .transpose()?;
                         footer.previous = anchor
-                            .map(|anchor| ready(ReadDirection::Before, anchor))
+                            .map(|anchor| seal(&anchor, ReadDirection::Before))
                             .transpose()?;
                     }
                     Ok(footer)
                 })
                 .map_err(page_error)?;
             scope.check()?;
-            let footer = document.footer.clone();
-            Ok((
-                ReadPage {
-                    format: execution.format,
-                    snapshot: ReadPageSnapshot::from(&snapshot),
-                    records: vec![],
-                    document,
-                },
-                footer,
-            ))
+            Ok(ReadPage {
+                format: reading.format,
+                snapshot: ReadPageSnapshot::from(&snapshot),
+                records: vec![],
+                document,
+            })
         },
-    );
-    match result {
-        Ok(page) => match serde_json::to_value(&page) {
-            Ok(value) => crate::protocol::read(value, &page.snapshot.currency),
-            Err(problem) => error("internal", problem),
-        },
-        Err(failure) => failure.answer(),
-    }
+    )
 }
+
 pub(crate) fn produce(
     request: &Request,
     d: &Daemon,
@@ -799,18 +853,19 @@ pub(crate) fn produce(
     };
     Some(super::accepting(d).and_then(|()| {
         let reader = d.reads.reader()?;
+        let (reading, _) = reading(request)?;
         prepared(
             &reader,
             d,
-            request,
             operation,
-            |selection, execution, start, snapshot, header, near, _evaluation| {
+            &reading,
+            |selection, snapshot, header, near| {
                 let ready_attachment =
                     |message: &polylogue_model::MessageId, block, index, input: Option<&str>| {
-                        attachment_call(d, execution, message, block, index, input)
+                        attachment_call(d, message, block, index, input)
                     };
                 let rendering = Rendering {
-                    options: &execution.options,
+                    options: &reading.options,
                     near,
                     ready_attachment: &ready_attachment,
                     page: false,
@@ -824,10 +879,10 @@ pub(crate) fn produce(
                     Ok(())
                 };
                 let begin = ReadBegin {
-                    format: execution.format,
+                    format: reading.format,
                     snapshot,
                     header,
-                    options: execution.options.clone(),
+                    options: reading.options.clone(),
                 };
                 let mut stream = output::Stream::begin(output, &check, &begin)?;
                 let mut blobs = if *with_blobs {
@@ -836,11 +891,13 @@ pub(crate) fn produce(
                     None
                 };
                 let mut footer = ReadFooter::default();
+                let mut rows = RowKeys::default();
                 visit(
                     &reader,
                     selection,
                     &rendering,
-                    start.map(|seek| seek.anchor),
+                    None,
+                    &mut rows,
                     &mut footer,
                     |record, _, _| {
                         stream.record(record)?;
@@ -851,8 +908,8 @@ pub(crate) fn produce(
                     },
                 )?;
                 check()?;
-                stream.finish(footer.clone())?;
-                Ok(((), footer))
+                stream.finish(footer)?;
+                Ok(())
             },
         )
     }))

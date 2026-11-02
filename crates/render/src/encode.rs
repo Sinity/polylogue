@@ -97,6 +97,9 @@ impl<'a> Encoder<'a> {
                     terminal::escape(&header.target),
                     header.view
                 )?;
+                if let Some(line) = logical_line(&header.kind) {
+                    encoder.line(&line)?;
+                }
                 for figure in &header.figures {
                     let text = format!(
                         "{}: {}{}",
@@ -204,6 +207,20 @@ impl<'a> Encoder<'a> {
                 }
                 if header.inherited {
                     text.push_str(" · inherited");
+                }
+                if let Some(context) = &header.context {
+                    let tokens = |n: u64| {
+                        if n >= 1000 {
+                            format!("{}k", n.div_ceil(1000))
+                        } else {
+                            n.to_string()
+                        }
+                    };
+                    text.push_str(&match context {
+                        ValueState::Value { value } => format!(" · ctx {}", tokens(*value)),
+                        ValueState::Inferred { value } => format!(" · ctx ≈{}", tokens(*value)),
+                        _ => " · ctx unknown (no usage recorded)".into(),
+                    });
                 }
                 match &header.branch {
                     BranchState::Abandoned { n, total } => text.push_str(&format!(
@@ -590,7 +607,9 @@ fn json(out: &mut dyn Write, value: &impl Serialize) -> io::Result<()> {
         })
 }
 
-pub(crate) fn json_bytes(value: &impl Serialize) -> io::Result<Vec<u8>> {
+/// The archive's JSON encoding of a value: what the JSON encoder writes and
+/// what fragment positions count characters in.
+pub fn json_bytes(value: &impl Serialize) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     json(&mut bytes, value)?;
     Ok(bytes)
@@ -687,4 +706,24 @@ pub(crate) fn fragment_origin_label(origin: &ValueState<FragmentOrigin>) -> &'st
         ValueState::Stale { .. } => "stale",
         ValueState::Inherited { .. } => "inherited",
     }
+}
+
+/// The logical header's line: the root, the physical sessions it joins and
+/// its messages.
+pub(crate) fn logical_line(kind: &HeaderKind) -> Option<String> {
+    let HeaderKind::Logical {
+        root,
+        physical_sessions,
+        own_messages,
+        inherited_messages,
+    } = kind
+    else {
+        return None;
+    };
+    Some(format!(
+        "logical session from {root} · {} physical sessions · {} messages · {} inherited",
+        physical_sessions.len(),
+        value_text(own_messages),
+        value_text(inherited_messages)
+    ))
 }

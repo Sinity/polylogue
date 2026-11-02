@@ -1,7 +1,7 @@
 use super::*;
-use crate::protocol::read::ResumeArguments;
+use crate::protocol::read::Arguments as ResumeArguments;
 use polylogue_model::read::{
-    ItemKind, ReadDelivery, ReadItem, ReadOptions, ReadPage, ReadPosition, View,
+    ItemKind, ItemPlace, ReadDelivery, ReadItem, ReadOptions, ReadPage, View,
 };
 
 fn request(
@@ -12,11 +12,9 @@ fn request(
     cursor: Option<&ResumeArguments>,
 ) -> Request {
     if let Some(resume) = cursor {
-        return Request::ReadResume {
-            root_run: resume.root_run.clone(),
-            cursor: resume.cursor.clone(),
-            budget: Some(std::num::NonZeroU64::new(budget as u64).unwrap()),
-        };
+        let mut resume = resume.clone();
+        resume.budget = Some(std::num::NonZeroU64::new(budget as u64).unwrap());
+        return resume.into_request().unwrap();
     }
     Request::Read {
         target: target.into(),
@@ -29,6 +27,7 @@ fn request(
         format: "json".into(),
         budget: Some(budget),
         with_blobs: false,
+        cursor: None,
     }
 }
 fn page(
@@ -64,7 +63,7 @@ fn next(page: &ReadPage) -> Option<ResumeArguments> {
 struct Text {
     value: String,
     item: String,
-    position: Option<ReadPosition>,
+    position: Option<ItemPlace>,
 }
 impl Text {
     fn push(&mut self, item: &ReadItem) {
@@ -121,8 +120,8 @@ fn all(d: &Daemon, target: &str, inherited: bool, view: View) -> String {
         let continued = next(&page);
         if let (Some(previous), Some(next)) = (&cursor, &continued) {
             assert_eq!(
-                next.root_run, previous.root_run,
-                "continuation changed its original root"
+                next.target, previous.target,
+                "a continuation reads the same target"
             );
         }
         cursor = continued;
@@ -136,13 +135,14 @@ fn all(d: &Daemon, target: &str, inherited: bool, view: View) -> String {
     );
     text.value
 }
+/// The session's rewrite version: what a cursor binds.
 fn selected_fingerprint(d: &test_daemon::TestDaemon, session: &str) -> String {
     let reader = d.daemon.reads.reader().unwrap();
-    reader
-        .select_messages(&polylogue_model::SessionId::parse(session).unwrap(), false)
+    let index = reader
+        .item_index(&polylogue_model::SessionId::parse(session).unwrap())
         .unwrap()
-        .content_version()
-        .unwrap()
+        .unwrap();
+    format!("{}:{}", index.rewrite_version, index.entries.len())
 }
 
 fn replace(d: &test_daemon::TestDaemon, texts: &[(&str, &str)]) {
@@ -199,7 +199,7 @@ fn read_pages_refuse_malformed_cross_view_and_tampered_positions() {
     let token = next(&first).expect("real continuation");
     for malformed in ["broken", "m0.b0.c0", "m0.b0.c0.extra", "m999.b0.c0"] {
         let mut malformed_resume = token.clone();
-        malformed_resume.cursor = query_language::cursor::SealedCursor::from_wire(malformed);
+        malformed_resume.cursor = Some(malformed.to_owned());
         refused(
             handle(
                 request(
@@ -221,22 +221,24 @@ fn read_pages_refuse_malformed_cross_view_and_tampered_positions() {
         json: true,
     };
     for (field, value) in [
-        ("inherited", serde_json::json!(true)),
+        ("show", serde_json::json!(["inherited"])),
         ("view", serde_json::json!("dialogue")),
         ("target", serde_json::json!("message:claude-code:u1")),
     ] {
+        // A cursor is bound to its reading: other arguments are refused
+        // when the page is read (docs/reading.md, Budgets).
         let mut arguments = serde_json::to_value(&token).unwrap();
         arguments[field] = value;
-        let refused = command.build_typed.unwrap()(arguments, &caller, "closed-resume-witness");
-        assert!(refused.is_err(), "resume accepted {field} override");
+        let request =
+            command.build_typed.unwrap()(arguments, &caller, "closed-resume-witness").unwrap();
+        refused(handle(request, &d.daemon), "invalid_query");
     }
-    let wire = token.cursor.as_str();
+    let wire = token.cursor.clone().unwrap();
     for at in [0, wire.len() / 2, wire.len() - 1] {
         let mut changed = wire.as_bytes().to_vec();
         changed[at] = if changed[at] == b'a' { b'b' } else { b'a' };
         let mut changed_resume = token.clone();
-        changed_resume.cursor =
-            query_language::cursor::SealedCursor::from_wire(String::from_utf8(changed).unwrap());
+        changed_resume.cursor = Some(String::from_utf8(changed).unwrap());
         refused(
             handle(
                 request(
@@ -459,70 +461,6 @@ fn hundred_thousand_message_pages_and_direct_jumps_keep_source_identity() {
 }
 
 #[test]
-fn outline_continuations_cover_every_reference_and_bind_to_selected_content() {
-    let d = test_daemon::start("placeholder");
-    let texts = (0..125)
-        .map(|i| (format!("outline-{i}"), "synthetic prompt"))
-        .collect::<Vec<_>>();
-    add_selected_session(
-        &d,
-        &texts
-            .iter()
-            .map(|(id, text)| (id.as_str(), *text))
-            .collect::<Vec<_>>(),
-    );
-    let request = |cursor| Request::Outline {
-        session: polylogue_model::SessionId::parse("claude-code:s2").unwrap(),
-        with_parents: true,
-        page_size: 17,
-        cursor,
-    };
-    let mut cursor = None;
-    let mut first = None;
-    let mut references = Vec::new();
-    loop {
-        let response = handle(request(cursor), &d.daemon);
-        let Some(data) = response.value().cloned() else {
-            panic!("{response:?}")
-        };
-        references.extend(
-            data["entries"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|entry| entry["message"].as_str().unwrap().to_owned()),
-        );
-        cursor = data["next"].as_str().map(str::to_owned);
-        if first.is_none() {
-            first = cursor.clone();
-        }
-        if cursor.is_none() {
-            break;
-        }
-    }
-    assert_eq!(
-        references,
-        (0..125)
-            .map(|i| format!("claude-code:outline-{i}"))
-            .collect::<Vec<_>>()
-    );
-    d.set("browser.actions", "on");
-    crate::test_answers::ok(handle(request(first.clone()), &d.daemon));
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .append(true)
-        .open(d.home.join(".claude/projects/-p/s2.jsonl"))
-        .unwrap();
-    file.write_all(polylogue_testkit::claude_user("outline-new", "s2", "new prompt").as_bytes())
-        .unwrap();
-    file.flush().unwrap();
-    d.wait_for(|status| status["store"]["messages"] == 127);
-    assert!(
-        matches!(handle(request(first), &d.daemon), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("stale_cursor"))
-    );
-}
-
-#[test]
 fn previous_pages_end_at_the_current_start_and_next_reopens_it() {
     let d = test_daemon::start("a long synthetic λ🙂 prompt with enough text for several pages");
     let first = page(
@@ -733,4 +671,102 @@ fn selected_latest_user_message_does_not_include_later_assistant_bodies() {
         ),
         "latest human prompt λ🙂"
     );
+}
+
+/// law: pl.read.page-append-stable
+#[test]
+fn a_cursor_on_a_live_session_continues_after_appended_messages() {
+    let d = test_daemon::start("placeholder");
+    let first: Vec<(String, String)> = (0..6)
+        .map(|n| {
+            (
+                format!("live-{n}"),
+                format!("message {n} before the append"),
+            )
+        })
+        .collect();
+    let borrowed: Vec<(&str, &str)> = first
+        .iter()
+        .map(|(id, text)| (id.as_str(), text.as_str()))
+        .collect();
+    add_selected_session(&d, &borrowed);
+    let opening = page(
+        &d.daemon,
+        "session:claude-code:s2",
+        false,
+        View::Transcript,
+        8,
+        None,
+    );
+    let cursor = next(&opening).expect("a second page");
+    let mut source = std::fs::read_to_string(d.home.join(".claude/projects/-p/s2.jsonl")).unwrap();
+    for n in 6..9 {
+        source.push_str(&polylogue_testkit::claude_user(
+            &format!("live-{n}"),
+            "s2",
+            &format!("message {n} after the append"),
+        ));
+    }
+    std::fs::write(d.home.join(".claude/projects/-p/s2.jsonl"), source).unwrap();
+    d.wait_for(|status| {
+        status["store"]["messages"] == 10 && status["store"]["search_pending"] == 0
+    });
+    let mut text = Text::default();
+    text.page(&opening);
+    let mut cursor = Some(cursor);
+    while let Some(current) = cursor {
+        let continued = page(
+            &d.daemon,
+            "session:claude-code:s2",
+            false,
+            View::Transcript,
+            8,
+            Some(&current),
+        );
+        text.page(&continued);
+        cursor = next(&continued);
+    }
+    let mut expected = String::new();
+    for n in 0..6 {
+        expected.push_str(&format!("message {n} before the append"));
+    }
+    for n in 6..9 {
+        expected.push_str(&format!("message {n} after the append"));
+    }
+    assert_eq!(text.value, expected);
+}
+
+/// law: pl.read.page-no-proof
+#[test]
+fn continuation_pages_write_nothing() {
+    let d = test_daemon::start("a synthetic prompt long enough for several pages of reading");
+    let first = page(
+        &d.daemon,
+        "session:claude-code:s1",
+        false,
+        View::Transcript,
+        8,
+        None,
+    );
+    // The first page's run record goes to the writer after the answer; a
+    // blocking write behind it is a barrier.
+    d.set("browser.actions", "on");
+    let before = d.daemon.reads.reader().unwrap().change_position().unwrap();
+    let mut cursor = next(&first);
+    let mut pages = 0;
+    while let Some(current) = cursor {
+        let continued = page(
+            &d.daemon,
+            "session:claude-code:s1",
+            false,
+            View::Transcript,
+            8,
+            Some(&current),
+        );
+        pages += 1;
+        cursor = next(&continued);
+    }
+    assert!(pages > 0);
+    let after = d.daemon.reads.reader().unwrap().change_position().unwrap();
+    assert_eq!(before, after);
 }

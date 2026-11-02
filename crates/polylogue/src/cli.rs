@@ -5,6 +5,7 @@
 pub(crate) mod attachment;
 pub mod changes;
 pub(crate) mod completion;
+pub(crate) mod follow;
 pub mod local;
 pub mod print;
 pub(crate) mod schema;
@@ -190,11 +191,7 @@ fn chosen(matches: &ArgMatches) -> Option<(&'static Command, &ArgMatches)> {
 /// A command's values from its matches.
 fn values(c: &Command, m: &ArgMatches) -> Values {
     let mut out = serde_json::Map::new();
-    let read_resume = c.name == "read" && m.get_one::<String>("root_run").is_some();
     for a in c.args_for(Surface::Cli) {
-        if read_resume && m.value_source(a.name) != Some(ValueSource::CommandLine) {
-            continue;
-        }
         let value = match a.kind {
             Kind::Bool => m.get_flag(a.name).then_some(Value::Bool(true)),
             Kind::Integer => m.get_one::<u64>(a.name).map(|n| Value::from(*n)),

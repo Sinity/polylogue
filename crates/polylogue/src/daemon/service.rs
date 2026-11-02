@@ -614,7 +614,6 @@ fn handle_inner(
             | Request::Watch { .. }
             | Request::Embed { .. }
             | Request::Read { .. }
-            | Request::ReadResume { .. }
             | Request::Context { .. }
             | Request::Resumable { .. }
     ) || matches!(&request, Request::Explain { subject, .. } if subject == "query")
@@ -802,19 +801,7 @@ fn handle_inner(
             Ok(rows) => listed(rows),
             Err(e) => error("sql", e),
         },
-        Request::Outline {
-            session,
-            with_parents,
-            page_size,
-            cursor,
-        } => read::outline(
-            &reader,
-            &session,
-            with_parents,
-            page_size,
-            cursor.as_deref(),
-        ),
-        request @ (Request::Read { .. } | Request::ReadResume { .. }) => read::page(
+        request @ Request::Read { .. } => read::page(
             &reader,
             d,
             &request,

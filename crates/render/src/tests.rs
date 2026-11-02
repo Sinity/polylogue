@@ -551,7 +551,7 @@ fn page_cut_uses_canonical_record_position_not_paired_display_source() {
     );
     assert_eq!(
         builder.position(),
-        Some(&ReadPosition {
+        Some(&ItemPlace {
             selection: selection(),
             item: 1,
             character: 0,
@@ -564,7 +564,7 @@ fn missing_or_invalid_cursor_is_an_error_never_a_shifted_page() {
     let mut builder = pager::PageBuilder::new(
         header(),
         budget(),
-        Some(ReadPosition {
+        Some(ItemPlace {
             selection: SelectionLocator {
                 row: 99,
                 ..selection()
@@ -1330,7 +1330,7 @@ fn one_token_pages_and_accessible_empty_text_always_make_progress() {
         vec![text("")]
     );
 }
-fn large_footer(position: Option<&ReadPosition>) -> Result<ReadFooter, pager::PageError> {
+fn large_footer(position: Option<&ItemPlace>) -> Result<ReadFooter, pager::PageError> {
     let mut footer = ReadFooter {
         referenced_by: vec![ReferencedBy {
             reference: "x".repeat(100),
@@ -1371,16 +1371,18 @@ fn final_footer_size_can_trim_items_and_regenerate_the_exact_boundary() {
         pager::Push::Full
     );
     let mut attempts = 0;
+    let mut last = None;
     let doc = builder
         .finish_with(|position| {
             attempts += 1;
+            last = position.copied();
             large_footer(position)
         })
         .unwrap();
     assert!(attempts > 1);
     assert!(!doc.items.is_empty());
     assert!(doc.items.len() < 3);
-    let position = doc.footer.position.as_ref().unwrap();
+    let position = last.as_ref().unwrap();
     assert_eq!(position.item, doc.items.len() as u64);
     assert_eq!(
         doc.footer.next.as_ref().unwrap().mcp["position"],
@@ -1405,7 +1407,13 @@ fn final_footer_size_can_shorten_a_single_item_without_skipping_its_middle() {
             .unwrap(),
         pager::Push::Full
     );
-    let doc = builder.finish_with(large_footer).unwrap();
+    let mut last = None;
+    let doc = builder
+        .finish_with(|position| {
+            last = position.copied();
+            large_footer(position)
+        })
+        .unwrap();
     let ItemKind::Fragment {
         text: payload,
         position,
@@ -1425,8 +1433,8 @@ fn final_footer_size_can_shorten_a_single_item_without_skipping_its_middle() {
             .count() as u64
     );
     assert_eq!(payload.chars().count() as u64, *until);
-    assert_eq!(doc.footer.position.as_ref().unwrap().character, *until);
-    assert_eq!(doc.footer.position.as_ref().unwrap().item, 0);
+    assert_eq!(last.as_ref().unwrap().character, *until);
+    assert_eq!(last.as_ref().unwrap().item, 0);
     assert!(encode(&doc, Format::Json).len() <= limits.bytes.get());
 }
 
@@ -2460,8 +2468,8 @@ fn fragment_separator_ranges_require_complete_original_adjacent_body_evidence() 
     ));
 }
 
-fn before_anchor(item: &ReadItem, ordinal: u64, character: u64) -> ReadPosition {
-    ReadPosition {
+fn before_anchor(item: &ReadItem, ordinal: u64, character: u64) -> ItemPlace {
+    ItemPlace {
         selection: selection(),
         item: ordinal,
         character,
@@ -2600,7 +2608,6 @@ fn before_footer_trim_evicts_earliest_output_and_regenerates_its_lower_anchor() 
     let initial_lower = *page.first_position().unwrap();
     assert_eq!(page.position(), Some(&initial_lower));
     let mut initial_footer = large_footer(Some(&initial_lower)).unwrap();
-    initial_footer.position = Some(initial_lower);
     initial_footer.shown = 3;
     initial_footer.estimator = Some(TOKEN_ESTIMATOR.into());
     let untrimmed = ReadDocument {
@@ -2615,15 +2622,17 @@ fn before_footer_trim_evicts_earliest_output_and_regenerates_its_lower_anchor() 
         "fixture must require footer trimming"
     );
     let mut attempts = 0;
+    let mut final_lower = None;
     let doc = page
         .finish_with(|lower| {
             attempts += 1;
+            final_lower = lower.copied();
             large_footer(lower)
         })
         .unwrap();
     assert!(attempts > 1);
     assert!(!doc.items.is_empty() && doc.items.len() < 3);
-    let lower = doc.footer.position.unwrap();
+    let lower = final_lower.unwrap();
     assert_eq!(lower.item, 3 - doc.items.len() as u64);
     let ItemKind::Text { text: first } = &doc.items[0].kind else {
         panic!()
@@ -2658,7 +2667,13 @@ fn before_footer_trim_advances_only_the_left_fragment_edge() {
         pager::Push::Full
     );
     assert_eq!(page.upper_position(), Some(&upper));
-    let doc = page.finish_with(large_footer).unwrap();
+    let mut final_lower = None;
+    let doc = page
+        .finish_with(|lower| {
+            final_lower = lower.copied();
+            large_footer(lower)
+        })
+        .unwrap();
     let ItemKind::Fragment {
         text,
         position,
@@ -2672,7 +2687,7 @@ fn before_footer_trim_advances_only_the_left_fragment_edge() {
     assert_eq!(*until, upper.character);
     assert_eq!(*total, upper.character);
     assert_eq!(position.item_hash, upper.item_hash);
-    assert_eq!(doc.footer.position, Some(*position));
+    assert_eq!(final_lower, Some(*position));
     assert_eq!(
         text,
         &encoded
@@ -2693,7 +2708,7 @@ fn before_input_must_descend_across_rows_families_and_record_ordinals() {
             ordinal: 4,
         },
     };
-    let anchor = ReadPosition {
+    let anchor = ItemPlace {
         selection: anchor_selection,
         item: 5,
         character: 0,

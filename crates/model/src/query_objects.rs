@@ -277,8 +277,7 @@ pub struct QueryRun {
     pub binding: RunBinding,
 }
 
-/// A continuation retains one bounded reference to the original execution.
-/// Its own envelope is provenance of this invocation, never old authority.
+/// The inputs an execution ran with.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RunBinding {
@@ -288,24 +287,18 @@ pub enum RunBinding {
     Original {
         execution: Box<ExecutionBinding>,
     },
-    Continuation {
-        root: crate::RunId,
-        binding_hash: crate::BlobHash,
-        seek: crate::read::ReadSeek,
-        accepted_request: Option<serde_json::Value>,
-    },
 }
 impl RunBinding {
     pub fn original(&self) -> Option<&ExecutionBinding> {
         match self {
             Self::Original { execution } => Some(execution),
-            Self::Continuation { .. } | Self::OriginalObject { .. } => None,
+            Self::OriginalObject { .. } => None,
         }
     }
     pub fn original_mut(&mut self) -> Option<&mut ExecutionBinding> {
         match self {
             Self::Original { execution } => Some(execution),
-            Self::Continuation { .. } | Self::OriginalObject { .. } => None,
+            Self::OriginalObject { .. } => None,
         }
     }
     /// Stable action identity belongs to the original execution, not the page.
@@ -313,7 +306,6 @@ impl RunBinding {
         match self {
             Self::Original { execution } => execution.hash(),
             Self::OriginalObject { execution } => execution.hash(),
-            Self::Continuation { binding_hash, .. } => Ok(*binding_hash),
         }
     }
 }

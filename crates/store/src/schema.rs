@@ -33,7 +33,9 @@ pub const INDEX: &str = concat!(
     "\n",
     include_str!("schema/attachment_bindings.sql"),
     "\n",
-    include_str!("schema/index_12.sql")
+    include_str!("schema/index_12.sql"),
+    "\n",
+    include_str!("schema/session_items.sql")
 );
 pub(crate) const QUERY_RUNS: &str = include_str!("schema/query_runs.sql");
 #[cfg(test)]

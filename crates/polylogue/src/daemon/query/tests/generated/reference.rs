@@ -73,7 +73,7 @@ pub fn session_id(rows: &Rows, i: usize) -> String {
 }
 
 pub fn message_id(i: usize, j: usize) -> String {
-    format!("g{i:02}m{j:02}")
+    format!("claude-code:g{i:02}m{j:02}")
 }
 
 /// A tool call as its result row shows it: its message, tool, command,

@@ -31,18 +31,18 @@ pub struct PageBuilder {
     budget: PageBudget,
     bytes: usize,
     tokens: u64,
-    start: Option<ReadPosition>,
-    next: Option<ReadPosition>,
+    start: Option<ItemPlace>,
+    next: Option<ItemPlace>,
     full: bool,
-    boundaries: Vec<ReadPosition>,
-    before: Option<ReadPosition>,
+    boundaries: Vec<ItemPlace>,
+    before: Option<ItemPlace>,
     previous_input: Option<(SelectionLocator, u64)>,
 }
 impl PageBuilder {
     pub fn new(
         header: ReadHeader,
         budget: PageBudget,
-        start: Option<ReadPosition>,
+        start: Option<ItemPlace>,
         framing: ReadFraming,
     ) -> Result<Self, PageError> {
         let bytes = crate::encode::json_bytes(&header)
@@ -72,7 +72,7 @@ impl PageBuilder {
     pub fn new_before(
         header: ReadHeader,
         budget: PageBudget,
-        anchor: ReadPosition,
+        anchor: ItemPlace,
         framing: ReadFraming,
     ) -> Result<Self, PageError> {
         let mut page = Self::new(header, budget, Some(anchor), framing)?;
@@ -112,7 +112,7 @@ impl PageBuilder {
         if self.start.is_some_and(|start| start.item_hash != item_hash) {
             return Err(PageError::ItemChanged);
         }
-        let position = ReadPosition {
+        let position = ItemPlace {
             selection,
             item: ordinal,
             character: from,
@@ -193,7 +193,7 @@ impl PageBuilder {
         self.items.push(fragment);
         self.start = None;
         if lo < total {
-            self.stop(ReadPosition {
+            self.stop(ItemPlace {
                 character: lo as u64,
                 ..position
             });
@@ -243,7 +243,7 @@ impl PageBuilder {
         if until == 0 {
             return Ok(Push::Accepted);
         }
-        let position = ReadPosition {
+        let position = ItemPlace {
             selection,
             item: ordinal,
             character: 0,
@@ -279,7 +279,7 @@ impl PageBuilder {
             source: self.framing.source(),
             kind: ItemKind::Fragment {
                 text: text[boundaries[until - keep]..boundaries[until]].into(),
-                position: ReadPosition {
+                position: ItemPlace {
                     character: (until - keep) as u64,
                     ..position
                 },
@@ -317,7 +317,7 @@ impl PageBuilder {
         let bytes = crate::encode::json_bytes(&fragment).map_err(serialization)?;
         self.bytes += bytes.len();
         self.tokens += estimate_tokens(std::str::from_utf8(&bytes).expect("JSON is UTF-8")) as u64;
-        let lower = ReadPosition {
+        let lower = ItemPlace {
             character: (until - lo) as u64,
             ..position
         };
@@ -339,7 +339,7 @@ impl PageBuilder {
     }
     /// The first emitted encoded position; Before inputs are kept descending
     /// internally, then emitted in forward order.
-    pub fn first_position(&self) -> Option<&ReadPosition> {
+    pub fn first_position(&self) -> Option<&ItemPlace> {
         if self.before.is_some() {
             self.boundaries.last()
         } else {
@@ -347,20 +347,19 @@ impl PageBuilder {
         }
     }
     /// Fixed exclusive upper boundary for the next forward page.
-    pub fn upper_position(&self) -> Option<&ReadPosition> {
+    pub fn upper_position(&self) -> Option<&ItemPlace> {
         self.before.as_ref()
     }
     /// Follow-ups are regenerated only for the finalized unread coordinate.
     pub fn finish_with(
         mut self,
-        mut footer: impl FnMut(Option<&ReadPosition>) -> Result<ReadFooter, PageError>,
+        mut footer: impl FnMut(Option<&ItemPlace>) -> Result<ReadFooter, PageError>,
     ) -> Result<ReadDocument, PageError> {
         if self.start.is_some() {
             return Err(PageError::InvalidPosition);
         }
         loop {
             let mut footer = footer(self.next.as_ref())?;
-            footer.position = self.next;
             footer.shown = self.items.len() as u64;
             footer.estimator = Some(TOKEN_ESTIMATOR.into());
             let document = ReadDocument {
@@ -420,7 +419,7 @@ impl PageBuilder {
                     .nth(drop)
                     .map_or(text.len(), |(index, _)| index);
                 let until = position.character + count as u64;
-                let lower = ReadPosition {
+                let lower = ItemPlace {
                     character: position.character + drop as u64,
                     ..position
                 };
@@ -448,17 +447,17 @@ impl PageBuilder {
                 until,
                 total,
             };
-            self.next = Some(ReadPosition {
+            self.next = Some(ItemPlace {
                 character: until,
                 ..boundary
             });
         }
     }
-    fn stop(&mut self, position: ReadPosition) {
+    fn stop(&mut self, position: ItemPlace) {
         self.next = Some(position);
         self.full = true;
     }
-    pub fn position(&self) -> Option<&ReadPosition> {
+    pub fn position(&self) -> Option<&ItemPlace> {
         self.next.as_ref()
     }
     pub fn is_full(&self) -> bool {
@@ -472,7 +471,6 @@ impl PageBuilder {
         }
         footer.shown = self.items.len() as u64;
         footer.estimator = Some(TOKEN_ESTIMATOR.into());
-        footer.position = self.next;
         let mut items = self.items;
         if self.before.is_some() {
             items.reverse();

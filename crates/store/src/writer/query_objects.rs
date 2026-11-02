@@ -90,6 +90,30 @@ impl Writer {
 }
 
 impl WriterSender {
+    /// Hand a read's question, its run and the run's outcome to the writer
+    /// without waiting for them: the writer commits them on its next turn,
+    /// after the answer has gone. The read never waits on custody.
+    pub fn record_after_answer(
+        &self,
+        object: QueryObject,
+        run: QueryRun,
+        outcome: QueryRunOutcome,
+    ) -> Result<()> {
+        let (object_reply, _) = sync_channel(1);
+        self.0
+            .send_user(UserMsg::QueryObject(Box::new(object), None, object_reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        let (run_reply, _) = sync_channel(1);
+        self.0
+            .send_user(UserMsg::QueryRun(Box::new(run), None, run_reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        let (outcome_reply, _) = sync_channel(1);
+        self.0
+            .send_user(UserMsg::QueryRunOutcome(Box::new(outcome), outcome_reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        Ok(())
+    }
+
     pub fn query_object_with_parent(
         &self,
         object: QueryObject,
@@ -215,18 +239,6 @@ impl Inner {
     pub(super) fn write_query_run(&mut self, run: &QueryRun) -> Result<QueryCustody> {
         crate::query_objects::validate_run(run)?;
         if let Some(sinex) = &self.sinex {
-            if matches!(
-                &run.binding,
-                polylogue_model::query_objects::RunBinding::Continuation { .. }
-            ) {
-                self.primary_cache_ready()?;
-                crate::query_objects::validate_root_reference(
-                    &self.index,
-                    run,
-                    Some(sinex.as_ref()),
-                )?;
-            }
-
             match self.primary_cache_ready() {
                 Ok(()) => {
                     if crate::query_objects::known_run(&self.index, run)? {
@@ -271,7 +283,6 @@ impl Inner {
             }
             return Ok(QueryCustody::Queued);
         }
-        crate::query_objects::validate_root_reference(&self.archive, run, None)?;
         let tx = self.archive.transaction()?;
         let sequence = bump_counter(&tx)?;
         let before = tx.total_changes();

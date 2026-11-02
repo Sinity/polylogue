@@ -64,14 +64,14 @@ proptest::proptest! {
         let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();
         let session = fx.session(SessionFacts { id: "claude-code:time", ..SessionFacts::default() }).unwrap();
         let instant = OCT1 + DAY + 30 * 60_000 + 45_000 + millis;
-        for (name, time) in [("before", Some(instant - 1)), ("equal", Some(instant)), ("after", Some(instant + 1)), ("unknown", None)] {
+        for (name, time) in [("claude-code:before", Some(instant - 1)), ("claude-code:equal", Some(instant)), ("claude-code:after", Some(instant + 1)), ("claude-code:unknown", None)] {
             fx.message(session, msg(name, "user", "human", "synthetic", time)).unwrap();
         }
         let w = TestArchive { _dir: dir, fx };
         let utc = format!("2026-10-02T12:30:45.{millis:03}Z");
         let sign = if offset < 0 { '-' } else { '+' };
         let local = format!("2026-10-02T{:02}:30:45.{millis:03}{sign}{:02}:00", 12 + offset, offset.abs());
-        for (operator, names) in [("=", vec!["equal"]), ("<", vec!["before"]), (">", vec!["after"]), ("!=", vec!["before", "after"])] {
+        for (operator, names) in [("=", vec!["claude-code:equal"]), ("<", vec!["claude-code:before"]), (">", vec!["claude-code:after"]), ("!=", vec!["claude-code:before", "claude-code:after"])] {
             let expected = names.into_iter().map(str::to_owned).collect::<BTreeSet<_>>();
             for time in [&utc, &local] {
                 let query = format!("messages where at {operator} {time}");

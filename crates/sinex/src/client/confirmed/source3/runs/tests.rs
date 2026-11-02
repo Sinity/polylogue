@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_model::query_objects::{QueryRun, RunBinding};
+use polylogue_model::query_objects::{HistoricalRunReplay, QueryRun};
 use serde_json::{Value, json};
 
 fn original() -> QueryRun {
@@ -129,32 +129,23 @@ fn retired_note_reference_remains_read_only_old_json_without_a_current_reference
 }
 
 #[test]
-fn unsupported_recorded_seek_is_historical_and_never_rewritten_to_a_default_locator() {
-    let mut run = original();
-    run.binding = RunBinding::Continuation {
-        root: polylogue_model::RunId::parse("00000000-0000-7000-8000-000000000002").unwrap(),
-        binding_hash: BlobHash::of(b"retained root binding"),
-        seek: polylogue_model::read::ReadSeek {
-            direction: polylogue_model::read::ReadDirection::Before,
-            anchor: polylogue_model::read::ReadPosition {
-                selection: polylogue_model::read::SelectionLocator {
-                    row: 2,
-                    record: polylogue_model::read::ReadRecordLocator {
-                        kind: polylogue_model::read::ReadRecordKind::Authored,
-                        ordinal: 3,
-                    },
-                },
-                item: 4,
-                character: 5,
-                item_hash: BlobHash::of(b"original encoded item"),
-            },
+fn a_recorded_read_continuation_is_historical_and_kept_byte_for_byte() {
+    let mut body = serde_json::to_value(original()).unwrap();
+    body["binding"] = json!({
+        "kind": "continuation",
+        "root": "00000000-0000-7000-8000-000000000002",
+        "binding_hash": BlobHash::of(b"retained root binding"),
+        "seek": {
+            "direction": "before",
+            "anchor": {
+                "selection": {"row": 2, "record": {"kind": "authored", "ordinal": 3}},
+                "item": 4,
+                "character": 5,
+                "item_hash": BlobHash::of(b"original encoded item"),
+            }
         },
-        accepted_request: None,
-    };
-    let mut body = serde_json::to_value(&run).unwrap();
-    body["binding"]["seek"]["anchor"]["selection"]["record"]["kind"] =
-        "unrecognized_historical_record".into();
-    assert!(!locator_supported(&body).unwrap());
+        "accepted_request": null,
+    });
     let payload = json!({"record_key":"original-key","record":{"product":"query_run","run":body}});
     let historical = historical(&event(payload));
     assert!(matches!(

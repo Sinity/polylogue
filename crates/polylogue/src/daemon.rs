@@ -8,6 +8,7 @@ pub mod calendar;
 pub(crate) mod disconnect;
 pub mod execution;
 mod failure;
+pub(crate) mod items;
 pub(crate) mod lifecycle;
 pub mod measure;
 pub mod query;

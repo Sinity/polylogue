@@ -155,7 +155,7 @@ fn tool_aliases_preserve_exact_input_values_and_result_bytes() {
             ),
         ],
         |fixture, _| {
-            let shown = page(fixture, &["--tools", "full", "--output-lines", "0"]);
+            let shown = page(fixture, &["--show", "tools:full", "--output-lines", "0"]);
             let calls: Vec<_> = shown
                 .document
                 .items
@@ -177,14 +177,7 @@ fn tool_aliases_preserve_exact_input_values_and_result_bytes() {
             );
             let expanded = page(
                 fixture,
-                &[
-                    "--tools",
-                    "full",
-                    "--harness",
-                    "full",
-                    "--output-lines",
-                    "0",
-                ],
+                &["--show", "tools:full,harness:full", "--output-lines", "0"],
             );
             assert_eq!(
                 expanded
@@ -204,8 +197,8 @@ fn tool_aliases_preserve_exact_input_values_and_result_bytes() {
                     "--json",
                     "read",
                     "block:claude-code:a1#0",
-                    "--tools",
-                    "full",
+                    "--show",
+                    "tools:full",
                     "--output-lines",
                     "0",
                     "--budget",
@@ -247,7 +240,7 @@ fn dialogue_filters_tool_output_without_rewriting_the_remaining_source() {
         )],
         |fixture, _| {
             assert_eq!(texts(&page(fixture, &["--view", "dialogue"])), [visible]);
-            let full = page(fixture, &["--tools", "full", "--output-lines", "0"]);
+            let full = page(fixture, &["--show", "tools:full", "--output-lines", "0"]);
             assert!(
                 serde_json::to_string(&full.document.items)
                     .unwrap()
@@ -294,8 +287,8 @@ fn indexed_tool_result_pages_reconstruct_the_exact_pair_once() {
                 "--json",
                 "read",
                 "block:claude-code:a1#0",
-                "--tools",
-                "full",
+                "--show",
+                "tools:full",
                 "--output-lines",
                 "0",
                 "--budget",

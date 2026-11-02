@@ -217,32 +217,6 @@ fn missing_parents_and_session_cycles_report_their_actual_boundary() {
 }
 
 #[test]
-fn changed_missing_anchor_changes_fingerprint_even_when_available_messages_do_not() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
-    session(&mut f, "a", &["a"]);
-    session(&mut f, "b", &["b"]);
-    fork(&mut f, "a", "b", Some("claude-code:missing-one"));
-    let pool = f.reads().unwrap();
-    let id = SessionId::parse("claude-code:b").unwrap();
-    let before = {
-        let r = pool.reader().unwrap();
-        r.select_messages(&id, true)
-            .unwrap()
-            .content_version()
-            .unwrap()
-    };
-    crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP)
-        .unwrap()
-        .execute("UPDATE link SET branch_point='claude-code:missing-two'", [])
-        .unwrap();
-    let r = pool.reader().unwrap();
-    let selected = r.select_messages(&id, true).unwrap();
-    assert_eq!(texts(&selected), ["b"]);
-    assert_ne!(before, selected.content_version().unwrap());
-}
-
-#[test]
 fn a_shared_ancestor_is_deduplicated_without_becoming_a_session_cycle() {
     let mut writer = crate::fixture::writer::WriterArchive::new();
     let p = recorded_messages(&mut writer, "p", &["p"], &[]);
@@ -336,79 +310,6 @@ fn source_checkpoint_skips_prefix_hydration_in_physical_and_logical_order() {
 }
 
 #[test]
-fn outline_and_anchors_keep_shared_ancestry_in_selected_order() {
-    let mut writer = crate::fixture::writer::WriterArchive::new();
-    let a = recorded_messages(&mut writer, "a", &["shared first", "shared second"], &[]);
-    writer
-        .links
-        .push(recorded_link(polylogue_model::LinkKind::Copy, "a", "b"));
-    let b = recorded_messages(&mut writer, "b", &["branch b"], &a[..1]);
-    writer
-        .links
-        .push(recorded_link(polylogue_model::LinkKind::Copy, "a", "c"));
-    let c = recorded_messages(&mut writer, "c", &["branch c"], &a);
-    let d = crate::fixture::writer::message(
-        "0",
-        "d",
-        polylogue_model::Role::User,
-        0,
-        vec![polylogue_model::Block::Text {
-            text: "joint session".into(),
-        }],
-    );
-    copied_source(
-        &mut writer,
-        "d",
-        &["a", "b", "c"],
-        vec![a[0].clone(), b[0].clone(), a[1].clone(), c[0].clone(), d],
-    );
-    let pool = ReadPool::open(&writer.archive).unwrap();
-    let reader = pool.reader().unwrap();
-    let id = SessionId::parse("claude-code:d").unwrap();
-    let selected = reader.select_messages(&id, true).unwrap();
-    assert!(selected.parents().complete);
-    let expected = [
-        "claude-code:a-0",
-        "claude-code:b-0",
-        "claude-code:a-1",
-        "claude-code:c-0",
-        "claude-code:d-0",
-    ];
-    let entries = selected.outline(None, 100).unwrap();
-    assert_eq!(
-        entries
-            .iter()
-            .map(|entry| entry.message.to_string())
-            .collect::<Vec<_>>(),
-        expected
-    );
-    assert_eq!(
-        selected
-            .outline(Some(entries[1].key), 2)
-            .unwrap()
-            .iter()
-            .map(|entry| entry.message.to_string())
-            .collect::<Vec<_>>(),
-        expected[2..4]
-    );
-    let anchor = polylogue_model::MessageId::parse("claude-code:a-1").unwrap();
-    assert_eq!(selected.locate(Some(&anchor)).unwrap().unwrap().message, 2);
-    assert!(
-        reader
-            .select_messages(&id, false)
-            .unwrap()
-            .locate(Some(&anchor))
-            .unwrap()
-            .is_none()
-    );
-    let last = selected
-        .latest(&[polylogue_model::BlockKind::Text], true)
-        .unwrap()
-        .unwrap();
-    assert_eq!(last.message, 4);
-}
-
-#[test]
 fn previous_indices_include_hidden_messages_in_own_and_parent_selections() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
@@ -448,50 +349,6 @@ fn previous_indices_include_hidden_messages_in_own_and_parent_selections() {
         assert_eq!(found[0], "first");
         assert_eq!(found[1], "");
     }
-}
-
-#[test]
-fn outline_includes_microcompactions_and_seeks_indexed_branch_points() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
-    session(&mut f, "a", &["prompt", "context change"]);
-    let conn =
-        crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP).unwrap();
-    conn.execute(
-        "UPDATE message SET written_by='model' WHERE id='claude-code:a-1'",
-        [],
-    )
-    .unwrap();
-    let pk = conn
-        .query_row(
-            "SELECT pk FROM session WHERE id='claude-code:a'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap();
-    f.event(pk, "microcompaction", None).unwrap();
-    conn.execute(
-        "UPDATE event SET after_message_pk=(SELECT pk FROM message WHERE id='claude-code:a-1')",
-        [],
-    )
-    .unwrap();
-    let pool = f.reads().unwrap();
-    let r = pool.reader().unwrap();
-    let selected = r
-        .select_messages(&SessionId::parse("claude-code:a").unwrap(), false)
-        .unwrap();
-    let entries = selected.outline(None, 10).unwrap();
-    assert_eq!(entries.len(), 2);
-    assert_eq!(entries[1].events.len(), 1);
-    assert!(entries[1].kinds.iter().any(|kind| kind == "compaction"));
-    let plan: String = conn
-        .query_row(
-            "EXPLAIN QUERY PLAN SELECT 1 FROM link WHERE branch_point='claude-code:a-1'",
-            [],
-            |row| row.get(3),
-        )
-        .unwrap();
-    assert!(plan.contains("link_branch_point"), "{plan}");
 }
 
 #[test]

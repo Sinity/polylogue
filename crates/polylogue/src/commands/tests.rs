@@ -186,13 +186,14 @@ fn one_operation_makes_one_request_on_every_surface() {
         "dialogue",
         "--budget",
         "100",
-        "--inherited",
+        "--show",
+        "inherited",
     ])
     .unwrap();
     let mcp = Values::from_json(
         read,
         Surface::Mcp,
-        json!({"target": "claude-code:s1", "view": "dialogue", "budget": 100, "inherited": true})
+        json!({"target": "claude-code:s1", "view": "dialogue", "budget": 100, "show": ["inherited"]})
             .as_object()
             .unwrap()
             .clone(),
@@ -306,31 +307,10 @@ fn mcp_schemas_follow_the_arguments() {
     }
     let read = command("read").unwrap();
     let s = read.typed_schemas.unwrap()().0;
-    assert!(
-        serde_json::to_string(&s)
-            .unwrap()
-            .contains("ResumeArguments")
-    );
-    let resume = &s["$defs"]["ResumeArguments"];
-    assert_eq!(resume["additionalProperties"], false);
-    assert_eq!(
-        resume["properties"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect::<std::collections::BTreeSet<_>>(),
-        std::collections::BTreeSet::from(["budget", "cursor", "root_run"])
-    );
-    assert_eq!(
-        resume["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|value| value.as_str().unwrap())
-            .collect::<std::collections::BTreeSet<_>>(),
-        std::collections::BTreeSet::from(["root_run", "cursor"])
-    );
+    // A continuation is the same arguments with a cursor; there is no
+    // second argument form.
+    let text = serde_json::to_string(&s).unwrap();
+    assert!(!text.contains("root_run") && !text.contains("ResumeArguments"));
     for name in ["assert", "assert-query", "revise", "withdraw"] {
         let s = schema(command(name).unwrap());
         assert!(s["properties"].get("request_id").is_none(), "{name}");

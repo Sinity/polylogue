@@ -237,6 +237,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
                 format: "json".into(),
                 budget: None,
                 with_blobs: false,
+                cursor: None,
             },
             &r.web.daemon,
         )) else {

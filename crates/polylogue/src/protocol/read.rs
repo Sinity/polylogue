@@ -1,27 +1,13 @@
-//! Public read arguments use the same typed options as layout and transfer.
-use polylogue_model::read::{Expansion, Format, ReadDelivery, View};
+//! Public read arguments. Folds are the `show` and `hide` words of one
+//! table (`FoldKind`); the daemon reads them into one `ReadOptions`.
+use polylogue_model::read::{Format, ReadDelivery, View};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub enum Arguments {
-    Full(FullArguments),
-    Resume(ResumeArguments),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct ResumeArguments {
-    pub root_run: polylogue_model::RunId,
-    pub cursor: query_language::cursor::SealedCursor,
-    pub budget: Option<NonZeroU64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct FullArguments {
+pub struct Arguments {
     pub target: String,
     #[serde(default)]
     pub view: View,
@@ -29,48 +15,62 @@ pub struct FullArguments {
     #[serde(default)]
     pub delivery: ReadDelivery,
     pub budget: Option<NonZeroU64>,
-    pub tools: Option<Expansion>,
-    pub thinking: Option<Expansion>,
-    pub harness: Option<Expansion>,
+    /// Item kinds to show, each `KIND` or `KIND:LEVEL`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub show: Vec<String>,
+    /// Item kinds to hide.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hide: Vec<String>,
     #[serde(default = "output_lines")]
     pub output_lines: u64,
-    #[serde(default)]
-    pub inherited: bool,
-    #[serde(default)]
-    pub branches: bool,
-    #[serde(default)]
-    pub turns: bool,
-    #[serde(default = "enabled")]
-    pub assertions: bool,
     #[serde(default)]
     pub for_others: bool,
     #[serde(default)]
     pub variant: Vec<String>,
     #[serde(default)]
     pub with_blobs: bool,
+    /// The message a context reading is taken at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    /// The other place of a context difference: a message or `compaction[:N]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    /// Messages before and after a message read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub around: Option<u64>,
+    /// Start at the last page.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub latest: bool,
+    /// With `root:REF`: read only the named physical session.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub physical: bool,
+    /// A page cursor from an earlier page's `next` or `previous`; the other
+    /// arguments must be the ones that page was read with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 fn output_lines() -> u64 {
     100
 }
-fn enabled() -> bool {
-    true
-}
 pub type Answer = polylogue_model::read::ReadPage;
 
 impl Arguments {
+    /// The read request these arguments name, built by the command's own
+    /// builder, the one parser of read arguments.
+    #[cfg(test)]
+    pub fn into_request(self) -> Result<crate::daemon::Request, String> {
+        let command = crate::commands::command("read").ok_or("read is a command")?;
+        let caller = crate::commands::Caller {
+            surface: crate::commands::Surface::Mcp,
+            cwd: None,
+            json: true,
+        };
+        let arguments = serde_json::to_value(self).map_err(|error| error.to_string())?;
+        (command.build_typed.ok_or("read has a typed builder")?)(arguments, &caller, "test-read")
+            .map_err(|error| error.to_string())
+    }
+
     pub fn from_request(request: &crate::daemon::Request) -> Result<Self, String> {
-        if let crate::daemon::Request::ReadResume {
-            root_run,
-            cursor,
-            budget,
-        } = request
-        {
-            return Ok(Self::Resume(ResumeArguments {
-                root_run: root_run.clone(),
-                cursor: cursor.clone(),
-                budget: *budget,
-            }));
-        }
         let crate::daemon::Request::Read {
             target,
             options,
@@ -78,11 +78,13 @@ impl Arguments {
             format,
             budget,
             with_blobs,
+            cursor,
         } = request
         else {
             return Err("a read request is required".into());
         };
-        Ok(Self::Full(FullArguments {
+        let (show, hide) = options.fold_words();
+        Ok(Self {
             target: target.clone(),
             view: options.view,
             format: Some(
@@ -95,35 +97,20 @@ impl Arguments {
                         .ok_or_else(|| "budget must be positive".to_string())
                 })
                 .transpose()?,
-            tools: options.tools,
-            thinking: options.thinking,
-            harness: options.harness,
+            show,
+            hide,
             output_lines: options.output_lines,
-            inherited: options.inherited,
-            branches: options.branches,
-            turns: options.turns,
-            assertions: options.assertions,
             for_others: options.for_others,
             variant: options.variants.clone(),
             with_blobs: *with_blobs,
-        }))
+            at: options.at.as_ref().map(ToString::to_string),
+            diff: options.diff.clone(),
+            around: options.around,
+            latest: options.latest,
+            physical: options.physical,
+            cursor: cursor.clone(),
+        })
     }
-}
-
-/// Only the supplied resume fields reach this decoder. Full options are never
-/// filled from current defaults or recovered from untrusted caller input.
-pub(crate) fn resume_from_values(
-    values: &crate::commands::Values,
-) -> Result<crate::daemon::Request, String> {
-    let mut object = values.0.clone();
-    object.remove("json");
-    let arguments: ResumeArguments = serde_json::from_value(serde_json::Value::Object(object))
-        .map_err(|error| error.to_string())?;
-    Ok(crate::daemon::Request::ReadResume {
-        root_run: arguments.root_run,
-        cursor: arguments.cursor,
-        budget: arguments.budget,
-    })
 }
 
 #[cfg(test)]

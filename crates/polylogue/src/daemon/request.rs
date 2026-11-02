@@ -169,18 +169,8 @@ pub enum Request {
         budget: Option<usize>,
         #[serde(default)]
         with_blobs: bool,
-    },
-    /// Continue an acknowledged read with its frozen options and current authority.
-    ReadResume {
-        root_run: polylogue_model::RunId,
-        cursor: query_language::cursor::SealedCursor,
-        budget: Option<std::num::NonZeroU64>,
-    },
-    Outline {
-        session: SessionId,
+        /// A page cursor issued by an earlier page of this same reading.
         #[serde(default)]
-        with_parents: bool,
-        page_size: usize,
         cursor: Option<String>,
     },
     Import {
@@ -339,8 +329,6 @@ impl Request {
             | Self::Query { .. }
             | Self::Changes { .. }
             | Self::Read { .. }
-            | Self::ReadResume { .. }
-            | Self::Outline { .. }
             | Self::Resumable { .. }
             | Self::Continue { .. }
             | Self::Sql { .. }

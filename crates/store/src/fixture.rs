@@ -111,7 +111,11 @@ impl Fixture {
         crate::derive::run(&mut self.index, None)
     }
 
+    /// The writer indexes each session's items as it commits; fixture rows
+    /// are written directly, so sessions they changed are indexed before
+    /// reads open.
     pub fn reads(&self) -> Result<ReadPool> {
+        crate::items::refresh_stale(&self.index)?;
         ReadPool::open(&self.archive)
     }
 
@@ -247,6 +251,7 @@ impl Fixture {
                 serde_json::json!({"type": "text", "text": ""}),
             )?;
         }
+        crate::items::refresh_stale(&self.index)?;
         Ok(pk)
     }
 
@@ -311,6 +316,7 @@ impl Fixture {
             "UPDATE session SET changed=changed+1 WHERE pk=?1",
             [session_pk],
         )?;
+        crate::items::refresh_stale(&self.index)?;
         Ok(pk)
     }
 
@@ -320,6 +326,7 @@ impl Fixture {
              VALUES (?1, ?2, (SELECT pk FROM session WHERE id = ?2), ?3, ?4, 'fixture', ?5)",
             params![parent, child, kind, how, self.input_pk],
         )?;
+        crate::items::refresh_stale(&self.index)?;
         Ok(())
     }
 
@@ -385,6 +392,7 @@ impl Fixture {
             "UPDATE session SET changed=changed+1 WHERE pk=?1",
             [session_pk],
         )?;
+        crate::items::refresh_stale(&self.index)?;
         Ok(())
     }
 
@@ -426,6 +434,7 @@ impl Fixture {
              WHERE pk = (SELECT session_pk FROM message WHERE pk = ?1)",
             [message_pk],
         )?;
+        crate::items::refresh_stale(&self.index)?;
         Ok(())
     }
 

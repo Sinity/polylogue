@@ -4,7 +4,7 @@ use super::{Emit, Failure, attachment_evidence, evidence, output};
 use polylogue_model::{
     Block, DocumentId,
     read::{
-        ReadItem, ReadPart, ReadPosition, ReadRecord, ReadRecordKind, ReadRecordLocator,
+        ItemPlace, ReadItem, ReadPart, ReadRecord, ReadRecordKind, ReadRecordLocator,
         SelectionLocator, Source, SourceBlock, View,
     },
 };
@@ -41,7 +41,7 @@ fn emit_items(
     row: u64,
     ordinal: u64,
     items: Vec<ReadItem>,
-    start: Option<ReadPosition>,
+    start: Option<ItemPlace>,
     layout: &evidence::Layout<'_>,
     emit: &mut Emit<'_>,
 ) -> Result<bool, Failure> {
@@ -128,7 +128,7 @@ pub(super) fn visit(
     reader: &Reader<'_>,
     id: &DocumentId,
     row: u64,
-    start: Option<ReadPosition>,
+    start: Option<ItemPlace>,
     layout: &evidence::Layout<'_>,
     emit: &mut Emit<'_>,
 ) -> Result<bool, Failure> {

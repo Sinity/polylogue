@@ -1,7 +1,6 @@
 //! Message selection in one pinned read, with incomplete parents kept explicit.
 use super::*;
 mod navigation;
-pub use navigation::OutlineEntry;
 use std::collections::VecDeque;
 use std::ops::ControlFlow;
 
@@ -702,110 +701,4 @@ impl MessageSelection<'_, '_> {
             },
         }
     }
-
-    /// Tool-bearing messages that parents contribute to this selection. Their
-    /// pairs can bind results past the inherited prefix, which the parent rows
-    /// alone do not show; the read session's own pairs move its write counter.
-    pub(crate) fn visit_inherited_tool_message_ids(
-        &self,
-        mut visit: impl FnMut(&str) -> Result<()>,
-    ) -> Result<()> {
-        self.reader.check()?;
-        let (Some(keys), Some((own, _))) = (&self.with_parents, &self.own) else {
-            return Ok(());
-        };
-        let mut tooling = self.reader.conn()?.prepare_cached(
-            "SELECT EXISTS(SELECT 1 FROM block b WHERE b.message_pk=?1 AND b.kind IN ('tool_call','tool_result')
-             AND EXISTS(SELECT 1 FROM tool_call t WHERE t.call_block_pk=b.pk OR t.result_block_pk=b.pk))",
-        )?;
-        for key in keys.iter().filter(|key| key.session_pk != *own) {
-            self.reader.check()?;
-            if tooling.query_row([key.message_pk], |row| row.get::<_, bool>(0))? {
-                visit(&key.id)?;
-            }
-        }
-        self.reader.check()
-    }
-}
-
-impl MessageSelection<'_, '_> {
-    /// Folds what the selected content is, from owner counters and stored
-    /// version identities: the read session's write counter (`session.changed`,
-    /// which every change to its messages, versions, blocks, tool calls,
-    /// events, links and derived rows moves); with parents, the parents status
-    /// and the row and shown version of each message a parent contributes,
-    /// since a parent's later messages are not selected; and the change counter
-    /// of every import holding an input parsed into the selected sessions,
-    /// which moves with their attachment custody. No block, text or import
-    /// member is read.
-    pub fn content_version(&self) -> Result<String> {
-        let mut hash = blake3::Hasher::new();
-        self.fold_content_version(&mut hash)?;
-        Ok(hash.finalize().to_hex().to_string())
-    }
-
-    pub(crate) fn fold_content_version(&self, hash: &mut blake3::Hasher) -> Result<()> {
-        let (own, id) = self
-            .own
-            .as_ref()
-            .ok_or_else(|| StoreError::NotFound("the selected session".into()))?;
-        fold_serialized(hash, &id.to_string())?;
-        if self.with_parents.is_some() {
-            fold_serialized(hash, &self.parents)?;
-        }
-        let conn = self.reader.conn()?;
-        let mut changed = conn.prepare_cached("SELECT changed FROM session WHERE pk = ?1")?;
-        let mut facts = conn.prepare_cached("SELECT * FROM message WHERE pk = ?1")?;
-        let mut version = conn.prepare_cached(
-            "SELECT version_hash FROM message_source WHERE message_pk = ?1 AND shown = 1",
-        )?;
-        let mut sessions = Vec::new();
-        for (session, members) in self.sessions() {
-            self.reader.check()?;
-            sessions.push(session);
-            fold_serialized(hash, &session)?;
-            if session == *own {
-                let counter: i64 = changed.query_row([session], |r| r.get(0))?;
-                fold_serialized(hash, &counter)?;
-                continue;
-            }
-            for pk in members.iter().flatten() {
-                for statement in [&mut facts, &mut version] {
-                    let mut rows = statement.query([pk])?;
-                    while let Some(row) = rows.next()? {
-                        hash_row(hash, row)?;
-                    }
-                }
-            }
-        }
-        crate::assets::fold_session_import_versions(conn, &sessions, hash)?;
-        self.reader.check()
-    }
-}
-
-/// Folds every column of a row into `hash`, with its type.
-fn hash_row(hash: &mut blake3::Hasher, row: &rusqlite::Row<'_>) -> Result<()> {
-    use rusqlite::types::ValueRef;
-    hash.update(b"row");
-    for column in 0..row.as_ref().column_count() {
-        match row.get_ref(column)? {
-            ValueRef::Null => {
-                hash.update(b"n");
-            }
-            ValueRef::Integer(value) => {
-                hash.update(b"i");
-                hash.update(&value.to_le_bytes());
-            }
-            ValueRef::Real(value) => {
-                hash.update(b"r");
-                hash.update(&value.to_bits().to_le_bytes());
-            }
-            ValueRef::Text(bytes) | ValueRef::Blob(bytes) => {
-                hash.update(b"b");
-                hash.update(&(bytes.len() as u64).to_le_bytes());
-                hash.update(bytes);
-            }
-        }
-    }
-    Ok(())
 }

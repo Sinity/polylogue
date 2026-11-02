@@ -660,6 +660,7 @@ impl Inner {
             ));
         }
         rows::prune_sessions(&tx, &batch.input.id, chain, counter)?;
+        crate::items::refresh_changed(&tx, counter)?;
         batch.parse.clear();
         crate::fault::check("write.index_commit", "")?;
         crate::fault::check("reparse.commit", &batch.input.id)?;

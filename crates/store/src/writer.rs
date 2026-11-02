@@ -1763,6 +1763,7 @@ impl Inner {
             }
             stats.0 += 1;
         }
+        crate::items::refresh_changed(&itx, counter)?;
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
         self.commits.committed();

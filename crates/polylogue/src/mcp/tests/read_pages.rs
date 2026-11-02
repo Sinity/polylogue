@@ -1,6 +1,6 @@
 use super::*;
+use polylogue_model::BlobHash;
 use polylogue_model::read::{ItemKind, ReadItem, ReadPage, ReadyCall, SelectionLocator};
-use polylogue_model::{BlobHash, RunId};
 use std::collections::{BTreeMap, BTreeSet};
 
 type ItemKey = (SelectionLocator, u64, BlobHash);
@@ -143,38 +143,10 @@ impl ItemUniverse {
     fn from_root(daemon: &test_daemon::TestDaemon, next: &ReadyCall) -> Self {
         let child: crate::protocol::operations::ToolCall =
             serde_json::from_value(next.mcp["arguments"].clone()).unwrap();
-        let crate::protocol::read::Arguments::Resume(resume) =
-            serde_json::from_value(child.arguments).unwrap()
-        else {
-            panic!("compact root continuation");
-        };
-        let reader = daemon.daemon.reads.reader().unwrap();
-        let root = reader
-            .query_run(&resume.root_run, None)
-            .unwrap()
-            .expect("acknowledged root")
-            .value;
-        let accepted: command_surface::RunnableRequest = serde_json::from_value(
-            root.binding
-                .original()
-                .expect("original root")
-                .accepted_request
-                .clone()
-                .expect("actual root envelope"),
-        )
-        .unwrap();
-        drop(reader);
-        let command = crate::commands::command("read").unwrap();
-        let mut request = command.build_typed.unwrap()(
-            accepted.arguments,
-            &crate::commands::Caller {
-                surface: crate::commands::Surface::Mcp,
-                cwd: None,
-                json: true,
-            },
-            &accepted.request_id,
-        )
-        .unwrap();
+        let mut arguments: crate::protocol::read::Arguments =
+            serde_json::from_value(child.arguments).unwrap();
+        arguments.cursor = None;
+        let mut request = arguments.into_request().unwrap();
         let crate::daemon::Request::Read {
             delivery,
             budget,
@@ -310,7 +282,7 @@ pub(super) fn collect(
     let archive = Archive::at(&daemon.daemon.archive.root);
     let query = page.snapshot.query.clone();
     let format = page.format;
-    let mut root: Option<(RunId, BlobHash)> = None;
+    let mut root: Option<(String, polylogue_model::read::View)> = None;
     let mut cursors = BTreeSet::new();
     let mut requests = BTreeSet::new();
     let mut items = Items::default();
@@ -403,49 +375,15 @@ pub(super) fn collect(
             cursors.insert(cursor.to_owned()),
             "continuation repeated a position"
         );
-        let crate::protocol::read::Arguments::Resume(arguments) =
-            serde_json::from_value(envelope["arguments"].clone()).unwrap()
-        else {
-            panic!("next call must use the closed compact resume form");
-        };
-        let reader = daemon.daemon.reads.reader().unwrap();
-        let acknowledged = reader
-            .query_run(&arguments.root_run, None)
-            .unwrap()
-            .expect("root Begin is acknowledged before exposing continuation")
-            .value;
-        let original = acknowledged
-            .binding
-            .original()
-            .expect("continuation must point one hop to the original run");
-        let original: command_surface::RunnableRequest = serde_json::from_value(
-            original
-                .accepted_request
-                .clone()
-                .expect("actual accepted root envelope"),
-        )
-        .unwrap();
-        assert_eq!(
-            original.deadline, expected_deadline,
-            "root deadline was not retained"
-        );
-        assert_eq!(
-            query,
-            format!(
-                "query:{}",
-                acknowledged
-                    .question
-                    .expect("a query read retains its question")
-            )
-        );
-        let hash = acknowledged.binding_hash().unwrap();
-        let identity = (arguments.root_run, hash);
+        let arguments: crate::protocol::read::Arguments =
+            serde_json::from_value(envelope["arguments"].clone()).unwrap();
+        // A continuation reads the same target with the same options.
+        let identity = (arguments.target.clone(), arguments.view);
         if let Some(root) = &root {
-            assert_eq!(&identity, root, "original execution binding changed");
+            assert_eq!(&identity, root, "the continuation changed its reading");
         } else {
             root = Some(identity);
         }
-        drop(reader);
         if let Some(budget) = budget {
             ready.mcp["arguments"]["arguments"]["budget"] = json!(budget);
         }
@@ -532,7 +470,9 @@ fn mcp_read_pages_execute_the_generated_continuation_without_losing_unicode() {
     let mut invalid = first_next.clone();
     invalid.mcp["arguments"]["arguments"]["view"] = json!("dialogue");
     let error = execute_ready(&archive, &invalid).unwrap_err();
-    assert!(error.contains("bad_request"), "{error}");
+    // docs/query.md: "a cursor from another question is `invalid_query`";
+    // a read continuation with other arguments is refused the same way.
+    assert!(error.contains("invalid_query"), "{error}");
     let (items, pages) = collect(
         &daemon,
         page,
@@ -578,7 +518,7 @@ fn budgeted_mcp_output_contains_one_bounded_layout_and_no_duplicate_source_recor
 }
 
 #[test]
-fn an_omitted_read_deadline_stays_default_in_the_acknowledged_root_and_next_call() {
+fn an_omitted_read_deadline_stays_default_in_the_next_call() {
     let daemon = test_daemon::start(&"small default read fragment ".repeat(100));
     let archive = Archive::at(&daemon.daemon.archive.root);
     let first = call(
@@ -601,29 +541,9 @@ fn an_omitted_read_deadline_stays_default_in_the_acknowledged_root_and_next_call
     let child: crate::protocol::operations::ToolCall =
         serde_json::from_value(envelope.clone()).unwrap();
     assert_eq!(child.deadline, command_surface::Deadline::Default);
-    let crate::protocol::read::Arguments::Resume(resume) =
-        serde_json::from_value(child.arguments).unwrap()
-    else {
-        panic!("compact resume arguments");
-    };
-    let reader = daemon.daemon.reads.reader().unwrap();
-    let root = reader
-        .query_run(&resume.root_run, None)
-        .unwrap()
-        .expect("acknowledged root")
-        .value;
-    let accepted = root
-        .binding
-        .original()
-        .expect("original root")
-        .accepted_request
-        .as_ref()
-        .expect("accepted root envelope");
-    assert!(accepted.get("deadline").is_none());
-    let original: command_surface::RunnableRequest =
-        serde_json::from_value(accepted.clone()).unwrap();
-    assert_eq!(original.deadline, command_surface::Deadline::Default);
-    drop(reader);
+    let arguments: crate::protocol::read::Arguments =
+        serde_json::from_value(child.arguments).unwrap();
+    assert!(arguments.cursor.is_some());
     let continued = execute_ready(&archive, &next).unwrap();
     assert_eq!(continued.snapshot.query, page.snapshot.query);
 }

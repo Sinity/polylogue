@@ -135,6 +135,7 @@ fn run_all(
         for &pk in sessions {
             done += derive_session(&tx, pk, derivations, &versions, catalog, counter)?;
         }
+        crate::items::refresh_changed(&tx, counter)?;
         tx.commit()?;
         if let Some(events) = commits {
             events.committed();
@@ -147,7 +148,8 @@ fn run_all(
     }
     let changed = tx.total_changes() != before;
     if changed {
-        crate::archive::bump_counter(&tx)?;
+        let counter = crate::archive::bump_counter(&tx)?;
+        crate::items::refresh_changed(&tx, counter)?;
     }
     tx.commit()?;
     if changed && let Some(events) = commits {

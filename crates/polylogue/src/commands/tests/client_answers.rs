@@ -24,7 +24,6 @@ const ASKED: &[(&str, &[&str])] = &[
     ),
     ("list", &[]),
     ("read", &["session:claude-code:s1"]),
-    ("outline", &["claude-code:s1"]),
     ("read", &["session:claude-code:missing"]),
     ("attachment", &["claude-code:missing", "0"]),
     ("read", &["assertion:missing"]),

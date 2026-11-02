@@ -1,8 +1,34 @@
 use super::*;
 use crate::fixture::{Fixture, SessionFacts};
 
+fn kinds_from(
+    reader: &Reader<'_>,
+    selection: &PreparedSelection<'_>,
+    from: Option<&OrderPosition>,
+) -> Vec<String> {
+    let mut out = vec![];
+    reader
+        .visit_selection_from_row::<SelectionError>(selection, from, None, |row| {
+            out.push(row.values["kind"].as_str().unwrap().to_owned());
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    out
+}
+
+fn positions(reader: &Reader<'_>, selection: &PreparedSelection<'_>) -> Vec<OrderPosition> {
+    let mut out = vec![];
+    reader
+        .visit_selection::<SelectionError>(selection, None, None, |row| {
+            out.push(row.position);
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    out
+}
+
 #[test]
-fn compact_row_seek_does_not_decode_preceding_answer_bodies() {
+fn a_row_continuation_resumes_at_its_anchor_by_key_without_earlier_bodies() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
     let session = fixture
@@ -13,6 +39,16 @@ fn compact_row_seek_does_not_decode_preceding_answer_bodies() {
         .unwrap();
     fixture.event(session, "synthetic-a", None).unwrap();
     fixture.event(session, "synthetic-b", None).unwrap();
+    fixture.event(session, "synthetic-c", None).unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let selection = reader
+        .prepare_selection("events | sort by id", &options())
+        .unwrap();
+    let keys = positions(&reader, &selection);
+    drop(reader);
+    drop(pool);
+    // An earlier body that cannot decode is never read by a continuation.
     let conn = crate::archive::open_write(&fixture.archive.index_db(), 1).unwrap();
     conn.execute(
         "UPDATE event SET data=X'ff' WHERE id=(SELECT min(id) FROM event)",
@@ -22,44 +58,16 @@ fn compact_row_seek_does_not_decode_preceding_answer_bodies() {
     drop(conn);
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let options = options();
     let selection = reader
-        .prepare_selection("events | sort by id", &options)
-        .unwrap();
-    assert!(
-        reader
-            .visit_selection::<SelectionError>(&selection, None, None, |_| Ok(
-                ControlFlow::Continue(())
-            ))
-            .is_err()
-    );
-    let mut rows = vec![];
-    reader
-        .visit_selection_from::<SelectionError>(&selection, 1, None, |ordinal, row| {
-            rows.push((
-                ordinal,
-                row.values["kind"].clone(),
-                row.values["data"].clone(),
-            ));
-            Ok(ControlFlow::Continue(()))
-        })
+        .prepare_selection("events | sort by id", &options())
         .unwrap();
     assert_eq!(
-        rows,
-        vec![(
-            1,
-            Value::String("synthetic-b".into()),
-            serde_json::json!({})
-        )]
+        kinds_from(&reader, &selection, Some(&keys[1])),
+        ["synthetic-b", "synthetic-c"]
     );
     assert_eq!(
-        reader
-            .visit_selection_from::<SelectionError>(&selection, 3, None, |_, _| Ok(
-                ControlFlow::Continue(())
-            ))
-            .unwrap_err()
-            .kind(),
-        "stale_cursor"
+        kinds_from(&reader, &selection, Some(&keys[2])),
+        ["synthetic-c"]
     );
 }
 
@@ -120,45 +128,44 @@ fn reverse_selection_mirrors_nulls_ties_and_selection_stages() {
         ),
     ] {
         let selection = reader.prepare_selection(query, &options).unwrap();
-        let mut forward = vec![];
-        reader
-            .visit_selection::<SelectionError>(&selection, None, None, |row| {
-                forward.push(row.values["kind"].as_str().unwrap().to_owned());
-                Ok(ControlFlow::Continue(()))
-            })
-            .unwrap();
-        assert_eq!(forward, expected, "{query}");
-        for end_row in 0..expected.len() {
+        let keys = positions(&reader, &selection);
+        assert_eq!(kinds_from(&reader, &selection, None), expected, "{query}");
+        for (end, key) in keys.iter().enumerate() {
             let mut reverse = vec![];
             reader
-                .visit_selection_before::<SelectionError>(
-                    &selection,
-                    end_row as u64,
-                    None,
-                    |ordinal, row| {
-                        reverse.push((ordinal, row.values["kind"].as_str().unwrap().to_owned()));
-                        Ok(ControlFlow::Continue(()))
-                    },
-                )
+                .visit_selection_before_row::<SelectionError>(&selection, key, None, |row| {
+                    reverse.push(row.values["kind"].as_str().unwrap().to_owned());
+                    Ok(ControlFlow::Continue(()))
+                })
                 .unwrap();
-            let expected = expected[..end_row]
+            let expected: Vec<String> = expected[..end]
                 .iter()
-                .enumerate()
                 .rev()
-                .map(|(i, kind)| (i as u64, (*kind).to_owned()))
-                .collect::<Vec<_>>();
-            assert_eq!(reverse, expected, "{query}, before row {end_row}");
+                .map(|kind| (*kind).to_owned())
+                .collect();
+            assert_eq!(reverse, expected, "{query}, before row {end}");
+            assert_eq!(
+                kinds_from(&reader, &selection, Some(key))
+                    .first()
+                    .map(String::as_str),
+                Some(expected_first(query, end)),
+                "{query}, from row {end}"
+            );
         }
-        assert_eq!(
-            reader
-                .visit_selection_before::<SelectionError>(&selection, 99, None, |_, _| Ok(
-                    ControlFlow::Continue(())
-                ))
-                .unwrap_err()
-                .kind(),
-            "stale_cursor"
-        );
     }
+}
+
+fn expected_first(query: &str, row: usize) -> &'static str {
+    let order: &[&'static str] = match query {
+        "events | sort by at desc, id asc" => {
+            &["late-a", "late-b", "early", "unknown-a", "unknown-b"]
+        }
+        "events | sort by at asc, id desc" => {
+            &["early", "late-b", "late-a", "unknown-b", "unknown-a"]
+        }
+        _ => &["late-b", "early", "unknown-a"],
+    };
+    order[row]
 }
 
 #[test]
@@ -174,26 +181,36 @@ fn reverse_callback_stops_before_poisoned_earlier_body() {
     fixture.event(session, "poison", None).unwrap();
     fixture.event(session, "previous", None).unwrap();
     fixture.event(session, "anchor", None).unwrap();
+    let anchors: Vec<(String, OrderPosition)> = {
+        let pool = fixture.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        ["events | sort by id", "events | sort by id | limit 3"]
+            .into_iter()
+            .map(|query| {
+                let selection = reader.prepare_selection(query, &options()).unwrap();
+                (query.to_owned(), positions(&reader, &selection)[2].clone())
+            })
+            .collect()
+    };
     let conn = crate::archive::open_write(&fixture.archive.index_db(), 1).unwrap();
     conn.execute("UPDATE event SET data=X'ff' WHERE id='e1'", [])
         .unwrap();
     drop(conn);
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let options = options();
-    for query in ["events | sort by id", "events | sort by id | limit 3"] {
-        let selection = reader.prepare_selection(query, &options).unwrap();
+    for (query, anchor) in anchors {
+        let selection = reader.prepare_selection(&query, &options()).unwrap();
         let mut found = vec![];
         reader
-            .visit_selection_before::<SelectionError>(&selection, 2, None, |ordinal, row| {
-                found.push((ordinal, row.values["kind"].clone()));
+            .visit_selection_before_row::<SelectionError>(&selection, &anchor, None, |row| {
+                found.push(row.values["kind"].clone());
                 Ok(ControlFlow::Break(()))
             })
             .unwrap();
-        assert_eq!(found, vec![(1, Value::String("previous".into()))]);
+        assert_eq!(found, vec![Value::String("previous".into())]);
         assert!(
             reader
-                .visit_selection_before::<SelectionError>(&selection, 2, None, |_, _| Ok(
+                .visit_selection_before_row::<SelectionError>(&selection, &anchor, None, |_| Ok(
                     ControlFlow::Continue(())
                 ))
                 .is_err()

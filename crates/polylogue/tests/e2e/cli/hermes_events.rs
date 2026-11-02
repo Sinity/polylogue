@@ -420,12 +420,17 @@ fn hermes_atif_documents_preserve_roles_unknown_media_and_exact_ordered_parts() 
             assert_eq!(doc["blocks"][3]["outcome"]["kind"], "unknown");
             // Tool output is shown in full only with `--tools full`
             // (docs/reading.md, tools).
-            let joined = joined_items_with_options(&env, &reference, "24", &["--tools", "full"]);
+            let joined =
+                joined_items_with_options(&env, &reference, "24", &["--show", "tools:full"]);
             assert_eq!(
                 joined,
-                reading(&env, &reference, &["--tools", "full", "--budget", "100000"])
-                    .document
-                    .items
+                reading(
+                    &env,
+                    &reference,
+                    &["--show", "tools:full", "--budget", "100000"]
+                )
+                .document
+                .items
             );
             let joined = serde_json::to_string(&joined).unwrap();
             assert!(joined.contains("synthetic-atif-message-tail"));

@@ -27,7 +27,13 @@ fn backwards() -> TestArchive {
         let m = fx
             .message(
                 s,
-                msg(&format!("b{n}"), "assistant", "model", "", at(1, hour)),
+                msg(
+                    &format!("claude-code:b{n}"),
+                    "assistant",
+                    "model",
+                    "",
+                    at(1, hour),
+                ),
             )
             .unwrap();
         let edit = what.starts_with("src/");
