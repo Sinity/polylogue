@@ -552,11 +552,8 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
         texts.push(text.clone());
     }
     if !texts.is_empty() && recorder.emit(&ids, &texts.join("\n\n"), emit) {
-        // Claimed items were recorded delivered by the claim itself.
-        if let Some((deliveries, _)) = &responded {
-            for d in deliveries.split(',') {
-                delivered(startup, d, CONTEXT_BUDGET);
-            }
+        for d in &ids {
+            delivered(startup, d, CONTEXT_BUDGET);
         }
     }
     ExitCode::SUCCESS

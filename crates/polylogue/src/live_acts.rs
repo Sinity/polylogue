@@ -196,6 +196,9 @@ pub(crate) fn answer_result(
 pub(crate) struct Acts {
     mail: PathBuf,
     claims: Mutex<()>,
+    /// Deliveries handed to a hook or a resumed run and not yet recorded:
+    /// never handed out again while the daemon runs.
+    claimed: Mutex<std::collections::BTreeSet<String>>,
     /// Sessions with a resumed run in progress, each with the runs queued
     /// behind it: one resumed run per session at a time, in order.
     resuming: Mutex<BTreeMap<String, VecDeque<ResumeRun>>>,
@@ -212,6 +215,7 @@ impl Acts {
         Self {
             mail,
             claims: Mutex::new(()),
+            claimed: Mutex::new(std::collections::BTreeSet::new()),
             resuming: Mutex::new(BTreeMap::new()),
             hosted: Mutex::new(BTreeMap::new()),
             permission_hook: OnceLock::new(),
@@ -238,6 +242,38 @@ impl Acts {
         self.claims
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Marks deliveries handed out; returns those not handed out before.
+    /// Callers hold the claim lock.
+    pub(crate) fn take<T>(&self, pending: Vec<(String, T)>) -> Vec<(String, T)> {
+        let mut claimed = self
+            .claimed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        pending
+            .into_iter()
+            .filter(|(id, _)| claimed.insert(id.clone()))
+            .collect()
+    }
+
+    /// Whether a delivery was handed out.
+    pub(crate) fn handed_out(&self, id: &str) -> bool {
+        self.claimed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(id)
+    }
+
+    /// The oldest request a hosted session waits on, by the app-server's
+    /// request ID.
+    pub(crate) fn host_request(&self, session: &SessionId) -> Option<String> {
+        self.with_hosted(session, |h| {
+            h.absorb();
+            Ok(h.requests.front().map(|(id, _, _)| id.to_string()))
+        })
+        .ok()
+        .flatten()
     }
 
     /// Whether the installed Claude Code asks the synchronous permission

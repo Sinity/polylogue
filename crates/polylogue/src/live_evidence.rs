@@ -635,6 +635,19 @@ impl CodexConnection {
         self.send(&json!({"jsonrpc": "2.0", "id": id, "result": result}))
     }
 
+    /// The next notification or server request, waiting up to `timeout`;
+    /// `Err` once the app-server closed the connection.
+    pub(crate) fn next(&mut self, timeout: Duration) -> Result<Option<Value>, ()> {
+        if !self.pending.is_empty() {
+            return Ok(Some(self.pending.remove(0)));
+        }
+        match self.lines.recv_timeout(timeout) {
+            Ok(message) => Ok(Some(message)),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => Err(()),
+        }
+    }
+
     /// The notifications and server requests received so far.
     pub(crate) fn take_pending(&mut self) -> Vec<Value> {
         while let Ok(message) = self.lines.try_recv() {
@@ -761,6 +774,31 @@ impl CodexStatus {
         out
     }
 
+    /// Waits up to `timeout` for a `thread/status/changed` notification and
+    /// returns its line when the status changed.
+    pub(crate) fn next_change(&mut self, timeout: Duration, now: jiff::Timestamp) -> Option<Value> {
+        let connection = self.connection.as_mut()?;
+        let message = match connection.next(timeout) {
+            Ok(message) => message?,
+            Err(()) => {
+                self.connection = None;
+                return None;
+            }
+        };
+        if message.get("method").and_then(Value::as_str) != Some("thread/status/changed") {
+            return None;
+        }
+        let params = message.get("params")?;
+        let thread = params.get("threadId")?.as_str()?.to_owned();
+        let status = params.get("status")?.clone();
+        if self.seen.get(&thread) == Some(&status) {
+            return None;
+        }
+        let line = codex_line(&thread, &status, now);
+        self.seen.insert(thread, status);
+        line
+    }
+
     fn forget_all(&mut self, now: jiff::Timestamp) -> Vec<Value> {
         self.changes(BTreeMap::new(), now)
     }
@@ -867,14 +905,15 @@ impl CommitWatcher {
             let commits = match (&seen.head, &head) {
                 (Some(old), Some(new)) => git(
                     &top,
-                    &["log", "--format=%x00%H", "--name-only", &format!("{old}..{new}")],
+                    &["log", "--format=%x00%H %ct", "--name-only", &format!("{old}..{new}")],
                 )
                 .map(|text| parse_commits(&text))
                 .unwrap_or_default(),
                 _ => Vec::new(),
             };
             seen.head = head;
-            for (commit, files) in commits {
+            for (commit, seconds, files) in commits {
+                let at = jiff::Timestamp::from_second(seconds).unwrap_or(now);
                 let files: BTreeSet<PathBuf> = files.iter().map(|f| top.join(f)).collect();
                 for footprint in &sessions {
                     let cwd = Path::new(&footprint.cwd);
@@ -896,7 +935,7 @@ impl CommitWatcher {
                         "git",
                         "Commit",
                         &session,
-                        now,
+                        at,
                         json!({"commit": commit, "worktree": top, "files": contained}),
                     ));
                 }
@@ -906,52 +945,103 @@ impl CommitWatcher {
     }
 }
 
-/// `git log --format=%x00%H --name-only` output as (commit, files).
-pub(crate) fn parse_commits(text: &str) -> Vec<(String, Vec<String>)> {
+/// `git log --format=%x00%H %ct --name-only` output as (commit, commit
+/// time in seconds, files).
+pub(crate) fn parse_commits(text: &str) -> Vec<(String, i64, Vec<String>)> {
     text.split('\0')
         .filter_map(|chunk| {
             let mut lines = chunk.lines().map(str::trim).filter(|l| !l.is_empty());
-            let commit = lines.next()?.to_owned();
-            Some((commit, lines.map(str::to_owned).collect()))
+            let (commit, seconds) = lines.next()?.split_once(' ')?;
+            Some((
+                commit.to_owned(),
+                seconds.parse().ok()?,
+                lines.map(str::to_owned).collect(),
+            ))
         })
         .collect()
 }
 
-/// The live clock: sessions whose `live_until` has passed changed state
+/// The live clock: a session whose `live_until` has passed changed state
 /// with no new evidence, and each such transition is put on the change
-/// feed once, so followers see it without polling.
+/// feed once, so followers see it without polling. A reading at `now`
+/// gives every instant after `now`; the clock remembers the latest
+/// reading and hands out each remembered instant once it has passed.
 #[derive(Default)]
 pub(crate) struct LiveClock {
-    announced: BTreeSet<(String, i64)>,
+    pending: BTreeMap<String, i64>,
 }
 
 impl LiveClock {
-    /// From every session's next `until`, the sessions whose transition
-    /// is due now and not yet announced, and how long until the next one.
-    pub(crate) fn due(
-        &mut self,
-        untils: &[(String, i64)],
-        now_ms: i64,
-    ) -> (Vec<String>, Option<Duration>) {
-        let current: BTreeSet<(String, i64)> = untils.iter().cloned().collect();
-        self.announced.retain(|k| current.contains(k));
-        let mut due = Vec::new();
-        let mut next: Option<i64> = None;
-        for (session, until) in untils {
-            if *until <= now_ms {
-                if self.announced.insert((session.clone(), *until)) {
-                    due.push(session.clone());
-                }
-            } else {
-                next = Some(next.map_or(*until, |n| n.min(*until)));
-            }
+    /// Remembers every session's next `until`, read at some instant.
+    pub(crate) fn remember(&mut self, untils: &[(String, i64)]) {
+        self.pending = untils.iter().cloned().collect();
+    }
+
+    /// Takes the sessions whose remembered instant has passed.
+    pub(crate) fn take_due(&mut self, now_ms: i64) -> Vec<String> {
+        let due: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|(_, until)| **until <= now_ms)
+            .map(|(session, _)| session.clone())
+            .collect();
+        for session in &due {
+            self.pending.remove(session);
         }
-        let wait = next.map(|n| Duration::from_millis(u64::try_from(n - now_ms).unwrap_or(0)));
-        (due, wait)
+        due
+    }
+
+    /// How long until the earliest remembered instant.
+    pub(crate) fn wait(&self, now_ms: i64) -> Option<Duration> {
+        self.pending
+            .values()
+            .min()
+            .map(|n| Duration::from_millis(u64::try_from(n - now_ms).unwrap_or(0)))
     }
 }
 
-/// Runs both writers until `stop` fires.
+/// How often the readers re-read the archive's live sessions when no
+/// commit has changed them.
+const REFRESH: Duration = Duration::from_secs(15);
+
+/// The Codex status reader's own thread: while the control socket exists
+/// it reads the loaded threads' statuses every second and takes
+/// `thread/status/changed` notifications as they come between readings;
+/// a failed connection is tried again a second later.
+fn run_codex(
+    mut codex: CodexStatus,
+    spool: PathBuf,
+    boot: String,
+    clock: polylogue_model::WallClock,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+    while !stop.load(Ordering::Acquire) {
+        let lines = codex.read(clock.now());
+        let _ = append(&spool, "registry", &boot, &lines);
+        let deadline = Instant::now() + SAMPLE_OPEN_CALL;
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            match codex.next_change(left.min(SAMPLE_OPEN_CALL), clock.now()) {
+                Some(line) => {
+                    let _ = append(&spool, "registry", &boot, &[line]);
+                }
+                None if codex.connection.is_none() => {
+                    std::thread::sleep(left.min(SAMPLE_OPEN_CALL));
+                }
+                None => {}
+            }
+        }
+    }
+}
+
+/// Runs the writers and the live clock until `stop` fires.
 pub(crate) fn run(
     daemon: std::sync::Arc<crate::daemon::service::Daemon>,
     paths: Paths,
@@ -961,49 +1051,68 @@ pub(crate) fn run(
     let Some(boot) = boot_id() else {
         return;
     };
+    let codex_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let codex = {
+        let reader = CodexStatus::new(paths.codex_program.clone(), paths.codex_socket.clone());
+        let (spool, boot, clock, stop) = (
+            paths.spool.clone(),
+            boot.clone(),
+            clock.clone(),
+            std::sync::Arc::clone(&codex_stop),
+        );
+        std::thread::Builder::new()
+            .name("polylogue-codex-status".into())
+            .spawn(move || run_codex(reader, spool, boot, clock, stop))
+            .ok()
+    };
     let mut watcher = Watcher::new(PathBuf::from("/proc"), boot.clone(), boot_time_ms());
     let mut registry = Registry::new(paths.claude_sessions.clone());
-    let mut codex = CodexStatus::new(paths.codex_program.clone(), paths.codex_socket.clone());
     let mut live_clock = LiveClock::default();
-    let mut commits = CommitWatcher::default();
+    let mut commit_watcher = CommitWatcher::default();
+    let commits = daemon.writes.as_ref().map(|w| w.completion_commits());
+    let mut roots = Vec::new();
+    let mut footprints = Vec::new();
+    let mut refreshed: Option<Instant> = None;
     loop {
         let now = clock.now();
-        let mut process_lines = Vec::new();
-        if let Ok(roots) = daemon.reads.reader().and_then(|r| r.live_roots()) {
-            process_lines.extend(watcher.update_roots(&roots, now));
+        let now_ms = now.as_millisecond();
+        // The archive's live sessions change only with a commit (or, for
+        // a stale session, a day later): read them again after a commit.
+        let committed = commits.as_ref().is_some_and(|c| {
+            let mut any = false;
+            while c.try_recv().is_ok() {
+                any = true;
+            }
+            any
+        });
+        let due = live_clock.take_due(now_ms);
+        if committed || refreshed.is_none_or(|at| at.elapsed() >= REFRESH) {
+            if let Ok(reader) = daemon.reads.reader() {
+                roots = reader.live_roots().unwrap_or_default();
+                footprints = reader.live_footprints(now_ms).unwrap_or_default();
+                if let Ok(untils) = reader.live_untils(now_ms) {
+                    live_clock.remember(&untils);
+                }
+            }
+            refreshed = Some(Instant::now());
+            crate::daemon::service::acts::settle_ended(&daemon, now_ms);
         }
+        if let Some(writes) = daemon.writes.as_ref()
+            && !due.is_empty()
+        {
+            let _ = writes.live_clock(due);
+        }
+        let mut process_lines = watcher.update_roots(&roots, now);
         process_lines.extend(watcher.sample(now));
         let _ = append(&paths.spool, "process", &boot, &process_lines);
-        let mut registry_lines = registry.read(now, identity);
-        registry_lines.extend(codex.read(now));
-        let _ = append(&paths.spool, "registry", &boot, &registry_lines);
-        if let Ok(footprints) = daemon
-            .reads
-            .reader()
-            .and_then(|r| r.live_footprints(now.as_millisecond()))
-        {
-            let _ = append(&paths.spool, "git", &boot, &commits.read(&footprints, now));
-        }
-        let mut clock_wait = None;
-        if let Ok(untils) = daemon
-            .reads
-            .reader()
-            .and_then(|r| r.live_untils(now.as_millisecond()))
-        {
-            let (due, wait) = live_clock.due(&untils, now.as_millisecond());
-            clock_wait = wait;
-            if let Some(writes) = daemon.writes.as_ref()
-                && !due.is_empty()
-            {
-                let _ = writes.live_clock(due);
-            }
-        }
+        let _ = append(&paths.spool, "registry", &boot, &registry.read(now, identity));
+        let _ = append(&paths.spool, "git", &boot, &commit_watcher.read(&footprints, now));
         // Wake for the next sample, a root's exit, the next clock
         // transition, new roots (at most a second later) or the stop signal.
         let wake = watcher
             .next_wake()
             .min(SAMPLE_OPEN_CALL)
-            .min(clock_wait.unwrap_or(SAMPLE_OPEN_CALL));
+            .min(live_clock.wait(now_ms).unwrap_or(SAMPLE_OPEN_CALL));
         let polled = watcher.watched.values().any(|w| w.pidfd.is_some());
         let ready = if polled {
             watcher.wait(wake)
@@ -1014,7 +1123,13 @@ pub(crate) fn run(
         let _ = append(&paths.spool, "process", &boot, &gone);
         match stop.recv_timeout(if polled { Duration::ZERO } else { wake }) {
             Err(RecvTimeoutError::Timeout) => {}
-            Ok(()) | Err(RecvTimeoutError::Disconnected) => return,
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                codex_stop.store(true, std::sync::atomic::Ordering::Release);
+                if let Some(codex) = codex {
+                    let _ = codex.join();
+                }
+                return;
+            }
         }
     }
 }

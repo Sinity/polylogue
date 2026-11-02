@@ -53,7 +53,7 @@ fn claim_ids(d: &test_daemon::TestDaemon) -> Vec<String> {
 
 /// law: pl.live.mailbox-once
 /// Concurrent claims of one session hand each pending delivery over
-/// exactly once, oldest first, and lower the flag.
+/// exactly once and lower the flag.
 #[test]
 fn concurrent_claims_hand_each_delivery_over_once() {
     let d = test_daemon::start_with_clock("mailbox", at("2026-03-01T10:05:00Z"));
@@ -72,9 +72,11 @@ fn concurrent_claims_hand_each_delivery_over_once() {
     assert_eq!(sorted, ["ping-a", "ping-b"]);
     assert!(!crate::mailbox::raised(d.daemon.acts.mail(), &s1()));
     assert!(claim_ids(&d).is_empty(), "a claimed delivery is never sent again");
+    // The hook records `delivered` once it has written the text; until
+    // then the claim leaves no outcome, and nothing hands it out again.
     let reader = d.daemon.reads.reader().unwrap();
     let (row, _) = reader.delivery("ping-a").unwrap().unwrap();
-    assert_eq!(row.events, ["delivered"]);
+    assert!(row.events.is_empty());
 }
 
 /// A ping is refused, and the refusal recorded, when no channel reaches

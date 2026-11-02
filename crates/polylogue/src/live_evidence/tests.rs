@@ -317,29 +317,32 @@ fn the_codex_reader_writes_each_thread_status_change_once() {
     assert!(reader.read(now()).is_empty());
 }
 
-/// The live clock announces each passed `until` once, waits for the next
-/// one, and forgets an instant once the session's next `until` moved on.
+/// The live clock announces a session once its instant from the previous
+/// reading has passed. The readings come from the real view, which only
+/// ever gives instants after the time it is read at.
 #[test]
 fn the_live_clock_announces_each_transition_once() {
+    use polylogue_model::live::{LIVE_WINDOW_MS, LiveFacts, fold, view};
+    let mut facts = LiveFacts::default();
+    // Hook evidence with no process: working for the live window, then stale.
+    fold(&mut facts, "hook_user_prompt_submit", 0, &json!({}));
+    let reading = |now: i64| -> Vec<(String, i64)> {
+        view(Some(&facts), None, now)
+            .until
+            .map(|u| ("claude-code:a".to_owned(), u))
+            .into_iter()
+            .collect()
+    };
     let mut clock = LiveClock::default();
-    let untils = vec![("a".to_owned(), 100), ("b".to_owned(), 250)];
-    assert_eq!(
-        clock.due(&untils, 50),
-        (vec![], Some(Duration::from_millis(50)))
-    );
-    assert_eq!(
-        clock.due(&untils, 100),
-        (vec!["a".to_owned()], Some(Duration::from_millis(150)))
-    );
-    // Not again while the stored state has not moved on.
-    assert_eq!(clock.due(&untils, 120).0, Vec::<String>::new());
-    // The counter moved `a` on to its next instant.
-    let moved = vec![("a".to_owned(), 400), ("b".to_owned(), 250)];
-    assert_eq!(
-        clock.due(&moved, 260),
-        (vec!["b".to_owned()], Some(Duration::from_millis(140)))
-    );
-    assert_eq!(clock.due(&[], 1000), (vec![], None));
+    let (due, wait) = clock.due(&reading(1_000), 1_000);
+    assert!(due.is_empty());
+    assert_eq!(wait, Some(Duration::from_millis((LIVE_WINDOW_MS + 1 - 1_000) as u64)));
+    // Before the instant: nothing.
+    assert!(clock.due(&reading(LIVE_WINDOW_MS), LIVE_WINDOW_MS).0.is_empty());
+    // After it: the session is announced once.
+    let after = LIVE_WINDOW_MS + 5;
+    assert_eq!(clock.due(&reading(after), after).0, ["claude-code:a"]);
+    assert!(clock.due(&reading(after + 10), after + 10).0.is_empty());
 }
 
 fn git_in(repo: &Path, args: &[&str]) {
@@ -407,12 +410,16 @@ fn a_commit_in_the_worktree_names_the_footprint_files_it_contains() {
 
 #[test]
 fn commit_lists_parse_into_commits_and_files() {
-    let text = "\u{0}aaa\n\nsrc/a.rs\nsrc/b.rs\n\u{0}bbb\n\n";
+    let text = "\u{0}aaa 1790000000\n\nsrc/a.rs\nsrc/b.rs\n\u{0}bbb 1790000060\n\n";
     assert_eq!(
         parse_commits(text),
         vec![
-            ("aaa".to_owned(), vec!["src/a.rs".to_owned(), "src/b.rs".to_owned()]),
-            ("bbb".to_owned(), vec![])
+            (
+                "aaa".to_owned(),
+                1_790_000_000,
+                vec!["src/a.rs".to_owned(), "src/b.rs".to_owned()]
+            ),
+            ("bbb".to_owned(), 1_790_000_060, vec![])
         ]
     );
 }

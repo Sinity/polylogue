@@ -558,9 +558,10 @@ impl LiveFacts {
             && self.root.as_ref() == Some(&identity)
             && self.root_gone_at.is_none()
         {
+            // A root gone mid-turn is stale, not ended: its footprint stays
+            // until a commit takes the files or the session ends.
             self.root_gone_at = Some(at);
             self.open_call = None;
-            self.footprint.clear();
         }
     }
 
@@ -754,9 +755,11 @@ pub fn view(facts: Option<&LiveFacts>, grew_at: Option<i64>, now: i64) -> LiveVi
     let aged_out = last.saturating_add(STALE_FOR_MS);
     let stale = |since: i64| {
         if now >= aged_out {
+            // No evidence says when it ended; its latest evidence is when
+            // it was last known to run.
             LiveView {
                 process_alive,
-                ..ended(Some(aged_out))
+                ..ended(Some(last))
             }
         } else {
             LiveView {

@@ -24,7 +24,7 @@ pub(super) fn handle(request: Request, d: &Daemon, invocation: &Invocation) -> A
             live,
             about,
         } => ping(d, invocation, &request_id, &target, &text, live, about),
-        Request::Claim { session, event } => claim(d, invocation, &session, &event),
+        Request::Claim { session, event: _ } => claim(d, &session),
         Request::Answer {
             request_id,
             session,
@@ -38,9 +38,9 @@ pub(super) fn handle(request: Request, d: &Daemon, invocation: &Invocation) -> A
             input,
         } => permission(d, invocation, &session, &tool, &input),
         Request::Interrupt {
-            request_id: _,
+            request_id,
             session,
-        } => interrupt(d, &session),
+        } => interrupt(d, invocation, &request_id, &session),
         Request::Start {
             request_id,
             harness,
@@ -215,6 +215,11 @@ fn ping(
                        "outcome": "prepared", "note": "reaches the session at its next tool result or prompt"})
             }
             Ok(Channel::Resume) => {
+                // Handed to the resumed run: no hook takes it.
+                {
+                    let _claims = d.acts.claim_lock();
+                    d.acts.take(vec![(delivery.clone(), ())]);
+                }
                 let started = d.acts.resume(ResumeRun {
                     session: session.clone(),
                     delivery: delivery.clone(),
@@ -246,32 +251,69 @@ fn ping(
 }
 
 /// A hook's mailbox claim: every ping and notice pending for the session,
-/// oldest first, each recorded delivered once. Claims run one at a time,
-/// so concurrent hooks of one session never take the same delivery.
-fn claim(
-    d: &Daemon,
-    invocation: &Invocation,
-    session: &SessionId,
-    event: &str,
-) -> Result<Answer<Value>, Failure> {
+/// oldest first, each handed out once. Claims run one at a time, so
+/// concurrent hooks of one session never take the same delivery. The hook
+/// records each `delivered` once it has written it to the harness; a claim
+/// whose hook never confirms stays without an outcome and is not handed
+/// out again.
+fn claim(d: &Daemon, session: &SessionId) -> Result<Answer<Value>, Failure> {
     let _claims = d.acts.claim_lock();
     let pending = d
         .reads
         .reader()?
         .pending_hook_deliveries(&session.to_string())?;
-    let mut claimed = Vec::new();
-    for (id, text) in pending {
-        outcome_event(
-            d,
-            invocation,
-            &id,
-            DeliveryOutcome::Delivered,
-            format!("claimed by the {event} hook"),
-        )?;
-        claimed.push(json!({"id": id, "text": text}));
-    }
+    let claimed: Vec<Value> = d
+        .acts
+        .take(pending)
+        .into_iter()
+        .map(|(id, text)| json!({"id": id, "text": text}))
+        .collect();
     crate::mailbox::lower(d.acts.mail(), session).map_err(|e| Failure::new("io", e))?;
     Ok(ok(json!({ "deliveries": claimed })))
+}
+
+/// Pings and notices still pending for sessions that stopped running
+/// reach no hook: each is recorded `not_sent:session_ended` and the flag
+/// lowered. Run by the live worker after each change, and at start for
+/// every session with pending items (a resumed run queued when the daemon
+/// stopped is among them).
+pub(crate) fn settle_ended(d: &Daemon, now: i64) {
+    let invocation = d.invocation(&crate::operation::Context::worker_authorship("mailbox"));
+    let Ok(reader) = d.reads.reader() else {
+        return;
+    };
+    let sessions = reader.sessions_with_pending_hook_deliveries().unwrap_or_default();
+    let mut ended = Vec::new();
+    for session in sessions {
+        let Ok(id) = SessionId::parse(&session) else {
+            continue;
+        };
+        let running = reader
+            .live_state(&session, now)
+            .ok()
+            .flatten()
+            .is_some_and(|s| s.view.state.running());
+        if running {
+            let _ = crate::mailbox::raise(d.acts.mail(), &id);
+            continue;
+        }
+        let pending = reader.pending_hook_deliveries(&session).unwrap_or_default();
+        ended.push((id, pending));
+    }
+    drop(reader);
+    for (session, pending) in ended {
+        let _claims = d.acts.claim_lock();
+        for (id, _) in d.acts.take(pending) {
+            let _ = outcome_event(
+                d,
+                &invocation,
+                &id,
+                DeliveryOutcome::NotSent,
+                "session_ended".into(),
+            );
+        }
+        let _ = crate::mailbox::lower(d.acts.mail(), &session);
+    }
 }
 
 /// The pending request an answer is about, as `request:<session>#<at>`.
@@ -295,17 +337,30 @@ fn answer(
     let Some(state) = d.reads.reader()?.live_state(&session.to_string(), now)? else {
         return Ok(error("not_found", format!("no session {session}")));
     };
-    let Some(pending) = state.facts.pending_request.clone() else {
-        return Ok(error(
-            "refused",
-            "the session has no pending permission request to answer",
-        ));
-    };
     let chosen = match channel(Act::Answer, state.view.state, &probe(&d.acts, session, &state.facts)) {
         Ok(chosen) => chosen,
         Err(refusal) => return Ok(error("refused", format!("{}: {}", refusal.reason, refusal.detail))),
     };
-    let reference = request_reference(session, pending.at);
+    // A hosted session's requests come to Polylogue's connection; an
+    // observed one's from its permission hook, into its live facts.
+    let (reference, tool, input) = if chosen == Channel::Protocol {
+        let Some(request) = d.acts.host_request(session) else {
+            return Ok(error("refused", "the hosted session has no pending request to answer"));
+        };
+        (format!("request:{session}#{request}"), Value::Null, Value::Null)
+    } else {
+        let Some(pending) = state.facts.pending_request.clone() else {
+            return Ok(error(
+                "refused",
+                "the session has no pending permission request to answer",
+            ));
+        };
+        (
+            request_reference(session, pending.at),
+            Value::String(pending.tool),
+            pending.input,
+        )
+    };
     if !standing && chosen == Channel::Hook {
         return Ok(error(
             "refused",
@@ -331,8 +386,8 @@ fn answer(
         "decision": if approve { "approve" } else { "deny" },
         "text": text,
         "standing": standing,
-        "tool": pending.tool,
-        "input": pending.input,
+        "tool": tool,
+        "input": input,
     });
     author(
         d,
@@ -396,11 +451,13 @@ fn permission(
         .filter(|row| row.event == DeliveryEvent::Control.as_str())
         .filter_map(|row| reader.delivery(&row.id).ok().flatten())
         .filter_map(|(row, body)| Some((row, serde_json::from_str::<Value>(&body).ok()?)))
+        // An answer given ahead applies once: to the next request for the
+        // same tool and input.
         .find(|(row, body)| {
             body["standing"] == true
                 && body["tool"] == tool
                 && &body["input"] == input
-                && !row.events.iter().any(|e| e.as_str() == DeliveryOutcome::NotSent.as_str())
+                && row.events.is_empty()
         });
     drop(reader);
     let Some((row, body)) = standing else {
@@ -420,19 +477,56 @@ fn permission(
     })))
 }
 
-fn interrupt(d: &Daemon, session: &SessionId) -> Result<Answer<Value>, Failure> {
+/// Stops a session's turn, recorded as a `control` delivery with its
+/// outcome.
+fn interrupt(
+    d: &Daemon,
+    invocation: &Invocation,
+    request_id: &str,
+    session: &SessionId,
+) -> Result<Answer<Value>, Failure> {
     let now = now(d);
     let Some(state) = d.reads.reader()?.live_state(&session.to_string(), now)? else {
         return Ok(error("not_found", format!("no session {session}")));
     };
-    match channel(Act::Interrupt, state.view.state, &probe(&d.acts, session, &state.facts)) {
-        Ok(_) => match d.acts.host_interrupt(session) {
-            Ok(()) => Ok(ok(json!({"session": session, "channel": "protocol", "outcome": "delivered",
-                                   "undo": "none: an interrupted turn is not resumed"}))),
-            Err(reason) => Ok(error("refused", format!("not_sent: failed({reason})"))),
-        },
-        Err(refusal) => Ok(error("refused", format!("{}: {}", refusal.reason, refusal.detail))),
-    }
+    author(
+        d,
+        invocation,
+        request_id.to_owned(),
+        UserWrite::Deliver(Delivery {
+            recipient_kind: "session".into(),
+            recipient_id: Some(session.to_string()),
+            sender: DeliverySender::Act.as_str().into(),
+            event: DeliveryEvent::Control.as_str().into(),
+            cwd: state.cwd.clone(),
+            text: json!({"interrupt": true}).to_string(),
+            refs: Vec::new(),
+            left_out: Vec::new(),
+        }),
+    )?;
+    let (what, detail, answer) =
+        match channel(Act::Interrupt, state.view.state, &probe(&d.acts, session, &state.facts)) {
+            Ok(_) => match d.acts.host_interrupt(session) {
+                Ok(()) => (
+                    DeliveryOutcome::Delivered,
+                    "interrupted over the hosted connection".to_owned(),
+                    ok(json!({"session": session, "delivery": request_id, "channel": "protocol",
+                              "outcome": "delivered", "undo": "none: an interrupted turn is not resumed"})),
+                ),
+                Err(reason) => (
+                    DeliveryOutcome::NotSent,
+                    format!("failed({reason})"),
+                    error("refused", format!("not_sent: failed({reason})")),
+                ),
+            },
+            Err(refusal) => (
+                DeliveryOutcome::NotSent,
+                refusal.reason.to_owned(),
+                error("refused", format!("{}: {}", refusal.reason, refusal.detail)),
+            ),
+        };
+    outcome_event(d, invocation, request_id, what, detail)?;
+    Ok(answer)
 }
 
 /// Runs a resumed run on its own thread, then any queued behind it whose
@@ -451,15 +545,19 @@ pub(crate) fn run_resume(acts: &crate::live_acts::Acts, run: ResumeRun) {
                 resume_once(&daemon, &run);
                 next = daemon.acts.resume_finished(&run.session);
                 while let Some(candidate) = next.take() {
-                    let pending = daemon
+                    // A queued ping still pending is the run's; one a hook
+                    // or an ending took meanwhile is not run.
+                    let claims = daemon.acts.claim_lock();
+                    let still_pending = daemon
                         .reads
                         .reader()
                         .and_then(|r| r.pending_hook_deliveries(&candidate.session.to_string()))
                         .is_ok_and(|p| p.iter().any(|(id, _)| *id == candidate.delivery));
-                    if pending {
+                    if still_pending {
                         next = Some(candidate);
                         break;
                     }
+                    drop(claims);
                     next = daemon.acts.resume_finished(&candidate.session);
                 }
             }

@@ -8,7 +8,8 @@
 //!
 //! Evidence that arrives no later than what a session has already folded
 //! marks the session for a refold, which the session derivation runs over
-//! every stored line in (time, input, byte offset) order: lines at one
+//! every stored line in (time, input identity, byte offset) order (the
+//! input's stable identity, not its row key, so a rebuild orders alike): lines at one
 //! instant may arrive in any order, and a line stored again must not fold
 //! twice. Both paths give the same rows.
 
@@ -168,8 +169,9 @@ pub(crate) fn refold(tx: &Transaction<'_>, session_pk: i64, counter: i64) -> Res
         .execute([session_pk])?;
     let mut facts = LiveFacts::default();
     let mut statement = tx.prepare(&format!(
-        "SELECT kind, at, data FROM event WHERE session_pk = ?1 AND at IS NOT NULL AND {EVIDENCE_KINDS}
-         ORDER BY at, input_pk, source_start, id"
+        "SELECT e.kind, e.at, e.data FROM event e JOIN input_ref i ON i.pk = e.input_pk
+         WHERE e.session_pk = ?1 AND e.at IS NOT NULL AND {EVIDENCE_KINDS}
+         ORDER BY e.at, i.id, e.source_start, e.id"
     ))?;
     let events = statement.query_map([session_pk], |r| {
         Ok((

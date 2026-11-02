@@ -1861,18 +1861,9 @@ pub fn start(
         read_limits: Mutex::new(None),
     });
     daemon.acts.bind(Arc::downgrade(&daemon));
-    // Pings and notices left pending raise their sessions' mailbox flags.
-    if let Ok(sessions) = daemon
-        .reads
-        .reader()
-        .and_then(|r| r.sessions_with_pending_hook_deliveries())
-    {
-        for session in sessions {
-            if let Ok(session) = polylogue_model::SessionId::parse(&session) {
-                let _ = crate::mailbox::raise(daemon.acts.mail(), &session);
-            }
-        }
-    }
+    // Pings and notices left pending raise their running sessions' mailbox
+    // flags; those to sessions no longer running are settled.
+    acts::settle_ended(&daemon, daemon.config.requests.now().unix_ms());
     let operations = Arc::new(crate::protocol::operations::table(Arc::clone(&daemon)));
     assert!(
         daemon.operations.set(Arc::downgrade(&operations)).is_ok(),
