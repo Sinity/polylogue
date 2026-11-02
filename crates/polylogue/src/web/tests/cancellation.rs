@@ -239,6 +239,9 @@ fn an_expired_http_parent_never_submits_a_new_pure_write() {
 #[test]
 fn no_header_null_sql_has_no_implicit_read_cap_and_disconnect_still_cleans_up() {
     let daemon = test_daemon::start("null HTTP SQL cancellation");
+    // Hold the other reader slot, so the slot check below waits for the SQL
+    // read's own slot, which its cancellation frees.
+    let _held = daemon.daemon.reads.reader().unwrap();
     let reads = daemon.watch_reads();
     let mut server = start_on(
         Arc::clone(&daemon.daemon),
