@@ -91,8 +91,9 @@ pub enum PagePosition {
 pub struct PageCursor {
     /// The reference or query text as the caller gave it.
     pub target: String,
-    /// Digest of the reading options, the format, the page budget and the
-    /// enabled variants. A continuation with other options is refused.
+    /// Digest of the reading options, the format and the enabled variants.
+    /// A continuation with other options is refused; the page budget may
+    /// change for one page.
     pub options: String,
     pub versions: Vec<SessionVersion>,
     pub position: PagePosition,
@@ -277,9 +278,13 @@ impl PageCursor {
                 _ => CursorError::Invalid,
             });
         }
-        serde_json::from_slice::<Sealed<Self>>(&payload)
-            .map(|sealed| sealed.cursor)
-            .map_err(|_| CursorError::Invalid)
+        let sealed =
+            serde_json::from_slice::<Sealed<Self>>(&payload).map_err(|_| CursorError::Invalid)?;
+        // The key can outlive a generation; the generation it names decides.
+        if sealed.generation != seal.generation {
+            return Err(CursorError::Stale);
+        }
+        Ok(sealed.cursor)
     }
 
     /// Refuse a cursor issued for another target or other options.

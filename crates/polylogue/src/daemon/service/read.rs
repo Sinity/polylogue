@@ -103,7 +103,7 @@ fn reading(request: &Request) -> Result<(Reading, Option<&str>), Failure> {
     }
     Ok((
         Reading {
-            digest: options_digest(&(options, format, budget)),
+            digest: options_digest(&(options, format)),
             options: options.clone(),
             format,
             budget,
@@ -787,6 +787,12 @@ fn rows_page(
             scope.check()?;
             polylogue_store::read::limit::ReadLimit::set_stage("read page footer");
             let upper = pager.upper_position().copied();
+            // A backward page numbers its rows down from the anchor; its
+            // fragments are renumbered from the page's first row, as a forward
+            // page numbers them, so the same row gives the same positions.
+            let first_row = backwards
+                .then(|| pager.first_position().map(|place| place.selection.row))
+                .flatten();
             let seal = |place: &ItemPlace, direction| -> Result<ReadyCall, PageError> {
                 let row = rows.keys.get(&place.selection.row).cloned();
                 let mut place = *place;
@@ -823,6 +829,14 @@ fn rows_page(
                     Ok(footer)
                 })
                 .map_err(page_error)?;
+            let mut document = document;
+            if let Some(first_row) = first_row {
+                for item in &mut document.items {
+                    if let ItemKind::Fragment { position, .. } = &mut item.kind {
+                        position.selection.row -= first_row;
+                    }
+                }
+            }
             scope.check()?;
             Ok(ReadPage {
                 format: reading.format,

@@ -867,7 +867,7 @@ pub(super) fn page(
         limits.tokens = std::num::NonZeroU64::new(*tokens as u64)
             .ok_or_else(|| Failure::new("bad_request", "read budget must be positive"))?;
     }
-    let digest = options_digest(&(options, format, limits));
+    let digest = options_digest(&(options, format));
     let key = super::cursor_seal(reader)?;
     let opened = cursor
         .as_deref()
@@ -888,6 +888,9 @@ pub(super) fn page(
         ..scope
     };
     let composed = compose(d, reader, &scope, options, target)?;
+    let read_session = reader
+        .session(&scope.session)?
+        .ok_or_else(|| Failure::new("not_found", format!("no session {}", scope.session)))?;
     let versions = composed.versions();
     if let Some(opened) = &opened
         && let Some(session) = opened.rewritten(&versions)
@@ -941,7 +944,7 @@ pub(super) fn page(
         // The first page's lead lines spend its budget first; when they
         // use all of it, the page is those lines alone.
         None => {
-            let lead = lead_items(&composed, &runs, options, target);
+            let lead = lead_items(&composed, &runs, options, target, &read_session);
             let lead_tokens: u64 = lead
                 .iter()
                 .map(|item| {
@@ -1005,9 +1008,9 @@ pub(super) fn page(
     // on the page before it.
     let lead_before = start == 0
         && continues_forward
-        && !lead_items(&composed, &runs, options, target).is_empty();
+        && !lead_items(&composed, &runs, options, target, &read_session).is_empty();
     if start == 0 && !continues_forward {
-        items_out.extend(lead_items(&composed, &runs, options, target));
+        items_out.extend(lead_items(&composed, &runs, options, target, &read_session));
     }
     let mut laid = lay_out(reader, d, &composed, &shown[start..end], options)?;
     decorate(reader, &composed, &shown, start, &mut laid, options)?;
@@ -1080,6 +1083,7 @@ pub(super) fn page(
             unfinished = fragments(
                 entry_items,
                 inside,
+                target,
                 kind,
                 room.saturating_sub(used),
                 tokens,
@@ -1194,8 +1198,20 @@ fn lead_items(
     runs: &Runs,
     options: &ReadOptions,
     target: &str,
+    session: &polylogue_model::Session,
 ) -> Vec<ReadItem> {
-    let mut out = Vec::new();
+    // The read session's card opens the reading, with whether its lineage
+    // composed without a problem.
+    let mut out = vec![ReadItem {
+        source: Source::record(format!("session:{}", session.id)),
+        kind: ItemKind::Card {
+            card: Box::new(Card::Session {
+                session: Box::new(session.clone()),
+                lineage_complete: ValueState::known(composed.issues.is_empty()),
+                open: None,
+            }),
+        },
+    }];
     let source = Source::record(target);
     for issue in &composed.issues {
         out.push(ReadItem {
@@ -1284,6 +1300,7 @@ fn lead_items(
 fn fragments(
     items: Vec<ReadItem>,
     from: Option<ItemPlace>,
+    target: &str,
     kind: ReadRecordKind,
     room: usize,
     tokens: u64,
@@ -1342,8 +1359,10 @@ fn fragments(
         if start >= total {
             return Err(Failure::new("stale_cursor", "the cursor is past its item"));
         }
+        // A fragment is sourced at the reading, as the row pager's are;
+        // its position names the item.
         let make = |until: usize| ReadItem {
-            source: item.source.clone(),
+            source: Source::record(target),
             kind: ItemKind::Fragment {
                 text: text[boundaries[start]..boundaries[until]].into(),
                 position: place(start),
@@ -1897,7 +1916,7 @@ pub(super) fn links_page(
         limits.tokens = std::num::NonZeroU64::new(*tokens as u64)
             .ok_or_else(|| Failure::new("bad_request", "read budget must be positive"))?;
     }
-    let digest = options_digest(&(options, format, limits));
+    let digest = options_digest(&(options, format));
     let key = super::cursor_seal(reader)?;
     let nodes = tree(reader, &scope.session)?;
     let start = match cursor.as_deref() {

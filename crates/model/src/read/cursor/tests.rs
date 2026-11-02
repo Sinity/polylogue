@@ -115,3 +115,12 @@ fn a_cursor_of_an_earlier_generation_is_stale_not_broken() {
         Err(CursorError::Stale)
     );
 }
+
+#[test]
+fn a_cursor_sealed_with_the_same_key_for_another_generation_is_stale() {
+    let sealed = cursor().seal(&seal(7, "g1"));
+    assert_eq!(
+        PageCursor::open(&sealed, &seal(7, "g2")),
+        Err(CursorError::Stale)
+    );
+}
