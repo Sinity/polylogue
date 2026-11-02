@@ -75,6 +75,8 @@ pub struct Figure {
 #[serde(deny_unknown_fields)]
 pub struct ReadyCall {
     pub cli: String,
+    /// The MCP `tools/call` parameters; null for an operation MCP does not
+    /// offer.
     pub mcp: serde_json::Value,
     pub http: HttpCall,
 }

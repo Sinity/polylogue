@@ -33,7 +33,7 @@ fn infer_and_unread_share_typed_requests_and_keep_local_output_off_remote_surfac
         wire,
         json!({"op":"schema_infer","origin":"claude-code","inputs":["opaque:input"],"revision":2,"since":null,"fields":["named"]})
     );
-    assert!(command.mcp && command.http);
+    assert!(command.tool == Some(crate::commands::Tool::Read) && command.http);
     assert!(
         !command
             .args_for(Surface::Mcp)

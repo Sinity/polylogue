@@ -191,3 +191,32 @@ fn derived_pages_and_fields_expose_the_same_validity_and_parameters() {
         .unwrap();
     assert_eq!(field["construct"]["catalog"], "K15");
 }
+
+/// law: mcp-detail-on-demand
+#[test]
+fn capabilities_publish_each_operation_with_its_tool_unlisted_arguments_and_answer() {
+    let capabilities = entries("capabilities", None).unwrap();
+    let read = capabilities
+        .iter()
+        .find(|entry| entry["kind"] == "command" && entry["name"] == "read")
+        .unwrap();
+    assert_eq!(read["tool"], "polylogue_read");
+    let unlisted = read["unlisted"].as_array().unwrap();
+    assert!(unlisted.contains(&json!("thinking")), "{unlisted:?}");
+    assert!(!unlisted.contains(&json!("target")), "{unlisted:?}");
+    assert!(read["arguments"]["$defs"]["FullArguments"]["properties"]["thinking"].is_object());
+    assert!(read["answer"].is_object());
+    let list = capabilities
+        .iter()
+        .find(|entry| entry["kind"] == "command" && entry["name"] == "list")
+        .unwrap();
+    assert_eq!(list["tool"], Value::Null);
+    let envelope = capabilities
+        .iter()
+        .find(|entry| entry["kind"] == "answer")
+        .unwrap();
+    assert_eq!(
+        envelope["schema"],
+        schemars::schema_for!(command_surface::Answer<Value>).to_value()
+    );
+}

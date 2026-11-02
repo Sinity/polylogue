@@ -4,34 +4,82 @@ use super::*;
 use crate::test_daemon;
 use serde_json::json;
 
+/// The `tools/call` parameters that run `operation` (a command name) with
+/// these arguments through its tool.
+pub(crate) fn tool_call(operation: &str, arguments: Value, request_id: &str) -> Value {
+    let command = crate::commands::command(operation).expect("a declared command");
+    let tool = command.tool.expect("an MCP operation");
+    json!({"name": tool.name(), "arguments": {
+        "operation": command.name, "arguments": arguments, "request_id": request_id,
+    }})
+}
+
+/// Runs `operation` through its tool; a name that is no command is called
+/// as a tool name, so its refusal can be checked.
 pub(crate) fn call(
     archive: &Archive,
-    name: &str,
+    operation: &str,
     arguments: serde_json::Map<String, Value>,
 ) -> Result<String, String> {
-    let command = tool_commands()
-        .find(|command| command.name.replace(' ', "_") == name || command.mcp_name() == name);
-    let (name, arguments) =
-        if let Some(command) = command.filter(|command| command.register.is_some()) {
-            (
-                command.mcp_name(),
-                json!({"arguments":arguments,"request_id":uuid::Uuid::now_v7().to_string()})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            )
-        } else {
-            (name.to_owned(), arguments)
-        };
+    call_as(
+        archive,
+        operation,
+        arguments,
+        &uuid::Uuid::now_v7().to_string(),
+    )
+}
+
+/// [`call`] with the caller's retry identity.
+pub(crate) fn call_as(
+    archive: &Archive,
+    operation: &str,
+    arguments: serde_json::Map<String, Value>,
+    request_id: &str,
+) -> Result<String, String> {
+    let params = match crate::commands::command(operation).filter(|c| c.tool.is_some()) {
+        Some(_) => tool_call(operation, Value::Object(arguments), request_id),
+        None => {
+            json!({"name": operation, "arguments": {"arguments": arguments, "request_id": request_id}})
+        }
+    };
     call_with_limit(
         archive,
-        &name,
-        arguments,
+        params["name"].as_str().unwrap(),
+        params["arguments"].as_object().unwrap().clone(),
         None,
         &tokio_util::sync::CancellationToken::new(),
         None,
     )
     .and_then(|(text, _, failed)| if failed { Err(text) } else { Ok(text) })
+}
+
+/// The completion protocol method's answer for `text` at `position`, as
+/// the completions value of the `complete` operation.
+pub(crate) fn complete(
+    archive: &Archive,
+    text: &str,
+    position: Option<u64>,
+) -> Result<Value, String> {
+    let mut meta = json!({});
+    if let Some(position) = position {
+        meta["polylogue/position"] = json!(position);
+    }
+    let reply = Session {
+        initialized: true,
+        ..Default::default()
+    }
+    .prepare(
+        json!({"jsonrpc":"2.0", "id":1, "method":"completion/complete", "params":{
+            "argument": {"name": "query", "value": text},
+            "_meta": meta,
+        }}),
+    )
+    .answer(archive)
+    .unwrap();
+    match reply.get("error") {
+        Some(error) => Err(error["message"].as_str().unwrap_or_default().to_owned()),
+        None => Ok(reply["result"]["_meta"]["polylogue/completions"].clone()),
+    }
 }
 
 fn args(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
@@ -105,11 +153,11 @@ fn stdio_answers_initialize_tools_calls_and_errors() {
         initialize().to_string(),
         json!({"jsonrpc":"2.0", "method":"notifications/initialized"}).to_string(),
         json!({"jsonrpc":"2.0", "id":2, "method":"tools/list"}).to_string(),
-        json!({"jsonrpc":"2.0", "id":3, "method":"tools/call", "params":{"name":"polylogue_status","arguments":{"arguments":{},"request_id":"status-jsonrpc"}}}).to_string(),
+        json!({"jsonrpc":"2.0", "id":3, "method":"tools/call", "params":tool_call("status", json!({}), "status-jsonrpc")}).to_string(),
         json!({"jsonrpc":"2.0", "id":4, "method":"tools/call", "params":{"name":"unknown"}}).to_string(),
         "not JSON".to_owned(),
         json!({"jsonrpc":"2.0", "id":5, "method":"unknown"}).to_string(),
-        json!({"jsonrpc":"2.0", "id":6, "method":"tools/call", "params":{"name":"polylogue_status", "arguments":[]}}).to_string(),
+        json!({"jsonrpc":"2.0", "id":6, "method":"tools/call", "params":{"name":"polylogue_read", "arguments":[]}}).to_string(),
         json!({"jsonrpc":"2.0", "id":7, "method":"ping"}).to_string(),
     ].join("\n");
     let replies: Vec<Value> = std::thread::scope(|scope| {
@@ -197,7 +245,7 @@ fn protocol_ids_null_arguments_and_ping_follow_the_request_version() {
         .unwrap();
     assert_eq!(ping["id"], id);
     assert_eq!(ping["result"], json!({}));
-    let call = session.prepare(json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"polylogue_status", "arguments":null}}));
+    let call = session.prepare(json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"polylogue_read", "arguments":null}}));
     match call {
         Reply::Tool { arguments, .. } => assert!(arguments.is_empty()),
         _ => panic!("null arguments must be an empty argument map"),
@@ -224,18 +272,19 @@ fn malformed_request_ids_are_not_echoed_in_error_responses() {
     }
 }
 
+/// law: mcp-instructions-are-the-card
 #[test]
-fn server_instructions_include_guidance_and_current_command_names() {
+fn server_instructions_are_the_card_naming_every_tool() {
     let Reply::Message(info) = Session::default().prepare(initialize()) else {
         panic!("initialize must return server information");
     };
     let text = info["result"]["instructions"].as_str().unwrap();
-    assert!(text.contains("ReadyCall"));
-    assert!(text.contains("root_run") && text.contains("cursor"));
-    for command in commands::COMMANDS.iter().filter(|c| c.mcp) {
-        assert!(text.contains(&format!("`{}`", command.mcp_name())));
+    assert_eq!(text, crate::manual::card());
+    for tool in Tool::ALL {
+        assert!(text.contains(tool.name()), "{}", tool.name());
     }
-    assert_eq!(text, crate::manual::text());
+    assert!(text.contains("`explain capabilities`"));
+    assert!(text.len() <= 800, "the card is {} bytes", text.len());
 }
 
 #[test]
@@ -271,23 +320,206 @@ fn errors_show_archived_controls_as_text() {
     assert!(text.contains("\\x1b]52;c;YQ==\\x07"));
 }
 
+/// law: mcp-tool-access-is-uniform
 #[test]
 fn tool_annotations_follow_the_command_table() {
+    let tools = tools();
+    for tool in Tool::ALL {
+        let listed = tools.iter().find(|t| t["name"] == tool.name()).unwrap();
+        assert_eq!(listed["annotations"]["readOnlyHint"], !tool.writes());
+        assert_eq!(listed["annotations"]["openWorldHint"], tool.open_world());
+        assert_eq!(listed["annotations"]["idempotentHint"], tool.idempotent());
+        for command in operations(tool) {
+            assert_eq!(command.writes, tool.writes(), "{}", command.name);
+        }
+    }
+    for (name, read_only) in [
+        ("polylogue_read", true),
+        ("polylogue_context", true),
+        ("polylogue_note", false),
+        ("polylogue_chat", false),
+    ] {
+        let tool = tools.iter().find(|t| t["name"] == name).unwrap();
+        assert_eq!(tool["annotations"]["readOnlyHint"], read_only, "{name}");
+    }
+}
+
+/// law: mcp-surface-size
+#[test]
+fn tools_and_instructions_fit_four_kilobytes() {
+    let mut session = Session::default();
+    let Reply::Message(info) = session.prepare(initialize()) else {
+        panic!("initialize must return server information");
+    };
+    let Reply::Message(list) =
+        session.prepare(json!({"jsonrpc":"2.0", "id":2, "method":"tools/list"}))
+    else {
+        panic!("tools/list must answer at once");
+    };
+    let tools = serde_json::to_string(&list["result"]).unwrap();
+    let instructions = serde_json::to_string(&info["result"]["instructions"]).unwrap();
+    let total = tools.len() + instructions.len();
+    eprintln!(
+        "tools/list {} bytes, instructions {} bytes, total {total}",
+        tools.len(),
+        instructions.len()
+    );
+    assert!(
+        total <= 4096,
+        "tools/list is {} bytes and the instructions {} bytes: {total} in all",
+        tools.len(),
+        instructions.len()
+    );
+    for tool in list["result"]["tools"].as_array().unwrap() {
+        assert!(tool.get("outputSchema").is_none(), "{}", tool["name"]);
+    }
+}
+
+/// law: mcp-covers-command-table
+#[test]
+fn every_tool_operation_is_reachable_from_exactly_one_tool() {
+    let tools = tools();
+    for command in tool_commands() {
+        let offering: Vec<&str> = tools
+            .iter()
+            .filter(|tool| {
+                tool["inputSchema"]["properties"]["operation"]["enum"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(command.name))
+            })
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(offering, [command.tool.unwrap().name()], "{}", command.name);
+    }
+    // Every daemon request the command line or HTTP can make, apart from
+    // query forms and the protocol's own completion, is a tool operation.
+    let query_forms = ["list", "live", "notices", "sql", "changes"];
+    for command in COMMANDS
+        .iter()
+        .filter(|c| matches!(c.action, Action::Request(_) | Action::Stream { .. }) && c.http)
+    {
+        assert!(
+            command.tool.is_some()
+                || query_forms.contains(&command.name)
+                || command.name == "complete",
+            "{} is not reachable over MCP",
+            command.name
+        );
+    }
+}
+
+/// law: mcp-arguments-are-listed-or-explained
+#[test]
+fn every_argument_is_in_its_tool_schema_or_unlisted() {
     let tools = tools();
     for command in tool_commands() {
         let tool = tools
             .iter()
-            .find(|t| t["name"] == command.mcp_name())
+            .find(|tool| tool["name"] == command.tool.unwrap().name())
             .unwrap();
-        let json = serde_json::to_value(tool).unwrap();
-        assert_eq!(json["annotations"]["readOnlyHint"], !command.writes);
+        let properties = &tool["inputSchema"]["properties"]["arguments"]["properties"];
+        for arg in command.args_for(Surface::Mcp) {
+            if arg.name == "request_id" {
+                assert!(properties.get("request_id").is_none());
+                continue;
+            }
+            assert_eq!(
+                properties.get(arg.name).is_some(),
+                !arg.unlisted
+                    || operations(command.tool.unwrap()).any(|other| {
+                        other
+                            .args_for(Surface::Mcp)
+                            .any(|a| a.name == arg.name && !a.unlisted)
+                    }),
+                "{} {}",
+                command.name,
+                arg.name
+            );
+        }
     }
-    for name in ["polylogue_find", "polylogue_read", "polylogue_status"] {
-        let tool = tools.iter().find(|t| t["name"] == name).unwrap();
-        assert_eq!(tool["annotations"]["readOnlyHint"], true);
+}
+
+/// law: mcp-arguments-are-listed-or-explained
+#[test]
+fn typed_operations_declare_every_field_of_their_arguments() {
+    fn fields(schema: &Value, root: &Value, names: &mut std::collections::BTreeSet<String>) {
+        if let Some(reference) = schema["$ref"].as_str() {
+            let name = reference.strip_prefix("#/$defs/").unwrap();
+            return fields(&root["$defs"][name], root, names);
+        }
+        names.extend(
+            schema["properties"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(k, _)| k.clone()),
+        );
+        for key in ["anyOf", "oneOf"] {
+            for choice in schema[key].as_array().into_iter().flatten() {
+                fields(choice, root, names);
+            }
+        }
     }
-    let write = tools.iter().find(|t| t["name"] == "note_add").unwrap();
-    assert_eq!(write["annotations"]["readOnlyHint"], false);
+    for command in tool_commands().filter(|c| c.register.is_some()) {
+        let schema = command.typed_schemas.unwrap()().0;
+        let mut typed = std::collections::BTreeSet::new();
+        fields(&schema, &schema, &mut typed);
+        let declared: std::collections::BTreeSet<String> = command
+            .args_for(Surface::Mcp)
+            .map(|arg| arg.name.to_owned())
+            .filter(|name| name != "request_id")
+            .collect();
+        assert_eq!(typed, declared, "{}", command.name);
+    }
+}
+
+/// law: mcp-operation-dispatch
+#[test]
+fn a_tool_call_names_one_of_its_operations() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive = Archive::at(temp.path());
+    let run = |name: &str, arguments: Value| {
+        call_with_limit(
+            &archive,
+            name,
+            arguments.as_object().unwrap().clone(),
+            None,
+            &tokio_util::sync::CancellationToken::new(),
+            None,
+        )
+        .unwrap_err()
+    };
+    let missing = run(
+        "polylogue_read",
+        json!({"arguments": {}, "request_id": "no-operation"}),
+    );
+    assert!(missing.contains("needs `operation`"), "{missing}");
+    let foreign = run(
+        "polylogue_read",
+        json!({"operation": "assert", "arguments": {}, "request_id": "foreign"}),
+    );
+    assert!(foreign.contains("no operation `assert`"), "{foreign}");
+    let removed = run(
+        "polylogue_read",
+        json!({"operation": "list", "arguments": {}, "request_id": "removed"}),
+    );
+    assert!(removed.contains("no operation `list`"), "{removed}");
+    let inside = run(
+        "polylogue_note",
+        json!({"operation": "save", "arguments": {"name": "x", "query": "sessions", "request_id": "inner"}, "request_id": "outer"}),
+    );
+    assert!(inside.contains("beside arguments"), "{inside}");
+    let unknown = run(
+        "polylogue_context",
+        json!({"operation": "brief", "arguments": {"cwd": "/synthetic", "detail": "full"}, "request_id": "unknown-argument"}),
+    );
+    assert!(unknown.contains("has no argument `detail`"), "{unknown}");
+    let lifted = run(
+        "polylogue_context",
+        json!({"operation": "brief", "arguments": {"cwd": "/synthetic"}, "request_id": "lifted", "deadline": null}),
+    );
+    assert!(lifted.contains("cannot be lifted"), "{lifted}");
 }
 
 mod cancellation;
@@ -356,10 +588,24 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
         reply["result"]["structuredContent"]["value"]["count"], 1,
         "{reply}"
     );
+    assert_eq!(ready.mcp["name"], "polylogue_read");
+    assert_eq!(ready.mcp["arguments"]["operation"], "query");
+    // An operation MCP does not offer has no MCP form; its other forms stay.
+    let sql = daemon
+        .daemon
+        .ready_call(&command_surface::Request {
+            operation: "sql".into(),
+            arguments: json!({"statement":"SELECT 1"}),
+            request_id: "mcp-ready-sql".into(),
+            deadline: command_surface::Deadline::None,
+        })
+        .unwrap();
+    assert_eq!(sql.mcp, Value::Null);
+    assert_eq!(sql.http.path, "/api/v1/sql");
     let legacy = call_with_limit(
         &daemon.daemon.archive,
-        "polylogue_find",
-        args(json!({"query":"sessions"})),
+        "polylogue_read",
+        args(json!({"operation":"query","query":"sessions","request_id":"outside"})),
         None,
         &Default::default(),
         None,
@@ -370,7 +616,7 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
     );
     let tool = tools()
         .into_iter()
-        .find(|tool| tool["name"] == "polylogue_find")
+        .find(|tool| tool["name"] == "polylogue_read")
         .unwrap();
     assert_eq!(tool["inputSchema"]["additionalProperties"], false);
     assert!(tool["inputSchema"]["properties"].get("arguments").is_some());
@@ -384,6 +630,7 @@ fn typed_admission_failure_has_the_same_shared_answer_without_opening_a_daemon()
         &archive,
         "polylogue_read",
         args(json!({
+            "operation":"read",
             "arguments":{"target":"session:claude-code:synthetic", "author":"invented"},
             "request_id":"invalid-admission-witness"
         })),

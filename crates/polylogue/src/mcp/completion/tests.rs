@@ -27,13 +27,15 @@ fn completion_route_uses_full_query_cursor_and_preserves_the_suffix() {
             .iter()
             .all(|value| value.as_str().unwrap().ends_with(" | measure count"))
     );
-    let (_, direct, failed) = call_with_limit(
+    let (_, direct, failed) = run(
         archive,
-        "polylogue_complete",
-        json!({"arguments":{"text":"live: | measure count","position":5},"request_id":"complete-parity"})
-            .as_object()
-            .unwrap()
-            .clone(),
+        crate::commands::command("complete").unwrap(),
+        ToolCall {
+            operation: None,
+            arguments: json!({"text":"live: | measure count","position":5}),
+            request_id: "complete-parity".into(),
+            deadline: Default::default(),
+        },
         None,
         &tokio_util::sync::CancellationToken::new(),
         None,

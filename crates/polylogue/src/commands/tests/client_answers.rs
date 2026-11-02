@@ -74,15 +74,39 @@ fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str]) -> (Answer, Exit) {
     (shown, Some(exit))
 }
 
+/// The MCP answer for the same request: the command's own tool operation,
+/// or for a command MCP offers in another form, that form (`list` is a
+/// `query`, `complete` the protocol's completion method).
 fn mcp_answer(w: &test_daemon::TestDaemon, c: &Command, values: &Values) -> Answer {
-    let names: Vec<&str> = c.args_for(Surface::Mcp).map(|a| a.name).collect();
-    let arguments = values
-        .0
-        .iter()
-        .filter(|(k, _)| names.contains(&k.as_str()))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    match crate::mcp::tests::call(&w.daemon.archive, &c.mcp_name(), arguments) {
+    if c.name == "complete" {
+        return crate::mcp::tests::complete(
+            &w.daemon.archive,
+            &values.text("text").unwrap_or_default(),
+            values.integer("position"),
+        );
+    }
+    let (operation, arguments) = if c.name == "list" {
+        let Action::Request(build) = c.action else {
+            panic!("list is a daemon request")
+        };
+        let request = build(c, values, &cli_caller()).unwrap();
+        let arguments =
+            crate::protocol::query::Arguments::from_request(&request).expect("list builds a query");
+        let Value::Object(arguments) = serde_json::to_value(arguments).unwrap() else {
+            panic!("query arguments are an object")
+        };
+        ("query", arguments)
+    } else {
+        let names: Vec<&str> = c.args_for(Surface::Mcp).map(|a| a.name).collect();
+        let arguments = values
+            .0
+            .iter()
+            .filter(|(k, _)| names.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        (c.name, arguments)
+    };
+    match crate::mcp::tests::call(&w.daemon.archive, operation, arguments) {
         Ok(text) => Ok(serde_json::from_str(&text).unwrap()),
         // `error (kind): message`, with the corrected query on a last line
         // of its own when there is one.
@@ -235,7 +259,9 @@ fn assert_read_page(answer: &Answer, position: &polylogue_model::ChangePosition)
 fn every_client_answers_the_same_request_identically() {
     let offered: Vec<&str> = COMMANDS
         .iter()
-        .filter(|c| c.mcp && c.http && !c.writes && matches!(c.action, Action::Request(_)))
+        .filter(|c| {
+            c.tool.is_some() && c.http && !c.writes && matches!(c.action, Action::Request(_))
+        })
         .map(|c| c.name)
         .collect();
     for name in &offered {

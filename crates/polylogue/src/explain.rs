@@ -107,11 +107,16 @@ fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
         })).collect(),
         "operators" => [polylogue_query::ast::Op::Eq, polylogue_query::ast::Op::Ne, polylogue_query::ast::Op::Lt, polylogue_query::ast::Op::Le, polylogue_query::ast::Op::Gt, polylogue_query::ast::Op::Ge, polylogue_query::ast::Op::Contains, polylogue_query::ast::Op::Prefix].into_iter().map(|op| json!({"name": op.symbol(), "operation": op})).collect(),
         "capabilities" => {
+            // MCP tools list only their operations' common arguments and
+            // carry no answer schema; both are published here in full.
             let mut entries: Vec<_> = COMMANDS.iter().map(|c| json!({
                 "kind": "command", "name": c.name, "help": c.help,
-                "mcp": c.mcp, "http": c.http, "writes": c.writes,
+                "tool": c.tool.map(commands::Tool::name), "http": c.http, "writes": c.writes,
                 "arguments": commands::schema(c),
+                "unlisted": c.args_for(commands::Surface::Mcp).filter(|a| a.unlisted).map(|a| a.name).collect::<Vec<_>>(),
+                "answer": c.typed_schemas.map(|schemas| schemas().1),
             })).collect();
+            entries.push(json!({"kind": "answer", "schema": schemars::schema_for!(command_surface::Answer<Value>).to_value()}));
             entries.extend(polylogue_model::read::View::NAMES.iter().map(|name| json!({"kind": "read_view", "name": name})));
             entries.extend(polylogue_render::Format::NAMES.iter().map(|name| json!({"kind": "format", "name": name})));
             entries

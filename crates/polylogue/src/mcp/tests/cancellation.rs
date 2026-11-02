@@ -14,12 +14,7 @@ fn tool_call(name: &str) -> Value {
         "query" => json!({"query":"sessions"}),
         _ => panic!("no fixture for {name}"),
     };
-    let command = crate::commands::command(name).expect("fixture operation");
-    if command.register.is_some() {
-        json!({"name":command.mcp_name(),"arguments":{"arguments":arguments,"request_id":format!("cancel-{name}")}})
-    } else {
-        json!({"name":command.mcp_name(),"arguments":arguments})
-    }
+    super::tool_call(name, arguments, &format!("cancel-{name}"))
 }
 
 struct PeerCleanup<'a> {
@@ -168,7 +163,7 @@ fn stdio_tool_body_preserves_the_explicit_shared_deadline() {
         writeln!(client, "{}", super::initialize()).unwrap();
         let mut line = String::new();
         input.read_line(&mut line).unwrap();
-        writeln!(client, "{}", json!({"jsonrpc":"2.0", "id":"bounded", "method":"tools/call", "params":{"name":"polylogue_status","arguments":{"arguments":{},"request_id":"bounded-forward","deadline":deadline}}})).unwrap();
+        writeln!(client, "{}", json!({"jsonrpc":"2.0", "id":"bounded", "method":"tools/call", "params":{"name":"polylogue_read","arguments":{"operation":"status","arguments":{},"request_id":"bounded-forward","deadline":deadline}}})).unwrap();
         line.clear();
         input.read_line(&mut line).unwrap();
         let reply: Value = serde_json::from_str(&line).unwrap();

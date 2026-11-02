@@ -12,7 +12,8 @@ The generator is not implemented yet. Use `polylogue --help`,
 The current derived-data reference is
 [`../derived.md`](../derived.md), rendered from the declarations and checked
 by a golden test. The embedded [`../agent-manual.md`](../agent-manual.md)
-receives the current generated command reference at run time.
+is the MCP card; `polylogue manual` appends the generated operation
+reference to it.
 
 ## Planned pages
 

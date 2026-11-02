@@ -116,8 +116,8 @@ fn surface_answer(
         "mcp" => {
             let reply = mcp.request(
                 "tools/call",
-                json!({"name":"polylogue_find", "arguments":{
-                    "arguments":{"query":text}, "request_id":uuid::Uuid::now_v7().to_string()
+                json!({"name":"polylogue_read", "arguments":{
+                    "operation":"query", "arguments":{"query":text}, "request_id":uuid::Uuid::now_v7().to_string()
                 }}),
             );
             assert!(reply["error"].is_null(), "{reply}");
