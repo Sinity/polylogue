@@ -89,6 +89,24 @@ pub fn import(_: &Command, v: &Values, caller: &Caller) -> Built {
     })
 }
 
+/// A relative manifest path names a file in the caller's directory.
+pub fn verify(_: &Command, v: &Values, caller: &Caller) -> Built {
+    let manifest = v
+        .text("manifest")
+        .map(|path| {
+            let path = PathBuf::from(path);
+            if path.is_absolute() {
+                Ok(path)
+            } else {
+                caller.cwd.as_ref().map(|base| base.join(path)).ok_or_else(|| {
+                    "a relative manifest path requires a native caller working directory; supply an absolute path".to_string()
+                })
+            }
+        })
+        .transpose()?;
+    Ok(Request::Verify { manifest })
+}
+
 /// The query; without one, the `sessions` unit with its defaults.
 pub fn list(_: &Command, v: &Values, _: &Caller) -> Built {
     let text = v

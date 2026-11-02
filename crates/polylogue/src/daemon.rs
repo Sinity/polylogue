@@ -15,6 +15,7 @@ pub mod request;
 pub(crate) mod schema;
 pub mod server;
 pub mod service;
+mod verify;
 pub mod warm;
 
 pub use failure::Failure;

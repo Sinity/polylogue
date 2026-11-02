@@ -246,3 +246,112 @@ pub(crate) fn diagnostic(
 
 #[cfg(test)]
 mod tests;
+
+/// What `daemon --until-idle` did, for a person.
+pub fn idle_summary(summary: &polylogue_engine::RunSummary) -> String {
+    let work = &summary.work;
+    let mut out = format!(
+        "idle after {} pass{} and {} import{} ({:.1} s in passes)\n",
+        summary.passes,
+        if summary.passes == 1 { "" } else { "es" },
+        summary.imports,
+        if summary.imports == 1 { "" } else { "s" },
+        work.seconds,
+    );
+    for (name, n) in [
+        ("full scans", work.full_scans),
+        ("inputs seen", work.inputs_seen),
+        ("inputs changed", work.inputs_changed),
+        ("bytes read", work.bytes_read),
+        ("bytes stored", work.bytes_stored),
+        ("messages written", work.messages_written),
+        ("sessions derived", work.sessions_derived),
+    ] {
+        let _ = writeln!(out, "  {name:<17} {n}");
+    }
+    for root in &work.unreadable_roots {
+        let _ = writeln!(
+            out,
+            "  unreadable: {}",
+            polylogue_render::terminal::escape(&root.display().to_string())
+        );
+    }
+    for error in &work.errors {
+        let _ = writeln!(
+            out,
+            "  error: {}",
+            polylogue_render::terminal::escape(error)
+        );
+    }
+    out
+}
+
+/// `verify`: the counts, then each problem.
+pub fn verify(data: &Value, _color: bool) -> String {
+    let Ok(found) = serde_json::from_value::<polylogue_store::verify::Verification>(data.clone())
+    else {
+        return json(data, false);
+    };
+    let counts = &found.counts;
+    let mut out = format!(
+        "{} inputs, {} revisions, {} extents, {} observations, {} blobs ({} bytes)\n",
+        counts.inputs,
+        counts.revisions,
+        counts.extents,
+        counts.observations,
+        counts.blobs,
+        counts.blob_bytes
+    );
+    let _ = writeln!(
+        out,
+        "blobs checked: {} ({} bytes, {} stored), {} with problems",
+        found.blobs.checked, found.blobs.bytes, found.blobs.stored_bytes, found.blobs.mismatched
+    );
+    for format in &found.formats {
+        let _ = writeln!(
+            out,
+            "  {:<28} {:>8} inputs {:>9} revisions {:>14} bytes",
+            format.format, format.inputs, format.revisions, format.revision_bytes
+        );
+    }
+    let classes = |counts: &[polylogue_store::verify::ClassCount]| {
+        counts
+            .iter()
+            .map(|class| format!("{} {}", class.class, class.count))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let _ = writeln!(out, "observations: {}", classes(&found.observation_classes));
+    let _ = writeln!(out, "revisions: {}", classes(&found.revision_kinds));
+    for database in &found.databases {
+        let _ = writeln!(
+            out,
+            "{}: {}",
+            polylogue_render::terminal::escape(&database.file),
+            polylogue_render::terminal::escape(&database.result.join("; "))
+        );
+    }
+    if let Some(manifest) = &found.manifest {
+        let _ = writeln!(
+            out,
+            "manifest: {} revisions hashed from {} bytes",
+            manifest.revisions, manifest.bytes_read
+        );
+    }
+    if found.problems.is_empty() {
+        out.push_str("no problems\n");
+    }
+    for problem in &found.problems {
+        let kind = serde_json::to_value(problem.kind)
+            .ok()
+            .and_then(|kind| kind.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "{kind}: {}: {}",
+            polylogue_render::terminal::escape(&problem.subject),
+            polylogue_render::terminal::escape(&problem.detail)
+        );
+    }
+    out
+}

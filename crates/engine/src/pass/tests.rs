@@ -1,4 +1,5 @@
 mod coverage;
+mod no_sources;
 mod parent_admission;
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user};

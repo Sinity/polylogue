@@ -29,12 +29,18 @@ fn queued_import_checks_its_captured_parent_before_source_admission() {
         let status = Arc::new(Mutex::new(LoopStatus::default()));
         let worker = std::thread::spawn(move || {
             let _lock = lock;
-            engine.run(worker_tx, &rx, &status, || {
-                ready.send(()).unwrap();
-                // The existing ready boundary holds the real loop before its
-                // first pass and request dequeue; no provider work has begun.
-                let _ = held.recv();
-            })
+            engine.run(
+                worker_tx,
+                &rx,
+                &status,
+                crate::Lifetime::UntilStopped,
+                || {
+                    ready.send(()).unwrap();
+                    // The existing ready boundary holds the real loop before its
+                    // first pass and request dequeue; no provider work has begun.
+                    let _ = held.recv();
+                },
+            )
         });
         started.recv_timeout(Duration::from_secs(5)).unwrap();
         let authorship = Authorship {

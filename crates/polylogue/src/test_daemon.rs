@@ -30,7 +30,12 @@ pub(crate) fn start_runtime(
     mode: service::ArchiveMode,
 ) -> std::io::Result<service::Runtime> {
     let deployment = crate::config::Config::for_test(&engine, root);
-    service::start(deployment, engine, mode)
+    service::start(
+        deployment,
+        engine,
+        mode,
+        polylogue_engine::Lifetime::UntilStopped,
+    )
 }
 
 pub(crate) struct ReadObservation {
@@ -109,8 +114,13 @@ fn start_with_clock_and_workers(
     if let Some(day) = day {
         deployment = deployment.standalone_for_archive(root, day).unwrap();
     }
-    let runtime =
-        service::start(deployment, config.clone(), service::ArchiveMode::Standalone).unwrap();
+    let runtime = service::start(
+        deployment,
+        config.clone(),
+        service::ArchiveMode::Standalone,
+        polylogue_engine::Lifetime::UntilStopped,
+    )
+    .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
     let server =
         server::Server::start(Arc::clone(&daemon), Arc::clone(&runtime.operations)).unwrap();
@@ -185,6 +195,7 @@ impl TestDaemon {
             Arc::clone(&self.daemon.config),
             self.config.clone(),
             service::ArchiveMode::Standalone,
+            polylogue_engine::Lifetime::UntilStopped,
         )
         .unwrap();
         self.daemon = Arc::clone(&self.runtime.daemon);

@@ -345,6 +345,7 @@ fn isolated_signal_child() {
             std::sync::Arc::clone(&startup.config),
             startup.engine.clone(),
             startup.mode.clone(),
+            polylogue_engine::Lifetime::UntilStopped,
         )
         .unwrap();
         let stop_worker = runtime.signal_stop_for_test();
@@ -402,5 +403,12 @@ fn isolated_signal_child() {
         println!("observed:{error}");
         return;
     }
-    super::super::server::serve(&startup).unwrap();
+    super::super::server::serve(
+        &startup,
+        super::super::server::Run {
+            reads_sources: true,
+            lifetime: polylogue_engine::Lifetime::UntilStopped,
+        },
+    )
+    .unwrap();
 }

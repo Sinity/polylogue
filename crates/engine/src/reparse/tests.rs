@@ -79,6 +79,7 @@ fn engine(w: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
         chunk: 64 << 20,
         rescan_every: Duration::from_secs(60),
         live_every: Duration::from_secs(2),
+        reads_sources: true,
     };
     let engine = Engine::new(config, archive).unwrap();
     (engine, _lock)

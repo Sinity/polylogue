@@ -85,9 +85,9 @@ Commands are not about a query's rows.
 | `next` | the following page of the last list here ([Addressing](#addressing)) |
 | `web [PATH]` | opens the workbench at a view that is not a reference |
 | `auth drive` | a credential flow, not rows |
-| `daemon [--until-idle] [--json]`, `mcp`, `hook EVENT`, `hooks print\|status`, `install-agent HARNESS [--remove]`, `browser-host`, `completions SHELL`, `demo` | local process entry points and installers ([operations.md](operations.md#installing-into-harnesses)) |
+| `daemon [--until-idle] [--no-sources] [--json]`, `mcp`, `hook EVENT`, `hooks print\|status`, `install-agent HARNESS [--remove]`, `browser-host`, `completions SHELL`, `demo` | local process entry points and installers ([operations.md](operations.md#installing-into-harnesses)) |
 | `schema infer\|unread` | daemon requests over stored inputs ([archive.md](archive.md#format-drift)) |
-| `verify` | the on-demand read-only check ([operations.md](operations.md)) |
+| `verify [--manifest FILE]` | the on-demand read-only check ([operations.md](operations.md#verification)) |
 | `sinex cutover` | the one mode transition ([primary-mode.md](primary-mode.md#cutover)) |
 
 ## Latency classes

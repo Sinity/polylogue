@@ -60,6 +60,7 @@ pub mod user_state;
 pub mod user_writes;
 pub mod variants;
 pub mod vectors;
+pub mod verify;
 mod versions;
 pub mod wire_shapes;
 mod write_lock;

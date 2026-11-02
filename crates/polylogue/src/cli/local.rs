@@ -6,9 +6,33 @@ use super::fail;
 use crate::commands::{Command, Values};
 use std::process::ExitCode;
 
-pub fn daemon(_: &Command, _: &Values, startup: &crate::config::Startup, _: bool) -> ExitCode {
-    match crate::daemon::server::serve(startup) {
-        Ok(()) => ExitCode::SUCCESS,
+pub fn daemon(_: &Command, v: &Values, startup: &crate::config::Startup, json: bool) -> ExitCode {
+    let run = crate::daemon::server::Run {
+        reads_sources: !v.flag("no_sources"),
+        lifetime: if v.flag("until_idle") {
+            polylogue_engine::Lifetime::UntilIdle
+        } else {
+            polylogue_engine::Lifetime::UntilStopped
+        },
+    };
+    match crate::daemon::server::serve(startup, run) {
+        Ok(None) => ExitCode::SUCCESS,
+        Ok(Some(summary)) => {
+            if json {
+                match serde_json::to_string(&summary) {
+                    Ok(text) => println!("{text}"),
+                    Err(error) => eprintln!("polylogue: the run summary: {error}"),
+                }
+            } else {
+                print!("{}", super::print::idle_summary(&summary));
+            }
+            // A run that met errors did not process everything it was given.
+            if summary.work.errors.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
         Err(e) => {
             eprint!(
                 "{}",

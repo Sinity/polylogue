@@ -27,7 +27,9 @@ No step deletes the index or any store.
 
 **Restart** resumes from committed positions; it does not rescan the archive, replay tool-database captures or re-read history. Target: socket ready within 2 s of start.
 
-**Batch mode.** `polylogue daemon --until-idle [--json]` runs the same pipeline and exits when no unit has work, printing a summary. Tests, benchmarks and the restore drill use it; it is not a second engine.
+**Batch mode.** `polylogue daemon --until-idle [--json]` runs the same pipeline and exits when no unit has work, printing a summary and exiting 0, or 1 when a pass or import met an error: the passes and imports it ran and their work added together (inputs seen and changed, bytes read and stored, messages written, sessions derived, unreadable roots and errors). "No work" means a pass ended with no capture continuing, no request queued and no change waiting from the watcher. Tests, benchmarks and the restore drill use it; it is not a second engine.
+
+**Without sources.** `polylogue daemon --no-sources` reads none of its sources: no root is scanned or watched, no spool or tool database is read, no collector runs and no repository lookup is written, so no input, observation or coverage is recorded from the machine. It parses and derives what the archive already stores (an index behind its archive catches up, a reading-version change re-parses) and serves every request, `import` included. A file that has gone from its location is not observed as gone, because nothing looked. With `--until-idle` it processes what is stored and exits. An archive that receives another archive's contents (`import`) is started this way, so that none of its locations is watched before the import, and the restore drill uses it to check a restored copy without touching the machine's live files.
 
 **Exits:** 0 clean stop; 1 failure or lock held; 78 refused archive. The service sets `RestartPreventExitStatus=78`, and the service manager's failure notification reports it, since no daemon is running to send a notice.
 
@@ -90,9 +92,9 @@ The commands this area owns, each with the reason it is a command rather than a 
 |---|---|
 | bare `polylogue` | orientation |
 | `status [--json]` | a snapshot of the daemon, not of archive rows |
-| `daemon [--until-idle] [--json] [--archive DIR]` | runs the service |
+| `daemon [--until-idle] [--no-sources] [--json] [--archive DIR]` | runs the service |
 | `import PATH…` | brings files on the daemon's host into the archive ([capture.md#import](capture.md#import)); a relative path resolves against the caller's working directory |
-| `verify` | an on-demand check of stored bytes |
+| `verify [--manifest FILE]` | an on-demand check of stored bytes |
 | `setting [NAME [VALUE]]` | writes an authored `setting` record |
 | `schema infer\|diff\|unread` | describes stored inputs' shapes ([archive.md#format-drift](archive.md#format-drift)) |
 | `sinex cutover [--dry-run]` | the one-way move to primary mode ([primary-mode.md#cutover](primary-mode.md#cutover)) |
@@ -139,7 +141,8 @@ Sinex's own notices are Sinex's and reach the operator through Sinex's deliverer
 ## Verification
 
 - **At read time,** every read of stored bytes checks the frame's hash; a mismatch fails that read with a named error (the segment, the extent and the citing input) and records a problem, which fires `stored bytes mismatch`.
-- **On demand,** `polylogue verify` asks the daemon for a full check at idle priority, with progress in `status`: every segment frame against its hash (the one scan in common's [hashed-blobs](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/hashed-blobs/README.md)), every extent cited by a row present in the segment log, and page checksums and `quick_check` of each SQLite database. It stores only its result (when it ran, what it covered, the named problems) and changes no row.
+- **On demand,** `polylogue verify` asks the daemon for a full check at idle priority, with progress in `status`: every segment frame against its hash (the one scan in common's [hashed-blobs](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/hashed-blobs/README.md)), every blob's catalog sizes against its stored descriptor, every extent cited by a row present in its blob, every chain's extents contiguous from its start and covering its longest revision, the kept counters (`input`, `revision`, stored bytes) equal to the rows they count, and page checksums and `quick_check` of each SQLite database. Its answer counts inputs, revisions, extents, observations and blobs, inputs, revisions and bytes per input format, observations per class and revisions per way they were produced, and names every problem; with problems the answer is `degraded` (exit 5). It stores only its result (when it ran, what it covered, the named problems) and changes no row.
+- **Manifest.** `verify --manifest FILE` also reads every revision's bytes through its chain (each chain once) and writes one line per revision, `input<TAB>number<TAB>length<TAB>blake3`, ordered by input and then number, to a new file on the daemon's host; a relative path is the caller's. The file appears complete or not at all: when a revision cannot be read the check names it and writes no manifest. An existing file is never replaced. A manifest computed independently from another copy of the same inputs (an older archive, a backup) compares byte for byte.
 - **Recovery** from a mismatch is a restore from backup ([Backup and restore](#backup-and-restore)).
 - Verification has no schedule; a drill or periodic check is something someone invokes.
 
@@ -212,6 +215,8 @@ An upgrade is a version change in `status` and, when a parser changed, a while i
 | a schema change of any store | a numbered in-place migration at open | down for the migration |
 | an archive newer than the binary, or with no migration from its version | refused, exit 78, not restarted | down |
 
+**Spools across a rollback.** Hooks and the browser host keep writing their spools while the daemon is replaced, and the spools are never deleted, so the build a deployment rolls back to reads what the newer build wrote. A spool line's shape is therefore part of the deployed format: the hook's line shapes are pinned by a fixture that the previous build's reader is checked against (law `spool-lines-match-rollback-fixture` in [capture.md](capture.md#laws)), and a change to them is checked against the deployed reader before it ships.
+
 No code path deletes the index. A full rebuild is a rare deliberate act: someone moves `index.db` aside and starts the daemon, which rebuilds from stored bytes and answers reads with `index building` and progress until it can answer. Moving a whole archive aside and starting fresh is likewise a deliberate act, never something code does to get past a change.
 
 ## Backup and restore
@@ -221,7 +226,7 @@ No code path deletes the index. A full rebuild is a rare deliberate act: someone
   - A file copy needs either a stopped daemon, or each SQLite database copied through SQLite's backup API followed by the segment log: committed extents never move and no row cites an extent before it commits, so databases first and segments after is consistent.
 - **Polylogue provides** the paths and sizes in `status`, and `verify` to check a restored copy.
 - **Restore** is putting the files back and starting the daemon. Migrations apply as on any open; an uncommitted segment tail is truncated; an index behind its positions catches up; a daemon that finds a segment log but no `archive.db` refuses to start a fresh archive over it and says why. There is no restore command.
-- **A restore drill** restores the latest backup into a scratch directory, runs `polylogue --archive <dir> daemon --until-idle` with no provider locations, then `verify`. Someone runs it when they want the evidence, for example after changing the backup route.
+- **A restore drill** restores the latest backup into a scratch directory, runs `polylogue --archive <dir> daemon --no-sources --until-idle`, then starts `polylogue --archive <dir> daemon --no-sources` and runs `polylogue --archive <dir> verify` against it. Someone runs it when they want the evidence, for example after changing the backup route.
 - **Primary mode:** Sinex is the store of record, and its backup covers Polylogue's materials and authored records. Losing the local directory means a rebuild from the confirmed stream ([primary-mode.md](primary-mode.md)). The embeddings store stays local and is backed up, because recomputing it costs money.
 
 ## Laws
@@ -252,6 +257,13 @@ No code path deletes the index. A full rebuild is a rare deliberate act: someone
 - **archive-selected-explicitly**: with two archives under one user, each with its daemon, a command with `--archive A` reaches only A and its output names A.
 - **bundle-moves-between-archives**: a bundle written by `read --to` from archive A and imported into B (another machine ID) gives the same answers for A's sessions, with authors preserved, and leaves B's own sessions unaffected.
 - **no-agent-refusal**: no operation here refuses a caller for being an agent or lacking a terminal.
+- **until-idle-ends-after-work**: `daemon --until-idle` exits after a pass ends with nothing pending, with its summary, the socket removed and the lock released; it exits 0 when its passes and imports met no error and 1 otherwise.
+- **no-sources-reads-no-source**: a daemon started with `--no-sources` on a fresh archive beside a home with provider files and spools records no input, observation or coverage and writes nothing under the home.
+- **no-sources-parses-what-is-stored**: with `--no-sources` and the index moved aside, the index is rebuilt from stored bytes, and an input whose file has gone gets no `deleted` observation.
+- **no-sources-takes-imports**: a daemon started with `--no-sources` stores what `import` gives it and then becomes idle.
+- **verify-counts-every-class**: on a consistent archive `verify` names no problem, and its counts per format, observation class and revision kind equal the rows.
+- **verify-reads-only**: `verify`, with or without a manifest, changes no row and no write counter of any store.
+- **verify-manifest-hashes-each-revision**: each manifest line's hash is the BLAKE3 of that revision's bytes, computed from the bytes written, not read back from the store.
 - **corruption-named-not-rewritten**: corrupting one byte of a stored frame makes the next read of it fail naming the extent, records the problem, and `verify` names it; nothing is rewritten.
 - **upgrade-answers-throughout**: a scripted upgrade on Morrow with one reading-version bump answers every read meanwhile, `status` shows progress then `up to date`, and the result equals a fresh build by natural keys.
 - **migration-keeps-rows**: every migration keeps every row of a populated store (one test per migration).

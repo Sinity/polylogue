@@ -190,6 +190,7 @@ Its figures and verdicts use the shared status format of [command-surface](https
 - **hook-event-recorded**: a synthetic event of each type lands in the spool and in the index.
 - **hook-never-creates-session**: a hook event for an unknown session creates no session.
 - **hook-line-durable**: a hook line survives a crash after the hook returns.
+- **spool-lines-match-rollback-fixture**: the hook writes exactly the line shapes of its rollback fixture (every harness, an event with and without a session, native observations, an emission receipt), each line starting with a key a spool reader recognizes it by, and this build's reader takes every fixture line.
 - **drive-revisions**: against a fake Drive, three revisions and one `driveImage` give one session with three revisions and the image's bytes; a deleted prompt keeps its revisions and is marked gone.
 - **import-every-structure**: a fixture for every row of the structures table imports; an unrelated JSONL file is refused with the structures tried and nothing is stored.
 - **reimport-changes-nothing**: importing identical bytes again changes nothing, and a byte-identical copy of a container is `already_stored`.

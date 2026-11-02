@@ -371,20 +371,42 @@ fn raise_open_file_limit() {
     }
 }
 
-pub fn serve(startup: &crate::config::Startup) -> std::io::Result<()> {
+/// How `polylogue daemon` runs: whether its loop reads capture sources,
+/// and whether it stops once its loop is idle.
+#[derive(Debug, Clone, Copy)]
+pub struct Run {
+    pub reads_sources: bool,
+    pub lifetime: polylogue_engine::Lifetime,
+}
+
+/// Serves the archive until a signal or, for a run until idle, until the
+/// loop has no work; then returns what the loop did in a run until idle.
+pub fn serve(
+    startup: &crate::config::Startup,
+    run: Run,
+) -> std::io::Result<Option<polylogue_engine::RunSummary>> {
     raise_open_file_limit();
     let supervisor = super::lifecycle::Supervisor::start(&startup.lifecycle)?;
     let root = &startup.config.archive;
+    let mut engine = startup.engine.clone();
+    engine.reads_sources = run.reads_sources;
     let runtime = service::start(
         Arc::clone(&startup.config),
-        startup.engine.clone(),
+        engine,
         startup.mode.clone(),
+        run.lifetime,
     )?;
+    let idle = runtime.idle();
     let server = Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))?;
     eprintln!(
-        "polylogue: serving {} on {}",
+        "polylogue: serving {} on {}{}",
         root.display(),
-        runtime.daemon.archive.socket().display()
+        runtime.daemon.archive.socket().display(),
+        if run.reads_sources {
+            ""
+        } else {
+            ", reading no sources"
+        }
     );
     let web = match crate::web::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))
     {
@@ -397,7 +419,9 @@ pub fn serve(startup: &crate::config::Startup) -> std::io::Result<()> {
             None
         }
     };
-    supervisor.run(runtime, server, web)
+    supervisor.run(runtime, server, web)?;
+    let summary = idle.borrow().clone();
+    Ok(summary)
 }
 
 /// Owns the socket listener and every accepted client thread.
