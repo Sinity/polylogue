@@ -1469,13 +1469,16 @@ impl Inner {
             return Ok(());
         }
         self.index.pragma_update(None, "synchronous", "normal")?;
-        if let Err(error) = self.build_deferred() {
+        let finished = self.build_deferred().and_then(|()| {
+            self.index
+                .execute("UPDATE meta SET value = '0' WHERE key = 'building'", [])?;
+            Ok(())
+        });
+        if let Err(error) = finished {
             // Rows written while the build continues are synced again.
             self.index.pragma_update(None, "synchronous", "full")?;
             return Err(error);
         }
-        self.index
-            .execute("UPDATE meta SET value = '0' WHERE key = 'building'", [])?;
         self.first_build = None;
         self.search.ready();
         self.commits.committed();
