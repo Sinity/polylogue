@@ -43,7 +43,9 @@ exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask"
 pool = "compile"
 priority = -100
 result = "exit"
-timeout_seconds = 1800
+# A cold warm build took over 30 minutes for Polylogue and 23 for Sinex
+# (2026-11-02); it starts only when no lane job waits for the compile slot.
+timeout_seconds = 3600
 scratch = "nvme"
 cache = "none"
 cap = "cargo"
