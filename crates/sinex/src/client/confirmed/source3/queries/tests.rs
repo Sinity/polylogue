@@ -113,61 +113,76 @@ fn frozen_query1_retains_a_synthetic_old_notes_definition_without_current_catalo
 }
 
 #[test]
-fn receive_only_types_cannot_rename_unchanged_message_document_event_or_query_contracts() {
+fn the_query_contract_is_unchanged_and_reading_kinds_take_new_versions() {
     let old = contract::declaration().unwrap();
     let current = crate::kinds::declarations("polylogue");
-    for name in [
-        "polylogue.message",
-        "polylogue.document",
-        "polylogue.event",
-        "polylogue.query",
-    ] {
-        let before = old
-            .kinds
+    let find = |kinds: &[sinex_model::KindDeclaration], name: &str| {
+        kinds
             .iter()
             .find(|kind| kind.kind.name == name)
-            .unwrap();
-        let after = current.iter().find(|kind| kind.kind.name == name).unwrap();
-        assert_eq!(before.kind, after.kind, "{name}");
-        assert_eq!(before.definition_hash(), after.definition_hash(), "{name}");
-        assert_eq!(
-            serde_json::to_value(before).unwrap(),
-            serde_json::to_value(after).unwrap(),
-            "{name}"
-        );
+            .unwrap()
+            .clone()
+    };
+    let before = find(&old.kinds, "polylogue.query");
+    let after = find(&current, "polylogue.query");
+    assert_eq!(before.kind, after.kind, "polylogue.query");
+    assert_eq!(
+        before.definition_hash(),
+        after.definition_hash(),
+        "polylogue.query"
+    );
+    assert_eq!(
+        serde_json::to_value(&before).unwrap(),
+        serde_json::to_value(&after).unwrap(),
+        "polylogue.query"
+    );
+    // A kind embedding a parser reading changed its definition when the
+    // reading's two flags became one progress value, so it carries a new
+    // version and never a changed definition under the frozen one.
+    for (name, frozen, now) in [
+        ("polylogue.message", 5, 6),
+        ("polylogue.document", 4, 5),
+        ("polylogue.event", 4, 5),
+    ] {
+        let before = find(&old.kinds, name);
+        let after = find(&current, name);
+        assert_eq!(before.kind.version, frozen, "{name}");
+        assert_eq!(after.kind.version, now, "{name}");
+        assert_ne!(before.definition_hash(), after.definition_hash(), "{name}");
     }
 }
 
 #[test]
-fn unchanged_source3_raw_facts_decode_with_original_versions_hashes_and_reading_data() {
+fn source3_raw_facts_at_their_frozen_versions_are_refused_not_misread() {
     for product in raw_products() {
         let name = crate::products::kind(&product).unwrap();
         let version = match name {
             "polylogue.message" => 5,
             _ => 4,
         };
-        let event = event(
-            name,
-            version,
-            crate::products::payload(&product, 0).unwrap(),
-        );
+        let mut payload = crate::products::payload(&product, 0).unwrap();
+        let reading = payload["record"]["reading"].as_object_mut().unwrap();
+        assert_eq!(reading.remove("progress"), Some(json!("at_end")));
+        reading.insert("at_end".into(), json!(true));
+        reading.insert("no_parser_yet".into(), json!(false));
+        let event = event(name, version, payload);
         let old = contract::declaration()
             .unwrap()
             .kinds
             .iter()
-            .find(|kind| kind.kind.name == name)
+            .find(|kind| kind.kind.name == name && kind.kind.version == version)
             .unwrap();
         jsonschema::validator_for(old.payload_schema.as_ref().unwrap())
             .unwrap()
             .validate(&event.payload)
             .unwrap();
         let before = serde_json::to_vec(&event).unwrap();
-        let confirmed = super::super::super::decode_event(&event).unwrap();
-        assert!(matches!(confirmed.change,ConfirmedChange::Live(actual) if *actual==product));
-        let native = confirmed.native.unwrap();
-        assert_eq!(native.kind.version, version);
-        assert_eq!(native.kind_definition_hash, event.kind_definition_hash);
-        assert_eq!(native.origin.source_fingerprint, event.source_fingerprint);
+        let refused = super::super::super::decode_event(&event).unwrap_err();
+        assert!(
+            matches!(&refused, crate::Error::Invalid(message)
+                if *message == format!("unsupported indexed kind {name}@{version}")),
+            "{refused:?}"
+        );
         assert_eq!(serde_json::to_vec(&event).unwrap(), before);
     }
 }

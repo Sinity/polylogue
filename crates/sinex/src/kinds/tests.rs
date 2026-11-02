@@ -165,7 +165,7 @@ fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
         .into_iter()
         .find(|declaration| declaration.kind.name == "polylogue.fragment")
         .unwrap();
-    assert_eq!(declaration.kind.version, 2);
+    assert_eq!(declaration.kind.version, 3);
     jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap())
         .unwrap()
         .validate(&payload)
