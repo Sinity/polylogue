@@ -19,7 +19,7 @@ impl ::signals::Calendar for Calendar {
 }
 
 #[test]
-fn generic_source_paths_refuse_live_and_restored_signal_state_before_spool_publication() {
+fn signal_state_is_an_ordinary_authored_request_held_in_the_spool() {
     let root = tempfile::tempdir().unwrap();
     let sinex = client(root.path());
     let checkpoint = Checkpoint {
@@ -39,7 +39,7 @@ fn generic_source_paths_refuse_live_and_restored_signal_state_before_spool_publi
             "signal-fixture".into(),
             UserWrite::SignalCommit(Box::new(Commit {
                 prior: None,
-                checkpoint: checkpoint.clone(),
+                checkpoint,
                 outbox: vec![],
                 events: vec![],
             })),
@@ -51,73 +51,17 @@ fn generic_source_paths_refuse_live_and_restored_signal_state_before_spool_publi
         },
         effect: AuthoredEffect::default(),
     };
-    assert!(matches!(
-        sinex.prepare_request(&prepared),
-        Err(crate::Error::Refused { .. })
-    ));
-    let attribution = polylogue_model::authored::ImportAttribution {
-        machine: "fixture-machine".into(),
-        input: "bundle".into(),
-        chain: 1,
-        actor: polylogue_model::Author::Operator,
-        at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
-    };
-    for product in [
-        Product::Request(prepared.clone()),
-        Product::RestoredRequest {
-            prepared,
-            claims: vec![attribution.clone()],
-            current: attribution,
-        },
-    ] {
-        let write = ProductWrite {
-            product,
-            location: None,
-            parents: vec![],
-            machine: None,
-            output_index: 0,
-        };
-        assert!(matches!(
-            sinex.prepare_named_products("signal-state", std::slice::from_ref(&write)),
-            Err(crate::Error::Refused { .. })
-        ));
-        assert!(matches!(
-            sinex.prepare_products(std::slice::from_ref(&write)),
-            Err(crate::Error::Refused { .. })
-        ));
-        assert!(matches!(
-            sinex.complete_captures(&[], &[write]),
-            Err(crate::Error::Refused { .. })
-        ));
-    }
-    let mut ordinary = PreparedRequest {
-        original: None,
-        request: polylogue_store::fixture::authored::operator_request(
-            "ordinary-fixture".into(),
-            UserWrite::SetSetting {
-                key: "example".into(),
-                value: "value".into(),
-                machine: None,
-            },
-        ),
-        outcome: UserOutcome {
-            id: "ordinary-fixture".into(),
-            pending: false,
-            repeat: false,
-        },
-        effect: AuthoredEffect::default(),
-    };
-    ordinary.effect.signal_checkpoints.push(checkpoint);
-    assert!(matches!(
-        sinex.prepare_request(&ordinary),
-        Err(crate::Error::Refused { .. })
-    ));
-    assert!(
-        sinex
-            .queue()
-            .unwrap()
-            .pending_after(None, 1)
-            .unwrap()
-            .is_empty()
+    let outcome = sinex.prepare_request(&prepared).unwrap();
+    assert_eq!(outcome.id, "signal-fixture");
+    assert!(outcome.pending);
+    let mut pending = Vec::new();
+    polylogue_store::primary::Sinex::visit_pending_requests(&sinex, &mut |request| {
+        pending.push(request.clone());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        pending,
+        [polylogue_model::authored::PendingAuthored::Live { prepared }]
     );
 }

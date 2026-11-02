@@ -114,7 +114,12 @@ fn assert_custody_complete(sdk: &Sinex, path: &Path, expected: &[u8]) -> usize {
     count
 }
 
-fn assert_unverified_custody(sdk: &Sinex, archive: &Archive, path: &Path, identity: &str) {
+fn assert_custody_waits_for_confirmation(
+    sdk: &Sinex,
+    archive: &Archive,
+    path: &Path,
+    identity: &str,
+) {
     let source = sdk.pending_source(&selector(path), "").unwrap();
     assert_eq!(
         source.status,
@@ -130,12 +135,12 @@ fn assert_unverified_custody(sdk: &Sinex, archive: &Archive, path: &Path, identi
             .unwrap()
             .is_none()
     );
-    // A fresh checkout is refused by the current owner state, not an old token.
+    // While Sinex is unreachable, reads answer from the index as it stands.
     let reads = ReadPool::open(archive).unwrap();
-    assert!(matches!(
-        reads.reader(),
-        Err(polylogue_store::StoreError::ScopeChanged)
-    ));
+    assert_eq!(
+        reads.reader().unwrap().confirmed_checkpoint().unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -289,22 +294,16 @@ fn offline_empty_native_file_has_an_actual_body_and_eof_with_no_confirmed_source
         queue.acknowledge(receipt).unwrap();
     }
     drop(engine);
-    // Run the real confirmed-consumer path in writer order. The unavailable
-    // owner yields Unverified before the offline acknowledgment attempt fails.
+    // Run the real confirmed-consumer path in writer order. An unreachable
+    // Sinex fails the read without changing the read scope.
     let writer = polylogue_store::Writer::start_on_sinex(&archive, sdk.clone()).unwrap();
     assert!(matches!(
         writer.synchronize_primary(),
         Err(polylogue_store::StoreError::Sinex(_))
     ));
-    assert!(matches!(
-        original_scope.check(),
-        Err(polylogue_store::StoreError::ScopeChanged)
-    ));
-    assert!(matches!(
-        archive.scope_token(),
-        Err(polylogue_store::StoreError::ScopeChanged)
-    ));
-    assert_unverified_custody(&sdk, &archive, &path, &identity);
+    original_scope.check().unwrap();
+    archive.scope_token().unwrap();
+    assert_custody_waits_for_confirmation(&sdk, &archive, &path, &identity);
     assert_eq!(assert_custody_complete(&sdk, &path, b""), 1);
     drop(writer);
     drop(lock);
@@ -314,13 +313,9 @@ fn offline_empty_native_file_has_an_actual_body_and_eof_with_no_confirmed_source
     // Reopen uses the retained acquisition, even after the provider is gone.
     std::fs::remove_file(&path).unwrap();
     let (mut engine, archive, _lock, sdk) = open(&home);
-    assert!(matches!(
-        engine.run_pass(),
-        Err(polylogue_engine::EngineError::Store(
-            polylogue_store::StoreError::ScopeChanged
-        ))
-    ));
-    assert_unverified_custody(&sdk, &archive, &path, &identity);
+    // A pass while Sinex is unreachable is not refused by the read scope.
+    engine.run_pass().unwrap();
+    assert_custody_waits_for_confirmation(&sdk, &archive, &path, &identity);
     assert_eq!(assert_custody_complete(&sdk, &path, b""), 1);
     let pending = sdk.pending_captures().unwrap();
     let retained = pending
