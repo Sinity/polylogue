@@ -291,13 +291,22 @@ fn a_rejudged_revision_reads_its_latest_operator_judgment_everywhere() {
             },
         );
     }
-    assert_eq!(query(&d, "assertions where judged:accepted")["count"], 1);
-    assert_eq!(query(&d, "assertions where judged:rejected")["count"], 0);
     assert_eq!(
-        query(&d, "assertions where agent:true judged:unknown")["count"],
+        crate::test_answers::ok(query(&d, "assertions where judged:accepted"))["count"],
+        1
+    );
+    assert_eq!(
+        crate::test_answers::empty(query(&d, "assertions where judged:rejected"))["count"],
         0
     );
-    let grouped = query(&d, "assertions where agent:true | group by judged | count");
+    assert_eq!(
+        crate::test_answers::empty(query(&d, "assertions where agent:true judged:unknown"))["count"],
+        0
+    );
+    let grouped = crate::test_answers::ok(query(
+        &d,
+        "assertions where agent:true | group by judged | count",
+    ));
     assert_eq!(grouped["rows"][0]["judged"], "accepted", "{grouped}");
     assert_eq!(grouped["rows"][0]["count"], 1, "{grouped}");
 }
@@ -313,11 +322,14 @@ fn changes_select_assertions_by_their_kind() {
             assertions: vec![assertion(vec![session], "a lesson")],
         },
     );
-    let lessons = query(&d, "changes where assertion_kind:lesson");
+    let lessons = crate::test_answers::ok(query(&d, "changes where assertion_kind:lesson"));
     assert_eq!(lessons["count"], 1, "{lessons}");
     assert_eq!(lessons["rows"][0]["kind"], "assertion", "{lessons}");
     assert_eq!(lessons["rows"][0]["assertion_kind"], "lesson", "{lessons}");
-    assert_eq!(query(&d, "changes where assertion_kind:tag")["count"], 0);
+    assert_eq!(
+        crate::test_answers::empty(query(&d, "changes where assertion_kind:tag"))["count"],
+        0
+    );
 }
 
 #[test]
@@ -332,8 +344,11 @@ fn a_structured_value_matches_by_its_text() {
         },
     );
     assert_eq!(
-        query(&d, "assertions where value:\"use the fast path\"")["count"],
+        crate::test_answers::ok(query(&d, "assertions where value:\"use the fast path\""))["count"],
         1
     );
-    assert_eq!(query(&d, "assertions where value:\"the fast\"")["count"], 1);
+    assert_eq!(
+        crate::test_answers::ok(query(&d, "assertions where value:\"the fast\""))["count"],
+        1
+    );
 }
