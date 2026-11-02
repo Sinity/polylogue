@@ -348,16 +348,15 @@ impl Engine {
             for mut input in inputs {
                 for hash in input.blobs() {
                     cited.insert(hash);
-                    if !blobs.contains_key(&hash) {
-                        let state = self.prepare_older_blob(
+                    if let std::collections::hash_map::Entry::Vacant(slot) = blobs.entry(hash) {
+                        slot.insert(self.prepare_older_blob(
                             older,
                             &hash,
                             dry_run,
                             &mut group,
                             &mut prepared_bytes,
                             report,
-                        )?;
-                        blobs.insert(hash, state);
+                        )?);
                     }
                     if input.refusal.is_none()
                         && let Some(BlobState::Refused(reason)) = blobs.get(&hash)
@@ -731,7 +730,6 @@ impl Engine {
             Ok(())
         })?;
         write(&mut batch, report)?;
-        drop(write);
         let failures = older.vector_failures()?;
         let outcomes = match vectors.as_mut() {
             Some(vectors) => vectors.restore_failures(&failures)?,
