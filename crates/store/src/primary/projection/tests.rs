@@ -184,7 +184,7 @@ fn source_lifecycle_preserves_independent_frozen_authored_effects() {
             present
         );
         assert!(index.query_row(
-            "SELECT json_extract(value,'$.value') FROM source_assertion WHERE kind='setting' AND key='browser.actions'",
+            "SELECT json_extract(value,'$.value.value') FROM source_assertion WHERE kind='setting' AND key='browser.actions'",
             [],|row|row.get::<_,bool>(0),
         ).unwrap());
     }
@@ -269,14 +269,14 @@ fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_aut
     )
     .unwrap();
     assert_eq!(settings(&index), ["browser.actions"]);
-    let second = setting(&index, "second-request", "browser.capture");
+    let second = setting(&index, "second-request", "drive.ai-studio");
     apply(
         &mut index,
         &resolver,
         &[fact(3, "second", second), barrier(3)],
     )
     .unwrap();
-    assert_eq!(settings(&index), ["browser.actions", "browser.capture"]);
+    assert_eq!(settings(&index), ["browser.actions", "drive.ai-studio"]);
     apply(
         &mut index,
         &resolver,
@@ -292,7 +292,7 @@ fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_aut
         ],
     )
     .unwrap();
-    assert_eq!(settings(&index), ["browser.capture"]);
+    assert_eq!(settings(&index), ["drive.ai-studio"]);
     apply(
         &mut index,
         &resolver,
@@ -308,7 +308,7 @@ fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_aut
         ],
     )
     .unwrap();
-    assert_eq!(settings(&index), ["browser.actions", "browser.capture"]);
+    assert_eq!(settings(&index), ["browser.actions", "drive.ai-studio"]);
 }
 
 #[test]
