@@ -118,6 +118,7 @@ pub fn run(
         Request::Read { .. } | Request::ReadResume { .. } => ("read", None),
         Request::Outline { .. } => ("outline", None),
         Request::Changes { .. } => ("changes", None),
+        Request::Follow { query, .. } => ("follow", Some(query.clone())),
         Request::Attachment { .. } => ("attachment", None),
         Request::SchemaInfer { .. } => ("schema_infer", None),
         Request::SchemaUnread { .. } => ("schema_unread", None),

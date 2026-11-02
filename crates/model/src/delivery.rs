@@ -14,6 +14,12 @@ pub enum DeliveryEvent {
     Signal,
     /// A hint just before a tool runs.
     Advice,
+    /// An addressed message to a session.
+    Ping,
+    /// A signal rule's notice to a session.
+    Notice,
+    /// A live-session act: an answer to a pending request, an interrupt.
+    Control,
 }
 
 stored_names!(DeliveryEvent {
@@ -24,6 +30,9 @@ stored_names!(DeliveryEvent {
     Recall => "recall",
     Signal => "signal",
     Advice => "advice",
+    Ping => "ping",
+    Notice => "notice",
+    Control => "control",
 });
 
 /// What prepared a delivery.
@@ -33,12 +42,18 @@ pub enum DeliverySender {
     Hook,
     Mcp,
     Signal,
+    /// A ping, from whichever surface its author used.
+    Ping,
+    /// A live-session act from the command line, MCP or the web.
+    Act,
 }
 
 stored_names!(DeliverySender {
     Hook => "hook",
     Mcp => "mcp",
     Signal => "signal",
+    Ping => "ping",
+    Act => "act",
 });
 
 /// What happened to a delivery after it was prepared.

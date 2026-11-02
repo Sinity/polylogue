@@ -118,10 +118,11 @@ pub enum Tool {
     Context,
     Note,
     Chat,
+    Act,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 4] = [Tool::Read, Tool::Context, Tool::Note, Tool::Chat];
+    pub const ALL: [Tool; 5] = [Tool::Read, Tool::Context, Tool::Note, Tool::Chat, Tool::Act];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -129,6 +130,7 @@ impl Tool {
             Tool::Context => "polylogue_context",
             Tool::Note => "polylogue_note",
             Tool::Chat => "polylogue_chat",
+            Tool::Act => "polylogue_act",
         }
     }
 
@@ -138,22 +140,24 @@ impl Tool {
             Tool::Context => "Briefs, recall and takeovers",
             Tool::Note => "Assertions, saved queries, watches, settings",
             Tool::Chat => "Web chats via the browser extension",
+            Tool::Act => "Acts on live sessions: ping, answer, interrupt, start, hand-off",
         }
     }
 
     pub fn writes(self) -> bool {
-        matches!(self, Tool::Note | Tool::Chat)
+        matches!(self, Tool::Note | Tool::Chat | Tool::Act)
     }
 
     /// A retried `request_id` is applied once. Chat and backfill requests
-    /// start a new browser action each time.
+    /// start a new browser action each time, and acts reach a running
+    /// harness or start one.
     pub fn idempotent(self) -> bool {
-        self != Tool::Chat
+        !matches!(self, Tool::Chat | Tool::Act)
     }
 
-    /// Its operations act outside the archive (a web chat).
+    /// Its operations act outside the archive (a web chat, a harness).
     pub fn open_world(self) -> bool {
-        self == Tool::Chat
+        matches!(self, Tool::Chat | Tool::Act)
     }
 
     pub fn named(name: &str) -> Option<Tool> {
@@ -676,10 +680,12 @@ const WRITTEN: &[Command] = &[
     }),
     typed_command!(StatusOperation, crate::protocol::status::Arguments, crate::protocol::status::Answer, {
         name: "status",
-        help: "What the archive holds and what the daemon is doing",
+        help: "What the archive holds, what the daemon is doing and which sessions are running, waiting first",
         reason: "Orient the caller with measured archive and daemon state",
         latency: command_surface::LatencyClass::Status,
+        args: &[opt("line", Kind::Bool, "One line for status bars: running sessions and the longest wait")],
         action: Action::Request(requests::status),
+        output: Some(crate::cli::status_output),
         tool: Some(Tool::Read),
         http: true,
         ..CLI
@@ -1031,6 +1037,79 @@ const WRITTEN: &[Command] = &[
             cli: crate::cli::changes::run,
         },
         http: true,
+        ..CLI
+    },
+    Command {
+        name: "follow",
+        help: "Follow a session or a sessions query: one line per live-state change (`→ waiting: permission`) and per new message or tool call, until interrupted",
+        reason: "A live stream records nothing and cannot be a query's page",
+        args: &[pos("target", Kind::Words, "A session reference or a sessions query, such as `sessions where running:true`")],
+        action: Action::Stream {
+            build: requests::follow,
+            produce: crate::daemon::service::follow::produce,
+            cli: crate::cli::follow::run,
+        },
+        ..CLI
+    },
+    Command {
+        name: "ping",
+        help: "Send an addressed message to a session, or to every session a quoted query selects now (`@[sessions repo:x running:true]`): a running session gets it at its next tool result or prompt, one that ended is resumed headlessly with it. Each recipient gets one delivery; there is no undo",
+        reason: "An authored act that reaches a session through its harness",
+        args: &[
+            pos("target", Kind::Text, "A session reference, or @[QUERY] for every session the query selects now"),
+            pos("text", Kind::Words, "The message"),
+            opt("live", Kind::Bool, "Refuse rather than resume a session that is not running"),
+            opt("about", Kind::Text, "A reference the ping is about"),
+            REQUEST_ID,
+        ],
+        action: Action::Request(requests::ping),
+        tool: Some(Tool::Act),
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "answer",
+        help: "Approve or deny a session's pending permission request; --standing answers the same tool and input whenever the session asks next. The first answer wins; there is no undo",
+        reason: "An authored act on a request a session waits on",
+        args: &[
+            pos("session", Kind::Text, "The waiting session"),
+            pos("decision", Kind::Choice(&["approve", "deny"]), "approve or deny"),
+            opt("text", Kind::Text, "A reason given with the answer"),
+            opt("standing", Kind::Bool, "Answer the same tool and input next time in this session"),
+            REQUEST_ID,
+        ],
+        action: Action::Request(requests::answer),
+        tool: Some(Tool::Act),
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "interrupt",
+        help: "Stop a session's current turn, through the control connection of a session Polylogue hosts; refused otherwise",
+        reason: "An authored act that reaches a session through its harness",
+        args: &[pos("session", Kind::Text, "The session"), REQUEST_ID],
+        action: Action::Request(requests::interrupt),
+        tool: Some(Tool::Act),
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "start",
+        help: "Start a session Polylogue hosts (Codex, on its shared app-server): its approvals, questions and turns can then be answered, steered and interrupted from anywhere",
+        reason: "Starts a harness session; no query selects one that does not exist yet",
+        args: &[
+            pos("text", Kind::Words, "The first turn"),
+            opt("harness", Kind::Choice(&["codex"]), "The harness to host"),
+            opt("cwd", Kind::Text, "The working directory"),
+            REQUEST_ID,
+        ],
+        action: Action::Request(requests::start),
+        tool: Some(Tool::Act),
+        http: true,
+        writes: true,
         ..CLI
     },
     typed_command!(NoticesOperation, crate::protocol::query_aliases::Notices, crate::protocol::query::Rows, {

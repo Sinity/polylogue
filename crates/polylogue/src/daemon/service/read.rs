@@ -19,6 +19,7 @@ mod before;
 mod blobs;
 mod documents;
 mod evidence;
+mod live;
 mod object;
 mod outline;
 mod output;
@@ -488,7 +489,16 @@ fn visit(
                 &target,
                 options.inherited,
                 record_start.as_ref(),
-                &mut |record, evidence, record_position| {
+                &mut |record, mut evidence, record_position| {
+                    if options.view == View::Live
+                        && let records::SelectedRecord::Canonical(canonical) = &record
+                        && let polylogue_model::bundle::Record::Session(row) = canonical.as_ref()
+                    {
+                        let now = selection.cursor_context().clock.now.as_millisecond();
+                        evidence
+                            .cards
+                            .push(live::card(reader, &row.session.id.to_string(), now)?);
+                    }
                     polylogue_store::read::limit::ReadLimit::set_stage("read layout");
                     let at = SelectionLocator {
                         row: row_number,

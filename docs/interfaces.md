@@ -63,7 +63,7 @@ Verbs act on a query's rows.
 | `save NAME` | label the query's hash with a name | [query.md](query.md#query-objects) |
 | `watch` | write a watch rule over the query | [query.md](query.md#watches) |
 | `pack [NAME]` | build a pack under a budget and record a delivery | [agents.md](agents.md#packs) |
-| `ping TEXT`, `send TEXT`, `approve`, `deny`, `interrupt`, `resume` | address a session, or act on a live one through its harness | [agents.md](agents.md#live-sessions) |
+| `ping TEXT [--live]`, `answer approve\|deny [--standing]`, `interrupt`, `continue` | address a session, or act on a live one through its harness; `send` is `ping --live` | [agents.md](agents.md#live-session-control) |
 | `pick` | open the picker over the rows and print the chosen references, one per line | [below](#picker) |
 | `compare DIMENSION` | a comparison of the matched references | [assertions.md](assertions.md#judgment) |
 | `variant` | write a variant of a reference | [assertions.md](assertions.md#variants) |

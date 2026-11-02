@@ -491,6 +491,59 @@ pub fn changes(_: &Command, v: &Values, _: &Caller) -> Built {
     })
 }
 
+fn session_arg(v: &Values) -> Result<polylogue_model::SessionId, String> {
+    polylogue_model::SessionId::parse(&v.text("session").ok_or("a session reference is required")?)
+        .map_err(|e| e.to_string())
+}
+
+pub fn ping(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Ping {
+        request_id: v.request_id(),
+        target: v.text("target").ok_or("a session reference or @[query] is required")?,
+        text: v.text("text").ok_or("a ping needs text")?,
+        live: v.flag("live"),
+        about: v.text("about"),
+    })
+}
+
+pub fn answer(_: &Command, v: &Values, _: &Caller) -> Built {
+    let approve = match v.text("decision").as_deref() {
+        Some("approve") => true,
+        Some("deny") => false,
+        _ => return Err("answer takes approve or deny".into()),
+    };
+    Ok(Request::Answer {
+        request_id: v.request_id(),
+        session: session_arg(v)?,
+        approve,
+        text: v.text("text"),
+        standing: v.flag("standing"),
+    })
+}
+
+pub fn interrupt(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Interrupt {
+        request_id: v.request_id(),
+        session: session_arg(v)?,
+    })
+}
+
+pub fn start(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Start {
+        request_id: v.request_id(),
+        harness: v.text("harness").ok_or("start takes --harness")?,
+        cwd: std::path::PathBuf::from(v.text("cwd").ok_or("start takes --cwd")?),
+        text: v.text("text").ok_or("start needs the first turn's text")?,
+    })
+}
+
+pub fn follow(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Follow {
+        query: v.text("target").ok_or("follow takes a session reference or a sessions query")?,
+        marks: None,
+    })
+}
+
 pub fn explain(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(Request::Explain {
         subject: v.text("subject").ok_or("`subject` is required")?,

@@ -31,6 +31,18 @@ pub(super) fn answer(
         Ok(notices) => notices,
         Err(problem) => return error("internal", problem),
     };
+    let running = match reader.running(now_ms()) {
+        Ok(sessions) => crate::protocol::status::Running::Measured {
+            waiting: sessions
+                .iter()
+                .filter(|s| s.state == polylogue_model::live::LiveState::Waiting)
+                .count(),
+            sessions,
+        },
+        Err(error) => crate::protocol::status::Running::Unavailable {
+            error: error.to_string(),
+        },
+    };
     let mode = match serde_json::to_value(&d.mode).and_then(serde_json::from_value) {
         Ok(mode) => mode,
         Err(problem) => return error("internal", problem),
@@ -59,6 +71,7 @@ pub(super) fn answer(
         loop_status,
         signals,
         notices,
+        running,
         warm: d.warm.summary(),
         mode,
         currency: currency.clone(),

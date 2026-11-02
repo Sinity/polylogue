@@ -40,6 +40,6 @@ CREATE TABLE process (
 UPDATE session SET live_reparse = 1 WHERE pk IN (
   SELECT session_pk FROM event WHERE session_pk IS NOT NULL
     AND (kind LIKE 'hook~_%' ESCAPE '~' OR kind LIKE 'process~_%' ESCAPE '~'
-         OR kind LIKE 'registry~_%' ESCAPE '~'));
+         OR kind LIKE 'registry~_%' ESCAPE '~' OR kind LIKE 'git~_%' ESCAPE '~'));
 DELETE FROM derive_state WHERE name = 'session'
   AND session_pk IN (SELECT pk FROM session WHERE live_reparse = 1);

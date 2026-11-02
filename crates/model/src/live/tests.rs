@@ -364,3 +364,36 @@ fn an_instant_leaves_no_interval() {
         ]
     );
 }
+
+/// A stale session ages out: a day after its latest evidence it is ended,
+/// whether its process was seen gone mid-turn or it never had process
+/// evidence; the stale view says when.
+#[test]
+fn stale_sessions_end_a_day_after_their_latest_evidence() {
+    let (gone, _) = run(&[
+        ("hook_user_prompt_submit", 0, hook(json!({}))),
+        (
+            "process_root_gone",
+            MIN,
+            json!({"pid": 100, "start": 5000, "boot_id": "boot-a"}),
+        ),
+    ]);
+    let v = view(Some(&gone), None, 2 * MIN);
+    assert_eq!(
+        (v.state, v.since, v.until),
+        (LiveState::Stale, Some(MIN), Some(MIN + STALE_FOR_MS))
+    );
+    assert_eq!(state(&gone, MIN + STALE_FOR_MS - 1), LiveState::Stale);
+    let aged = view(Some(&gone), None, MIN + STALE_FOR_MS);
+    assert_eq!(
+        (aged.state, aged.since, aged.until),
+        (LiveState::Ended, Some(MIN + STALE_FOR_MS), None)
+    );
+    let (unobserved, _) = run(&[("hook_user_prompt_submit", 0, json!({}))]);
+    let v = view(Some(&unobserved), None, LIVE_WINDOW_MS + 1);
+    assert_eq!(
+        (v.state, v.until),
+        (LiveState::Stale, Some(STALE_FOR_MS))
+    );
+    assert_eq!(state(&unobserved, STALE_FOR_MS), LiveState::Ended);
+}

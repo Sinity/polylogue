@@ -17,11 +17,12 @@
 //! an export provides it, its events wait on a placeholder that reads do
 //! not show, and a transcript a payload carries is not read.
 //!
-//! The daemon's process watcher and harness registry readers write lines of
-//! the same shape under `process/` and `registry/`, with `route` naming
-//! them; their events are `process_<event>` and `registry_<event>` instead
-//! of `hook_<event>`, and together with hook events they are a session's
-//! live evidence (`polylogue_model::live`).
+//! The daemon's process watcher, harness registry readers and commit
+//! watcher write lines of the same shape under `process/`, `registry/` and
+//! `git/`, with `route` naming them; their events are `process_<event>`,
+//! `registry_<event>` and `git_<event>` instead of `hook_<event>`, and
+//! together with hook events they are a session's live evidence
+//! (`polylogue_model::live`).
 //!
 //! An event is one hook invocation. The producer gives each invocation its
 //! own `event_id`, so equal payloads and timestamps still name two events.
@@ -93,6 +94,7 @@ pub const LOCATIONS: &[&str] = &[
     "polylogue/hooks/*.ndjson",
     "polylogue/hooks/process/*.ndjson",
     "polylogue/hooks/registry/*.ndjson",
+    "polylogue/hooks/git/*.ndjson",
 ];
 
 fn is_spool_file(path: &Path) -> bool {
@@ -160,6 +162,7 @@ fn route_prefix(route: Option<&str>) -> Option<&'static str> {
         None | Some("hook") => Some(polylogue_model::live::HOOK_PREFIX),
         Some("process") => Some(polylogue_model::live::PROCESS_PREFIX),
         Some("registry") => Some(polylogue_model::live::REGISTRY_PREFIX),
+        Some("git") => Some(polylogue_model::live::GIT_PREFIX),
         Some(_) => None,
     }
 }

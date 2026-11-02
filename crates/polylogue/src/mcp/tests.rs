@@ -338,6 +338,7 @@ fn tool_annotations_follow_the_command_table() {
         ("polylogue_context", true),
         ("polylogue_note", false),
         ("polylogue_chat", false),
+        ("polylogue_act", false),
     ] {
         let tool = tools.iter().find(|t| t["name"] == name).unwrap();
         assert_eq!(tool["annotations"]["readOnlyHint"], read_only, "{name}");

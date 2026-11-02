@@ -81,6 +81,9 @@ enum Msg {
         Box<polylogue_model::capture::Coverage>,
         SyncSender<Result<()>>,
     ),
+    /// Sessions whose live state changed with the clock alone: each gets a
+    /// new change counter, so the change feed carries the transition.
+    LiveClock(Vec<String>, SyncSender<Result<()>>),
     /// Bytes no input holds (a chat action's attachment), as one blob.
     StoreBlob(
         Box<(crate::NewBlob, Option<crate::staging::PreparedBytes>)>,
@@ -923,6 +926,16 @@ impl WriterSender {
         coverage_via(&self.0, coverage)
     }
 
+    /// Puts sessions whose live state changed with the clock alone on the
+    /// change feed ([`crate::live`]).
+    pub fn live_clock(&self, sessions: Vec<String>) -> Result<()> {
+        let (reply, wait) = sync_channel(1);
+        self.0
+            .send(Msg::LiveClock(sessions, reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
     /// As [`Writer::capture`].
     pub fn capture(&self, identity: String) -> Result<crate::primary::Capture> {
         capture_via(&self.0, identity)
@@ -1131,6 +1144,7 @@ impl Inner {
         let mut file_groups = Vec::new();
         let mut assets = Vec::new();
         let mut coverage = Vec::new();
+        let mut live_clock = Vec::new();
         let mut confirmations = Vec::new();
         let mut synchronizations = Vec::new();
         let mut snapshots = Vec::new();
@@ -1179,6 +1193,10 @@ impl Inner {
                     }
                     Msg::Coverage(fact, reply) => {
                         coverage.push((fact, reply));
+                        false
+                    }
+                    Msg::LiveClock(sessions, reply) => {
+                        live_clock.push((sessions, reply));
                         false
                     }
                     Msg::StoreBlob(blob, reply) => {
@@ -1332,6 +1350,9 @@ impl Inner {
             for (fact, reply) in coverage.drain(..) {
                 let _ = reply.send(self.write_coverage(*fact));
             }
+            for (sessions, reply) in live_clock.drain(..) {
+                let _ = reply.send(self.write_live_clock(&sessions));
+            }
             for (query, reply) in raw_cursors.drain(..) {
                 let result = query.validate().and_then(|()| {
                     self.sinex
@@ -1389,6 +1410,25 @@ impl Inner {
             }
         }
         let _ = self.finish_build();
+    }
+
+    /// Gives each named session a new live change counter. In primary mode
+    /// the index follows the confirmed stream, which carries no clock
+    /// transitions, so nothing is written there.
+    fn write_live_clock(&mut self, sessions: &[String]) -> Result<()> {
+        if self.sinex.is_some() || sessions.is_empty() {
+            return Ok(());
+        }
+        let tx = self.index.transaction()?;
+        let counter = bump_counter(&tx)?;
+        for session in sessions {
+            tx.prepare_cached("UPDATE session SET live_changed = ?2 WHERE id = ?1")?
+                .execute(rusqlite::params![session, counter])?;
+        }
+        crate::write_lock::commit(tx)?;
+        self.commits.committed();
+        self.report.transactions += 1;
+        Ok(())
     }
 
     fn write_coverage(&mut self, coverage: polylogue_model::capture::Coverage) -> Result<()> {

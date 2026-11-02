@@ -232,3 +232,187 @@ fn the_registry_reader_writes_each_change_once_with_the_file_whole() {
     write("blocked");
     assert_eq!(r.read(now(), identity)[0]["payload"]["status"], "blocked");
 }
+
+/// A stand-in for `codex app-server proxy`: answers `thread/loaded/list`
+/// from the file `threads` and `thread/read` from the file `status` beside
+/// it, and every other request with an empty result.
+fn fake_codex(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let program = dir.join("codex");
+    std::fs::write(
+        &program,
+        r#"#!/bin/sh
+dir=$(dirname "$0")
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  [ -z "$id" ] && continue
+  case "$line" in
+    *'"thread/loaded/list"'*) printf '{"id":%s,"result":{"data":%s,"nextCursor":null}}\n' "$id" "$(cat "$dir/threads")" ;;
+    *'"thread/read"'*) printf '{"id":%s,"result":{"thread":{"status":%s}}}\n' "$id" "$(cat "$dir/status")" ;;
+    *) printf '{"id":%s,"result":{}}\n' "$id" ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    program
+}
+
+/// The Codex status reader writes one registry line per thread status
+/// change, the status object whole, `notLoaded` when a thread leaves the
+/// loaded list, and nothing while the control socket is absent.
+#[test]
+fn the_codex_reader_writes_each_thread_status_change_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = fake_codex(dir.path());
+    let socket = dir.path().join("app-server-control.sock");
+    let thread = "0199a1b2-3c4d-7e8f-9012-345678901234";
+    let set = |threads: &str, status: &str| {
+        std::fs::write(dir.path().join("threads"), threads).unwrap();
+        std::fs::write(dir.path().join("status"), status).unwrap();
+    };
+    let words = |lines: &[Value]| -> Vec<(String, String)> {
+        lines
+            .iter()
+            .map(|l| {
+                assert_eq!(l["route"], "registry");
+                assert_eq!(l["provider"], "codex");
+                (
+                    l["session_id"].as_str().unwrap().to_owned(),
+                    l["payload"]["status"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    };
+    let mut reader = CodexStatus::new(program, socket.clone());
+    set(&format!(r#"["{thread}"]"#), r#"{"type":"idle"}"#);
+    // No control socket: no connection and no lines.
+    assert!(reader.read(now()).is_empty());
+    std::fs::write(&socket, "").unwrap();
+    assert_eq!(
+        words(&reader.read(now())),
+        vec![(thread.to_owned(), "idle".to_owned())]
+    );
+    assert!(reader.read(now()).is_empty(), "no change, no line");
+    set(
+        &format!(r#"["{thread}"]"#),
+        r#"{"type":"active","activeFlags":["waitingOnApproval"]}"#,
+    );
+    let lines = reader.read(now());
+    assert_eq!(
+        words(&lines),
+        vec![(thread.to_owned(), "waitingOnApproval".to_owned())]
+    );
+    assert_eq!(
+        lines[0]["payload"]["registry"]["status"]["activeFlags"][0],
+        "waitingOnApproval"
+    );
+    set("[]", r#"{"type":"idle"}"#);
+    assert_eq!(
+        words(&reader.read(now())),
+        vec![(thread.to_owned(), "notLoaded".to_owned())]
+    );
+    std::fs::remove_file(&socket).unwrap();
+    assert!(reader.read(now()).is_empty());
+}
+
+/// The live clock announces each passed `until` once, waits for the next
+/// one, and forgets an instant once the session's next `until` moved on.
+#[test]
+fn the_live_clock_announces_each_transition_once() {
+    let mut clock = LiveClock::default();
+    let untils = vec![("a".to_owned(), 100), ("b".to_owned(), 250)];
+    assert_eq!(
+        clock.due(&untils, 50),
+        (vec![], Some(Duration::from_millis(50)))
+    );
+    assert_eq!(
+        clock.due(&untils, 100),
+        (vec!["a".to_owned()], Some(Duration::from_millis(150)))
+    );
+    // Not again while the stored state has not moved on.
+    assert_eq!(clock.due(&untils, 120).0, Vec::<String>::new());
+    // The counter moved `a` on to its next instant.
+    let moved = vec![("a".to_owned(), 400), ("b".to_owned(), 250)];
+    assert_eq!(
+        clock.due(&moved, 260),
+        (vec!["b".to_owned()], Some(Duration::from_millis(140)))
+    );
+    assert_eq!(clock.due(&[], 1000), (vec![], None));
+}
+
+fn git_in(repo: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "-c",
+            "user.name=Example",
+            "-c",
+            "user.email=example@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+/// law: pl.live.footprint-commit
+/// A commit in a session's worktree that contains files of its footprint
+/// writes one line naming exactly those files; a file the commit does not
+/// contain stays, and a step with no commit writes nothing.
+#[test]
+fn a_commit_in_the_worktree_names_the_footprint_files_it_contains() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    git_in(&repo, &["init", "--initial-branch=main"]);
+    git_in(&repo, &["commit", "--allow-empty", "-m", "root"]);
+    let a = repo.join("src/a.rs");
+    let b = repo.join("src/b.rs");
+    std::fs::write(&a, "a").unwrap();
+    std::fs::write(&b, "b").unwrap();
+    let footprint = polylogue_store::LiveFootprint {
+        session: "claude-code:edits".into(),
+        cwd: repo.join("src").display().to_string(),
+        // One absolute path, one relative to the working directory.
+        files: vec![a.display().to_string(), "b.rs".into()],
+    };
+    let mut watcher = CommitWatcher::default();
+    // First sight records HEAD; nothing has been committed since.
+    assert!(watcher.read(std::slice::from_ref(&footprint), now()).is_empty());
+    assert!(watcher.read(std::slice::from_ref(&footprint), now()).is_empty());
+    git_in(&repo, &["add", "src/a.rs"]);
+    git_in(&repo, &["commit", "-m", "a"]);
+    let lines = watcher.read(std::slice::from_ref(&footprint), now());
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["route"], "git");
+    assert_eq!(lines[0]["event"], "Commit");
+    assert_eq!(lines[0]["payload"]["files"], json!([a.display().to_string()]));
+    assert!(watcher.read(std::slice::from_ref(&footprint), now()).is_empty());
+    git_in(&repo, &["add", "src/b.rs"]);
+    git_in(&repo, &["commit", "-m", "b"]);
+    let lines = watcher.read(std::slice::from_ref(&footprint), now());
+    assert_eq!(lines[0]["payload"]["files"], json!(["b.rs"]));
+    // The fold takes the named files out of the footprint.
+    let mut facts = polylogue_model::live::LiveFacts::default();
+    facts.footprint.insert("b.rs".into());
+    facts.footprint.insert("c.rs".into());
+    polylogue_model::live::fold(&mut facts, "git_commit", 1, &lines[0]["payload"]);
+    assert_eq!(facts.footprint.into_iter().collect::<Vec<_>>(), ["c.rs"]);
+}
+
+#[test]
+fn commit_lists_parse_into_commits_and_files() {
+    let text = "\u{0}aaa\n\nsrc/a.rs\nsrc/b.rs\n\u{0}bbb\n\n";
+    assert_eq!(
+        parse_commits(text),
+        vec![
+            ("aaa".to_owned(), vec!["src/a.rs".to_owned(), "src/b.rs".to_owned()]),
+            ("bbb".to_owned(), vec![])
+        ]
+    );
+}

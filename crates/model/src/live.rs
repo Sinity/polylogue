@@ -1,8 +1,9 @@
 //! Live state: what a session is doing now, folded from evidence.
 //!
 //! Every live fact comes from stored inputs: hook lines (route `hook`),
-//! the daemon's process watcher (route `process`) and harness registries
-//! (route `registry`). [`fold`] applies one piece of evidence to a
+//! the daemon's process watcher (route `process`), harness registries
+//! (route `registry`) and commits seen in a session's worktree (route
+//! `git`). [`fold`] applies one piece of evidence to a
 //! session's [`LiveFacts`] and returns the intervals it closed; folding the
 //! stored evidence of a session in (time, line) order always gives the same
 //! facts and the same intervals, so a rebuild reproduces every past state.
@@ -14,6 +15,8 @@ use crate::Json;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+pub mod channel;
+
 #[cfg(test)]
 mod tests;
 
@@ -24,6 +27,10 @@ mod tests;
 pub const LIVE_WINDOW_MS: i64 = 15 * 60 * 1000;
 /// A tool call open this long is a `long_call` stall.
 pub const LONG_CALL_MS: i64 = 30 * 60 * 1000;
+/// The live table holds sessions with a live root process or evidence in
+/// the last day: a `stale` session whose latest evidence is this old is
+/// `ended`, so stale sessions age out rather than accumulate.
+pub const STALE_FOR_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// The live state shown for a session at an instant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +180,17 @@ pub struct OpenCall {
     pub at: i64,
 }
 
+/// A permission request a session waits on: the tool and its input,
+/// which an answer given ahead ("the same tool and input next time")
+/// matches exactly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingRequest {
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "Json::is_null")]
+    pub input: Json,
+    pub at: i64,
+}
+
 /// A harness registry's own word for a session's status, verbatim.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HarnessStatus {
@@ -220,6 +238,9 @@ pub struct LiveFacts {
     pub harness_status: Option<HarnessStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_call: Option<OpenCall>,
+    /// The permission request the session waits on, as the hook saw it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_request: Option<PendingRequest>,
     /// A stall the evidence states (rate limit, API error).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stall: Option<Since<Stall>>,
@@ -274,12 +295,14 @@ pub struct LiveInterval {
 pub const HOOK_PREFIX: &str = "hook_";
 pub const PROCESS_PREFIX: &str = "process_";
 pub const REGISTRY_PREFIX: &str = "registry_";
+pub const GIT_PREFIX: &str = "git_";
 
 /// Whether an event of this kind is live evidence.
 pub fn is_evidence(kind: &str) -> bool {
     kind.starts_with(HOOK_PREFIX)
         || kind.starts_with(PROCESS_PREFIX)
         || kind.starts_with(REGISTRY_PREFIX)
+        || kind.starts_with(GIT_PREFIX)
 }
 
 /// Tools whose structured input names the one file they change.
@@ -395,12 +418,14 @@ impl LiveFacts {
     /// The turn moved on: no wait, no stall.
     fn resume_work(&mut self, at: i64) {
         self.hook_waiting_on = None;
+        self.pending_request = None;
         self.stall = None;
         self.set_activity(Activity::Working, at);
     }
 
     fn stop(&mut self, at: i64) {
         self.hook_waiting_on = None;
+        self.pending_request = None;
         self.open_call = None;
         self.set_activity(Activity::Idle, at);
     }
@@ -470,7 +495,18 @@ impl LiveFacts {
                     self.footprint.extend(edited_paths(data));
                 }
             }
-            "permission_request" => self.set_waiting(WaitingOn::Permission, at),
+            "permission_request" => {
+                self.set_waiting(WaitingOn::Permission, at);
+                self.pending_request = Some(PendingRequest {
+                    tool: data
+                        .get("tool_name")
+                        .and_then(Json::as_str)
+                        .unwrap_or("")
+                        .to_owned(),
+                    input: data.get("tool_input").cloned().unwrap_or(Json::Null),
+                    at,
+                });
+            }
             "permission_denied" | "elicitation_result" => self.resume_work(at),
             "elicitation" => self.set_waiting(WaitingOn::Question, at),
             "notification" => match data.get("notification_type").and_then(Json::as_str) {
@@ -500,6 +536,7 @@ impl LiveFacts {
             "session_end" => {
                 self.ended_at = Some(at);
                 self.open_call = None;
+                self.pending_request = None;
                 self.open_subagents = 0;
                 self.footprint.clear();
             }
@@ -524,6 +561,23 @@ impl LiveFacts {
             self.root_gone_at = Some(at);
             self.open_call = None;
             self.footprint.clear();
+        }
+    }
+
+    /// A commit in the session's worktree, with the files it contains:
+    /// those leave the footprint, since they are no longer uncommitted.
+    fn apply_git(&mut self, event: &str, data: &Json) {
+        if event != "commit" {
+            return;
+        }
+        for path in data
+            .get("files")
+            .and_then(Json::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Json::as_str)
+        {
+            self.footprint.remove(path);
         }
     }
 
@@ -630,6 +684,8 @@ pub fn fold(facts: &mut LiveFacts, kind: &str, at: i64, data: &Json) -> Vec<Live
         facts.apply_process(event, at, data);
     } else if kind.starts_with(REGISTRY_PREFIX) {
         facts.apply_registry(at, data);
+    } else if let Some(event) = kind.strip_prefix(GIT_PREFIX) {
+        facts.apply_git(event, data);
     } else {
         return Vec::new();
     }
@@ -693,35 +749,42 @@ pub fn view(facts: Option<&LiveFacts>, grew_at: Option<i64>, now: i64) -> LiveVi
             ..ended(Some(at))
         };
     }
+    let last = facts.last_at.unwrap_or(i64::MIN).min(now);
+    // A stale session is ended once its latest evidence is a day old.
+    let aged_out = last.saturating_add(STALE_FOR_MS);
+    let stale = |since: i64| {
+        if now >= aged_out {
+            LiveView {
+                process_alive,
+                ..ended(Some(aged_out))
+            }
+        } else {
+            LiveView {
+                state: LiveState::Stale,
+                since: Some(since),
+                until: Some(aged_out),
+                waiting_on: None,
+                stall: None,
+                process_alive,
+            }
+        }
+    };
     if let Some(gone) = facts.root_gone_at {
         // Gone after a stop is an end; gone mid-turn is stale.
         let stopped = facts.hook_activity.map(|a| a.value) == Some(Activity::Idle)
             && facts.hook_waiting_on.is_none();
-        return LiveView {
-            state: if stopped {
-                LiveState::Ended
-            } else {
-                LiveState::Stale
-            },
-            since: Some(gone),
-            until: None,
-            waiting_on: None,
-            stall: None,
-            process_alive,
-        };
+        if stopped {
+            return LiveView {
+                process_alive,
+                ..ended(Some(gone))
+            };
+        }
+        return stale(gone);
     }
-    let last = facts.last_at.unwrap_or(i64::MIN).min(now);
     // Without process evidence, hook evidence holds only for the window.
     let window_end = facts.root.is_none().then(|| last + LIVE_WINDOW_MS + 1);
-    if window_end.is_some_and(|end| now >= end) {
-        return LiveView {
-            state: LiveState::Stale,
-            since: window_end,
-            until: None,
-            waiting_on: None,
-            stall: None,
-            process_alive,
-        };
+    if let Some(end) = window_end.filter(|end| now >= *end) {
+        return stale(end);
     }
     let shown = facts.shown();
     let state = match shown.map(|(a, _)| a) {

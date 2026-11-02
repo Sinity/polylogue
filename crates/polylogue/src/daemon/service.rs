@@ -32,6 +32,8 @@ pub struct Daemon {
     pub(crate) warm: super::warm::Warm,
     /// User writes (notes, deliveries, settings) through the one writer.
     pub(crate) writes: Option<WriterSender>,
+    /// Live-session acts: the mailbox, resumed runs and hosted sessions.
+    pub(crate) acts: crate::live_acts::Acts,
     mode: ModeState,
     loop_tx: Mutex<Sender<LoopMsg>>,
     pub(crate) status: Arc<Mutex<LoopStatus>>,
@@ -354,7 +356,7 @@ fn writer(d: &Daemon) -> Result<&WriterSender, Failure> {
     d.writes.as_ref().ok_or_else(|| d.mode.write_refusal())
 }
 
-fn authored_preparation() -> user_writes::PreparationContext {
+pub(crate) fn authored_preparation() -> user_writes::PreparationContext {
     user_writes::PreparationContext::new(
         polylogue_sources::origin::ORIGINS
             .iter()
@@ -646,6 +648,16 @@ fn handle_inner(
             "bad_request",
             "the change feed uses the finite socket stream",
         ),
+        Request::Follow { .. } => error("bad_request", "follow uses the socket stream"),
+        Request::Ping { .. }
+        | Request::Claim { .. }
+        | Request::Answer { .. }
+        | Request::Permission { .. }
+        | Request::Interrupt { .. }
+        | Request::Start { .. } => {
+            drop(reader);
+            acts::handle(request, d, invocation)
+        }
         Request::Explain {
             subject,
             expression,
@@ -1824,6 +1836,17 @@ pub fn start(
             settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
         ),
         warm: super::warm::Warm::default(),
+        acts: crate::live_acts::Acts::new(
+            crate::mailbox::dir(&archive.root),
+            polylogue_sources::origin::by_name("codex")
+                .map(|origin| {
+                    settings
+                        .root(origin.root)
+                        .join("app-server-control/app-server-control.sock")
+                })
+                .unwrap_or_default(),
+            "codex".into(),
+        ),
         writes,
         mode,
         loop_tx: Mutex::new(tx.clone()),
@@ -1837,6 +1860,19 @@ pub fn start(
         #[cfg(test)]
         read_limits: Mutex::new(None),
     });
+    daemon.acts.bind(Arc::downgrade(&daemon));
+    // Pings and notices left pending raise their sessions' mailbox flags.
+    if let Ok(sessions) = daemon
+        .reads
+        .reader()
+        .and_then(|r| r.sessions_with_pending_hook_deliveries())
+    {
+        for session in sessions {
+            if let Ok(session) = polylogue_model::SessionId::parse(&session) {
+                let _ = crate::mailbox::raise(daemon.acts.mail(), &session);
+            }
+        }
+    }
     let operations = Arc::new(crate::protocol::operations::table(Arc::clone(&daemon)));
     assert!(
         daemon.operations.set(Arc::downgrade(&operations)).is_ok(),
@@ -1956,6 +1992,8 @@ pub fn start(
         claude_sessions: polylogue_sources::origin::by_name("claude-code")
             .map(|origin| settings.root(origin.root).join("sessions"))
             .unwrap_or_default(),
+        codex_socket: runtime.daemon.acts.codex_socket.clone(),
+        codex_program: runtime.daemon.acts.codex_program.clone(),
     };
     let clock = settings.clock.clone();
     runtime.live_evidence = Some(
@@ -1996,4 +2034,6 @@ pub(crate) mod read;
 #[cfg(test)]
 mod tests;
 
+pub(crate) mod acts;
 mod feeds;
+pub(crate) mod follow;

@@ -793,7 +793,7 @@ fn sessions_live_rank(a: &Aliases, now: i64) -> String {
 /// Peers: the other sessions working, waiting or idle in the same
 /// repository (by its identity) or, when either has no repository
 /// identity, in the same working directory. Symmetric by construction.
-fn sessions_peers(a: &Aliases, now: i64) -> String {
+pub(crate) fn sessions_peers(a: &Aliases, now: i64) -> String {
     let s = &a.s;
     let active = |x: &str| format!("{} IN ('working', 'waiting', 'idle')", live_state(x, now));
     format!(

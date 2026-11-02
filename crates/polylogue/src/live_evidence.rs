@@ -1,5 +1,6 @@
-//! The daemon's live evidence writers: the process watcher and the harness
-//! registry reader. Both append lines to the hook spool's `process/` and
+//! The daemon's live evidence writers: the process watcher, the harness
+//! registry readers and the commit watcher; and the live clock, which puts transitions that come
+//! from the passage of time alone on the change feed. Both append lines to the hook spool's `process/` and
 //! `registry/` directories, which the daemon then reads like any other
 //! growing input, so everything they observe is a stored input that a
 //! rebuild folds again.
@@ -14,9 +15,12 @@
 //! written. With no roots nothing under `/proc` is read, and `environ` is
 //! never opened.
 //!
-//! **Registry reader.** Claude Code keeps one `sessions/<pid>.json` per
+//! **Registry readers.** Claude Code keeps one `sessions/<pid>.json` per
 //! process with its own status word; each change of a file is written as
 //! one `Status` line carrying the file whole, plus the process identity.
+//! Codex runs its sessions on a shared app-server; while its control socket
+//! exists, each change of a loaded thread's status is written as one
+//! `ThreadStatus` line carrying the status object whole.
 
 use polylogue_model::SessionId;
 use polylogue_model::live::ProcessIdentity;
@@ -44,6 +48,9 @@ pub(crate) struct Paths {
     pub spool: PathBuf,
     /// Claude Code's per-process registry directory.
     pub claude_sessions: PathBuf,
+    /// Codex's app-server control socket, and the program that proxies it.
+    pub codex_socket: PathBuf,
+    pub codex_program: PathBuf,
 }
 
 /// What `/proc/<pid>/stat` says about a process.
@@ -519,6 +526,431 @@ impl Registry {
     }
 }
 
+/// How long the Codex status reader waits for one answer from the
+/// app-server before it drops the connection and connects again later.
+const CODEX_ANSWER: Duration = Duration::from_secs(2);
+
+/// A JSON-RPC connection to Codex's shared app-server through `codex
+/// app-server proxy`, which carries newline-delimited JSON between its
+/// stdio and the daemon's control socket.
+pub(crate) struct CodexConnection {
+    child: std::process::Child,
+    input: std::process::ChildStdin,
+    lines: Receiver<Value>,
+    next_id: u64,
+    /// Notifications and server requests that arrived while an answer was
+    /// awaited, in arrival order.
+    pending: Vec<Value>,
+}
+
+impl CodexConnection {
+    /// Starts `program app-server proxy --sock SOCKET` and initializes the
+    /// session.
+    pub(crate) fn open(program: &Path, socket: &Path) -> std::io::Result<Self> {
+        use std::io::BufRead;
+        use std::process::{Command, Stdio};
+        let mut child = Command::new(program)
+            .args(["app-server", "proxy", "--sock"])
+            .arg(socket)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let input = child.stdin.take().expect("piped stdin");
+        let output = child.stdout.take().expect("piped stdout");
+        let (sender, lines) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("polylogue-codex".into())
+            .spawn(move || {
+                for line in std::io::BufReader::new(output).lines() {
+                    let Ok(line) = line else { return };
+                    if let Ok(value) = serde_json::from_str::<Value>(&line)
+                        && sender.send(value).is_err()
+                    {
+                        return;
+                    }
+                }
+            })?;
+        let mut connection = Self {
+            child,
+            input,
+            lines,
+            next_id: 0,
+            pending: Vec::new(),
+        };
+        connection.call(
+            "initialize",
+            json!({"clientInfo": {"name": "polylogue", "version": env!("CARGO_PKG_VERSION")}}),
+        )?;
+        connection.notify("initialized", Value::Null)?;
+        Ok(connection)
+    }
+
+    fn send(&mut self, message: &Value) -> std::io::Result<()> {
+        let mut bytes = serde_json::to_vec(message)?;
+        bytes.push(b'\n');
+        self.input.write_all(&bytes)?;
+        self.input.flush()
+    }
+
+    pub(crate) fn notify(&mut self, method: &str, params: Value) -> std::io::Result<()> {
+        let mut message = json!({"jsonrpc": "2.0", "method": method});
+        if !params.is_null() {
+            message["params"] = params;
+        }
+        self.send(&message)
+    }
+
+    /// Sends a request and waits for its answer; messages that arrive
+    /// meanwhile are kept for [`Self::take_pending`].
+    pub(crate) fn call(&mut self, method: &str, params: Value) -> std::io::Result<Value> {
+        self.next_id += 1;
+        let id = self.next_id;
+        self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
+        let deadline = Instant::now() + CODEX_ANSWER;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let message = self.lines.recv_timeout(left).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("codex app-server did not answer {method}"),
+                )
+            })?;
+            if message.get("id").and_then(Value::as_u64) == Some(id)
+                && message.get("method").is_none()
+            {
+                if let Some(error) = message.get("error") {
+                    return Err(std::io::Error::other(format!(
+                        "codex app-server refused {method}: {error}"
+                    )));
+                }
+                return Ok(message.get("result").cloned().unwrap_or(Value::Null));
+            }
+            self.pending.push(message);
+        }
+    }
+
+    /// Answers a request the app-server sent.
+    pub(crate) fn answer(&mut self, id: &Value, result: Value) -> std::io::Result<()> {
+        self.send(&json!({"jsonrpc": "2.0", "id": id, "result": result}))
+    }
+
+    /// The notifications and server requests received so far.
+    pub(crate) fn take_pending(&mut self) -> Vec<Value> {
+        while let Ok(message) = self.lines.try_recv() {
+            self.pending.push(message);
+        }
+        std::mem::take(&mut self.pending)
+    }
+}
+
+impl Drop for CodexConnection {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The word a Codex thread status states: the first active flag
+/// (`waitingOnApproval`, `waitingOnUserInput`), else its type (`active`,
+/// `idle`, `systemError`, `notLoaded`).
+pub(crate) fn codex_status_word(status: &Value) -> Option<String> {
+    status
+        .get("activeFlags")
+        .and_then(Value::as_array)
+        .and_then(|flags| flags.first())
+        .or_else(|| status.get("type"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+/// The Codex status reader: while Codex's app-server control socket
+/// exists, it lists the loaded threads and their statuses and writes one
+/// registry line per thread whose status changed, the status object whole.
+/// A thread that leaves the loaded list is written `notLoaded`.
+pub(crate) struct CodexStatus {
+    program: PathBuf,
+    socket: PathBuf,
+    connection: Option<CodexConnection>,
+    seen: BTreeMap<String, Value>,
+}
+
+impl CodexStatus {
+    pub(crate) fn new(program: PathBuf, socket: PathBuf) -> Self {
+        Self {
+            program,
+            socket,
+            connection: None,
+            seen: BTreeMap::new(),
+        }
+    }
+
+    /// Lines for thread statuses that changed since the last read.
+    pub(crate) fn read(&mut self, now: jiff::Timestamp) -> Vec<Value> {
+        if !self.socket.exists() {
+            self.connection = None;
+            return self.forget_all(now);
+        }
+        if self.connection.is_none() {
+            self.connection = CodexConnection::open(&self.program, &self.socket).ok();
+        }
+        let Some(connection) = self.connection.as_mut() else {
+            return Vec::new();
+        };
+        match Self::statuses(connection) {
+            Ok(current) => self.changes(current, now),
+            Err(_) => {
+                // A dead or silent app-server: connect again on the next read.
+                self.connection = None;
+                Vec::new()
+            }
+        }
+    }
+
+    /// Every loaded thread's status now, by thread ID.
+    fn statuses(connection: &mut CodexConnection) -> std::io::Result<BTreeMap<String, Value>> {
+        let mut threads = Vec::new();
+        let mut cursor = Value::Null;
+        loop {
+            let page = connection.call("thread/loaded/list", json!({"cursor": cursor}))?;
+            threads.extend(
+                page.get("data")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned),
+            );
+            match page.get("nextCursor") {
+                Some(next) if next.is_string() => cursor = next.clone(),
+                _ => break,
+            }
+        }
+        let mut out = BTreeMap::new();
+        for thread in threads {
+            let read = connection.call(
+                "thread/read",
+                json!({"threadId": thread, "includeTurns": false}),
+            )?;
+            if let Some(status) = read.pointer("/thread/status") {
+                out.insert(thread, status.clone());
+            }
+        }
+        // Status changes announced meanwhile are already in the reads.
+        connection.take_pending();
+        Ok(out)
+    }
+
+    fn changes(&mut self, current: BTreeMap<String, Value>, now: jiff::Timestamp) -> Vec<Value> {
+        let mut out = Vec::new();
+        for (thread, status) in &current {
+            if self.seen.get(thread) != Some(status)
+                && let Some(line) = codex_line(thread, status, now)
+            {
+                out.push(line);
+            }
+        }
+        for thread in self.seen.keys() {
+            if !current.contains_key(thread)
+                && let Some(line) = codex_line(thread, &json!({"type": "notLoaded"}), now)
+            {
+                out.push(line);
+            }
+        }
+        self.seen = current;
+        out
+    }
+
+    fn forget_all(&mut self, now: jiff::Timestamp) -> Vec<Value> {
+        self.changes(BTreeMap::new(), now)
+    }
+}
+
+fn codex_line(thread: &str, status: &Value, now: jiff::Timestamp) -> Option<Value> {
+    let session = SessionId::parse(&format!("codex:{thread}")).ok()?;
+    let word = codex_status_word(status)?;
+    Some(line(
+        "registry",
+        "ThreadStatus",
+        &session,
+        now,
+        json!({"status": word, "registry": {"threadId": thread, "status": status}}),
+    ))
+}
+
+/// Runs git in `top` and returns its output when it succeeds.
+fn git(top: &Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("--no-optional-locks")
+        .arg("-C")
+        .arg(top)
+        .args(args)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8(output.stdout).ok())
+        .flatten()
+}
+
+/// The reflog of a worktree's HEAD, which Git appends to on every commit:
+/// `.git/logs/HEAD`, or for a linked worktree, in the directory its `.git`
+/// file names.
+fn head_log(top: &Path) -> Option<PathBuf> {
+    let dot_git = top.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git.join("logs/HEAD"));
+    }
+    let text = std::fs::read_to_string(&dot_git).ok()?;
+    let dir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
+    Some(if dir.is_absolute() { dir } else { top.join(dir) }.join("logs/HEAD"))
+}
+
+/// One watched worktree: its reflog's modification time and HEAD when last
+/// read.
+struct Worktree {
+    modified: Option<SystemTime>,
+    head: Option<String>,
+}
+
+/// The commit watcher: for the worktrees of running sessions with a
+/// footprint, it notices HEAD moving (the reflog changes; one `stat` per
+/// worktree per step), lists the new commits with their files, and writes
+/// one `Commit` line per session whose footprint a commit contains, naming
+/// those files. The fold takes them out of the footprint. No command text
+/// is read; the files come from Git.
+#[derive(Default)]
+pub(crate) struct CommitWatcher {
+    worktrees: BTreeMap<PathBuf, Worktree>,
+}
+
+impl CommitWatcher {
+    pub(crate) fn read(
+        &mut self,
+        footprints: &[polylogue_store::LiveFootprint],
+        now: jiff::Timestamp,
+    ) -> Vec<Value> {
+        let mut by_worktree: BTreeMap<PathBuf, Vec<&polylogue_store::LiveFootprint>> =
+            BTreeMap::new();
+        for footprint in footprints {
+            if let Some(top) =
+                polylogue_engine::repo_lookup::repository_of(Path::new(&footprint.cwd))
+            {
+                by_worktree.entry(top).or_default().push(footprint);
+            }
+        }
+        self.worktrees.retain(|top, _| by_worktree.contains_key(top));
+        let mut out = Vec::new();
+        for (top, sessions) in by_worktree {
+            let modified = head_log(&top)
+                .and_then(|log| std::fs::metadata(log).ok())
+                .and_then(|m| m.modified().ok());
+            let Some(seen) = self.worktrees.get_mut(&top) else {
+                let head = git(&top, &["rev-parse", "HEAD"]).map(|h| h.trim().to_owned());
+                self.worktrees.insert(top, Worktree { modified, head });
+                continue;
+            };
+            if seen.modified == modified {
+                continue;
+            }
+            seen.modified = modified;
+            let head = git(&top, &["rev-parse", "HEAD"]).map(|h| h.trim().to_owned());
+            if head == seen.head {
+                continue;
+            }
+            let commits = match (&seen.head, &head) {
+                (Some(old), Some(new)) => git(
+                    &top,
+                    &["log", "--format=%x00%H", "--name-only", &format!("{old}..{new}")],
+                )
+                .map(|text| parse_commits(&text))
+                .unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            seen.head = head;
+            for (commit, files) in commits {
+                let files: BTreeSet<PathBuf> = files.iter().map(|f| top.join(f)).collect();
+                for footprint in &sessions {
+                    let cwd = Path::new(&footprint.cwd);
+                    let contained: Vec<&String> = footprint
+                        .files
+                        .iter()
+                        .filter(|path| {
+                            let path = Path::new(path.as_str());
+                            files.contains(path) || files.contains(&cwd.join(path))
+                        })
+                        .collect();
+                    if contained.is_empty() {
+                        continue;
+                    }
+                    let Ok(session) = SessionId::parse(&footprint.session) else {
+                        continue;
+                    };
+                    out.push(line(
+                        "git",
+                        "Commit",
+                        &session,
+                        now,
+                        json!({"commit": commit, "worktree": top, "files": contained}),
+                    ));
+                }
+            }
+        }
+        out
+    }
+}
+
+/// `git log --format=%x00%H --name-only` output as (commit, files).
+pub(crate) fn parse_commits(text: &str) -> Vec<(String, Vec<String>)> {
+    text.split('\0')
+        .filter_map(|chunk| {
+            let mut lines = chunk.lines().map(str::trim).filter(|l| !l.is_empty());
+            let commit = lines.next()?.to_owned();
+            Some((commit, lines.map(str::to_owned).collect()))
+        })
+        .collect()
+}
+
+/// The live clock: sessions whose `live_until` has passed changed state
+/// with no new evidence, and each such transition is put on the change
+/// feed once, so followers see it without polling.
+#[derive(Default)]
+pub(crate) struct LiveClock {
+    announced: BTreeSet<(String, i64)>,
+}
+
+impl LiveClock {
+    /// From every session's next `until`, the sessions whose transition
+    /// is due now and not yet announced, and how long until the next one.
+    pub(crate) fn due(
+        &mut self,
+        untils: &[(String, i64)],
+        now_ms: i64,
+    ) -> (Vec<String>, Option<Duration>) {
+        let current: BTreeSet<(String, i64)> = untils.iter().cloned().collect();
+        self.announced.retain(|k| current.contains(k));
+        let mut due = Vec::new();
+        let mut next: Option<i64> = None;
+        for (session, until) in untils {
+            if *until <= now_ms {
+                if self.announced.insert((session.clone(), *until)) {
+                    due.push(session.clone());
+                }
+            } else {
+                next = Some(next.map_or(*until, |n| n.min(*until)));
+            }
+        }
+        let wait = next.map(|n| Duration::from_millis(u64::try_from(n - now_ms).unwrap_or(0)));
+        (due, wait)
+    }
+}
+
 /// Runs both writers until `stop` fires.
 pub(crate) fn run(
     daemon: std::sync::Arc<crate::daemon::service::Daemon>,
@@ -531,6 +963,9 @@ pub(crate) fn run(
     };
     let mut watcher = Watcher::new(PathBuf::from("/proc"), boot.clone(), boot_time_ms());
     let mut registry = Registry::new(paths.claude_sessions.clone());
+    let mut codex = CodexStatus::new(paths.codex_program.clone(), paths.codex_socket.clone());
+    let mut live_clock = LiveClock::default();
+    let mut commits = CommitWatcher::default();
     loop {
         let now = clock.now();
         let mut process_lines = Vec::new();
@@ -539,11 +974,36 @@ pub(crate) fn run(
         }
         process_lines.extend(watcher.sample(now));
         let _ = append(&paths.spool, "process", &boot, &process_lines);
-        let registry_lines = registry.read(now, identity);
+        let mut registry_lines = registry.read(now, identity);
+        registry_lines.extend(codex.read(now));
         let _ = append(&paths.spool, "registry", &boot, &registry_lines);
-        // Wake for the next sample, a root's exit, new roots (at most a
-        // second later) or the stop signal.
-        let wake = watcher.next_wake().min(SAMPLE_OPEN_CALL);
+        if let Ok(footprints) = daemon
+            .reads
+            .reader()
+            .and_then(|r| r.live_footprints(now.as_millisecond()))
+        {
+            let _ = append(&paths.spool, "git", &boot, &commits.read(&footprints, now));
+        }
+        let mut clock_wait = None;
+        if let Ok(untils) = daemon
+            .reads
+            .reader()
+            .and_then(|r| r.live_untils(now.as_millisecond()))
+        {
+            let (due, wait) = live_clock.due(&untils, now.as_millisecond());
+            clock_wait = wait;
+            if let Some(writes) = daemon.writes.as_ref()
+                && !due.is_empty()
+            {
+                let _ = writes.live_clock(due);
+            }
+        }
+        // Wake for the next sample, a root's exit, the next clock
+        // transition, new roots (at most a second later) or the stop signal.
+        let wake = watcher
+            .next_wake()
+            .min(SAMPLE_OPEN_CALL)
+            .min(clock_wait.unwrap_or(SAMPLE_OPEN_CALL));
         let polled = watcher.watched.values().any(|w| w.pidfd.is_some());
         let ready = if polled {
             watcher.wait(wake)

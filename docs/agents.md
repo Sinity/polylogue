@@ -186,7 +186,7 @@ Ruling, 2026-10-18: "CLAUDE/AGENTS/skills -- yes … almost defintely we do want
 
 **Complete for writes.** Ruling, 2026-10-27: "presumably agents would use properly designed MCP anyway" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:271c00a1-b795-4d0f-aed3-96acc2dff1ec). Every operation in the command table is reachable over MCP: `assert` of every kind, `revise`, `withdraw`, `judge`, `setting`, `keep`, `save`, `watch`, `pack`, `ping`, live-session control, chat actions, `backfill`, `import` and `memory`. Only local commands stay CLI-only: `web`, `daemon`, `hook`, `hooks`, `install-agent`, `browser-host`, `mcp`, `completions`, `demo`.
 
-**Tools.** Every agent session pays for the tool list and the instructions before it asks anything, so together they stay within 4,096 bytes of compact JSON. Four tools are generated from the command table, each a family of rows with the same access; the shape is the common `command-surface` tool family's:
+**Tools.** Every agent session pays for the tool list and the instructions before it asks anything, so together they stay within 4,096 bytes of compact JSON. Five tools are generated from the command table, each a family of rows with the same access; the shape is the common `command-surface` tool family's:
 
 | Tool | Access | Operations |
 |---|---|---|
@@ -194,12 +194,13 @@ Ruling, 2026-10-18: "CLAUDE/AGENTS/skills -- yes … almost defintely we do want
 | `polylogue_context` | read | `brief`, `recall`, `takeover`, `continue` |
 | `polylogue_note` | write | `assert`, `assert-query`, `revise`, `withdraw`, `save`, `watch`, `keep`, `setting`, `import` |
 | `polylogue_chat` | write, open world | `chat send`, `backfill start`, `backfill cancel` |
+| `polylogue_act` | write, open world | `ping`, `answer`, `interrupt`, `start`, `hand-off` ([Live-session control](#live-session-control)) |
 
 - **A call** is `{operation, arguments, request_id, deadline}`. `operation` is the row's command name; `arguments` is the row's argument object, checked by that row; `request_id` and `deadline` are the request envelope's ([interfaces.md](interfaces.md#command-table)). A row whose request is built from flat arguments takes its deadline in milliseconds only; typed rows also accept `null`.
 - **The input schema** lists, under `arguments`, the arguments of the tool's rows merged by name, each with its bare type; an argument two rows type differently is a choice naming the rows. Options agents rarely need (read's expansions and format, cost's month and model, attachment ranges, watch timing and others) are left out of the schema but accepted; `explain capabilities` lists every row's complete argument schema, its unlisted arguments and its answer schema, and `polylogue manual` names every argument.
 - **Query forms instead of tools.** `list` is `sessions where …` through `query`; measurements are `| measure` stages; `live`, `notices`, `sql` and `changes` are not MCP operations. Completion is the protocol's `completion/complete`, not an operation. `timeline` and `cost` stay operations: their logical-day, calendar and per-model response pages are not query results.
 - **Results** return `structuredContent`, the answer envelope, plus a short text rendering; context tools return the prepared pack as the text. Tools carry no `outputSchema`: the envelope's schema and each row's answer schema are published once, by `explain capabilities`. A cut result carries `next`, the ready follow-up call, already in the tool's call form (null for an operation MCP does not offer). An error carries its failure kind ([interfaces.md#exit-codes](interfaces.md#exit-codes)) and, where the daemon formed one, the corrected query.
-- **Annotations** come from the tool's access: `readOnlyHint` for read tools, `destructiveHint` never (Polylogue has no deletion), `idempotentHint` except for `polylogue_chat` (elsewhere a retried `request_id` is applied once; a chat or backfill request starts a new browser action), `openWorldHint` for `polylogue_chat`, which reaches a web chat. Clients filter on these; the server has no read-only mode.
+- **Annotations** come from the tool's access: `readOnlyHint` for read tools, `destructiveHint` never (Polylogue has no deletion), `idempotentHint` except for `polylogue_chat` and `polylogue_act` (elsewhere a retried `request_id` is applied once; a chat or backfill request starts a new browser action, and an act reaches a running harness or starts one), `openWorldHint` for those two, which reach a web chat or a harness. Clients filter on these; the server has no read-only mode.
 - **Descriptions** are a few words per tool; the card and `explain` carry the guidance.
 - **`detail`:** `concise` (default) or `full`; explicit view flags override it. Results use short IDs; any unique prefix is accepted as input.
 - **Resources:** `polylogue://agent/manual`, `polylogue://session/<id>`, `polylogue://assertion/<id>`, `polylogue://page/<id>/toc`, `polylogue://result/<id>`. **Prompts** are the shipped saved queries and named packs, offered as context without instruction authority.
@@ -218,7 +219,9 @@ Ruling, 2026-10-18: "CLAUDE/AGENTS/skills -- yes … almost defintely we do want
 
 Live state is computed at read time from stored facts and `now`. Nothing live is kept only in memory, so a rebuild reproduces every past live state. It rests on evidence only (a process alive, a harness event, the harness's own registry), never on text.
 
-**Live evidence** arrives by three routes, each a captured input in the hook spool: `hook` (the hook command's lines), `process` (the daemon's process watcher, below) and `registry` (harness registries: Claude Code's `sessions/<pid>.json`, one line per change, the file kept whole). Each line becomes an event on its session (`hook_*`, `process_*`, `registry_*`).
+**Live evidence** arrives by four routes, each a captured input in the hook spool: `hook` (the hook command's lines), `process` (the daemon's process watcher, below), `registry` (harness registries: Claude Code's `sessions/<pid>.json`, one line per change, the file kept whole; Codex's thread statuses on its shared app-server, one line per change, the status object kept whole) and `git` (commits seen in a running session's worktree, below). Each line becomes an event on its session (`hook_*`, `process_*`, `registry_*`, `git_*`).
+
+**Hook events.** Polylogue registers `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`, `SubagentStop`, `PreCompact` and `SessionEnd` with Claude Code. `hooks install` asks the installed Claude Code for its version and also registers `PermissionRequest`, `PermissionDenied`, `StopFailure`, `SubagentStart` and `Elicitation` from the version a probe confirmed them in (2.1.316); an older or unknown version gets the base events only. These events carry the waits and stalls of the fold.
 
 **The live fold.** Each session's live facts are the fold of its live evidence in (time, line) order, written in the transaction that stores each line: the root process, its exit, the hook-derived activity (`working`, `idle`, `waiting`) and wait (`permission`, `question`, `plan`, `input`), the harness registry's own status word, the open tool call, a stall the evidence states, open subagents, the footprint, the task and the in-progress todo text. A line older than what the session has already folded makes the session fold again from all its stored lines, so arrival order never changes the result.
 
@@ -227,16 +230,17 @@ Live state is computed at read time from stored facts and `now`. Nothing live is
 | State | Rule | Evidence shown |
 |---|---|---|
 | `ended` | a `SessionEnd`, or the root process gone after a `Stop` | the event or process line |
-| `stale` | root process gone with no `SessionEnd` (killed, crashed, rebooted); or, with no process evidence, no hook evidence for 15 minutes | "process gone at T, no end event" |
+| `stale` | root process gone with no `SessionEnd` (killed, crashed, rebooted); or, with no process evidence, no hook evidence for 15 minutes. A day after its latest evidence a stale session is `ended`: the live table holds sessions with a live root or evidence in the last day | "process gone at T, no end event" |
 | `waiting` | waiting on the operator: a `PermissionRequest` or a permission or elicitation notification with nothing after it; an `AskUserQuestion` or `ExitPlanMode` call open; a `Stop` whose turn ended with a question (`ending: question`); the registry says `blocked` | what it waits for, since when |
 | `working` | a turn in progress: a prompt, a tool call or a subagent after the last stop; or the registry says `busy` | the open tool or last event |
 | `idle` | the last turn stopped, nothing waiting; or the registry says `idle` | since when |
 | `unknown` | no live evidence, and the transcript grew in the last 15 minutes or no time is recorded | "inferred from file growth" |
 
 - **The registry outranks hook inference**: when the harness's own word (`busy`, `idle`, `blocked`; Codex `active`, `idle`, `waitingOnApproval`, `waitingOnUserInput`) states an activity, that is the state shown, with the hook evidence kept beside it.
-- **Without process evidence** (lines from before hook lines carried the process identity), hook evidence holds for 15 minutes after the last line; afterwards the session is `stale`. With a known root process, no passage of time changes the state; only evidence does.
+- **Without process evidence** (lines from before hook lines carried the process identity), hook evidence holds for 15 minutes after the last line; afterwards the session is `stale`, and a day after the last line `ended`. With a known root process that is alive, no passage of time changes the state; only evidence does.
 - **Stalls** are waits on something other than the operator: `rate_limit` and `api_error` (a `StopFailure`, by its error type), `long_call` (a tool call open for 30 minutes), `queue`. A stall is shown with the state and never counts as waiting.
 - `live_until` is the next instant at which the state or stall changes with no new evidence; empty when only evidence can change them.
+- **The live clock.** The daemon wakes at the earliest `live_until` of the sessions in the live table and gives each session whose instant passed a new change counter, so a transition that comes from time alone reaches the change feed, `follow` and open web views like any other session change. Nothing polls.
 
 A subagent's live state is its parent's process plus its own `SubagentStart`/`SubagentStop`. Query fields on sessions: `live`, `running` (`live` in `working`, `waiting`, `idle`, `unknown`), `waiting`, `waiting_on`, `stall`, `process_alive`, `harness_status`, `open_tool`, `footprint`, `task`, `todo`, `live_since`, `live_until`, `last_event_at`, `live_rank`, `peers`.
 
@@ -248,18 +252,21 @@ A subagent's live state is its parent's process plus its own `SubagentStart`/`Su
 - Its **roots** are the root processes that sessions' evidence says are alive. Each root gets a pidfd; its exit writes `RootGone` at once. A root already gone when first seen is written gone then; a root of an earlier boot is written gone at that boot's end.
 - **Descendants** are read from `/proc/<pid>/task/*/children`, every second while the session has an open tool call and every 15 seconds otherwise; only differences are written to the process spool (`process/<boot>.ndjson`): `Started` (pid, parent pid, start, `comm`, `argv`, `cwd`, role), `Ended`, `RootGone`.
 - With no roots nothing under `/proc` is read; a sample with no change writes nothing; `environ` is never read.
-- **`processes` rows:** session, identity, parent pid, `comm`, `argv`, `cwd`, `started_at`, `ended_at`, `role` (`harness` or `child`).
+- **`processes` rows:** session, identity, parent pid, `comm`, `argv`, `cwd`, `started_at`, `ended_at`, `role` (`harness` or `child`), and `tool_call`, the call that was open when the child was first seen, by time only. A session's end closes the rows of its processes.
 
 **Peers** are other sessions whose live state is `working`, `waiting` or `idle` in the same repository (by its identity) or, when either has no repository identity, the same working directory. Peers are a query, symmetric at any `now`.
 
-**Footprint.** Per live session, the files it changed through structured edit tools (Claude Code `Edit`, `Write`, `MultiEdit`, `NotebookEdit`; Gemini CLI `write_file`, `replace`; the file headers of Codex's `apply_patch`), from the finished call's structured input. Shell commands contribute nothing. The footprint is cleared at the session's end and when its root process exits.
+**Footprint.** Per live session, the files it changed through structured edit tools (Claude Code `Edit`, `Write`, `MultiEdit`, `NotebookEdit`; Gemini CLI `write_file`, `replace`; the file headers of Codex's `apply_patch`), from the finished call's structured input. Shell commands contribute nothing. A file leaves the footprint when a commit in the session's worktree contains it, and the whole footprint is cleared at the session's end and when its root process exits.
+
+**The commit watcher.** For the worktrees of running sessions with a footprint, the daemon checks each worktree's HEAD reflog once per step (one `stat`). When HEAD moved, Git lists the new commits and their files, and each session whose footprint a commit contains gets one `git` line `Commit` naming the commit, the worktree and exactly those files. No command text is read.
 
 **Task.** A session's live task is set only by explicit structured task evidence: a hook line `TaskClaimed` with `{"task": ID}` sent for the session (`polylogue hook TaskClaimed`), cleared by `TaskReleased` naming the same task. A command's name or arguments, including a tracker's exact claim command, establish no task state. A tracker ID mentioned in prose stays a reference. The harness's in-progress todo item is shown as text (`todo`), never as a task.
 
 **Surfaces.**
 - `polylogue live` lists running sessions, waiting first (`sessions where running:true | sort by live_rank, last_event_at desc`); `polylogue waiting` lists what waits on the operator, the longest wait first (`sessions where waiting:true | sort by live_since`).
-- `polylogue QUERY follow` prints a line per new message or tool call and per live-state change (`→ waiting: permission for Bash`).
-- `read --view live` shows the process tree: harness, children with argv and age.
+- `polylogue follow TARGET` (a session reference or a sessions query) prints one line per live-state change (`14:02:11 claude-code:5f2e… → waiting: permission`) and per new message or tool call of the selected sessions, until interrupted. It wakes on each committed change, reads the selection again, so sessions that start matching are followed too, and starts with each session's current state rather than its history. Each daemon request runs until its deadline and ends with the marks it reached, which the next request carries, so lines are neither repeated nor skipped.
+- `read --view live` shows the state and how long, what it waits on or its stall, the open tool call, the task, the peers, and the process tree: the harness, then each child with its command, age, working directory and tool call.
+- `status` lists the running sessions, waiting first, each with its state, since, wait, stall, open tool, task, footprint size and directory; MCP `status` returns the same list. `status --line` prints one line for status bars: `3 running · 1 waiting 7m`, the wait being the longest.
 - The brief's other-agents section lists each live session here with its state, wait, directory, task and the number of uncommitted edits.
 - Live-state changes are session changes on the change feed, so followers see `waiting` without polling.
 
@@ -267,42 +274,43 @@ A subagent's live state is its parent's process plus its own `SubagentStart`/`Su
 
 ## Live-session control
 
-From the CLI, MCP or the web UI alike, an author can address a session; each act is a command-table row, recorded as a delivery (event `control` or `ping`) with its computed author.
+From the CLI, MCP or the web UI alike, an author acts on a session; each act is a command-table row, recorded as a delivery (event `ping` or `control`, sender `ping` or `act`) with its computed author.
 
 | Operation | Meaning |
 |---|---|
-| `ping TEXT` | an addressed message in any state: steers a working session, prompts an idle one, resumes an ended one ([Pings](#pings)) |
-| `send TEXT` | input to a live session only (`working`, `waiting`, `idle`), through the same channels as a ping; refused (`refused`, `session_not_live`) for an ended or stale session, so it never resumes anything |
-| `approve`, `deny [TEXT]` | answer the session's pending permission request |
-| `interrupt` | stop the session's current turn |
-| `resume` | native resume ([Resume](#resume)) |
+| `ping TARGET TEXT [--live] [--about REF]` | an addressed message in any state ([Pings](#pings)); `--live` refuses (`not_sent:session_not_live`) rather than resume a session that is not running |
+| `answer SESSION approve\|deny [--text T] [--standing]` | answer the session's pending permission request; `--standing` answers the same tool and input whenever the session asks next in this session |
+| `interrupt SESSION` | stop the session's current turn |
+| `start TEXT --harness codex --cwd DIR` | start a session Polylogue hosts |
+| `continue SESSION` | native resume ([Resume](#resume)) |
 
-**Each control uses the harness's own mechanism.** A mechanism is probed against the installed harness version before it is offered; until a probe confirms it, the control is shown disabled with "not supported by <harness> <version>" and the operation answers `refused`, `unsupported`.
+**Channels.** Which channel an act takes is one pure function of the act, the session's live state and what the installed harness is known to support (`polylogue_model::live::channel`), in this order of preference:
 
-| Control | Claude Code | Codex | Gemini CLI | Hermes | Web chats |
-|---|---|---|---|---|---|
-| ping or send, working | injected at the next context-accepting hook (`PostToolUse`, `UserPromptSubmit`) | `PostToolUse` | `AfterTool` | `pre_llm_call` | — |
-| ping or send, idle | the per-process messaging socket where confirmed; otherwise the ping waits as `prepared` for the next hook | the app-server channel where confirmed; otherwise waits | waits | waits | — |
-| ping, ended | `claude --resume ID -p TEXT` | `codex exec resume ID TEXT` | `gemini --resume ID` | its resume where supported | `chat send` ([extension.md#chat-actions](extension.md#chat-actions)) |
-| approve, deny | the synchronous `PermissionRequest` hook asks the daemon for a decision within its timeout; with none, it returns nothing and the harness's own prompt stands | its `PermissionRequest` hook, same rule | where confirmed | where confirmed | the extension's approval of a drafted turn |
-| interrupt | where confirmed | where confirmed | where confirmed | where confirmed | — |
+1. **protocol**: a session Polylogue hosts. Polylogue starts a Codex thread on Codex's shared app-server (`start`) and keeps the connection: the app-server's approval and question requests for the thread come to it, a ping steers the running turn (`turn/steer`) or starts one (`turn/start`), `answer` answers the oldest pending request, and `interrupt` sends `turn/interrupt`.
+2. **hook**: the next context-accepting hook event of a running session whose evidence shows the hook installed, through the mailbox; for `answer`, Claude Code's synchronous `PermissionRequest` hook, where the probe confirmed it.
+3. **resume**: the harness's headless resume (`claude --resume ID -p TEXT`, `codex exec resume ID TEXT`) for a session that ended or is stale.
 
-Worktree and permissions are explicit request context, never an ambient directory; a resumed run uses the session's recorded `cwd`. An agent saying "I started the reviewer" is not evidence; the delivery and the recipient's transcript are.
+A mechanism no probe confirmed is refused (`refused`, `unsupported`, naming the harness). A channel is never chosen by trying one and falling back: a failed channel records `not_sent:failed(<reason>)` and nothing else is tried.
+
+**The mailbox.** A ping or notice to a running session waits as a `prepared` delivery and raises the empty flag file `mail/<harness>/<session>` in the archive's runtime directory. At a context-accepting event (Claude Code and Codex `PostToolUse` and `UserPromptSubmit`, Gemini CLI `AfterTool` and `BeforeAgent`, Hermes `pre_llm_call`), the hook checks that one path; only when it exists does it ask the daemon, which hands over every pending item, oldest first, records each `delivered`, and lowers the flag. Claims run one at a time in the daemon, so concurrent hooks of one session never take the same item. Nothing is claimed before a tool runs. At start the daemon raises the flags of sessions that still have pending items.
+
+**Answers.** Polylogue does not hold a harness's permission prompt (operator question Q-L1 is open), so an answer reaches an observed Claude Code session only ahead of time: `answer --standing` records the decision for the pending request's tool and input, and the next `PermissionRequest` hook for the same tool and input in that session returns it at once (recorded `delivered`); with none, the hook returns nothing and the harness's own prompt stands. A plain `answer` to an observed session is refused with "answer it in the terminal". A request is `request:<session>#<instant>`; it is answered once, and a later answer records `not_sent:already_answered` naming the first.
+
+**Interrupt** goes only through a hosted session's connection; signals to processes are never used. Worktree and permissions are explicit request context, never an ambient directory; a resumed run uses the session's recorded `cwd`. An agent saying "I started the reviewer" is not evidence; the delivery and the recipient's transcript are.
 
 ## Pings
 
 A **ping** is an explicit address with text: `@[address] text` in an assertion, a page slot or a transcript, the web ping composer, `polylogue ADDRESS ping TEXT`, or MCP `act` `ping`. It is stored as an assertion ([pages.md#ping-records](pages.md#ping-records)) and recorded as one delivery (sender `ping`).
 
-- **The address is explicit:** a session reference, or a page-local member alias such as `@reviewer`. An alias resolves to a concrete session when the ping is sent, through to the newest `resume` or `continuation` successor; rebinding the alias later never retargets an earlier ping.
-- **Execution follows the recipient's live state:**
-  - `working`: injected at its next context-accepting hook event, never interrupting a running tool call;
-  - `idle` or `waiting`: through the harness's input channel where one is confirmed, otherwise at its next hook event;
-  - `ended` or `stale`: resumed once, headlessly, through the origin's declared resume command, in the session's recorded cwd, with the ping pack as input. No confirmation is asked, whoever sent the ping and through whichever channel;
-  - a session that cannot be resumed (its file is gone, or its harness has no resume): a new session of the same role starts with the ping pack and is recorded as new, never as a resume. A session with no role gives `not_sent:session_missing`.
+- **The address is explicit:** a session reference (`claude-code:…` or `@[claude-code:…]`), or `@[QUERY]` for every session a sessions query selects when the ping is sent (a broadcast: one ping assertion about each recipient and one delivery each; sessions that start matching later receive nothing). Page-local member aliases and `@[role:NAME]` need the session role records of [pages.md](pages.md#members-and-roles) and are refused until sessions carry them.
+- **Execution follows the recipient's live state and the channel function:**
+  - running (`working`, `waiting`, `idle`, `unknown`): over the hosted connection, or at its next context-accepting hook event through the mailbox, never interrupting a running tool call;
+  - `ended` or `stale`: resumed once, headlessly, through the harness's resume command, in the session's recorded cwd, with the ping pack as its prompt. No confirmation is asked, whoever sent the ping and through whichever channel. The delivery is `delivered` when the run starts and `failed(<first error line>)` if it exits unsuccessfully;
+  - a session not in the archive gives `not_sent:session_missing`; a harness with no headless resume gives `not_sent:unsupported`.
 - **The ping pack:** the text, the subject's content and references, the page's table of contents when the ping came from a page, and the instruction to answer with `::finding(answers=assertion:<ping>)` or `@[…]`, with the delivery reference line.
 - **Once per ping.** Re-reading, quoting, translating or re-importing text that contains `@[address]` never sends it again; deliberately submitting the same text again does. The key is the message ID and the markup's position.
 - **The reply** is the recipient's ordinary output, ingested as usual and linked to the ping by its `answers=` marker or by the delivery reference found in the recipient's transcript. The resumed session's link to the pinging session is `reference` with `how: ping`.
-- **Concurrency:** one resumed run per session at a time; further pings to it queue as `prepared` deliveries and run in order. There is no rate limit.
+- **Concurrency:** one resumed run per session at a time; further pings to it queue as `prepared` deliveries and run in order, unless the resumed session's own hook claims them first. There is no rate limit. A sent ping has no undo.
 - **Background triggers never start or resume agents** (default; open operator question): a signal or watch firing has no explicit address and no author act, so it only notifies.
 
 **Roles.** A role is a `role` assertion: instructions (a SOUL.md-style text) and the harness to launch. Roles are optional; a session without one runs the harness's default.
@@ -369,6 +377,11 @@ Morrow is the fixture; a "fixture harness" is a stub binary on `PATH` that recor
 - **pl.live.root-gone-prompt**: a root's exit is seen through its pidfd within 100 ms.
 - **pl.live.sampler-proportional**: a sample with no process change writes nothing; with no live roots nothing under `/proc` is read.
 - **pl.live.pid-reuse**: a process or registry line with the same pid but a different start time or boot ID never attaches to the earlier session.
+- **pl.live.footprint-commit**: a commit in the session's worktree that contains files of its footprint takes exactly those files out; files it does not contain stay.
+- **pl.live.channel-pure**: the channel is a function of the act, the live state and the probe; an unconfirmed mechanism is refused naming the harness and never replaced by another channel.
+- **pl.live.mailbox-once**: concurrent claims of one session hand each pending delivery over exactly once.
+- **pl.live.never-mid-tool**: nothing is claimed before a tool runs; a ping reaches a working session at its next tool result or prompt.
+- **pl.live.broadcast-frozen**: a broadcast ping's recipients are the query's result when it is sent; one assertion, one delivery per recipient.
 - **peers-symmetric**: peers are symmetric at a given `now`.
 - **task-from-explicit-evidence**: a tracker ID in a prompt or an exact tracker claim command creates no task; explicit structured evidence naming the item and claiming session does, and later explicit close or release evidence clears it.
 - **ping-to-working-at-next-hook**: a ping to a working fixture session is injected at its next `PostToolUse` and never earlier.

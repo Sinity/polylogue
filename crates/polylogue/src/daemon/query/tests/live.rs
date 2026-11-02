@@ -36,13 +36,23 @@ fn sid(n: &str) -> SessionId {
 /// Stores hook lines `(session, kind, minutes after T0, payload)` as one
 /// step of the hook spool.
 fn hooks(w: &mut WriterArchive, lines: &[(&str, &str, i64, Json)]) {
+    let lines: Vec<(&str, String, i64, Json)> = lines
+        .iter()
+        .map(|(s, kind, min, data)| (*s, format!("hook_{kind}"), *min, data.clone()))
+        .collect();
+    evidence(w, &lines);
+}
+
+/// Stores live evidence lines `(session, full kind, minutes after T0,
+/// data)` as one step of the hook spool.
+fn evidence<K: AsRef<str>>(w: &mut WriterArchive, lines: &[(&str, K, i64, Json)]) {
     let start = w.offset();
     let events: Vec<Event> = lines
         .iter()
         .enumerate()
         .map(|(i, (s, kind, min, data))| Event {
             session: Some(sid(s)),
-            kind: format!("hook_{kind}"),
+            kind: kind.as_ref().to_owned(),
             at: Timestamp::from_unix_ms(T0 + min * MIN),
             at_quality: polylogue_model::TimeQuality::Intrinsic,
             at_precision: Some(polylogue_model::Precision::Instant),
@@ -105,8 +115,9 @@ fn st(s: &str, state: &str, until: Option<i64>) -> (String, String, Option<i64>)
 fn live_state_is_a_function_of_stored_facts_and_the_time() {
     // Live state on hook evidence alone (no process lines). Without
     // process evidence, hook evidence holds for the live window and the
-    // session is stale afterwards; no time rule ends it (live-sessions
-    // design §8: "Time-only inference survives only as the `unknown` row").
+    // session is stale afterwards, until a day after its latest evidence
+    // (live-sessions design §3.3: the live table holds "sessions with a
+    // live root or activity in the last 24 h").
     let mut w = WriterArchive::new();
     hooks(
         &mut w,
@@ -135,7 +146,7 @@ fn live_state_is_a_function_of_stored_facts_and_the_time() {
         vec![
             st("v1", "waiting", Some(56)),
             st("v2", "working", Some(70)),
-            st("v3", "stale", None),
+            st("v3", "stale", Some(20 + 24 * 60)),
         ]
     );
     // Asking twice at different times with no write between gives the
@@ -143,9 +154,9 @@ fn live_state_is_a_function_of_stored_facts_and_the_time() {
     assert_eq!(
         states(&w, 60),
         vec![
-            st("v1", "stale", None),
+            st("v1", "stale", Some(41 + 24 * 60)),
             st("v2", "working", Some(70)),
-            st("v3", "stale", None),
+            st("v3", "stale", Some(20 + 24 * 60)),
         ]
     );
     // A Stop makes it idle; a SessionEnd ends it for good.
@@ -156,13 +167,13 @@ fn live_state_is_a_function_of_stored_facts_and_the_time() {
     // A line applied late (older than the stored one) changes nothing.
     hooks(&mut w, &[("v2", "pre_tool_use", 58, json!({}))]);
     assert_eq!(states(&w, 64)[1], st("v2", "ended", None));
-    // A day later nothing has changed: only evidence ends a session.
+    // A day after their latest evidence, stale sessions have ended.
     assert_eq!(
         states(&w, 26 * 60),
         vec![
-            st("v1", "stale", None),
+            st("v1", "ended", None),
             st("v2", "ended", None),
-            st("v3", "stale", None),
+            st("v3", "ended", None),
         ]
     );
 }
@@ -432,4 +443,36 @@ fn stored_facts_equal_the_fold_of_stored_lines_with_ties_and_late_lines() {
         .map(|i| json!({"aspect": i.aspect.as_str(), "value": i.value, "start_at": i.start, "end_at": i.end}))
         .collect();
     assert_eq!(intervals, expected);
+}
+
+/// A session's end closes the rows of its processes, children and harness
+/// alike: the watcher stops watching an ended session.
+#[test]
+fn a_session_end_closes_its_process_rows() {
+    let identity = |pid: u32, role: &str| {
+        json!({"pid": pid, "start": 7, "boot_id": "boot-a", "role": role, "comm": "x"})
+    };
+    let mut w = WriterArchive::new();
+    evidence(
+        &mut w,
+        &[
+            (
+                "p",
+                "hook_user_prompt_submit",
+                0,
+                json!({"harness_pid": 10, "harness_start": 7, "boot_id": "boot-a"}),
+            ),
+            ("p", "process_started", 1, identity(10, "harness")),
+            ("p", "process_started", 2, identity(11, "child")),
+            ("p", "process_ended", 3, identity(11, "child")),
+            ("p", "process_started", 4, identity(12, "child")),
+            ("p", "hook_session_end", 5, json!({})),
+        ],
+    );
+    let rows = w.rows("SELECT pid, ended_at FROM process ORDER BY pid");
+    let ended: Vec<(i64, i64)> = rows
+        .iter()
+        .map(|r| (r["pid"].as_i64().unwrap(), (r["ended_at"].as_i64().unwrap() - T0) / MIN))
+        .collect();
+    assert_eq!(ended, vec![(10, 5), (11, 3), (12, 5)]);
 }
