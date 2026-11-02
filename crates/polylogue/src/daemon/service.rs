@@ -285,11 +285,11 @@ fn context(
     let queued = ask
         .recipient()
         .and_then(|recipient| d.queued_deliveries.latest(&recipient.to_string()));
-    let prepare = || -> Result<_, Answer<Value>> {
-        let reader = d.reads.reader().map_err(|e| store_error(&e))?;
+    let prepare = || -> Result<_, Box<Answer<Value>>> {
+        let reader = d.reads.reader().map_err(|e| Box::new(store_error(&e)))?;
         let settings = reader
             .settings_snapshot(&operation.machine)
-            .map_err(|e| store_error(&e))?;
+            .map_err(|e| Box::new(store_error(&e)))?;
         let provider =
             crate::embeddings::Provider::from_settings(&settings, &d.config.embedding_credentials)
                 .ok()
@@ -303,7 +303,7 @@ fn context(
         // Assertions written after this are the next brief's delta.
         let written_up_to = reader
             .change_position()
-            .map_err(|e| store_error(&e))?
+            .map_err(|e| Box::new(store_error(&e)))?
             .archive;
         let prepared = briefing::prepare(
             &reader,
@@ -321,9 +321,9 @@ fn context(
                     Ask::Recall { text, .. } => Some(text.as_str()),
                     _ => None,
                 };
-                super::execution::refusal(&e, "context", text, limit)
+                Box::new(super::execution::refusal(&e, "context", text, limit))
             }
-            _ => store_error(&e),
+            _ => Box::new(store_error(&e)),
         })?;
         Ok((prepared, reader.scope_token(), written_up_to))
     };
@@ -333,7 +333,7 @@ fn context(
     };
     let (prepared, selected_scope, written_up_to) = match prepared {
         Ok(prepared) => prepared,
-        Err(answer) => return answer,
+        Err(answer) => return *answer,
     };
     // The request's own deadline and cancellation still apply.
     if let Some(limit) = &request_limit

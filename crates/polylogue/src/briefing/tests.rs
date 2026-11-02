@@ -455,7 +455,7 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
             last: T0 - 60_000,
         })
         .unwrap();
-    assert!(SESSIONS * MESSAGES >= 1_000_000);
+    const { assert!(SESSIONS * MESSAGES >= 1_000_000) };
     // Three of the newest are working there now.
     for &pk in &pks[SESSIONS - 3..] {
         f.live(pk, "hook_pre_tool_use", T0 - 30_000, None, None)
