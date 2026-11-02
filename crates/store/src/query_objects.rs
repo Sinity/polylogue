@@ -490,22 +490,6 @@ pub(crate) fn apply_run_outcome(conn: &Connection, outcome: &QueryRunOutcome) ->
     Ok(())
 }
 
-/// Fixture coverage states may override this value. Production derives it from
-/// admitted runs and the confirmed projection's historical coverage.
-#[cfg(test)]
-pub(crate) fn set_first_run(
-    conn: &Connection,
-    question: QuestionId,
-    run: Option<&str>,
-) -> Result<()> {
-    let source = Source::of(conn)?;
-    conn.execute(
-        &source.sql("UPDATE @source.query SET first_run=?2 WHERE hash=?1"),
-        params![question.to_string(), run],
-    )?;
-    Ok(())
-}
-
 pub(crate) fn clear(conn: &Connection) -> Result<()> {
     let source = Source::of(conn)?;
     for table in ["query_run", "query_edge", "query"] {
