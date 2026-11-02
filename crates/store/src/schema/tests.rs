@@ -291,22 +291,32 @@ fn an_archive_written_before_the_baseline_is_an_older_format_and_stays_as_it_is(
     assert_eq!(format_id(&conn).unwrap(), FORMAT_ID);
 }
 
-/// The conversion layer for the rewrite's own retired formats is gone: no
-/// file of it may survive in the tree, compiled or not.
+/// An unversioned file that already holds tables is not ours to create into:
+/// it is refused before it takes the format identity or any table.
 #[test]
-fn no_retired_format_converter_remains_in_the_tree() {
-    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    for path in [
-        "crates/store/src/assertions/conversion.rs",
-        "crates/store/src/assertions/conversion",
-        "crates/store/src/primary/authored/conserve.rs",
-        "crates/sinex/src/client/confirmed/source3.rs",
-        "crates/sinex/src/client/confirmed/source3",
-        "crates/sinex/src/client/retained.rs",
-        "crates/sinex/src/client/retained",
-        "crates/sinex/src/producer/requests/wire.rs",
-        "crates/model/src/historical.rs",
+fn an_unversioned_file_with_tables_is_refused_unchanged() {
+    for (name, create) in [
+        ("archive", ensure_archive as fn(&Connection) -> Result<()>),
+        ("index", ensure_index),
     ] {
-        assert!(!workspace.join(path).exists(), "{path} remains");
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE unrelated(x) STRICT; INSERT INTO unrelated VALUES (1);")
+            .unwrap();
+        let error = create(&conn).unwrap_err();
+        assert!(
+            matches!(error, StoreError::NoMigration { found: 0, .. }),
+            "{name}: {error}"
+        );
+        assert_eq!(format_id(&conn).unwrap(), 0, "{name}");
+        assert_eq!(version(&conn).unwrap(), 0, "{name}");
+        assert_eq!(
+            shape(&conn).unwrap(),
+            vec![(
+                "table".to_owned(),
+                "unrelated".to_owned(),
+                statement("CREATE TABLE unrelated(x) STRICT")
+            )],
+            "{name}"
+        );
     }
 }

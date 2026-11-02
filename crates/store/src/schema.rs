@@ -63,10 +63,16 @@ fn format_id(conn: &Connection) -> Result<i32> {
     Ok(conn.pragma_query_value(None, "application_id", |r| r.get(0))?)
 }
 
-/// Refuses a non-empty database that carries no baseline format identity.
+/// Refuses a versioned database that carries no baseline format identity,
+/// and an unversioned file that already holds tables: only an empty file is
+/// created into.
 fn check_format(conn: &Connection, database: &'static str) -> Result<()> {
-    if version(conn)? != 0 && format_id(conn)? != FORMAT_ID {
+    let found = version(conn)?;
+    if found != 0 && format_id(conn)? != FORMAT_ID {
         return Err(StoreError::OlderFormat { database });
+    }
+    if found == 0 && !shape(conn)?.is_empty() {
+        return Err(StoreError::NoMigration { database, found });
     }
     Ok(())
 }
@@ -172,7 +178,7 @@ pub fn ensure_archive(conn: &Connection) -> Result<()> {
     check_format(conn, "archive")?;
     // An empty file takes the identity before its tables, so no crash can
     // leave a versioned archive without it.
-    if version(conn)? == 0 && format_id(conn)? != FORMAT_ID {
+    if version(conn)? == 0 {
         conn.pragma_update(None, "application_id", FORMAT_ID)?;
     }
     ensure(conn, "archive", &[ARCHIVE], ARCHIVE_MIGRATIONS)
