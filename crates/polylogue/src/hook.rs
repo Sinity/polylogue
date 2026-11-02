@@ -612,7 +612,11 @@ fn permission(startup: &Startup, session: &SessionId, payload: &Value) {
     };
     if let Some(output) = permission_output(&data) {
         let mut stdout = std::io::stdout().lock();
-        let _ = writeln!(stdout, "{}", polylogue_render::terminal::json(&output, false));
+        let _ = writeln!(
+            stdout,
+            "{}",
+            polylogue_render::terminal::json(&output, false)
+        );
         let _ = stdout.flush();
     }
 }

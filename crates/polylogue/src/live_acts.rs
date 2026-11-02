@@ -130,9 +130,10 @@ impl HostedCodex {
                 "turn/steer",
                 json!({"threadId": self.thread, "expectedTurnId": turn, "input": input}),
             ),
-            None => self
-                .connection
-                .call("turn/start", json!({"threadId": self.thread, "input": input})),
+            None => self.connection.call(
+                "turn/start",
+                json!({"threadId": self.thread, "input": input}),
+            ),
         }
         .map(drop)
     }
@@ -144,7 +145,8 @@ impl HostedCodex {
             .requests
             .pop_front()
             .ok_or_else(|| std::io::Error::other("no request is pending on the hosted thread"))?;
-        self.connection.answer(&id, answer_result(&method, &params, approve, text)?)
+        self.connection
+            .answer(&id, answer_result(&method, &params, approve, text)?)
     }
 
     pub(crate) fn interrupt(&mut self) -> std::io::Result<()> {

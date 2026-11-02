@@ -89,22 +89,25 @@ pub fn channel(act: Act, state: LiveState, probe: &Probe) -> Result<Channel, Ref
             } else if live {
                 refuse(
                     "session_not_live",
-                    format!("the session is {}; a live ping never resumes it", state.as_str()),
+                    format!(
+                        "the session is {}; a live ping never resumes it",
+                        state.as_str()
+                    ),
                 )
             } else if probe.headless_resume {
                 Ok(Channel::Resume)
             } else {
-                refuse(
-                    "unsupported",
-                    format!("{harness} has no headless resume"),
-                )
+                refuse("unsupported", format!("{harness} has no headless resume"))
             }
         }
         Act::Answer => {
             if !state.running() {
                 refuse(
                     "session_not_live",
-                    format!("the session is {}; nothing waits for an answer", state.as_str()),
+                    format!(
+                        "the session is {}; nothing waits for an answer",
+                        state.as_str()
+                    ),
                 )
             } else if probe.hosted {
                 Ok(Channel::Protocol)
@@ -113,7 +116,9 @@ pub fn channel(act: Act, state: LiveState, probe: &Probe) -> Result<Channel, Ref
             } else {
                 refuse(
                     "unsupported",
-                    format!("{harness} offers no channel for answers to a session Polylogue does not host"),
+                    format!(
+                        "{harness} offers no channel for answers to a session Polylogue does not host"
+                    ),
                 )
             }
         }

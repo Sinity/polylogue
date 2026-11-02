@@ -499,7 +499,9 @@ fn session_arg(v: &Values) -> Result<polylogue_model::SessionId, String> {
 pub fn ping(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(Request::Ping {
         request_id: v.request_id(),
-        target: v.text("target").ok_or("a session reference or @[query] is required")?,
+        target: v
+            .text("target")
+            .ok_or("a session reference or @[query] is required")?,
         text: v.text("text").ok_or("a ping needs text")?,
         live: v.flag("live"),
         about: v.text("about"),
@@ -539,7 +541,9 @@ pub fn start(_: &Command, v: &Values, _: &Caller) -> Built {
 
 pub fn follow(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(Request::Follow {
-        query: v.text("target").ok_or("follow takes a session reference or a sessions query")?,
+        query: v
+            .text("target")
+            .ok_or("follow takes a session reference or a sessions query")?,
         marks: None,
     })
 }

@@ -480,10 +480,15 @@ fn successful_native_context_output_produces_a_distinct_parsable_emission_receip
 fn newer_events_are_registered_only_for_a_confirmed_version() {
     use super::settings::HarnessVersion;
     let newer = |settings: &Value| {
-        ["PermissionRequest", "StopFailure", "SubagentStart", "Elicitation"]
-            .iter()
-            .filter(|e| settings["hooks"].get(**e).is_some())
-            .count()
+        [
+            "PermissionRequest",
+            "StopFailure",
+            "SubagentStart",
+            "Elicitation",
+        ]
+        .iter()
+        .filter(|e| settings["hooks"].get(**e).is_some())
+        .count()
     };
     assert_eq!(
         HarnessVersion::parse("2.1.316 (Claude Code)"),
@@ -535,12 +540,16 @@ fn a_standing_answer_becomes_the_permission_decision() {
     assert_eq!(permission_output(&json!({"decision": null})), None);
     assert_eq!(
         permission_output(&json!({"decision": "approve", "text": null, "delivery": "d"})),
-        Some(json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
-            "decision": {"behavior": "allow"}}}))
+        Some(
+            json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+            "decision": {"behavior": "allow"}}})
+        )
     );
     assert_eq!(
         permission_output(&json!({"decision": "deny", "text": "not on main"})),
-        Some(json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
-            "decision": {"behavior": "deny", "message": "not on main"}}}))
+        Some(
+            json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+            "decision": {"behavior": "deny", "message": "not on main"}}})
+        )
     );
 }

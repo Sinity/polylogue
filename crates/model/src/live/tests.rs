@@ -391,9 +391,6 @@ fn stale_sessions_end_a_day_after_their_latest_evidence() {
     );
     let (unobserved, _) = run(&[("hook_user_prompt_submit", 0, json!({}))]);
     let v = view(Some(&unobserved), None, LIVE_WINDOW_MS + 1);
-    assert_eq!(
-        (v.state, v.until),
-        (LiveState::Stale, Some(STALE_FOR_MS))
-    );
+    assert_eq!((v.state, v.until), (LiveState::Stale, Some(STALE_FOR_MS)));
     assert_eq!(state(&unobserved, STALE_FOR_MS), LiveState::Ended);
 }

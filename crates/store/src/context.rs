@@ -260,7 +260,9 @@ impl Reader<'_> {
                 AND NOT EXISTS (SELECT 1 FROM source_delivery_event e WHERE e.delivery = d.id)
               ORDER BY d.at, d.id",
         )?;
-        let rows = stmt.query_map([session], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+        let rows = stmt.query_map([session], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
         let mut out = Vec::new();
         for row in rows {
             let (id, body) = row?;

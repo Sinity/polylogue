@@ -4,7 +4,13 @@ use serde_json::json;
 
 const MIN: i64 = 60_000;
 
-fn process(pid: i64, role: &str, argv: &[&str], ended: Option<i64>, call: Option<&str>) -> ProcessRow {
+fn process(
+    pid: i64,
+    role: &str,
+    argv: &[&str],
+    ended: Option<i64>,
+    call: Option<&str>,
+) -> ProcessRow {
     ProcessRow {
         pid,
         parent_pid: Some(1),
@@ -38,8 +44,18 @@ fn the_live_card_shows_the_state_the_wait_and_the_process_tree() {
         2 * MIN,
         &hook(json!({"tool_name": "Bash", "tool_use_id": "t1"})),
     );
-    live::fold(&mut facts, "hook_permission_request", 3 * MIN, &hook(json!({})));
-    live::fold(&mut facts, "hook_task_claimed", 3 * MIN, &hook(json!({"task": "tide-12"})));
+    live::fold(
+        &mut facts,
+        "hook_permission_request",
+        3 * MIN,
+        &hook(json!({})),
+    );
+    live::fold(
+        &mut facts,
+        "hook_task_claimed",
+        3 * MIN,
+        &hook(json!({"task": "tide-12"})),
+    );
     let now = 10 * MIN;
     let detail = LiveDetail {
         view: live::view(Some(&facts), None, now),

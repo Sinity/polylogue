@@ -1043,7 +1043,11 @@ const WRITTEN: &[Command] = &[
         name: "follow",
         help: "Follow a session or a sessions query: one line per live-state change (`→ waiting: permission`) and per new message or tool call, until interrupted",
         reason: "A live stream records nothing and cannot be a query's page",
-        args: &[pos("target", Kind::Words, "A session reference or a sessions query, such as `sessions where running:true`")],
+        args: &[pos(
+            "target",
+            Kind::Words,
+            "A session reference or a sessions query, such as `sessions where running:true`",
+        )],
         action: Action::Stream {
             build: requests::follow,
             produce: crate::daemon::service::follow::produce,
@@ -1056,9 +1060,17 @@ const WRITTEN: &[Command] = &[
         help: "Send an addressed message to a session, or to every session a quoted query selects now (`@[sessions repo:x running:true]`): a running session gets it at its next tool result or prompt, one that ended is resumed headlessly with it. Each recipient gets one delivery; there is no undo",
         reason: "An authored act that reaches a session through its harness",
         args: &[
-            pos("target", Kind::Text, "A session reference, or @[QUERY] for every session the query selects now"),
+            pos(
+                "target",
+                Kind::Text,
+                "A session reference, or @[QUERY] for every session the query selects now",
+            ),
             pos("text", Kind::Words, "The message"),
-            opt("live", Kind::Bool, "Refuse rather than resume a session that is not running"),
+            opt(
+                "live",
+                Kind::Bool,
+                "Refuse rather than resume a session that is not running",
+            ),
             opt("about", Kind::Text, "A reference the ping is about"),
             REQUEST_ID,
         ],
@@ -1074,9 +1086,17 @@ const WRITTEN: &[Command] = &[
         reason: "An authored act on a request a session waits on",
         args: &[
             pos("session", Kind::Text, "The waiting session"),
-            pos("decision", Kind::Choice(&["approve", "deny"]), "approve or deny"),
+            pos(
+                "decision",
+                Kind::Choice(&["approve", "deny"]),
+                "approve or deny",
+            ),
             opt("text", Kind::Text, "A reason given with the answer"),
-            opt("standing", Kind::Bool, "Answer the same tool and input next time in this session"),
+            opt(
+                "standing",
+                Kind::Bool,
+                "Answer the same tool and input next time in this session",
+            ),
             REQUEST_ID,
         ],
         action: Action::Request(requests::answer),

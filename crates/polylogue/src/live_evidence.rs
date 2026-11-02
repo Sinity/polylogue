@@ -847,7 +847,14 @@ fn head_log(top: &Path) -> Option<PathBuf> {
     }
     let text = std::fs::read_to_string(&dot_git).ok()?;
     let dir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
-    Some(if dir.is_absolute() { dir } else { top.join(dir) }.join("logs/HEAD"))
+    Some(
+        if dir.is_absolute() {
+            dir
+        } else {
+            top.join(dir)
+        }
+        .join("logs/HEAD"),
+    )
 }
 
 /// One watched worktree: its reflog's modification time and HEAD when last
@@ -883,7 +890,8 @@ impl CommitWatcher {
                 by_worktree.entry(top).or_default().push(footprint);
             }
         }
-        self.worktrees.retain(|top, _| by_worktree.contains_key(top));
+        self.worktrees
+            .retain(|top, _| by_worktree.contains_key(top));
         let mut out = Vec::new();
         for (top, sessions) in by_worktree {
             let modified = head_log(&top)
@@ -905,7 +913,12 @@ impl CommitWatcher {
             let commits = match (&seen.head, &head) {
                 (Some(old), Some(new)) => git(
                     &top,
-                    &["log", "--format=%x00%H %ct", "--name-only", &format!("{old}..{new}")],
+                    &[
+                        "log",
+                        "--format=%x00%H %ct",
+                        "--name-only",
+                        &format!("{old}..{new}"),
+                    ],
                 )
                 .map(|text| parse_commits(&text))
                 .unwrap_or_default(),
@@ -1105,8 +1118,18 @@ pub(crate) fn run(
         let mut process_lines = watcher.update_roots(&roots, now);
         process_lines.extend(watcher.sample(now));
         let _ = append(&paths.spool, "process", &boot, &process_lines);
-        let _ = append(&paths.spool, "registry", &boot, &registry.read(now, identity));
-        let _ = append(&paths.spool, "git", &boot, &commit_watcher.read(&footprints, now));
+        let _ = append(
+            &paths.spool,
+            "registry",
+            &boot,
+            &registry.read(now, identity),
+        );
+        let _ = append(
+            &paths.spool,
+            "git",
+            &boot,
+            &commit_watcher.read(&footprints, now),
+        );
         // Wake for the next sample, a root's exit, the next clock
         // transition, new roots (at most a second later) or the stop signal.
         let wake = watcher

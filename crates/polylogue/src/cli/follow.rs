@@ -19,7 +19,13 @@ pub fn run(
     _: crate::commands::CallForm,
 ) -> ExitCode {
     let Request::Follow { query, marks } = request else {
-        return fail(startup.output, true, "bad_request", "a follow request is required", 2);
+        return fail(
+            startup.output,
+            true,
+            "bad_request",
+            "a follow request is required",
+            2,
+        );
     };
     let zone = startup
         .config

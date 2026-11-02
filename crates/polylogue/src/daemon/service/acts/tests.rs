@@ -71,7 +71,10 @@ fn concurrent_claims_hand_each_delivery_over_once() {
     sorted.sort();
     assert_eq!(sorted, ["ping-a", "ping-b"]);
     assert!(!crate::mailbox::raised(d.daemon.acts.mail(), &s1()));
-    assert!(claim_ids(&d).is_empty(), "a claimed delivery is never sent again");
+    assert!(
+        claim_ids(&d).is_empty(),
+        "a claimed delivery is never sent again"
+    );
     // The hook records `delivered` once it has written the text; until
     // then the claim leaves no outcome, and nothing hands it out again.
     let reader = d.daemon.reads.reader().unwrap();

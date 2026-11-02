@@ -342,7 +342,10 @@ fn the_live_clock_announces_each_transition_once() {
     };
     let (due, wait) = step(1_000);
     assert!(due.is_empty());
-    assert_eq!(wait, Some(Duration::from_millis((LIVE_WINDOW_MS + 1 - 1_000) as u64)));
+    assert_eq!(
+        wait,
+        Some(Duration::from_millis((LIVE_WINDOW_MS + 1 - 1_000) as u64))
+    );
     // Before the instant: nothing.
     assert!(step(LIVE_WINDOW_MS).0.is_empty());
     // After it: the session is announced once.
@@ -366,7 +369,11 @@ fn git_in(repo: &Path, args: &[&str]) {
         .args(args)
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// law: pl.live.footprint-commit
@@ -392,16 +399,31 @@ fn a_commit_in_the_worktree_names_the_footprint_files_it_contains() {
     };
     let mut watcher = CommitWatcher::default();
     // First sight records HEAD; nothing has been committed since.
-    assert!(watcher.read(std::slice::from_ref(&footprint), now()).is_empty());
-    assert!(watcher.read(std::slice::from_ref(&footprint), now()).is_empty());
+    assert!(
+        watcher
+            .read(std::slice::from_ref(&footprint), now())
+            .is_empty()
+    );
+    assert!(
+        watcher
+            .read(std::slice::from_ref(&footprint), now())
+            .is_empty()
+    );
     git_in(&repo, &["add", "src/a.rs"]);
     git_in(&repo, &["commit", "-m", "a"]);
     let lines = watcher.read(std::slice::from_ref(&footprint), now());
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0]["route"], "git");
     assert_eq!(lines[0]["event"], "Commit");
-    assert_eq!(lines[0]["payload"]["files"], json!([a.display().to_string()]));
-    assert!(watcher.read(std::slice::from_ref(&footprint), now()).is_empty());
+    assert_eq!(
+        lines[0]["payload"]["files"],
+        json!([a.display().to_string()])
+    );
+    assert!(
+        watcher
+            .read(std::slice::from_ref(&footprint), now())
+            .is_empty()
+    );
     git_in(&repo, &["add", "src/b.rs"]);
     git_in(&repo, &["commit", "-m", "b"]);
     let lines = watcher.read(std::slice::from_ref(&footprint), now());

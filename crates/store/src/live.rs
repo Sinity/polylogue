@@ -265,7 +265,9 @@ pub struct LiveFootprint {
 }
 
 /// One running session as the running list shows it.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct RunningSession {
     pub session: String,
     #[schemars(with = "String")]
@@ -482,9 +484,7 @@ impl crate::Reader<'_> {
     ) -> Result<Option<FollowSnapshot>> {
         let conn = self.conn()?;
         let found = conn
-            .prepare_cached(
-                "SELECT pk, live_facts, last_activity_at FROM session WHERE id = ?1",
-            )?
+            .prepare_cached("SELECT pk, live_facts, last_activity_at FROM session WHERE id = ?1")?
             .query_row([session], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,

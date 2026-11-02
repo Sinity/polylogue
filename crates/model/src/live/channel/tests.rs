@@ -27,10 +27,15 @@ fn the_channel_is_a_function_of_act_state_and_probe() {
         assert_eq!(channel(ping, state, &hosted), Ok(Channel::Protocol));
         assert_eq!(channel(Act::Answer, state, &observed), Ok(Channel::Hook));
         assert_eq!(
-            channel(Act::Interrupt, state, &observed).unwrap_err().reason,
+            channel(Act::Interrupt, state, &observed)
+                .unwrap_err()
+                .reason,
             "unsupported"
         );
-        assert_eq!(channel(Act::Interrupt, state, &hosted), Ok(Channel::Protocol));
+        assert_eq!(
+            channel(Act::Interrupt, state, &hosted),
+            Ok(Channel::Protocol)
+        );
         assert_eq!(
             channel(Act::Resume, state, &observed).unwrap_err().reason,
             "session_running"
@@ -52,5 +57,8 @@ fn the_channel_is_a_function_of_act_state_and_probe() {
         channel(ping, Working, &observed),
         channel(ping, Working, &observed)
     );
-    assert_eq!(channel(Act::Answer, Working, &bare).unwrap_err().reason, "unsupported");
+    assert_eq!(
+        channel(Act::Answer, Working, &bare).unwrap_err().reason,
+        "unsupported"
+    );
 }

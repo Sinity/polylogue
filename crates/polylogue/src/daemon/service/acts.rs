@@ -31,7 +31,15 @@ pub(super) fn handle(request: Request, d: &Daemon, invocation: &Invocation) -> A
             approve,
             text,
             standing,
-        } => answer(d, invocation, &request_id, &session, approve, text, standing),
+        } => answer(
+            d,
+            invocation,
+            &request_id,
+            &session,
+            approve,
+            text,
+            standing,
+        ),
         Request::Permission {
             session,
             tool,
@@ -92,7 +100,12 @@ fn outcome_event(
 /// The sessions an address names when the ping is sent: a session
 /// reference, or the sessions a quoted query selects then (a broadcast,
 /// frozen: sessions that start matching later receive nothing).
-fn recipients(d: &Daemon, invocation: &Invocation, target: &str, now: i64) -> Result<Vec<SessionId>, Failure> {
+fn recipients(
+    d: &Daemon,
+    invocation: &Invocation,
+    target: &str,
+    now: i64,
+) -> Result<Vec<SessionId>, Failure> {
     let address = target
         .trim()
         .strip_prefix("@[")
@@ -117,13 +130,7 @@ fn recipients(d: &Daemon, invocation: &Invocation, target: &str, now: i64) -> Re
 
 /// The ping pack: the text, what it is about, how to answer, and the
 /// delivery reference.
-fn ping_text(
-    delivery: &str,
-    ping: &str,
-    author: &str,
-    text: &str,
-    about: Option<&str>,
-) -> String {
+fn ping_text(delivery: &str, ping: &str, author: &str, text: &str, about: Option<&str>) -> String {
     let mut pack = format!("Ping from {author} (delivery:{delivery}, assertion:{ping}):\n{text}\n");
     if let Some(about) = about {
         pack.push_str(&format!("About: {about}\n"));
@@ -160,7 +167,9 @@ fn ping(
     let assertion = polylogue_model::assertion::NewAssertion {
         kind: polylogue_model::assertion::AssertionKind::Ping,
         key: None,
-        value: Some(json!({"text": text, "subject": subject.as_ref().map(ToString::to_string), "reply_to": null})),
+        value: Some(
+            json!({"text": text, "subject": subject.as_ref().map(ToString::to_string), "reply_to": null}),
+        ),
         valid_until: None,
         links: sessions
             .iter()
@@ -187,7 +196,9 @@ fn ping(
         let (view_state, facts, cwd) = match state {
             Some(s) => (s.view.state, s.facts, s.cwd),
             None => {
-                sent.push(json!({"session": session, "outcome": "not_sent", "reason": "session_missing"}));
+                sent.push(
+                    json!({"session": session, "outcome": "not_sent", "reason": "session_missing"}),
+                );
                 continue;
             }
         };
@@ -213,7 +224,11 @@ fn ping(
                 left_out: Vec::new(),
             }),
         )?;
-        let chosen = channel(Act::Ping { live }, view_state, &probe(&d.acts, session, &facts));
+        let chosen = channel(
+            Act::Ping { live },
+            view_state,
+            &probe(&d.acts, session, &facts),
+        );
         let row = match chosen {
             Ok(Channel::Hook) => {
                 crate::mailbox::raise(d.acts.mail(), session).map_err(|e| Failure::new("io", e))?;
@@ -234,23 +249,43 @@ fn ping(
             }
             Ok(Channel::Protocol) => match d.acts.host_send(session, &pack) {
                 Ok(()) => {
-                    outcome_event(d, invocation, &delivery, DeliveryOutcome::Delivered, "sent over the hosted connection".into())?;
+                    outcome_event(
+                        d,
+                        invocation,
+                        &delivery,
+                        DeliveryOutcome::Delivered,
+                        "sent over the hosted connection".into(),
+                    )?;
                     json!({"session": session, "delivery": delivery, "channel": "protocol", "outcome": "delivered"})
                 }
                 Err(reason) => {
-                    outcome_event(d, invocation, &delivery, DeliveryOutcome::NotSent, format!("failed({reason})"))?;
+                    outcome_event(
+                        d,
+                        invocation,
+                        &delivery,
+                        DeliveryOutcome::NotSent,
+                        format!("failed({reason})"),
+                    )?;
                     json!({"session": session, "delivery": delivery, "channel": "protocol", "outcome": "not_sent", "reason": reason})
                 }
             },
             Err(refusal) => {
-                outcome_event(d, invocation, &delivery, DeliveryOutcome::NotSent, refusal.reason.to_owned())?;
+                outcome_event(
+                    d,
+                    invocation,
+                    &delivery,
+                    DeliveryOutcome::NotSent,
+                    refusal.reason.to_owned(),
+                )?;
                 json!({"session": session, "delivery": delivery, "outcome": "not_sent",
                        "reason": refusal.reason, "detail": refusal.detail})
             }
         };
         sent.push(row);
     }
-    Ok(ok(json!({"ping": ping, "deliveries": sent, "undo": "none: a sent ping cannot be taken back"})))
+    Ok(ok(
+        json!({"ping": ping, "deliveries": sent, "undo": "none: a sent ping cannot be taken back"}),
+    ))
 }
 
 /// A hook's mailbox claim: every ping and notice pending for the session,
@@ -289,7 +324,9 @@ pub(crate) fn settle_ended(d: &Daemon, now: i64, everyone: bool) {
         return;
     };
     let sessions: Vec<String> = if everyone {
-        reader.sessions_with_pending_hook_deliveries().unwrap_or_default()
+        reader
+            .sessions_with_pending_hook_deliveries()
+            .unwrap_or_default()
     } else {
         crate::mailbox::flagged(d.acts.mail())
             .iter()
@@ -301,7 +338,11 @@ pub(crate) fn settle_ended(d: &Daemon, now: i64, everyone: bool) {
         let Ok(id) = SessionId::parse(&session) else {
             continue;
         };
-        let state = reader.live_state(&session, now).ok().flatten().map(|s| s.view.state);
+        let state = reader
+            .live_state(&session, now)
+            .ok()
+            .flatten()
+            .map(|s| s.view.state);
         let pending: Vec<(String, ())> = reader
             .pending_hook_deliveries(&session)
             .unwrap_or_default()
@@ -326,7 +367,13 @@ pub(crate) fn settle_ended(d: &Daemon, now: i64, everyone: bool) {
         };
         let reason = format!("session_{}", state.map_or("missing", |s| s.as_str()));
         for (id, ()) in taken {
-            let _ = outcome_event(d, &invocation, &id, DeliveryOutcome::NotSent, reason.clone());
+            let _ = outcome_event(
+                d,
+                &invocation,
+                &id,
+                DeliveryOutcome::NotSent,
+                reason.clone(),
+            );
         }
         let _ = crate::mailbox::lower(d.acts.mail(), &session);
     }
@@ -353,17 +400,33 @@ fn answer(
     let Some(state) = d.reads.reader()?.live_state(&session.to_string(), now)? else {
         return Ok(error("not_found", format!("no session {session}")));
     };
-    let chosen = match channel(Act::Answer, state.view.state, &probe(&d.acts, session, &state.facts)) {
+    let chosen = match channel(
+        Act::Answer,
+        state.view.state,
+        &probe(&d.acts, session, &state.facts),
+    ) {
         Ok(chosen) => chosen,
-        Err(refusal) => return Ok(error("refused", format!("{}: {}", refusal.reason, refusal.detail))),
+        Err(refusal) => {
+            return Ok(error(
+                "refused",
+                format!("{}: {}", refusal.reason, refusal.detail),
+            ));
+        }
     };
     // A hosted session's requests come to Polylogue's connection; an
     // observed one's from its permission hook, into its live facts.
     let (reference, tool, input) = if chosen == Channel::Protocol {
         let Some(request) = d.acts.host_request(session) else {
-            return Ok(error("refused", "the hosted session has no pending request to answer"));
+            return Ok(error(
+                "refused",
+                "the hosted session has no pending request to answer",
+            ));
         };
-        (format!("request:{session}#{request}"), Value::Null, Value::Null)
+        (
+            format!("request:{session}#{request}"),
+            Value::Null,
+            Value::Null,
+        )
     } else {
         let Some(pending) = state.facts.pending_request.clone() else {
             return Ok(error(
@@ -392,9 +455,8 @@ fn answer(
         .filter(|row| row.event == DeliveryEvent::Control.as_str())
         .filter_map(|row| reader.delivery(&row.id).ok().flatten())
         .find(|(_, body)| {
-            serde_json::from_str::<Value>(body).is_ok_and(|b| {
-                b["request"] == reference && b["standing"] == standing
-            })
+            serde_json::from_str::<Value>(body)
+                .is_ok_and(|b| b["request"] == reference && b["standing"] == standing)
         });
     drop(reader);
     let body = json!({
@@ -430,23 +492,33 @@ fn answer(
         )?;
         return Ok(error(
             "refused",
-            format!("already_answered: {reference} was answered by delivery:{}", first.id),
+            format!(
+                "already_answered: {reference} was answered by delivery:{}",
+                first.id
+            ),
         ));
     }
     match chosen {
         Channel::Protocol => {
             let result = d.acts.host_answer(session, approve, text.as_deref());
             let (what, detail) = match &result {
-                Ok(()) => (DeliveryOutcome::Delivered, "answered over the hosted connection".to_owned()),
+                Ok(()) => (
+                    DeliveryOutcome::Delivered,
+                    "answered over the hosted connection".to_owned(),
+                ),
                 Err(reason) => (DeliveryOutcome::NotSent, format!("failed({reason})")),
             };
             outcome_event(d, invocation, request_id, what, detail)?;
-            Ok(ok(json!({"delivery": request_id, "request": reference, "channel": "protocol",
-                         "outcome": what.as_str(), "undo": "none: an answer cannot be taken back"})))
+            Ok(ok(
+                json!({"delivery": request_id, "request": reference, "channel": "protocol",
+                         "outcome": what.as_str(), "undo": "none: an answer cannot be taken back"}),
+            ))
         }
-        _ => Ok(ok(json!({"delivery": request_id, "request": reference, "channel": "hook",
+        _ => Ok(ok(
+            json!({"delivery": request_id, "request": reference, "channel": "hook",
                           "outcome": "prepared", "note": "applies when the session next asks for the same tool and input",
-                          "undo": "none: an answer cannot be taken back"}))),
+                          "undo": "none: an answer cannot be taken back"}),
+        )),
     }
 }
 
@@ -528,27 +600,32 @@ fn interrupt(
             left_out: Vec::new(),
         }),
     )?;
-    let (what, detail, answer) =
-        match channel(Act::Interrupt, state.view.state, &probe(&d.acts, session, &state.facts)) {
-            Ok(_) => match d.acts.host_interrupt(session) {
-                Ok(()) => (
-                    DeliveryOutcome::Delivered,
-                    "interrupted over the hosted connection".to_owned(),
-                    ok(json!({"session": session, "delivery": request_id, "channel": "protocol",
-                              "outcome": "delivered", "undo": "none: an interrupted turn is not resumed"})),
+    let (what, detail, answer) = match channel(
+        Act::Interrupt,
+        state.view.state,
+        &probe(&d.acts, session, &state.facts),
+    ) {
+        Ok(_) => match d.acts.host_interrupt(session) {
+            Ok(()) => (
+                DeliveryOutcome::Delivered,
+                "interrupted over the hosted connection".to_owned(),
+                ok(
+                    json!({"session": session, "delivery": request_id, "channel": "protocol",
+                              "outcome": "delivered", "undo": "none: an interrupted turn is not resumed"}),
                 ),
-                Err(reason) => (
-                    DeliveryOutcome::NotSent,
-                    format!("failed({reason})"),
-                    error("refused", format!("not_sent: failed({reason})")),
-                ),
-            },
-            Err(refusal) => (
-                DeliveryOutcome::NotSent,
-                refusal.reason.to_owned(),
-                error("refused", format!("{}: {}", refusal.reason, refusal.detail)),
             ),
-        };
+            Err(reason) => (
+                DeliveryOutcome::NotSent,
+                format!("failed({reason})"),
+                error("refused", format!("not_sent: failed({reason})")),
+            ),
+        },
+        Err(refusal) => (
+            DeliveryOutcome::NotSent,
+            refusal.reason.to_owned(),
+            error("refused", format!("{}: {}", refusal.reason, refusal.detail)),
+        ),
+    };
     outcome_event(d, invocation, request_id, what, detail)?;
     Ok(answer)
 }
@@ -578,9 +655,12 @@ pub(crate) fn run_resume(acts: &crate::live_acts::Acts, run: ResumeRun) {
                         .reader()
                         .ok()
                         .and_then(|r| {
-                            r.live_state(&candidate.session.to_string(), crate::daemon::service::now_ms())
-                                .ok()
-                                .flatten()
+                            r.live_state(
+                                &candidate.session.to_string(),
+                                crate::daemon::service::now_ms(),
+                            )
+                            .ok()
+                            .flatten()
                         })
                         .is_some_and(|s| s.view.state.running());
                     if !running {
@@ -621,7 +701,11 @@ fn resume_once(d: &Daemon, run: &ResumeRun) {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
-    if let Some(cwd) = run.cwd.as_deref().filter(|c| std::path::Path::new(c).is_dir()) {
+    if let Some(cwd) = run
+        .cwd
+        .as_deref()
+        .filter(|c| std::path::Path::new(c).is_dir())
+    {
         command.current_dir(cwd);
     }
     let child = match command.spawn() {
@@ -664,11 +748,16 @@ fn start(
     if harness != "codex" {
         return Ok(error(
             "refused",
-            format!("unsupported: Polylogue hosts sessions of codex only; {harness} has no control protocol client here"),
+            format!(
+                "unsupported: Polylogue hosts sessions of codex only; {harness} has no control protocol client here"
+            ),
         ));
     }
     if !cwd.is_dir() {
-        return Ok(error("bad_value", format!("{} is not a directory", cwd.display())));
+        return Ok(error(
+            "bad_value",
+            format!("{} is not a directory", cwd.display()),
+        ));
     }
     let hosted = crate::live_acts::HostedCodex::start(
         &d.acts.codex_program,
@@ -703,5 +792,7 @@ fn start(
         DeliveryOutcome::Delivered,
         "the first turn of a hosted session".into(),
     )?;
-    Ok(ok(json!({"session": session, "delivery": request_id, "channel": "protocol", "hosting": "hosted"})))
+    Ok(ok(
+        json!({"session": session, "delivery": request_id, "channel": "protocol", "hosting": "hosted"}),
+    ))
 }

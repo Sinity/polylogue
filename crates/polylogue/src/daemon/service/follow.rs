@@ -66,12 +66,8 @@ fn run(
             .and_then(polylogue_store::read::limit::ReadLimit::remaining)
             .map(|left| left.saturating_sub(MARKS_MARGIN));
         if left.is_some_and(|left| left.is_zero()) {
-            return crate::protocol::stream::event(
-                output,
-                "record",
-                &Line::Marks { marks },
-            )
-            .map_err(|e| Failure::new("io", e));
+            return crate::protocol::stream::event(output, "record", &Line::Marks { marks })
+                .map_err(|e| Failure::new("io", e));
         }
         let wait = left.map_or(IDLE_WAIT, |left| left.min(IDLE_WAIT));
         match &commits {

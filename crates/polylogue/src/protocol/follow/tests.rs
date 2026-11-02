@@ -2,7 +2,12 @@ use super::*;
 use polylogue_model::live::{LiveState, LiveView, WaitingOn};
 use polylogue_store::{FollowedCall, FollowedMessage};
 
-fn snapshot(state: LiveState, waiting_on: Option<WaitingOn>, messages: &[i64], calls: &[i64]) -> FollowSnapshot {
+fn snapshot(
+    state: LiveState,
+    waiting_on: Option<WaitingOn>,
+    messages: &[i64],
+    calls: &[i64],
+) -> FollowSnapshot {
     FollowSnapshot {
         view: LiveView {
             state,
@@ -41,7 +46,11 @@ fn kinds(lines: &[Line]) -> Vec<String> {
             Line::State { state, .. } => format!(
                 "state {}{}",
                 state.state,
-                state.waiting_on.as_deref().map(|w| format!(" {w}")).unwrap_or_default()
+                state
+                    .waiting_on
+                    .as_deref()
+                    .map(|w| format!(" {w}"))
+                    .unwrap_or_default()
             ),
             Line::Message { message, .. } => format!("message {message}"),
             Line::ToolCall { tool, call_id, .. } => {
@@ -57,11 +66,21 @@ fn kinds(lines: &[Line]) -> Vec<String> {
 /// changed.
 #[test]
 fn following_shows_each_new_row_and_state_change_once() {
-    let (lines, mark) = step("s", None, &snapshot(LiveState::Working, None, &[1, 2], &[5]), 0);
+    let (lines, mark) = step(
+        "s",
+        None,
+        &snapshot(LiveState::Working, None, &[1, 2], &[5]),
+        0,
+    );
     assert_eq!(kinds(&lines), ["state working"]);
     assert_eq!((mark.message, mark.tool_call), (2, 5));
     // Nothing new: nothing shown.
-    let (lines, same) = step("s", Some(&mark), &snapshot(LiveState::Working, None, &[], &[]), 1);
+    let (lines, same) = step(
+        "s",
+        Some(&mark),
+        &snapshot(LiveState::Working, None, &[], &[]),
+        1,
+    );
     assert!(lines.is_empty());
     assert_eq!(same, mark);
     // A new message and call, then a wait.
@@ -82,7 +101,9 @@ fn following_shows_each_new_row_and_state_change_once() {
     let marks = Marks {
         sessions: [("s".to_owned(), mark)].into_iter().collect(),
     };
-    let line = Line::Marks { marks: marks.clone() };
+    let line = Line::Marks {
+        marks: marks.clone(),
+    };
     let back: Line = serde_json::from_str(&serde_json::to_string(&line).unwrap()).unwrap();
     assert_eq!(back, Line::Marks { marks });
     assert_eq!(back.text(&jiff::tz::TimeZone::UTC), None);

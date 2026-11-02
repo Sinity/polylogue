@@ -449,9 +449,7 @@ fn stored_facts_equal_the_fold_of_stored_lines_with_ties_and_late_lines() {
 /// alike: the watcher stops watching an ended session.
 #[test]
 fn a_session_end_closes_its_process_rows() {
-    let identity = |pid: u32, role: &str| {
-        json!({"pid": pid, "start": 7, "boot_id": "boot-a", "role": role, "comm": "x"})
-    };
+    let identity = |pid: u32, role: &str| json!({"pid": pid, "start": 7, "boot_id": "boot-a", "role": role, "comm": "x"});
     let mut w = WriterArchive::new();
     evidence(
         &mut w,
@@ -472,7 +470,12 @@ fn a_session_end_closes_its_process_rows() {
     let rows = w.rows("SELECT pid, ended_at FROM process ORDER BY pid");
     let ended: Vec<(i64, i64)> = rows
         .iter()
-        .map(|r| (r["pid"].as_i64().unwrap(), (r["ended_at"].as_i64().unwrap() - T0) / MIN))
+        .map(|r| {
+            (
+                r["pid"].as_i64().unwrap(),
+                (r["ended_at"].as_i64().unwrap() - T0) / MIN,
+            )
+        })
         .collect();
     assert_eq!(ended, vec![(10, 5), (11, 3), (12, 5)]);
 }
