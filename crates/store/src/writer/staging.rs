@@ -105,8 +105,10 @@ impl Inner {
     }
 
     /// Stores a group of batches whose new blobs include private files, then
-    /// writes their parsed rows. A refused group is tried again batch by
-    /// batch, so one bad batch costs only itself.
+    /// writes their parsed rows. The bytes commit together. Parsed rows of
+    /// independent inputs that are refused together are written again batch
+    /// by batch, so one bad batch costs only itself; one logical acquisition
+    /// ([`atomic_acquisition`]) succeeds or fails as a whole.
     pub(super) fn store_group(
         &mut self,
         mut group: Vec<PreparedBatch>,
@@ -118,6 +120,7 @@ impl Inner {
         if self.sinex.is_some() {
             return self.primary_store_group(group);
         }
+        let independent = !atomic_acquisition(&group);
         for item in &group {
             if let Err(error) = self.check_staged(item) {
                 return errors(&group, error);
@@ -195,7 +198,7 @@ impl Inner {
             }
         }
         let mut parsed = Vec::new();
-        for (mut item, stored) in group.into_iter().zip(&stored) {
+        for (position, (mut item, stored)) in group.into_iter().zip(&stored).enumerate() {
             if !item.batch.parse.is_empty() {
                 item.batch.change = Change::Reparse {
                     chain: stored.chain,
@@ -204,19 +207,32 @@ impl Inner {
                 item.batch.new_blob = None;
                 item.batch.observation = None;
                 item.batch.blobs.clear();
-                parsed.push(item.batch);
+                parsed.push((position, item.batch));
             }
         }
-        if !parsed.is_empty()
-            && let Err(error) = self.write(parsed.iter())
-        {
-            let reason = error.to_string();
-            return stored
-                .into_iter()
-                .map(|_| Err(StoreError::Invalid(reason.clone())))
-                .collect();
+        let mut results: Vec<Result<StoredInput>> = stored.into_iter().map(Ok).collect();
+        if parsed.is_empty() {
+            return results;
         }
-        stored.into_iter().map(Ok).collect()
+        let Err(error) = self.write(parsed.iter().map(|(_, batch)| batch)) else {
+            return results;
+        };
+        if independent && parsed.len() > 1 {
+            for (position, batch) in &parsed {
+                if let Err(error) = self.write(std::iter::once(batch)) {
+                    results[*position] = Err(error);
+                }
+            }
+            return results;
+        }
+        if results.len() == 1 {
+            return vec![Err(error)];
+        }
+        let reason = error.to_string();
+        results
+            .into_iter()
+            .map(|_| Err(StoreError::Invalid(reason.clone())))
+            .collect()
     }
 
     /// Commits the durable extents and the revisions and observations that cite them.

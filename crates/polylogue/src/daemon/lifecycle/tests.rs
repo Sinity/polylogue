@@ -203,6 +203,10 @@ fn a_second_signal_ends_the_process_while_startup_is_blocked() {
         }
         line.clear();
     }
+    // `Child::wait` closes the child's stdin, and end of input ends the
+    // blocked startup normally. Holding stdin leaves the second signal as
+    // the only way the child can exit.
+    let _blocked_startup = process.0.stdin.take().unwrap();
     send(&process, rustix::process::Signal::INT);
     assert_eq!(process.0.wait().unwrap().code(), Some(128 + libc::SIGINT));
 }

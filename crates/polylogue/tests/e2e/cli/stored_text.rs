@@ -21,13 +21,13 @@ pub(super) fn with_source(records: &[Value], check: impl FnOnce(&crate::Fixture,
     check(&fixture, directory.path());
     assert_eq!(std::fs::read_to_string(source).unwrap(), original);
 }
-// Serving precedes the initial ingest/count pass. A default-budget status
-// timeout is a pending setup observation, not a successful readiness result.
+// Serving precedes the initial ingest and count pass. The startup poll lifts
+// its deadline: status then answers once the daemon can, so the only answer
+// accepted is a successful one.
 fn wait_for_source(fixture: &crate::Fixture, messages: usize) {
     let until = Instant::now() + Duration::from_secs(30);
-    let mut last_status = None;
     loop {
-        let output = cli(fixture, &["--json", "status"]);
+        let output = cli(fixture, &["--deadline", "none", "--json", "status"]);
         let answer: command_surface::Answer<Value> = serde_json::from_slice(&output.stdout)
             .unwrap_or_else(|error| panic!("invalid startup status answer: {error}: {output:?}"));
         assert_eq!(
@@ -35,23 +35,17 @@ fn wait_for_source(fixture: &crate::Fixture, messages: usize) {
             Some(i32::from(answer.exit_code())),
             "startup status exit disagrees with its answer: {output:?}"
         );
-        match answer {
-            command_surface::Answer::Error { error, .. }
-                if error.kind == command_surface::FailureKind::Timeout
-                    && error.code.as_deref() == Some("deadline_exceeded")
-                    && error.retryable => {}
-            // A standalone archive's status is current, so never degraded.
-            command_surface::Answer::Ok { value, .. } => {
-                if value["busy"] == false && value["store"]["messages"] == messages {
-                    return;
-                }
-                last_status = Some(value);
-            }
+        // A standalone archive's status is current, so never degraded.
+        let value = match answer {
+            command_surface::Answer::Ok { value, .. } => value,
             answer => panic!("startup status failed: {answer:?}; {output:?}"),
+        };
+        if value["busy"] == false && value["store"]["messages"] == messages {
+            return;
         }
         assert!(
             Instant::now() < until,
-            "source never became ready; last successful status: {last_status:?}; last output: {output:?}"
+            "source never became ready; last status: {value}"
         );
         std::thread::sleep(Duration::from_millis(20));
     }

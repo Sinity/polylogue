@@ -41,7 +41,9 @@ pub(super) fn wait_status(
     const PAUSE: Duration = Duration::from_millis(25);
     let started = Instant::now();
     loop {
-        let out = cli(env, &["--json", "status"]);
+        // The poll lifts its deadline, so a loaded host delays the answer
+        // instead of turning it into a timeout.
+        let out = cli(env, &["--deadline", "none", "--json", "status"]);
         assert!(out.status.success(), "{out:?}");
         let status = json(&out);
         // The archive counts come once the daemon's first count ends.
