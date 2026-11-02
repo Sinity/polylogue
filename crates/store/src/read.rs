@@ -275,7 +275,9 @@ impl ReadPool {
     }
 
     fn connect(&self) -> Result<Connection> {
+        let debug_start = std::time::Instant::now();
         let conn = open_read(&self.archive.index_db())?;
+        let debug_opened = debug_start.elapsed();
         if self.archive.is_primary() {
             crate::primary::scope::require_readable(&conn)?;
         }
@@ -296,6 +298,7 @@ impl ReadPool {
             crate::sql_views::create(&conn)?;
             Ok::<_, StoreError>(())
         })();
+        let debug_viewed = debug_start.elapsed();
         match created {
             Ok(()) => conn.execute_batch("COMMIT")?,
             Err(error) => {
@@ -311,6 +314,7 @@ impl ReadPool {
             conn.pragma_update(Some(schema), "cache_size", -self.cache_kib)?;
             conn.pragma_update(Some(schema), "mmap_size", 0)?;
         }
+        eprintln!("DEBUGCONNECT open={debug_opened:?} views={debug_viewed:?} total={:?}", debug_start.elapsed());
         Ok(conn)
     }
 
@@ -640,7 +644,9 @@ impl Reader<'_> {
         // The currency is a pure function of this snapshot. It is built here
         // once per read, and nowhere else, so no SQL access can see it missing.
         if !self.assertion_currency_ready.get() {
+            let debug_start = std::time::Instant::now();
             crate::assertions::currency::prepare_all(conn)?;
+            eprintln!("DEBUGCURRENCY {:?}", debug_start.elapsed());
             self.check()?;
             self.assertion_currency_ready.set(true);
         }
