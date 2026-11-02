@@ -80,7 +80,7 @@ fn concurrent_reads_keep_separate_deadlines_and_cancellation() {
         // The short deadline may pass while its reader is still opening; the
         // law is that it ends that read alone, wherever it is.
         let a = scope.spawn(|| short.scope(|| pool.reader()?.query(SLOW, &[])));
-        let b = scope.spawn(|| long.scope(|| pool.reader().unwrap().query(SLOW, &[])));
+        let b = scope.spawn(|| long.scope(|| pool.reader()?.query(SLOW, &[])));
         started(&long);
         assert!(matches!(
             a.join().unwrap(),
@@ -92,7 +92,9 @@ fn concurrent_reads_keep_separate_deadlines_and_cancellation() {
         ));
         assert!(long.check().is_ok());
         long.cancellation.cancel();
-        assert!(b.join().unwrap().is_err());
+        // SQLite steps start while the reader opens its views, so the
+        // cancellation can end the long read before its statement starts.
+        assert!(matches!(b.join().unwrap(), Err(StoreError::ReadCancelled)));
     });
 }
 

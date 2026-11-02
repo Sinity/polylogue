@@ -7,13 +7,13 @@
 //!   so a repeated or paged query neither pays nor waits for the provider
 //!   again, and ranks by the same values.
 //! - **Archive counts** for `status`: counted by a worker of their own when
-//!   the daemon starts and whenever a `status` finds them older than its
-//!   read, while `status` answers from memory (no counts until the first
-//!   count ends), so it stays fast during a long pass. Counts that take
-//!   under 50 ms are simply taken again inside the request. A count of a large
-//!   archive under load takes seconds; the worker leaves at least four
-//!   times as long between counts, and `status` says which read position
-//!   its counts are from.
+//!   the daemon starts and after the writer commits, while `status` answers
+//!   from memory (no counts until the first count ends), so it stays fast
+//!   during a long pass. Counts that take under 50 ms are simply taken again
+//!   inside the request. One count runs at a time: commits made while it
+//!   runs are counted once it ends, so the counts reach the writer's last
+//!   commit one count after it, and `status` says which read position its
+//!   counts are from.
 //!
 //! Every entry is checked against the read position (or the vector write
 //! count) of the request that uses it, so a write is never answered from
@@ -89,9 +89,11 @@ pub struct Warm {
     /// Whether the index had caught up, with the change position it was read at.
     caught_up: Mutex<Option<(String, bool)>>,
     count_error: Mutex<Option<String>>,
-    /// Wakes the count worker: a request saw counts older than its read.
+    /// Wakes the count worker: the writer committed, or a request saw
+    /// counts older than its read.
     recount: std::sync::Condvar,
     recount_wanted: std::sync::atomic::AtomicBool,
+    counting_stopped: std::sync::atomic::AtomicBool,
     query_vectors: Mutex<Recent<Arc<Vec<f32>>>>,
     counts: Counts,
 }
@@ -106,6 +108,7 @@ impl Default for Warm {
             recount: std::sync::Condvar::new(),
             // The first count starts with the daemon.
             recount_wanted: std::sync::atomic::AtomicBool::new(true),
+            counting_stopped: std::sync::atomic::AtomicBool::new(false),
             query_vectors: Mutex::new(Recent::new(QUERY_VECTORS)),
             counts: Counts::default(),
         }
@@ -245,50 +248,66 @@ impl Warm {
 
     fn request_count(&self) {
         self.recount_wanted.store(true, Ordering::Release);
+        // Under the worker's lock, so the wake cannot fall between its check
+        // and its wait.
+        let _guard = self.archive_counts.lock();
         self.recount.notify_one();
     }
 
-    /// The count worker: counts again when a `status` asked for newer
-    /// counts, leaving at least four times the last count's duration
-    /// between counts, until `stop` says so.
+    /// The count worker: counts whenever the writer committed (`commits`)
+    /// or a `status` asked for newer counts, one count at a time, until
+    /// [`Warm::stop_counting`].
     pub fn count_worker(
         &self,
         reads: &polylogue_store::ReadPool,
-        stop: &std::sync::mpsc::Receiver<()>,
+        commits: Option<polylogue_store::completion::CommitSubscription>,
     ) {
-        loop {
-            match stop.try_recv() {
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                _ => return,
-            }
-            let gap = {
-                let Ok(held) = self.archive_counts.lock() else {
-                    return;
-                };
-                let gap = held.as_ref().map_or(Duration::ZERO, |c| {
-                    (c.took * 4)
-                        .max(Duration::from_millis(200))
-                        .saturating_sub(c.at.elapsed())
+        let wake = commits
+            .as_ref()
+            .map(polylogue_store::completion::CommitSubscription::wake_handle);
+        std::thread::scope(|scope| {
+            if let Some(commits) = commits {
+                scope.spawn(move || {
+                    while commits.recv().is_ok() && !self.counting_stopped() {
+                        self.request_count();
+                    }
                 });
-                let wanted = self.recount_wanted.load(Ordering::Acquire);
-                let wait = if gap.is_zero() && wanted {
-                    Duration::ZERO
-                } else if gap.is_zero() {
-                    Duration::from_secs(1)
-                } else {
-                    gap
-                };
-                let Ok((held, _)) = self.recount.wait_timeout(held, wait) else {
-                    return;
-                };
-                drop(held);
-                gap
-            };
-            if !gap.is_zero() || !self.recount_wanted.swap(false, Ordering::AcqRel) {
-                continue;
             }
-            self.refresh_counts(reads);
-        }
+            loop {
+                {
+                    let Ok(held) = self.archive_counts.lock() else {
+                        break;
+                    };
+                    let Ok(held) = self.recount.wait_while(held, |_| {
+                        !self.counting_stopped() && !self.recount_wanted.load(Ordering::Acquire)
+                    }) else {
+                        break;
+                    };
+                    drop(held);
+                }
+                if self.counting_stopped() {
+                    break;
+                }
+                self.recount_wanted.store(false, Ordering::Release);
+                self.refresh_counts(reads);
+            }
+            self.counting_stopped.store(true, Ordering::Release);
+            if let Some(wake) = wake {
+                // The relay sees the stop on its next wake.
+                let _ = wake.try_send(());
+            }
+        });
+    }
+
+    /// Ends [`Warm::count_worker`].
+    pub fn stop_counting(&self) {
+        self.counting_stopped.store(true, Ordering::Release);
+        let _guard = self.archive_counts.lock();
+        self.recount.notify_all();
+    }
+
+    fn counting_stopped(&self) -> bool {
+        self.counting_stopped.load(Ordering::Acquire)
     }
 
     fn refresh_counts(&self, reads: &polylogue_store::ReadPool) {
