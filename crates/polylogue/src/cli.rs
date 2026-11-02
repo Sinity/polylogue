@@ -457,7 +457,13 @@ pub fn status_output(
         .expect("output handlers receive answers with values");
     if !values.flag("line") {
         if json {
-            println!("{}", polylogue_render::terminal::json(data, false));
+            println!(
+                "{}",
+                polylogue_render::terminal::json(
+                    &serde_json::to_value(answer).expect("answer serializes"),
+                    false
+                )
+            );
         } else {
             print!("{}", print::json(data, startup.output.stdout_color()));
         }
