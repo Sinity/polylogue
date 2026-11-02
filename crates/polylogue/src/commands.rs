@@ -1167,7 +1167,7 @@ const WRITTEN: &[Command] = &[
             ),
         ],
         action: Action::Request(requests::hand_off),
-        mcp: true,
+        tool: Some(Tool::Act),
         http: true,
         writes: true,
         ..CLI
