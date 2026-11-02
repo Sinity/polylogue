@@ -252,7 +252,7 @@ fn a_hand_off_starts_a_new_session_briefed_from_the_source() {
                 session: s1(),
                 to: to.into(),
                 cwd: Some(work.path().to_owned()),
-                at: Some("message:claude-code:s1:u1".into()),
+                at: Some("message:claude-code:u1".into()),
                 stop_source: false,
                 print,
             },

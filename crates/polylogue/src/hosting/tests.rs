@@ -237,7 +237,7 @@ fn claude_stream_json_steers_answers_and_interrupts() {
     .unwrap();
     client.send("look around").unwrap();
     wait_until("the tool permission", || client.request().is_some());
-    assert_eq!(client.request().unwrap(), "\"r1\"");
+    assert_eq!(client.request().unwrap(), "r1");
     client.answer(true, None).unwrap();
     wait_until("the approval", || hosting.log().contains("allow"));
     let approval: Value = serde_json::from_str(hosting.log().lines().next().unwrap()).unwrap();

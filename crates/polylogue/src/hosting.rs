@@ -806,10 +806,11 @@ impl HostedStdio {
     pub(crate) fn request(&self) -> Option<String> {
         let state = lock(&self.state.0);
         let request = state.requests.front()?;
-        Some(match state.protocol {
-            HostProtocol::ClaudeStreamJson => request["request_id"].to_string(),
-            _ => request["id"].to_string(),
-        })
+        let id = match state.protocol {
+            HostProtocol::ClaudeStreamJson => &request["request_id"],
+            _ => &request["id"],
+        };
+        Some(id.as_str().map_or_else(|| id.to_string(), str::to_owned))
     }
 
     /// Answers the oldest pending request.
