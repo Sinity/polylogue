@@ -153,7 +153,7 @@ fn this_builds_reader_takes_every_rollback_fixture_line() {
             "claude-code:rollback-claude",
             "codex:rollback-codex",
             "gemini-cli:rollback-gemini",
-            "hermes:rollback-hermes",
+            "hermes:rollback-hermes@profile-caa890356da51a01",
             "claude-code:rollback-claude",
         ]
     );
