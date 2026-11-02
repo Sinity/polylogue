@@ -1009,7 +1009,10 @@ fn start_session(
         invocation,
         new.request_id,
         DeliveryOutcome::Delivered,
-        format!("the first turn of a session hosted over {}", protocol.as_str()),
+        format!(
+            "the first turn of a session hosted over {}",
+            protocol.as_str()
+        ),
     )?;
     Ok(Ok(session))
 }
@@ -1036,7 +1039,9 @@ fn start(
     cwd: &std::path::Path,
     text: &str,
 ) -> Result<Answer<Value>, Failure> {
-    let role = role_name.map(|name| role(d, invocation, name)).transpose()?;
+    let role = role_name
+        .map(|name| role(d, invocation, name))
+        .transpose()?;
     let harness = match (harness, &role) {
         (Some(harness), Some(role)) if harness != role.harness => {
             return Ok(error(
@@ -1153,7 +1158,11 @@ struct HandOff<'a> {
 /// from. It is a new session, never a resume or a fork of the source.
 /// `stop_source` then interrupts the source; `print` shows the pack and
 /// starts nothing.
-fn hand_off(d: &Daemon, invocation: &Invocation, h: &HandOff<'_>) -> Result<Answer<Value>, Failure> {
+fn hand_off(
+    d: &Daemon,
+    invocation: &Invocation,
+    h: &HandOff<'_>,
+) -> Result<Answer<Value>, Failure> {
     let reader = d.reads.reader()?;
     let Some(source) = reader.session(h.source)? else {
         return Ok(error("not_found", format!("no session {}", h.source)));
@@ -1167,11 +1176,10 @@ fn hand_off(d: &Daemon, invocation: &Invocation, h: &HandOff<'_>) -> Result<Answ
             .map(std::path::PathBuf::from)
             .filter(|c| c.is_dir()),
     };
-    let at = h
-        .at
-        .map(polylogue_model::Reference::parse)
-        .transpose()
-        .map_err(|e| Failure::new("bad_value", e))?;
+    let at =
+        h.at.map(polylogue_model::Reference::parse)
+            .transpose()
+            .map_err(|e| Failure::new("bad_value", e))?;
     let operation = d.resolve_operation_context(invocation.clone())?;
     let prepared = crate::briefing::prepare(
         &reader,
@@ -1259,13 +1267,10 @@ fn hand_off(d: &Daemon, invocation: &Invocation, h: &HandOff<'_>) -> Result<Answ
         reason = "the signal evaluator calls it once authored rules fire; they are held until the signals adoption lands"
     )
 )]
-pub(crate) fn notice(
-    d: &Daemon,
-    rule: &str,
-    to: &str,
-    text: &str,
-) -> Result<Vec<Value>, Failure> {
-    let invocation = d.invocation(&crate::operation::Context::worker_authorship("polylogue-signals"));
+pub(crate) fn notice(d: &Daemon, rule: &str, to: &str, text: &str) -> Result<Vec<Value>, Failure> {
+    let invocation = d.invocation(&crate::operation::Context::worker_authorship(
+        "polylogue-signals",
+    ));
     let now = now(d);
     let sessions = match recipients(d, &invocation, to, now)? {
         Recipients::Sessions(sessions) => sessions,
@@ -1279,7 +1284,9 @@ pub(crate) fn notice(
     for (n, session) in sessions.iter().enumerate() {
         let delivery = format!("{base}-{n}");
         let Some((state, facts, cwd)) = session_state(d, session, now)? else {
-            sent.push(json!({"session": session, "outcome": "not_sent", "reason": "session_missing"}));
+            sent.push(
+                json!({"session": session, "outcome": "not_sent", "reason": "session_missing"}),
+            );
             continue;
         };
         let pack = format!("Notice from the rule {rule} (delivery:{delivery}):\n{text}");

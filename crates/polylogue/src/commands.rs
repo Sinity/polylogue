@@ -1139,20 +1139,32 @@ const WRITTEN: &[Command] = &[
         help: "Hand a session's work to a new hosted session in any harness, briefed with the session's takeover pack and the message to continue from (--at), in its directory; the new session records what it was briefed from and is never a resume or fork. --stop-source then interrupts the source; --print shows the pack and starts nothing",
         reason: "Starts a harness session; no query selects one that does not exist yet",
         args: &[
-            pos("session", Kind::Text, "The session whose work is handed off"),
+            pos(
+                "session",
+                Kind::Text,
+                "The session whose work is handed off",
+            ),
             opt(
                 "to",
                 Kind::Choice(&["codex", "claude-code", "gemini-cli", "hermes"]),
                 "The harness of the new session",
             ),
             opt("at", Kind::Text, "The message to continue from"),
-            opt("cwd", Kind::Text, "The working directory, when not the source's"),
+            opt(
+                "cwd",
+                Kind::Text,
+                "The working directory, when not the source's",
+            ),
             opt(
                 "stop_source",
                 Kind::Bool,
                 "Interrupt the source session once the new one runs",
             ),
-            opt("print", Kind::Bool, "Show the pack and the channel; start nothing"),
+            opt(
+                "print",
+                Kind::Bool,
+                "Show the pack and the channel; start nothing",
+            ),
         ],
         action: Action::Request(requests::hand_off),
         mcp: true,
@@ -1458,7 +1470,11 @@ const WRITTEN: &[Command] = &[
             opt("socket", Kind::Text, "The socket the daemon connects to"),
             opt("cwd", Kind::Text, "The agent's working directory"),
             opt("spool", Kind::Text, "The hook spool its status lines go to"),
-            opt("session_id", Kind::Text, "The session ID to start the agent with, where the harness takes one"),
+            opt(
+                "session_id",
+                Kind::Text,
+                "The session ID to start the agent with, where the harness takes one",
+            ),
         ],
         action: Action::Local(local::host),
         ..CLI

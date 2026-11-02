@@ -310,13 +310,8 @@ fn status_line(
         payload["start"] = json!(identity.start);
         payload["boot_id"] = json!(identity.boot);
     }
-    let line = crate::live_evidence::line(
-        "registry",
-        event,
-        session,
-        jiff::Timestamp::now(),
-        payload,
-    );
+    let line =
+        crate::live_evidence::line("registry", event, session, jiff::Timestamp::now(), payload);
     let boot = crate::live_evidence::boot_id().unwrap_or_else(|| "unknown".into());
     let _ = crate::live_evidence::append(&config.spool, "registry", &boot, &[line]);
 }
@@ -388,7 +383,11 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                         }
                         // An unanswered request that waited here is in both.
                         for line in &relay.backlog {
-                            if relay.tracker.unanswered().any(|open| open == line.as_slice()) {
+                            if relay
+                                .tracker
+                                .unanswered()
+                                .any(|open| open == line.as_slice())
+                            {
                                 continue;
                             }
                             first.extend_from_slice(line);
@@ -546,7 +545,9 @@ pub(crate) fn spawn_host(
         std::thread::sleep(Duration::from_millis(20));
     }
     stop_host(child.id());
-    Err(std::io::Error::other("polylogue host did not open its socket"))
+    Err(std::io::Error::other(
+        "polylogue host did not open its socket",
+    ))
 }
 
 /// Ends a host that never became a session, and its agent.
@@ -659,8 +660,8 @@ impl StdioState {
                     let id = &message["id"];
                     // A prompt sent before a daemon restart is known only
                     // by its answer's stop reason.
-                    let prompt = self.prompts.contains(id)
-                        || message["result"].get("stopReason").is_some();
+                    let prompt =
+                        self.prompts.contains(id) || message["result"].get("stopReason").is_some();
                     if prompt {
                         self.prompts.retain(|p| p != id);
                         self.turn = false;
@@ -779,8 +780,8 @@ impl HostedStdio {
     ) -> std::io::Result<(Self, SessionId)> {
         let key = format!("{harness}-{}", uuid::Uuid::now_v7());
         let socket = dir.join(format!("{key}.sock"));
-        let claude_id = (protocol == HostProtocol::ClaudeStreamJson)
-            .then(|| uuid::Uuid::new_v4().to_string());
+        let claude_id =
+            (protocol == HostProtocol::ClaudeStreamJson).then(|| uuid::Uuid::new_v4().to_string());
         let host = spawn_host(harness, &socket, cwd, spool, claude_id.as_deref())?;
         let started = Self::begin(harness, protocol, dir, &key, &socket, cwd, claude_id, text);
         if started.is_err() {
@@ -817,10 +818,7 @@ impl HostedStdio {
                     json!({"protocolVersion": 1, "clientCapabilities": {
                         "fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false}}),
                 )?;
-                let created = hosted.call(
-                    "session/new",
-                    json!({"cwd": cwd, "mcpServers": []}),
-                )?;
+                let created = hosted.call("session/new", json!({"cwd": cwd, "mcpServers": []}))?;
                 let id = created["sessionId"]
                     .as_str()
                     .ok_or_else(|| std::io::Error::other("session/new named no session"))?

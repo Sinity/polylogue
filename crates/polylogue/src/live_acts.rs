@@ -378,7 +378,9 @@ impl Acts {
     /// The oldest request a hosted session waits on, by its protocol's
     /// request ID.
     pub(crate) fn host_request(&self, session: &SessionId) -> Option<String> {
-        self.with_hosted(session, |h| Ok(h.request())).ok().flatten()
+        self.with_hosted(session, |h| Ok(h.request()))
+            .ok()
+            .flatten()
     }
 
     /// Whether the installed Claude Code asks the synchronous permission

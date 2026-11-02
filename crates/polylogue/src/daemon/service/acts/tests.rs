@@ -215,7 +215,13 @@ fn hosted_codex(d: &test_daemon::TestDaemon) -> tempfile::TempDir {
 #[test]
 fn a_notice_to_a_stopped_session_is_not_sent_and_starts_nothing() {
     let d = test_daemon::start_with_clock("notice", at("2026-03-02T10:00:00Z"));
-    let sent = notice(&d.daemon, "main-force-pushed", "@[claude-code:s1]", "main moved").unwrap();
+    let sent = notice(
+        &d.daemon,
+        "main-force-pushed",
+        "@[claude-code:s1]",
+        "main moved",
+    )
+    .unwrap();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0]["outcome"], "not_sent");
     assert_eq!(sent[0]["reason"], "session_not_live");
@@ -261,7 +267,12 @@ fn a_hand_off_starts_a_new_session_briefed_from_the_source() {
         )
     };
     let printed = crate::test_answers::ok(hand_off("codex", true));
-    assert!(printed["pack"].as_str().unwrap().contains("Hand-off from claude-code:s1"));
+    assert!(
+        printed["pack"]
+            .as_str()
+            .unwrap()
+            .contains("Hand-off from claude-code:s1")
+    );
     assert!(turns(fixture.path()).is_empty(), "print starts nothing");
     let refused = serde_json::to_value(hand_off("chatgpt", false)).unwrap();
     assert_eq!(refused["error"]["kind"], "refused");
@@ -271,14 +282,20 @@ fn a_hand_off_starts_a_new_session_briefed_from_the_source() {
     let delivery = answer["delivery"].as_str().unwrap();
     let first = turns(fixture.path());
     assert_eq!(first.len(), 1);
-    assert!(first[0].starts_with(&format!("delivery:{delivery}\nHand-off from claude-code:s1")));
+    assert!(first[0].starts_with(&format!(
+        "delivery:{delivery}\nHand-off from claude-code:s1"
+    )));
     let reader = d.daemon.reads.reader().unwrap();
     let (row, _) = reader.delivery(delivery).unwrap().unwrap();
     assert_eq!((row.event.as_str(), row.sender.as_str()), ("pack", "act"));
     assert_eq!(row.recipient_id.as_deref(), Some("codex:t1"));
     assert_eq!(row.events, ["delivered"]);
     drop(reader);
-    assert!(d.daemon.acts.is_hosted(&SessionId::parse("codex:t1").unwrap()));
+    assert!(
+        d.daemon
+            .acts
+            .is_hosted(&SessionId::parse("codex:t1").unwrap())
+    );
     assert!(
         crate::hosting::records(&d.daemon.acts.hosts)
             .iter()
@@ -318,7 +335,9 @@ fn role_addresses_and_role_starts() {
             assertions: vec![NewAssertion {
                 kind: AssertionKind::Role,
                 key: Some("reviewer".into()),
-                value: Some(json!({"instructions": "Review diffs for data safety.", "harness": "codex"})),
+                value: Some(
+                    json!({"instructions": "Review diffs for data safety.", "harness": "codex"}),
+                ),
                 valid_until: None,
                 links: vec![],
             }],
@@ -326,7 +345,12 @@ fn role_addresses_and_role_starts() {
     )
     .unwrap();
     let refused = ping("@[role:reviewer]");
-    assert!(refused["error"]["message"].as_str().unwrap().contains("no_live_instance"));
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no_live_instance")
+    );
     let started = crate::test_answers::ok(handle(
         Request::Start {
             request_id: polylogue_store::user_writes::new_request_id(),

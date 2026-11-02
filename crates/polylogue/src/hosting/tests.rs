@@ -142,9 +142,11 @@ fn record(hosting: &Hosting) -> Record {
 #[test]
 fn a_hosted_session_survives_its_daemon_connection() {
     let mut hosting = Hosting::start("gemini-cli", HostProtocol::Acp, ACP_AGENT, None);
-    let first = HostedStdio::connect(&hosting.config.socket, HostProtocol::Acp, String::new())
+    let first =
+        HostedStdio::connect(&hosting.config.socket, HostProtocol::Acp, String::new()).unwrap();
+    first
+        .call("initialize", json!({"protocolVersion": 1}))
         .unwrap();
-    first.call("initialize", json!({"protocolVersion": 1})).unwrap();
     let created = first
         .call("session/new", json!({"cwd": "/", "mcpServers": []}))
         .unwrap();
@@ -180,7 +182,9 @@ fn a_hosted_session_survives_its_daemon_connection() {
     let words: Vec<&str> = lines.iter().filter_map(|(_, w)| w.as_deref()).collect();
     assert_eq!(
         words,
-        ["busy", "blocked", "busy", "idle", "busy", "blocked", "busy", "idle"]
+        [
+            "busy", "blocked", "busy", "idle", "busy", "blocked", "busy", "idle"
+        ]
     );
     assert_eq!(lines.last().unwrap().0, "HostedEnded");
     assert!(!hosting.config.socket.exists());
@@ -191,8 +195,8 @@ fn a_hosted_session_survives_its_daemon_connection() {
 #[test]
 fn acp_prompts_cancels_and_answers_through_the_protocol() {
     let mut hosting = Hosting::start("gemini-cli", HostProtocol::Acp, ACP_AGENT, None);
-    let client = HostedStdio::connect(&hosting.config.socket, HostProtocol::Acp, "s1".into())
-        .unwrap();
+    let client =
+        HostedStdio::connect(&hosting.config.socket, HostProtocol::Acp, "s1".into()).unwrap();
     assert!(client.interrupt().is_err(), "no prompt runs yet");
     client.send("work", None).unwrap();
     wait_until("the permission request", || client.request().is_some());
@@ -213,7 +217,12 @@ fn acp_prompts_cancels_and_answers_through_the_protocol() {
         json!({"jsonrpc": "2.0", "id": 7, "result": {"outcome": {"outcome": "selected", "optionId": "never"}}})
     );
     assert_eq!(
-        answer_message(HostProtocol::Acp, &json!({"id": 8, "params": {"options": []}}), true, None),
+        answer_message(
+            HostProtocol::Acp,
+            &json!({"id": 8, "params": {"options": []}}),
+            true,
+            None
+        ),
         json!({"jsonrpc": "2.0", "id": 8, "result": {"outcome": {"outcome": "cancelled"}}})
     );
     hosting.quit(&client);
@@ -260,7 +269,9 @@ fn claude_stream_json_steers_answers_and_interrupts() {
     let words: Vec<&str> = lines.iter().filter_map(|(_, w)| w.as_deref()).collect();
     assert_eq!(
         words,
-        ["busy", "blocked", "busy", "idle", "busy", "blocked", "busy", "idle"]
+        [
+            "busy", "blocked", "busy", "idle", "busy", "blocked", "busy", "idle"
+        ]
     );
     let raw = std::fs::read_dir(hosting.config.spool.join("registry"))
         .unwrap()
@@ -284,11 +295,20 @@ fn the_tracker_follows_turns_and_unanswered_requests() {
     let ask = json!({"id": 5, "method": "session/request_permission"});
     assert_eq!(acp.from_agent(&ask, b"ask"), Some("blocked"));
     assert_eq!(acp.unanswered().collect::<Vec<_>>(), [b"ask".as_slice()]);
-    assert_eq!(acp.from_agent(&json!({"method": "session/update"}), b"u"), None);
-    assert_eq!(acp.from_client(&json!({"id": 5, "result": {}})), Some("busy"));
+    assert_eq!(
+        acp.from_agent(&json!({"method": "session/update"}), b"u"),
+        None
+    );
+    assert_eq!(
+        acp.from_client(&json!({"id": 5, "result": {}})),
+        Some("busy")
+    );
     assert_eq!(acp.unanswered().count(), 0);
     assert_eq!(
-        acp.from_agent(&json!({"id": "a", "result": {"stopReason": "end_turn"}}), b"r"),
+        acp.from_agent(
+            &json!({"id": "a", "result": {"stopReason": "end_turn"}}),
+            b"r"
+        ),
         Some("idle")
     );
     let mut claude = Tracker::new(HostProtocol::ClaudeStreamJson);
@@ -299,7 +319,10 @@ fn the_tracker_follows_turns_and_unanswered_requests() {
         None,
         "the second message's turn runs next"
     );
-    assert_eq!(claude.from_agent(&json!({"type": "result"}), b"r"), Some("idle"));
+    assert_eq!(
+        claude.from_agent(&json!({"type": "result"}), b"r"),
+        Some("idle")
+    );
 }
 
 /// Records round-trip, and removing one takes its socket with it.
@@ -339,8 +362,5 @@ fn records_list_every_hosted_session() {
         Some("u")
     );
     assert_eq!(agent_command("claude-code", None), None);
-    assert_eq!(
-        agent_command("hermes", None).unwrap(),
-        ["hermes", "acp"]
-    );
+    assert_eq!(agent_command("hermes", None).unwrap(), ["hermes", "acp"]);
 }
