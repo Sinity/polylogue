@@ -60,7 +60,7 @@ fn output(record: TextFragmentRecord) -> Output {
 fn database() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE input_ref(pk INTEGER PRIMARY KEY,id TEXT,format TEXT); INSERT INTO input_ref VALUES(1,'receiving-input','polylogue-bundle');").unwrap();
-    conn.execute_batch(include_str!("../schema/index_12.sql"))
+    conn.execute_batch(include_str!("../schema/text_fragments.sql"))
         .unwrap();
     conn
 }

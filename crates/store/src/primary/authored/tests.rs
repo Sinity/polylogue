@@ -128,9 +128,9 @@ fn prepared_effect_is_private_and_preserves_full_assertion_provenance() {
             polylogue_model::SessionId::parse("codex:session-a").unwrap()
         ))
     );
-    assert_eq!(p.effect.assertions[0].machine.as_deref(), Some("machine-a"));
-    assert_eq!(p.effect.assertions[0].via, Some(r.authorship.via));
-    assert_eq!(p.effect.assertions[0].created_at, Some(r.at));
+    assert_eq!(p.effect.assertions[0].machine, "machine-a");
+    assert_eq!(p.effect.assertions[0].via, r.authorship.via);
+    assert_eq!(p.effect.assertions[0].created_at, r.at);
     assert!(!p.outcome.pending);
     commit(&mut conn, &p, 1);
     assert_eq!(count(&conn, "assertion"), 1);

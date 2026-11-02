@@ -194,7 +194,7 @@ fn host_settings_default_to_the_accepting_machine_and_do_not_leak_to_other_hosts
             .authored
             .unwrap()
             .machine,
-        Some("host-a".into())
+        "host-a"
     );
 }
 

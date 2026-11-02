@@ -2,7 +2,7 @@ use super::*;
 use crate::primary::authored::{apply, prepare, restore};
 use polylogue_model::{
     Author, Timestamp,
-    authored::{ImportAttribution, PendingAuthored},
+    authored::PendingAuthored,
     signal::{Event, Outbox},
     user::{Delivery as PreparedDelivery, UserWrite},
 };
@@ -222,16 +222,9 @@ fn signal_historical_reverse_snapshots_preserve_receipts_without_authorizing_eff
     }];
     let q = prepare_pending(&origin, &request("next", next), &[]).unwrap();
     let mut target = cache();
-    let claim = ImportAttribution {
-        machine: "receiver".into(),
-        input: "bundle".into(),
-        chain: 1,
-        actor: Author::Operator,
-        at: Timestamp::from_unix_ms(500).unwrap(),
-    };
     for (seq, prepared) in [(1, &q), (2, &p), (3, &q)] {
         let tx = target.transaction().unwrap();
-        restore(&tx, prepared, &[], &claim, seq).unwrap();
+        restore(&tx, prepared, seq).unwrap();
         tx.commit().unwrap();
     }
     assert!(
