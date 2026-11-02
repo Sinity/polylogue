@@ -296,6 +296,38 @@ pub(crate) fn write_preparing(
     accept(conn, &expanded, true, context, saved)
 }
 
+/// Inserts one write of the request being checked, under the ID it will
+/// take, and recomputes its family's currency. Only `accept`'s rolled-back
+/// savepoint calls this.
+fn preview(
+    conn: &Connection,
+    request: &UserRequest,
+    id: &str,
+    statement: &NewAssertion,
+    counter: i64,
+) -> Result<()> {
+    let mut root = id.to_owned();
+    for link in &statement.links {
+        if let (LinkRole::Revises, Reference::Assertion(base)) = (link.role, &link.reference) {
+            root = base.root.clone();
+        }
+    }
+    let links = statement
+        .links
+        .iter()
+        .map(|link| AssertionLink {
+            role: link.role,
+            reference: link.reference.clone(),
+            seen_hash: None,
+            quote: None,
+        })
+        .collect();
+    let fact =
+        AssertionFact::from_request(id.into(), root.clone(), statement.clone(), links, request);
+    insert(conn, Source::of(conn)?, &fact, &[], counter)?;
+    currency::recompute(conn, [root].into())
+}
+
 fn accept(
     conn: &Connection,
     statements: &[NewAssertion],
@@ -313,50 +345,69 @@ fn accept(
     if statements.is_empty() {
         return Err(invalid("assert needs at least one statement"));
     }
-    let mut prepared = Vec::with_capacity(statements.len());
-    for original in statements {
-        let mut statement = original.clone();
-        // A relation is a statement about the revision it relates to, so it
-        // also points `about` it; "everything about X" is then one lookup.
-        let relations: Vec<Reference> = statement
-            .links
-            .iter()
-            .filter(|link| link.role.is_relation())
-            .map(|link| link.reference.clone())
-            .collect();
-        for reference in relations {
-            if !statement
+    // Each write is checked against the archive as it stands after the
+    // request's earlier writes, so a later write may name an earlier one (a
+    // saved query using one defined before it, an annotation of a rubric
+    // written before it). The earlier writes are previewed under their final
+    // IDs inside a savepoint that is always rolled back; the plan below then
+    // places them all against the archive as it was.
+    conn.execute_batch("SAVEPOINT request_preview")?;
+    let previewed = (|| -> Result<Vec<Prepared>> {
+        let mut prepared = Vec::with_capacity(statements.len());
+        for (index, original) in statements.iter().enumerate() {
+            let mut statement = original.clone();
+            // A relation is a statement about the revision it relates to, so it
+            // also points `about` it; "everything about X" is then one lookup.
+            let relations: Vec<Reference> = statement
                 .links
                 .iter()
-                .any(|link| link.role == LinkRole::About && link.reference == reference)
-            {
-                statement.links.push(NewAssertionLink {
-                    role: LinkRole::About,
-                    reference,
-                });
+                .filter(|link| link.role.is_relation())
+                .map(|link| link.reference.clone())
+                .collect();
+            for reference in relations {
+                if !statement
+                    .links
+                    .iter()
+                    .any(|link| link.role == LinkRole::About && link.reference == reference)
+                {
+                    statement.links.push(NewAssertionLink {
+                        role: LinkRole::About,
+                        reference,
+                    });
+                }
             }
+            let (value, rubric) =
+                validate_value(conn, request, &mut statement, live_value, owner, saved)?;
+            check_variant_targets(conn, &statement)?;
+            for link in &statement.links {
+                if link.role != LinkRole::Revises {
+                    continue;
+                }
+                if let Reference::Assertion(RevisionReference {
+                    revision: Some(id), ..
+                }) = &link.reference
+                    && let Some(base) = get(conn, id)?
+                    && base.fact.kind != statement.kind
+                {
+                    return Err(invalid("revision cannot change assertion kind"));
+                }
+            }
+            let unique = statement
+                .unique(&value, &request.authorship.author, rubric.as_ref())
+                .map_err(|error| invalid(&error.to_string()))?;
+            preview(
+                conn,
+                request,
+                &authored::write_id(&request.id, index + 1, statements.len()),
+                &statement,
+                counter,
+            )?;
+            prepared.push(Prepared { statement, unique });
         }
-        let (value, rubric) =
-            validate_value(conn, request, &mut statement, live_value, owner, saved)?;
-        check_variant_targets(conn, &statement)?;
-        for link in &statement.links {
-            if link.role != LinkRole::Revises {
-                continue;
-            }
-            if let Reference::Assertion(RevisionReference {
-                revision: Some(id), ..
-            }) = &link.reference
-                && let Some(base) = get(conn, id)?
-                && base.fact.kind != statement.kind
-            {
-                return Err(invalid("revision cannot change assertion kind"));
-            }
-        }
-        let unique = statement
-            .unique(&value, &request.authorship.author, rubric.as_ref())
-            .map_err(|error| invalid(&error.to_string()))?;
-        prepared.push(Prepared { statement, unique });
-    }
+        Ok(prepared)
+    })();
+    conn.execute_batch("ROLLBACK TO request_preview; RELEASE request_preview")?;
+    let prepared = previewed?;
     let arrival = Arrival {
         author: request.authorship.author.to_string(),
         via: request.authorship.via.as_str().into(),

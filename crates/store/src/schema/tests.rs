@@ -300,8 +300,10 @@ fn an_unversioned_file_with_tables_is_refused_unchanged() {
         ("index", ensure_index),
     ] {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE unrelated(x) STRICT; INSERT INTO unrelated VALUES (1);")
-            .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE unrelated(x INTEGER) STRICT; INSERT INTO unrelated VALUES (1);",
+        )
+        .unwrap();
         let error = create(&conn).unwrap_err();
         assert!(
             matches!(error, StoreError::NoMigration { found: 0, .. }),
@@ -314,7 +316,7 @@ fn an_unversioned_file_with_tables_is_refused_unchanged() {
             vec![(
                 "table".to_owned(),
                 "unrelated".to_owned(),
-                statement("CREATE TABLE unrelated(x) STRICT")
+                statement("CREATE TABLE unrelated(x INTEGER) STRICT")
             )],
             "{name}"
         );

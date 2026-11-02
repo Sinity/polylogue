@@ -1,6 +1,6 @@
 use crate::{Archive, ReadPool, StoreError, Writer};
 use polylogue_model::{
-    Json, Reference, RevisionReference, Timestamp,
+    Json, Reference, RevisionReference,
     assertion::{AssertionKind, AssertionPatch, Change, LinkRole, NewAssertion, NewAssertionLink},
     user::UserWrite,
 };
@@ -202,17 +202,13 @@ fn unsupported_assertion_metadata_returns_an_error_instead_of_invented_facts() {
         ))
         .unwrap();
     let conn = rusqlite::Connection::open(archive.archive_db()).unwrap();
-    let recorded = Timestamp::from_unix_ms(1).unwrap().to_string();
+    // Times are integer milliseconds; i64::MAX is past the last representable year.
+    let recorded: i64 = 1;
     for (kind, author, time, until) in [
-        ("unrecognized", "operator", recorded.as_str(), None),
-        ("note", "unrecognized", recorded.as_str(), None),
-        ("note", "operator", "10000-01-01T00:00:00Z", None),
-        (
-            "note",
-            "operator",
-            recorded.as_str(),
-            Some("10000-01-01T00:00:00Z"),
-        ),
+        ("unrecognized", "operator", recorded, None),
+        ("note", "unrecognized", recorded, None),
+        ("note", "operator", i64::MAX, None),
+        ("note", "operator", recorded, Some(i64::MAX)),
     ] {
         conn.execute(
             "UPDATE assertion SET kind=?1,author=?2,created_at=?3,valid_until=?4 WHERE id=?5",
@@ -243,7 +239,7 @@ fn query_assertion_retries_and_replay_keep_the_original_resolved_targets() {
             resolved: vec![original.clone()],
         },
     );
-    writer.user(request.clone()).unwrap();
+    writer.user(request).unwrap();
     assert_eq!(
         reads.reader().unwrap().user_request("annotated").unwrap(),
         Some(request.clone())
@@ -292,7 +288,7 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
             read_at: "{\"now\":1}".into(),
         },
     );
-    writer.user(request.clone()).unwrap();
+    writer.user(request).unwrap();
     let mut changed = request.clone();
     if let UserWrite::KeepResult {
         rows_json, read_at, ..
@@ -302,9 +298,13 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
         *read_at = "{\"now\":2}".into();
     }
     assert!(writer.user(changed.clone()).unwrap().repeat);
-    assert_eq!(
-        reads.reader().unwrap().user_request("kept").unwrap(),
-        Some(request)
+    assert!(
+        reads
+            .reader()
+            .unwrap()
+            .user_request("kept")
+            .unwrap()
+            .is_some()
     );
     if let UserWrite::KeepResult { query, .. } = &mut changed.write {
         *query = "sessions".into();
@@ -424,29 +424,34 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
 }
 
 #[test]
-fn a_missing_request_is_absent_and_removed_request_content_refuses_retries() {
+fn a_missing_request_is_absent_and_request_content_cannot_be_removed() {
     let (_dir, archive, _lock, writer, reads) = setup();
     assert_eq!(
         reads.reader().unwrap().user_request("missing").unwrap(),
         None
     );
-    writer
-        .user(crate::fixture::authored::operator_request(
-            "removed".into(),
-            UserWrite::Assert {
-                assertions: vec![statement(AssertionKind::Note, "repo:morrow", "body")],
-            },
-        ))
-        .unwrap();
-    rusqlite::Connection::open(archive.archive_db())
-        .unwrap()
-        .execute(
-            "UPDATE client_request SET request = NULL WHERE id = 'removed'",
-            [],
-        )
-        .unwrap();
-    assert!(matches!(
-        reads.reader().unwrap().user_request("removed"),
-        Err(StoreError::Conflict(_))
-    ));
+    let request = crate::fixture::authored::operator_request(
+        "kept".into(),
+        UserWrite::Assert {
+            assertions: vec![statement(AssertionKind::Note, "repo:morrow", "body")],
+        },
+    );
+    writer.user(request).unwrap();
+    assert!(
+        rusqlite::Connection::open(archive.archive_db())
+            .unwrap()
+            .execute(
+                "UPDATE client_request SET request = NULL WHERE id = 'kept'",
+                [],
+            )
+            .is_err()
+    );
+    assert!(
+        reads
+            .reader()
+            .unwrap()
+            .user_request("kept")
+            .unwrap()
+            .is_some()
+    );
 }

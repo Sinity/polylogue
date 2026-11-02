@@ -145,6 +145,9 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
     if found == 0 {
         create_index_in(&tx, primary)?;
     } else {
+        // Read indexes are added before the shape check, so an index missing
+        // only those is completed rather than refused.
+        tx.execute_batch(READ_INDEXES)?;
         let matches = found == INDEX_VERSION
             && if building(&tx)? {
                 same_build_schema_in(&tx, primary)?
@@ -157,7 +160,6 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
                 found,
             });
         }
-        tx.execute_batch(READ_INDEXES)?;
     }
     tx.commit()?;
     Ok(())

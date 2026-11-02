@@ -557,12 +557,15 @@ fn selected_assertion_reference_retains_its_actual_family_and_revision() {
     let second = fixture
         .note("note", None, Some("second"), "session:test:one")
         .unwrap();
+    // A fork with no revises link: both revisions of `first`'s family stay
+    // current. The stored currency index is recomputed as a writer would.
     let conn = crate::archive::open_write(&fixture.archive.archive_db(), 1).unwrap();
     conn.execute(
         "UPDATE assertion SET root=?1 WHERE id=?2",
         rusqlite::params![first, second],
     )
     .unwrap();
+    crate::assertions::currency::recompute(&conn, [first.clone(), second.clone()].into()).unwrap();
     drop(conn);
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();

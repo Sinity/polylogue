@@ -179,6 +179,7 @@ fn relation_shapes_allow_query_evidence_but_hold_authored_revisions_exact() {
                 None,
                 &[
                     (LinkRole::About, "message:codex:m"),
+                    (LinkRole::About, "assertion:claim@r1"),
                     (role, "assertion:claim@r1")
                 ]
             )

@@ -854,19 +854,15 @@ fn wire_shape_confirmed_subset_keeps_partial_coverage_despite_scratch_reset() {
 
 #[test]
 fn wire_coverage_diagnostics_survive_parser_activity_without_completion_promotion() {
+    // `Unknown` came only from the retired export reading marker.
     for wire in [
         CoverageStatus::Unreadable,
-        CoverageStatus::Unknown,
         CoverageStatus::NoParserYet,
         CoverageStatus::Complete,
         CoverageStatus::Partial,
     ] {
         let mut conn = database();
-        let version = if wire == CoverageStatus::Unknown {
-            "crate::export::VERSION=1"
-        } else {
-            "v1"
-        };
+        let version = "v1";
         let end = if matches!(wire, CoverageStatus::Partial | CoverageStatus::NoParserYet) {
             0
         } else {

@@ -379,6 +379,7 @@ fn kind_shapes_decode_every_declared_value_and_refuse_malformed_static_values() 
             ),
         ),
         (K::Withdrawal, None, None),
+        (K::Hidden, None, Some(Json::String("duplicate".into()))),
         (
             K::Setting,
             Some("browser.actions"),
