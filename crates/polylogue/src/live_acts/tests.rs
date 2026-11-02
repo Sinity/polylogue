@@ -36,6 +36,8 @@ fn headless_resume_uses_each_harness_own_command() {
 fn resumed_runs_of_one_session_queue_in_order() {
     let acts = Acts::new(
         PathBuf::from("/nonexistent"),
+        PathBuf::from("/nonexistent"),
+        PathBuf::new(),
         PathBuf::new(),
         PathBuf::new(),
     );

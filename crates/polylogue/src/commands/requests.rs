@@ -531,11 +531,28 @@ pub fn interrupt(_: &Command, v: &Values, _: &Caller) -> Built {
 }
 
 pub fn start(_: &Command, v: &Values, _: &Caller) -> Built {
+    let (harness, role) = (v.text("harness"), v.text("role"));
+    if harness.is_none() && role.is_none() {
+        return Err("start takes --harness or --role".into());
+    }
     Ok(Request::Start {
         request_id: v.request_id(),
-        harness: v.text("harness").ok_or("start takes --harness")?,
+        harness,
+        role,
         cwd: std::path::PathBuf::from(v.text("cwd").ok_or("start takes --cwd")?),
         text: v.text("text").ok_or("start needs the first turn's text")?,
+    })
+}
+
+pub fn hand_off(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::HandOff {
+        request_id: v.request_id(),
+        session: session_arg(v)?,
+        to: v.text("to").ok_or("hand-off takes --to")?,
+        cwd: v.text("cwd").map(std::path::PathBuf::from),
+        at: v.text("at"),
+        stop_source: v.flag("stop_source"),
+        print: v.flag("print"),
     })
 }
 

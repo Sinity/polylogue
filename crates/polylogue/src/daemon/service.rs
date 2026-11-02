@@ -654,7 +654,8 @@ fn handle_inner(
         | Request::Answer { .. }
         | Request::Permission { .. }
         | Request::Interrupt { .. }
-        | Request::Start { .. } => {
+        | Request::Start { .. }
+        | Request::HandOff { .. } => {
             drop(reader);
             acts::handle(request, d, invocation)
         }
@@ -1827,6 +1828,7 @@ pub fn start(
         ..LoopStatus::default()
     }));
     let mail = crate::mailbox::dir(&archive.root);
+    let hosts = crate::hosting::dir(&archive.root);
     let daemon = Arc::new(Daemon {
         config: deployment,
         operations: std::sync::OnceLock::new(),
@@ -1839,6 +1841,8 @@ pub fn start(
         warm: super::warm::Warm::default(),
         acts: crate::live_acts::Acts::new(
             mail,
+            hosts,
+            settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
             polylogue_sources::origin::by_name("codex")
                 .map(|origin| {
                     settings
@@ -1862,6 +1866,9 @@ pub fn start(
         read_limits: Mutex::new(None),
     });
     daemon.acts.bind(Arc::downgrade(&daemon));
+    // Hosted sessions outlive a daemon restart: their hosts, or Codex's
+    // app-server, kept them running; connect to each again.
+    daemon.acts.reattach();
     // Pings and notices left pending raise their running sessions' mailbox
     // flags; those to sessions no longer running are settled.
     acts::settle_ended(&daemon, daemon.config.requests.now().unix_ms(), true);
@@ -1984,8 +1991,8 @@ pub fn start(
         claude_sessions: polylogue_sources::origin::by_name("claude-code")
             .map(|origin| settings.root(origin.root).join("sessions"))
             .unwrap_or_default(),
-        codex_socket: runtime.daemon.acts.codex_socket.clone(),
-        codex_program: runtime.daemon.acts.codex_program.clone(),
+        codex_socket: runtime.daemon.acts.codex().1,
+        codex_program: runtime.daemon.acts.codex().0,
     };
     let clock = settings.clock.clone();
     runtime.live_evidence = Some(

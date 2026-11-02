@@ -164,7 +164,12 @@ pub(crate) fn line(
 }
 
 /// Appends lines to `<spool>/<route>/<boot>.ndjson` in one write.
-fn append(spool: &Path, route: &str, boot: &str, lines: &[Value]) -> std::io::Result<()> {
+pub(crate) fn append(
+    spool: &Path,
+    route: &str,
+    boot: &str,
+    lines: &[Value],
+) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     if lines.is_empty() {
         return Ok(());

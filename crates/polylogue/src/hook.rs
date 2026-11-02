@@ -560,15 +560,11 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
 }
 
 /// The events at which a harness accepts context between steps: after a
-/// tool result and at a prompt, never before a tool runs.
+/// tool result and at a prompt, never before a tool runs. Declared with
+/// the harness's other channels (`polylogue_model::live::channel`).
 pub fn accepts_mail(harness: Harness, event: &str) -> bool {
-    match harness {
-        Harness::ClaudeCode | Harness::Codex => {
-            matches!(event, "PostToolUse" | "UserPromptSubmit")
-        }
-        Harness::GeminiCli => matches!(event, "AfterTool" | "BeforeAgent"),
-        Harness::Hermes => event == "pre_llm_call",
-    }
+    polylogue_model::live::channel::harness(harness.origin())
+        .is_some_and(|declared| declared.mail_events.contains(&event))
 }
 
 /// Takes the session's pending pings and notices from the daemon: their

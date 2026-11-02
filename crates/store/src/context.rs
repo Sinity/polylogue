@@ -271,6 +271,25 @@ impl Reader<'_> {
         Ok(out)
     }
 
+    /// The sessions Polylogue started whose first turn (a `pack`
+    /// delivery) refers to `reference`, such as `role:reviewer`, newest
+    /// first: each with the directory it was started in and when.
+    pub fn sessions_started_with(
+        &self,
+        reference: &str,
+    ) -> Result<Vec<(String, Option<String>, i64)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT d.recipient_id, d.cwd, d.at FROM source_delivery d
+              WHERE d.event = 'pack' AND d.recipient_id IS NOT NULL
+                AND EXISTS (SELECT 1 FROM json_each(d.refs_json) r WHERE r.value = ?1)
+              ORDER BY d.at DESC, d.id DESC",
+        )?;
+        Ok(stmt
+            .query_map([reference], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
     /// The sessions with pings or notices that have no outcome yet.
     pub fn sessions_with_pending_hook_deliveries(&self) -> Result<Vec<String>> {
         let conn = self.conn()?;

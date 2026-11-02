@@ -394,3 +394,42 @@ fn stale_sessions_end_a_day_after_their_latest_evidence() {
     assert_eq!((v.state, v.until), (LiveState::Stale, Some(STALE_FOR_MS)));
     assert_eq!(state(&unobserved, STALE_FOR_MS), LiveState::Ended);
 }
+
+/// A hosted session's lines come from the host that started its process:
+/// they name the root, state its activity and, when the process exits after
+/// its turn, end the session. A plain registry line still never chooses a
+/// root.
+#[test]
+fn hosted_lines_name_the_root_and_end_the_session() {
+    let process = json!({"pid": 300, "start": 77, "boot_id": "boot-a"});
+    let status = |word: &str| {
+        let mut data = process.clone();
+        data["status"] = json!(word);
+        data
+    };
+    let (facts, _) = run(&[("registry_hosted_status", 0, status("busy"))]);
+    assert_eq!(
+        facts.root,
+        Some(ProcessIdentity {
+            boot: "boot-a".into(),
+            pid: 300,
+            start: 77
+        })
+    );
+    assert_eq!(state(&facts, MIN), LiveState::Working);
+    let (facts, _) = run(&[
+        ("registry_hosted_status", 0, status("busy")),
+        ("registry_hosted_status", MIN, status("blocked")),
+    ]);
+    assert_eq!(state(&facts, 2 * MIN), LiveState::Waiting);
+    let (facts, closed) = run(&[
+        ("registry_hosted_status", 0, status("busy")),
+        ("registry_hosted_status", MIN, status("idle")),
+        ("registry_hosted_ended", 2 * MIN, process.clone()),
+    ]);
+    assert_eq!(state(&facts, 3 * MIN), LiveState::Ended);
+    assert!(closed.iter().any(|i| i.value == "idle" && i.end == 2 * MIN));
+    // A reader's line names no root by itself.
+    let (facts, _) = run(&[("registry_status", 0, status("busy"))]);
+    assert_eq!(facts.root, None);
+}

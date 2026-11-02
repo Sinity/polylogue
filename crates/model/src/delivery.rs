@@ -20,6 +20,9 @@ pub enum DeliveryEvent {
     Notice,
     /// A live-session act: an answer to a pending request, an interrupt.
     Control,
+    /// The first turn of a session Polylogue starts: a role's text, a
+    /// hand-off's context, the text it was started with.
+    Pack,
 }
 
 stored_names!(DeliveryEvent {
@@ -33,6 +36,7 @@ stored_names!(DeliveryEvent {
     Ping => "ping",
     Notice => "notice",
     Control => "control",
+    Pack => "pack",
 });
 
 /// What prepared a delivery.

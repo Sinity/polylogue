@@ -315,12 +315,32 @@ pub enum Request {
         session: SessionId,
     },
     /// Start a session Polylogue hosts, in `cwd`, with `text` as its first
-    /// turn.
+    /// turn: on `harness`, or as an instance of `role` (its harness and
+    /// instructions).
     Start {
         request_id: String,
-        harness: String,
+        #[serde(default)]
+        harness: Option<String>,
+        #[serde(default)]
+        role: Option<String>,
         cwd: PathBuf,
         text: String,
+    },
+    /// Hand a session's work to a new hosted session on `to`, briefed with
+    /// its takeover pack (from message `at`), in `cwd` or the source's; `stop_source` interrupts the
+    /// source afterwards; `print` shows the pack and starts nothing.
+    HandOff {
+        request_id: String,
+        session: SessionId,
+        to: String,
+        #[serde(default)]
+        cwd: Option<PathBuf>,
+        #[serde(default)]
+        at: Option<String>,
+        #[serde(default)]
+        stop_source: bool,
+        #[serde(default)]
+        print: bool,
     },
     /// What happened to a delivery after it was handed out.
     DeliveryEvent {
@@ -435,7 +455,8 @@ impl Request {
             | Self::Answer { .. }
             | Self::Permission { .. }
             | Self::Interrupt { .. }
-            | Self::Start { .. } => false,
+            | Self::Start { .. }
+            | Self::HandOff { .. } => false,
         }
     }
 

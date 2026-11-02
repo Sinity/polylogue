@@ -108,6 +108,10 @@ in
     WatchdogSec = cfg.watchdogSec;
     Restart = "on-failure";
     RestartPreventExitStatus = 78;
+    # A stop or restart signals the daemon only: the `polylogue host`
+    # processes of hosted sessions, and headless resumed runs, keep their
+    # agents running, and the next daemon reattaches to them.
+    KillMode = "process";
     CPUWeight = cfg.cpuWeight;
     IOWeight = cfg.ioWeight;
     IOSchedulingClass = "idle";

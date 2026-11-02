@@ -582,12 +582,26 @@ impl LiveFacts {
         }
     }
 
-    fn apply_registry(&mut self, at: i64, data: &Json) {
+    fn apply_registry(&mut self, event: &str, at: i64, data: &Json) {
         let identity = ProcessIdentity::from_line(data, "pid", "start");
-        // The reader names the process that owns the pid when it reads the
-        // file, so a registry line never chooses the root; it only speaks
-        // for a root the hooks established, or for a session with none.
-        if !self.same_root(identity.as_ref()) {
+        if event.starts_with("hosted_") {
+            // Polylogue's own host started the harness process, so its
+            // lines name the root with certainty.
+            self.adopt_root(identity);
+        } else if !self.same_root(identity.as_ref()) {
+            // A registry reader names the process that owns the pid when it
+            // reads the file, so its line never chooses the root; it only
+            // speaks for a root the hooks established, or for none.
+            return;
+        }
+        if event == "hosted_ended" {
+            // The host saw the harness process exit after it ended its
+            // last turn: the session ended.
+            self.ended_at = Some(at);
+            self.open_call = None;
+            self.pending_request = None;
+            self.open_subagents = 0;
+            self.footprint.clear();
             return;
         }
         if let Some(word) = data.get("status").and_then(Json::as_str) {
@@ -683,8 +697,8 @@ pub fn fold(facts: &mut LiveFacts, kind: &str, at: i64, data: &Json) -> Vec<Live
         facts.apply_hook(event, at, data);
     } else if let Some(event) = kind.strip_prefix(PROCESS_PREFIX) {
         facts.apply_process(event, at, data);
-    } else if kind.starts_with(REGISTRY_PREFIX) {
-        facts.apply_registry(at, data);
+    } else if let Some(event) = kind.strip_prefix(REGISTRY_PREFIX) {
+        facts.apply_registry(event, at, data);
     } else if let Some(event) = kind.strip_prefix(GIT_PREFIX) {
         facts.apply_git(event, data);
     } else {

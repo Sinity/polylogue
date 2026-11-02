@@ -88,6 +88,26 @@ impl HostedCodex {
         Ok(hosted)
     }
 
+    /// Connects again to a thread the shared app-server kept, after a
+    /// daemon restart: `thread/resume` subscribes this connection to it.
+    pub(crate) fn reattach(program: &Path, socket: &Path, thread: &str) -> std::io::Result<Self> {
+        let mut connection = CodexConnection::open(program, socket)?;
+        let resumed = connection.call("thread/resume", json!({"threadId": thread}))?;
+        let turn = resumed
+            .pointer("/thread/turns")
+            .and_then(Value::as_array)
+            .and_then(|turns| turns.last())
+            .filter(|turn| turn["status"] == "inProgress")
+            .and_then(|turn| turn["id"].as_str())
+            .map(str::to_owned);
+        Ok(Self {
+            connection,
+            thread: thread.to_owned(),
+            turn,
+            requests: VecDeque::new(),
+        })
+    }
+
     pub(crate) fn thread(&self) -> &str {
         &self.thread
     }
@@ -194,6 +214,57 @@ pub(crate) fn answer_result(
     }
 }
 
+/// A session Polylogue holds a control connection to.
+pub(crate) enum Hosted {
+    /// A Codex thread on the shared app-server.
+    Codex(HostedCodex),
+    /// A session a `polylogue host` process holds (Claude Code
+    /// stream-json, ACP).
+    Stdio(crate::hosting::HostedStdio),
+}
+
+impl Hosted {
+    fn send(&mut self, text: &str) -> std::io::Result<()> {
+        match self {
+            Self::Codex(h) => h.send(text),
+            Self::Stdio(h) => h.send(text),
+        }
+    }
+
+    fn answer(&mut self, approve: bool, text: Option<&str>) -> std::io::Result<()> {
+        match self {
+            Self::Codex(h) => h.answer(approve, text),
+            Self::Stdio(h) => h.answer(approve, text),
+        }
+    }
+
+    fn interrupt(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Codex(h) => h.interrupt(),
+            Self::Stdio(h) => h.interrupt(),
+        }
+    }
+
+    /// Whether the connection still reaches the session: a host that
+    /// exited closed it.
+    fn open(&self) -> bool {
+        match self {
+            Self::Codex(_) => true,
+            Self::Stdio(h) => h.open(),
+        }
+    }
+
+    fn request(&mut self) -> Option<String> {
+        match self {
+            Self::Codex(h) => {
+                h.absorb();
+                h.requests.front().map(|(id, _, _)| id.to_string())
+            }
+            Self::Stdio(h) => h.request(),
+        }
+    }
+}
+
 /// What the daemon keeps for live-session acts.
 pub(crate) struct Acts {
     mail: PathBuf,
@@ -204,27 +275,54 @@ pub(crate) struct Acts {
     /// Sessions with a resumed run in progress, each with the runs queued
     /// behind it: one resumed run per session at a time, in order.
     resuming: Mutex<BTreeMap<String, VecDeque<ResumeRun>>>,
-    hosted: Mutex<BTreeMap<String, HostedCodex>>,
+    hosted: Mutex<BTreeMap<String, Hosted>>,
     permission_hook: OnceLock<bool>,
-    /// Codex's control socket and the program that proxies it.
-    pub(crate) codex_socket: PathBuf,
-    pub(crate) codex_program: PathBuf,
+    /// The program that proxies Codex's control socket, and the socket.
+    codex: Mutex<(PathBuf, PathBuf)>,
+    /// The hosted sessions' records and host sockets.
+    pub(crate) hosts: PathBuf,
+    /// The hook spool, whose `registry/` hosts write status lines to.
+    pub(crate) spool: PathBuf,
     daemon: OnceLock<Weak<crate::daemon::service::Daemon>>,
 }
 
 impl Acts {
-    pub(crate) fn new(mail: PathBuf, codex_socket: PathBuf, codex_program: PathBuf) -> Self {
+    pub(crate) fn new(
+        mail: PathBuf,
+        hosts: PathBuf,
+        spool: PathBuf,
+        codex_socket: PathBuf,
+        codex_program: PathBuf,
+    ) -> Self {
         Self {
+            hosts,
+            spool,
             mail,
             claims: Mutex::new(()),
             claimed: Mutex::new(std::collections::BTreeSet::new()),
             resuming: Mutex::new(BTreeMap::new()),
             hosted: Mutex::new(BTreeMap::new()),
             permission_hook: OnceLock::new(),
-            codex_socket,
-            codex_program,
+            codex: Mutex::new((codex_program, codex_socket)),
             daemon: OnceLock::new(),
         }
+    }
+
+    /// The program that proxies Codex's control socket, and the socket.
+    pub(crate) fn codex(&self) -> (PathBuf, PathBuf) {
+        self.codex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Points the Codex client at a fixture app-server.
+    #[cfg(test)]
+    pub(crate) fn set_codex(&self, program: PathBuf, socket: PathBuf) {
+        *self
+            .codex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = (program, socket);
     }
 
     /// Binds the daemon the resume runner records outcomes through.
@@ -275,15 +373,10 @@ impl Acts {
             .contains(id)
     }
 
-    /// The oldest request a hosted session waits on, by the app-server's
+    /// The oldest request a hosted session waits on, by its protocol's
     /// request ID.
     pub(crate) fn host_request(&self, session: &SessionId) -> Option<String> {
-        self.with_hosted(session, |h| {
-            h.absorb();
-            Ok(h.requests.front().map(|(id, _, _)| id.to_string()))
-        })
-        .ok()
-        .flatten()
+        self.with_hosted(session, |h| Ok(h.request())).ok().flatten()
     }
 
     /// Whether the installed Claude Code asks the synchronous permission
@@ -302,27 +395,78 @@ impl Acts {
         })
     }
 
+    /// Whether Polylogue holds an open control connection to the session.
     pub(crate) fn is_hosted(&self, session: &SessionId) -> bool {
         self.hosted
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(&session.to_string())
+            .get(&session.to_string())
+            .is_some_and(Hosted::open)
     }
 
-    /// Takes a hosted session in; its thread names the session.
-    pub(crate) fn host(&self, hosted: HostedCodex) -> Option<SessionId> {
-        let session = SessionId::parse(&format!("codex:{}", hosted.thread())).ok()?;
+    /// Takes a hosted Codex thread in, recording it for reattachment; its
+    /// thread names the session.
+    pub(crate) fn host_codex(&self, hosted: HostedCodex) -> std::io::Result<SessionId> {
+        let session = SessionId::parse(&format!("codex:{}", hosted.thread()))
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        crate::hosting::write_record(
+            &self.hosts,
+            &format!("codex-{}", hosted.thread()),
+            &crate::hosting::Record {
+                session: session.to_string(),
+                protocol: polylogue_model::live::channel::HostProtocol::CodexAppServer,
+                socket: None,
+                protocol_session: Some(hosted.thread().to_owned()),
+            },
+        )?;
+        self.hold(&session, Hosted::Codex(hosted));
+        Ok(session)
+    }
+
+    /// Takes a hosted session's connection in.
+    pub(crate) fn hold(&self, session: &SessionId, hosted: Hosted) {
         self.hosted
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(session.to_string(), hosted);
-        Some(session)
+    }
+
+    /// Connects again to every recorded hosted session, after a daemon
+    /// start; records whose host or thread is gone are removed. Returns
+    /// the sessions reattached.
+    pub(crate) fn reattach(&self) -> Vec<SessionId> {
+        use polylogue_model::live::channel::HostProtocol;
+        let (codex_program, codex_socket) = self.codex();
+        let mut attached = Vec::new();
+        for (key, record) in crate::hosting::records(&self.hosts) {
+            let Ok(session) = SessionId::parse(&record.session) else {
+                crate::hosting::remove(&self.hosts, &key);
+                continue;
+            };
+            let hosted = match record.protocol {
+                HostProtocol::CodexAppServer => HostedCodex::reattach(
+                    &codex_program,
+                    &codex_socket,
+                    record.protocol_session.as_deref().unwrap_or_default(),
+                )
+                .map(Hosted::Codex),
+                _ => crate::hosting::HostedStdio::reattach(&record).map(Hosted::Stdio),
+            };
+            match hosted {
+                Ok(hosted) => {
+                    self.hold(&session, hosted);
+                    attached.push(session);
+                }
+                Err(_) => crate::hosting::remove(&self.hosts, &key),
+            }
+        }
+        attached
     }
 
     fn with_hosted<T>(
         &self,
         session: &SessionId,
-        act: impl FnOnce(&mut HostedCodex) -> std::io::Result<T>,
+        act: impl FnOnce(&mut Hosted) -> std::io::Result<T>,
     ) -> Result<T, String> {
         let mut hosted = self
             .hosted
@@ -348,7 +492,7 @@ impl Acts {
     }
 
     pub(crate) fn host_interrupt(&self, session: &SessionId) -> Result<(), String> {
-        self.with_hosted(session, HostedCodex::interrupt)
+        self.with_hosted(session, Hosted::interrupt)
     }
 
     /// Starts a resumed run, or queues it behind the session's run in
@@ -395,7 +539,8 @@ pub(crate) fn probe(acts: &Acts, session: &SessionId, facts: &LiveFacts) -> Prob
         hosted: acts.is_hosted(session),
         hooks: facts.root.is_some() || facts.hook_activity.is_some(),
         permission_hook: harness == "claude-code" && acts.permission_hook(),
-        headless_resume: headless_resume(session, "").is_some(),
+        headless_resume: polylogue_model::live::channel::harness(&harness)
+            .is_some_and(|h| h.headless_resume),
         harness,
     }
 }

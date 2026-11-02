@@ -1,8 +1,12 @@
-//! Live-session acts: pings (one session, or every session a query selects
-//! when sent), the mailbox claim a hook makes, answers to permission
-//! requests, and interrupts. Each act is recorded as a delivery with its
-//! computed author, and reaches its session only through the channel
-//! [`polylogue_model::live::channel::channel`] chooses.
+//! Live-session acts: pings (one session, a role's running instance, or
+//! every session a query selects when sent), signal notices to sessions,
+//! the mailbox claim a hook makes, answers to permission requests,
+//! interrupts, and new hosted sessions (`start`, role instances,
+//! `hand-off`). Each act is recorded as a delivery with its computed
+//! author, and reaches its session only through the channel
+//! [`polylogue_model::live::channel::channel`] chooses; a new session
+//! starts on the protocol [`polylogue_model::live::channel::host_channel`]
+//! names.
 use super::{Daemon, Failure, Invocation, authored_preparation, error, ok, writer};
 use crate::daemon::Request;
 use crate::live_acts::{ResumeRun, probe};
@@ -52,9 +56,39 @@ pub(super) fn handle(request: Request, d: &Daemon, invocation: &Invocation) -> A
         Request::Start {
             request_id,
             harness,
+            role,
             cwd,
             text,
-        } => start(d, invocation, &request_id, &harness, &cwd, &text),
+        } => start(
+            d,
+            invocation,
+            &request_id,
+            harness.as_deref(),
+            role.as_deref(),
+            &cwd,
+            &text,
+        ),
+        Request::HandOff {
+            request_id,
+            session,
+            to,
+            cwd,
+            at,
+            stop_source,
+            print,
+        } => hand_off(
+            d,
+            invocation,
+            &HandOff {
+                request_id: &request_id,
+                source: &session,
+                to: &to,
+                cwd: cwd.as_deref(),
+                at: at.as_deref(),
+                stop_source,
+                print,
+            },
+        ),
         _ => unreachable!("only live-session acts reach here"),
     };
     result.unwrap_or_else(|failure| failure.answer())
@@ -97,35 +131,116 @@ fn outcome_event(
     .map(drop)
 }
 
-/// The sessions an address names when the ping is sent: a session
-/// reference, or the sessions a quoted query selects then (a broadcast,
-/// frozen: sessions that start matching later receive nothing).
+/// Who an address names when it is sent.
+enum Recipients {
+    /// Sessions: one reference, or every session a quoted query selects
+    /// then (a broadcast, frozen: sessions that start matching later
+    /// receive nothing).
+    Sessions(Vec<SessionId>),
+    /// A role with no running instance: a ping starts one; a notice does
+    /// not.
+    NewInstance(Role),
+}
+
+/// A role as its current revision defines it.
+#[derive(Debug, Clone)]
+pub(crate) struct Role {
+    pub name: String,
+    /// The exact revision, which the sessions it starts record.
+    pub assertion: String,
+    pub instructions: String,
+    pub harness: String,
+}
+
+/// The current revision of the role `name`.
+fn role(d: &Daemon, invocation: &Invocation, name: &str) -> Result<Role, Failure> {
+    use polylogue_model::assertion::values;
+    let operation = d.resolve_operation_context(invocation.clone())?;
+    let reader = d.reads.reader()?;
+    let conditions = format!(
+        "kind:role key:{}",
+        crate::daemon::query::assertions::quoted(name)
+    );
+    let found = crate::daemon::query::assertions::list(&reader, &conditions, &operation)?;
+    let Some(assertion) = found.into_iter().next() else {
+        return Err(Failure::new("not_found", format!("no role {name}")));
+    };
+    let Ok(values::Value::Role(role)) = assertion.fact.validate() else {
+        return Err(Failure::new(
+            "bad_value",
+            format!("the role {name} has no instructions and harness"),
+        ));
+    };
+    Ok(Role {
+        name: name.to_owned(),
+        assertion: assertion.fact.id.clone(),
+        instructions: role.fields.instructions.clone(),
+        harness: role.fields.harness.as_str().to_owned(),
+    })
+}
+
+/// The reference every session a role starts records.
+fn role_reference(name: &str) -> String {
+    format!("role:{name}")
+}
+
+/// The newest running instance of a role: the newest session Polylogue
+/// started for it whose live state is running.
+fn role_instance(d: &Daemon, name: &str, now: i64) -> Result<Option<SessionId>, Failure> {
+    let reader = d.reads.reader()?;
+    for (session, _, _) in reader.sessions_started_with(&role_reference(name))? {
+        let running = reader
+            .live_state(&session, now)?
+            .is_some_and(|s| s.view.state.running());
+        if running && let Ok(id) = SessionId::parse(&session) {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+/// Where a role's new instance runs when an address starts one: where its
+/// latest instance ran.
+fn role_cwd(d: &Daemon, name: &str) -> Result<Option<std::path::PathBuf>, Failure> {
+    Ok(d.reads
+        .reader()?
+        .sessions_started_with(&role_reference(name))?
+        .into_iter()
+        .find_map(|(_, cwd, _)| cwd)
+        .map(std::path::PathBuf::from))
+}
+
+/// Who an address names now: a session reference, `@[role:NAME]` (its
+/// newest running instance), or `@[QUERY]`.
 fn recipients(
     d: &Daemon,
     invocation: &Invocation,
     target: &str,
     now: i64,
-) -> Result<Vec<SessionId>, Failure> {
+) -> Result<Recipients, Failure> {
     let address = target
         .trim()
         .strip_prefix("@[")
         .and_then(|rest| rest.strip_suffix(']'))
         .unwrap_or(target.trim());
-    if let Ok(session) = SessionId::parse(address) {
-        return Ok(vec![session]);
+    if let Some(name) = address.strip_prefix("role:") {
+        let role = role(d, invocation, name)?;
+        return Ok(match role_instance(d, name, now)? {
+            Some(session) => Recipients::Sessions(vec![session]),
+            None => Recipients::NewInstance(role),
+        });
     }
-    if address.starts_with("role:") {
-        return Err(Failure::new(
-            "refused",
-            "a role address needs the session's role record, which no session carries yet",
-        ));
+    if let Ok(session) = SessionId::parse(address) {
+        return Ok(Recipients::Sessions(vec![session]));
     }
     let operation = d.resolve_operation_context(invocation.clone())?;
     let reader = d.reads.reader()?;
-    super::follow::selected(&reader, &operation, address, now)?
-        .iter()
-        .map(|id| SessionId::parse(id).map_err(|e| Failure::new("internal", e)))
-        .collect()
+    Ok(Recipients::Sessions(
+        super::follow::selected(&reader, &operation, address, now)?
+            .iter()
+            .map(|id| SessionId::parse(id).map_err(|e| Failure::new("internal", e)))
+            .collect::<Result<_, _>>()?,
+    ))
 }
 
 /// The ping pack: the text, what it is about, how to answer, and the
@@ -155,7 +270,12 @@ fn ping(
         return Ok(error("bad_request", "a ping needs text"));
     }
     let now = now(d);
-    let sessions = recipients(d, invocation, target, now)?;
+    let sessions = match recipients(d, invocation, target, now)? {
+        Recipients::Sessions(sessions) => sessions,
+        Recipients::NewInstance(role) => {
+            return ping_new_instance(d, invocation, request_id, &role, text, about.as_deref());
+        }
+    };
     if sessions.is_empty() {
         return Ok(error("not_found", "the address names no session"));
     }
@@ -733,66 +853,413 @@ fn resume_once(d: &Daemon, run: &ResumeRun) {
     }
 }
 
-/// Starts a session Polylogue hosts: a Codex thread on the shared
-/// app-server, whose approvals and questions come to Polylogue's
-/// connection and whose turns Polylogue can steer and interrupt. The first
-/// turn's text is recorded as a delivery to the new session.
-fn start(
+/// A new session Polylogue starts and hosts, and what its first turn
+/// carries.
+struct NewSession<'a> {
+    request_id: &'a str,
+    harness: &'a str,
+    cwd: &'a std::path::Path,
+    /// The first turn's text, without its delivery line.
+    text: String,
+    /// What the first turn refers to: the role revision, the hand-off's
+    /// source, the ping.
+    refs: Vec<String>,
+}
+
+/// Starts a hosted session on the harness's control protocol, its first
+/// turn opening with the delivery reference, and records that turn as a
+/// `pack` delivery to the new session. The channel is
+/// [`polylogue_model::live::channel::host_channel`]'s.
+fn start_session(
     d: &Daemon,
     invocation: &Invocation,
-    request_id: &str,
-    harness: &str,
-    cwd: &std::path::Path,
-    text: &str,
-) -> Result<Answer<Value>, Failure> {
-    if harness != "codex" {
-        return Ok(error(
-            "refused",
-            format!(
-                "unsupported: Polylogue hosts sessions of codex only; {harness} has no control protocol client here"
-            ),
-        ));
-    }
-    if !cwd.is_dir() {
-        return Ok(error(
+    new: NewSession<'_>,
+) -> Result<Result<SessionId, Answer<Value>>, Failure> {
+    use polylogue_model::live::channel::{HostProtocol, host_channel};
+    let protocol = match host_channel(new.harness) {
+        Ok(protocol) => protocol,
+        Err(refusal) => {
+            return Ok(Err(error(
+                "refused",
+                format!("{}: {}", refusal.reason, refusal.detail),
+            )));
+        }
+    };
+    if !new.cwd.is_dir() {
+        return Ok(Err(error(
             "bad_value",
-            format!("{} is not a directory", cwd.display()),
-        ));
+            format!("{} is not a directory", new.cwd.display()),
+        )));
     }
-    let hosted = crate::live_acts::HostedCodex::start(
-        &d.acts.codex_program,
-        &d.acts.codex_socket,
-        &cwd.to_string_lossy(),
-        text,
-    )
-    .map_err(|e| Failure::new("refused", format!("codex app-server: {e}")))?;
-    let session = d
-        .acts
-        .host(hosted)
-        .ok_or_else(|| Failure::new("internal", "the app-server named an unusable thread"))?;
+    let first = format!("delivery:{}\n{}", new.request_id, new.text);
+    let session = match protocol {
+        HostProtocol::CodexAppServer => crate::live_acts::HostedCodex::start(
+            &d.acts.codex().0,
+            &d.acts.codex().1,
+            &new.cwd.to_string_lossy(),
+            &first,
+        )
+        .and_then(|hosted| d.acts.host_codex(hosted)),
+        _ => crate::hosting::HostedStdio::start(
+            new.harness,
+            protocol,
+            &d.acts.hosts,
+            new.cwd,
+            &d.acts.spool,
+            &first,
+        )
+        .map(|(hosted, session)| {
+            d.acts
+                .hold(&session, crate::live_acts::Hosted::Stdio(hosted));
+            session
+        }),
+    }
+    .map_err(|e| Failure::new("refused", format!("{}: {e}", protocol.as_str())))?;
     author(
         d,
         invocation,
-        request_id.to_owned(),
+        new.request_id.to_owned(),
         UserWrite::Deliver(Delivery {
             recipient_kind: "session".into(),
             recipient_id: Some(session.to_string()),
             sender: DeliverySender::Act.as_str().into(),
-            event: DeliveryEvent::Control.as_str().into(),
-            cwd: Some(cwd.to_string_lossy().into_owned()),
-            text: text.to_owned(),
-            refs: Vec::new(),
+            event: DeliveryEvent::Pack.as_str().into(),
+            cwd: Some(new.cwd.to_string_lossy().into_owned()),
+            text: first,
+            refs: new.refs,
             left_out: Vec::new(),
         }),
     )?;
     outcome_event(
         d,
         invocation,
-        request_id,
+        new.request_id,
         DeliveryOutcome::Delivered,
-        "the first turn of a hosted session".into(),
+        format!("the first turn of a session hosted over {}", protocol.as_str()),
     )?;
-    Ok(ok(
-        json!({"session": session, "delivery": request_id, "channel": "protocol", "hosting": "hosted"}),
-    ))
+    Ok(Ok(session))
+}
+
+/// The first turn of a role's instance: the role's instructions, then the
+/// work.
+fn role_text(role: &Role, text: &str) -> String {
+    format!(
+        "You run as the role `{}` (assertion:{}):\n{}\n\n{}",
+        role.name, role.assertion, role.instructions, text
+    )
+}
+
+/// Starts a session Polylogue hosts, on the harness's control protocol:
+/// its approvals, questions and turns can then be answered, steered and
+/// interrupted from anywhere. With a role, the role's harness runs with
+/// the role's instructions, and the session records the role revision.
+fn start(
+    d: &Daemon,
+    invocation: &Invocation,
+    request_id: &str,
+    harness: Option<&str>,
+    role_name: Option<&str>,
+    cwd: &std::path::Path,
+    text: &str,
+) -> Result<Answer<Value>, Failure> {
+    let role = role_name.map(|name| role(d, invocation, name)).transpose()?;
+    let harness = match (harness, &role) {
+        (Some(harness), Some(role)) if harness != role.harness => {
+            return Ok(error(
+                "bad_value",
+                format!(
+                    "the role {} runs {}, not {harness}",
+                    role.name, role.harness
+                ),
+            ));
+        }
+        (Some(harness), _) => harness.to_owned(),
+        (None, Some(role)) => role.harness.clone(),
+        (None, None) => return Ok(error("bad_request", "start takes --harness or --role")),
+    };
+    let (text, refs) = match &role {
+        Some(role) => (
+            role_text(role, text),
+            vec![
+                role_reference(&role.name),
+                format!("assertion:{}", role.assertion),
+            ],
+        ),
+        None => (text.to_owned(), Vec::new()),
+    };
+    let session = match start_session(
+        d,
+        invocation,
+        NewSession {
+            request_id,
+            harness: &harness,
+            cwd,
+            text,
+            refs,
+        },
+    )? {
+        Ok(session) => session,
+        Err(refused) => return Ok(refused),
+    };
+    Ok(ok(json!({
+        "session": session,
+        "delivery": request_id,
+        "channel": "protocol",
+        "hosting": "hosted",
+        "role": role.map(|r| r.name),
+        "undo": "none: interrupt it, or let it finish",
+    })))
+}
+
+/// A ping to a role with no running instance starts one, in the directory
+/// its latest instance ran in, with the ping as its first turn.
+fn ping_new_instance(
+    d: &Daemon,
+    invocation: &Invocation,
+    request_id: &str,
+    role: &Role,
+    text: &str,
+    about: Option<&str>,
+) -> Result<Answer<Value>, Failure> {
+    let Some(cwd) = role_cwd(d, &role.name)? else {
+        return Ok(error(
+            "refused",
+            format!(
+                "no_live_instance: the role {} has no running session and none ran before to take a directory from; start one with `polylogue start --role {} --cwd DIR TEXT`",
+                role.name, role.name
+            ),
+        ));
+    };
+    let author_name = invocation.authorship.author.to_string();
+    let mut pack = format!("Ping from {author_name}:\n{text}\n");
+    if let Some(about) = about {
+        pack.push_str(&format!("About: {about}\n"));
+    }
+    let session = match start_session(
+        d,
+        invocation,
+        NewSession {
+            request_id,
+            harness: &role.harness,
+            cwd: &cwd,
+            text: role_text(role, &pack),
+            refs: vec![
+                role_reference(&role.name),
+                format!("assertion:{}", role.assertion),
+            ],
+        },
+    )? {
+        Ok(session) => session,
+        Err(refused) => return Ok(refused),
+    };
+    Ok(ok(json!({
+        "deliveries": [{"session": session, "delivery": request_id, "channel": "protocol",
+                        "outcome": "delivered", "started": role.name}],
+        "undo": "none: a sent ping cannot be taken back",
+    })))
+}
+
+/// A hand-off's arguments.
+struct HandOff<'a> {
+    request_id: &'a str,
+    source: &'a SessionId,
+    to: &'a str,
+    /// Where the new session runs, when not where the source ran.
+    cwd: Option<&'a std::path::Path>,
+    at: Option<&'a str>,
+    stop_source: bool,
+    print: bool,
+}
+
+/// Hands a session's work to a new hosted session in any harness: the new
+/// session starts in the source's directory with the source's takeover
+/// pack (from a message, with `at`), its first turn carrying the pack's
+/// delivery reference, and records the source as what it was briefed
+/// from. It is a new session, never a resume or a fork of the source.
+/// `stop_source` then interrupts the source; `print` shows the pack and
+/// starts nothing.
+fn hand_off(d: &Daemon, invocation: &Invocation, h: &HandOff<'_>) -> Result<Answer<Value>, Failure> {
+    let reader = d.reads.reader()?;
+    let Some(source) = reader.session(h.source)? else {
+        return Ok(error("not_found", format!("no session {}", h.source)));
+    };
+    let cwd = match h.cwd {
+        Some(cwd) => Some(cwd.to_owned()),
+        None => source
+            .cwd
+            .last()
+            .cloned()
+            .map(std::path::PathBuf::from)
+            .filter(|c| c.is_dir()),
+    };
+    let at = h
+        .at
+        .map(polylogue_model::Reference::parse)
+        .transpose()
+        .map_err(|e| Failure::new("bad_value", e))?;
+    let operation = d.resolve_operation_context(invocation.clone())?;
+    let prepared = crate::briefing::prepare(
+        &reader,
+        &crate::briefing::Ask::Takeover {
+            session: h.source.clone(),
+            for_session: None,
+        },
+        h.request_id,
+        &operation,
+        None,
+        None,
+    )?;
+    drop(reader);
+    let mut text = format!("Hand-off from {}", h.source);
+    if let Some(at) = &at {
+        text.push_str(&format!(", continuing from {at}"));
+    }
+    text.push_str(":\n");
+    text.push_str(&prepared.text);
+    let mut refs = vec![format!("session:{}", h.source)];
+    refs.extend(at.as_ref().map(ToString::to_string));
+    refs.extend(prepared.refs.iter().cloned());
+    if h.print {
+        return Ok(ok(json!({
+            "to": h.to,
+            "cwd": cwd,
+            "channel": polylogue_model::live::channel::host_channel(h.to)
+                .map(|p| p.as_str())
+                .map_err(|r| r.reason),
+            "pack": text,
+            "refs": refs,
+        })));
+    }
+    let Some(cwd) = cwd else {
+        return Ok(error(
+            "refused",
+            format!(
+                "{} recorded no working directory that exists here; give one with --cwd",
+                h.source
+            ),
+        ));
+    };
+    let session = match start_session(
+        d,
+        invocation,
+        NewSession {
+            request_id: h.request_id,
+            harness: h.to,
+            cwd: &cwd,
+            text,
+            refs,
+        },
+    )? {
+        Ok(session) => session,
+        Err(refused) => return Ok(refused),
+    };
+    let stopped = if h.stop_source {
+        let answer = interrupt(d, invocation, &format!("{}-stop", h.request_id), h.source)?;
+        serde_json::to_value(&answer).unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    Ok(ok(json!({
+        "session": session,
+        "delivery": h.request_id,
+        "channel": "protocol",
+        "hosting": "hosted",
+        "briefed_from": h.source,
+        "at": at.map(|a| a.to_string()),
+        "stop_source": stopped,
+        "undo": "none: the new session runs on its own; interrupt it to stop it",
+    })))
+}
+
+/// A signal rule's notice to the sessions `to` addresses (a session, a
+/// role's running instance, or every session a quoted query selects now):
+/// one delivery each, sender `signal`, event `notice`, reaching a running
+/// session through its channel. A notice never starts or resumes a
+/// session: to one that is not running, and to a role with no running
+/// instance, it records `not_sent`.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the signal evaluator calls it once authored rules fire; they are held until the signals adoption lands"
+    )
+)]
+pub(crate) fn notice(
+    d: &Daemon,
+    rule: &str,
+    to: &str,
+    text: &str,
+) -> Result<Vec<Value>, Failure> {
+    let invocation = d.invocation(&crate::operation::Context::worker_authorship("polylogue-signals"));
+    let now = now(d);
+    let sessions = match recipients(d, &invocation, to, now)? {
+        Recipients::Sessions(sessions) => sessions,
+        Recipients::NewInstance(role) => {
+            return Ok(vec![json!({"role": role.name, "outcome": "not_sent",
+                "reason": "session_not_live", "detail": "a notice never starts a session"})]);
+        }
+    };
+    let base = polylogue_store::user_writes::new_request_id();
+    let mut sent = Vec::new();
+    for (n, session) in sessions.iter().enumerate() {
+        let delivery = format!("{base}-{n}");
+        let Some(state) = d.reads.reader()?.live_state(&session.to_string(), now)? else {
+            sent.push(json!({"session": session, "outcome": "not_sent", "reason": "session_missing"}));
+            continue;
+        };
+        let pack = format!("Notice from the rule {rule} (delivery:{delivery}):\n{text}");
+        {
+            let _claims = d.acts.claim_lock();
+            d.acts.take(vec![(delivery.clone(), ())]);
+        }
+        author(
+            d,
+            &invocation,
+            delivery.clone(),
+            UserWrite::Deliver(Delivery {
+                recipient_kind: "session".into(),
+                recipient_id: Some(session.to_string()),
+                sender: DeliverySender::Signal.as_str().into(),
+                event: DeliveryEvent::Notice.as_str().into(),
+                cwd: state.cwd.clone(),
+                text: pack.clone(),
+                refs: vec![format!("signal:{rule}")],
+                left_out: Vec::new(),
+            }),
+        )?;
+        let row = match channel(
+            Act::Notice,
+            state.view.state,
+            &probe(&d.acts, session, &state.facts),
+        ) {
+            Ok(Channel::Protocol) => {
+                let result = d.acts.host_send(session, &pack);
+                d.acts.release(&delivery);
+                let (what, detail) = match &result {
+                    Ok(()) => (DeliveryOutcome::Delivered, "sent over the hosted connection".to_owned()),
+                    Err(reason) => (DeliveryOutcome::NotSent, format!("failed({reason})")),
+                };
+                outcome_event(d, &invocation, &delivery, what, detail)?;
+                json!({"session": session, "delivery": delivery, "channel": "protocol", "outcome": what.as_str()})
+            }
+            Ok(_) => {
+                crate::mailbox::raise(d.acts.mail(), session).map_err(|e| Failure::new("io", e))?;
+                d.acts.release(&delivery);
+                json!({"session": session, "delivery": delivery, "channel": "hook", "outcome": "prepared"})
+            }
+            Err(refusal) => {
+                outcome_event(
+                    d,
+                    &invocation,
+                    &delivery,
+                    DeliveryOutcome::NotSent,
+                    refusal.reason.to_owned(),
+                )?;
+                json!({"session": session, "delivery": delivery, "outcome": "not_sent",
+                       "reason": refusal.reason, "detail": refusal.detail})
+            }
+        };
+        sent.push(row);
+    }
+    Ok(sent)
 }

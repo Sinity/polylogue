@@ -1063,7 +1063,7 @@ const WRITTEN: &[Command] = &[
             pos(
                 "target",
                 Kind::Text,
-                "A session reference, or @[QUERY] for every session the query selects now",
+                "A session reference, @[role:NAME] for the role's running instance (or a new one), or @[QUERY] for every session the query selects now",
             ),
             pos("text", Kind::Words, "The message"),
             opt(
@@ -1116,15 +1116,46 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "start",
-        help: "Start a session Polylogue hosts (Codex, on its shared app-server): its approvals, questions and turns can then be answered, steered and interrupted from anywhere",
+        help: "Start a session Polylogue hosts on the harness's control protocol (Codex's app-server, Claude Code stream-json, Gemini CLI and Hermes ACP): its approvals, questions and turns can then be answered, steered and interrupted from anywhere, and it survives a daemon restart. With --role, an instance of that role: its harness, with its instructions",
         reason: "Starts a harness session; no query selects one that does not exist yet",
         args: &[
             pos("text", Kind::Words, "The first turn"),
-            opt("harness", Kind::Choice(&["codex"]), "The harness to host"),
+            opt(
+                "harness",
+                Kind::Choice(&["codex", "claude-code", "gemini-cli", "hermes"]),
+                "The harness to host",
+            ),
+            opt("role", Kind::Text, "Start an instance of this role"),
             opt("cwd", Kind::Text, "The working directory"),
         ],
         action: Action::Request(requests::start),
         tool: Some(Tool::Act),
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "hand-off",
+        help: "Hand a session's work to a new hosted session in any harness, briefed with the session's takeover pack (from a message with --at) in its directory; the new session records what it was briefed from and is never a resume or fork. --stop-source then interrupts the source; --print shows the pack and starts nothing",
+        reason: "Starts a harness session; no query selects one that does not exist yet",
+        args: &[
+            pos("session", Kind::Text, "The session whose work is handed off"),
+            opt(
+                "to",
+                Kind::Choice(&["codex", "claude-code", "gemini-cli", "hermes"]),
+                "The harness of the new session",
+            ),
+            opt("at", Kind::Text, "The message to continue from"),
+            opt("cwd", Kind::Text, "The working directory, when not the source's"),
+            opt(
+                "stop_source",
+                Kind::Bool,
+                "Interrupt the source session once the new one runs",
+            ),
+            opt("print", Kind::Bool, "Show the pack and the channel; start nothing"),
+        ],
+        action: Action::Request(requests::hand_off),
+        mcp: true,
         http: true,
         writes: true,
         ..CLI
@@ -1413,6 +1444,23 @@ const WRITTEN: &[Command] = &[
             },
         ],
         action: Action::ConfiguredLocal(local::hook),
+        ..CLI
+    },
+    Command {
+        name: "host",
+        help: "Started by the daemon for a session it hosts over stdio (Claude Code stream-json, Gemini CLI and Hermes ACP): holds the agent's stdin and stdout so a daemon restart never ends it, and relays them to the daemon's connection",
+        args: &[
+            pos(
+                "harness",
+                Kind::Choice(&["claude-code", "gemini-cli", "hermes"]),
+                "The harness to run",
+            ),
+            opt("socket", Kind::Text, "The socket the daemon connects to"),
+            opt("cwd", Kind::Text, "The agent's working directory"),
+            opt("spool", Kind::Text, "The hook spool its status lines go to"),
+            opt("session_id", Kind::Text, "The session ID to start the agent with, where the harness takes one"),
+        ],
+        action: Action::Local(local::host),
         ..CLI
     },
     Command {
