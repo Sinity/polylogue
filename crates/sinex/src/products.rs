@@ -433,7 +433,21 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
             KindDeclaration {
                 kind: KindRef {
                     name: (*name).into(),
-                    version: 1,
+                    version: if *name == "polylogue.assertion" {
+                        1
+                    } else {
+                        match *product {
+                            "message" => 5,
+                            "request" | "restored_request" => 5,
+                            "input" | "session" | "document" | "event" | "link" | "background"
+                            | "repository" | "parse_progress" => 4,
+                            "fragment" => 2,
+                            "query_run" => 3,
+                            "restored_history" | "restored_assertion" | "attachment_binding"
+                            | "query" | "query_run_outcome" => 1,
+                            _ => 3,
+                        }
+                    },
                 },
                 declaring_producer: producer.into(),
                 payload_schema: Some(schema),
