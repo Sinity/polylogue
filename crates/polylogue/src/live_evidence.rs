@@ -335,7 +335,7 @@ impl Watcher {
             let Ok(session) = SessionId::parse(&session_key) else {
                 continue;
             };
-            for ((pid, start), _) in &w.children {
+            for (pid, start) in w.children.keys() {
                 out.push(line(
                     "process",
                     "Ended",

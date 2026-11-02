@@ -289,38 +289,38 @@ fn claude_stream_json_steers_answers_and_interrupts() {
 fn the_tracker_follows_turns_and_unanswered_requests() {
     let mut acp = Tracker::new(HostProtocol::Acp);
     assert_eq!(
-        acp.from_client(&json!({"id": "a", "method": "session/prompt"})),
+        acp.client_sent(&json!({"id": "a", "method": "session/prompt"})),
         Some("busy")
     );
     let ask = json!({"id": 5, "method": "session/request_permission"});
-    assert_eq!(acp.from_agent(&ask, b"ask"), Some("blocked"));
+    assert_eq!(acp.agent_sent(&ask, b"ask"), Some("blocked"));
     assert_eq!(acp.unanswered().collect::<Vec<_>>(), [b"ask".as_slice()]);
     assert_eq!(
-        acp.from_agent(&json!({"method": "session/update"}), b"u"),
+        acp.agent_sent(&json!({"method": "session/update"}), b"u"),
         None
     );
     assert_eq!(
-        acp.from_client(&json!({"id": 5, "result": {}})),
+        acp.client_sent(&json!({"id": 5, "result": {}})),
         Some("busy")
     );
     assert_eq!(acp.unanswered().count(), 0);
     assert_eq!(
-        acp.from_agent(
+        acp.agent_sent(
             &json!({"id": "a", "result": {"stopReason": "end_turn"}}),
             b"r"
         ),
         Some("idle")
     );
     let mut claude = Tracker::new(HostProtocol::ClaudeStreamJson);
-    assert_eq!(claude.from_client(&json!({"type": "user"})), Some("busy"));
-    assert_eq!(claude.from_client(&json!({"type": "user"})), None);
+    assert_eq!(claude.client_sent(&json!({"type": "user"})), Some("busy"));
+    assert_eq!(claude.client_sent(&json!({"type": "user"})), None);
     assert_eq!(
-        claude.from_agent(&json!({"type": "result"}), b"r"),
+        claude.agent_sent(&json!({"type": "result"}), b"r"),
         None,
         "the second message's turn runs next"
     );
     assert_eq!(
-        claude.from_agent(&json!({"type": "result"}), b"r"),
+        claude.agent_sent(&json!({"type": "result"}), b"r"),
         Some("idle")
     );
 }

@@ -190,7 +190,7 @@ impl Tracker {
     }
 
     /// A line the daemon sent the agent; the new status word if it changed.
-    pub(crate) fn from_client(&mut self, message: &Value) -> Option<&'static str> {
+    pub(crate) fn client_sent(&mut self, message: &Value) -> Option<&'static str> {
         match self.protocol {
             HostProtocol::ClaudeStreamJson => match message["type"].as_str() {
                 Some("user") => {
@@ -215,7 +215,7 @@ impl Tracker {
     }
 
     /// A line the agent sent; the new status word if it changed.
-    pub(crate) fn from_agent(&mut self, message: &Value, line: &[u8]) -> Option<&'static str> {
+    pub(crate) fn agent_sent(&mut self, message: &Value, line: &[u8]) -> Option<&'static str> {
         match self.protocol {
             HostProtocol::ClaudeStreamJson => match message["type"].as_str() {
                 Some("control_request") => {
@@ -410,7 +410,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                                 let Ok(line) = line else { return };
                                 if let Ok(message) = serde_json::from_slice::<Value>(&line) {
                                     let mut relay = lock(&relay);
-                                    if let Some(word) = relay.tracker.from_client(&message)
+                                    if let Some(word) = relay.tracker.client_sent(&message)
                                         && let Some(session) = relay.session.clone()
                                     {
                                         status_line(
@@ -443,7 +443,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
             if relay.session.is_none() {
                 relay.session = session_named(config, &message);
             }
-            if let Some(word) = relay.tracker.from_agent(&message, &line)
+            if let Some(word) = relay.tracker.agent_sent(&message, &line)
                 && let Some(session) = relay.session.clone()
             {
                 status_line(
