@@ -637,7 +637,9 @@ impl Reader<'_> {
     pub fn stored_record(&self, table: RecordTable, id: &str) -> Result<Option<StoredRecord>> {
         let table = table.name();
         let conn = self.conn()?;
-        let found: Option<(i64, String, Option<i64>, Option<i64>, Option<i64>)> = conn
+        // input pk, input ID, then the record's chain, start and end.
+        type Located = (i64, String, Option<i64>, Option<i64>, Option<i64>);
+        let found: Option<Located> = conn
             .query_row(
                 &format!(
                     "SELECT x.input_pk, i.id, x.source_chain, x.source_start, x.source_end
