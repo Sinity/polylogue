@@ -480,11 +480,7 @@ fn live_here(
                 let _ = write!(line, ", task {task}");
             }
             if let Some(files) = row["footprint"].as_str() {
-                let _ = write!(
-                    line,
-                    ", uncommitted edits to {}",
-                    files.lines().count()
-                );
+                let _ = write!(line, ", uncommitted edits to {}", files.lines().count());
             }
             if let Some(todo) = row["todo"].as_str() {
                 let _ = write!(line, ", doing \"{}\"", one_line(todo, 100));

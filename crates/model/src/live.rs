@@ -549,16 +549,20 @@ impl LiveFacts {
         if self.ended_at.is_some() || self.root_gone_at.is_some() {
             return None;
         }
-        if let Some((activity, waiting_on)) = self.harness_status.as_ref().and_then(|s| s.activity()) {
+        if let Some((activity, waiting_on)) =
+            self.harness_status.as_ref().and_then(|s| s.activity())
+        {
             // The hooks may say more precisely what a blocked session waits for.
-            let waiting_on = waiting_on.map(|registry| {
-                self.hook_waiting_on.map_or(registry, |hook| hook.value)
-            });
+            let waiting_on =
+                waiting_on.map(|registry| self.hook_waiting_on.map_or(registry, |hook| hook.value));
             return Some((activity, waiting_on));
         }
         let activity = self.hook_activity.map(|a| a.value)?;
         let waiting_on = self.hook_waiting_on.map(|w| w.value);
-        Some((activity, waiting_on.filter(|_| activity == Activity::Waiting)))
+        Some((
+            activity,
+            waiting_on.filter(|_| activity == Activity::Waiting),
+        ))
     }
 
     /// Closes and opens intervals so the open set matches what is shown now.

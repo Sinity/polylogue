@@ -15,7 +15,11 @@ fn fake_proc(dir: &Path, processes: &[(u32, u32, u64, &str)]) {
         let mut fields = vec!["S".to_owned(), ppid.to_string()];
         fields.extend((5..22).map(|_| "0".to_owned()));
         fields.push(start.to_string());
-        std::fs::write(base.join("stat"), format!("{pid} ({comm}) {}", fields.join(" "))).unwrap();
+        std::fs::write(
+            base.join("stat"),
+            format!("{pid} ({comm}) {}", fields.join(" ")),
+        )
+        .unwrap();
         let children: Vec<String> = processes
             .iter()
             .filter(|p| p.1 == *pid)
@@ -79,11 +83,18 @@ fn the_watcher_writes_only_changes_and_reads_nothing_without_roots() {
     assert!(w.sample(now()).is_empty());
     fake_proc(
         &proc_root,
-        &[(10, 1, 500, "claude"), (11, 10, 600, "bash"), (12, 11, 700, "cargo")],
+        &[
+            (10, 1, 500, "claude"),
+            (11, 10, 600, "bash"),
+            (12, 11, 700, "cargo"),
+        ],
     );
     let mut w = Watcher::new(proc_root.clone(), "b1".into(), Some(0));
     let roots = [root("s", 10, 500, "b1")];
-    assert_eq!(events(&w.update_roots(&roots, now())), [("Started".into(), 10)]);
+    assert_eq!(
+        events(&w.update_roots(&roots, now())),
+        [("Started".into(), 10)]
+    );
     assert_eq!(
         events(&w.sample(now())),
         [("Started".into(), 11), ("Started".into(), 12)]
@@ -122,8 +133,11 @@ fn a_root_from_another_boot_or_start_time_is_written_gone() {
     assert!(w.watched.is_empty());
     // Until the evidence stops naming them, gone roots are not written again.
     assert!(
-        w.update_roots(&[root("old", 10, 500, "b1"), root("reused", 10, 500, "b2")], now())
-            .is_empty()
+        w.update_roots(
+            &[root("old", 10, 500, "b1"), root("reused", 10, 500, "b2")],
+            now()
+        )
+        .is_empty()
     );
 }
 
@@ -133,11 +147,16 @@ fn an_exited_root_waiting_to_be_reaped_is_gone() {
     let proc_root = dir.path().join("proc");
     fake_proc(&proc_root, &[(10, 1, 500, "claude")]);
     let stat = proc_root.join("10").join("stat");
-    let text = std::fs::read_to_string(&stat).unwrap().replace(") S ", ") Z ");
+    let text = std::fs::read_to_string(&stat)
+        .unwrap()
+        .replace(") S ", ") Z ");
     std::fs::write(&stat, text).unwrap();
     let mut w = Watcher::new(proc_root, "b1".into(), None);
     let roots = [root("s", 10, 500, "b1")];
-    assert_eq!(events(&w.update_roots(&roots, now())), [("RootGone".into(), 10)]);
+    assert_eq!(
+        events(&w.update_roots(&roots, now())),
+        [("RootGone".into(), 10)]
+    );
     assert!(w.update_roots(&roots, now()).is_empty());
 }
 
@@ -156,7 +175,10 @@ fn a_root_exit_is_seen_through_its_pidfd_at_once() {
         root: me,
         open_call: false,
     }];
-    assert_eq!(events(&w.update_roots(&roots, now())), [("Started".into(), u64::from(pid))]);
+    assert_eq!(
+        events(&w.update_roots(&roots, now())),
+        [("Started".into(), u64::from(pid))]
+    );
     assert!(w.wait(Duration::from_millis(20)).is_empty());
     child.kill().unwrap();
     let started = Instant::now();
@@ -174,13 +196,19 @@ fn the_registry_reader_writes_each_change_once_with_the_file_whole() {
     let write = |status: &str| {
         std::fs::write(
             &file,
-            serde_json::to_vec(&json!({"pid": 4242, "sessionId": "s9", "status": status, "kind": "interactive"}))
-                .unwrap(),
+            serde_json::to_vec(
+                &json!({"pid": 4242, "sessionId": "s9", "status": status, "kind": "interactive"}),
+            )
+            .unwrap(),
         )
         .unwrap();
         // A distinct modification time for each write.
         let f = std::fs::File::options().write(true).open(&file).unwrap();
-        let later = SystemTime::now() + Duration::from_secs(match status { "busy" => 1, _ => 2 });
+        let later = SystemTime::now()
+            + Duration::from_secs(match status {
+                "busy" => 1,
+                _ => 2,
+            });
         f.set_modified(later).unwrap();
     };
     let mut r = Registry::new(dir.path().to_path_buf());

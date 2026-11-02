@@ -911,7 +911,11 @@ pub static UNITS: &[UnitSpec] = &[
             ("started_at", T("{r}.started_at"), Time),
             ("ended_at", T("{r}.ended_at"), Time),
             ("role", T("{r}.role"), Text),
-            ("tool_call", Expr::Fn(crate::query::fields::processes_tool_call), Text),
+            (
+                "tool_call",
+                Expr::Fn(crate::query::fields::processes_tool_call),
+                Text,
+            ),
         ],
         time: "{r}.started_at",
         newest_first: false,

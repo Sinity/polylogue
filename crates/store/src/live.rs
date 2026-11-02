@@ -65,7 +65,13 @@ fn record_intervals(tx: &Transaction<'_>, session_pk: i64, closed: &[LiveInterva
 
 /// Keeps `process` rows from process lines: one row per process identity,
 /// with its exit when seen.
-fn record_process(tx: &Transaction<'_>, session_pk: i64, kind: &str, at: i64, data: &Json) -> Result<()> {
+fn record_process(
+    tx: &Transaction<'_>,
+    session_pk: i64,
+    kind: &str,
+    at: i64,
+    data: &Json,
+) -> Result<()> {
     let Some(event) = kind.strip_prefix(live::PROCESS_PREFIX) else {
         return Ok(());
     };

@@ -256,7 +256,13 @@ fn peers_are_symmetric() {
     // (id, latest event, waiting on, repo_root, cwd)
     let rows = [
         ("a", "hook_pre_tool_use", None, None, "/src/tide"),
-        ("b", "hook_notification", Some("permission"), None, "/src/tide"),
+        (
+            "b",
+            "hook_notification",
+            Some("permission"),
+            None,
+            "/src/tide",
+        ),
         ("c", "hook_stop", None, None, "/src/tide/web"),
         ("d", "hook_pre_tool_use", None, Some("r1"), "/x"),
         ("e", "hook_stop", None, Some("r1"), "/y"),
@@ -386,7 +392,12 @@ fn stored_facts_equal_the_fold_of_stored_lines_with_ties_and_late_lines() {
         ("f", "post_tool_use", 2, json!({})),
         ("f", "stop", 4, json!({})),
         // Arrives after the stop but happened before it.
-        ("f", "pre_tool_use", 3, json!({"tool_name": "Bash", "tool_use_id": "t"})),
+        (
+            "f",
+            "pre_tool_use",
+            3,
+            json!({"tool_name": "Bash", "tool_use_id": "t"}),
+        ),
     ];
     let mut w = WriterArchive::new();
     // One line per step, so equal and late instants arrive separately.

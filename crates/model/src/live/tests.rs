@@ -68,7 +68,10 @@ fn the_view_is_total_and_constant_between_until_instants() {
     assert_eq!(view(None, None, 0).state, LiveState::Unknown);
     let grew = view(None, Some(10 * MIN), 20 * MIN);
     assert_eq!(grew.state, LiveState::Unknown);
-    assert_eq!(view(None, Some(10 * MIN), grew.until.unwrap()).state, LiveState::Ended);
+    assert_eq!(
+        view(None, Some(10 * MIN), grew.until.unwrap()).state,
+        LiveState::Ended
+    );
 }
 
 /// law: pl.live.wait-not-stall
@@ -89,10 +92,17 @@ fn a_rate_limit_stop_is_a_stall_and_never_waiting() {
     // A permission request is waiting, with what it waits for.
     let (facts, _) = run(&[
         ("hook_user_prompt_submit", 0, hook(json!({}))),
-        ("hook_permission_request", MIN, hook(json!({"tool_name": "Bash"}))),
+        (
+            "hook_permission_request",
+            MIN,
+            hook(json!({"tool_name": "Bash"})),
+        ),
     ]);
     let v = view(Some(&facts), None, 2 * MIN);
-    assert_eq!((v.state, v.waiting_on), (LiveState::Waiting, Some(WaitingOn::Permission)));
+    assert_eq!(
+        (v.state, v.waiting_on),
+        (LiveState::Waiting, Some(WaitingOn::Permission))
+    );
     // An idle notification is not a wait.
     let (facts, _) = run(&[
         ("hook_stop", 0, hook(json!({}))),
@@ -131,7 +141,10 @@ fn the_registry_word_outranks_hook_inference() {
         &json!({"status": "blocked", "pid": 100, "start": 5000, "boot_id": "boot-a"}),
     );
     let v = view(Some(&blocked), None, 6 * MIN);
-    assert_eq!((v.state, v.waiting_on), (LiveState::Waiting, Some(WaitingOn::Permission)));
+    assert_eq!(
+        (v.state, v.waiting_on),
+        (LiveState::Waiting, Some(WaitingOn::Permission))
+    );
 }
 
 /// law: pl.live.pid-reuse
@@ -185,7 +198,9 @@ fn no_fact_comes_from_prose_or_command_text() {
         (
             "hook_post_tool_use",
             0,
-            hook(json!({"tool_name": "Bash", "tool_input": {"command": "sed -i x file; bd update sx-1 --claim"}})),
+            hook(
+                json!({"tool_name": "Bash", "tool_input": {"command": "sed -i x file; bd update sx-1 --claim"}}),
+            ),
         ),
         (
             "hook_user_prompt_submit",
@@ -211,12 +226,18 @@ fn no_fact_comes_from_prose_or_command_text() {
         (
             "hook_post_tool_use",
             MIN,
-            hook(json!({"tool_name": "apply_patch", "tool_input": {"input": "*** Begin Patch\n*** Update File: src/a.rs\n@@\n*** Add File: src/b.rs\n*** End Patch"}})),
+            hook(
+                json!({"tool_name": "apply_patch", "tool_input": {"input": "*** Begin Patch\n*** Update File: src/a.rs\n@@\n*** Add File: src/b.rs\n*** End Patch"}}),
+            ),
         ),
         ("hook_task_claimed", 2 * MIN, hook(json!({"task": "sx-1"}))),
     ]);
     assert_eq!(
-        facts.footprint.iter().map(String::as_str).collect::<Vec<_>>(),
+        facts
+            .footprint
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
         ["/home/op/src/file", "src/a.rs", "src/b.rs"]
     );
     assert_eq!(facts.task.as_deref(), Some("sx-1"));
@@ -279,7 +300,9 @@ fn folding_through_stored_facts_equals_folding_at_once() {
         (
             "hook_pre_tool_use",
             MIN,
-            hook(json!({"tool_name": "TodoWrite", "tool_input": {"todos": [{"status": "in_progress", "content": "port cases"}]}})),
+            hook(
+                json!({"tool_name": "TodoWrite", "tool_input": {"todos": [{"status": "in_progress", "content": "port cases"}]}}),
+            ),
         ),
         (
             "registry_status",

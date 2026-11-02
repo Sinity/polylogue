@@ -121,7 +121,10 @@ pub(crate) fn descendants(proc_root: &Path, root: u32) -> BTreeMap<u32, Stat> {
             let Ok(children) = std::fs::read_to_string(task.path().join("children")) else {
                 continue;
             };
-            for child in children.split_whitespace().filter_map(|c| c.parse::<u32>().ok()) {
+            for child in children
+                .split_whitespace()
+                .filter_map(|c| c.parse::<u32>().ok())
+            {
                 if child != root
                     && !out.contains_key(&child)
                     && let Some(s) = stat(proc_root, child)
@@ -225,7 +228,10 @@ impl Watcher {
             .collect();
         self.reported_gone.retain(|k| named.contains(k));
         for r in roots {
-            if self.reported_gone.contains(&(r.session.clone(), r.root.clone())) {
+            if self
+                .reported_gone
+                .contains(&(r.session.clone(), r.root.clone()))
+            {
                 continue;
             }
             let Ok(session) = SessionId::parse(&r.session) else {
@@ -239,7 +245,8 @@ impl Watcher {
             }
             self.watched.remove(&r.session);
             if !self.alive(&r.root) {
-                self.reported_gone.insert((r.session.clone(), r.root.clone()));
+                self.reported_gone
+                    .insert((r.session.clone(), r.root.clone()));
             }
             if r.root.boot != self.boot {
                 // The process belonged to an earlier boot: it ended then.
@@ -247,11 +254,23 @@ impl Watcher {
                     .boot_time_ms
                     .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
                     .unwrap_or(now);
-                out.push(line("process", "RootGone", &session, at, identity_payload(&r.root)));
+                out.push(line(
+                    "process",
+                    "RootGone",
+                    &session,
+                    at,
+                    identity_payload(&r.root),
+                ));
                 continue;
             }
             if !self.alive(&r.root) {
-                out.push(line("process", "RootGone", &session, now, identity_payload(&r.root)));
+                out.push(line(
+                    "process",
+                    "RootGone",
+                    &session,
+                    now,
+                    identity_payload(&r.root),
+                ));
                 continue;
             }
             let pidfd = rustix::process::Pid::from_raw(r.root.pid as i32).and_then(|pid| {
@@ -293,14 +312,14 @@ impl Watcher {
             .watched
             .iter()
             .filter(|(session, w)| {
-                ready.contains(*session)
-                    || (w.pidfd.is_none() && !self.alive(&w.root))
+                ready.contains(*session) || (w.pidfd.is_none() && !self.alive(&w.root))
             })
             .map(|(s, _)| s.clone())
             .collect();
         for session_key in gone {
             let w = self.watched.remove(&session_key).expect("listed above");
-            self.reported_gone.insert((session_key.clone(), w.root.clone()));
+            self.reported_gone
+                .insert((session_key.clone(), w.root.clone()));
             let Ok(session) = SessionId::parse(&session_key) else {
                 continue;
             };
@@ -313,7 +332,13 @@ impl Watcher {
                     json!({"pid": pid, "start": start, "boot_id": self.boot}),
                 ));
             }
-            out.push(line("process", "RootGone", &session, now, identity_payload(&w.root)));
+            out.push(line(
+                "process",
+                "RootGone",
+                &session,
+                now,
+                identity_payload(&w.root),
+            ));
         }
         out
     }
@@ -437,7 +462,11 @@ impl Registry {
     }
 
     /// Lines for registry files that changed since the last read.
-    pub(crate) fn read(&mut self, now: jiff::Timestamp, identity_of: impl Fn(u32) -> Option<ProcessIdentity>) -> Vec<Value> {
+    pub(crate) fn read(
+        &mut self,
+        now: jiff::Timestamp,
+        identity_of: impl Fn(u32) -> Option<ProcessIdentity>,
+    ) -> Vec<Value> {
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
             self.seen.clear();
             return Vec::new();

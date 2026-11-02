@@ -326,8 +326,7 @@ fn apply_rows(
             .as_ref()
             .map(|id| rows.session_pk(&mut sessions, id))
             .transpose()?;
-        if let Some(session_pk) =
-            session_pk.filter(|_| polylogue_model::live::is_evidence(&e.kind))
+        if let Some(session_pk) = session_pk.filter(|_| polylogue_model::live::is_evidence(&e.kind))
         {
             // Prepared events release their JSON payload before writing. Live
             // facts must read the same payload as the stored event.

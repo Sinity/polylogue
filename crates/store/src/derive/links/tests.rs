@@ -29,14 +29,8 @@ fn no_task_from_prose_or_claim_commands() {
             "✓ claimed",
         ),
     );
-    assert_eq!(
-        w.live_task("a"),
-        json!({"task": null})
-    );
-    assert_eq!(
-        w.live_task("b"),
-        json!({"task": null})
-    );
+    assert_eq!(w.live_task("a"), json!({"task": null}));
+    assert_eq!(w.live_task("b"), json!({"task": null}));
 
     w.write(
         "b",
@@ -49,10 +43,7 @@ fn no_task_from_prose_or_claim_commands() {
             "✓ closed",
         ),
     );
-    assert_eq!(
-        w.live_task("b"),
-        json!({"task": null})
-    );
+    assert_eq!(w.live_task("b"), json!({"task": null}));
 }
 
 #[test]
@@ -69,10 +60,7 @@ fn a_failed_claim_claims_nothing() {
             "error: not found",
         ),
     );
-    assert_eq!(
-        w.live_task("s"),
-        json!({"task": null})
-    );
+    assert_eq!(w.live_task("s"), json!({"task": null}));
 }
 
 #[test]
