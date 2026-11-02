@@ -653,7 +653,10 @@ fn a_refused_input_is_set_aside_with_every_row_and_its_stored_bytes() {
         .collect();
     assert_eq!(ids, ["o1", "o2", "o3", "o4", "o5", "o0"]);
     // Every blob it cites, the damaged file with its bytes as they were found.
-    let blobs: Vec<&serde_json::Value> = lines.iter().filter(|line| line["table"] == "blob").collect();
+    let blobs: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|line| line["table"] == "blob")
+        .collect();
     assert_eq!(blobs.len(), 3);
     let file = blobs
         .iter()
