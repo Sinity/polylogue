@@ -41,6 +41,39 @@ fn count_failures_are_visible_and_a_success_clears_them() {
 }
 
 #[test]
+fn a_commit_is_counted_however_long_the_last_count_took() {
+    let daemon = crate::test_daemon::start("commit counted");
+    let warm = Warm::default();
+    warm.refresh_counts(&daemon.daemon.reads);
+    warm.recount_wanted.store(false, Ordering::Release);
+    let before = {
+        let mut held = warm.archive_counts.lock().unwrap();
+        let counted = held.as_mut().unwrap();
+        // A count this slow must not hold back the next one.
+        counted.took = Duration::from_secs(3600);
+        counted.position.clone()
+    };
+    let commits = daemon.daemon.writes.as_ref().unwrap().completion_commits();
+    std::thread::scope(|scope| {
+        let worker = scope.spawn(|| warm.count_worker(&daemon.daemon.reads, Some(commits)));
+        daemon.set("browser.actions", "on");
+        while warm
+            .archive_counts
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .position
+            == before
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        warm.stop_counting();
+        worker.join().unwrap();
+    });
+}
+
+#[test]
 fn completion_reads_declared_values_and_refreshes_observed_models() {
     let d = crate::test_daemon::start("synthetic prompt");
     let values = |word: &str| {

@@ -1521,7 +1521,6 @@ pub struct Runtime {
     pub operations: Arc<command_surface::OperationTable>,
     signals_stop: Option<Sender<()>>,
     signals: Option<JoinHandle<()>>,
-    counts_stop: Option<Sender<()>>,
     counts: Option<JoinHandle<()>>,
     completion: Option<crate::completion_catalog::publisher::Publisher>,
     completion_scope: Option<polylogue_store::ScopeInvalidation>,
@@ -1604,8 +1603,8 @@ impl Runtime {
         if let Some(stop) = self.signals_stop.take() {
             let _ = stop.send(());
         }
-        if let Some(stop) = self.counts_stop.take() {
-            let _ = stop.send(());
+        if self.counts.is_some() {
+            self.daemon.warm.stop_counting();
             self.daemon.warm.clear();
         }
         if let Some(counts) = self.counts.take()
@@ -1830,7 +1829,6 @@ pub fn start(
         operations,
         signals_stop: None,
         signals: None,
-        counts_stop: None,
         counts: None,
         completion: None,
         completion_scope: Some(completion_scope),
@@ -1912,8 +1910,11 @@ pub fn start(
                 crate::signals::run(daemon, stopped)
             })?,
     );
-    let (stop, stopped) = channel();
-    runtime.counts_stop = Some(stop);
+    let count_commits = runtime
+        .daemon
+        .writes
+        .as_ref()
+        .map(WriterSender::completion_commits);
     let daemon = Arc::clone(&runtime.daemon);
     let worker_events = runtime.worker_events.clone();
     runtime.counts = Some(
@@ -1925,7 +1926,7 @@ pub fn start(
                     "count worker terminated",
                     None,
                 );
-                daemon.warm.count_worker(&daemon.reads, &stopped)
+                daemon.warm.count_worker(&daemon.reads, count_commits)
             })?,
     );
     // Load the vectors `similar:` ranks by before the first query needs them.
