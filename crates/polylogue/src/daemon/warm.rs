@@ -262,8 +262,11 @@ impl Warm {
         reads: &polylogue_store::ReadPool,
         commits: Option<polylogue_store::completion::CommitSubscription>,
     ) {
+        let wake = commits
+            .as_ref()
+            .map(polylogue_store::completion::CommitSubscription::wake_handle);
         std::thread::scope(|scope| {
-            if let Some(commits) = &commits {
+            if let Some(commits) = commits {
                 scope.spawn(move || {
                     while commits.recv().is_ok() && !self.counting_stopped() {
                         self.request_count();
@@ -289,9 +292,9 @@ impl Warm {
                 self.refresh_counts(reads);
             }
             self.counting_stopped.store(true, Ordering::Release);
-            if let Some(commits) = &commits {
+            if let Some(wake) = wake {
                 // The relay sees the stop on its next wake.
-                let _ = commits.wake_handle().try_send(());
+                let _ = wake.try_send(());
             }
         });
     }
