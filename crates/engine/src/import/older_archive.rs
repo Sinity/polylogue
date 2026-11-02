@@ -67,6 +67,10 @@ pub struct OlderArchiveReport {
     /// The imported input keeping every row other than the stored bytes'
     /// verbatim, by its ID.
     pub rows_input: Option<String>,
+    /// The imported input setting aside every row and the stored bytes of
+    /// each refused input, with its refusal reason, by its ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused_inputs: Option<String>,
     /// What a dry run cannot tell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dry_run_limits: Option<String>,
@@ -186,38 +190,7 @@ impl Engine {
         let current = if dry_run {
             None
         } else {
-            let mut import = ImportReport::default();
-            let at = root.join("archive.db!").join("rows.jsonl");
-            let origin = polylogue_sources::origin::by_name(KEPT)
-                .ok_or_else(|| std::io::Error::other("the kept-file origin is not declared"))?;
-            let member = polylogue_store::ImportMember {
-                version: 1,
-                import_id: uuid::Uuid::now_v7().to_string(),
-                authorship: authorship.cloned(),
-                member: "rows.jsonl".into(),
-                format: None,
-            };
-            self.store_import_group(
-                vec![(
-                    at,
-                    origin,
-                    None,
-                    Captured {
-                        prepared: rows_bytes,
-                        #[cfg(test)]
-                        head: Vec::new(),
-                        member: Some(member),
-                        container: None,
-                    },
-                )],
-                &mut import,
-            )?;
-            if let Some(error) = import.pass.errors.first() {
-                return Err(std::io::Error::other(format!(
-                    "the rows input could not be stored: {error}"
-                ))
-                .into());
-            }
+            self.store_kept_member(root, "rows.jsonl", rows_bytes, authorship)?;
             let chain = self
                 .reads
                 .reader()?
@@ -237,6 +210,22 @@ impl Engine {
         };
 
         self.import_older_inputs(&older, dry_run, &mut report)?;
+        // Refused inputs are set aside whole, with their bytes and reasons.
+        let refused_inputs: Vec<(String, String)> = report
+            .refused
+            .iter()
+            .filter(|row| row.class == "input")
+            .map(|row| (row.row.clone(), row.reason.clone()))
+            .collect();
+        if !refused_inputs.is_empty() {
+            let (set_aside, _) = self
+                .archive
+                .prepare_write(|out| older.write_refused_inputs(&refused_inputs, out))?;
+            report.refused_inputs = Some(set_aside.hash().to_string());
+            if !dry_run {
+                self.store_kept_member(root, "refused-inputs.jsonl", set_aside, authorship)?;
+            }
+        }
         self.import_older_authored(&older, current.as_ref(), &mut report)?;
         self.import_older_vectors(&older, dry_run, &mut report)?;
 
@@ -286,6 +275,49 @@ impl Engine {
             self.loaded = false;
         }
         Ok(report)
+    }
+
+    /// Stores `bytes` as an imported kept file, `archive.db!/<member>` of
+    /// the older folder `root`.
+    fn store_kept_member(
+        &mut self,
+        root: &Path,
+        member: &str,
+        bytes: polylogue_store::staging::PreparedBytes,
+        authorship: Option<&polylogue_model::authorship::Authorship>,
+    ) -> Result<(), EngineError> {
+        let mut import = ImportReport::default();
+        let at = root.join("archive.db!").join(member);
+        let origin = polylogue_sources::origin::by_name(KEPT)
+            .ok_or_else(|| std::io::Error::other("the kept-file origin is not declared"))?;
+        let imported = polylogue_store::ImportMember {
+            version: 1,
+            import_id: uuid::Uuid::now_v7().to_string(),
+            authorship: authorship.cloned(),
+            member: member.into(),
+            format: None,
+        };
+        self.store_import_group(
+            vec![(
+                at,
+                origin,
+                None,
+                Captured {
+                    prepared: bytes,
+                    #[cfg(test)]
+                    head: Vec::new(),
+                    member: Some(imported),
+                    container: None,
+                },
+            )],
+            &mut import,
+        )?;
+        if let Some(error) = import.pass.errors.first() {
+            return Err(
+                std::io::Error::other(format!("{member} could not be stored: {error}")).into(),
+            );
+        }
+        Ok(())
     }
 
     /// Stored bytes: inputs with every revision, extent and observation, and

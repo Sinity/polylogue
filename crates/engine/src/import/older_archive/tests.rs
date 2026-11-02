@@ -591,3 +591,80 @@ fn a_delivery_its_own_request_could_not_store_but_an_event_request_did_counts_as
         );
     }
 }
+
+/// law: older-archive-refusals
+#[test]
+fn a_refused_input_is_set_aside_with_every_row_and_its_stored_bytes() {
+    let mut w = setup();
+    let path = w
+        .older
+        .root
+        .join("blobs")
+        .join(&w.older.file_blob.to_string()[..2])
+        .join(format!("{}.zst", w.older.file_blob));
+    let size = {
+        let older = OlderArchive::open(&w.older.root, &w.root.join("copies")).unwrap();
+        older.blob(&w.older.file_blob).unwrap().unwrap().size as usize
+    };
+    let damaged = fixture::seekable(&vec![b'x'; size], 16);
+    std::fs::write(&path, &damaged).unwrap();
+    let report = import(&mut w, false);
+    let set_aside = report.refused_inputs.clone().unwrap();
+    let target = read_only(&w.root.join("archive.db"));
+    let extents = rows(
+        &target,
+        &format!("SELECT blob FROM extent WHERE input = '{set_aside}' ORDER BY chain, offset"),
+    );
+    assert_eq!(extents.len(), 1);
+    let store = w.engine.archive.blobs().unwrap();
+    let hash = polylogue_model::BlobHash::parse(&extents[0][0]).unwrap();
+    let bytes = polylogue_store::blobs::read(&target, &store, &hash).unwrap();
+    let lines: Vec<serde_json::Value> = bytes
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    let reason = &report
+        .refused
+        .iter()
+        .find(|r| r.class == "input")
+        .unwrap()
+        .reason;
+    assert!(lines.iter().all(|line| line["reason"] == reason.as_str()));
+    let source = read_only(&w.older.root.join("archive.db"));
+    let watched = &w.older.watched;
+    // Every row of the refused input, column for column.
+    for (table, filter) in [
+        ("input", format!("id = '{watched}'")),
+        ("revision", format!("input = '{watched}'")),
+        ("extent", format!("input = '{watched}'")),
+        ("observation", format!("input = '{watched}'")),
+    ] {
+        let expected = rows(&source, &format!("SELECT * FROM {table} WHERE {filter}"));
+        let carried: Vec<&serde_json::Value> =
+            lines.iter().filter(|line| line["table"] == table).collect();
+        assert_eq!(carried.len(), expected.len(), "{table}");
+        assert!(!expected.is_empty(), "{table}");
+    }
+    let ids: Vec<&str> = lines
+        .iter()
+        .filter(|line| line["table"] == "observation")
+        .map(|line| line["row"]["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["o1", "o2", "o3", "o4", "o5", "o0"]);
+    // Every blob it cites, the damaged file with its bytes as they were found.
+    let blobs: Vec<&serde_json::Value> = lines.iter().filter(|line| line["table"] == "blob").collect();
+    assert_eq!(blobs.len(), 3);
+    let file = blobs
+        .iter()
+        .find(|line| line["row"]["place"] == "file")
+        .unwrap();
+    let hex: String = damaged.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(file["file_hex"], hex.as_str());
+    assert!(
+        blobs
+            .iter()
+            .filter(|line| line["row"]["place"] == "inline")
+            .all(|line| line["row"]["data"]["sqlite_blob_hex"].is_string())
+    );
+}

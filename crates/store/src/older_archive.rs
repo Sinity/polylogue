@@ -942,6 +942,97 @@ impl OlderArchive {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Writes each refused input as JSON lines, each carrying the input's
+    /// refusal `reason`: its `input`, `revision`, `extent`, `observation` and
+    /// `observation_zip` rows, then the `blob` row of every blob it cites
+    /// with the blob's stored bytes as they are (the row's `data` for an
+    /// inline blob; `file_hex` for a file, or `file_missing` when there is
+    /// none), so a refused input
+    /// whose source is gone keeps every row and byte. Values are written as
+    /// in [`Self::write_rows`].
+    pub fn write_refused_inputs(
+        &self,
+        refused: &[(String, String)],
+        out: &mut dyn Write,
+    ) -> Result<u64> {
+        let tables = tables_of(&self.archive)?;
+        let mut written = 0;
+        let mut line = |table: &str,
+                        columns: &[String],
+                        row: &rusqlite::Row<'_>,
+                        reason: &str,
+                        extra: Option<(&str, serde_json::Value)>,
+                        out: &mut dyn Write|
+         -> Result<()> {
+            let mut values = serde_json::Map::new();
+            for (index, name) in columns.iter().enumerate() {
+                values.insert(name.clone(), json_value(row.get_ref(index)?));
+            }
+            let mut record = serde_json::json!({"table": table, "reason": reason, "row": values});
+            if let Some((key, value)) = extra {
+                record[key] = value;
+            }
+            serde_json::to_writer(&mut *out, &record)?;
+            out.write_all(b"\n")?;
+            written += 1;
+            Ok(())
+        };
+        for (id, reason) in refused {
+            for (table, filter) in [
+                ("input", "id = ?1"),
+                ("revision", "input = ?1"),
+                ("extent", "input = ?1"),
+                ("observation", "input = ?1"),
+                (
+                    "observation_zip",
+                    "observation_id IN (SELECT id FROM observation WHERE input = ?1)",
+                ),
+            ] {
+                let Some(columns) = tables.get(table) else {
+                    continue;
+                };
+                let order = if table == "observation" {
+                    "rowid".to_owned()
+                } else {
+                    (1..=columns.len())
+                        .map(|n| n.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                };
+                let mut statement = self.archive.prepare(&format!(
+                    "SELECT * FROM \"{table}\" WHERE {filter} ORDER BY {order}"
+                ))?;
+                let mut rows = statement.query([id])?;
+                while let Some(row) = rows.next()? {
+                    line(table, columns, row, reason, None, out)?;
+                }
+            }
+            let columns = &tables["blob"];
+            let mut statement = self.archive.prepare(
+                "SELECT * FROM blob WHERE hash IN (SELECT blob FROM extent WHERE input = ?1)
+                 ORDER BY hash",
+            )?;
+            let mut rows = statement.query([id])?;
+            while let Some(row) = rows.next()? {
+                let place: String = row.get("place")?;
+                let extra = if place != "file" {
+                    None
+                } else {
+                    let hash = hash_of(row.get("hash")?)?;
+                    match std::fs::read(self.blob_path(&hash)) {
+                        Ok(bytes) => Some(("file_hex", serde_json::Value::String(hex(&bytes)))),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            Some(("file_missing", serde_json::Value::Bool(true)))
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                };
+                line("blob", columns, row, reason, extra, out)?;
+            }
+        }
+        Ok(written)
+    }
+
     /// Writes every row of every table other than the stored bytes'
     /// ([`BYTE_TABLES`]) as JSON lines, `{"table":…,"row":{column:value}}`,
     /// table by table in name order and each table's rows in the order of
