@@ -17,14 +17,13 @@ CARGO_BUILD_JOBS = "8"
 CARGO_INCREMENTAL = "0"
 
 [operations.fast]
-description = "Formatting, crate boundaries and strict Clippy in the development queue"
+description = "Formatting, crate boundaries and strict Clippy"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "fast"]
-pool = "normal"
+pool = "compile"
 result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
 cache = "none"
-cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.check]
@@ -64,12 +63,11 @@ unit_properties = ["MemoryHigh=8G"]
 description = "Compile selected packages without waiting behind the full suite"
 exec = ["nix", "develop", "--command", "cargo", "check", "--locked"]
 arguments = "required"
-pool = "normal"
+pool = "compile"
 result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
 cache = "none"
-cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.focused]
