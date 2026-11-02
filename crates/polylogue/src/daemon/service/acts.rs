@@ -185,14 +185,20 @@ fn role_reference(name: &str) -> String {
 }
 
 /// The newest running instance of a role: the newest session Polylogue
-/// started for it whose live state is running.
+/// started for it that it still hosts or whose live state is running.
 fn role_instance(d: &Daemon, name: &str, now: i64) -> Result<Option<SessionId>, Failure> {
     let reader = d.reads.reader()?;
     for (session, _, _) in reader.sessions_started_with(&role_reference(name))? {
-        let running = reader
-            .live_state(&session, now)?
-            .is_some_and(|s| s.view.state.running());
-        if running && let Ok(id) = SessionId::parse(&session) {
+        let Ok(id) = SessionId::parse(&session) else {
+            continue;
+        };
+        // A session just started has no live evidence yet; its open
+        // connection says it runs.
+        let running = d.acts.is_hosted(&id)
+            || reader
+                .live_state(&session, now)?
+                .is_some_and(|s| s.view.state.running());
+        if running {
             return Ok(Some(id));
         }
     }
@@ -241,6 +247,85 @@ fn recipients(
             .map(|id| SessionId::parse(id).map_err(|e| Failure::new("internal", e)))
             .collect::<Result<_, _>>()?,
     ))
+}
+
+/// A session's live state, live facts and directory for an act: from the
+/// archive, or, for a session Polylogue just started and still hosts, no
+/// evidence yet and state `unknown`.
+fn session_state(
+    d: &Daemon,
+    session: &SessionId,
+    now: i64,
+) -> Result<
+    Option<(
+        polylogue_model::live::LiveState,
+        polylogue_model::live::LiveFacts,
+        Option<String>,
+    )>,
+    Failure,
+> {
+    match d.reads.reader()?.live_state(&session.to_string(), now)? {
+        Some(s) => Ok(Some((s.view.state, s.facts, s.cwd))),
+        None if d.acts.is_hosted(session) => Ok(Some((
+            polylogue_model::live::LiveState::Unknown,
+            polylogue_model::live::LiveFacts::default(),
+            None,
+        ))),
+        None => Ok(None),
+    }
+}
+
+/// Sends a ping or notice over a hosted connection: `delivered` when
+/// written, recorded later when it waits for the running prompt, and
+/// `not_sent` when the connection fails. The delivery stays handed out, so
+/// no hook takes it as well.
+fn protocol_send(
+    d: &Daemon,
+    invocation: &Invocation,
+    session: &SessionId,
+    delivery: &str,
+    pack: &str,
+) -> Result<Value, Failure> {
+    Ok(match d.acts.host_send(session, pack, Some(delivery)) {
+        Ok(true) => {
+            outcome_event(
+                d,
+                invocation,
+                delivery,
+                DeliveryOutcome::Delivered,
+                "sent over the hosted connection".into(),
+            )?;
+            json!({"session": session, "delivery": delivery, "channel": "protocol", "outcome": "delivered"})
+        }
+        Ok(false) => {
+            json!({"session": session, "delivery": delivery, "channel": "protocol", "outcome": "prepared",
+                   "note": "waits for the running prompt; recorded when it is sent"})
+        }
+        Err(reason) => {
+            outcome_event(
+                d,
+                invocation,
+                delivery,
+                DeliveryOutcome::NotSent,
+                format!("failed({reason})"),
+            )?;
+            json!({"session": session, "delivery": delivery, "channel": "protocol", "outcome": "not_sent", "reason": reason})
+        }
+    })
+}
+
+/// Records what happened to a message that waited for a hosted session's
+/// running prompt.
+pub(crate) fn record_sent(d: &Daemon, delivery: &str, sent: Result<(), String>) {
+    let invocation = d.invocation(&crate::operation::Context::worker_authorship("hosted"));
+    let (what, detail) = match sent {
+        Ok(()) => (
+            DeliveryOutcome::Delivered,
+            "sent over the hosted connection after the running prompt".to_owned(),
+        ),
+        Err(reason) => (DeliveryOutcome::NotSent, format!("failed({reason})")),
+    };
+    let _ = outcome_event(d, &invocation, delivery, what, detail);
 }
 
 /// The ping pack: the text, what it is about, how to answer, and the
@@ -312,9 +397,8 @@ fn ping(
     let mut sent = Vec::new();
     for (n, session) in sessions.iter().enumerate() {
         let delivery = format!("{request_id}-{n}");
-        let state = d.reads.reader()?.live_state(&session.to_string(), now)?;
-        let (view_state, facts, cwd) = match state {
-            Some(s) => (s.view.state, s.facts, s.cwd),
+        let (view_state, facts, cwd) = match session_state(d, session, now)? {
+            Some(state) => state,
             None => {
                 sent.push(
                     json!({"session": session, "outcome": "not_sent", "reason": "session_missing"}),
@@ -367,28 +451,7 @@ fn ping(
                 json!({"session": session, "delivery": delivery, "channel": "resume",
                        "outcome": if started { "started" } else { "queued" }})
             }
-            Ok(Channel::Protocol) => match d.acts.host_send(session, &pack) {
-                Ok(()) => {
-                    outcome_event(
-                        d,
-                        invocation,
-                        &delivery,
-                        DeliveryOutcome::Delivered,
-                        "sent over the hosted connection".into(),
-                    )?;
-                    json!({"session": session, "delivery": delivery, "channel": "protocol", "outcome": "delivered"})
-                }
-                Err(reason) => {
-                    outcome_event(
-                        d,
-                        invocation,
-                        &delivery,
-                        DeliveryOutcome::NotSent,
-                        format!("failed({reason})"),
-                    )?;
-                    json!({"session": session, "delivery": delivery, "channel": "protocol", "outcome": "not_sent", "reason": reason})
-                }
-            },
+            Ok(Channel::Protocol) => protocol_send(d, invocation, session, &delivery, &pack)?,
             Err(refusal) => {
                 outcome_event(
                     d,
@@ -443,6 +506,17 @@ pub(crate) fn settle_ended(d: &Daemon, now: i64, everyone: bool) {
     let Ok(reader) = d.reads.reader() else {
         return;
     };
+    // A hosted session that ended needs no connection or record.
+    for session in d.acts.hosted_sessions() {
+        let ended = reader
+            .live_state(&session.to_string(), now)
+            .ok()
+            .flatten()
+            .is_some_and(|s| s.view.state == polylogue_model::live::LiveState::Ended);
+        if ended {
+            d.acts.release_host(&session);
+        }
+    }
     let sessions: Vec<String> = if everyone {
         reader
             .sessions_with_pending_hook_deliveries()
@@ -1073,7 +1147,8 @@ struct HandOff<'a> {
 
 /// Hands a session's work to a new hosted session in any harness: the new
 /// session starts in the source's directory with the source's takeover
-/// pack (from a message, with `at`), its first turn carrying the pack's
+/// pack and a line naming the message to continue from (`at`), its first
+/// turn carrying the pack's
 /// delivery reference, and records the source as what it was briefed
 /// from. It is a new session, never a resume or a fork of the source.
 /// `stop_source` then interrupts the source; `print` shows the pack and
@@ -1203,7 +1278,7 @@ pub(crate) fn notice(
     let mut sent = Vec::new();
     for (n, session) in sessions.iter().enumerate() {
         let delivery = format!("{base}-{n}");
-        let Some(state) = d.reads.reader()?.live_state(&session.to_string(), now)? else {
+        let Some((state, facts, cwd)) = session_state(d, session, now)? else {
             sent.push(json!({"session": session, "outcome": "not_sent", "reason": "session_missing"}));
             continue;
         };
@@ -1221,27 +1296,14 @@ pub(crate) fn notice(
                 recipient_id: Some(session.to_string()),
                 sender: DeliverySender::Signal.as_str().into(),
                 event: DeliveryEvent::Notice.as_str().into(),
-                cwd: state.cwd.clone(),
+                cwd,
                 text: pack.clone(),
                 refs: vec![format!("signal:{rule}")],
                 left_out: Vec::new(),
             }),
         )?;
-        let row = match channel(
-            Act::Notice,
-            state.view.state,
-            &probe(&d.acts, session, &state.facts),
-        ) {
-            Ok(Channel::Protocol) => {
-                let result = d.acts.host_send(session, &pack);
-                d.acts.release(&delivery);
-                let (what, detail) = match &result {
-                    Ok(()) => (DeliveryOutcome::Delivered, "sent over the hosted connection".to_owned()),
-                    Err(reason) => (DeliveryOutcome::NotSent, format!("failed({reason})")),
-                };
-                outcome_event(d, &invocation, &delivery, what, detail)?;
-                json!({"session": session, "delivery": delivery, "channel": "protocol", "outcome": what.as_str()})
-            }
+        let row = match channel(Act::Notice, state, &probe(&d.acts, session, &facts)) {
+            Ok(Channel::Protocol) => protocol_send(d, &invocation, session, &delivery, &pack)?,
             Ok(_) => {
                 crate::mailbox::raise(d.acts.mail(), session).map_err(|e| Failure::new("io", e))?;
                 d.acts.release(&delivery);

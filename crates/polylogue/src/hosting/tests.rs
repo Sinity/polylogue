@@ -18,7 +18,8 @@ while IFS= read -r line; do
       n=$((n+1)); echo "$n" > "$count"; prompt=$id
       printf '{"jsonrpc":"2.0","id":90%s,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"t%s"},"options":[{"optionId":"yes","name":"Allow","kind":"allow_once"},{"optionId":"no","name":"Reject","kind":"reject_once"}]}}\n' "$n" "$n" ;;
     *'"optionId":"yes"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$prompt" ;;
-    *'"method":"session/cancel"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"cancelled"}}\n' "$prompt"; echo cancelled >> "$count.cancel" ;;
+    *'"method":"session/cancel"'*) echo cancel >> "$count.cancel" ;;
+    *'"outcome":"cancelled"'*) echo cancelled >> "$count.cancel"; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"cancelled"}}\n' "$prompt" ;;
   esac
 done
 "#;
@@ -149,7 +150,7 @@ fn a_hosted_session_survives_its_daemon_connection() {
         .unwrap();
     assert_eq!(created["sessionId"], "s1");
     lock(&first.state.0).protocol_session = "s1".into();
-    first.send("first turn").unwrap();
+    first.send("first turn", None).unwrap();
     wait_until("the permission request", || first.request().is_some());
     // The daemon stops before answering.
     drop(first);
@@ -162,7 +163,7 @@ fn a_hosted_session_survives_its_daemon_connection() {
     );
     assert!(lock(&second.state.0).turn, "the hello says a turn runs");
     // A message sent while the turn runs waits for it.
-    second.send("second turn").unwrap();
+    second.send("second turn", None).unwrap();
     assert_eq!(lock(&second.state.0).queued.len(), 1);
     second.answer(true, None).unwrap();
     // The first prompt finishes and the queued one is sent.
@@ -193,15 +194,17 @@ fn acp_prompts_cancels_and_answers_through_the_protocol() {
     let client = HostedStdio::connect(&hosting.config.socket, HostProtocol::Acp, "s1".into())
         .unwrap();
     assert!(client.interrupt().is_err(), "no prompt runs yet");
-    client.send("work").unwrap();
+    client.send("work", None).unwrap();
     wait_until("the permission request", || client.request().is_some());
     client.interrupt().unwrap();
     wait_until("the cancelled prompt's end", || !lock(&client.state.0).turn);
-    assert!(
-        std::fs::read_to_string(hosting.dir.path().join("log.cancel"))
-            .unwrap()
-            .contains("cancelled")
+    // The cancel came first, then the pending permission was answered
+    // `cancelled`, and only then did the agent end the prompt.
+    assert_eq!(
+        std::fs::read_to_string(hosting.dir.path().join("log.cancel")).unwrap(),
+        "cancel\ncancelled\n"
     );
+    assert!(client.request().is_none());
     let request = json!({"id": 7, "params": {"options": [
         {"optionId": "always", "kind": "allow_always"},
         {"optionId": "never", "kind": "reject_once"}]}});
@@ -235,7 +238,7 @@ fn claude_stream_json_steers_answers_and_interrupts() {
         String::new(),
     )
     .unwrap();
-    client.send("look around").unwrap();
+    client.send("look around", None).unwrap();
     wait_until("the tool permission", || client.request().is_some());
     assert_eq!(client.request().unwrap(), "r1");
     client.answer(true, None).unwrap();
@@ -246,7 +249,7 @@ fn claude_stream_json_steers_answers_and_interrupts() {
         approval["response"]["response"]["updatedInput"],
         json!({"command": "ls"})
     );
-    client.send("and again").unwrap();
+    client.send("and again", None).unwrap();
     wait_until("the second permission", || client.request().is_some());
     client.answer(false, Some("not now")).unwrap();
     wait_until("the denial", || hosting.log().contains("not now"));

@@ -224,10 +224,12 @@ pub(crate) enum Hosted {
 }
 
 impl Hosted {
-    fn send(&mut self, text: &str) -> std::io::Result<()> {
+    /// `true` when written now; `false` when it waits for the running
+    /// ACP prompt, its outcome then reported when it is written.
+    fn send(&mut self, text: &str, delivery: Option<&str>) -> std::io::Result<bool> {
         match self {
-            Self::Codex(h) => h.send(text),
-            Self::Stdio(h) => h.send(text),
+            Self::Codex(h) => h.send(text).map(|()| true),
+            Self::Stdio(h) => h.send(text, delivery),
         }
     }
 
@@ -425,6 +427,16 @@ impl Acts {
 
     /// Takes a hosted session's connection in.
     pub(crate) fn hold(&self, session: &SessionId, hosted: Hosted) {
+        if let Hosted::Stdio(stdio) = &hosted {
+            // A message that waited for the running prompt is recorded
+            // when it is written, or `not_sent` when it is dropped.
+            let daemon = self.daemon.get().cloned();
+            stdio.on_sent(std::sync::Arc::new(move |delivery: &str, sent| {
+                if let Some(daemon) = daemon.as_ref().and_then(Weak::upgrade) {
+                    crate::daemon::service::acts::record_sent(&daemon, delivery, sent);
+                }
+            }));
+        }
         self.hosted
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -457,10 +469,36 @@ impl Acts {
                     self.hold(&session, hosted);
                     attached.push(session);
                 }
-                Err(_) => crate::hosting::remove(&self.hosts, &key),
+                // Only a host or thread that is gone loses its record; a
+                // Codex app-server not up yet keeps it for the next start.
+                Err(error) if gone(&error) => crate::hosting::remove(&self.hosts, &key),
+                Err(_) => {}
             }
         }
         attached
+    }
+
+    /// The sessions Polylogue holds a connection to.
+    pub(crate) fn hosted_sessions(&self) -> Vec<SessionId> {
+        self.hosted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .filter_map(|k| SessionId::parse(k).ok())
+            .collect()
+    }
+
+    /// Lets go of a session that ended: its connection and its record.
+    pub(crate) fn release_host(&self, session: &SessionId) {
+        self.hosted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session.to_string());
+        for (key, record) in crate::hosting::records(&self.hosts) {
+            if record.session == session.to_string() {
+                crate::hosting::remove(&self.hosts, &key);
+            }
+        }
     }
 
     fn with_hosted<T>(
@@ -478,8 +516,16 @@ impl Acts {
         act(connection).map_err(|e| e.to_string())
     }
 
-    pub(crate) fn host_send(&self, session: &SessionId, text: &str) -> Result<(), String> {
-        self.with_hosted(session, |h| h.send(text))
+    /// Sends a message to a hosted session: `true` when written now,
+    /// `false` when it waits for the running prompt (its outcome is then
+    /// recorded under `delivery` when it is written or dropped).
+    pub(crate) fn host_send(
+        &self,
+        session: &SessionId,
+        text: &str,
+        delivery: Option<&str>,
+    ) -> Result<bool, String> {
+        self.with_hosted(session, |h| h.send(text, delivery))
     }
 
     pub(crate) fn host_answer(
@@ -538,9 +584,21 @@ pub(crate) fn probe(acts: &Acts, session: &SessionId, facts: &LiveFacts) -> Prob
     Probe {
         hosted: acts.is_hosted(session),
         hooks: facts.root.is_some() || facts.hook_activity.is_some(),
-        permission_hook: harness == "claude-code" && acts.permission_hook(),
+        permission_hook: polylogue_model::live::channel::harness(&harness)
+            .is_some_and(|h| h.permission_hook.is_some())
+            && acts.permission_hook(),
         headless_resume: polylogue_model::live::channel::harness(&harness)
             .is_some_and(|h| h.headless_resume),
         harness,
     }
+}
+
+/// Whether a reattachment failed because the host or the thread is gone,
+/// not because something was briefly unavailable.
+fn gone(error: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    matches!(
+        error.kind(),
+        ErrorKind::NotFound | ErrorKind::ConnectionRefused
+    ) || error.to_string().contains("refused thread/resume")
 }

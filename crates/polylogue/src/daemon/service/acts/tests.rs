@@ -348,8 +348,8 @@ fn role_addresses_and_role_starts() {
     assert_eq!(instances.len(), 1);
     assert_eq!(instances[0].0, "codex:t1");
     drop(reader);
-    // Its instance shows no running evidence yet, so a ping starts another
-    // instance where the last one ran, with the ping as its first turn.
+    // The instance runs on its hosted connection (no live evidence has
+    // arrived yet), so a ping reaches it rather than starting another.
     let pinged = crate::test_answers::ok(handle(
         Request::Ping {
             request_id: polylogue_store::user_writes::new_request_id(),
@@ -361,8 +361,28 @@ fn role_addresses_and_role_starts() {
         &d.daemon,
         &invocation(&d),
     ));
-    assert_eq!(pinged["deliveries"][0]["session"], "codex:t2");
+    assert_eq!(pinged["deliveries"][0]["session"], "codex:t1");
+    assert_eq!(pinged["deliveries"][0]["channel"], "protocol");
+    assert_eq!(pinged["deliveries"][0]["outcome"], "delivered");
     assert!(turns(fixture.path())[1].contains("review my diff"));
+    // Once the daemon lets go of it, the role has no running instance, and
+    // a ping starts one where the last one ran.
+    d.daemon
+        .acts
+        .release_host(&SessionId::parse("codex:t1").unwrap());
+    let restarted = crate::test_answers::ok(handle(
+        Request::Ping {
+            request_id: polylogue_store::user_writes::new_request_id(),
+            target: "@[role:reviewer]".into(),
+            text: "one more".into(),
+            live: false,
+            about: None,
+        },
+        &d.daemon,
+        &invocation(&d),
+    ));
+    assert_eq!(restarted["deliveries"][0]["session"], "codex:t2");
+    assert!(turns(fixture.path())[2].contains("one more"));
     // A role's harness and an explicit other harness conflict.
     let conflict = serde_json::to_value(handle(
         Request::Start {

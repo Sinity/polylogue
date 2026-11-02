@@ -1136,7 +1136,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "hand-off",
-        help: "Hand a session's work to a new hosted session in any harness, briefed with the session's takeover pack (from a message with --at) in its directory; the new session records what it was briefed from and is never a resume or fork. --stop-source then interrupts the source; --print shows the pack and starts nothing",
+        help: "Hand a session's work to a new hosted session in any harness, briefed with the session's takeover pack and the message to continue from (--at), in its directory; the new session records what it was briefed from and is never a resume or fork. --stop-source then interrupts the source; --print shows the pack and starts nothing",
         reason: "Starts a harness session; no query selects one that does not exist yet",
         args: &[
             pos("session", Kind::Text, "The session whose work is handed off"),
