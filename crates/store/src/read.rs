@@ -285,9 +285,24 @@ impl ReadPool {
         if !self.archive.is_primary() {
             let uri = format!("file:{}?mode=ro", self.archive.archive_db().display());
             conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
-            crate::source::views(&conn)?;
         }
-        crate::sql_views::create(&conn)?;
+        // Each view is a write to the temporary schema: one transaction per
+        // connection instead of one per view.
+        conn.execute_batch("BEGIN")?;
+        let created = (|| {
+            if !self.archive.is_primary() {
+                crate::source::views(&conn)?;
+            }
+            crate::sql_views::create(&conn)?;
+            Ok::<_, StoreError>(())
+        })();
+        match created {
+            Ok(()) => conn.execute_batch("COMMIT")?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
         for &schema in if self.archive.is_primary() {
             &["main"][..]
         } else {

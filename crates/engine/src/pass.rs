@@ -480,7 +480,18 @@ impl Engine {
             if !self.track(f) {
                 continue;
             }
-            if let Some(mut plan) = self.plan(&f.path, now)? {
+            // Every recently written live file is checked on each tick. An
+            // unchanged, fully stored one with no capture waiting can only
+            // have an unfinished reading left, which needs no source state
+            // from the writer; asking the writer for each one made a pass
+            // over many recent files quadratic.
+            let st = &self.inputs[&f.path];
+            let plan = if st.facts == Some(now) && st.working.is_none() && st.stored >= now.size {
+                self.stored_plan(&f.path)?
+            } else {
+                self.plan(&f.path, now)?
+            };
+            if let Some(mut plan) = plan {
                 plan.priority = Priority::Live;
                 plans.push(plan);
             }

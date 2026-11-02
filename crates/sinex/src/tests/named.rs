@@ -152,7 +152,11 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
             .into_iter()
             .find(|d| d.kind.name == kind)
             .unwrap();
-        assert_eq!(declaration.kind.version, 1);
+        // Kind declarations are immutable per version: query runs were
+        // declared twice before (the confirmed stream still carries version
+        // 2), so their current declaration is version 3.
+        let version = if kind == "polylogue.query_run" { 3 } else { 1 };
+        assert_eq!(declaration.kind.version, version, "{kind}");
         assert_eq!(
             declaration.replace_rule,
             Some(sinex_model::ReplaceRule::SuppressRepeat)

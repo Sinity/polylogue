@@ -25,21 +25,15 @@ impl PreparedRows {
                 ));
             }
         }
+        if !self.released {
+            return Err(StoreError::Invalid("reading rows were not prepared".into()));
+        }
         for (&index, projection) in &output.message_projections {
             let row = output
                 .messages
                 .get(index)
                 .ok_or(polylogue_model::bundle::BundleError::InvalidBlockSelection)?;
             projection.validate(row.message.blocks.len())?;
-            if !self.released
-                && projection.block_count == row.message.blocks.len() as u64
-                && row.message.content_hash()? != projection.source_version
-            {
-                return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
-            }
-        }
-        if !self.released {
-            return Err(StoreError::Invalid("reading rows were not prepared".into()));
         }
         for (&index, identity) in &output.imported_events {
             if index >= output.events.len() {
@@ -277,9 +271,6 @@ impl ParseStep {
     pub fn complete_output(&self) -> Result<Output> {
         self.prepared.validate(&self.output)?;
         let mut output = self.output.clone();
-        if !self.prepared.released {
-            return Ok(output);
-        }
         for (row, prepared) in output.messages.iter_mut().zip(&self.prepared.messages) {
             crate::writer::attachments::restore_values(&mut row.message.blocks, prepared)?;
         }

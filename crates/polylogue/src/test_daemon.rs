@@ -147,10 +147,23 @@ impl TestDaemon {
     /// Waits until `status` satisfies `ok` and then until the loop is idle,
     /// so the pass that made `ok` hold has also derived from its rows. A
     /// state that never comes is ended by the test runner's timeout.
+    ///
+    /// `status` answers its store counts from the count worker, which spaces
+    /// counts by four times the last count's duration, so under load its
+    /// store section can trail the loop by many seconds. A fixture asks what
+    /// the store holds now, so `store` here is counted at the current snapshot.
     pub fn wait_for(&self, ok: impl Fn(&serde_json::Value) -> bool) {
         let status = || {
-            crate::protocol::into_value(handle(Request::Status, &self.daemon))
-                .unwrap_or_else(|failure| panic!("status failed: {failure:?}"))
+            let mut data = crate::protocol::into_value(handle(Request::Status, &self.daemon))
+                .unwrap_or_else(|failure| panic!("status failed: {failure:?}"));
+            let counts = self
+                .daemon
+                .reads
+                .reader()
+                .and_then(|reader| reader.status())
+                .unwrap_or_else(|error| panic!("store counts failed: {error}"));
+            data["store"] = serde_json::to_value(counts).unwrap();
+            data
         };
         while !ok(&status()) {
             std::thread::sleep(Duration::from_millis(10));

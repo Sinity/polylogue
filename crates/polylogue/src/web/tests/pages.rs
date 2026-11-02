@@ -349,12 +349,18 @@ fn inheritance_is_an_explicit_shared_read_option() {
 fn previous_links_reopen_exact_unicode_fragments_without_browser_history() {
     let r = reader();
     let text = "first λ🙂 ".repeat(800);
-    std::fs::write(
-        r.w.home.join(".claude/projects/-p/s1.jsonl"),
-        polylogue_testkit::claude_user("u1", "s1", &text),
-    )
-    .unwrap();
-    r.w.wait_for(|data| data["store"]["search_pending"] == 0 && data["busy"] == false);
+    let rewritten = polylogue_testkit::claude_user("u1", "s1", &text);
+    std::fs::write(r.w.home.join(".claude/projects/-p/s1.jsonl"), &rewritten).unwrap();
+    // The archive before the rewrite is already idle with nothing pending;
+    // wait for the rewritten bytes, or the reads below race its re-parse,
+    // which changes the session's content under the sealed links.
+    let length = rewritten.len() as u64;
+    r.w.wait_for(|data| {
+        data["store"]["stored_bytes"]
+            .as_u64()
+            .is_some_and(|stored| stored >= length)
+            && data["store"]["search_pending"] == 0
+    });
     rt().block_on(async {
         let first = read_page(&r, "message:claude-code:u1", &[("budget", "20")]).await;
         let next = first

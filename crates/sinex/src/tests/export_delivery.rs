@@ -47,6 +47,7 @@ fn callback(
         ExportDeliverySource::Item { start: 4, end: 10 }
     };
     step.seal_export(ordinal, source, previous).unwrap();
+    step.prepare();
     polylogue_store::primary::products::parse(&key.input, key.chain, Some(key.length), &step)
         .unwrap()
         .into_iter()
@@ -193,12 +194,12 @@ fn export_source_length_and_callback_coordinate_distinguish_native_keys() {
             .version,
         4
     );
-    assert_eq!(crate::source_reference().version, 3);
+    assert_eq!(crate::source_reference().version, 4);
     assert_eq!(
         crate::kinds::kind_reference("polylogue.query_run")
             .unwrap()
             .version,
-        2
+        3
     );
     assert_eq!(
         crate::kinds::kind_reference("polylogue.query_run_outcome")
