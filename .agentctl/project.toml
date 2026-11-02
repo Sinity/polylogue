@@ -37,13 +37,16 @@ cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.baseline]
-description = "Both configurations on the master baseline; the host queues it on each new master head"
-exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]
-pool = "bulk"
+description = "Warm build of master (test binaries and clippy, nothing run) that seeds new checkouts; the host queues it on each new master head"
+exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "warm"]
+# A build only, so it takes the compile slot, behind every lane's job there.
+pool = "compile"
+priority = -100
 result = "exit"
-timeout_seconds = 1200
-scratch = "tmpfs"
+timeout_seconds = 1800
+scratch = "nvme"
 cache = "none"
+cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.scenarios]
