@@ -1864,7 +1864,7 @@ pub fn start(
     daemon.acts.bind(Arc::downgrade(&daemon));
     // Pings and notices left pending raise their running sessions' mailbox
     // flags; those to sessions no longer running are settled.
-    acts::settle_ended(&daemon, daemon.config.requests.now().unix_ms());
+    acts::settle_ended(&daemon, daemon.config.requests.now().unix_ms(), true);
     let operations = Arc::new(crate::protocol::operations::table(Arc::clone(&daemon)));
     assert!(
         daemon.operations.set(Arc::downgrade(&operations)).is_ok(),

@@ -43,6 +43,29 @@ pub fn lower(dir: &Path, session: &SessionId) -> std::io::Result<()> {
     }
 }
 
+/// The sessions whose flag is up.
+pub fn flagged(dir: &Path) -> Vec<SessionId> {
+    let Ok(origins) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for origin in origins.flatten() {
+        let Ok(sessions) = std::fs::read_dir(origin.path()) else {
+            continue;
+        };
+        for session in sessions.flatten() {
+            if let Ok(id) = SessionId::parse(&format!(
+                "{}:{}",
+                origin.file_name().to_string_lossy(),
+                session.file_name().to_string_lossy()
+            )) {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
 /// Whether a delivery may be pending: one `stat`.
 pub fn raised(dir: &Path, session: &SessionId) -> bool {
     std::fs::symlink_metadata(flag(dir, session)).is_ok()

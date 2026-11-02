@@ -531,7 +531,7 @@ impl crate::Reader<'_> {
         }))
     }
 
-    /// The running sessions with a footprint: each with its working
+    /// The sessions not ended with a footprint: each with its working
     /// directory and the files it changed and has not committed.
     pub fn live_footprints(&self, now: i64) -> Result<Vec<LiveFootprint>> {
         let conn = self.conn()?;
@@ -555,7 +555,9 @@ impl crate::Reader<'_> {
         for row in rows {
             let (session, facts, grew_at, cwd) = row?;
             let facts: LiveFacts = serde_json::from_str(&facts)?;
-            if facts.footprint.is_empty() || !live::view(Some(&facts), grew_at, now).state.running()
+            // A stale session keeps its footprint until a commit or its end.
+            if facts.footprint.is_empty()
+                || live::view(Some(&facts), grew_at, now).state == live::LiveState::Ended
             {
                 continue;
             }

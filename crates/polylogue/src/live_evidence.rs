@@ -1095,7 +1095,7 @@ pub(crate) fn run(
                 }
             }
             refreshed = Some(Instant::now());
-            crate::daemon::service::acts::settle_ended(&daemon, now_ms);
+            crate::daemon::service::acts::settle_ended(&daemon, now_ms, false);
         }
         if let Some(writes) = daemon.writes.as_ref()
             && !due.is_empty()

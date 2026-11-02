@@ -192,6 +192,12 @@ fn ping(
             }
         };
         let pack = ping_text(&delivery, &ping, &author_name, text, about.as_deref());
+        // Held from before its row exists, so nothing settles or claims it
+        // until its channel is decided.
+        {
+            let _claims = d.acts.claim_lock();
+            d.acts.take(vec![(delivery.clone(), ())]);
+        }
         author(
             d,
             invocation,
@@ -211,15 +217,12 @@ fn ping(
         let row = match chosen {
             Ok(Channel::Hook) => {
                 crate::mailbox::raise(d.acts.mail(), session).map_err(|e| Failure::new("io", e))?;
+                d.acts.release(&delivery);
                 json!({"session": session, "delivery": delivery, "channel": "hook",
                        "outcome": "prepared", "note": "reaches the session at its next tool result or prompt"})
             }
             Ok(Channel::Resume) => {
-                // Handed to the resumed run: no hook takes it.
-                {
-                    let _claims = d.acts.claim_lock();
-                    d.acts.take(vec![(delivery.clone(), ())]);
-                }
+                // Held for the resumed run: no hook takes it.
                 let started = d.acts.resume(ResumeRun {
                     session: session.clone(),
                     delivery: delivery.clone(),
@@ -277,40 +280,53 @@ fn claim(d: &Daemon, session: &SessionId) -> Result<Answer<Value>, Failure> {
 /// lowered. Run by the live worker after each change, and at start for
 /// every session with pending items (a resumed run queued when the daemon
 /// stopped is among them).
-pub(crate) fn settle_ended(d: &Daemon, now: i64) {
+/// `everyone` reads every session with pending items (at start); otherwise
+/// only sessions whose flag is up are looked at. Items already handed out
+/// are left to their hook or run.
+pub(crate) fn settle_ended(d: &Daemon, now: i64, everyone: bool) {
     let invocation = d.invocation(&crate::operation::Context::worker_authorship("mailbox"));
     let Ok(reader) = d.reads.reader() else {
         return;
     };
-    let sessions = reader.sessions_with_pending_hook_deliveries().unwrap_or_default();
-    let mut ended = Vec::new();
+    let sessions: Vec<String> = if everyone {
+        reader.sessions_with_pending_hook_deliveries().unwrap_or_default()
+    } else {
+        crate::mailbox::flagged(d.acts.mail())
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    };
+    let mut stopped = Vec::new();
     for session in sessions {
         let Ok(id) = SessionId::parse(&session) else {
             continue;
         };
-        let running = reader
-            .live_state(&session, now)
-            .ok()
-            .flatten()
-            .is_some_and(|s| s.view.state.running());
-        if running {
-            let _ = crate::mailbox::raise(d.acts.mail(), &id);
-            continue;
+        let state = reader.live_state(&session, now).ok().flatten().map(|s| s.view.state);
+        let pending: Vec<(String, ())> = reader
+            .pending_hook_deliveries(&session)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(item, _)| !d.acts.handed_out(item))
+            .map(|(item, _)| (item, ()))
+            .collect();
+        match state {
+            Some(state) if state.running() => {
+                if !pending.is_empty() {
+                    let _ = crate::mailbox::raise(d.acts.mail(), &id);
+                }
+            }
+            _ => stopped.push((id, state, pending)),
         }
-        let pending = reader.pending_hook_deliveries(&session).unwrap_or_default();
-        ended.push((id, pending));
     }
     drop(reader);
-    for (session, pending) in ended {
-        let _claims = d.acts.claim_lock();
-        for (id, _) in d.acts.take(pending) {
-            let _ = outcome_event(
-                d,
-                &invocation,
-                &id,
-                DeliveryOutcome::NotSent,
-                "session_ended".into(),
-            );
+    for (session, state, pending) in stopped {
+        let taken = {
+            let _claims = d.acts.claim_lock();
+            d.acts.take(pending)
+        };
+        let reason = format!("session_{}", state.map_or("missing", |s| s.as_str()));
+        for (id, ()) in taken {
+            let _ = outcome_event(d, &invocation, &id, DeliveryOutcome::NotSent, reason.clone());
         }
         let _ = crate::mailbox::lower(d.acts.mail(), &session);
     }
@@ -463,6 +479,14 @@ fn permission(
     let Some((row, body)) = standing else {
         return Ok(ok(json!({ "decision": null })));
     };
+    // Concurrent permission hooks: only the first applies it.
+    let taken = {
+        let _claims = d.acts.claim_lock();
+        d.acts.take(vec![(row.id.clone(), ())])
+    };
+    if taken.is_empty() {
+        return Ok(ok(json!({ "decision": null })));
+    }
     outcome_event(
         d,
         invocation,
@@ -537,6 +561,7 @@ pub(crate) fn run_resume(acts: &crate::live_acts::Acts, run: ResumeRun) {
         return;
     };
     let session = run.session.clone();
+    let delivery = run.delivery.clone();
     let spawned = std::thread::Builder::new()
         .name("polylogue-resume".into())
         .spawn(move || {
@@ -545,26 +570,36 @@ pub(crate) fn run_resume(acts: &crate::live_acts::Acts, run: ResumeRun) {
                 resume_once(&daemon, &run);
                 next = daemon.acts.resume_finished(&run.session);
                 while let Some(candidate) = next.take() {
-                    // A queued ping still pending is the run's; one a hook
-                    // or an ending took meanwhile is not run.
-                    let claims = daemon.acts.claim_lock();
-                    let still_pending = daemon
+                    // A queued ping waits for its session to stop running:
+                    // if it runs again (resumed by hand), the ping goes to
+                    // its next hook instead of a second resume.
+                    let running = daemon
                         .reads
                         .reader()
-                        .and_then(|r| r.pending_hook_deliveries(&candidate.session.to_string()))
-                        .is_ok_and(|p| p.iter().any(|(id, _)| *id == candidate.delivery));
-                    if still_pending {
+                        .ok()
+                        .and_then(|r| {
+                            r.live_state(&candidate.session.to_string(), crate::daemon::service::now_ms())
+                                .ok()
+                                .flatten()
+                        })
+                        .is_some_and(|s| s.view.state.running());
+                    if !running {
                         next = Some(candidate);
                         break;
                     }
-                    drop(claims);
+                    let _ = crate::mailbox::raise(daemon.acts.mail(), &candidate.session);
+                    daemon.acts.release(&candidate.delivery);
                     next = daemon.acts.resume_finished(&candidate.session);
                 }
             }
         });
     if spawned.is_err() {
-        // Nothing runs; the deliveries stay prepared for the session's hook.
-        while acts.resume_finished(&session).is_some() {}
+        // Nothing runs: the pings go back to the mailbox, where they are
+        // settled like any other.
+        acts.release(&delivery);
+        while let Some(queued) = acts.resume_finished(&session) {
+            acts.release(&queued.delivery);
+        }
     }
 }
 

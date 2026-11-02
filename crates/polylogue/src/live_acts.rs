@@ -257,6 +257,14 @@ impl Acts {
             .collect()
     }
 
+    /// Gives a delivery back to the mailbox.
+    pub(crate) fn release(&self, id: &str) {
+        self.claimed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id);
+    }
+
     /// Whether a delivery was handed out.
     pub(crate) fn handed_out(&self, id: &str) -> bool {
         self.claimed
