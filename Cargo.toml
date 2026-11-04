@@ -11,6 +11,7 @@ publish = false
 [workspace.dependencies]
 web-shell = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 command-surface = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
+authored = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 polylogue-model = { path = "crates/model" }
 polylogue-sources = { path = "crates/sources" }
 polylogue-store = { path = "crates/store" }

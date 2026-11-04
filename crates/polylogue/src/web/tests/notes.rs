@@ -260,10 +260,7 @@ fn operator_edits_and_judgments_of_agent_revisions_keep_exact_evidence() {
         let old = stored(&f, "own", "own").await;
         assert_eq!(old.fact.value, Some(json!("first <script>")));
         assert_eq!(old.fact.author, polylogue_model::Author::Operator);
-        assert_eq!(
-            old.fact.via,
-            Some(polylogue_model::authorship::Channel::Web)
-        );
+        assert_eq!(old.fact.via, polylogue_model::authorship::Channel::Web);
         agent_assert(&f, "agent", "proposal");
         for (id, key, reason) in [
             ("accept", "accepted", "checked"),
@@ -337,10 +334,7 @@ fn operator_edits_and_judgments_of_agent_revisions_keep_exact_evidence() {
         let revision = stored(&f, "agent", "agent-new").await;
         assert_eq!(revision.fact.value, Some(json!("new proposal")));
         assert!(revision.fact.author.is_agent());
-        assert_eq!(
-            revision.fact.via,
-            Some(polylogue_model::authorship::Channel::Mcp)
-        );
+        assert_eq!(revision.fact.via, polylogue_model::authorship::Channel::Mcp);
     });
 }
 

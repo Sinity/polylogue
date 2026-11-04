@@ -125,12 +125,7 @@ fn execute<T>(
                 view: options.view,
                 title: ValueState::NotApplicable,
                 kind: HeaderKind::Record {
-                    record_type: if matches!(&reference, Reference::Run(_)) {
-                        "historical_query_run"
-                    } else {
-                        "accepted_request"
-                    }
-                    .into(),
+                    record_type: "accepted_request".into(),
                 },
                 figures: vec![],
             };

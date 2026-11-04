@@ -103,9 +103,9 @@ fn variant_frozen_application_preserves_forks_and_restores_withdrawn_base() {
             key: None,
             value: None,
             author: Author::Operator,
-            via: Some(polylogue_model::authorship::Channel::Cli),
-            machine: Some("machine".into()),
-            created_at: Some(Timestamp::from_unix_ms(1).unwrap()),
+            via: polylogue_model::authorship::Channel::Cli,
+            machine: "machine".into(),
+            created_at: Timestamp::from_unix_ms(1).unwrap(),
             valid_until: None,
             links: targets
                 .iter()
@@ -113,6 +113,7 @@ fn variant_frozen_application_preserves_forks_and_restores_withdrawn_base() {
                     role: LinkRole::Withdraws,
                     reference: Reference::parse(reference).unwrap(),
                     seen_hash: None,
+                    quote: None,
                 })
                 .collect(),
         };

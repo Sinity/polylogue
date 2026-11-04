@@ -201,9 +201,13 @@ fn native_fact_preserves_captured_provenance_and_original_waiting_hash() {
     )
     .unwrap();
     let fact = get(&conn, "waiting").unwrap().unwrap().fact;
-    assert_eq!(fact.via, Some(Channel::Cli));
-    assert_eq!(fact.machine.as_deref(), Some("accepting-machine"));
-    assert_eq!(fact.created_at, Some(request("waiting").at));
+    assert_eq!(fact.via, Channel::Cli);
+    assert_eq!(fact.machine, "accepting-machine");
+    // Stored to the millisecond (`created_at INTEGER`, docs/assertions.md).
+    assert_eq!(
+        fact.created_at,
+        Timestamp::from_unix_ms(request("waiting").at.unix_ms()).unwrap()
+    );
     assert_eq!(fact.links[0].seen_hash, None);
     apply(&conn, std::slice::from_ref(&fact), 20).unwrap();
     assert_eq!(get(&conn, "waiting").unwrap().unwrap().fact, fact);
@@ -286,8 +290,10 @@ fn bulk_tag_keeps_existing_target_and_writes_each_untagged_target() {
     )
     .unwrap();
     assert!(!outcome.repeat);
-    assert!(get(&conn, "bulk.0").unwrap().is_none());
-    let second = get(&conn, "bulk.1").unwrap().unwrap().fact;
+    // Writes of one request are numbered from one; the first target was
+    // already tagged and wrote nothing.
+    assert!(get(&conn, "bulk.1").unwrap().is_none());
+    let second = get(&conn, "bulk.2").unwrap().unwrap().fact;
     assert_eq!(
         second.about().cloned().collect::<Vec<_>>(),
         vec![reference("session:codex:two")]
@@ -316,6 +322,7 @@ fn withdrawal_of_conflicted_or_already_withdrawn_root_needs_no_text_winner() {
             role: LinkRole::Revises,
             reference: reference("assertion:first@first"),
             seen_hash: Some(BlobHash([4; 32])),
+            quote: None,
         });
         apply(&conn, &[fork], 2).unwrap();
     }
@@ -431,11 +438,11 @@ fn unavailable_text_link_does_not_freeze_an_unbound_fact() {
 }
 
 #[test]
-fn accepting_withdrawal_refuses_a_cycle_closed_by_a_historical_forward_link() {
+fn accepting_withdrawal_refuses_a_cycle_closed_by_an_imported_forward_link() {
     let mut conn = db();
-    let mut historical = AssertionFact::from_request(
-        "historical".into(),
-        "historical".into(),
+    let imported = AssertionFact::from_request(
+        "imported".into(),
+        "imported".into(),
         NewAssertion {
             kind: AssertionKind::Withdrawal,
             key: None,
@@ -447,27 +454,28 @@ fn accepting_withdrawal_refuses_a_cycle_closed_by_a_historical_forward_link() {
             role: LinkRole::Withdraws,
             reference: reference("assertion:native"),
             seen_hash: None,
+            quote: None,
         }],
-        &request("historical"),
+        &request("imported"),
     );
-    historical.via = None;
-    historical.machine = None;
-    historical.created_at = None;
-    apply(&conn, std::slice::from_ref(&historical), 1).unwrap();
+    apply(&conn, std::slice::from_ref(&imported), 1).unwrap();
     {
         let tx = conn.transaction().unwrap();
         let mut native = request("native");
         native.write = UserWrite::WithdrawAssertions {
-            targets: vec![reference("assertion:historical")],
+            targets: vec![reference("assertion:imported")],
             reason: None,
         };
         assert!(
-            matches!(crate::user_writes::apply(&tx, &native, 2), Err(StoreError::Invalid(message)) if message.contains("cyclic withdrawal"))
+            matches!(crate::user_writes::apply(&tx, &native, 2), Err(StoreError::Invalid(message)) if message.contains("form a cycle"))
         );
         // The accepting writer rolls back the request and every proposed fact.
     }
     assert!(get(&conn, "native").unwrap().is_none());
-    assert_eq!(get(&conn, "historical").unwrap().unwrap().fact, historical);
+    assert_eq!(
+        get(&conn, "imported").unwrap().unwrap().fact,
+        canonical_fact(&imported).unwrap()
+    );
     assert!(
         !conn
             .prepare("SELECT 1 FROM client_request WHERE id='native'")

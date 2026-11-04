@@ -223,7 +223,7 @@ impl ExportParser for Bundle {
                 sink.out.links.push(record.link);
                 "link"
             }
-            Record::Authored(_) | Record::Assertion(_) | Record::Historical(_) => {
+            Record::Authored(_) | Record::Assertion(_) => {
                 sink.records.record(
                     "authored",
                     &RecordOutcome::skipped("historical state restored by import"),

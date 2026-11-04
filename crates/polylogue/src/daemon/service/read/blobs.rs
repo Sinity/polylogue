@@ -30,15 +30,6 @@ impl Blobs {
             Record::Message(row) => self.blocks(&row.message.blocks, stream, check),
             Record::Document(row) => self.blocks(&row.document.blocks, stream, check),
             Record::Authored(row) => self.authored(&row.prepared.effect, stream, check),
-            Record::Historical(row) => match &row.evidence {
-                polylogue_model::historical::HistoricalRecord::Accepted(record) => {
-                    match &record.conserved_effects {
-                        Some(effects) => self.authored(&effects.current, stream, check),
-                        None => Ok(()),
-                    }
-                }
-                _ => Ok(()),
-            },
             _ => Ok(()),
         }
     }

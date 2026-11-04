@@ -160,7 +160,7 @@ fn answers(archive: &Archive) -> (BTreeMap<String, serde_json::Value>, Vec<serde
         .collect();
     let notes = reader
         .query(
-            "SELECT n.id,n.kind,n.value,t.ref FROM source_assertion n JOIN source_assertion_link t ON t.assertion=n.id ORDER BY n.id,t.role,t.ref",
+            "SELECT n.id,n.kind,n.value,t.ref FROM source_assertion n JOIN source_link t ON t.record=n.id ORDER BY n.id,t.role,t.ref",
             &[],
         )
         .unwrap();

@@ -1,5 +1,3 @@
-mod assertions;
-mod components;
 use super::*;
 
 #[test]
@@ -16,19 +14,62 @@ fn every_schema_applies_to_an_empty_database() {
     }
 }
 
+/// law: one-baseline
 #[test]
-fn numbered_source_and_index_migrations_keep_the_embedding_baseline() {
-    assert_eq!(ARCHIVE_VERSION, 5);
-    assert_eq!(INDEX_VERSION, 21);
-    for (create, expected) in [
-        (ensure_archive as fn(&Connection) -> Result<()>, 5),
-        (ensure_index, 21),
-        (ensure_embeddings, 1),
+fn every_database_starts_at_its_one_baseline() {
+    assert_eq!(ARCHIVE_VERSION, 1);
+    assert_eq!(INDEX_VERSION, 1);
+    assert!(ARCHIVE_MIGRATIONS.is_empty());
+    for create in [
+        ensure_archive as fn(&Connection) -> Result<()>,
+        ensure_index,
+        ensure_primary_index,
+        ensure_embeddings,
     ] {
         let conn = Connection::open_in_memory().unwrap();
         create(&conn).unwrap();
-        assert_eq!(version(&conn).unwrap(), expected);
+        assert_eq!(version(&conn).unwrap(), 1);
     }
+}
+
+/// law: one-baseline
+#[test]
+fn an_index_at_another_version_is_refused_without_removing_rows() {
+    let conn = Connection::open_in_memory().unwrap();
+    ensure_index(&conn).unwrap();
+    conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
+        .unwrap();
+    // An index written by an older build of another lineage.
+    set_version(&conn, 17).unwrap();
+    assert!(matches!(
+        ensure_index(&conn),
+        Err(StoreError::IndexVersion {
+            found: 17,
+            wanted: 1
+        })
+    ));
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE input_ref(pk INTEGER PRIMARY KEY, id TEXT) STRICT;
+         INSERT INTO input_ref(id) VALUES ('synthetic');
+         PRAGMA user_version = 1;",
+    )
+    .unwrap();
+    // No baseline format identity: an index written by an earlier Polylogue.
+    assert!(matches!(
+        ensure_index(&conn),
+        Err(StoreError::OlderFormat { database: "index" })
+    ));
+    assert_eq!(
+        ensure_index(&conn).unwrap_err().to_string(),
+        "older format: import with `polylogue import --from-archive PATH`"
+    );
+    assert_eq!(
+        conn.query_row("SELECT id FROM input_ref", [], |row| row
+            .get::<_, String>(0))
+            .unwrap(),
+        "synthetic"
+    );
 }
 
 const TWO_TABLES: &str = "CREATE TABLE kept(value TEXT NOT NULL) STRICT;
@@ -161,6 +202,8 @@ fn comments_and_spacing_in_the_declarations_do_not_change_the_schema() {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(&respaced).unwrap();
     set_version(&conn, ARCHIVE_VERSION).unwrap();
+    conn.pragma_update(None, "application_id", FORMAT_ID)
+        .unwrap();
     ensure_archive(&conn).unwrap();
 }
 
@@ -169,9 +212,11 @@ fn read_indexes_are_added_in_place_and_survive_reopen() {
     let conn = Connection::open_in_memory().unwrap();
     base_index(&conn).unwrap();
     set_version(&conn, INDEX_VERSION).unwrap();
+    conn.pragma_update(None, "application_id", FORMAT_ID)
+        .unwrap();
     conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
         .unwrap();
-    assert!(same_index_schema(&conn).unwrap());
+    assert!(same_index_schema_in(&conn, false).unwrap());
     ensure_index(&conn).unwrap();
     let base = Connection::open_in_memory().unwrap();
     base_index(&base).unwrap();
@@ -187,7 +232,10 @@ fn read_indexes_are_added_in_place_and_survive_reopen() {
     assert!(!read_indexes.is_empty());
     for name in read_indexes {
         conn.execute_batch(&format!("DROP INDEX {name}")).unwrap();
-        assert!(same_index_schema(&conn).unwrap(), "missing {name}");
+        assert!(
+            same_index_schema_in(&conn, false).unwrap(),
+            "missing {name}"
+        );
         ensure_index(&conn).unwrap();
         assert_eq!(shape(&conn).unwrap(), expected);
     }
@@ -201,116 +249,76 @@ fn read_indexes_are_added_in_place_and_survive_reopen() {
     );
     conn.execute_batch("DROP INDEX event_at; CREATE INDEX event_at ON event(kind)")
         .unwrap();
-    assert!(!same_index_schema(&conn).unwrap());
+    assert!(!same_index_schema_in(&conn, false).unwrap());
 }
 
+/// law: one-baseline
 #[test]
-fn migration_keeps_rows_source_bytes_and_paid_embedding_hashes_when_mask_state_retires() {
-    let index = Connection::open_in_memory().unwrap();
-    index.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-    index
-        .execute_batch(include_str!("fixtures/index_3.sql"))
+fn an_archive_written_before_the_baseline_is_an_older_format_and_stays_as_it_is() {
+    // An archive with tables and a version but no format identity, as every
+    // earlier Polylogue wrote it (master's archives are at version 4).
+    for found in [1, 4] {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE input(id TEXT PRIMARY KEY) STRICT;
+             INSERT INTO input VALUES ('synthetic');
+             PRAGMA user_version = {found};"
+        ))
         .unwrap();
-    index.execute_batch("PRAGMA user_version=3;
-      INSERT INTO input_ref(pk,id,format) VALUES(1,'synthetic-source','fixture');
-      INSERT INTO session(pk,id,origin,native_id,kind,changed) VALUES(1,'claude-code:migration','claude-code','migration','main',1);
-      INSERT INTO message(pk,id,session_pk,order_input_pk,seq,arrival_rank,role,written_by,prompt_kind,input_pk,cost_nusd,provider_cost_nusd,pem,order_input_id)
-      VALUES(1,'claude-code:migration/m',1,1,1,0,'user','human','prose',1,12345,67890,2,'synthetic-source');").unwrap();
-    let source = "--secret=synthetic-preserved-value\n\0";
-    let text_body = crate::encoding::pack_text(source).unwrap();
-    let hash = blake3::hash(source.as_bytes());
-    let block_body =
-        crate::encoding::pack_json(&serde_json::json!({"type":"text","text":null})).unwrap();
-    index
-        .execute(
-            "INSERT INTO text(id,hash,body) VALUES(1,?1,?2)",
-            rusqlite::params![hash.as_bytes().as_slice(), text_body],
-        )
-        .unwrap();
-    index.execute("INSERT INTO block(message_pk,session_pk,idx,kind,text_id,body) VALUES(1,1,0,'text',1,?1)",[&block_body]).unwrap();
-    let reading_body = crate::encoding::pack_json(&serde_json::json!({"source":source})).unwrap();
-    index
-        .execute(
-            "INSERT INTO message_version(version_hash,body) VALUES(?1,?2)",
-            rusqlite::params![hash.as_bytes().as_slice(), reading_body],
-        )
-        .unwrap();
-    let embeddings = Connection::open_in_memory().unwrap();
-    ensure_embeddings(&embeddings).unwrap();
-    let vector = [0_f32, 1_f32, 0_f32]
-        .into_iter()
-        .flat_map(f32::to_le_bytes)
-        .collect::<Vec<_>>();
-    embeddings.execute("INSERT INTO embedded(text_hash,model,chunk,dims,vector,embedded_at) VALUES(?1,'synthetic/model/3/document/unit',0,3,?2,1)",
-        rusqlite::params![hash.as_bytes().as_slice(),vector]).unwrap();
-    let values = |conn: &Connection| {
-        conn.query_row(
-            "SELECT id,cost_nusd,provider_cost_nusd FROM message",
-            [],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            },
-        )
-        .unwrap()
-    };
-    let before = values(&index);
-    ensure_index(&index).unwrap();
-    ensure_index(&index).unwrap();
-    assert_eq!(version(&index).unwrap(), INDEX_VERSION);
-    assert_eq!(values(&index), before);
-    assert_eq!(
-        index
-            .query_row("SELECT body FROM block", [], |row| row.get::<_, Vec<u8>>(0))
-            .unwrap(),
-        block_body
-    );
-    let (stored_hash, stored_body): (Vec<u8>, Vec<u8>) = index
-        .query_row("SELECT hash,body FROM text", [], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
-        .unwrap();
-    assert_eq!(stored_hash, hash.as_bytes());
-    assert_eq!(crate::encoding::unpack_text(&stored_body).unwrap(), source);
-    assert_eq!(
-        index
-            .query_row(
-                "SELECT body FROM message_version WHERE version_hash=?1",
-                [&stored_hash],
-                |row| row.get::<_, Vec<u8>>(0)
-            )
-            .unwrap(),
-        reading_body
-    );
-    let (cached_hash, cached_vector): (Vec<u8>, Vec<u8>) = embeddings
-        .query_row("SELECT text_hash,vector FROM embedded", [], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
-        .unwrap();
-    assert_eq!(cached_hash, stored_hash);
-    assert_eq!(cached_vector, vector);
-    assert!(
-        !index
-            .prepare("SELECT name FROM pragma_table_info('message') WHERE name='pem'")
-            .unwrap()
-            .exists([])
-            .unwrap()
-    );
-}
-
-#[test]
-fn cursor_checkpoint_migration_keeps_prior_cursor_without_manufacturing_state() {
+        let error = ensure_archive(&conn).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                StoreError::OlderFormat {
+                    database: "archive"
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "older format: import with `polylogue import --from-archive PATH`"
+        );
+        assert_eq!(version(&conn).unwrap(), found);
+        assert_eq!(
+            conn.query_row("SELECT id FROM input", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "synthetic"
+        );
+    }
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(include_str!("fixtures/index_3.sql"))
+    ensure_archive(&conn).unwrap();
+    assert_eq!(format_id(&conn).unwrap(), FORMAT_ID);
+}
+
+/// An unversioned file that already holds tables is not ours to create into:
+/// it is refused before it takes the format identity or any table.
+#[test]
+fn an_unversioned_file_with_tables_is_refused_unchanged() {
+    for (name, create) in [
+        ("archive", ensure_archive as fn(&Connection) -> Result<()>),
+        ("index", ensure_index),
+    ] {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE unrelated(x INTEGER) STRICT; INSERT INTO unrelated VALUES (1);",
+        )
         .unwrap();
-    conn.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(1,'checkpoint-migration','claude-code');
-        INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto,commit_seq) VALUES(1,1,'prior-reading','done',2,17);
-        PRAGMA user_version=3;").unwrap();
-    ensure_index(&conn).unwrap();
-    let prior:(String,i64,i64,Option<Vec<u8>>)=conn.query_row("SELECT reading_version,parsed_upto,commit_seq,checkpoint FROM parse_state WHERE input_pk=1 AND chain=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
-    assert_eq!(prior, ("prior-reading".into(), 2, 17, None));
-    assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
+        let error = create(&conn).unwrap_err();
+        assert!(
+            matches!(error, StoreError::NoMigration { found: 0, .. }),
+            "{name}: {error}"
+        );
+        assert_eq!(format_id(&conn).unwrap(), 0, "{name}");
+        assert_eq!(version(&conn).unwrap(), 0, "{name}");
+        assert_eq!(
+            shape(&conn).unwrap(),
+            vec![(
+                "table".to_owned(),
+                "unrelated".to_owned(),
+                statement("CREATE TABLE unrelated(x INTEGER) STRICT")
+            )],
+            "{name}"
+        );
+    }
 }

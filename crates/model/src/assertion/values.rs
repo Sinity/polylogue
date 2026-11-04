@@ -412,6 +412,43 @@ impl Field {
             })
     }
 }
+/// One text per value under [`equal`]: object keys sorted and numbers in one
+/// spelling, so two values give the same text exactly when they are equal.
+pub fn canonical(value: &Json) -> String {
+    fn write(value: &Json, out: &mut String) {
+        match value {
+            Json::Number(number) => out.push_str(&number::canonical(number)),
+            Json::Array(items) => {
+                out.push('[');
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    write(item, out);
+                }
+                out.push(']');
+            }
+            Json::Object(map) => {
+                let mut entries: Vec<_> = map.iter().collect();
+                entries.sort_by(|left, right| left.0.cmp(right.0));
+                out.push('{');
+                for (index, (key, item)) in entries.into_iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&Json::String(key.clone()).to_string());
+                    out.push(':');
+                    write(item, out);
+                }
+                out.push('}');
+            }
+            scalar => out.push_str(&scalar.to_string()),
+        }
+    }
+    let mut out = String::new();
+    write(value, &mut out);
+    out
+}
 pub(super) fn equal(left: &Json, right: &Json) -> bool {
     let mut pending = vec![(left, right)];
     while let Some((left, right)) = pending.pop() {
@@ -772,7 +809,7 @@ impl Check {
     }
 }
 
-/// Ordinary writes use the live value form. Only explicit historical ingress
+/// Ordinary writes use the live value form. Only the predecessor import
 /// introduces predecessor metadata; canonical replay uses decode unchanged.
 pub fn decode_live(
     kind: super::AssertionKind,
@@ -785,7 +822,7 @@ pub fn decode_live(
     {
         return Err(ShapeError {
             kind: kind.as_str().into(),
-            message: "predecessor metadata belongs to historical import".into(),
+            message: "predecessor metadata belongs to the predecessor import".into(),
         });
     }
     decode(kind, key, value)

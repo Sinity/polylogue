@@ -588,53 +588,6 @@ fn fragment_selection_keeps_unknown_receipt_instead_of_using_sender_or_read_posi
 }
 
 #[test]
-fn predecessor_note_is_not_a_canonical_assertion_fragment_authority() {
-    let w = WriterArchive::new();
-    let conn = crate::archive::open_write(&w.archive.archive_db(), 1).unwrap();
-    let fact = polylogue_model::historical::HistoricalAssertionEvidence {
-        id: "legacy".into(),
-        root: "legacy".into(),
-        source: polylogue_model::historical::SourceSchema::PolylogueArchive { version: 4 },
-        kind: polylogue_model::historical::RecordedKind::Known(
-            polylogue_model::historical::NoteKind::Note,
-        ),
-        key: None,
-        value: Some("legacy body".into()),
-        recorded_author: Some(polylogue_model::Author::Agent(None).to_string()),
-        machine: Some("machine".into()),
-        created_at: polylogue_model::Timestamp::from_unix_ms(1),
-        valid_until: None,
-        targets: vec![],
-        relations: vec![],
-        links: vec![],
-        predecessor: None,
-    };
-    crate::assertions::apply_historical(&conn, &fact, 100).unwrap();
-    let pool = crate::ReadPool::open(&w.archive).unwrap();
-    let reader = pool.reader().unwrap();
-    assert!(matches!(
-        reader
-            .assertion_evidence(&polylogue_model::RevisionReference::exact(
-                "legacy".into(),
-                "legacy".into()
-            ))
-            .unwrap(),
-        Some(polylogue_model::historical::AssertionEvidence::Historical { .. })
-    ));
-    let selected = reader
-        .select_fragment_span(
-            &Reference::parse("assertion:legacy@legacy").unwrap(),
-            None,
-            0,
-            6,
-        )
-        .unwrap();
-    assert_eq!(selected.availability, FragmentAvailability::Unknown);
-    assert_eq!(selected.admitted, None);
-    assert_eq!(selected.coverage.total_bytes, None);
-}
-
-#[test]
 fn exact_variant_part_bytes_do_not_borrow_the_earlier_header_admission() {
     use polylogue_model::{Variant, VariantEffect, VariantKind, VariantPart, VariantRelation};
     let w = WriterArchive::new();

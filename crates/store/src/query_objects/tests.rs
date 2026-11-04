@@ -362,8 +362,6 @@ fn composition_edges_are_read_from_the_canonical_source() {
     assert_eq!(stored, expected);
 }
 
-mod migrations;
-
 mod pending;
 
 #[test]
@@ -677,5 +675,3 @@ fn object_run_has_no_question_and_query_or_continuation_cannot_omit_one() {
         .unwrap();
     assert_eq!(fetched.value, exact);
 }
-
-mod historical;

@@ -80,7 +80,6 @@ pub(crate) fn kind(product: &Product) -> &'static str {
         Product::ParseProgress { .. } => "polylogue.parse_progress",
         Product::RestoredRequest { .. } => "polylogue.request_restore",
         Product::RestoredAssertion { .. } => "polylogue.assertion_restore",
-        Product::RestoredHistory { .. } => "polylogue.historical_restore",
         Product::Query { .. } => "polylogue.query",
         Product::QueryRun { .. } => "polylogue.query_run",
         Product::QueryRunOutcome { .. } => "polylogue.query_run_outcome",
@@ -122,43 +121,8 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
         Product::Repository { facts, .. } => json!([facts.path]),
         Product::ParseProgress { reading, .. } => json!([reading.start]),
         Product::Request(request) => json!([request.request.id]),
-        Product::RestoredRequest {
-            prepared,
-            claims,
-            current,
-        } => json!([
-            prepared.request.id,
-            claims,
-            current.input,
-            current.chain,
-            current.machine,
-            current.actor
-        ]),
-        Product::RestoredHistory {
-            evidence,
-            claims,
-            current,
-        } => json!([
-            evidence.id(),
-            claims,
-            current.input,
-            current.chain,
-            current.machine,
-            current.actor
-        ]),
-        Product::RestoredAssertion {
-            fact,
-            claims,
-            current,
-        } => json!([
-            fact.root,
-            fact.id,
-            claims,
-            current.input,
-            current.chain,
-            current.machine,
-            current.actor
-        ]),
+        Product::RestoredRequest { prepared } => json!([prepared.request.id]),
+        Product::RestoredAssertion { fact } => json!([fact.root, fact.id]),
         Product::Query { object } => json!([object.id]),
         Product::QueryRun { run } => json!([run.id]),
         Product::QueryRunOutcome { outcome } => json!([outcome.run]),
@@ -227,15 +191,15 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
             json!({"session": facts.session, "task": facts.task_id})
         }
         Product::Repository { facts, .. } => json!({"path": facts.path}),
-        Product::RestoredRequest {
-            prepared, current, ..
-        } => json!({"request":prepared.request.id,"at":current.at,"machine":current.machine}),
-        Product::RestoredHistory {
-            evidence, current, ..
-        } => json!({"reference":evidence.reference(),"at":current.at,"machine":current.machine}),
-        Product::RestoredAssertion { fact, current, .. } => json!({
-            "assertion":format!("assertion:{}@{}", fact.root, fact.id),
-            "at":current.at,"machine":current.machine
+        Product::RestoredRequest { prepared } => json!({
+            "request": prepared.request.id,
+            "at": prepared.request.at,
+            "machine": prepared.request.machine
+        }),
+        Product::RestoredAssertion { fact } => json!({
+            "assertion": format!("assertion:{}@{}", fact.root, fact.id),
+            "at": fact.created_at,
+            "machine": fact.machine
         }),
         Product::Request(prepared) => {
             let request = &prepared.request;
@@ -400,7 +364,6 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
         ("polylogue.request", "request"),
         ("polylogue.request_restore", "restored_request"),
         ("polylogue.assertion_restore", "restored_assertion"),
-        ("polylogue.historical_restore", "restored_history"),
         ("polylogue.query", "query"),
         ("polylogue.query_run", "query_run"),
         ("polylogue.query_run_outcome", "query_run_outcome"),

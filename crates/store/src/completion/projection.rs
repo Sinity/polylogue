@@ -156,23 +156,8 @@ impl Reader<'_> {
         let [Reference::Assertion(exact)] = state.heads.as_slice() else {
             return Ok(change);
         };
-        let Some(evidence) = self.assertion_evidence(exact)? else {
+        let Some(row) = self.assertion(exact)? else {
             return Ok(change);
-        };
-        let row = match evidence {
-            polylogue_model::historical::AssertionEvidence::Current(row) => row,
-            polylogue_model::historical::AssertionEvidence::Historical { fact, .. } => {
-                if fact.kind.name() == "saved_query"
-                    && let (Some(name), Some(text)) = (fact.key, fact.value)
-                {
-                    change.saved = Some(NativeSaved {
-                        revision: fact.id,
-                        name,
-                        text,
-                    });
-                }
-                return Ok(change);
-            }
         };
         let Some(name) = row.fact.key.as_ref() else {
             return Ok(change);

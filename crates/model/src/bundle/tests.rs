@@ -325,33 +325,33 @@ fn declared_blob_records_require_actual_blob_transfer() {
 }
 
 #[test]
-fn independent_historical_assertion_has_no_invented_request_or_sender_receipt() {
+fn an_assertion_record_carries_its_fact_without_an_invented_request() {
     use crate::assertion::{
         AssertionFact, AssertionKind, AssertionLink, AssertionRecord, LinkRole,
     };
     let fact = AssertionFact {
-        id: "historical-revision".into(),
-        root: "historical-root".into(),
+        id: "imported-revision".into(),
+        root: "imported-root".into(),
         kind: AssertionKind::Note,
         key: None,
         value: Some(
             serde_json::json!({"text":"original text","predecessor":{"id":"old-17","extra":["preserved",2]}}),
         ),
         author: Author::Operator,
-        via: None,
-        machine: None,
-        created_at: None,
+        via: crate::authorship::Channel::Import,
+        machine: "importing-host".into(),
+        created_at: crate::Timestamp::from_unix_ms(1).unwrap(),
         valid_until: None,
         links: vec![AssertionLink {
             role: LinkRole::About,
             reference: crate::Reference::parse("session:codex:subject").unwrap(),
             seen_hash: None,
+            quote: None,
         }],
     };
     let record = Record::Assertion(Box::new(AssertionRecord {
-        reference: "assertion:historical-root@historical-revision".into(),
+        reference: "assertion:imported-root@imported-revision".into(),
         assertion: fact.clone(),
-        imports: vec![],
     }));
     record.validate().unwrap();
     assert_eq!(record.commit(), None);
@@ -364,7 +364,7 @@ fn independent_historical_assertion_has_no_invented_request_or_sender_receipt() 
         unreachable!()
     };
     assert_eq!(invalid.assertion, fact);
-    invalid.reference = "assertion:another@historical-revision".into();
+    invalid.reference = "assertion:another@imported-revision".into();
     assert_eq!(
         Record::Assertion(invalid).validate(),
         Err(BundleError::ReferenceMismatch)

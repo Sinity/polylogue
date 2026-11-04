@@ -438,8 +438,8 @@ pub(crate) fn tag(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Quer
     for v in x.values() {
         let p = c.text_param(&v.to_lowercase());
         parts.push(format!(
-            "EXISTS (SELECT 1 FROM source_assertion tn JOIN temp.assertion_about tt ON tt.assertion = tn.id \
-             WHERE tn.kind = 'tag' AND tn.historical IS NULL AND tt.ref = 'session:' || {s}.id AND {} \
+            "EXISTS (SELECT 1 FROM source_assertion tn JOIN source_link tt ON tt.record = tn.id AND tt.role = 'about' \
+             WHERE tn.kind = 'tag' AND tt.ref = 'session:' || {s}.id AND {} \
              AND ((tn.key IS NULL AND lower(json_extract(tn.value,'$.value')) = {p}) \
                OR lower(tn.key) || ':' || lower(json_extract(tn.value,'$.value')) = {p} \
                OR (json_extract(tn.value,'$.value') IS NULL AND lower(tn.key) = {p})))",
@@ -686,7 +686,7 @@ pub(crate) fn assertion_about(
         })?;
     let p = c.text_param(&reference.to_string());
     Ok(format!(
-        "EXISTS(SELECT 1 FROM temp.assertion_about nt WHERE nt.assertion={r}.id AND nt.ref={p})",
+        "EXISTS(SELECT 1 FROM source_link nt WHERE nt.record={r}.id AND nt.role='about' AND nt.ref={p})",
         r = x.row()
     ))
 }

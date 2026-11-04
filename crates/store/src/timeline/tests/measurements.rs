@@ -65,7 +65,7 @@ fn million_message_measurements() {
         let pool = f.reads().unwrap();
         let r = pool.reader().unwrap();
         // The reviewed page queries, before per-source ranges and time indexes.
-        let source = "SELECT m.at, 'message' AS kind,m.id FROM message m UNION ALL SELECT e.at,'event',e.id FROM event e UNION ALL SELECT pl_recorded_time(n.created_at),'assertion',n.id FROM source_assertion n";
+        let source = "SELECT m.at, 'message' AS kind,m.id FROM message m UNION ALL SELECT e.at,'event',e.id FROM event e UNION ALL SELECT n.created_at,'assertion',n.id FROM source_assertion n";
         let (since, until) = crate::calendar::range(&day.day, date).unwrap();
         let (month_since, month_until) = crate::calendar::month(&day.day, date).unwrap();
         let page_sql = format!(

@@ -350,14 +350,15 @@ fn preparation_hashes_native_text_from_original_and_authored_text_from_private_o
         key: None,
         value: Some(serde_json::json!("pending exact authored text")),
         author: Author::Unattributed,
-        via: None,
-        machine: None,
-        created_at: None,
+        via: polylogue_model::authorship::Channel::Import,
+        machine: "synthetic-host".into(),
+        created_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
         valid_until: None,
         links: vec![AssertionLink {
             role: LinkRole::About,
             reference: r("message:claude-code:s-m1"),
             seen_hash: None,
+            quote: None,
         }],
     };
     crate::assertions::apply(&scratch, &[fact], 0).unwrap();

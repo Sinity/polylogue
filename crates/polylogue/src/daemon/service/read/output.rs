@@ -184,15 +184,6 @@ impl<'a> Stream<'a> {
                 Record::Document(_) => self.counts.documents += 1,
                 Record::Event(_) => self.counts.events += 1,
                 Record::Link(_) => self.counts.links += 1,
-                Record::Historical(record) => match &record.evidence {
-                    polylogue_model::historical::HistoricalRecord::Accepted(_) => {
-                        self.counts.authored += 1
-                    }
-                    polylogue_model::historical::HistoricalRecord::Assertion(_) => {
-                        self.counts.assertions += 1
-                    }
-                    polylogue_model::historical::HistoricalRecord::Run(_) => self.counts.runs += 1,
-                },
                 Record::Authored(_) => self.counts.authored += 1,
                 Record::Assertion(_) => self.counts.assertions += 1,
                 Record::Variant(_) => self.counts.variants += 1,

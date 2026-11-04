@@ -118,9 +118,7 @@ pub fn project_record(
         Record::TextFragment(row) => {
             super::fragments::project_fragment(row, options, evidence)?;
         }
-        Record::Historical(row)
-            if matches!(row.evidence, crate::historical::HistoricalRecord::Run(_)) => {}
-        Record::Authored(_) | Record::Assertion(_) | Record::Historical(_) => {
+        Record::Authored(_) | Record::Assertion(_) => {
             if !options.assertions {
                 return Ok(None);
             }

@@ -128,9 +128,9 @@ fn prepared_effect_is_private_and_preserves_full_assertion_provenance() {
             polylogue_model::SessionId::parse("codex:session-a").unwrap()
         ))
     );
-    assert_eq!(p.effect.assertions[0].machine.as_deref(), Some("machine-a"));
-    assert_eq!(p.effect.assertions[0].via, Some(r.authorship.via));
-    assert_eq!(p.effect.assertions[0].created_at, Some(r.at));
+    assert_eq!(p.effect.assertions[0].machine, "machine-a");
+    assert_eq!(p.effect.assertions[0].via, r.authorship.via);
+    assert_eq!(p.effect.assertions[0].created_at, r.at);
     assert!(!p.outcome.pending);
     commit(&mut conn, &p, 1);
     assert_eq!(count(&conn, "assertion"), 1);
@@ -206,7 +206,7 @@ fn saved_family_and_revision_are_frozen_across_pending_overlay_and_replay() {
     assert_eq!(count(&conn, "assertion"), 0);
     let mut rebuilt = cache();
     commit(&mut rebuilt, &third, 1);
-    let got:(String,String)=rebuilt.query_row("SELECT a.root,l.ref FROM source_assertion a JOIN source_assertion_link l ON l.assertion=a.id WHERE a.id='third' AND l.role='revises'",[],|row|Ok((row.get(0)?,row.get(1)?))).unwrap();
+    let got:(String,String)=rebuilt.query_row("SELECT a.root,l.ref FROM source_assertion a JOIN source_link l ON l.record=a.id WHERE a.id='third' AND l.role='revises'",[],|row|Ok((row.get(0)?,row.get(1)?))).unwrap();
     assert_eq!(got, ("first".into(), "assertion:first@second".into()));
 }
 #[test]
@@ -584,7 +584,8 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_through_primary_apply
 }
 
 #[test]
-fn historical_restore_preserves_history_but_cannot_authorize_execution() {
+fn restored_actions_keep_their_history_but_never_run() {
+
     let mut source = cache();
     enqueue(&mut source, "a", 10);
     let p = known_request(
@@ -594,15 +595,8 @@ fn historical_restore_preserves_history_but_cannot_authorize_execution() {
     .unwrap()
     .unwrap();
     let mut destination = cache();
-    let attribution = ImportAttribution {
-        machine: "machine-import".into(),
-        input: "bundle-input".into(),
-        chain: 1,
-        actor: Author::Operator,
-        at: Timestamp::from_unix_ms(100).unwrap(),
-    };
     let tx = destination.transaction().unwrap();
-    restore(&tx, &p, &[], &attribution, 1).unwrap();
+    restore(&tx, &p, 1).unwrap();
     tx.commit().unwrap();
     let action = crate::chat_actions::read(&destination, "source_", "a")
         .unwrap()
@@ -619,7 +613,7 @@ fn historical_restore_preserves_history_but_cannot_authorize_execution() {
         Err(StoreError::NotFound(_))
     ));
     let tx = destination.transaction().unwrap();
-    assert!(restore(&tx, &p, &[], &attribution, 2).unwrap().repeat);
+    assert!(restore(&tx, &p, 2).unwrap().repeat);
     tx.commit().unwrap();
     assert_eq!(count(&destination, "chat_action_event"), 1);
 }
@@ -652,7 +646,7 @@ fn retry_reuses_frozen_annotation_targets_and_rejects_changed_machine() {
     ));
 }
 #[test]
-fn subset_restore_keeps_full_chat_history_and_import_provenance() {
+fn subset_restore_keeps_full_chat_history() {
     let mut source = cache();
     enqueue(&mut source, "a", 10);
     let p = prepare_with(
@@ -662,16 +656,9 @@ fn subset_restore_keeps_full_chat_history_and_import_provenance() {
         &[],
     )
     .unwrap();
-    let current = ImportAttribution {
-        machine: "machine-import".into(),
-        input: "bundle".into(),
-        chain: 4,
-        actor: Author::Operator,
-        at: Timestamp::from_unix_ms(30).unwrap(),
-    };
     let mut dest = cache();
     let tx = dest.transaction().unwrap();
-    restore(&tx, &p, &[], &current, 1).unwrap();
+    restore(&tx, &p, 1).unwrap();
     tx.commit().unwrap();
     let got = crate::chat_actions::read(&dest, "source_", "a")
         .unwrap()
@@ -679,10 +666,9 @@ fn subset_restore_keeps_full_chat_history_and_import_provenance() {
     assert_eq!(got.events, p.effect.chats[0].action.events);
     assert_eq!(got.execution, ExecutionEligibility::Historical);
     let mut n = 0;
-    visit(&dest, &mut |record, claims| {
+    visit(&dest, &mut |record| {
         n += 1;
         assert_eq!(record, &p);
-        assert_eq!(claims, std::slice::from_ref(&current));
         Ok(())
     })
     .unwrap();
@@ -709,7 +695,7 @@ fn inconsistent_event_delta_is_refused_before_application() {
 }
 
 #[test]
-fn repeated_import_unions_real_ingress_without_changing_frozen_state() {
+fn repeated_import_changes_no_frozen_state() {
     let source = cache();
     let p = prepare_with(
         &source,
@@ -725,30 +711,17 @@ fn repeated_import_unions_real_ingress_without_changing_frozen_state() {
     )
     .unwrap();
     let mut conn = cache();
-    let first = ImportAttribution {
-        machine: "host-a".into(),
-        input: "bundle".into(),
-        chain: 1,
-        actor: Author::Operator,
-        at: Timestamp::from_unix_ms(20).unwrap(),
-    };
     let tx = conn.transaction().unwrap();
-    restore(&tx, &p, &[], &first, 1).unwrap();
+    restore(&tx, &p, 1).unwrap();
     tx.commit().unwrap();
-    let mut retry = first.clone();
-    retry.at = Timestamp::from_unix_ms(30).unwrap();
-    let tx = conn.transaction().unwrap();
-    assert!(restore(&tx, &p, &[], &retry, 2).unwrap().repeat);
-    tx.commit().unwrap();
-    let mut second = retry;
-    second.machine = "host-b".into();
-    let tx = conn.transaction().unwrap();
-    assert!(restore(&tx, &p, &[], &second, 3).unwrap().repeat);
-    tx.commit().unwrap();
+    for counter in [2, 3] {
+        let tx = conn.transaction().unwrap();
+        assert!(restore(&tx, &p, counter).unwrap().repeat);
+        tx.commit().unwrap();
+    }
     assert_eq!(count(&conn, "assertion"), 1);
-    visit(&conn, &mut |record, imports| {
+    visit(&conn, &mut |record| {
         assert_eq!(record, &p);
-        assert_eq!(imports, &[first.clone(), second.clone()]);
         Ok(())
     })
     .unwrap();
@@ -764,48 +737,7 @@ fn repeated_import_unions_real_ingress_without_changing_frozen_state() {
 }
 
 #[test]
-fn historical_claim_cannot_supply_current_import_observation() {
-    let source = cache();
-    let p = prepare_with(
-        &source,
-        &request(
-            "note",
-            1,
-            UserWrite::Assert {
-                assertions: vec![statement("example")],
-            },
-        ),
-        &[],
-        &[],
-    )
-    .unwrap();
-    let current = ImportAttribution {
-        machine: "host".into(),
-        input: "bundle".into(),
-        chain: 1,
-        actor: Author::Operator,
-        at: Timestamp::from_unix_ms(20).unwrap(),
-    };
-    let mut claimed = current.clone();
-    claimed.at = Timestamp::from_unix_ms(2).unwrap();
-    let mut conn = cache();
-    let tx = conn.transaction().unwrap();
-    restore(&tx, &p, std::slice::from_ref(&claimed), &current, 1).unwrap();
-    tx.commit().unwrap();
-    let wire: String = conn
-        .query_row(
-            "SELECT imports FROM source_client_request WHERE id='note'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let history: ImportHistory = serde_json::from_str(&wire).unwrap();
-    assert_eq!(history.observed, vec![current]);
-    assert_eq!(history.declared, vec![claimed]);
-}
-
-#[test]
-fn pending_historical_restore_keeps_execution_disabled_after_restart() {
+fn pending_restore_keeps_execution_disabled_after_restart() {
     let mut source = cache();
     enqueue(&mut source, "historical", 10);
     let prepared = known_request(
@@ -820,14 +752,6 @@ fn pending_historical_restore_keeps_execution_disabled_after_restart() {
     .unwrap();
     let pending = polylogue_model::authored::PendingAuthored::Restore {
         prepared: prepared.clone(),
-        claims: vec![],
-        current: ImportAttribution {
-            machine: "import-host".into(),
-            input: "bundle".into(),
-            chain: 1,
-            actor: Author::Operator,
-            at: Timestamp::from_unix_ms(20).unwrap(),
-        },
     };
     let restarted: polylogue_model::authored::PendingAuthored =
         serde_json::from_slice(&serde_json::to_vec(&pending).unwrap()).unwrap();
@@ -879,7 +803,7 @@ fn pending_historical_restore_keeps_execution_disabled_after_restart() {
 }
 
 #[test]
-fn reverse_full_snapshot_restore_keeps_event_order_and_historical_execution() {
+fn reverse_full_snapshot_restore_keeps_event_order_and_disabled_execution() {
     let mut source = cache();
     let writes = [
         request("enqueue", 10, UserWrite::ChatEnqueue(chat("chat"))),
@@ -935,15 +859,8 @@ fn reverse_full_snapshot_restore_keeps_event_order_and_historical_execution() {
         (&mut reverse, snapshots.iter().rev().collect::<Vec<_>>()),
     ] {
         for (index, p) in order.into_iter().enumerate() {
-            let current = ImportAttribution {
-                machine: "import-host".into(),
-                input: format!("bundle-{}", p.request.id),
-                chain: 1,
-                actor: Author::Operator,
-                at: Timestamp::from_unix_ms(100).unwrap(),
-            };
             let tx = destination.transaction().unwrap();
-            restore(&tx, p, &[], &current, index as i64 + 1).unwrap();
+            restore(&tx, p, index as i64 + 1).unwrap();
             tx.commit().unwrap();
         }
     }

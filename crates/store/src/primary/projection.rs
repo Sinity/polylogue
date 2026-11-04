@@ -28,8 +28,6 @@ CREATE TABLE source_material (
 CREATE INDEX source_material_identity ON source_material(id);
 CREATE INDEX source_material_place ON source_material(input,chain,offset);
 ", include_str!("projection/reference_index.sql"));
-pub(crate) const REFERENCE_INDEX: &str = include_str!("projection/reference_index.sql");
-pub(crate) const REFUSED: &str = include_str!("../schema/primary_refused.sql");
 
 use super::{Confirmed, ConfirmedChange, Material, Product};
 mod replay;
@@ -206,7 +204,6 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::RestoredRequest { prepared, .. } => {
             Some(format!("request:{}", prepared.request.id))
         }
-        Product::RestoredHistory { evidence, .. } => Some(evidence.reference()),
         Product::RestoredAssertion { fact, .. } => {
             Some(format!("assertion:{}@{}", fact.root, fact.id))
         }
@@ -243,7 +240,6 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::Blob(_) => (None, None, reference, "blob"),
         Product::Request(_)
         | Product::RestoredRequest { .. }
-        | Product::RestoredHistory { .. }
         | Product::RestoredAssertion { .. } => (None, None, reference, "request"),
         Product::Coverage(_) => (None, None, reference, "coverage"),
         Product::Query { .. } | Product::QueryRun { .. } | Product::QueryRunOutcome { .. } => {
@@ -870,28 +866,11 @@ fn requests(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
         let admitted: i64 = row.get(1)?;
         match unpacked(&bytes)? {
             Product::Request(prepared) => super::authored::apply(tx, &prepared, admitted)?,
-            Product::RestoredRequest {
-                prepared,
-                claims,
-                current,
-            } => {
-                super::authored::restore(tx, &prepared, &claims, &current, admitted)?;
+            Product::RestoredRequest { prepared } => {
+                super::authored::restore(tx, &prepared, admitted)?;
             }
-            Product::RestoredHistory {
-                evidence,
-                claims,
-                current,
-            } => {
-                super::authored::historical::restore_record(
-                    tx, &evidence, &claims, &current, admitted,
-                )?;
-            }
-            Product::RestoredAssertion {
-                fact,
-                claims,
-                current,
-            } => {
-                crate::assertions::restore(tx, &fact, &claims, &current, admitted)?;
+            Product::RestoredAssertion { fact } => {
+                crate::assertions::apply(tx, std::slice::from_ref(&fact), admitted)?;
             }
             _ => unreachable!(),
         }

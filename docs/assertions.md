@@ -27,20 +27,34 @@ CREATE TABLE assertion (
   commit_seq  INTEGER NOT NULL   -- this archive's write counter: change feed and send order only
 ) STRICT;
 
-CREATE TABLE assertion_link (
-  assertion   TEXT NOT NULL REFERENCES assertion(id),
+CREATE TABLE link (
+  record      TEXT NOT NULL REFERENCES assertion(id),
   role        TEXT NOT NULL,     -- see Links
   ref         TEXT NOT NULL,     -- a reference in its stored form
   seen_hash   BLOB,              -- BLAKE3 of the referenced text when written; filled on arrival for a waiting target
-  PRIMARY KEY (assertion, role, ref)
-) STRICT;
-CREATE INDEX assertion_link_ref ON assertion_link(ref, role);
+  quote       TEXT,              -- links to a span: the exact text with up to 32 characters before and after
+  PRIMARY KEY (record, role, ref)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX link_ref ON link(ref, role, record);
+
+CREATE TABLE revision_state (    -- an index kept by the writing transaction, never a source of truth
+  id          TEXT PRIMARY KEY,
+  root        TEXT NOT NULL,
+  current     INTEGER NOT NULL,
+  withdrawn   INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE assertion_slot (    -- the uniqueness slots each revision occupies, by digest
+  slot        BLOB NOT NULL,
+  id          TEXT NOT NULL REFERENCES assertion(id),
+  PRIMARY KEY (slot, id)
+) STRICT, WITHOUT ROWID;
 CREATE INDEX assertion_kind_key ON assertion(kind, key);
 CREATE INDEX assertion_root     ON assertion(root);
 ```
 
 - **One link table.** Target, evidence, scope, origin and every relation are the same fact: this assertion points at that reference, in this role.
-- **Nothing computed is stored.** Currency, conflicts, withdrawal, judgment state, target state and work-item state are computed when read, so they can never disagree with the links they come from.
+- **Nothing derived is stored except two indexes.** `revision_state` holds which revisions are current and withdrawn, and `assertion_slot` which uniqueness slots each revision holds. The write that adds a record recomputes them for exactly the roots it can affect, in the same transaction, so they always equal the rule over the links (law **currency-index-equals-function**). Conflicts, judgment state, target state and work-item state are computed when read.
 - **Nothing expires by itself.** `valid_until` changes how an assertion is shown; it deletes nothing. Polylogue has no deletion ([architecture.md](architecture.md#deletion)); withdrawal is itself an authored statement.
 
 ## Kinds
@@ -58,7 +72,7 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `claim` | optional label | text, optional `check` (see Checked claims) | many | anything | `::claim` |
 | `finding` | optional label | text | many | anything; `derived_from` the `result:` or `query:` it rests on | `::finding` |
 | `decision` | optional label | text, optional `{alternatives, constraints, reverse_if}` | many | anything | `::decision` |
-| `lesson`, `question`, `goal`, `problem`, `blocker`, `handoff`, `correction` | optional label | text | many | anything (`correction`: exactly what it corrects) | `::<kind>` |
+| `lesson`, `question`, `goal`, `problem`, `handoff`, `correction` | optional label | text | many | anything (`correction`: exactly what it corrects) | `::<kind>` |
 | `forecast` | event name | `{probability, horizon, resolves_by}` | many | anything | `::forecast` |
 | `judgment` | `accepted`, `rejected` or `deferred` | optional reason; `blind` details | many | exactly one assertion at an exact revision | — |
 | `comparison` | dimension | `{verdict, rubric?}` | many | two or more references | — |
@@ -98,7 +112,7 @@ A setting's `machine` is its target host for a host-scoped key and null for an a
 
 ## Currency
 
-- **Current revision.** Revision R of root X is current when R is not withdrawn and no non-withdrawn assertion links `revises assertion:X@R`. It is a pure function of the `revises` and `withdraws` links, never of `commit_seq` or time, so every machine computes the same answer from the same links.
+- **Current revision.** Revision R of root X is current when R is not withdrawn and no revision reachable from R through incoming `revises` links (its descendants, transitively) is not withdrawn. Withdrawn revisions are thus transparent: in R1←R2←R3, withdrawing R2 leaves R3 current and R1 not. It is a pure function of the `revises` and `withdraws` links, never of `commit_seq` or time, so every machine computes the same answer from the same links. The rule and its functions are shared with Sinex through polylogue-sinex-common's `authored` crate.
 - **Conflict.** Two current revisions of one root are a conflict. Both are shown with their authors; a single-valued read matches neither value; `conflict:true` finds them; `status` counts them. A revision that `revises` both resolves it.
 - **Stale base.** A write from the CLI, MCP or HTTP whose `revises` names a revision that is no longer current is refused as `stale`, naming the current revision or revisions. Standalone, the check runs inside the write's transaction. In primary mode it runs against the head as of the applied stream position plus this host's writes that are prepared but not yet confirmed, so two quick revisions on one host, or the memory adapter's `create` followed by `str_replace`, see each other ([primary-mode.md](primary-mode.md)).
 - **Markup and imports never refuse; they fork** into a visible conflict, so the order of arrival cannot change the result.
@@ -109,7 +123,7 @@ A setting's `machine` is its target host for a host-scoped key and null for an a
 
 **Exact references hold.** Judgments, questions, `fixed` slots, kept results and deliveries store `assertion:X@R`. A new revision never moves them, and a judgment of R says nothing about R+1.
 
-**Cardinality is enforced at write** from the kind declaration. Writing a single-valued kind (`title`, `outcome`, `hidden`, `rubric`, `saved_query`, `memory` per scope, `page` per name) from a command revises the current one instead of adding a second root. Markup of a single-valued kind never revises: a command-written value beats every marker, and among markers in force the latest in message order along the session's lineage wins, then block index, then byte offset. A `tag` write is skipped when the target already has a current tag with that key and value; the reply says "already tagged".
+**Uniqueness is enforced at write** from the kind declaration. Each kind declares a uniqueness key, a list of components (`about`, `key`, `value`, `scope`, `author`, `rubric`, `machine`; the kind is always part of it), or none for a kind that may have many values; a write without bases goes into the slot its key gives, as a revision of every current head of the record that holds it. Writing a single-valued kind (`title`, `outcome`, `hidden`, `rubric`, `saved_query`, `memory` per scope, `page` per name) from a command revises the current one instead of adding a second root. Markup of a single-valued kind never revises: a command-written value beats every marker, and among markers in force the latest in message order along the session's lineage wins, then block index, then byte offset. A `tag` write is skipped when the target already has a current tag with that key and value; the reply says "already tagged". A bulk write over more than one row never writes a single-valued mark (`title`, `outcome`, `hidden`): it is refused as `single_valued_bulk`, and systematic labelling goes through a rubric field instead. The writes of one request are numbered `<request>.1`, `<request>.2`, … and commit together or not at all.
 
 ## Authorship
 
@@ -180,7 +194,7 @@ Authorship is for honest attribution, not a security boundary: all agents run as
 |---|---|
 | question **answered** | a current assertion `answers` it |
 | goal **achieved** | an `accepted` judgment, by the judges the reader counts, of an assertion that `answers` it |
-| item **blocked** | a current assertion `blocks` it; the block ends when the blocker is answered or withdrawn; blocked never closes a goal |
+| item **blocked** | a current assertion `blocks` it; the block ends when the blocking assertion is answered or withdrawn; blocked never closes a goal |
 | **decided** | a current `decision` is about it; deciding does not answer an open question |
 | **withdrawn** | see Currency |
 | **unresolved since T** | none of the above, stated with how far capture reaches |
@@ -338,9 +352,9 @@ Page verbs are listed in [pages.md](pages.md#agents-and-pages). Every write prin
 
 ## Storage
 
-Standalone, `assertion`, `assertion_link`, `variant` and `variant_part` live in `archive.db` and are backed up with it; there is no separate file of user state. In primary mode every authored record travels to Sinex as a `polylogue.*` record and is applied locally from the confirmed stream like every other record ([primary-mode.md](primary-mode.md)); currency follows the same rule on every machine.
+Standalone, `assertion`, `link`, `revision_state`, `assertion_slot`, `variant` and `variant_part` live in `archive.db` and are backed up with it; there is no separate file of user state. In primary mode every authored record travels to Sinex as a `polylogue.*` record and is applied locally from the confirmed stream like every other record ([primary-mode.md](primary-mode.md)); currency follows the same rule on every machine.
 
-Performance rules: currency, conflict and withdrawn state are computed by indexed lookups on `assertion_link(ref, role)` and `assertion(root)`, never by scanning all assertions per row; an assertion write never waits behind a first build for more than one writer group; markup extraction costs a declared, measured share of parsing throughput; `toc` and the other assertion reads meet the latency classes in [interfaces.md](interfaces.md#latency-classes).
+Performance rules: currency, conflict and withdrawn state are read from `revision_state`, which the writing transaction recomputes for the affected roots only, never by scanning all assertions per row; an assertion write never waits behind a first build for more than one writer group; markup extraction costs a declared, measured share of parsing throughput; `toc` and the other assertion reads meet the latency classes in [interfaces.md](interfaces.md#latency-classes).
 
 ## Laws
 
@@ -353,9 +367,13 @@ Performance rules: currency, conflict and withdrawn state are computed by indexe
 - **withdraw-and-restore**: with R1←R2, withdrawing R2 makes R1 current; withdrawing that withdrawal makes R2 current; withdrawing the root hides the family except under `withdrawn:*`.
 - **exact-reference-holds**: a judgment and a question naming R1 stay on R1 after R2; `judged:` on R2 is unknown.
 - **currency-ignores-order**: permuting `commit_seq` and `created_at` on a generated history gives the same set of current revisions.
+- **currency-middle-withdrawal**: with R1←R2←R3, withdrawing R2 leaves exactly R3 current with no conflict; withdrawing R3 then makes R2's predecessor chain current from the newest revision not withdrawn; withdrawing the withdrawal of R2 restores it.
+- **currency-index-equals-function**: after every write of a generated history, `revision_state` equals the shared currency function over the stored links.
+- **single-valued-bulk**: `assert outcome solved` over a two-row query is refused `single_valued_bulk` and writes nothing; over one row it revises.
+- **relation-implies-about**: an assertion with a relation link (`answers`, `challenges`, `supports`, `qualifies`, `corrects`, `blocks`) also links `about` the same revision.
 - **cardinality**: two `title` writes give one root with two revisions; a `::title` marker never changes a command-written title; `assert tag research` twice writes one assertion.
 - **stack-shown**: an agent claim, the operator's question about it at R1 and the agent's answer that `challenges` R1 all appear in `--stack`, the question still on R1 after R2.
-- **work-item-state**: `::blocker(blocks=assertion:g@1)` makes goal g blocked; answering the blocker unblocks it; g is achieved only after an accepted judgment of an answer.
+- **work-item-state**: `::problem(blocks=assertion:g@1)` makes goal g blocked; answering the problem unblocks it; g is achieved only after an accepted judgment of an answer.
 - **repetition-not-support**: two summaries `derived_from` one assertion count as one support; a variant of a claim changes no support or judgment count.
 - **mcp-never-operator**: MCP never records `operator`; with `toolUseId` joined to a spooled `PreToolUse` carrying `agent_id`, the author is that subagent.
 - **nearest-harness-wins**: Codex run inside Claude, with both sets of variables, is attributed to the nearest harness ancestor.

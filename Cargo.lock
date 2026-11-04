@@ -189,6 +189,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "authored"
+version = "0.1.0"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#149e9e2a00b1757d4d3dbaaee0bfb00ed69f3bd0"
+dependencies = [
+ "blake3",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2137,6 +2149,7 @@ dependencies = [
 name = "polylogue-model"
 version = "0.1.0"
 dependencies = [
+ "authored",
  "blake3",
  "jiff",
  "query-language",
@@ -2230,6 +2243,7 @@ dependencies = [
 name = "polylogue-store"
 version = "0.1.0"
 dependencies = [
+ "authored",
  "base64 0.22.1",
  "blake3",
  "hashed-blobs",
@@ -2238,6 +2252,7 @@ dependencies = [
  "memchr",
  "polylogue-model",
  "polylogue-query",
+ "proptest",
  "query-language",
  "rusqlite",
  "schemars",

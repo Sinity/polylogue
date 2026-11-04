@@ -38,19 +38,6 @@ pub fn register(conn: &Connection) -> rusqlite::Result<()> {
             .to_string(),
         )
     })?;
-    conn.create_scalar_function("pl_recorded_time", 1, FLAGS, |ctx| {
-        ctx.get::<Option<String>>(0)?
-            .map(|text| {
-                polylogue_model::Timestamp::parse_rfc3339(&text)
-                    .map(|at| at.unix_ms())
-                    .ok_or_else(|| {
-                        rusqlite::Error::UserFunctionError(
-                            "invalid recorded assertion timestamp".into(),
-                        )
-                    })
-            })
-            .transpose()
-    })?;
     let versions = crate::derive::current_versions()
         .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
     conn.create_scalar_function("pl_derived_current", 2, FLAGS, move |ctx| {

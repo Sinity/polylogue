@@ -18,16 +18,6 @@ pub(super) fn reference(
     visit: &mut Visit<'_>,
 ) -> Result<bool, Failure> {
     match reader.authored_record(reference)? {
-        Some(AuthoredReadEvidence::Historical { selected, record }) => visit(
-            Record::Historical(record),
-            ProjectionEvidence {
-                authored: Some(AuthoredSelection {
-                    selected,
-                    coverage: AuthoredCoverage::WholeRequest,
-                }),
-                ..Default::default()
-            },
-        ),
         Some(AuthoredReadEvidence::Local { selected, record }) => visit(
             Record::Authored(record),
             ProjectionEvidence {
@@ -62,45 +52,11 @@ fn direct_assertion(
         unreachable!()
     };
     let row = reader
-        .assertion_evidence(revision)?
+        .assertion(revision)?
         .ok_or_else(|| Failure::new("not_found", format!("no assertion {reference}")))?;
-    let record = match row {
-        polylogue_model::historical::AssertionEvidence::Current(row) => {
-            let reference = format!("assertion:{}@{}", row.fact.root, row.fact.id);
-            let imports = row
-                .imports
-                .observed
-                .into_iter()
-                .chain(row.imports.declared)
-                .collect();
-            Record::Assertion(Box::new(polylogue_model::assertion::AssertionRecord {
-                reference,
-                assertion: row.fact,
-                imports,
-            }))
-        }
-        polylogue_model::historical::AssertionEvidence::Historical {
-            fact,
-            commit_seq,
-            imports,
-        } => {
-            if commit_seq == 0 {
-                return Err(Failure::new(
-                    "not_yet_available",
-                    "historical assertion has no retained positive local admission",
-                ));
-            }
-            Record::Historical(Box::new(polylogue_model::bundle::HistoricalRecord {
-                reference: format!("assertion:{}@{}", fact.root, fact.id),
-                commit: commit_seq,
-                evidence: polylogue_model::historical::HistoricalRecord::Assertion(Box::new(fact)),
-                imports: imports
-                    .observed
-                    .into_iter()
-                    .chain(imports.declared)
-                    .collect(),
-            }))
-        }
-    };
+    let record = Record::Assertion(Box::new(polylogue_model::assertion::AssertionRecord {
+        reference: format!("assertion:{}@{}", row.fact.root, row.fact.id),
+        assertion: row.fact,
+    }));
     visit(record, ProjectionEvidence::default())
 }

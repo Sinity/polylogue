@@ -37,7 +37,6 @@ mod bytes;
 mod chain;
 mod confirmed;
 mod follow;
-mod historical;
 mod primary;
 mod primary_capture;
 mod query_objects;
@@ -111,10 +110,6 @@ enum Msg {
     ),
     RestoreAuthored(
         Box<authored::Restoration>,
-        SyncSender<Result<polylogue_model::user::UserOutcome>>,
-    ),
-    RestoreHistory(
-        Box<historical::Restoration>,
         SyncSender<Result<polylogue_model::user::UserOutcome>>,
     ),
     RestoreAssertion(
@@ -495,55 +490,26 @@ impl Writer {
         Ok(WriterSender(self.tx.clone().ok_or(StoreError::WriterGone)?))
     }
 
-    /// Restores an original authored effect without resolving its intent again.
+    /// Restores a request a bundle carried without resolving its intent again.
     pub fn restore_authored(
         &self,
         prepared: polylogue_model::authored::PreparedRequest,
-        claims: Vec<polylogue_model::authored::ImportAttribution>,
-        current: polylogue_model::authored::ImportAttribution,
     ) -> Result<polylogue_model::user::UserOutcome> {
         authored::restore_via(
             self.tx.as_ref().ok_or(StoreError::WriterGone)?,
-            authored::Restoration {
-                prepared,
-                claims,
-                current,
-            },
+            authored::Restoration { prepared },
         )
     }
 
-    /// Restore typed predecessor evidence without accepting its retired intent.
-    pub fn restore_history(
-        &self,
-        evidence: polylogue_model::historical::HistoricalRecord,
-        claims: Vec<polylogue_model::authored::ImportAttribution>,
-        current: polylogue_model::authored::ImportAttribution,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        historical::restore_via(
-            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
-            historical::Restoration {
-                evidence,
-                claims,
-                current,
-            },
-        )
-    }
-
-    /// Restores an independent assertion with receiver-computed ingress.
-    /// Historical provenance never creates an original native request.
+    /// Restores an assertion a bundle carried, unchanged; it creates no
+    /// request of its own.
     pub fn restore_assertion(
         &self,
         fact: polylogue_model::assertion::AssertionFact,
-        claims: Vec<polylogue_model::authored::ImportAttribution>,
-        current: polylogue_model::authored::ImportAttribution,
     ) -> Result<polylogue_model::user::UserOutcome> {
         assertions::restore_via(
             self.tx.as_ref().ok_or(StoreError::WriterGone)?,
-            assertions::Restoration {
-                fact,
-                claims,
-                current,
-            },
+            assertions::Restoration { fact },
         )
     }
 
@@ -839,52 +805,16 @@ impl WriterSender {
     pub fn restore_authored(
         &self,
         prepared: polylogue_model::authored::PreparedRequest,
-        claims: Vec<polylogue_model::authored::ImportAttribution>,
-        current: polylogue_model::authored::ImportAttribution,
     ) -> Result<polylogue_model::user::UserOutcome> {
-        authored::restore_via(
-            &self.0,
-            authored::Restoration {
-                prepared,
-                claims,
-                current,
-            },
-        )
+        authored::restore_via(&self.0, authored::Restoration { prepared })
     }
 
-    /// Restore typed predecessor evidence without accepting its retired intent.
-    pub fn restore_history(
-        &self,
-        evidence: polylogue_model::historical::HistoricalRecord,
-        claims: Vec<polylogue_model::authored::ImportAttribution>,
-        current: polylogue_model::authored::ImportAttribution,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        historical::restore_via(
-            &self.0,
-            historical::Restoration {
-                evidence,
-                claims,
-                current,
-            },
-        )
-    }
-
-    /// Restores an independent assertion with receiver-computed ingress.
-    /// Historical provenance never creates an original native request.
+    /// As [`Writer::restore_assertion`].
     pub fn restore_assertion(
         &self,
         fact: polylogue_model::assertion::AssertionFact,
-        claims: Vec<polylogue_model::authored::ImportAttribution>,
-        current: polylogue_model::authored::ImportAttribution,
     ) -> Result<polylogue_model::user::UserOutcome> {
-        assertions::restore_via(
-            &self.0,
-            assertions::Restoration {
-                fact,
-                claims,
-                current,
-            },
-        )
+        assertions::restore_via(&self.0, assertions::Restoration { fact })
     }
 
     /// As [`Writer::user`].
@@ -1189,7 +1119,6 @@ impl Inner {
         let mut group_pages = Vec::new();
         let mut restorations = Vec::new();
         let mut assertion_restorations = Vec::new();
-        let mut history_restorations = Vec::new();
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
         loop {
@@ -1240,10 +1169,6 @@ impl Inner {
                     }
                     Msg::Confirmed(events, reply) => {
                         confirmations.push((events, reply));
-                        false
-                    }
-                    Msg::RestoreHistory(restoration, reply) => {
-                        history_restorations.push((restoration, reply));
                         false
                     }
                     Msg::RestoreAuthored(restoration, reply) => {
@@ -1345,9 +1270,6 @@ impl Inner {
             for (blob, reply) in blobs.drain(..) {
                 let (new_blob, file) = *blob;
                 let _ = reply.send(self.store_blob(new_blob, file));
-            }
-            for (restoration, reply) in history_restorations.drain(..) {
-                let _ = reply.send(self.restore_history(*restoration));
             }
             for (restoration, reply) in restorations.drain(..) {
                 let _ = reply.send(self.restore_authored(*restoration));

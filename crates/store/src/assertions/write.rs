@@ -1,143 +1,40 @@
-//! Resolve one accepting snapshot, then freeze facts for direct confirmed apply.
+//! The one assertion write path. Each statement is validated against its
+//! kind, then the shared request rules place it: explicit bases must be
+//! current, a write without bases goes where its uniqueness slots say, and
+//! the writes of one request are numbered and committed together. The stored
+//! currency index is recomputed for the roots the request affects.
 use super::*;
+use authored::{Arrival, OnStale, Placed, Plan, Refusal, Refused, Write};
 use polylogue_model::{
-    assertion::{AssertionPatch, Change, NewAssertion, NewAssertionLink, cardinality, values},
+    assertion::{AssertionPatch, Change, NewAssertion, NewAssertionLink, values},
     settings::Owner,
     user::{UserOutcome, UserRequest},
 };
-use std::collections::{BTreeMap, BTreeSet};
 
 type Hash<'a> = dyn Fn(&Reference) -> Result<Option<BlobHash>> + 'a;
+type QuoteOf<'a> = dyn Fn(&Reference) -> Result<Option<Quote>> + 'a;
 
 #[derive(Clone, Copy)]
 pub(crate) struct WriteContext<'a> {
     pub request: &'a UserRequest,
     pub counter: i64,
     pub hash: &'a Hash<'a>,
+    pub quote: &'a QuoteOf<'a>,
     pub owner: Owner,
 }
 
 fn exact_fact(conn: &Connection, reference: &Reference) -> Result<AssertionFact> {
-    let Reference::Assertion(revision) = reference else {
+    let Reference::Assertion(RevisionReference {
+        root,
+        revision: Some(id),
+    }) = reference
+    else {
         return Err(invalid("expected an exact assertion revision"));
     };
-    let Some(id) = &revision.revision else {
-        return Err(invalid("expected an exact assertion revision"));
-    };
-    if matches!(get_evidence(conn, id)?, Some(polylogue_model::historical::AssertionEvidence::Historical { fact, .. }) if fact.root == revision.root)
-    {
-        return Err(StoreError::ReferenceUnavailable {
-            reference: reference.to_string(),
-            reason: "historical fields are not validated current-kind inputs".into(),
-        });
-    }
     get(conn, id)?
-        .filter(|row| row.fact.root == revision.root)
+        .filter(|row| row.fact.root == *root)
         .map(|row| row.fact)
         .ok_or_else(|| StoreError::NotFound(reference.to_string()))
-}
-
-struct RevisionBase {
-    root: String,
-    statement: NewAssertion,
-    unmapped_links: bool,
-}
-fn revision_base(conn: &Connection, reference: &Reference) -> Result<RevisionBase> {
-    let Reference::Assertion(revision) = reference else {
-        return Err(invalid("expected an exact assertion revision"));
-    };
-    let Some(id) = &revision.revision else {
-        return Err(invalid("expected an exact assertion revision"));
-    };
-    let evidence = get_evidence(conn, id)?
-        .filter(|row| row.reference() == *reference)
-        .ok_or_else(|| StoreError::NotFound(reference.to_string()))?;
-    let (root, kind, key, value, valid_until, links, unmapped_links) = match evidence {
-        polylogue_model::historical::AssertionEvidence::Current(row) => {
-            let fact = row.fact;
-            (
-                fact.root,
-                fact.kind,
-                fact.key,
-                fact.value,
-                fact.valid_until,
-                fact.links,
-                false,
-            )
-        }
-        polylogue_model::historical::AssertionEvidence::Historical { fact, .. } => {
-            let kind = AssertionKind::from_name(fact.kind.name()).ok_or_else(|| {
-                StoreError::ReferenceUnavailable {
-                    reference: reference.to_string(),
-                    reason: "the historical kind has no current native revision schema".into(),
-                }
-            })?;
-            let unmapped = fact.targets.iter().any(|target| {
-                Reference::parse(target).ok().is_none_or(|reference| {
-                    !fact
-                        .links
-                        .iter()
-                        .any(|link| link.role == LinkRole::About && link.reference == reference)
-                })
-            }) || fact.relations.iter().any(|(role, target)| {
-                !matches!(
-                    role,
-                    polylogue_model::historical::RecordedRelation::Known(
-                        polylogue_model::historical::Relation::Revises
-                            | polylogue_model::historical::Relation::Withdraws
-                    )
-                ) && Reference::parse(target).is_err()
-            });
-            (
-                fact.root,
-                kind,
-                fact.key,
-                fact.value.map(serde_json::Value::String),
-                fact.valid_until,
-                fact.links,
-                unmapped,
-            )
-        }
-    };
-    Ok(RevisionBase {
-        root,
-        statement: NewAssertion {
-            kind,
-            key,
-            value,
-            valid_until,
-            links: links
-                .into_iter()
-                .filter(|link| link.role != LinkRole::Revises)
-                .map(|link| NewAssertionLink {
-                    role: link.role,
-                    reference: link.reference,
-                })
-                .collect(),
-        },
-        unmapped_links,
-    })
-}
-
-fn rubric_reference(conn: &Connection, links: &[NewAssertionLink]) -> Result<Option<Reference>> {
-    let mut rubrics = BTreeSet::new();
-    for link in links
-        .iter()
-        .filter(|link| link.role == LinkRole::DerivedFrom)
-    {
-        if matches!(link.reference, Reference::Assertion(_))
-            && exact_fact(conn, &link.reference)?.kind == AssertionKind::Rubric
-        {
-            rubrics.insert(link.reference.clone());
-        }
-    }
-    if rubrics.len() > 1 {
-        return Err(StoreError::Ambiguous {
-            reference: "annotation rubric".into(),
-            candidates: rubrics.iter().map(ToString::to_string).collect(),
-        });
-    }
-    Ok(rubrics.pop_first())
 }
 
 fn validate_value(
@@ -184,8 +81,14 @@ fn validate_value(
         })?;
     }
     let rubric = if statement.kind == AssertionKind::Annotation {
-        let reference = rubric_reference(conn, &statement.links)?
-            .ok_or_else(|| invalid("annotation needs its exact derived_from rubric"))?;
+        let reference = rubric_of(
+            conn,
+            statement
+                .links
+                .iter()
+                .map(|link| (link.role, &link.reference)),
+        )?
+        .ok_or_else(|| invalid("annotation needs its exact derived_from rubric"))?;
         let values::Value::Rubric(rubric) = exact_fact(conn, &reference)?
             .validate()
             .map_err(|error| invalid(&error.to_string()))?
@@ -252,118 +155,73 @@ fn validate_value(
     Ok((value, rubric))
 }
 
-fn current_bases(conn: &Connection, statement: &NewAssertion) -> Result<Option<String>> {
-    for link in statement
-        .links
-        .iter()
-        .filter(|link| link.role == LinkRole::Withdraws)
-    {
-        let mut root = link.reference.clone();
-        let exact = match &mut root {
-            Reference::Assertion(revision)
-            | Reference::Variant {
+/// Withdrawals of variants are checked here; withdrawals of assertions are
+/// checked by the request rules, which see this request's earlier writes.
+fn check_variant_targets(conn: &Connection, statement: &NewAssertion) -> Result<()> {
+    for link in &statement.links {
+        let (
+            LinkRole::Withdraws,
+            Reference::Variant {
                 revision,
                 part: None,
-            } => {
-                let exact = revision.revision.is_some();
-                revision.revision = None;
-                exact
-            }
-            _ => return Err(invalid("withdrawal needs an assertion or variant identity")),
+            },
+        ) = (link.role, &link.reference)
+        else {
+            continue;
         };
-        let revisions = Graph::new(conn)?.revisions(&root)?;
-        if revisions.is_empty() || (exact && !revisions.contains(&link.reference)) {
+        let revisions = VariantLinks::new(conn)?.revisions(&revision.root)?;
+        let found = match &revision.revision {
+            None => !revisions.is_empty(),
+            Some(id) => revisions.iter().any(|known| known.rev == *id),
+        };
+        if !found {
             return Err(StoreError::NotFound(link.reference.to_string()));
         }
     }
-    let mut root = None;
-    for link in statement
-        .links
-        .iter()
-        .filter(|link| link.role == LinkRole::Revises)
-    {
-        let base = revision_base(conn, &link.reference)?;
-        if base.statement.kind != statement.kind {
-            return Err(invalid("revision cannot change assertion kind"));
-        }
-        let current = heads(
-            conn,
-            &Reference::Assertion(RevisionReference {
-                root: base.root.clone(),
-                revision: None,
-            }),
-        )?;
-        if !current.contains(&link.reference) {
-            return Err(StoreError::Stale {
-                reference: link.reference.to_string(),
-                current: current.iter().map(ToString::to_string).collect(),
-            });
-        }
-        root = Some(base.root);
-    }
-    Ok(root)
+    Ok(())
 }
 
-fn current_slots(
-    conn: &Connection,
-    statement: &NewAssertion,
-    keys: &[cardinality::Key],
-) -> Result<Vec<AssertionFact>> {
-    if keys.is_empty() {
-        return Ok(Vec::new());
-    }
-    let source = Source::reading(conn)?;
-    // The kind/key index bounds candidates; all revision truth comes from the
-    // same Graph/Currency kernel used by typed reads and the query backend.
-    let roots = conn
-        .prepare_cached(&source.sql(
-            "SELECT DISTINCT root FROM @source.assertion WHERE kind=?1 AND key IS ?2 ORDER BY root",
-        ))?
-        .query_map(params![statement.kind.as_str(), statement.key], |row| {
-            row.get::<_, String>(0)
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut matches = BTreeMap::new();
-    for root in roots {
-        for reference in heads(
-            conn,
-            &Reference::Assertion(RevisionReference {
-                root,
-                revision: None,
-            }),
-        )? {
-            let fact = exact_fact(conn, &reference)?;
-            let existing = NewAssertion {
-                kind: fact.kind,
-                key: fact.key.clone(),
-                value: fact.value.clone(),
-                valid_until: fact.valid_until,
-                links: fact
-                    .links
-                    .iter()
-                    .map(|link| NewAssertionLink {
-                        role: link.role,
-                        reference: link.reference.clone(),
-                    })
-                    .collect(),
-            };
-            let value = fact
-                .validate()
-                .map_err(|error| invalid(&error.to_string()))?;
-            let rubric = if existing.kind == AssertionKind::Annotation {
-                rubric_reference(conn, &existing.links)?
-            } else {
-                None
-            };
-            let slots = existing
-                .cardinality_keys(&value, &fact.author, rubric.as_ref())
-                .map_err(|error| invalid(&error.to_string()))?;
-            if slots.iter().any(|slot| keys.contains(slot)) {
-                matches.insert(reference, fact);
-            }
+/// A statement ready to place: its validated content and its slots.
+struct Prepared {
+    statement: NewAssertion,
+    unique: Option<authored::Unique>,
+}
+
+fn refusal(kind: &NewAssertion, refused: Refused<StoreError>) -> StoreError {
+    let list = |revisions: Vec<Revision>| -> Vec<String> {
+        revisions.iter().map(|r| reference(r).to_string()).collect()
+    };
+    match refused.refusal {
+        Refusal::Stale { base, heads } => StoreError::Stale {
+            reference: reference(&base).to_string(),
+            current: list(heads),
+        },
+        Refusal::UnknownBase(base) => StoreError::NotFound(reference(&base).to_string()),
+        Refusal::UnknownTarget(target) => {
+            StoreError::NotFound(target_reference(&target).to_string())
         }
+        Refusal::BasesSpanRoots(_) => {
+            invalid("one revision must name bases of one assertion family")
+        }
+        Refusal::Ambiguous { holders } => StoreError::Ambiguous {
+            reference: kind
+                .key
+                .clone()
+                .unwrap_or_else(|| kind.kind.as_str().into()),
+            candidates: list(holders),
+        },
+        Refusal::SlotTaken { holders } => StoreError::Conflict(format!(
+            "the revised {} would take a slot held by {}",
+            kind.kind.as_str(),
+            list(holders).join(", ")
+        )),
+        Refusal::Count { declared, written } => invalid(&format!(
+            "the request declared {declared} writes and carries {written}"
+        )),
+        Refusal::Abandoned(write) => invalid(&format!("write {write} of this request was refused")),
+        Refusal::Cycle(revision) => invalid(&format!("withdrawals of {revision} form a cycle")),
+        Refusal::Links(error) => error,
     }
-    Ok(matches.into_values().collect())
 }
 
 #[cfg(test)]
@@ -390,12 +248,15 @@ pub(crate) fn write(
             request,
             counter,
             hash,
+            quote: &|_| Ok(None),
             owner,
         },
         &mut unavailable_saved,
     )
 }
 
+/// Writes statements as one request. A tag about several targets is one
+/// write per target, so each target's tag is its own record.
 pub(crate) fn write_preparing(
     conn: &Connection,
     statements: &[NewAssertion],
@@ -404,22 +265,27 @@ pub(crate) fn write_preparing(
 ) -> Result<UserOutcome> {
     let mut expanded = Vec::new();
     for statement in statements {
-        if statement.kind == AssertionKind::Tag
-            && statement
-                .links
-                .iter()
-                .filter(|link| link.role == LinkRole::About)
-                .count()
-                > 1
-        {
-            for target in statement
-                .links
-                .iter()
-                .filter(|link| link.role == LinkRole::About)
-            {
+        // Targets a relation names are about-targets of every copy.
+        let relations: Vec<&Reference> = statement
+            .links
+            .iter()
+            .filter(|link| link.role.is_relation())
+            .map(|link| &link.reference)
+            .collect();
+        let about = statement
+            .links
+            .iter()
+            .filter(|link| link.role == LinkRole::About && !relations.contains(&&link.reference))
+            .count();
+        if statement.kind == AssertionKind::Tag && about > 1 {
+            for target in statement.links.iter().filter(|link| {
+                link.role == LinkRole::About && !relations.contains(&&link.reference)
+            }) {
                 let mut single = statement.clone();
                 single.links.retain(|link| {
-                    link.role != LinkRole::About || link.reference == target.reference
+                    link.role != LinkRole::About
+                        || link.reference == target.reference
+                        || relations.contains(&&link.reference)
                 });
                 expanded.push(single);
             }
@@ -429,6 +295,61 @@ pub(crate) fn write_preparing(
     }
     accept(conn, &expanded, true, context, saved)
 }
+
+/// Inserts one write of the request being checked, under the ID it will
+/// take, recomputes its family's currency and returns the family root. Only
+/// `accept` calls this, and it removes every preview again.
+fn preview(
+    conn: &Connection,
+    request: &UserRequest,
+    id: &str,
+    statement: &NewAssertion,
+    counter: i64,
+) -> Result<String> {
+    let mut root = id.to_owned();
+    for link in &statement.links {
+        if let (LinkRole::Revises, Reference::Assertion(base)) = (link.role, &link.reference) {
+            root = base.root.clone();
+        }
+    }
+    let links = statement
+        .links
+        .iter()
+        .map(|link| AssertionLink {
+            role: link.role,
+            reference: link.reference.clone(),
+            seen_hash: None,
+            quote: None,
+        })
+        .collect();
+    let fact =
+        AssertionFact::from_request(id.into(), root.clone(), statement.clone(), links, request);
+    insert(conn, Source::of(conn)?, &fact, &[], counter)?;
+    currency::recompute(conn, [root.clone()].into())?;
+    Ok(root)
+}
+
+/// Removes previewed writes and restores their families' currency.
+fn remove_previews(conn: &Connection, previews: Vec<(String, String)>) -> Result<()> {
+    if previews.is_empty() {
+        return Ok(());
+    }
+    let source = Source::of(conn)?;
+    let mut roots = std::collections::BTreeSet::new();
+    for (id, root) in previews {
+        conn.execute(
+            &source.sql("DELETE FROM @source.link WHERE record=?1"),
+            [&id],
+        )?;
+        conn.execute(
+            &source.sql("DELETE FROM @source.assertion WHERE id=?1"),
+            [&id],
+        )?;
+        roots.insert(root);
+    }
+    currency::recompute(conn, roots)
+}
+
 fn accept(
     conn: &Connection,
     statements: &[NewAssertion],
@@ -440,85 +361,178 @@ fn accept(
         request,
         counter,
         hash,
+        quote,
         owner,
     } = context;
     if statements.is_empty() {
         return Err(invalid("assert needs at least one statement"));
     }
-    let mut first = None;
-    let mut inserted = false;
-    for (ordinal, original) in statements.iter().enumerate() {
-        let mut statement = original.clone();
-        let (value, rubric) =
-            validate_value(conn, request, &mut statement, live_value, owner, saved)?;
-        let mut root = current_bases(conn, &statement)?;
-        if root.is_none() {
-            let keys = statement
-                .cardinality_keys(&value, &request.authorship.author, rubric.as_ref())
+    // Each write is checked against the archive as it stands after the
+    // request's earlier writes, so a later write may name an earlier one (a
+    // saved query using one defined before it, an annotation of a rubric
+    // written before it). The earlier writes are previewed under their final
+    // IDs and removed again before the plan below places them all against the
+    // archive as it was. The removal is explicit rather than a savepoint
+    // rollback: the preparation scratch runs with `journal_mode=OFF`, where
+    // a rollback does not undo writes.
+    let mut previews = Vec::new();
+    let previewed = (|| -> Result<Vec<Prepared>> {
+        let mut prepared = Vec::with_capacity(statements.len());
+        for (index, original) in statements.iter().enumerate() {
+            let mut statement = original.clone();
+            // A relation is a statement about the revision it relates to, so it
+            // also points `about` it; "everything about X" is then one lookup.
+            let relations: Vec<Reference> = statement
+                .links
+                .iter()
+                .filter(|link| link.role.is_relation())
+                .map(|link| link.reference.clone())
+                .collect();
+            for reference in relations {
+                if !statement
+                    .links
+                    .iter()
+                    .any(|link| link.role == LinkRole::About && link.reference == reference)
+                {
+                    statement.links.push(NewAssertionLink {
+                        role: LinkRole::About,
+                        reference,
+                    });
+                }
+            }
+            let (value, rubric) =
+                validate_value(conn, request, &mut statement, live_value, owner, saved)?;
+            check_variant_targets(conn, &statement)?;
+            for link in &statement.links {
+                if link.role != LinkRole::Revises {
+                    continue;
+                }
+                if let Reference::Assertion(RevisionReference {
+                    revision: Some(id), ..
+                }) = &link.reference
+                    && let Some(base) = get(conn, id)?
+                    && base.fact.kind != statement.kind
+                {
+                    return Err(invalid("revision cannot change assertion kind"));
+                }
+            }
+            let unique = statement
+                .unique(&value, &request.authorship.author, rubric.as_ref())
                 .map_err(|error| invalid(&error.to_string()))?;
-            let existing = current_slots(conn, &statement, &keys)?;
-            if statement.kind == AssertionKind::Tag && !existing.is_empty() {
-                first.get_or_insert_with(|| existing[0].id.clone());
-                continue;
+            // Only a write that a later one could name is previewed.
+            if index + 1 < statements.len() {
+                let id = authored::write_id(&request.id, index + 1, statements.len());
+                let root = preview(conn, request, &id, &statement, counter)?;
+                previews.push((id, root));
             }
-            if existing.len() > 1 {
-                return Err(StoreError::Ambiguous {
-                    reference: statement
-                        .key
-                        .clone()
-                        .unwrap_or_else(|| statement.kind.as_str().into()),
-                    candidates: existing
-                        .iter()
-                        .map(|fact| exact(&fact.root, &fact.id).to_string())
-                        .collect(),
-                });
-            }
-            if let Some(previous) = existing.first() {
-                root = Some(previous.root.clone());
-                statement.links.push(NewAssertionLink {
-                    role: LinkRole::Revises,
-                    reference: exact(&previous.root, &previous.id),
-                });
+            prepared.push(Prepared { statement, unique });
+        }
+        Ok(prepared)
+    })();
+    remove_previews(conn, previews)?;
+    let prepared = previewed?;
+    let arrival = Arrival {
+        author: request.authorship.author.to_string(),
+        via: request.authorship.via.as_str().into(),
+        at: request.at.unix_ms(),
+        on_stale: match request.authorship.via {
+            polylogue_model::authorship::Channel::Markup
+            | polylogue_model::authorship::Channel::Import => OnStale::Fork,
+            _ => OnStale::Refuse,
+        },
+    };
+    let mut store = StoredLinks::new(conn)?;
+    let mut plan: Plan<'_, StoredLinks<'_>, NewAssertion> =
+        Plan::new(request.id.clone(), prepared.len(), arrival, &mut store);
+    let mut first = None;
+    let mut written = false;
+    for Prepared { statement, unique } in prepared {
+        let mut revises = Vec::new();
+        let mut withdraws = Vec::new();
+        for link in &statement.links {
+            match (link.role, &link.reference) {
+                (
+                    LinkRole::Revises,
+                    Reference::Assertion(RevisionReference {
+                        root,
+                        revision: Some(id),
+                    }),
+                ) => revises.push(Revision::new(root, id)),
+                (LinkRole::Withdraws, Reference::Assertion(revision)) => {
+                    withdraws.push(target(revision))
+                }
+                _ => {}
             }
         }
-        let id = if statements.len() == 1 {
-            request.id.clone()
-        } else {
-            format!("{}.{}", request.id, ordinal)
+        let write = Write {
+            kind: statement.kind.as_str().into(),
+            key: statement.key.clone(),
+            value: statement.value.clone(),
+            body: statement.clone(),
+            revises,
+            withdraws,
+            unique,
         };
-        let mut links = Vec::with_capacity(statement.links.len());
-        for link in &statement.links {
+        match plan
+            .add(write)
+            .map_err(|refused| refusal(&statement, refused))?
+        {
+            Placed::Written { revision, .. } => {
+                first.get_or_insert(revision.rev);
+                written = true;
+            }
+            Placed::Already { heads } => {
+                if let Some(head) = heads.first() {
+                    first.get_or_insert(head.rev.clone());
+                }
+            }
+        }
+    }
+    let planned = plan
+        .finish()
+        .map_err(|refused| refusal(statements.first().expect("a nonempty request"), refused))?;
+    let source = Source::of(conn)?;
+    for record in &planned.records {
+        let header = &record.header;
+        let statement = &record.body;
+        let mut links = Vec::with_capacity(statement.links.len() + header.revises.len());
+        for link in statement
+            .links
+            .iter()
+            .filter(|link| link.role != LinkRole::Revises)
+            .map(|link| (link.role, link.reference.clone()))
+            .chain(
+                header
+                    .revises
+                    .iter()
+                    .map(|base| (LinkRole::Revises, reference(base))),
+            )
+        {
+            let (role, reference) = link;
             links.push(AssertionLink {
-                role: link.role,
-                reference: link.reference.clone(),
-                seen_hash: if link.role.uses_text_hash() {
-                    hash(&link.reference)?
+                seen_hash: if role.uses_text_hash() {
+                    hash(&reference)?
                 } else {
                     None
                 },
+                quote: quote(&reference)?,
+                role,
+                reference,
             });
         }
-        let fact = AssertionFact::from_request(
-            id.clone(),
-            root.unwrap_or_else(|| id.clone()),
-            statement,
+        let fact = canonical_fact(&AssertionFact::from_request(
+            header.rev.clone(),
+            header.root.clone(),
+            statement.clone(),
             links,
             request,
-        );
-        let family = Reference::Assertion(RevisionReference {
-            root: fact.root.clone(),
-            revision: None,
-        });
-        apply(conn, &[fact], counter)?;
-        // A historical forward link must not turn a new native withdrawal
-        // into a cyclic active graph. The caller owns the accepting transaction.
-        heads(conn, &family)?;
-        first.get_or_insert(id);
-        inserted = true;
+        ))?;
+        insert(conn, source, &fact, &record.slots, counter)?;
     }
+    currency::recompute(conn, planned.affected_roots)?;
     Ok(UserOutcome {
-        id: first.expect("nonempty assertion batch"),
-        repeat: !inserted,
+        id: first.expect("a nonempty request places at least one write"),
+        repeat: !written,
         pending: false,
     })
 }
@@ -541,6 +555,7 @@ pub(crate) fn revise(
             request,
             counter,
             hash,
+            quote: &|_| Ok(None),
             owner,
         },
         &mut unavailable_saved,
@@ -564,8 +579,8 @@ pub(crate) fn revise_preparing(
     )
 }
 
-/// Compose a revision once for preflight and final acceptance. Currency is
-/// checked by accept after the shared exact-base lookup and patch semantics.
+/// A revision inherits its base's kind, key, value, expiry and links unless
+/// the patch replaces them; the bases become its `revises` links.
 pub(crate) fn revision_statement(
     conn: &Connection,
     bases: &[RevisionReference],
@@ -576,12 +591,12 @@ pub(crate) fn revision_statement(
     }
     let mut facts = Vec::new();
     for base in bases {
-        facts.push(revision_base(conn, &Reference::Assertion(base.clone()))?);
+        facts.push(exact_fact(conn, &Reference::Assertion(base.clone()))?);
     }
     let first = &facts[0];
     if facts
         .iter()
-        .any(|fact| fact.root != first.root || fact.statement.kind != first.statement.kind)
+        .any(|fact| fact.root != first.root || fact.kind != first.kind)
     {
         return Err(invalid(
             "one revision must name bases of one assertion family",
@@ -594,25 +609,13 @@ pub(crate) fn revision_statement(
             Change::Clear => None,
         }
     }
-    if patch.links.is_none() && facts.iter().any(|base| base.unmapped_links) {
-        return Err(StoreError::ReferenceUnavailable {
-            reference: bases
-                .iter()
-                .map(|base| Reference::Assertion(base.clone()).to_string())
-                .collect::<Vec<_>>()
-                .join(", "),
-            reason: "historical targets or relations need an explicit canonical link replacement"
-                .into(),
-        });
-    }
     let mut statement = NewAssertion {
-        kind: first.statement.kind,
-        key: change(first.statement.key.clone(), &patch.key),
-        value: change(first.statement.value.clone(), &patch.value),
-        valid_until: change(first.statement.valid_until, &patch.valid_until),
+        kind: first.kind,
+        key: change(first.key.clone(), &patch.key),
+        value: change(first.value.clone(), &patch.value),
+        valid_until: change(first.valid_until, &patch.valid_until),
         links: patch.links.clone().unwrap_or_else(|| {
             first
-                .statement
                 .links
                 .iter()
                 .filter(|link| link.role != LinkRole::Revises)

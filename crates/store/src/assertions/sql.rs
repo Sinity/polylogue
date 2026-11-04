@@ -1,15 +1,13 @@
-//! SQL consumes the pinned Reader's pure Graph projection; it never computes
-//! a competing revision or withdrawal predicate.
+//! SQL over the stored currency index (`revision_state`), which the writer
+//! keeps equal to the descendant rule for every root it touches.
 
 pub fn current_assertion(row: &str) -> String {
-    format!(
-        "EXISTS (SELECT 1 FROM temp.assertion_currency ac WHERE ac.id={row}.id AND ac.root={row}.root AND ac.current=1)"
-    )
+    format!("EXISTS (SELECT 1 FROM source_revision_state rs WHERE rs.id={row}.id AND rs.current=1)")
 }
 
 pub fn withdrawn_assertion(row: &str) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM temp.assertion_currency ac WHERE ac.id={row}.id AND ac.root={row}.root AND ac.withdrawn=1)"
+        "EXISTS (SELECT 1 FROM source_revision_state rs WHERE rs.id={row}.id AND rs.withdrawn=1)"
     )
 }
 

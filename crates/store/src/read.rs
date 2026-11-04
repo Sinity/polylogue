@@ -38,7 +38,6 @@ pub use fragment::{
 };
 mod parser_checkpoint;
 pub use parser_checkpoint::StoredParserCheckpoint;
-mod import_attribution;
 mod import_counts;
 pub use import_counts::ImportCounts;
 mod parents;
@@ -127,10 +126,7 @@ struct PoolState {
 /// attached as `a`. Acquire, use and drop it on the same thread. Returned to
 /// the pool when dropped. Holding a reader slot takes no read lock; the first
 /// database access starts the read on both databases and checks them.
-/// Every SQL access goes through [`Reader::conn`], which also builds the
-/// snapshot's assertion currency (`temp.assertion_about`,
-/// `temp.assertion_currency`) before handing out the connection, so any SQL
-/// a reader runs may name those objects.
+/// Assertion currency is stored (`revision_state`), so no read builds it.
 pub struct Reader<'a> {
     pool: &'a ReadPool,
     conn: Option<Connection>,
@@ -144,7 +140,6 @@ pub struct Reader<'a> {
     thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
     vectors: std::cell::RefCell<Option<crate::vectors::Vectors>>,
     calendar: crate::sql_functions::CalendarContext,
-    assertion_currency_ready: std::cell::Cell<bool>,
     assertion_history_ready: std::cell::RefCell<std::collections::BTreeSet<i64>>,
 }
 
@@ -384,7 +379,6 @@ impl ReadPool {
             thread_bound: std::marker::PhantomData,
             vectors: std::cell::RefCell::new(None),
             calendar: crate::sql_functions::CalendarContext::new(),
-            assertion_currency_ready: std::cell::Cell::new(false),
             assertion_history_ready: std::cell::RefCell::new(Default::default()),
         };
         // A replaced index is a new file, never an old inode reused. Compare
@@ -515,6 +509,9 @@ struct MessageContent<'a> {
 }
 
 impl Reader<'_> {
+    /// As-of assertion reads need the currency of the records written before
+    /// `cutoff`, computed once per cutoff in this read transaction. Present
+    /// currency is stored and needs no preparation.
     pub(crate) fn prepare_assertion_history(&self, cutoff: i64) -> Result<()> {
         let conn = self.conn()?;
         if !self.assertion_history_ready.borrow().contains(&cutoff) {
@@ -636,13 +633,6 @@ impl Reader<'_> {
                 )?;
                 self.state.set(ReadState::Ready);
             }
-        }
-        // The currency is a pure function of this snapshot. It is built here
-        // once per read, and nowhere else, so no SQL access can see it missing.
-        if !self.assertion_currency_ready.get() {
-            crate::assertions::currency::prepare_all(conn)?;
-            self.check()?;
-            self.assertion_currency_ready.set(true);
         }
         Ok(conn)
     }

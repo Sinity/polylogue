@@ -10,7 +10,6 @@
 //! - [`text_search`]: whether a text is still stored or indexed anywhere.
 
 pub mod authored;
-pub mod query_objects;
 pub mod text_search;
 pub mod writer;
 
@@ -509,17 +508,16 @@ impl Fixture {
             key: key.map(str::to_owned),
             value: value.map(|value| polylogue_model::Json::String(value.into())),
             author: Author::Operator,
-            via: Some(Channel::Cli),
-            machine: Some("test".into()),
-            created_at: Some(
-                Timestamp::from_unix_ms(self.commit_seq)
-                    .expect("synthetic fixture counter is a timestamp"),
-            ),
+            via: Channel::Cli,
+            machine: "test".into(),
+            created_at: Timestamp::from_unix_ms(self.commit_seq)
+                .expect("synthetic fixture counter is a timestamp"),
             valid_until: None,
             links: vec![AssertionLink {
                 role: LinkRole::About,
                 reference: target,
                 seen_hash: None,
+                quote: None,
             }],
         };
         let tx = self.notes.transaction()?;
@@ -552,46 +550,15 @@ impl Fixture {
                 "text": plan.text(), "hash":object.id.to_string(), "denominator":null,
             })),
             author: Author::Operator,
-            via: Some(Channel::Cli),
-            machine: Some("test".into()),
-            created_at: Some(Timestamp::from_unix_ms(self.commit_seq).unwrap()),
+            via: Channel::Cli,
+            machine: "test".into(),
+            created_at: Timestamp::from_unix_ms(self.commit_seq).unwrap(),
             valid_until: None,
             links: vec![],
         };
         let tx = self.notes.transaction()?;
         crate::query_objects::apply_object(&tx, &object)?;
         crate::assertions::apply(&tx, &[fact], self.commit_seq)?;
-        tx.commit()?;
-        Ok(id)
-    }
-
-    /// A retained pre-custody definition stays read-only historical evidence;
-    /// its missing semantic identity never becomes a placeholder question.
-    pub fn historical_saved_query(&mut self, name: &str, text: &str) -> Result<String> {
-        use polylogue_model::{
-            Timestamp,
-            historical::{HistoricalAssertionEvidence, RecordedKind, SourceSchema},
-        };
-        self.commit_seq += 1;
-        let id = format!("n{}", self.commit_seq);
-        let fact = HistoricalAssertionEvidence {
-            id: id.clone(),
-            root: id.clone(),
-            source: SourceSchema::PolylogueArchive { version: 4 },
-            kind: RecordedKind::Known(polylogue_model::historical::NoteKind::SavedQuery),
-            key: Some(name.into()),
-            value: Some(text.into()),
-            recorded_author: Some("operator".into()),
-            machine: Some("test".into()),
-            created_at: Some(Timestamp::from_unix_ms(self.commit_seq).unwrap()),
-            valid_until: None,
-            targets: vec![],
-            relations: vec![],
-            links: vec![],
-            predecessor: None,
-        };
-        let tx = self.notes.transaction()?;
-        crate::assertions::apply_historical(&tx, &fact, self.commit_seq)?;
         tx.commit()?;
         Ok(id)
     }

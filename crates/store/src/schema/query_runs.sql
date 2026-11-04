@@ -1,8 +1,8 @@
 -- Begin and completion can arrive independently in a filtered confirmed stream.
 CREATE TABLE query_run (
     id TEXT PRIMARY KEY,
-    binding_hash TEXT CHECK(length(binding_hash)=64),
-    run_hash TEXT CHECK(length(run_hash)=64),
+    binding_hash TEXT NOT NULL CHECK(length(binding_hash)=64),
+    run_hash TEXT NOT NULL CHECK(length(run_hash)=64),
     query TEXT,
     object_ref TEXT CHECK(object_ref IS NULL
         OR (substr(object_ref,1,8)='request:' AND length(CAST(object_ref AS BLOB))>8)
@@ -19,10 +19,8 @@ CREATE TABLE query_run (
     source_order INTEGER CHECK(source_order IS NULL OR source_order>=0),
     run BLOB,
     completion BLOB,
-    historical BLOB,
-    CHECK(run IS NOT NULL OR completion IS NOT NULL OR historical IS NOT NULL),
-    CHECK(historical IS NOT NULL OR (binding_hash IS NOT NULL AND run_hash IS NOT NULL)),
-    CHECK(historical IS NOT NULL OR (run IS NULL AND query IS NULL AND object_ref IS NULL)
+    CHECK(run IS NOT NULL OR completion IS NOT NULL),
+    CHECK((run IS NULL AND query IS NULL AND object_ref IS NULL)
        OR (run IS NOT NULL AND ((query IS NOT NULL AND object_ref IS NULL)
                             OR (query IS NULL AND object_ref IS NOT NULL))))
 ) STRICT, WITHOUT ROWID;

@@ -12,8 +12,8 @@ fn roots(conn: &Connection, key: &str) -> Result<Vec<String>> {
         .query_map([key], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?)
 }
 
-/// SQL only nominates families. Both present and historical reads use the
-/// same slot comparison and the same Graph/Currency result for every head.
+/// SQL only nominates families. Present and as-of reads use the same slot
+/// comparison over the heads the currency rule gives.
 fn candidates(
     conn: &Connection,
     key: &str,
@@ -65,59 +65,49 @@ fn history_boundaries(
     key: &str,
     until: Timestamp,
 ) -> Result<(BTreeSet<String>, BTreeSet<Timestamp>)> {
-    let mut graph = Graph::as_of(conn, until)?;
-    let mut pending = Vec::new();
-    let mut times = BTreeSet::new();
+    let mut links = StoredLinks::as_of(conn, until)?;
     let source = Source::reading(conn)?;
-    let mut statement = conn.prepare_cached(&source.sql("SELECT root,id,created_at FROM @source.assertion WHERE kind='setting' AND key=?1 ORDER BY root,id"))?;
+    let mut statement = conn.prepare_cached(&source.sql("SELECT root,created_at FROM @source.assertion WHERE kind='setting' AND key=?1 ORDER BY root,id"))?;
     let mut rows = statement.query([key])?;
     let mut relevant = BTreeSet::new();
     while let Some(row) = rows.next()? {
         let root: String = row.get(0)?;
-        let reference = exact(&root, &row.get::<_, String>(1)?);
-        if graph.eligible(&reference, row.get(2)?)? {
+        if links.eligible(row.get(1)?) {
             relevant.insert(root);
         }
     }
+    drop(rows);
+    let mut pending = Vec::new();
     for root in &relevant {
-        let root = Reference::Assertion(RevisionReference {
-            root: root.clone(),
-            revision: None,
-        });
-        pending.extend(graph.revisions(&root)?);
-        pending.push(root);
+        pending.extend(
+            links
+                .revisions(root)?
+                .into_iter()
+                .map(authored::Target::Revision),
+        );
+        pending.push(authored::Target::Root(root.clone()));
     }
+    let mut times = BTreeSet::new();
     let mut visited = BTreeSet::new();
-    while let Some(reference) = pending.pop() {
+    while let Some(target) = pending.pop() {
         check_read()?;
-        if !visited.insert(reference.clone()) {
+        if !visited.insert(target.clone()) {
             continue;
         }
-        if let Reference::Assertion(RevisionReference {
-            root,
-            revision: Some(id),
-        }) = &reference
-        {
-            let row = get(conn, id)?.ok_or_else(|| StoreError::NotFound(reference.to_string()))?;
-            // Graph::as_of has already required a recorded date for this
-            // exact dependency. Its nullable historical provenance is intact.
-            times.insert(
-                row.fact
-                    .created_at
-                    .ok_or_else(|| StoreError::ReferenceUnavailable {
-                        reference: reference.to_string(),
-                        reason: "historical applicability is unknown for an undated assertion"
-                            .into(),
-                    })?,
-            );
-            pending.push(Reference::Assertion(RevisionReference {
-                root: root.clone(),
-                revision: None,
-            }));
+        if let authored::Target::Revision(revision) = &target {
+            let row = get(conn, &revision.rev)?
+                .ok_or_else(|| StoreError::NotFound(reference(revision).to_string()))?;
+            times.insert(row.fact.created_at);
+            pending.push(authored::Target::Root(revision.root.clone()));
         }
-        // Restoration can be arbitrarily deep. Walk precisely the same
-        // withdrawal dependencies used by Currency, including family targets.
-        pending.extend(graph.withdrawers(&reference)?);
+        // Restoration can be arbitrarily deep: walk exactly the withdrawal
+        // links currency reads, including withdrawals of whole families.
+        pending.extend(
+            links
+                .withdrawers(&target)?
+                .into_iter()
+                .map(authored::Target::Revision),
+        );
     }
     Ok((relevant, times))
 }
@@ -189,8 +179,7 @@ impl crate::Reader<'_> {
         })
     }
 
-    /// Historical archive settings use writer-clock evidence cutoffs. Missing
-    /// dates on an affecting fact make applicability unknown, not epoch-dated.
+    /// Archive settings as they stood over time, by the writer's clock.
     pub(crate) fn archive_setting_history(
         &self,
         key: &str,
@@ -225,12 +214,12 @@ fn history(
     for boundary in boundaries {
         let (mut selected, conflicts) =
             candidates(conn, key, None, families.iter().cloned(), |root| {
-                Currency::new(&mut Graph::as_of(conn, boundary)?)
-                    .heads(&Reference::Assertion(RevisionReference {
-                        root,
-                        revision: None,
-                    }))
-                    .map_err(graph_error)
+                Ok(Currency::new(&mut StoredLinks::as_of(conn, boundary)?)
+                    .heads(&root)
+                    .map_err(currency_error)?
+                    .iter()
+                    .map(reference)
+                    .collect())
             })?;
         if !conflicts.is_empty() {
             return Err(StoreError::Ambiguous {

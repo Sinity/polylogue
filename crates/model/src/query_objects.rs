@@ -1,6 +1,4 @@
 //! Immutable questions and the exact bindings of their executions.
-mod historical;
-pub use historical::{HistoricalQueryRun, HistoricalRunReplay};
 
 use crate::bundle::{
     TextCoverage, TextFragmentError, TextSourceVersion, TextSpanOrigin,
@@ -344,7 +342,7 @@ pub struct QueryRunOutcome {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutionBindingError {
-    #[error("exact object execution requires a request or raw historical run read")]
+    #[error("exact object execution requires a request read")]
     ObjectTarget,
     #[error(transparent)]
     Read(#[from] crate::read::ReadError),

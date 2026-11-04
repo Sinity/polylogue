@@ -89,13 +89,7 @@ pub fn visit_record(
     options.validate()?;
     let reference = record.reference().unwrap_or("manifest");
     let source = Source::record(reference);
-    // A retained historical run is its own original record; it has no input bytes.
-    let run_record = matches!(
-        record,
-        Record::Historical(row)
-            if matches!(row.evidence, polylogue_model::historical::HistoricalRecord::Run(_))
-    );
-    if options.view == View::Raw && !run_record {
+    if options.view == View::Raw {
         if evidence.raw.is_empty() {
             return Err(ReadError::MissingEvidence {
                 view: View::Raw,
@@ -403,23 +397,6 @@ pub fn visit_record(
                 kind: ItemKind::TextFragment {
                     record: row.clone(),
                     origin: evidence.fragment_origin.clone(),
-                },
-            }) {
-                return Ok(());
-            }
-        }
-        Record::Historical(row)
-            if options.assertions
-                || matches!(
-                    row.evidence,
-                    polylogue_model::historical::HistoricalRecord::Run(_)
-                ) =>
-        {
-            if !visit(ReadItem {
-                source,
-                kind: ItemKind::Other {
-                    type_name: "historical_evidence".into(),
-                    data: json!({"record":row,"selection":evidence.authored}),
                 },
             }) {
                 return Ok(());

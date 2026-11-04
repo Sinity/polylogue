@@ -453,11 +453,6 @@ fn count(counts: &mut Counts, record: &polylogue_model::bundle::Record) -> io::R
         Record::Document(_) => &mut counts.documents,
         Record::Event(_) => &mut counts.events,
         Record::Link(_) => &mut counts.links,
-        Record::Historical(row) => match &row.evidence {
-            polylogue_model::historical::HistoricalRecord::Accepted(_) => &mut counts.authored,
-            polylogue_model::historical::HistoricalRecord::Assertion(_) => &mut counts.assertions,
-            polylogue_model::historical::HistoricalRecord::Run(_) => &mut counts.runs,
-        },
         Record::Authored(_) => &mut counts.authored,
         Record::Assertion(_) => &mut counts.assertions,
         Record::Variant(_) => &mut counts.variants,

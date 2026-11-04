@@ -39,14 +39,13 @@ fn assertion(author: polylogue_model::Author) -> polylogue_model::assertion::Ass
             key: Some("waiting".into()),
             value: Some(json!({"name":"waiting","query":"sessions","interrupt":true})),
             author,
-            via: None,
-            machine: None,
-            created_at: None,
+            via: polylogue_model::authorship::Channel::Import,
+            machine: "synthetic-host".into(),
+            created_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
             valid_until: None,
             links: vec![],
         },
         commit_seq: 0,
-        imports: Default::default(),
     }
 }
 

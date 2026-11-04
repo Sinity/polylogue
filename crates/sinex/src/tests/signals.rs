@@ -34,7 +34,6 @@ fn signal_state_is_an_ordinary_authored_request_held_in_the_spool() {
         outlet_attempts: Default::default(),
     };
     let prepared = PreparedRequest {
-        original: None,
         request: polylogue_store::fixture::authored::operator_request(
             "signal-fixture".into(),
             UserWrite::SignalCommit(Box::new(Commit {

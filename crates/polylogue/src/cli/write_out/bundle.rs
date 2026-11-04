@@ -716,11 +716,6 @@ fn increment(counts: &mut Counts, record: &Record) {
         Record::Document(_) => counts.documents += 1,
         Record::Event(_) => counts.events += 1,
         Record::Link(_) => counts.links += 1,
-        Record::Historical(row) => match &row.evidence {
-            polylogue_model::historical::HistoricalRecord::Accepted(_) => counts.authored += 1,
-            polylogue_model::historical::HistoricalRecord::Assertion(_) => counts.assertions += 1,
-            polylogue_model::historical::HistoricalRecord::Run(_) => counts.runs += 1,
-        },
         Record::Authored(_) => counts.authored += 1,
         Record::Assertion(_) => counts.assertions += 1,
         Record::Variant(_) => counts.variants += 1,

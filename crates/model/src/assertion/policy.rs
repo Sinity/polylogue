@@ -1,4 +1,4 @@
-//! Structural authored policy shared by commands, markup and frozen imports.
+//! Structural authored policy shared by commands, markup and the predecessor import.
 //! Existence, currency, text evidence and configured rubric checks belong to
 //! the accepting store snapshot; this module never resolves a reference.
 use super::{About, AssertionKind, KeyShape, LinkRole, NewAssertion};
@@ -33,6 +33,11 @@ pub enum InvalidAssertion {
     NoWithdrawalTarget,
     #[error("only a withdrawal may carry withdraws links")]
     WithdrawalRole,
+    #[error("a {role:?} link to {reference} also needs an about link to it")]
+    RelationWithoutAbout {
+        role: LinkRole,
+        reference: Reference,
+    },
 }
 
 type Result<T> = std::result::Result<T, InvalidAssertion>;
@@ -96,6 +101,7 @@ pub fn validate_links<'a>(
     }
     let mut seen = BTreeSet::new();
     let mut about = Vec::new();
+    let mut relations = Vec::new();
     let mut revisions = BTreeSet::new();
     let mut withdraws = false;
     for (role, reference) in links {
@@ -131,6 +137,9 @@ pub fn validate_links<'a>(
         if role == LinkRole::About {
             about.push(reference);
         }
+        if role.is_relation() {
+            relations.push((role, reference));
+        }
         if role == LinkRole::Withdraws {
             withdraws = true;
         }
@@ -142,6 +151,16 @@ pub fn validate_links<'a>(
     }
     if revisions.len() > 1 {
         return Err(InvalidAssertion::RevisionFamilies);
+    }
+    // A relation is a statement about the revision it relates to.
+    if let Some((role, reference)) = relations
+        .into_iter()
+        .find(|(_, reference)| !about.contains(reference))
+    {
+        return Err(InvalidAssertion::RelationWithoutAbout {
+            role,
+            reference: reference.clone(),
+        });
     }
     if kind == AssertionKind::Withdrawal {
         if !withdraws {

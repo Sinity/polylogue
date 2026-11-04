@@ -29,7 +29,6 @@ pub(crate) struct CurrentSavedDefinition {
 #[derive(Default)]
 pub(crate) struct SavedQuerySnapshot {
     pub definitions: BTreeMap<String, Vec<CurrentSavedDefinition>>,
-    pub unavailable: BTreeMap<String, Vec<Reference>>,
 }
 
 pub(crate) fn saved_definition(
@@ -86,31 +85,15 @@ pub(crate) fn saved_family(conn: &Connection, root: &str) -> Result<SavedQuerySn
             .revision
             .as_ref()
             .ok_or_else(|| invalid("saved definition head is not exact"))?;
-        let row = get_evidence(conn, id)?.ok_or_else(|| {
+        let row = get(conn, id)?.ok_or_else(|| {
             StoreError::NotFound(Reference::Assertion(revision.clone()).to_string())
         })?;
-        match row {
-            polylogue_model::historical::AssertionEvidence::Current(row) => {
-                if let Some((name, definition)) = saved_definition(&row.fact, &conflicts)? {
-                    definitions
-                        .definitions
-                        .entry(name)
-                        .or_default()
-                        .push(definition);
-                }
-            }
-            polylogue_model::historical::AssertionEvidence::Historical { fact, .. }
-                if fact.kind.name() == "saved_query" =>
-            {
-                if let Some(name) = fact.key {
-                    definitions
-                        .unavailable
-                        .entry(name)
-                        .or_default()
-                        .push(Reference::Assertion(revision));
-                }
-            }
-            _ => {}
+        if let Some((name, definition)) = saved_definition(&row.fact, &conflicts)? {
+            definitions
+                .definitions
+                .entry(name)
+                .or_default()
+                .push(definition);
         }
     }
     Ok(definitions)
@@ -119,7 +102,7 @@ pub(crate) fn saved_family(conn: &Connection, root: &str) -> Result<SavedQuerySn
 #[cfg(test)]
 mod tests;
 
-/// SQL nominates saved families; only the shared Graph/Currency selects heads.
+/// SQL nominates saved families; the stored currency index selects heads.
 /// Both pinned Reader and original/scratch preparation consume this loader.
 pub(crate) fn saved_queries(
     conn: &Connection,
@@ -144,13 +127,6 @@ pub(crate) fn saved_query_snapshot(conn: &Connection) -> Result<SavedQuerySnapsh
                 .entry(name)
                 .or_default()
                 .append(&mut family);
-        }
-        for (name, mut references) in family.unavailable {
-            definitions
-                .unavailable
-                .entry(name)
-                .or_default()
-                .append(&mut references);
         }
     }
     Ok(definitions)

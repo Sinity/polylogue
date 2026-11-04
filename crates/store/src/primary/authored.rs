@@ -1,9 +1,5 @@
 //! Prepare authored changes once in a private overlay; confirmed records apply
 //! their frozen effects without selecting targets, families or claims again.
-mod conserve;
-pub mod historical;
-pub(crate) use conserve::{conserve_local, merge_original, same_historical};
-pub(crate) use conserve::{restored_contains, same_prepared};
 mod records;
 pub(crate) use records::insert_kept;
 #[cfg(test)]
@@ -11,9 +7,7 @@ mod tests;
 
 use crate::source::Source;
 use crate::{NewBlob, Result, StoreError};
-use polylogue_model::authored::{
-    AuthoredEffect, ImportAttribution, ImportHistory, PendingAuthored, PreparedRequest,
-};
+use polylogue_model::authored::{AuthoredEffect, PendingAuthored, PreparedRequest};
 use polylogue_model::user::{UserOutcome, UserRequest};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::HashMap;
@@ -32,28 +26,32 @@ pub(crate) fn pack(value: &impl serde::Serialize) -> Result<Vec<u8>> {
     Ok(crate::encoding::pack_bytes(&serde_json::to_vec(value)?)?)
 }
 
-enum FrozenRequest {
-    Prepared(Box<PreparedRequest>),
-    Historical,
-}
-
-fn frozen(conn: &Connection, id: &str) -> Result<Option<FrozenRequest>> {
+/// The stored request with its outcome and effect. A request whose outcome
+/// and effect were not yet written is incomplete.
+pub fn frozen_request(conn: &Connection, id: &str) -> Result<Option<PreparedRequest>> {
     let source = Source::reading(conn)?;
-    let stored=conn.query_row(&source.sql("SELECT content_hash,request,outcome,effect,historical IS NOT NULL,original FROM @source.client_request WHERE id=?1"),[id],|row|Ok((row.get::<_,Vec<u8>>(0)?,row.get::<_,Option<Vec<u8>>>(1)?,row.get::<_,Option<Vec<u8>>>(2)?,row.get::<_,Option<Vec<u8>>>(3)?,row.get::<_,bool>(4)?,row.get::<_,Option<Vec<u8>>>(5)?))).optional()?;
-    let Some((hash, body, outcome, effect, historical, original)) = stored else {
+    let stored = conn
+        .query_row(
+            &source.sql("SELECT content_hash,request,outcome,effect FROM @source.client_request WHERE id=?1"),
+            [id],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Option<Vec<u8>>>(2)?,
+                    row.get::<_, Option<Vec<u8>>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((hash, body, outcome, effect)) = stored else {
         return Ok(None);
     };
-    if historical {
-        return Ok(Some(FrozenRequest::Historical));
-    }
     let missing = || StoreError::Invalid(format!("request {id} has no complete frozen outcome"));
     let prepared = PreparedRequest {
-        request: crate::encoding::unpack_json(&body.ok_or_else(missing)?)?,
+        request: crate::encoding::unpack_json(&body)?,
         outcome: crate::encoding::unpack_json(&outcome.ok_or_else(missing)?)?,
         effect: crate::encoding::unpack_json(&effect.ok_or_else(missing)?)?,
-        original: original
-            .map(|bytes| crate::encoding::unpack_json(&bytes))
-            .transpose()?,
     };
     if prepared.request.id != id || hash.as_slice() != request_hash(&prepared.request)? {
         return Err(StoreError::Conflict(id.into()));
@@ -63,45 +61,18 @@ fn frozen(conn: &Connection, id: &str) -> Result<Option<FrozenRequest>> {
             "pending is not a canonical outcome".into(),
         ));
     }
-    if let Some(original) = &prepared.original {
-        original
-            .validate(&prepared.request, &prepared.outcome)
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
-        if original.content_hash.0 != request_hash(&prepared.request)? {
-            return Err(StoreError::Conflict(id.into()));
-        }
-    }
-    Ok(Some(FrozenRequest::Prepared(Box::new(prepared))))
+    Ok(Some(prepared))
 }
 
-/// Immutable evidence lookup. This does not certify a native acceptance or
-/// authorize executing an action retained from a historical projection.
-pub fn frozen_request(conn: &Connection, id: &str) -> Result<Option<PreparedRequest>> {
-    Ok(match frozen(conn, id)? {
-        Some(FrozenRequest::Prepared(prepared)) => Some(*prepared),
-        _ => None,
-    })
-}
-
-/// The existing request row owns the original native outcome and immutable
-/// effect. Historical projection equivalence is never a fresh native retry.
+/// The existing request row owns the original outcome and immutable effect.
 pub fn known_request(conn: &Connection, request: &UserRequest) -> Result<Option<PreparedRequest>> {
-    match frozen(conn, &request.id)? {
+    match frozen_request(conn, &request.id)? {
         None => Ok(None),
-        Some(FrozenRequest::Historical) => Err(StoreError::Conflict(request.id.clone())),
-        Some(FrozenRequest::Prepared(prepared)) => {
-            if prepared.original.as_ref().is_some_and(|original| {
-                matches!(
-                    original.source,
-                    polylogue_model::historical::SourceSchema::NativeProjection { .. }
-                        | polylogue_model::historical::SourceSchema::LocalProjection { .. }
-                        | polylogue_model::historical::SourceSchema::RetainedPublication { .. }
-                )
-            }) || request_hash(&prepared.request)? != request_hash(request)?
-            {
+        Some(prepared) => {
+            if request_hash(&prepared.request)? != request_hash(request)? {
                 return Err(StoreError::Conflict(request.id.clone()));
             }
-            Ok(Some(*prepared))
+            Ok(Some(prepared))
         }
     }
 }
@@ -118,16 +89,6 @@ pub(crate) fn pending_outcome(
             return Ok(());
         };
         if prepared.request.id == request.id {
-            if prepared.original.as_ref().is_some_and(|original| {
-                matches!(
-                    original.source,
-                    polylogue_model::historical::SourceSchema::NativeProjection { .. }
-                        | polylogue_model::historical::SourceSchema::LocalProjection { .. }
-                        | polylogue_model::historical::SourceSchema::RetainedPublication { .. }
-                )
-            }) {
-                return Err(StoreError::Conflict(request.id.clone()));
-            }
             if request_hash(&prepared.request)? != request_hash(request)? {
                 return Err(StoreError::Conflict(request.id.clone()));
             }
@@ -235,26 +196,11 @@ pub(crate) fn with_overlay<T>(
     visit_pending(&mut |pending| {
         match pending {
             PendingAuthored::Live { prepared } => apply(&tx, prepared, 0)?,
-            PendingAuthored::Restore {
-                prepared,
-                claims,
-                current,
-            } => {
-                restore(&tx, prepared, claims, current, 0)?;
+            PendingAuthored::Restore { prepared } => {
+                restore(&tx, prepared, 0)?;
             }
-            PendingAuthored::RestoreHistory {
-                evidence,
-                claims,
-                current,
-            } => {
-                historical::restore_record(&tx, evidence, claims, current, 0)?;
-            }
-            PendingAuthored::RestoreAssertion {
-                fact,
-                claims,
-                current,
-            } => {
-                crate::assertions::restore(&tx, fact, claims, current, 0)?;
+            PendingAuthored::RestoreAssertion { fact } => {
+                crate::assertions::apply(&tx, std::slice::from_ref(fact), 0)?;
             }
         }
         Ok(())
@@ -262,16 +208,8 @@ pub(crate) fn with_overlay<T>(
     visit(&tx)
 }
 
-/// Checks internal frozen history consistency without applying or executing it.
+/// Checks a frozen request's internal consistency without applying it.
 pub fn validate(prepared: &PreparedRequest) -> Result<()> {
-    if let Some(original) = &prepared.original {
-        original
-            .validate(&prepared.request, &prepared.outcome)
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
-        if original.content_hash.0 != request_hash(&prepared.request)? {
-            return Err(StoreError::Conflict(prepared.request.id.clone()));
-        }
-    }
     crate::signals::validate(prepared)?;
     for fact in &prepared.effect.assertions {
         fact.validate()
@@ -331,19 +269,8 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
 /// Apply immutable facts only. No request selection or domain precondition is
 /// rerun after Sinex confirms the prepared body.
 pub fn apply(tx: &Transaction<'_>, prepared: &PreparedRequest, counter: i64) -> Result<()> {
-    let prepared = conserve::declared_prepared(prepared);
-    if prepared.original.as_ref().is_some_and(|original| {
-        matches!(
-            original.source,
-            polylogue_model::historical::SourceSchema::NativeProjection { .. }
-                | polylogue_model::historical::SourceSchema::LocalProjection { .. }
-                | polylogue_model::historical::SourceSchema::RetainedPublication { .. }
-        )
-    }) {
-        return Err(StoreError::Conflict(prepared.request.id.clone()));
-    }
     if let Some(known) = known_request(tx, &prepared.request)? {
-        return if known == prepared {
+        return if known == *prepared {
             Ok(())
         } else {
             Err(StoreError::Conflict(prepared.request.id.clone()))
@@ -354,57 +281,21 @@ pub fn apply(tx: &Transaction<'_>, prepared: &PreparedRequest, counter: i64) -> 
             "pending is not a canonical outcome".into(),
         ));
     }
-    validate(&prepared)?;
+    validate(prepared)?;
     records::apply(tx, &prepared.effect, counter, false)?;
-    insert_request(tx, &prepared, counter, &ImportHistory::default())
+    insert_request(tx, prepared, counter)
 }
 
-/// Historical imported states retain their author and status, while execution
-/// eligibility is computed locally and cannot be restored from a wire claim.
+/// Restores a request a bundle carried. Its records keep their author and
+/// state, and the actions among them never run on this host.
 pub fn restore(
     tx: &Transaction<'_>,
     prepared: &PreparedRequest,
-    claims: &[ImportAttribution],
-    current: &ImportAttribution,
     counter: i64,
 ) -> Result<UserOutcome> {
-    if prepared.original.as_ref().is_some_and(|original| {
-        matches!(
-            original.source,
-            polylogue_model::historical::SourceSchema::RetainedPublication { .. }
-        )
-    }) {
-        return Err(StoreError::Invalid(
-            "queued publication is not canonical accepted evidence".into(),
-        ));
-    }
-    let prepared = conserve::declared_prepared(prepared);
-    let known = match frozen(tx, &prepared.request.id)? {
-        Some(FrozenRequest::Historical) => {
+    if let Some(known) = frozen_request(tx, &prepared.request.id)? {
+        if known != *prepared {
             return Err(StoreError::Conflict(prepared.request.id.clone()));
-        }
-        Some(FrozenRequest::Prepared(prepared)) => Some(*prepared),
-        None => None,
-    };
-    if let Some(mut known) = known {
-        if !conserve::same_prepared(&known, &prepared) {
-            return Err(StoreError::Conflict(prepared.request.id.clone()));
-        }
-        conserve::merge_declared_prepared(tx, &mut known, &prepared)?;
-        let source = Source::of(tx)?;
-        let prior: String = tx.query_row(
-            &source.sql("SELECT imports FROM @source.client_request WHERE id=?1"),
-            [&prepared.request.id],
-            |row| row.get(0),
-        )?;
-        let mut imports: ImportHistory = serde_json::from_str(&prior)?;
-        imports.merge(claims, current);
-        let merged = serde_json::to_string(&imports)?;
-        if merged != prior {
-            tx.execute(
-                &source.sql("UPDATE @source.client_request SET imports=?2 WHERE id=?1"),
-                params![prepared.request.id, merged],
-            )?;
         }
         let mut outcome = known.outcome;
         outcome.repeat = true;
@@ -415,22 +306,15 @@ pub fn restore(
             "pending is not a restorable outcome".into(),
         ));
     }
-    validate(&prepared)?;
+    validate(prepared)?;
     records::apply(tx, &prepared.effect, counter, true)?;
-    let mut imports = ImportHistory::default();
-    imports.merge(claims, current);
-    insert_request(tx, &prepared, counter, &imports)?;
+    insert_request(tx, prepared, counter)?;
     Ok(prepared.outcome.clone())
 }
 
-fn insert_request(
-    conn: &Connection,
-    prepared: &PreparedRequest,
-    counter: i64,
-    imports: &ImportHistory,
-) -> Result<()> {
+fn insert_request(conn: &Connection, prepared: &PreparedRequest, counter: i64) -> Result<()> {
     let source = Source::of(conn)?;
-    conn.execute(&source.sql("INSERT INTO @source.client_request(id,content_hash,created_at,request,outcome,effect,imports,commit_seq,original) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)"),params![prepared.request.id,&request_hash(&prepared.request)?[..],prepared.request.at.unix_ms(),pack(&prepared.request)?,pack(&prepared.outcome)?,pack(&prepared.effect)?,serde_json::to_string(imports)?,counter,prepared.original.as_ref().map(pack).transpose()?])?;
+    conn.execute(&source.sql("INSERT INTO @source.client_request(id,content_hash,created_at,request,outcome,effect,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7)"),params![prepared.request.id,&request_hash(&prepared.request)?[..],prepared.request.at.unix_ms(),pack(&prepared.request)?,pack(&prepared.outcome)?,pack(&prepared.effect)?,counter])?;
     Ok(())
 }
 
@@ -455,7 +339,9 @@ pub(crate) fn capture(
 pub fn clear(conn: &Connection) -> Result<()> {
     let source = Source::of(conn)?;
     for table in [
-        "assertion_link",
+        "revision_state",
+        "assertion_slot",
+        "link",
         "assertion",
         "variant_part",
         "variant",
@@ -476,36 +362,29 @@ pub fn clear(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Stream confirmed authored records with their retained import provenance.
-/// The caller supplies current import attribution only at `restore` ingress.
+/// Streams stored requests in write order.
 pub fn visit(
     conn: &Connection,
-    accept: &mut dyn FnMut(&PreparedRequest, &[ImportAttribution]) -> Result<()>,
+    accept: &mut dyn FnMut(&PreparedRequest) -> Result<()>,
 ) -> Result<()> {
     let source = Source::reading(conn)?;
-    let mut statement = conn.prepare(&source.sql(
-        "SELECT request,imports FROM @source.client_request WHERE historical IS NULL ORDER BY commit_seq,created_at,id",
-    ))?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let request: UserRequest = crate::encoding::unpack_json(&row.get::<_, Vec<u8>>(0)?)?;
-        let prepared = frozen_request(conn, &request.id)?
-            .ok_or_else(|| StoreError::NotFound(request.id.clone()))?;
-        let history: ImportHistory = serde_json::from_str(&row.get::<_, String>(1)?)?;
-        // Exported provenance is historical at the next importing host.
-        let imports: Vec<_> = history
-            .observed
-            .into_iter()
-            .chain(history.declared)
-            .collect();
-        accept(&prepared, &imports)?;
+    let mut statement = conn.prepare(
+        &source.sql("SELECT id FROM @source.client_request ORDER BY commit_seq,created_at,id"),
+    )?;
+    let ids = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for id in ids {
+        let prepared =
+            frozen_request(conn, &id)?.ok_or_else(|| StoreError::NotFound(id.clone()))?;
+        accept(&prepared)?;
     }
     Ok(())
 }
 impl crate::Reader<'_> {
     pub fn visit_authored(
         &self,
-        accept: &mut dyn FnMut(&PreparedRequest, &[ImportAttribution]) -> Result<()>,
+        accept: &mut dyn FnMut(&PreparedRequest) -> Result<()>,
     ) -> Result<()> {
         visit(self.conn()?, accept)
     }

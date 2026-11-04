@@ -1,6 +1,6 @@
 use crate::{Archive, ReadPool, StoreError, Writer};
 use polylogue_model::{
-    Author, Json, Reference, RevisionReference, Timestamp,
+    Json, Reference, RevisionReference,
     assertion::{AssertionKind, AssertionPatch, Change, LinkRole, NewAssertion, NewAssertionLink},
     user::UserWrite,
 };
@@ -120,7 +120,7 @@ fn a_withdrawal_names_its_family_and_keeps_exact_facts_readable() {
         .conn()
         .unwrap()
         .query_row(
-            "SELECT ref FROM a.assertion_link WHERE assertion=?1 AND role='withdraws'",
+            "SELECT ref FROM a.link WHERE record=?1 AND role='withdraws'",
             [&withdrawal.id],
             |row| row.get(0),
         )
@@ -153,7 +153,7 @@ fn a_withdrawal_names_its_family_and_keeps_exact_facts_readable() {
             .assertion_family_currency(&family)
             .unwrap()
             .unwrap()
-            .withdrawn
+            .withdrawn()
     );
 }
 
@@ -202,17 +202,13 @@ fn unsupported_assertion_metadata_returns_an_error_instead_of_invented_facts() {
         ))
         .unwrap();
     let conn = rusqlite::Connection::open(archive.archive_db()).unwrap();
-    let recorded = Timestamp::from_unix_ms(1).unwrap().to_string();
+    // Times are integer milliseconds; i64::MAX is past the last representable year.
+    let recorded: i64 = 1;
     for (kind, author, time, until) in [
-        ("unrecognized", "operator", recorded.as_str(), None),
-        ("note", "unrecognized", recorded.as_str(), None),
-        ("note", "operator", "10000-01-01T00:00:00Z", None),
-        (
-            "note",
-            "operator",
-            recorded.as_str(),
-            Some("10000-01-01T00:00:00Z"),
-        ),
+        ("unrecognized", "operator", recorded, None),
+        ("note", "unrecognized", recorded, None),
+        ("note", "operator", i64::MAX, None),
+        ("note", "operator", recorded, Some(i64::MAX)),
     ] {
         conn.execute(
             "UPDATE assertion SET kind=?1,author=?2,created_at=?3,valid_until=?4 WHERE id=?5",
@@ -302,9 +298,13 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
         *read_at = "{\"now\":2}".into();
     }
     assert!(writer.user(changed.clone()).unwrap().repeat);
-    assert_eq!(
-        reads.reader().unwrap().user_request("kept").unwrap(),
-        Some(request)
+    assert!(
+        reads
+            .reader()
+            .unwrap()
+            .user_request("kept")
+            .unwrap()
+            .is_some()
     );
     if let UserWrite::KeepResult { query, .. } = &mut changed.write {
         *query = "sessions".into();
@@ -384,18 +384,11 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
     let (_dir2, archive2, _lock2, _replay, replay_reads) = setup();
     let mut destination = crate::archive::open_write(&archive2.archive_db(), 1).unwrap();
     let tx = destination.transaction().unwrap();
-    let attribution = polylogue_model::authored::ImportAttribution {
-        input: "frozen-import".into(),
-        chain: 1,
-        machine: "receiving-machine".into(),
-        actor: Author::Operator,
-        at: Timestamp::from_unix_ms(1).unwrap(),
-    };
     reads
         .reader()
         .unwrap()
-        .visit_authored(&mut |prepared, imports| {
-            crate::primary::authored::restore(&tx, prepared, imports, &attribution, 1)?;
+        .visit_authored(&mut |prepared| {
+            crate::primary::authored::restore(&tx, prepared, 1)?;
             Ok(())
         })
         .unwrap();
@@ -416,9 +409,8 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
     replay_reads
         .reader()
         .unwrap()
-        .visit_authored(&mut |prepared, imports| {
+        .visit_authored(&mut |prepared| {
             if prepared.request.id == "resolved" {
-                assert_eq!(imports, std::slice::from_ref(&attribution));
                 assert_eq!(
                     prepared.effect.assertions.as_slice(),
                     std::slice::from_ref(&restored.fact)
@@ -432,29 +424,34 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
 }
 
 #[test]
-fn a_missing_request_is_absent_and_removed_request_content_refuses_retries() {
+fn a_missing_request_is_absent_and_request_content_cannot_be_removed() {
     let (_dir, archive, _lock, writer, reads) = setup();
     assert_eq!(
         reads.reader().unwrap().user_request("missing").unwrap(),
         None
     );
-    writer
-        .user(crate::fixture::authored::operator_request(
-            "removed".into(),
-            UserWrite::Assert {
-                assertions: vec![statement(AssertionKind::Note, "repo:morrow", "body")],
-            },
-        ))
-        .unwrap();
-    rusqlite::Connection::open(archive.archive_db())
-        .unwrap()
-        .execute(
-            "UPDATE client_request SET request = NULL WHERE id = 'removed'",
-            [],
-        )
-        .unwrap();
-    assert!(matches!(
-        reads.reader().unwrap().user_request("removed"),
-        Err(StoreError::Conflict(_))
-    ));
+    let request = crate::fixture::authored::operator_request(
+        "kept".into(),
+        UserWrite::Assert {
+            assertions: vec![statement(AssertionKind::Note, "repo:morrow", "body")],
+        },
+    );
+    writer.user(request).unwrap();
+    assert!(
+        rusqlite::Connection::open(archive.archive_db())
+            .unwrap()
+            .execute(
+                "UPDATE client_request SET request = NULL WHERE id = 'kept'",
+                [],
+            )
+            .is_err()
+    );
+    assert!(
+        reads
+            .reader()
+            .unwrap()
+            .user_request("kept")
+            .unwrap()
+            .is_some()
+    );
 }
