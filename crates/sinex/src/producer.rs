@@ -11,16 +11,12 @@ use polylogue_store::primary::{
 use sinex_model::{InputRef, Manifest, MaterialId, MaterialRole};
 use sinex_protocol::{Ingress, MaterialFrame};
 mod acquisition;
-mod canonical;
 mod exports;
 mod reading;
 mod requests;
-pub(crate) use requests::{
-    requires_retained, validate_publication as validate_retained_publication,
-};
 
 impl Sinex {
-    pub(crate) fn resume_publication(&self) {
+    pub(crate) fn send_pending(&self) {
         let result = self.with(async |client| client.retry_prepared().await);
         if result.is_ok() {
             let result = self
@@ -312,7 +308,6 @@ impl Sinex {
         self.prepare_named_products(&identity, writes)
     }
 
-    /// The transactional derived outbox supplies this stable operation identity.
     pub(crate) fn prepare_named_products(
         &self,
         identity: &str,
@@ -332,15 +327,6 @@ impl Sinex {
                 Some(key) => crate::products::require_export(&write.product, key)?,
                 None => crate::products::require_source(&write.product)?,
             }
-        }
-        if writes
-            .iter()
-            .any(|write| crate::products::canonical(&write.product))
-        {
-            return Err(Error::Refused {
-                name: identity.into(),
-                reason: "canonical products require an owner-certified publication".into(),
-            });
         }
         let queue = self.queue()?;
         let unlocated = export_key.is_some()
@@ -468,74 +454,6 @@ impl Sinex {
         })
     }
 
-    pub(crate) fn prepare_canonical_products(
-        &self,
-        identity: &str,
-        writes: &[ProductWrite],
-        proof: &polylogue_store::primary::RawInputProof,
-    ) -> Result<PreparedWrite> {
-        if identity.is_empty()
-            || writes.is_empty()
-            || proof.position < 0
-            || proof.policy_epoch < 0
-            || proof.scope.is_empty()
-            || proof.stamp.is_empty()
-        {
-            return Err(Error::Invalid(
-                "canonical publication requires an owner proof and immutable batch".into(),
-            ));
-        }
-        for write in writes {
-            if write.location.is_some() {
-                return Err(Error::Invalid(
-                    "canonical products cannot claim a source location".into(),
-                ));
-            }
-            match &write.product {
-                Product::AttachmentBinding { .. } => {}
-                _ => {
-                    return Err(Error::Invalid(
-                        "unsupported or mismatched canonical product".into(),
-                    ));
-                }
-            }
-        }
-        let custody = self.stage_canonical_products(identity, writes, Some(proof))?;
-        if self
-            .queue()?
-            .get(&custody.identity)?
-            .is_some_and(|entry| entry.revoked)
-        {
-            return Err(Error::Refused {
-                name: identity.into(),
-                reason: "the original canonical intent was revoked".into(),
-            });
-        }
-        let mut events = crate::products::events(writes)?;
-        for event in &mut events {
-            event.reading_order = Some(proof.position);
-        }
-        self.queue()?.prepare_group(
-            Ingress::Events {
-                frame: identity.into(),
-                source: None,
-                coverage: Some(sinex_protocol::CoverageProof {
-                    stamp: proof.stamp.clone(),
-                    position: proof.position,
-                    policy_epoch: proof.policy_epoch,
-                    scope: proof.scope.clone(),
-                }),
-                events,
-                failures: Vec::new(),
-            },
-            &[custody.identity],
-        )?;
-        Ok(PreparedWrite {
-            identity: identity.into(),
-            pending: true,
-        })
-    }
-
     pub(crate) fn drain_observations(&self) -> Result<()> {
         let mut ready = Vec::new();
         self.visit_prepared(|queue, entry| {
@@ -554,17 +472,6 @@ impl Sinex {
             Ok(())
         })?;
         for observation in ready {
-            let retired = {
-                let queue = self.queue()?;
-                let entry = queue
-                    .get(&observation)?
-                    .ok_or_else(|| requests::unavailable(&observation))?;
-                requests::requires_retained(&queue, &entry)?
-            };
-            if retired {
-                self.drain_retained_request(&observation)?;
-                continue;
-            }
             let writes: Vec<ProductWrite> = {
                 let queue = self.queue()?;
                 crate::spool::decode_json(queue.body(&observation)?)?
@@ -711,12 +618,6 @@ impl Sinex {
         &self,
         request: &PreparedRequest,
     ) -> Result<polylogue_model::user::UserOutcome> {
-        if crate::products::signal_content(request) {
-            return Err(Error::Refused {
-                name: request.request.id.clone(),
-                reason: "signal state requires an owner-certified derived request".into(),
-            });
-        }
         let identity = format!("request:{}", request.request.id);
         let queue = self.queue()?;
         let repeat = if queue.get(&identity)?.is_some() {
@@ -724,7 +625,9 @@ impl Sinex {
                 return Err(Error::Invalid("authored intent has no material".into()));
             };
             if material.source != crate::source_reference() {
-                return Err(requests::unavailable(&identity));
+                return Err(Error::Invalid(
+                    "authored intent belongs to another adapter version".into(),
+                ));
             }
             let original: PreparedRequest = crate::spool::decode_json(queue.body(&identity)?)?;
             if original != *request {
@@ -842,61 +745,10 @@ impl Sinex {
                 if !entry.is_request() {
                     continue;
                 }
-                let retained = {
-                    let queue = self.queue()?;
-                    requests::requires_retained(&queue, &entry)?
-                };
-                let observed = if retained {
-                    Some(self.observe_retained(&entry.identity, Vec::new())?)
-                } else {
-                    None
-                };
                 let queue = self.queue()?;
-                requests::visit(
-                    &queue,
-                    &entry,
-                    &self.config.producer,
-                    observed.as_ref().map(|observation| &observation.custody),
-                    visit,
-                )?;
+                requests::visit(&queue, &entry, visit)?;
             }
         }
-    }
-
-    fn observe_retained(
-        &self,
-        identity: &str,
-        uses: Vec<sinex_protocol::RecordedHeaderUse>,
-    ) -> Result<crate::client::retained::Observation> {
-        let (entry, material, request) = {
-            let queue = self.queue()?;
-            let entry = queue
-                .get(identity)?
-                .ok_or_else(|| requests::unavailable(identity))?;
-            let request = crate::client::retained::selector(&queue, &entry, uses)?;
-            let Ingress::Material { material, .. } = queue.decode_frame(identity)? else {
-                return Err(requests::unavailable(identity));
-            };
-            (entry, material, request)
-        };
-        // Serialize runtime use without connecting or registering the current
-        // write client. No spool lock is held across the owner observation.
-        let _connection = self
-            .client
-            .lock()
-            .map_err(|_| Error::Invalid("the Sinex connection panicked".into()))?;
-        let reply = self.runtime.block_on(crate::client::retained::observe(
-            &self.config,
-            &self.authentication,
-            &request,
-        ))?;
-        crate::client::retained::observation(
-            &self.config.producer,
-            &entry,
-            &material,
-            &request,
-            reply,
-        )
     }
 
     pub(crate) fn visit_pending_blobs(
@@ -928,24 +780,15 @@ impl Sinex {
             Ok(())
         })?;
         for identity in ready {
-            let retired = {
-                let queue = self.queue()?;
-                let entry = queue
-                    .get(&identity)?
-                    .ok_or_else(|| requests::unavailable(&identity))?;
-                requests::requires_retained(&queue, &entry)?
-            };
-            if retired {
-                self.drain_retained_request(&identity)?;
-                continue;
-            }
             let request: PreparedRequest = {
                 let queue = self.queue()?;
                 let Ingress::Material { material, .. } = queue.decode_frame(&identity)? else {
                     return Err(Error::Invalid("authored intent has no material".into()));
                 };
                 if material.source != crate::source_reference() {
-                    return Err(requests::unavailable(&identity));
+                    return Err(Error::Invalid(
+                        "authored intent belongs to another adapter version".into(),
+                    ));
                 }
                 crate::spool::decode_json(queue.body(&identity)?)?
             };

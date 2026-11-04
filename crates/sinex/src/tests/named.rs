@@ -147,7 +147,7 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
         );
         sinex.prepare_named_products(name, &[write]).unwrap();
         let payload = crate::products::payload(product, 0).unwrap();
-        let kind = crate::products::kind(product).unwrap();
+        let kind = crate::products::kind(product);
         let declaration = crate::kinds::declarations("polylogue")
             .into_iter()
             .find(|d| d.kind.name == kind)
@@ -233,7 +233,7 @@ fn source_material_identity_preserves_distinct_receiving_producers() {
 }
 
 #[test]
-fn canonical_attachment_binding_cannot_bypass_owner_proof_through_a_generic_operation_name() {
+fn an_attachment_binding_is_an_ordinary_named_product() {
     let root = tempfile::tempdir().unwrap();
     let sinex = client(root.path());
     let write = ProductWrite {
@@ -245,11 +245,10 @@ fn canonical_attachment_binding_cannot_bypass_owner_proof_through_a_generic_oper
         machine: None,
         output_index: 0,
     };
-    assert!(matches!(
-        sinex.prepare_named_products("ordinary-name", &[write]),
-        Err(crate::Error::Refused { .. })
-    ));
-    let status = sinex.status().unwrap();
-    assert_eq!(status.prepared_materials, 0);
-    assert_eq!(status.prepared_writes, 0);
+    let prepared = sinex
+        .prepare_named_products("ordinary-name", std::slice::from_ref(&write))
+        .unwrap();
+    assert_eq!(prepared.identity, "ordinary-name");
+    assert!(prepared.pending);
+    assert_eq!(sinex.status().unwrap().prepared_materials, 1);
 }

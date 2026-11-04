@@ -76,7 +76,7 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         &d,
         Request::Assert {
             request_id: "r2".into(),
-            assertions: vec![assertion(vec![session.clone()], "mine")],
+            assertions: vec![assertion(vec![session.clone()], "keep the operator lesson")],
         },
     );
     assert_eq!(
@@ -114,7 +114,8 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         crate::test_answers::empty(query(&d, "assertions where agent:true judged:unknown"))["count"],
         0
     );
-    // A recorded acceptance stays visible; it does not certify native origin.
+    // The brief carries the operator's assertions and the agent assertions
+    // the operator accepted.
     let operation = d
         .daemon
         .operation_context(&polylogue_model::authorship::Authorship {
@@ -136,12 +137,13 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         None,
     )
     .unwrap();
-    assert!(!brief.text.contains("use the fast path"), "{}", brief.text);
-    assert!(brief.text.contains("Assertions held:"), "{}", brief.text);
-    assert!(brief.left_out.iter().any(|item| {
-        item.reason
-            .contains("trusted native-origin proof is unavailable")
-    }));
+    assert!(brief.text.contains("use the fast path"), "{}", brief.text);
+    assert!(
+        brief.text.contains("keep the operator lesson"),
+        "{}",
+        brief.text
+    );
+    assert!(!brief.text.contains("Assertions held"), "{}", brief.text);
     drop(reader);
     // A later rejection replaces the acceptance.
     ok(

@@ -8,7 +8,6 @@ pub use acquisition::{
     PendingSource, RawCustodyReceipt, RawRange, SourceBasis, SourceSelector, SourceSnapshot,
     SourceStatus, SourceSubject,
 };
-pub mod derived;
 pub mod products;
 pub mod raw_acquisition;
 pub mod replay;
@@ -17,17 +16,15 @@ pub use raw_acquisition::{
     RawAcquisitionQuery, RawBodyRange, RawStream, RawStreamRole, SourceGeneration,
 };
 pub use replay::{
-    ConfirmedOrigin, DeliveredCompletion, FullProjectionComplete, NativeDeliveryCursor,
-    NativeFactContext, NativeKind, NativeSource, ProjectionAvailability, ProjectionCoverage,
-    ProjectionIdentity, RawInputCoverage, RawInputProof, ReplayBasisStatus, ReplayContinuation,
-    ReplayControl, ReplayCursor, ReplayPage, ReplayState,
+    ConfirmedOrigin, NativeDeliveryCursor, NativeFactContext, NativeKind, NativeSource,
+    ProjectionIdentity, ReplayControl, ReplayState,
 };
 pub(crate) mod projection;
 pub(crate) mod scope;
 pub use products::{
-    CanonicalCustody, Capture, CaptureGroup, CapturedInput, CapturedReading, Confirmed,
-    ConfirmedChange, ExportReadingKey, Material, PendingCapture, PreparedInput, PreparedWrite,
-    Product, ProductWrite, Reading, SourceLocation,
+    Capture, CaptureGroup, CapturedInput, CapturedReading, Confirmed, ConfirmedChange,
+    ExportReadingKey, Material, PendingCapture, PreparedInput, PreparedWrite, Product,
+    ProductWrite, Reading, SourceLocation,
 };
 
 use crate::{Result, StoreError};
@@ -91,9 +88,6 @@ pub trait Sinex: Send + Sync {
     ) -> Result<Option<RawAcquisitionCursor>>;
     /// Pins the original encoded body for exact range comparison without network I/O.
     fn capture_body(&self, identity: &str) -> Result<PreparedBody>;
-    fn canonical_publisher(&self) -> bool {
-        false
-    }
     fn pending_captures(&self) -> Result<Vec<PendingCapture>>;
     /// Loads complete private facts for one ready capture, never the whole queue.
     fn capture(&self, identity: &str) -> Result<Capture>;
@@ -139,39 +133,12 @@ pub trait Sinex: Send + Sync {
         key: &ExportReadingKey,
         visit: &mut ReadingProducts<'_>,
     ) -> Result<PreparedWrite>;
-    /// Retry identity comes from the same transaction as the applied position.
+    /// Products under a caller-chosen write identity, so a retry reuses it.
     fn prepare_named_products(
         &self,
         identity: &str,
         products: &[ProductWrite],
     ) -> Result<PreparedWrite>;
-    /// Durable HELD bytes only. This never uploads or grants publication.
-    fn stage_canonical_products(
-        &self,
-        identity: &str,
-        products: &[ProductWrite],
-        historical_proof: Option<&RawInputProof>,
-    ) -> Result<PreparedWrite>;
-    /// Hydrates one existing immutable body per callback, never the full backlog.
-    fn visit_canonical_custody(
-        &self,
-        visit: &mut dyn FnMut(&CanonicalCustody) -> Result<()>,
-    ) -> Result<()>;
-    /// Must durably fence HELD and already-staged canonical intents before reset.
-    fn revoke_canonical_custody(&self) -> Result<()>;
-    /// Owner-certified canonical batch, separate from native acquisition facts.
-    fn prepare_canonical_products(
-        &self,
-        identity: &str,
-        products: &[ProductWrite],
-        proof: &RawInputProof,
-    ) -> Result<PreparedWrite>;
-    fn discard_confirmed(
-        &self,
-        identities: &[String],
-        tombstone_position: i64,
-        applied: i64,
-    ) -> Result<()>;
     fn confirmed(&self, state: &ReplayState, cache: &str) -> Result<Vec<Confirmed>>;
     fn acknowledge(&self, state: &ReplayState) -> Result<()>;
 }

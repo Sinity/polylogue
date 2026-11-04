@@ -111,10 +111,7 @@ const INDEX_MIGRATIONS: &[IndexMigration] = &[
     },
     IndexMigration {
         version: 13,
-        target: IndexTarget::PrimaryIndex(&[
-            include_str!("schema/index_13.sql"),
-            crate::primary::derived::SCHEMA,
-        ]),
+        target: IndexTarget::PrimaryIndex(&[include_str!("schema/index_13.sql")]),
     },
     IndexMigration {
         version: 14,
@@ -131,6 +128,10 @@ const INDEX_MIGRATIONS: &[IndexMigration] = &[
     IndexMigration {
         version: 17,
         target: IndexTarget::Index(include_str!("schema/index_17.sql")),
+    },
+    IndexMigration {
+        version: 21,
+        target: IndexTarget::PrimaryIndex(&[crate::primary::projection::REFUSED]),
     },
 ];
 pub(crate) enum ArchiveMigration {
@@ -170,7 +171,6 @@ pub fn create_index(conn: &Connection) -> Result<()> {
 fn add_primary(conn: &Connection) -> Result<()> {
     conn.execute_batch(&crate::source::schema()?.ddl)?;
     conn.execute_batch(crate::primary::projection::SCHEMA)?;
-    conn.execute_batch(crate::primary::derived::SCHEMA)?;
     Ok(())
 }
 
@@ -230,7 +230,6 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
                 IndexTarget::WireReceipts => crate::wire_shapes::migrate_receipts(&tx)?,
                 IndexTarget::Assertions if primary => {
                     crate::assertions::conversion::migrate_source(&tx)?;
-                    crate::assertions::conversion::migrate_cached_products(&tx)?;
                 }
                 IndexTarget::Assertions => {}
                 IndexTarget::Index(sql) => tx.execute_batch(sql)?,

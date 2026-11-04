@@ -71,11 +71,6 @@ pub enum PendingAuthored {
         claims: Vec<ImportAttribution>,
         current: ImportAttribution,
     },
-    ConservedQueued {
-        accepted: crate::historical::ConservedAccepted,
-        claims: Vec<ImportAttribution>,
-        custody: crate::historical::QueuedPublicationCustody,
-    },
     Live {
         prepared: PreparedRequest,
     },
@@ -94,9 +89,7 @@ impl PendingAuthored {
     pub fn prepared(&self) -> Option<&PreparedRequest> {
         match self {
             Self::Live { prepared } | Self::Restore { prepared, .. } => Some(prepared),
-            Self::RestoreHistory { .. }
-            | Self::RestoreAssertion { .. }
-            | Self::ConservedQueued { .. } => None,
+            Self::RestoreHistory { .. } | Self::RestoreAssertion { .. } => None,
         }
     }
 }

@@ -120,9 +120,28 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, config: &Co
     let (archive, _lock) = Archive::open_primary(&example.root, &config.store).unwrap();
     let mut settings = example.config();
     settings.home = home.to_path_buf();
-    let mut engine = Engine::on_sinex(settings, archive, sinex.clone()).unwrap();
+    let mut engine = Engine::on_sinex(settings, archive.clone(), sinex.clone()).unwrap();
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    // The idle writer follows the confirmed stream until it reaches Sinex's head.
+    let started = Instant::now();
+    loop {
+        let applied = ReadPool::open(&archive)
+            .unwrap()
+            .reader()
+            .unwrap()
+            .confirmed_checkpoint()
+            .unwrap();
+        let head = sinex.status().unwrap().owner_position;
+        if head.is_some() && applied == head {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(120),
+            "the index did not reach Sinex's head: {applied:?} of {head:?}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 /// Every session as the export format holds it, and every note.
@@ -246,65 +265,21 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
         ) > 0
     );
     assert_eq!(
-        sinex_rows(&running.socket, "events where event_type = polylogue.note"),
+        sinex_rows(
+            &running.socket,
+            "events where event_type = polylogue.assertion"
+        ),
         1
     );
 
-    // Re-read the complete note material and replace its repeat-policy reading.
-    let saved = running._pg.sql("sinex", "SELECT json_build_object('id',e.id,'event',json_build_object('kind',json_build_object('name',e.event_type,'version',e.kind_version),'payload',e.payload,'location',json_build_object('material',e.material_id,'anchor',e.anchor),'output_index',e.output_index,'parents','[]'::json,'reading_order',0,'class',e.class))::text FROM core.events e WHERE event_type='polylogue.note' AND NOT EXISTS(SELECT 1 FROM audit.archived a WHERE a.event_id=e.id)").unwrap();
-    let saved: serde_json::Value = serde_json::from_str(saved.trim()).unwrap();
-    let event: sinex_protocol::ProducerEvent =
-        serde_json::from_value(saved["event"].clone()).unwrap();
-    let material = event.location.unwrap().material;
-    let scope = sinex_protocol::ReplayScopeQuery {
-        materials: vec![material],
-        event_types: Some(vec!["polylogue.note".into()]),
-        from: None,
-        until: None,
-        after: None,
-    };
-    let mut replay = sinex.replay().unwrap();
-    let selection = replay.scope(&scope).unwrap().into_iter().next().unwrap();
-    assert_eq!(selection.rows, 1);
-    let operation = sinex_model::OperationId::new();
-    let batches = vec![sinex_protocol::ReplayBatch {
-        events: vec![event],
-        failures: vec![],
-    }];
-    let replaced = replay
-        .sequence(operation, selection.clone(), scope.clone(), batches.clone())
-        .unwrap();
-    assert_eq!(replaced.admitted.len(), 1);
-    assert_ne!(
-        replaced.admitted[0].to_string(),
-        saved["id"].as_str().unwrap()
-    );
-    assert_eq!(
-        replaced,
-        replay
-            .sequence(operation, selection, scope, batches)
-            .unwrap()
-    );
-    drop(replay);
-    assert_eq!(
-        sinex_rows(&running.socket, "events where event_type = polylogue.note"),
-        1
-    );
-    assert_eq!(answers(&on_sinex), (sessions.clone(), notes.clone()));
-    phase("note replay acknowledged");
-
-    // Delete the local copy and the index; rebuild with no provider file.
-    for name in [
-        "sinex.db",
-        "sinex.db-wal",
-        "sinex.db-shm",
-        "index.db",
-        "index.db-wal",
-        "index.db-shm",
-        "sinex-sent.json",
-    ] {
-        let _ = fs::remove_file(example.root.join(name));
-    }
+    // Delete every local file Polylogue derived (the archive directory with
+    // its index, and the producer spool), then rebuild from Sinex alone with
+    // no provider file.
+    drop(sinex);
+    fs::remove_dir_all(&example.root).unwrap();
+    fs::create_dir_all(&example.root).unwrap();
+    fs::remove_dir_all(running.config.store.join("producer-spool")).unwrap();
+    let sinex = connect(&running.config);
     let empty = example.dir.path().join("empty-home");
     fs::create_dir_all(&empty).unwrap();
     build_on_sinex(&example, &empty, &sinex, &running.config);

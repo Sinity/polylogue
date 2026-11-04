@@ -2,8 +2,7 @@
 //! their frozen effects without selecting targets, families or claims again.
 mod conserve;
 pub mod historical;
-pub use conserve::conserve;
-pub(crate) use conserve::{conserve_local, merge_cached, merge_original, same_historical};
+pub(crate) use conserve::{conserve_local, merge_original, same_historical};
 pub(crate) use conserve::{restored_contains, same_prepared};
 mod records;
 pub(crate) use records::insert_kept;
@@ -115,11 +114,6 @@ pub(crate) fn pending_outcome(
 ) -> Result<Option<UserOutcome>> {
     let mut outcome = None;
     sinex.visit_pending_requests(&mut |pending| {
-        if let PendingAuthored::ConservedQueued { accepted, .. } = pending
-            && accepted.id() == request.id
-        {
-            return Err(StoreError::Conflict(request.id.clone()));
-        }
         let Some(prepared) = pending.prepared() else {
             return Ok(());
         };
@@ -240,11 +234,6 @@ pub(crate) fn with_overlay<T>(
     records::copy(index, &tx)?;
     visit_pending(&mut |pending| {
         match pending {
-            PendingAuthored::ConservedQueued {
-                accepted,
-                claims,
-                custody,
-            } => conserve::pending(&tx, accepted, claims, custody)?,
             PendingAuthored::Live { prepared } => apply(&tx, prepared, 0)?,
             PendingAuthored::Restore {
                 prepared,

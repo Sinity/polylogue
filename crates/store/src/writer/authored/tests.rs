@@ -275,38 +275,6 @@ impl crate::primary::Sinex for Producer {
             pending: true,
         })
     }
-    fn stage_canonical_products(
-        &self,
-        _: &str,
-        _: &[crate::primary::ProductWrite],
-        _: Option<&crate::primary::RawInputProof>,
-    ) -> Result<crate::primary::PreparedWrite> {
-        Err(StoreError::Invalid(
-            "canonical custody is unavailable in this fixture".into(),
-        ))
-    }
-    fn visit_canonical_custody(
-        &self,
-        _: &mut dyn FnMut(&crate::primary::CanonicalCustody) -> Result<()>,
-    ) -> Result<()> {
-        Ok(())
-    }
-    fn revoke_canonical_custody(&self) -> Result<()> {
-        Ok(())
-    }
-    fn prepare_canonical_products(
-        &self,
-        _identity: &str,
-        _products: &[crate::primary::ProductWrite],
-        _proof: &crate::primary::RawInputProof,
-    ) -> crate::Result<crate::primary::PreparedWrite> {
-        Err(crate::StoreError::Invalid(
-            "fixture has no canonical publication authority".into(),
-        ))
-    }
-    fn discard_confirmed(&self, _: &[String], _: i64, _: i64) -> Result<()> {
-        Ok(())
-    }
     fn confirmed(&self, state: &crate::primary::ReplayState, _: &str) -> Result<Vec<Confirmed>> {
         if !self.online.load(Ordering::SeqCst) {
             return Self::unavailable();
@@ -331,7 +299,9 @@ impl crate::primary::Sinex for Producer {
             position: 1,
             output_index: 0,
             event: String::new(),
-            change: ConfirmedChange::PositionComplete,
+            change: ConfirmedChange::Control(Box::new(crate::primary::ReplayControl::Completion {
+                position: 1,
+            })),
         });
         Ok(events)
     }

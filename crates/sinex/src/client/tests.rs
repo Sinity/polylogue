@@ -42,7 +42,7 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
             let mut hello=client.subscribe("auth.connect.polylogue").await.unwrap();
             let mut ingress=client.subscribe("auth.ingress.polylogue").await.unwrap();
             let mut recorded=client.subscribe("auth.recorded.polylogue").await.unwrap();
-            let mut replay=client.subscribe("auth.replay_scope.polylogue").await.unwrap();
+            let mut consumers=client.subscribe("auth.confirmed_consumer.polylogue").await.unwrap();
             let mut contexts=client.subscribe("auth.public_context.polylogue").await.unwrap();
             client.flush().await.unwrap();ready.send(()).unwrap();
             let request=hello.next().await.unwrap();let inbox=request.reply.unwrap();
@@ -61,19 +61,17 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
             assert!(request.reply.as_ref().unwrap().starts_with("_INBOX.polylogue."));
             let context:sinex_protocol::PublicContext=serde_json::from_value(serde_json::json!({"state":"available","context_token":"synthetic-context-token","settings_identity":"owner-settings","owner_revision":7,"day":{"zone":"Europe/Warsaw","start":"04:00:00"},"quiet_hours":{"from":1320,"to":420},"interrupt_budget":{"per_hour":3,"used":1,"remaining":2,"window_ms":3600000},"observed_at":"2026-01-01T00:00:00Z","coverage":{"state":"not_requested"}})).unwrap();
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),context,Duration::from_secs(5)).await.unwrap();
-            for _ in 0..2 {
-                let request=replay.next().await.unwrap();
-                let query:sinex_protocol::ReplayQuery=serde_json::from_slice(&request.payload).unwrap();
-                assert!(matches!(query,sinex_protocol::ReplayQuery::Inputs{cache,cursor:None} if cache=="cache-test"));
-                let reply=sinex_protocol::ReplayReply::Inputs {result:sinex_protocol::InputReplayReply::Page {
-                    position:0,policy_epoch:1,scope:"test-scope".into(),inputs:Vec::new(),
-                    continuation:sinex_protocol::ReplayContinuation::Complete {
-                        projection:sinex_protocol::FullProjectionComplete {stamp:"full-owner-proof".into(),position:0,scope:"test-scope".into(),catalog:"empty-synthetic-catalog".into()},
-                        raw_inputs:sinex_protocol::CoverageStatus::NotRequested,
-                    },
-                }};
-                sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),reply,Duration::from_secs(5)).await.unwrap();
-            }
+            let subjects=Subjects::new("auth");
+            let request=consumers.next().await.unwrap();
+            let query:sinex_protocol::ConfirmedConsumer=serde_json::from_slice(&request.payload).unwrap();
+            assert_eq!(query,sinex_protocol::ConfirmedConsumer{basis:None,after:42,cache:"cache-test".into(),status_only:false});
+            let reply=sinex_protocol::ConfirmedConsumerReply{position:Some(50),stream:subjects.confirmed_stream(),stream_instance:Some("instance".into()),consumer:"consumer".into(),scope:"test-scope".into(),refusal:None,gap:None};
+            sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),reply,Duration::from_secs(5)).await.unwrap();
+            let request=consumers.next().await.unwrap();
+            let query:sinex_protocol::ConfirmedConsumer=serde_json::from_slice(&request.payload).unwrap();
+            assert_eq!(query.after,0,"an index that applied nothing reads the stream from its start");
+            let reply=sinex_protocol::ConfirmedConsumerReply{refusal:Some("synthetic refusal".into()),..Default::default()};
+            sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),reply,Duration::from_secs(5)).await.unwrap();
         });
     });
     wait.recv().unwrap();
@@ -84,7 +82,6 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
     )
     .unwrap();
     assert_eq!(sinex.status().unwrap().family.as_deref(), Some("polylogue"));
-    assert!(sinex.status().unwrap().canonical_publisher);
     let context = sinex
         .context(|zone| jiff::tz::TimeZone::get(zone).map_err(|error| error.to_string()))
         .unwrap();
@@ -99,36 +96,31 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
     );
     assert!(!format!("{context:?}").contains("synthetic-context-token"));
     use polylogue_store::primary::{self, ConfirmedChange, ReplayControl};
-    let mut state = primary::ReplayState {
+    let state = primary::ReplayState {
         applied_position: Some(42),
         scope: Some("old-scope".into()),
-        policy_epoch: Some(1),
-        ..Default::default()
+        head: None,
+        staged_delivery: None,
     };
     let control = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap();
     assert!(
         matches!(control.as_slice(),[primary::Confirmed{change:ConfirmedChange::Control(control),..}]
-        if matches!(control.as_ref(),ReplayControl::Reset{scope,policy_epoch:1} if scope=="test-scope"))
+        if matches!(control.as_ref(),ReplayControl::Reset{scope} if scope=="test-scope"))
     );
     let currency = sinex.currency(Some(42), Some("old-scope".into())).unwrap();
     assert_eq!(currency.scope(), Some("old-scope"));
     assert!(currency.degraded());
-    state = primary::ReplayState {
+    let state = primary::ReplayState {
+        applied_position: None,
         scope: Some("test-scope".into()),
-        policy_epoch: Some(1),
-        ..Default::default()
+        head: None,
+        staged_delivery: None,
     };
-    primary::Sinex::acknowledge(&sinex, &state).unwrap();
-    let page = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap();
+    let refused = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap_err();
     assert!(
-        matches!(page.as_slice(),[primary::Confirmed{change:ConfirmedChange::Control(control),..}]
-        if matches!(control.as_ref(),ReplayControl::BasisStatus{status:primary::ReplayBasisStatus::Unverified}))
+        refused.to_string().contains("synthetic refusal"),
+        "{refused}"
     );
-    assert_eq!(
-        state.applied_position, None,
-        "delivery of a full proof does not apply it locally"
-    );
-    primary::Sinex::acknowledge(&sinex, &state).unwrap();
     drop(sinex);
     owner.join().unwrap();
 }
@@ -188,4 +180,36 @@ fn authentication_and_host_are_explicit_and_password_debug_is_redacted() {
     assert!(!format!("{secret:?}").contains("synthetic-sensitive-value"));
     let sinex = Sinex::open(&config, &secret, "supplied-host").unwrap();
     assert_eq!(sinex.host, "supplied-host");
+}
+
+#[test]
+fn an_unreadable_event_is_refused_at_its_position_but_a_lost_connection_stops_the_page() {
+    use polylogue_store::primary::ConfirmedChange;
+    let refused = crate::client::confirmed::readable(
+        9,
+        "event-x",
+        "polylogue.future@7".into(),
+        Err(Error::Invalid(
+            "unsupported Polylogue kind polylogue.future@7".into(),
+        )),
+    )
+    .unwrap();
+    assert_eq!(refused.position, 9);
+    assert_eq!(refused.event, "event-x");
+    assert_eq!(
+        refused.change,
+        ConfirmedChange::Refused {
+            kind: "polylogue.future@7".into(),
+            reason: "unsupported Polylogue kind polylogue.future@7".into(),
+        }
+    );
+    assert!(matches!(
+        crate::client::confirmed::readable(
+            9,
+            "event-x",
+            String::new(),
+            Err(Error::Unreachable("connection lost".into()))
+        ),
+        Err(Error::Unreachable(_))
+    ));
 }

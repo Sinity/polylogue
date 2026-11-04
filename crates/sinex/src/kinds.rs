@@ -1,4 +1,4 @@
-//! Canonical Polylogue kind declarations and exact native record references.
+//! Polylogue's kind declarations and native record references.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sinex_model::MaterialId;
@@ -30,6 +30,25 @@ pub(crate) fn kind_reference(name: &str) -> crate::Result<sinex_model::KindRef> 
         .ok_or_else(|| crate::Error::Invalid(format!("undeclared Polylogue event type {name}")))
 }
 
+/// The definition hash of a declared kind, computed once per process.
+pub(crate) fn declared_definition(kind: &sinex_model::KindRef) -> Option<&'static str> {
+    static HASHES: std::sync::OnceLock<Vec<(sinex_model::KindRef, String)>> =
+        std::sync::OnceLock::new();
+    HASHES
+        .get_or_init(|| {
+            declarations("polylogue")
+                .into_iter()
+                .map(|declaration| {
+                    let hash = declaration.definition_hash();
+                    (declaration.kind, hash)
+                })
+                .collect()
+        })
+        .iter()
+        .find(|(declared, _)| declared == kind)
+        .map(|(_, hash)| hash.as_str())
+}
+
 pub fn definition_hash(producer: &str) -> String {
     let hashes: Vec<_> = declarations(producer)
         .iter()
@@ -49,8 +68,8 @@ pub fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> {
     declarations
 }
 
-/// Complete immutable adapter artifact. Installing it and granting native or
-/// canonical publication authority remain separate owner operations.
+/// The adapter declaration the owner installs; the producer never registers
+/// it from its own requested permissions.
 pub fn source_declaration() -> sinex_model::SourceDeclaration {
     sinex_model::SourceDeclaration {
         source: crate::source_reference(),
@@ -61,29 +80,3 @@ pub fn source_declaration() -> sinex_model::SourceDeclaration {
 
 #[cfg(test)]
 mod tests;
-
-/// Export is unavailable until every indexed owner kind has a local projector.
-/// Native source registration and write authority do not establish this read contract.
-pub fn projection_catalog() -> crate::Result<sinex_model::ProjectionCatalog> {
-    Err(crate::Error::Refused {
-        name: "indexed projection catalog".into(),
-        reason: "the foreign signal receipt projectors are not registered".into(),
-    })
-}
-
-/// Exact predecessor request definitions supported for read/rebuild only.
-/// They are absent from producer hello and current source registration. This
-/// subset does not establish a complete indexed projection catalog.
-pub fn historical_request_declarations() -> crate::Result<Vec<sinex_model::KindDeclaration>> {
-    crate::client::confirmed::source3::historical_request_declarations()
-}
-
-/// Immutable predecessor Run declarations for read/rebuild, not producer hello.
-pub fn historical_run_declarations() -> crate::Result<Vec<sinex_model::KindDeclaration>> {
-    crate::client::confirmed::source3::historical_run_declarations()
-}
-
-/// Frozen question declarations for read/rebuild, never producer registration.
-pub fn historical_query_declarations() -> crate::Result<Vec<sinex_model::KindDeclaration>> {
-    crate::client::confirmed::source3::historical_query_declarations()
-}

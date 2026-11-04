@@ -1,4 +1,4 @@
-//! Grant changes replace cached facts while private producer intents keep their custody.
+//! A changed read scope clears the cache; the stream is then read again from 0.
 use crate::{Archive, Result, StoreError};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
@@ -15,7 +15,7 @@ pub(crate) fn current(index: &Connection) -> Result<Option<String>> {
 pub(crate) fn require_readable(index: &Connection) -> Result<()> {
     if index
         .query_row(
-            "SELECT 1 FROM meta WHERE key IN ('confirmed_scope_pending','confirmed_replay_blocked') LIMIT 1",
+            "SELECT 1 FROM meta WHERE key='confirmed_scope_pending'",
             [],
             |_| Ok(()),
         )
@@ -31,65 +31,25 @@ fn quoted(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+/// Clears the cache for a new read scope; the consumer then reads the stream
+/// from position 0 under that scope. The current, readable scope is kept.
 pub(crate) fn reset(
     index: &mut Connection,
     archive: &Archive,
     resolver: &crate::writer::resolve::Resolver,
     scope: &str,
 ) -> Result<bool> {
-    reset_to(index, archive, resolver, scope, false)
-}
-
-pub(crate) fn restart(
-    index: &mut Connection,
-    archive: &Archive,
-    resolver: &crate::writer::resolve::Resolver,
-    scope: &str,
-) -> Result<bool> {
-    reset_to(index, archive, resolver, scope, true)
-}
-
-/// Invalidates output before a typed owner refusal or erasure becomes observable.
-/// Payload custody remains until an explicit authoritative replay reset.
-pub(crate) fn invalidate(index: &Connection, archive: &Archive) -> Result<()> {
-    let mut reset = archive.read_scope.begin_reset()?;
-    let mut previous = None;
-    let persisted = (|| {
-        let synchronous: i64 = index.pragma_query_value(None, "synchronous", |row| row.get(0))?;
-        previous = Some(synchronous);
-        index.pragma_update(None, "synchronous", synchronous.max(2))?;
-        index.execute("INSERT INTO meta(key,value) VALUES ('confirmed_replay_blocked','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
-        Ok(())
-    })();
-    let invalidated = reset.invalidate();
-    let restored = previous
-        .map(|previous| index.pragma_update(None, "synchronous", previous))
-        .transpose();
-    persisted
-        .and(invalidated)
-        .and_then(|()| restored.map(|_| ()).map_err(Into::into))
-}
-
-fn reset_to(
-    index: &mut Connection,
-    archive: &Archive,
-    resolver: &crate::writer::resolve::Resolver,
-    scope: &str,
-    force: bool,
-) -> Result<bool> {
     if scope.is_empty() {
         return Err(StoreError::Invalid(
             "a confirmed scope needs its owner identity".into(),
         ));
     }
-    if !force && current(index)?.as_deref() == Some(scope) && require_readable(index).is_ok() {
+    if current(index)?.as_deref() == Some(scope) && require_readable(index).is_ok() {
         return Ok(false);
     }
-    // Cancellation precedes visibility. A failed transaction leaves reads blocked
-    // until the same authoritative reset can be completed.
+    // Reads stop before the clear starts. A failed clear leaves reads blocked
+    // until the same reset completes.
     let mut reset = archive.read_scope.begin_reset()?;
-    // The owner control must survive a failed clear and restart. This is cached
-    // grant metadata, independent of pending producer intents or input custody.
     let mut previous = None;
     let persisted = (|| {
         let synchronous: i64 = index.pragma_query_value(None, "synchronous", |row| row.get(0))?;
@@ -98,8 +58,6 @@ fn reset_to(
         index.execute("INSERT INTO meta(key,value) VALUES ('confirmed_scope_pending',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [scope])?;
         Ok(())
     })();
-    // Invalidate every registered output even when control persistence fails.
-    // An old publisher cannot race its pointer activation past this callback.
     let invalidated = reset.invalidate();
     drop(reset);
     let result = persisted
@@ -108,7 +66,7 @@ fn reset_to(
     let restored = previous
         .map(|previous| index.pragma_update(None, "synchronous", previous))
         .transpose();
-    result.and_then(|changed| restored.map(|_| changed).map_err(Into::into))
+    result.and_then(|()| restored.map(|_| true).map_err(Into::into))
 }
 
 fn clear(
@@ -116,17 +74,16 @@ fn clear(
     archive: &Archive,
     resolver: &crate::writer::resolve::Resolver,
     scope: &str,
-) -> Result<bool> {
+) -> Result<()> {
     resolver.discard_cached()?;
     index.flush_prepared_statement_cache();
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.pragma_update(None, "defer_foreign_keys", true)?;
-    super::derived::revoke(&tx)?;
     let temporary: Vec<(String,String)> = tx.prepare("SELECT name,type FROM temp.sqlite_schema WHERE type IN ('view','table') AND name NOT LIKE 'sqlite_%' ORDER BY type DESC")?.query_map([], |row| Ok((row.get(0)?,row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
     for (name, kind) in temporary {
         tx.execute_batch(&format!("DROP {kind} {}", quoted(&name)))?;
     }
-    let tables: Vec<String> = tx.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('meta','row_count','source_row_count','primary_derived','primary_derived_parent') ORDER BY name")?.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let tables: Vec<String> = tx.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('meta','row_count','source_row_count') ORDER BY name")?.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
     for name in &tables {
         tx.execute(&format!("DELETE FROM {}", quoted(name)), [])?;
     }
@@ -160,7 +117,7 @@ fn clear(
     crate::fault::check("primary.scope_reset_commit", "")?;
     tx.commit()?;
     archive.read_scope.finish_reset();
-    Ok(true)
+    Ok(())
 }
 
 #[cfg(test)]

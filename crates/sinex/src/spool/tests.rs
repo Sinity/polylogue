@@ -189,7 +189,7 @@ fn acknowledgment_is_not_the_confirmed_application_barrier() {
 }
 
 #[test]
-fn one_group_owns_every_capture_until_its_canonical_position_is_applied() {
+fn one_group_owns_every_capture_until_its_confirmed_position_is_applied() {
     let directory = tempfile::tempdir().unwrap();
     let spool = Spool::open(directory.path(), "host-a").unwrap();
     for identity in ["zip", "member"] {
@@ -376,19 +376,6 @@ fn crash_worker() {
                 bytes.as_slice(),
                 &capture,
             )
-            .unwrap();
-    } else if stage == "discard_member_retired" {
-        spool
-            .prepare_material(
-                material("private", b"private bytes"),
-                b"private bytes".as_slice(),
-            )
-            .unwrap();
-        spool
-            .prepare_group(events("doomed", "private projection"), &["private".into()])
-            .unwrap();
-        spool
-            .discard_confirmed(&["private".into(), "doomed".into()], 12, 12)
             .unwrap();
     } else if stage.starts_with("group_") {
         for identity in ["zip", "member"] {
@@ -594,92 +581,6 @@ fn request_and_blob_visitors_can_use_small_metadata_until_application() {
 }
 
 #[test]
-fn confirmed_tombstones_discard_only_complete_authorized_groups() {
-    let directory = tempfile::tempdir().unwrap();
-    let spool = Spool::open(directory.path(), "host").unwrap();
-    for identity in ["root", "part"] {
-        spool
-            .prepare_material(material(identity, b"private"), b"private".as_slice())
-            .unwrap();
-    }
-    spool
-        .prepare_group(
-            events("canonical", "private products"),
-            &["root".into(), "part".into()],
-        )
-        .unwrap();
-    spool
-        .prepare(events(
-            "independent-note",
-            "authored target reference survives",
-        ))
-        .unwrap();
-    let complete = vec!["root".into(), "part".into(), "canonical".into()];
-    assert!(spool.discard_confirmed(&complete, 18, 17).is_err());
-    assert!(spool.discard_confirmed(&["root".into()], 18, 18).is_err());
-    assert!(
-        spool
-            .discard_confirmed(&["root".into(), "canonical".into()], 18, 18)
-            .is_err()
-    );
-    assert_eq!(all(&spool, 2).len(), 4);
-    spool.discard_confirmed(&complete, 18, 18).unwrap();
-    spool.discard_confirmed(&complete, 18, 18).unwrap();
-    assert_eq!(
-        all(&spool, 1)
-            .iter()
-            .map(|entry| entry.identity.as_str())
-            .collect::<Vec<_>>(),
-        ["independent-note"]
-    );
-}
-
-#[test]
-fn confirmed_tombstone_outbox_can_retry_after_process_death() {
-    let directory = tempfile::tempdir().unwrap();
-    let status = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "spool::tests::crash_worker", "--nocapture"])
-        .env("POLYLOGUE_SPOOL_CRASH_ROOT", directory.path())
-        .env("POLYLOGUE_SPOOL_CRASH", "discard_member_retired")
-        .status()
-        .unwrap();
-    assert_eq!(status.code(), Some(77));
-    let spool = Spool::open(directory.path(), "host").unwrap();
-    spool
-        .discard_confirmed(&["private".into(), "doomed".into()], 12, 12)
-        .unwrap();
-    assert!(all(&spool, 1).is_empty());
-}
-
-#[test]
-fn confirmed_tombstones_remove_unpublished_copies_left_after_body_sync() {
-    let directory = tempfile::tempdir().unwrap();
-    let status = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "spool::tests::crash_worker", "--nocapture"])
-        .env("POLYLOGUE_SPOOL_CRASH_ROOT", directory.path())
-        .env("POLYLOGUE_SPOOL_CRASH", "body_synced")
-        .status()
-        .unwrap();
-    assert_eq!(status.code(), Some(77));
-    let spool = Spool::open(directory.path(), "host").unwrap();
-    assert!(spool.get("raw").unwrap().is_none());
-    assert!(
-        fs::read_dir(spool.root.join("operations"))
-            .unwrap()
-            .next()
-            .is_some()
-    );
-    assert!(spool.discard_confirmed(&["raw".into()], 14, 13).is_err());
-    spool.discard_confirmed(&["raw".into()], 14, 14).unwrap();
-    assert!(
-        fs::read_dir(spool.root.join("operations"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
-}
-
-#[test]
 fn replay_capture_group_retains_its_material_until_applied() {
     let directory = tempfile::tempdir().unwrap();
     let spool = Spool::open(directory.path(), "host").unwrap();
@@ -816,15 +717,6 @@ fn capture_sidecar_and_body_publish_together_after_process_death() {
     assert_eq!(status.code(), Some(77));
     let spool = Spool::open(directory.path(), "host").unwrap();
     assert!(spool.pending_after(None, 1).unwrap().is_empty());
-    spool
-        .discard_confirmed(&["captured".into()], 10, 10)
-        .unwrap();
-    assert!(
-        fs::read_dir(spool.root.join("operations"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
 }
 
 #[test]
@@ -1078,10 +970,17 @@ fn receipt_body_conflict_is_terminal_evidence_and_keeps_offered_bytes_after_rest
     let prior_frame = material("same-frame", b"previous different provider bytes");
     let mut receipt = ack("same-frame", false, Some(9));
     receipt.outcome = serde_json::json!({"frame_content_hash":sinex_transport::producer::content_hash(&prior_frame).unwrap()});
-    assert!(matches!(
-        crate::client::adopt_receipt(&spool, &prepared, receipt.clone()),
-        Err(Error::Refused { .. })
-    ));
+    let Err(Error::ReceiptConflict {
+        frame,
+        offered_hash,
+        receipt: conflict,
+    }) = crate::client::verified_receipt(&prepared, receipt.clone())
+    else {
+        panic!("different recorded contents are a receipt conflict")
+    };
+    spool
+        .record_conflict(&frame, &offered_hash, &conflict)
+        .unwrap();
     let terminal = spool.get("same-frame").unwrap().unwrap();
     assert!(matches!(terminal.phase, Phase::Conflicted { .. }));
     assert!(spool.acknowledgment("same-frame").unwrap().is_none());
@@ -1108,7 +1007,7 @@ fn receipt_body_conflict_is_terminal_evidence_and_keeps_offered_bytes_after_rest
 }
 
 #[test]
-fn conflict_evidence_for_another_frame_cannot_change_private_disposition() {
+fn conflict_evidence_for_another_frame_cannot_change_an_operation_phase() {
     let root = tempfile::tempdir().unwrap();
     let spool = Spool::open(root.path(), "host").unwrap();
     let prepared = spool.prepare(events("owned", "frozen bytes")).unwrap();

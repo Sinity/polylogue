@@ -5,7 +5,6 @@
 //! stores them before it records the frame.
 use crate::{Authentication, Config, Error, Result};
 pub(crate) mod confirmed;
-pub(crate) mod retained;
 use sinex_protocol::{Acknowledgment, Ingress, ProducerHello, ProducerWelcome, Subjects};
 use sinex_transport::frame_bytes;
 use std::collections::HashMap;
@@ -28,9 +27,6 @@ pub(crate) struct Client {
     pub(crate) store_root: PathBuf,
     acknowledgments: async_nats::Subscriber,
     consumer_cache: Option<String>,
-    consumer_scope: Option<String>,
-    publication_scope: Option<String>,
-    publication_epoch: Option<i64>,
     consumer_instance: Option<String>,
     health: std::sync::Arc<std::sync::Mutex<crate::status::Health>>,
     consumer: Option<async_nats::jetstream::consumer::PullConsumer>,
@@ -39,11 +35,6 @@ pub(crate) struct Client {
 }
 
 impl Client {
-    pub(crate) fn fence_publication(&mut self) {
-        self.publication_scope = None;
-        self.publication_epoch = None;
-    }
-
     pub(crate) fn family(&self) -> &str {
         &self.family
     }
@@ -103,7 +94,6 @@ impl Client {
             })?;
         if let Ok(mut health) = health.lock() {
             health.family = Some(family.clone());
-            health.canonical_publisher = welcome.canonical_publisher;
         }
         let max_message = client.server_info().max_payload;
         let mut connected = Self {
@@ -115,9 +105,6 @@ impl Client {
             store_root: config.store.clone(),
             acknowledgments,
             consumer_cache: None,
-            consumer_scope: None,
-            publication_scope: None,
-            publication_epoch: None,
             consumer_instance: None,
             health,
             consumer: None,
@@ -219,9 +206,6 @@ impl Client {
                 if !prepared.phase.is_pending() || prepared.unresolved {
                     continue;
                 }
-                if !self.publication_allowed(&prepared) {
-                    continue;
-                }
                 self.publish_prepared(prepared).await?;
             }
         }
@@ -231,7 +215,7 @@ impl Client {
         &mut self,
         prepared: crate::spool::Prepared,
     ) -> Result<Acknowledgment> {
-        let (receipt, frame, body, retained) = {
+        let (receipt, frame, body) = {
             let spool = self
                 .spool
                 .lock()
@@ -239,28 +223,11 @@ impl Client {
             let current = spool
                 .get(&prepared.identity)?
                 .ok_or_else(|| Error::Invalid("prepared operation disappeared".into()))?;
-            if current.revoked
-                || current.is_private()
-                || current.unresolved
-                || current.phase.is_refused()
-            {
+            if current.unresolved || current.phase.is_refused() {
                 return Err(Error::Refused {
                     name: prepared.identity.clone(),
                     reason: "the original operation is not publishable".into(),
                 });
-            }
-            if prepared.canonical().is_some() && prepared.group().is_some() {
-                let mut revoked = false;
-                spool.visit_captures(&prepared.identity, |identity| {
-                    revoked |= spool.get(identity)?.is_none_or(|member| member.revoked);
-                    Ok(())
-                })?;
-                if revoked {
-                    return Err(Error::Refused {
-                        name: prepared.identity.clone(),
-                        reason: "the original canonical custody was revoked".into(),
-                    });
-                }
             }
             (
                 spool.acknowledgment(&prepared.identity)?,
@@ -270,35 +237,10 @@ impl Client {
                 } else {
                     None
                 },
-                crate::producer::requires_retained(&spool, &prepared)?,
             )
         };
         if let Some(receipt) = receipt {
             return checked(verified_receipt(&prepared, receipt)?);
-        }
-        if retained {
-            let mut recorded = self
-                .recorded(std::slice::from_ref(&prepared.identity))
-                .await?;
-            if let Some(receipt) = recorded.remove(&prepared.identity) {
-                self.verify_retained_receipt(&prepared, &receipt).await?;
-                let queue = self
-                    .spool
-                    .lock()
-                    .map_err(|_| Error::Invalid("producer spool panicked".into()))?;
-                return checked(adopt_receipt(&queue, &prepared, receipt)?);
-            }
-            // A missing final Events receipt is not a fresh current request.
-            // The exact original group may continue only from retained own
-            // materials and current permission for its original headers.
-            self.permit_retained_events(&prepared).await?;
-        }
-        if !self.publication_allowed(&prepared) {
-            return Err(Error::Refused {
-                name: prepared.identity.clone(),
-                reason: "canonical output belongs to another or unknown confirmed read scope"
-                    .into(),
-            });
         }
         if let Some(body) = body {
             frame_bytes::write_prepared(&self.store_root, &self.producer, &prepared.identity, body)
@@ -356,19 +298,6 @@ impl Client {
         checked(acknowledgment)
     }
 
-    fn publication_allowed(&self, prepared: &crate::spool::Prepared) -> bool {
-        !prepared.unresolved
-            && !prepared.phase.is_refused()
-            && !prepared.is_private()
-            && !prepared.revoked
-            && prepared.canonical().is_none_or(|canonical| {
-                canonical.coverage.as_ref().is_some_and(|coverage| {
-                    self.publication_scope.as_ref() == Some(&coverage.scope)
-                        && self.publication_epoch == Some(coverage.epoch)
-                })
-            })
-    }
-
     /// Publishes one frame's JSON and waits for its acknowledgment. Accepted
     /// by NATS is not confirmed: only the acknowledgment, which Sinex commits
     /// with the frame's contents, is. A lost acknowledgment is an error here;
@@ -404,8 +333,7 @@ impl Client {
     }
 }
 
-/// Authentication and protocol negotiation are shared by the writer and its
-/// private own-Recorded observer. Registration belongs only to the writer.
+/// Connects, authenticates and checks the producer welcome.
 async fn transport(
     config: &Config,
     authentication: &Authentication,
@@ -462,31 +390,6 @@ pub(crate) fn submit_error(error: sinex_transport::producer::SubmitError) -> Err
             receipt,
         },
         other => Error::Unreachable(other.to_string()),
-    }
-}
-
-pub(crate) fn adopt_receipt(
-    spool: &crate::spool::Spool,
-    prepared: &crate::spool::Prepared,
-    receipt: Acknowledgment,
-) -> Result<Acknowledgment> {
-    match verified_receipt(prepared, receipt) {
-        Ok(receipt) => {
-            spool.acknowledge(receipt.clone())?;
-            Ok(receipt)
-        }
-        Err(Error::ReceiptConflict {
-            frame,
-            offered_hash,
-            receipt,
-        }) => {
-            spool.record_conflict(&frame, &offered_hash, &receipt)?;
-            Err(Error::Refused {
-                name: frame,
-                reason: "the owner recorded different immutable contents".into(),
-            })
-        }
-        Err(error) => Err(error),
     }
 }
 

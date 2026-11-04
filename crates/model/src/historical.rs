@@ -81,37 +81,6 @@ pub struct NativeRecordLocation {
     pub anchor: u64,
 }
 
-/// Verified retained publication facts. These identify durable producer custody,
-/// never a fetched event, canonical application or native execution eligibility.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct QueuedPublicationCustody {
-    pub producer_family: String,
-    pub producer_identity: String,
-    pub receipt_number: i64,
-    pub frame: String,
-    pub frame_content_hash: BlobHash,
-    pub material: String,
-    pub blob: BlobHash,
-    pub length: u64,
-    pub source: String,
-    pub source_version: u32,
-    pub source_fingerprint: String,
-    pub parser: String,
-    pub parser_version: u32,
-}
-impl QueuedPublicationCustody {
-    pub fn source_schema(&self) -> SourceSchema {
-        SourceSchema::RetainedPublication {
-            source: self.source.clone(),
-            source_version: self.source_version,
-            source_fingerprint: self.source_fingerprint.clone(),
-            parser: self.parser.clone(),
-            parser_version: self.parser_version,
-        }
-    }
-}
-
 /// What the authenticated owner fetch actually supplied. Record/projection
 /// hashes are distinct from an accepted intent hash; these fields confer no
 /// original-capture, native-execution or importing-actor authority.

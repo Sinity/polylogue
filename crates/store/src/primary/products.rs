@@ -130,17 +130,6 @@ pub enum Product {
         current: polylogue_model::authored::ImportAttribution,
     },
     Coverage(polylogue_model::capture::Coverage),
-    /// Receive-only projections keep their Serde codec, but must not allocate
-    /// names or appear in the current producer's generated kind declarations.
-    #[schemars(skip)]
-    HistoricalQueryRun {
-        run: Box<polylogue_model::query_objects::HistoricalQueryRun>,
-    },
-    #[schemars(skip)]
-    ConservedRequest {
-        accepted: polylogue_model::historical::ConservedAccepted,
-        claims: Vec<polylogue_model::authored::ImportAttribution>,
-    },
 }
 
 impl Product {
@@ -159,10 +148,8 @@ impl Product {
             | Self::Blob(_)
             | Self::AttachmentBinding { .. }
             | Self::Query { .. }
-            | Self::HistoricalQueryRun { .. }
             | Self::QueryRun { .. }
             | Self::QueryRunOutcome { .. }
-            | Self::ConservedRequest { .. }
             | Self::Request(_)
             | Self::RestoredRequest { .. }
             | Self::RestoredAssertion { .. }
@@ -172,16 +159,6 @@ impl Product {
     }
 }
 
-/// Durable private producer custody, independent of the rebuildable index.
-/// A historical proof never supplies current publication or read eligibility.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct CanonicalCustody {
-    pub identity: String,
-    pub products: Vec<ProductWrite>,
-    pub historical_proof: Option<super::RawInputProof>,
-    pub revoked: bool,
-}
-
 /// One change from Sinex's ordered confirmed stream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Confirmed {
@@ -189,7 +166,7 @@ pub struct Confirmed {
     pub output_index: u64,
     pub event: String,
     pub change: ConfirmedChange,
-    /// Authenticated owner fetch metadata; absent historical context stays unknown.
+    /// The kind, payload hash and origin Sinex recorded for the event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native: Option<super::NativeFactContext>,
 }
@@ -201,9 +178,13 @@ pub enum ConfirmedChange {
     Archived,
     Restored,
     Tombstoned,
-    Ignored,
-    PositionComplete,
-    ScopeReset { scope: String },
+    /// Polylogue could not read the event (an unknown kind, a refused fetch).
+    /// It stays in Sinex and is read again by a rebuild; the index records
+    /// the refusal and continues with the next event.
+    Refused {
+        kind: String,
+        reason: String,
+    },
     Control(Box<super::ReplayControl>),
 }
 

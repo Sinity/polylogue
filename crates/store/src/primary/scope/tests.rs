@@ -11,9 +11,6 @@ fn cache(archive: &Archive) -> Connection {
         .execute_batch(&crate::source::schema().unwrap().ddl)
         .unwrap();
     index.execute_batch(projection::SCHEMA).unwrap();
-    index
-        .execute_batch(crate::primary::derived::SCHEMA)
-        .unwrap();
     crate::archive::generation::create(&index).unwrap();
     index
         .execute(
@@ -49,7 +46,9 @@ fn barrier(position: i64) -> Confirmed {
         position,
         event: String::new(),
         output_index: 0,
-        change: ConfirmedChange::PositionComplete,
+        change: ConfirmedChange::Control(Box::new(crate::primary::ReplayControl::Completion {
+            position,
+        })),
     }
 }
 
@@ -259,55 +258,4 @@ fn cache_clear_cannot_commit_until_registered_outputs_are_invalidated() {
     // A newly started CLI reads the canonical pointer, not the retired cache.
     assert_eq!(std::fs::read(&pointer).unwrap(), b"unavailable");
     assert_eq!(projection::checkpoint(&index).unwrap(), None);
-}
-
-#[test]
-fn same_scope_replay_restart_cancels_readers_and_clears_the_previous_epoch() {
-    let root = tempfile::tempdir().unwrap();
-    let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
-    let mut index = cache(&archive);
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
-    reset(&mut index, &archive, &resolver, "same-scope").unwrap();
-    projection::apply(&mut index, &resolver, &[input(1, "old-epoch"), barrier(1)]).unwrap();
-    let token = archive.read_scope.token().unwrap();
-    assert!(restart(&mut index, &archive, &resolver, "same-scope").unwrap());
-    assert!(matches!(token.check(), Err(StoreError::ScopeChanged)));
-    assert_eq!(projection::checkpoint(&index).unwrap(), None);
-    assert_eq!(
-        index
-            .query_row("SELECT count(*) FROM primary_fact", [], |row| row
-                .get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
-    assert_eq!(current(&index).unwrap().as_deref(), Some("same-scope"));
-}
-
-#[test]
-fn owner_invalidation_is_durable_without_deleting_cached_payload_custody() {
-    let root = tempfile::tempdir().unwrap();
-    let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
-    let mut index = cache(&archive);
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
-    projection::apply(&mut index, &resolver, &[input(1, "retained"), barrier(1)]).unwrap();
-    let token = archive.read_scope.token().unwrap();
-    invalidate(&index, &archive).unwrap();
-    assert!(matches!(token.check(), Err(StoreError::ScopeChanged)));
-    drop(index);
-    let index = Connection::open(archive.index_db()).unwrap();
-    assert!(matches!(
-        require_readable(&index),
-        Err(StoreError::ScopeChanged)
-    ));
-    assert_eq!(
-        index
-            .query_row(
-                "SELECT count(*) FROM primary_fact WHERE event='event-retained'",
-                [],
-                |row| row.get::<_, i64>(0)
-            )
-            .unwrap(),
-        1
-    );
-    assert_eq!(projection::checkpoint(&index).unwrap(), Some(1));
 }

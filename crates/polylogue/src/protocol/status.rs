@@ -139,6 +139,9 @@ pub enum Primary {
         applied_position: Option<i64>,
         lag_positions: Option<i64>,
         position_error: Option<String>,
+        /// Confirmed events Polylogue could not read; they stay in Sinex.
+        refused_events: u64,
+        last_refused: Option<String>,
     },
     Unavailable {
         error: String,

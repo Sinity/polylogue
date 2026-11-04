@@ -250,7 +250,7 @@ impl Sinex {
                 from: None,
                 until: None,
                 declarations,
-                parser_build: crate::replay::build_id()?,
+                parser_build: build_id()?,
                 parser_version: replacement.key.reading_version,
                 expected_live_hash: selection.expected_live_hash,
                 batches: vec![sinex_protocol::ReplayBatch {
@@ -268,4 +268,18 @@ impl Sinex {
         }
         Ok(())
     }
+}
+
+/// The running binary's hash, which names the parser build of a replay.
+fn build_id() -> Result<String> {
+    static BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(build) = BUILD.get() {
+        return Ok(build.clone());
+    }
+    let mut file = std::fs::File::open("/proc/self/exe")?;
+    let mut hash = blake3::Hasher::new();
+    std::io::copy(&mut file, &mut hash)?;
+    let build = hash.finalize().to_hex().to_string();
+    let _ = BUILD.set(build.clone());
+    Ok(build)
 }

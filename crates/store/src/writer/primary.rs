@@ -16,82 +16,18 @@ impl Inner {
                 "confirmed facts require a primary cache".into(),
             ));
         }
-        if let Some((scope, policy_epoch)) = events.iter().find_map(|event| match &event.change {
+        if let Some(scope) = events.iter().find_map(|event| match &event.change {
             crate::primary::ConfirmedChange::Control(control) => match control.as_ref() {
-                crate::primary::ReplayControl::Reset {
-                    scope,
-                    policy_epoch,
-                } => Some((scope, *policy_epoch)),
+                crate::primary::ReplayControl::Reset { scope } => Some(scope),
                 _ => None,
             },
             _ => None,
         }) {
-            if events.len() != 1 || policy_epoch < 0 {
+            if events.len() != 1 {
                 return Err(StoreError::Invalid(
-                    "owner replay reset must be a separate valid control page".into(),
+                    "a scope reset must be a separate control page".into(),
                 ));
             }
-            crate::primary::scope::invalidate(&self.index, &self.location)?;
-            self.revoke_canonical_custody()?;
-            crate::primary::scope::restart(&mut self.index, &self.location, &self.resolver, scope)?;
-            let tx = self
-                .index
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            crate::primary::projection::save_replay(
-                &tx,
-                &crate::primary::ReplayState {
-                    scope: Some(scope.clone()),
-                    policy_epoch: Some(policy_epoch),
-                    ..Default::default()
-                },
-            )?;
-            tx.commit()?;
-            self.commits.committed();
-            self.derive_due = false;
-            self.derived_version = None;
-            return Ok(0);
-        }
-        let invalidates = events.iter().any(|event| match &event.change {
-            crate::primary::ConfirmedChange::Control(control) => matches!(
-                control.as_ref(),
-                crate::primary::ReplayControl::BasisStatus { .. }
-                    | crate::primary::ReplayControl::ErasedThrough { .. }
-                    | crate::primary::ReplayControl::Coverage {
-                        coverage: crate::primary::RawInputCoverage::Incomplete { .. }
-                    }
-            ),
-            _ => false,
-        });
-        if invalidates {
-            crate::primary::scope::invalidate(&self.index, &self.location)?;
-            let revokes = events.iter().any(|event| matches!(&event.change,
-                crate::primary::ConfirmedChange::Control(control) if matches!(control.as_ref(),
-                    crate::primary::ReplayControl::BasisStatus { status: crate::primary::ReplayBasisStatus::Invalidated { .. } }
-                    | crate::primary::ReplayControl::Coverage { coverage: crate::primary::RawInputCoverage::Incomplete { basis: crate::primary::ReplayBasisStatus::Invalidated { .. }, .. } })));
-            if revokes {
-                self.revoke_canonical_custody()?;
-            }
-        }
-        if let Some(reset) = events.iter().find(|event| {
-            matches!(
-                event.change,
-                crate::primary::ConfirmedChange::ScopeReset { .. }
-            )
-        }) {
-            if events.len() != 1
-                || reset.position != 0
-                || !reset.event.is_empty()
-                || reset.output_index != 0
-            {
-                return Err(StoreError::Invalid(
-                    "scope reset must be a separate owner control page".into(),
-                ));
-            }
-            let crate::primary::ConfirmedChange::ScopeReset { scope } = &reset.change else {
-                unreachable!()
-            };
-            crate::primary::scope::invalidate(&self.index, &self.location)?;
-            self.revoke_canonical_custody()?;
             if crate::primary::scope::reset(&mut self.index, &self.location, &self.resolver, scope)?
             {
                 self.commits.committed();
@@ -99,25 +35,15 @@ impl Inner {
                 self.derived_version = None;
                 self.report.transactions += 1;
             }
-            return crate::primary::projection::position(&self.index);
+            return Ok(0);
         }
-        let before = (
-            crate::primary::projection::checkpoint(&self.index)?,
-            crate::primary::projection::replay_state(&self.index)?.certified_position(),
-        );
+        let before = crate::primary::projection::checkpoint(&self.index)?;
         let position = crate::primary::projection::apply(&mut self.index, &self.resolver, events)?;
-        let after = (
-            crate::primary::projection::checkpoint(&self.index)?,
-            crate::primary::projection::replay_state(&self.index)?.certified_position(),
-        );
-        if after != before {
+        if crate::primary::projection::checkpoint(&self.index)? != before {
             self.commits.committed();
             self.derive_due = true;
             self.search.wake();
             self.report.transactions += 1;
-        }
-        if crate::primary::scope::require_readable(&self.index).is_ok() {
-            self.location.read_scope.finish_reset();
         }
         Ok(position)
     }
@@ -132,11 +58,9 @@ impl Inner {
         let identity = crate::primary::cache_identity(&self.index)?;
         let events = sinex.confirmed(&state, &identity)?;
         let applied = self.apply_confirmed(&events)?;
-        // Staging is durable even when a large position has not reached its barrier.
+        // Staged deliveries are durable even before their position completes.
         let state = crate::primary::projection::replay_state(&self.index)?;
-        crate::primary::derived::hold(&self.index, sinex.as_ref())?;
         sinex.acknowledge(&state)?;
-        crate::primary::derived::publish(&self.index, sinex.as_ref(), &state)?;
         Ok(applied)
     }
 

@@ -354,98 +354,6 @@ fn merge_native(
     Ok(())
 }
 
-fn record_value(bytes: &[u8]) -> Result<Option<serde_json::Value>> {
-    let value: serde_json::Value = crate::encoding::read_json(bytes)?;
-    if value.get("product").is_some() {
-        return Ok(Some(value));
-    }
-    if let Some(record) = value.get("record") {
-        return Ok(Some(record.clone()));
-    }
-    if value.get("state").and_then(serde_json::Value::as_str) == Some("live") {
-        return Ok(value.get("facts").cloned());
-    }
-    Ok(None)
-}
-
-fn validate_cached_records(
-    original: &polylogue_model::historical::OriginalBytes,
-    known: &NativeProjectionHistory,
-    incoming: &NativeProjectionHistory,
-) -> Result<()> {
-    for observation in &incoming.observed {
-        let record = record_value(&observation.provenance.projected_payload)?.ok_or_else(|| {
-            StoreError::Invalid("the fetched predecessor projection has no record encoding".into())
-        })?;
-        for prior in &original.records {
-            if record_value(prior)?.is_some_and(|prior| prior != record) {
-                return Err(StoreError::Invalid(
-                    "one native event changed its complete retained predecessor record".into(),
-                ));
-            }
-        }
-        for prior in &known.observed {
-            if prior.provenance.event == observation.provenance.event
-                && record_value(&prior.provenance.projected_payload)?
-                    .is_some_and(|prior| prior != record)
-            {
-                return Err(StoreError::Invalid(
-                    "one native event changed its complete fetched predecessor record".into(),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Only a receive-only derived cache wrapper uses this union. Full logical
-/// request/outcome/effect equality precedes every metadata change.
-pub(crate) fn merge_cached(
-    known: &ConservedAccepted,
-    incoming: &mut ConservedAccepted,
-) -> Result<()> {
-    match (known, incoming) {
-        (ConservedAccepted::Compatible(known), ConservedAccepted::Compatible(incoming)) => {
-            if !same_prepared(known, incoming) {
-                return Err(conflict(&known.request.id));
-            }
-            let mut merged = known.clone();
-            let old = merged
-                .original
-                .as_mut()
-                .ok_or_else(|| conflict(&known.request.id))?;
-            let new = incoming
-                .original
-                .as_ref()
-                .ok_or_else(|| conflict(&known.request.id))?;
-            validate_cached_records(&old.original, &old.native, &new.native)?;
-            merge_original(&mut old.original, &new.original);
-            merge_native(&mut old.native, &new.native, &mut old.original)?;
-            *incoming = merged;
-        }
-        (ConservedAccepted::Historical(known), ConservedAccepted::Historical(incoming)) => {
-            if !same_historical(known, incoming) {
-                return Err(conflict(&known.id));
-            }
-            let mut merged = known.clone();
-            let old = merged
-                .original
-                .as_mut()
-                .ok_or_else(|| conflict(&known.id))?;
-            let new = incoming
-                .original
-                .as_ref()
-                .ok_or_else(|| conflict(&known.id))?;
-            validate_cached_records(old, &merged.native, &incoming.native)?;
-            merge_original(old, new);
-            merge_native(&mut merged.native, &incoming.native, old)?;
-            *incoming = merged;
-        }
-        (known, _) => return Err(conflict(known.id())),
-    }
-    Ok(())
-}
-
 fn declared_imports(conn: &Connection, id: &str, claims: &[ImportAttribution]) -> Result<()> {
     let source = Source::of(conn)?;
     let prior: String = conn.query_row(
@@ -467,59 +375,6 @@ fn declared_imports(conn: &Connection, id: &str, claims: &[ImportAttribution]) -
         )?;
     }
     Ok(())
-}
-
-/// Native Source3 callers reach this only after exact declaration validation.
-/// The actual fetched observation is conserved; no ImportAttribution is minted.
-pub fn conserve(
-    tx: &Transaction<'_>,
-    accepted: &ConservedAccepted,
-    claims: &[ImportAttribution],
-    counter: i64,
-) -> Result<()> {
-    let source = match accepted {
-        ConservedAccepted::Compatible(prepared) => {
-            &prepared
-                .original
-                .as_ref()
-                .ok_or_else(|| conflict(&prepared.request.id))?
-                .source
-        }
-        ConservedAccepted::Historical(record) => &record.source,
-    };
-    if !matches!(
-        source,
-        SourceSchema::NativeProjection {
-            source_version: 3,
-            kind_version: 4,
-            ..
-        }
-    ) {
-        return Err(StoreError::Invalid(
-            "native conservation requires the exact historical projection encoding".into(),
-        ));
-    }
-    let native = match accepted {
-        ConservedAccepted::Compatible(prepared) => {
-            &prepared
-                .original
-                .as_ref()
-                .expect("checked original encoding")
-                .native
-        }
-        ConservedAccepted::Historical(record) => &record.native,
-    };
-    if native.observed.is_empty()
-        || native
-            .observed
-            .iter()
-            .any(|observation| &observation.source != source)
-    {
-        return Err(StoreError::Invalid(
-            "native conservation has no matching fetched observation".into(),
-        ));
-    }
-    conserve_on(tx, accepted, claims, counter)
 }
 
 /// Only the numbered source/projection upgrade calls this local counterpart.
@@ -552,50 +407,6 @@ pub(crate) fn conserve_local(
         ));
     }
     conserve_on(tx, accepted, claims, counter)
-}
-
-/// Only the disposable pending overlay calls this; the retained frame remains
-/// the SDK's sole publication body and never becomes a canonical client receipt.
-pub(super) fn pending(
-    tx: &Transaction<'_>,
-    accepted: &ConservedAccepted,
-    claims: &[ImportAttribution],
-    custody: &polylogue_model::historical::QueuedPublicationCustody,
-) -> Result<()> {
-    let (source, native) = match accepted {
-        ConservedAccepted::Compatible(prepared) => {
-            let original = prepared
-                .original
-                .as_ref()
-                .ok_or_else(|| conflict(&prepared.request.id))?;
-            (&original.source, &original.native)
-        }
-        ConservedAccepted::Historical(record) => (&record.source, &record.native),
-    };
-    if custody.receipt_number <= 0
-        || custody.producer_family.is_empty()
-        || custody.producer_identity.is_empty()
-        || custody.frame.is_empty()
-        || custody.material.is_empty()
-        || custody.source_fingerprint.is_empty()
-        || !matches!(
-            source,
-            SourceSchema::RetainedPublication {
-                source_version: 3,
-                parser_version: 3,
-                ..
-            }
-        )
-        || source != &custody.source_schema()
-        || !native.is_empty()
-    {
-        return Err(StoreError::ReferenceUnavailable {
-            reference: format!("request:{}", accepted.id()),
-            reason: "queued predecessor has no matching verified retained publication custody"
-                .into(),
-        });
-    }
-    conserve_on(tx, accepted, claims, 0)
 }
 
 fn apply_historical_fact(

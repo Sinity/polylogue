@@ -1,7 +1,7 @@
-//! Primary mode: durable prepared materials and complete product facts go to
-//! Sinex through its ingress. One confirmed-stream consumer writes the local
-//! read index. Captures and authored writes remain in the producer spool
-//! through outages and retries, under their original identities.
+//! Primary mode: captured bytes and complete product facts go to Sinex
+//! through its ingress, and one confirmed-stream consumer writes the local
+//! index. Captures and authored writes wait in the producer spool through
+//! outages and retries, under their original identities.
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -15,8 +15,6 @@ mod material;
 pub(crate) mod native;
 mod producer;
 mod products;
-mod replay;
-pub use replay::Replay;
 mod spool;
 mod status;
 pub use status::Status;
@@ -35,8 +33,6 @@ pub enum Error {
         offered_hash: String,
         receipt: Box<sinex_protocol::Acknowledgment>,
     },
-    #[error("historical event {event} was erased at {position}")]
-    Erased { event: String, position: i64 },
     #[error("{0}")]
     Invalid(String),
     #[error(transparent)]
@@ -365,11 +361,6 @@ impl polylogue_store::primary::Sinex for Sinex {
     ) -> polylogue_store::Result<polylogue_model::user::UserOutcome> {
         Ok(self.prepare_request(request)?)
     }
-    fn canonical_publisher(&self) -> bool {
-        self.health
-            .lock()
-            .is_ok_and(|health| health.canonical_publisher)
-    }
     fn visit_pending_requests(
         &self,
         visit: &mut dyn FnMut(
@@ -398,59 +389,6 @@ impl polylogue_store::primary::Sinex for Sinex {
     ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
         Ok(self.prepare_named_products(identity, products)?)
     }
-    fn stage_canonical_products(
-        &self,
-        identity: &str,
-        products: &[polylogue_store::primary::ProductWrite],
-        historical_proof: Option<&polylogue_store::primary::RawInputProof>,
-    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
-        Ok(self.stage_canonical_products(identity, products, historical_proof)?)
-    }
-    fn visit_canonical_custody(
-        &self,
-        visit: &mut dyn FnMut(
-            &polylogue_store::primary::CanonicalCustody,
-        ) -> polylogue_store::Result<()>,
-    ) -> polylogue_store::Result<()> {
-        Ok(self.visit_canonical_custody(visit)?)
-    }
-    fn revoke_canonical_custody(&self) -> polylogue_store::Result<()> {
-        Ok(self.revoke_canonical_custody()?)
-    }
-    fn prepare_canonical_products(
-        &self,
-        identity: &str,
-        products: &[polylogue_store::primary::ProductWrite],
-        proof: &polylogue_store::primary::RawInputProof,
-    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
-        Ok(self.prepare_canonical_products(identity, products, proof)?)
-    }
-    fn discard_confirmed(
-        &self,
-        identities: &[String],
-        position: i64,
-        applied: i64,
-    ) -> polylogue_store::Result<()> {
-        let receipts = self.with(async |client| client.recorded(identities).await)?;
-        let queue = self
-            .spool
-            .lock()
-            .map_err(|_| Error::Invalid("producer spool panicked".into()))?;
-        let mut admitted = false;
-        for receipt in receipts.into_values() {
-            if let Some(entry) = queue.get(&receipt.frame)? {
-                admitted |=
-                    entry.is_write() && receipt.refusal.is_none() && receipt.commit_seq.is_some();
-                client::adopt_receipt(&queue, &entry, receipt)?;
-            }
-        }
-        if admitted {
-            queue.retire(applied)?;
-        } else {
-            queue.discard_confirmed(identities, position, applied)?;
-        }
-        Ok(())
-    }
     fn prepare_reading(
         &self,
         root: &str,
@@ -464,24 +402,8 @@ impl polylogue_store::primary::Sinex for Sinex {
         state: &polylogue_store::primary::ReplayState,
         cache: &str,
     ) -> polylogue_store::Result<Vec<polylogue_store::primary::Confirmed>> {
-        let page = match self.with(async |client| client.confirmed(state, cache).await) {
-            Ok(page) => page,
-            Err(Error::Unreachable(_) | Error::Refused { .. }) => {
-                vec![polylogue_store::primary::Confirmed {
-                    position: 0,
-                    event: String::new(),
-                    output_index: 0,
-                    native: None,
-                    change: polylogue_store::primary::ConfirmedChange::Control(Box::new(
-                        polylogue_store::primary::ReplayControl::BasisStatus {
-                            status: polylogue_store::primary::ReplayBasisStatus::Unverified,
-                        },
-                    )),
-                }]
-            }
-            Err(error) => return Err(error.into()),
-        };
-        self.resume_publication();
+        let page = self.with(async |client| client.confirmed(state, cache).await)?;
+        self.send_pending();
         Ok(page)
     }
     fn acknowledge(
