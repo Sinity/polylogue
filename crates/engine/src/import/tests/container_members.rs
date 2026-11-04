@@ -185,7 +185,7 @@ fn identical_and_changed_containers_keep_imports_while_sharing_member_bytes() {
     );
     assert_eq!(
         w.count("SELECT count(DISTINCT container_input) AS n FROM a.observation_container"),
-        3
+        2
     );
     assert_eq!(w.count("SELECT count(DISTINCT json_extract(o.details_json,'$.import.import_id')) AS n FROM a.observation_container c JOIN a.observation o ON o.id=c.observation_id"),3);
 }

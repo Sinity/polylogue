@@ -195,13 +195,13 @@ fn explicit_unbounded_read_stream_waits_beyond_the_read_default_and_finishes_exa
 #[test]
 fn a_command_timeout_overrides_the_global_default() {
     let output = answer(
-        &["--deadline", "2000", "--json", "status"],
+        &["--deadline", "2000", "--json", "setting"],
         Duration::from_millis(1250),
-        b"{\"outcome\":\"ok\",\"value\":{\"ready\":true},\"notes\":[],\"next\":[]}\n",
+        b"{\"outcome\":\"ok\",\"value\":[],\"notes\":[],\"next\":[]}\n",
         command_surface::Deadline::Milliseconds(2000),
     );
     assert!(output.status.success(), "{output:?}");
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let answer: command_surface::Answer<serde_json::Value> = serde_json::from_value(value).unwrap();
-    assert_eq!(answer.value().unwrap()["ready"], true);
+    assert_eq!(answer.value().unwrap(), &serde_json::json!([]));
 }
