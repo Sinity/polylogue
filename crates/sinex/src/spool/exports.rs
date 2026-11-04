@@ -151,6 +151,7 @@ impl Spool {
                 reason: "pending custody of this input holds an export reading without a valid export key".into(),
             })
         })
+        .map(|_| ())
     }
 
     pub fn export_material_key(&self, identity: &str) -> Result<Option<ExportReadingKey>> {
