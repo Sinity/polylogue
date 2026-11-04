@@ -1433,7 +1433,7 @@ impl Spool {
             "raw-roots",
             "raw-children",
             "export-readings",
-            "export-unknown",
+            "export-inputs",
         ] {
             fs::create_dir_all(index.join(name))?;
         }

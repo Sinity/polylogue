@@ -56,15 +56,26 @@ pub(super) fn capture_bindings(capture: &Capture) -> Result<Vec<ExportBinding>> 
     Ok(result)
 }
 
+pub(super) fn unknown(capture: &Capture, bindings: &[ExportBinding]) -> bool {
+    let Capture::Input(input) = capture else {
+        return false;
+    };
+    input.parsed.iter().enumerate().any(|(index, reading)| {
+        (reading.delivery.is_some() || reading.export_key.is_some())
+            && !bindings
+                .iter()
+                .any(|binding| binding.captured == Some(index))
+    })
+}
+
 pub(super) fn insert(spool: &Spool, prepared: &Prepared) -> Result<()> {
-    // A reading whose export key is missing or wrong cannot be found by
-    // key, so the input it belongs to records it.
+    // Every captured input is indexed by its source name, including those
+    // whose sidecar cannot supply a valid export key.
     if let Some(material) = prepared.material()
-        && material.exports_unknown
         && let Some(Capture::Input(input)) = &material.capture
     {
         let path = spool.index(
-            "export-unknown",
+            "export-inputs",
             &input_key(&input.rows.input, &input.rows.format)?,
         );
         insert_order(&path, prepared)?;
@@ -120,7 +131,7 @@ impl Spool {
     pub fn require_known_exports(&self, key: &ExportReadingKey, through: u64) -> Result<()> {
         self.ensure_indexes()?;
         let path = self.index(
-            "export-unknown",
+            "export-inputs",
             &input_key(&key.input.id, &key.input.format)?,
         );
         if !path.try_exists()? {
@@ -128,10 +139,17 @@ impl Spool {
         }
         raw_ranges::walk(&path, 0, 0, None, through, usize::MAX, &mut |order, identity| {
             let entry = self.required(identity)?;
-            if entry.order != order || !entry.material().is_some_and(|m| m.exports_unknown) {
-                return invalid("unknown export index differs from its immutable custody");
+            let input_matches = entry.capture().is_some_and(|capture| matches!(capture,
+                Capture::Input(input) if input.rows.input == key.input.id && input.rows.format == key.input.format));
+            if entry.order != order || !input_matches {
+                return invalid("export input index differs from its immutable custody");
             }
-            if entry.phase.is_refused() || entry.revoked {
+            if entry.phase.is_refused() {
+                return Ok(());
+            }
+            let capture = self.capture(identity)?;
+            let bindings = capture_bindings(&capture)?;
+            if !unknown(&capture, &bindings) {
                 return Ok(());
             }
             Err(Error::Refused {
