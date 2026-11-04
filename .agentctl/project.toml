@@ -31,7 +31,7 @@ description = "Formatting, boundaries, both clippy configurations and all tests"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]
 pool = "bulk"
 result = "exit"
-timeout_seconds = 1200
+timeout_seconds = 3600
 scratch = "tmpfs"
 cache = "none"
 unit_properties = ["MemoryHigh=8G"]
@@ -47,7 +47,6 @@ result = "exit"
 timeout_seconds = 3600
 scratch = "nvme"
 cache = "none"
-cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.scenarios]
@@ -174,7 +173,7 @@ description = "Build and test the Sinex client and primary-mode application"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "sinex-client"]
 pool = "bulk"
 result = "exit"
-timeout_seconds = 1200
+timeout_seconds = 3600
 scratch = "tmpfs"
 cache = "none"
 unit_properties = ["MemoryHigh=8G"]

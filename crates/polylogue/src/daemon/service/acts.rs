@@ -1183,6 +1183,8 @@ fn hand_off(
     let operation = d.resolve_operation_context(invocation.clone())?;
     let prepared = crate::briefing::prepare(
         &reader,
+        &d.scope,
+        None,
         &crate::briefing::Ask::Takeover {
             session: h.source.clone(),
             for_session: None,
