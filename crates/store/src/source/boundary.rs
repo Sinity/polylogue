@@ -54,7 +54,6 @@ impl SourceBoundary {
             || generation != self.generation
             || scope_root(archive) != self.scope_root
         {
-            { eprintln!("DEBUGSCOPE {}:{}\n{}", file!(), line!(), std::backtrace::Backtrace::force_capture()); }
             return Err(StoreError::ScopeChanged);
         }
         match self.authority {

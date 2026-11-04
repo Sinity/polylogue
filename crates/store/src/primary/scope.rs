@@ -22,7 +22,6 @@ pub(crate) fn require_readable(index: &Connection) -> Result<()> {
         .optional()?
         .is_some()
     {
-        { eprintln!("DEBUGSCOPE {}:{}\n{}", file!(), line!(), std::backtrace::Backtrace::force_capture()); }
         return Err(StoreError::ScopeChanged);
     }
     Ok(())

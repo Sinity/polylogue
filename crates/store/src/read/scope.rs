@@ -145,7 +145,6 @@ impl ReadScopeToken {
         if self.state.resetting.load(Ordering::Acquire)
             || self.state.epoch.load(Ordering::Acquire) != self.epoch
         {
-            { eprintln!("DEBUGSCOPE {}:{}\n{}", file!(), line!(), std::backtrace::Backtrace::force_capture()); }
             Err(StoreError::ScopeChanged)
         } else {
             Ok(())

@@ -5,7 +5,6 @@ pub(super) fn require_current(archive: &Archive, selected: Option<&ReadScopeToke
     if let Some(selected) = selected {
         let current = archive.scope_token()?;
         if !selected.same(&current) {
-            { eprintln!("DEBUGSCOPE {}:{}\n{}", file!(), line!(), std::backtrace::Backtrace::force_capture()); }
             return Err(StoreError::ScopeChanged);
         }
         selected.check()?;
