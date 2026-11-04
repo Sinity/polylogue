@@ -196,37 +196,9 @@ impl Engine {
         report: &mut ImportReport,
     ) -> Result<BTreeSet<String>, EngineError> {
         let mut executed = BTreeSet::new();
-        let existing = items
-            .iter()
-            .map(|(_, _, _, captured)| {
-                self.reads
-                    .reader()?
-                    .input_progress(&captured.prepared.hash().to_string())
-            })
-            .collect::<Result<Vec<_>, polylogue_store::StoreError>>()?;
-        if existing.iter().all(Option::is_some) {
-            for ((at, origin, facts, captured), progress) in items.into_iter().zip(existing) {
-                let progress = progress.expect("existing input");
-                let id = captured.prepared.hash().to_string();
-                let stored = polylogue_store::staging::StoredInput {
-                    input: id.clone(),
-                    chain: progress.chain,
-                    length: progress.length,
-                    already_stored: true,
-                };
-                report.already_stored.push(at.clone());
-                let input = InputKey {
-                    id,
-                    format: origin.name.into(),
-                    arrival_rank: 2,
-                };
-                if let Some(plan) = self.stored_import_plan(&at, origin, input, &stored, facts)? {
-                    executed.insert(plan.input.id.clone());
-                    self.execute(vec![plan], &mut report.pass)?;
-                }
-            }
-            return Ok(executed);
-        }
+        // Every explicit import reaches the writer, including stored bytes:
+        // it checks the format and records this receiver's observation.
+        // The blob writer deduplicates bytes within the same transaction.
         let mut metadata = Vec::new();
         let mut group = Vec::new();
         for (at, origin, facts, captured) in items {
