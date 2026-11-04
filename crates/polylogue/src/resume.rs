@@ -73,7 +73,6 @@ pub struct ResumableSession {
 /// Sessions under `cwd`, newest first, that left something open or carry
 /// a handoff or problem; sessions with nothing open are left out. Which
 /// sessions are under `cwd` comes from the daemon's scope index.
-
 pub fn resumable(
     reader: &Reader<'_>,
     scope: &crate::daemon::scope::SharedScopeIndex,

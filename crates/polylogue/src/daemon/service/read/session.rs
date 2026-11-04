@@ -1860,7 +1860,8 @@ fn tree(reader: &Reader<'_>, seed: &SessionId) -> Result<Vec<Node>, Failure> {
     let mut shown: HashSet<String> = HashSet::new();
     let mut nodes = Vec::new();
     for root in roots {
-        let mut stack: Vec<(String, Option<(String, String, String)>)> = vec![(root, None)];
+        type ParentEdge = (String, String, String);
+        let mut stack: Vec<(String, Option<ParentEdge>)> = vec![(root, None)];
         while let Some((session, reached)) = stack.pop() {
             let parent = reached.as_ref().map(|(parent, _, _)| parent.clone());
             if !shown.insert(session.clone()) {
