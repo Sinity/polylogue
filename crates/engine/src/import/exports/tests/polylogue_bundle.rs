@@ -12,7 +12,7 @@ fn authored_bundle() -> Vec<u8> {
     let authored = json!({"record":"authored","data":{"ref":"request:setting-request","commit":2,"prepared":{
         "request":{"id":"setting-request","machine":"exported-machine","at":"2026-01-01T00:00:00Z","authorship":{"author":"operator","via":"cli"},"write":{"write":"set_setting","key":"browser.actions","value":"on","machine":null}},
         "outcome":{"id":"setting-request","repeat":false,"pending":false},
-        "effect":{"assertions":[{"id":"setting-request","root":"setting-request","kind":"setting","key":"browser.actions","value":{"machine":null,"value":{"type":"boolean","value":true}},"author":"operator","via":"cli","machine":"exported-machine","created_at":"2026-01-01T00:00:00Z","valid_until":null,"links":[]}],"variants":{"variants":[],"variant_parts":[]},"kept_results":[],"deliveries":[],"chats":[],"backfills":[]}},"imports":[]}});
+        "effect":{"assertions":[{"id":"setting-request","root":"setting-request","kind":"setting","key":"browser.actions","value":{"machine":null,"value":{"type":"boolean","value":true}},"author":"operator","via":"cli","machine":"exported-machine","created_at":"2026-01-01T00:00:00Z","valid_until":null,"links":[]}],"variants":{"variants":[],"variant_parts":[]},"kept_results":[],"deliveries":[],"chats":[],"backfills":[]}}}});
     [manifest, session, authored]
         .into_iter()
         .flat_map(|record| {
@@ -24,7 +24,7 @@ fn authored_bundle() -> Vec<u8> {
 }
 
 #[test]
-fn canonical_bundle_restores_historical_state_with_separate_local_ingress() {
+fn canonical_bundle_keeps_historical_authorship_and_separate_import_observation() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("records.jsonl");
     fs::write(&path, authored_bundle()).unwrap();
@@ -39,17 +39,7 @@ fn canonical_bundle_restores_historical_state_with_separate_local_ingress() {
     );
     assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 1);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.assertion WHERE id='setting-request' AND kind='setting' AND key='browser.actions' AND json_extract(value,'$.value.value')=1 AND author='operator'"),1);
-    let reads = engine.reads.reader().unwrap();
-    let provenance = reads
-        .query(
-            "SELECT imports FROM source_client_request WHERE id='setting-request'",
-            &[],
-        )
-        .unwrap();
-    let imports: serde_json::Value =
-        serde_json::from_str(provenance[0]["imports"].as_str().unwrap()).unwrap();
-    assert_eq!(imports["observed"][0]["actor"], "script:polylogue-import");
-    drop(reads);
+    assert_eq!(import_actors(&engine), ["script:polylogue-import"]);
     let again = engine.import(std::slice::from_ref(&path)).unwrap();
     assert!(again.pass.errors.is_empty(), "{again:?}");
     assert_eq!((again.user_state.applied, again.user_state.present), (0, 1));
@@ -162,23 +152,13 @@ fn ordinary_open_replays_stored_authored_state_after_real_interruption() {
             ),
             1
         );
-        let reader = engine.reads.reader().unwrap();
-        let provenance = reader
-            .query(
-                "SELECT imports FROM source_client_request WHERE id='setting-request'",
-                &[],
-            )
-            .unwrap();
-        let imports: serde_json::Value =
-            serde_json::from_str(provenance[0]["imports"].as_str().unwrap()).unwrap();
-        assert_eq!(imports["observed"].as_array().unwrap().len(), 1);
-        assert_eq!(imports["observed"][0]["actor"], "script:polylogue-import");
+        assert_eq!(import_actors(&engine), ["script:polylogue-import"]);
     }
 }
 
 #[cfg(feature = "faults")]
 #[test]
-fn explicit_receiver_after_interruption_is_separate_from_the_frozen_original_ingress() {
+fn explicit_receiver_after_interruption_does_not_rewrite_historical_authorship() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("records.jsonl");
     fs::write(&path, authored_bundle()).unwrap();
@@ -201,30 +181,20 @@ fn explicit_receiver_after_interruption_is_separate_from_the_frozen_original_ing
     assert_eq!(report.user_state.present, 1);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 1);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.assertion WHERE id='setting-request' AND kind='setting' AND author='operator' AND json_extract(value,'$.value.value')=1"), 1);
-    let reader = engine.reads.reader().unwrap();
-    let provenance = reader
-        .query(
-            "SELECT imports FROM source_client_request WHERE id='setting-request'",
-            &[],
-        )
-        .unwrap();
-    let imports: serde_json::Value =
-        serde_json::from_str(provenance[0]["imports"].as_str().unwrap()).unwrap();
-    let observed = imports["observed"].as_array().unwrap();
-    assert_eq!(observed.len(), 2);
-    let actors: std::collections::BTreeSet<_> = observed
-        .iter()
-        .map(|claim| claim["actor"].as_str().unwrap())
-        .collect();
     assert_eq!(
-        actors,
-        std::collections::BTreeSet::from(["script:polylogue-import", "script:receiver-b"])
+        import_actors(&engine),
+        ["script:polylogue-import", "script:receiver-b"]
     );
-    drop(reader);
     assert!(engine.run_pass().unwrap().errors.is_empty());
     assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 1);
     assert_eq!(
         w.count("SELECT count(*) AS n FROM a.assertion WHERE kind='setting'"),
         1
     );
+}
+
+fn import_actors(engine: &Engine) -> Vec<String> {
+    engine.reads.reader().unwrap().query(
+        "SELECT DISTINCT json_extract(details_json,'$.import.authorship.author') AS actor FROM a.observation WHERE class='imported' ORDER BY actor", &[]
+    ).unwrap().into_iter().map(|row| row["actor"].as_str().unwrap().to_owned()).collect()
 }

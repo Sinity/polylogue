@@ -17,12 +17,12 @@ fn slow_statement_stops_at_its_deadline_and_the_slot_can_be_reused() {
     let directory = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(directory.path()).unwrap();
     let pool = ReadPool::with_budget(&fixture.archive, 1, 8 << 20).unwrap();
+    // Warm the connection before the statement's deadline starts, then
+    // acquire it within the scope so it installs this request's progress hook.
+    drop(pool.reader().unwrap());
     let limit = ReadLimit::new(Duration::from_millis(50), Default::default());
     let start = Instant::now();
-    // Open the connection before timing the statement itself.
-    let reader = pool.reader().unwrap();
-    let result = limit.scope(|| reader.query(SLOW, &[]));
-    drop(reader);
+    let result = limit.scope(|| pool.reader()?.query(SLOW, &[]));
     assert!(matches!(result, Err(StoreError::ReadDeadlineExceeded)));
     assert!(matches!(
         limit.check(),
