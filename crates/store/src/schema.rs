@@ -32,7 +32,10 @@ pub const INDEX: &str = concat!(
     "\n",
     include_str!("schema/attachment_bindings.sql"),
     "\n",
-    include_str!("schema/text_fragments.sql")
+    include_str!("schema/text_fragments.sql"),
+    "\n",
+    include_str!("schema/session_cwd.sql")
+
 );
 #[cfg(test)]
 pub(crate) const QUERY_OBJECTS: &str = concat!(
@@ -50,6 +53,7 @@ pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[];
 
 /// The version [`ARCHIVE`] creates.
 pub const ARCHIVE_VERSION: u32 = 1 + ARCHIVE_MIGRATIONS.len() as u32;
+
 
 
 /// The index schema and row encoding version. Reading versions are independent.

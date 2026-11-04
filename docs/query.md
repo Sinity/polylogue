@@ -292,5 +292,6 @@ The language's own laws (filter composition, three-valued filters, grouped rows,
 - **answer-schema**: one JSON-schema test of the answer holds across all surfaces; `empty` never results from a failure.
 - **read-as-complete**: every field, operator and stage has a reading phrase; `read_as` for every Morrow example is pinned; `--why` on an empty Morrow query names the clause that matched nothing and the known values.
 - **facets-equal-group-by**: facet counts equal their `group by` queries.
+- **cwd-reads-directory-key-range**: `cwd:` at a deep directory and at `/` finds sessions through a key range over every directory sessions recorded, never by reading every session row, and matches whole path components.
 - **watch-change-kinds**: a watched `similar:` query reports rows joining and the top five changing as separate changes; a reading during catch-up reports nothing; a re-parse of the same input never fires again.
 - **bulk-write-membership**: a bulk write over a query writes exactly one assertion per row of the query's membership at write time.

@@ -101,7 +101,13 @@ The session-start brief is injected by the `SessionStart` hook (and Hermes's fir
 13. **Machine section**, in primary mode only: read from a stored Sinex context pack under a 100 ms deadline, within a declared share of the budget. Standalone, the section is absent.
 14. **Left out:** each group with the command that lists it.
 
-**Latency.** The daemon answers a brief within 150 ms p95 when warm; the hook allows 300 ms including connection. A section that cannot answer in time renders "not available (index building)" or "not available (timed out)". On a whole-brief timeout or refusal, the hook injects one line "Polylogue brief unavailable: timed out (delivery:<id>)", records `not_sent:timeout` and exits 0. The daemon keeps each section warm per repository scope, invalidated by writes that touch the scope.
+**Latency.** The daemon answers a brief within 300 ms p95 warm and 1 s p95 cold, at any directory (`/` and a directory nobody worked in included); the hook allows 1.5 s including connection. A brief's reads are bounded by what it reports, not by how much work happened under its directory:
+- **Scope index.** The daemon keeps every main session's working directories, repository, activity, stored message count, live facts and task in memory, read once at start and brought forward from the change feed after each commit. Which sessions are under the directory, which work there now and which hold a task there costs no index read.
+- **Session summaries.** The derive step keeps what a brief says about each session (its last answer, files changed, commits, pull requests, an unanswered prompt, an unfinished tool call), so each listed session costs one row and its answer's text.
+- **Deadline.** Sections run cheapest first (assertions, other agents, open tasks, recent sessions, notices) and stop a fifth of the remaining time, at most a second, before the request's deadline. A section that meets it is left out with reason `deadline`, the brief names it and the command that prints the whole brief (`polylogue brief --cwd DIR --deadline none`), and the hook injects the sections that are ready. A deadline never yields an empty brief while a section has items.
+- **Delivery off the answer path.** The answer does not wait for the writer: the delivery record is queued, the hook hands its `delivered` outcome over within 20 ms and exits, and the writer applies both in order, a repeated request ID once. A full writer queue never makes a brief wait: the record waits in the daemon, in order with its outcome event, and goes to the writer after its next commit. An outcome is recorded even when the hook has already exited. Until a delivery's record commits, the daemon remembers it as the recipient's latest brief, so a `resume` or `compact` brief right after it reports only what changed since.
+
+On a whole-brief timeout or refusal, the hook injects one line "Polylogue brief unavailable: timed out (delivery:<id>)", records `not_sent:timeout` and exits 0.
 
 **Interfaces:** the hook; `polylogue pack brief [--cwd DIR] [--for SESSION] [--source startup|resume|compact] [--budget N]`; MCP `brief`.
 
@@ -329,6 +335,16 @@ Morrow is the fixture; a "fixture harness" is a stub binary on `PATH` that recor
 - **contrary-evidence-included**: a pack including claim C includes every assertion that challenges C.
 - **brief-spans-worktrees**: in a second worktree of the Morrow repository, the brief lists the first worktree's sessions, labelled; the caller never appears under other agents.
 - **resume-delta-from-delivered**: after a resume, the delta starts at the last `delivered` session-start, resume or compaction delivery, not at a prepared or recall delivery.
+- **brief-reads-bounded-by-result**: under a prefix holding 30,000 sessions and over a million messages, at `/`, the prefix, one of its subdirectories and a directory nobody worked in, a brief reads at most 100 pages through a reader whose page cache starts empty.
+- **brief-partial-at-deadline**: a brief past its deadline answers with the sections that need no read, lists every other section in `left_out` with reason `deadline`, and names the command that prints the whole brief.
+- **brief-answers-before-delivery-commit**: with the writer held in a turn, a hook brief answers with its delivery ID; the delivery is recorded after the turn.
+- **brief-never-waits-for-the-writer-queue**: with the writer held and its queue full, a hook brief answers within the hook's budget; its record commits once, after the writer moves on.
+- **delivery-event-once**: a `delivered` outcome sent twice with one request ID is recorded once.
+- **brief-delta-after-queued-delivery**: a compaction brief prepared while the startup brief's record is still queued reports only what changed since the startup brief.
+- **scope-whole-components**: the scope index finds the sessions at or below a directory by whole path components, newest first, at `/` too; sibling directories sharing a prefix are not below it.
+- **scope-live-and-claims**: the scope index's other agents are the sessions working, waiting or idle by the live-state rule, waiting first.
+- **scope-follows-change-feed**: a session written after the scope index's position appears after it follows the change feed.
+- **live-state-one-rule**: the scope index's live state agrees with the query language's on every combination of live facts.
 - **unjudged-counted-not-inlined**: unjudged agent assertions are counted, not inlined; an operator-accepted agent assertion is inlined with its agent author and "(accepted by the operator)".
 - **takeover-references**: a prompt with eleven archived session IDs yields one delivery within the budget holding an eleven-line index; an ambiguous prefix yields its candidates; a provider URL yields that conversation's takeover; a predecessor ID yields the successor's takeover, labelled.
 - **takeover-after-compaction**: a takeover of a compacted session shows the summary and the kept tail, not the evicted prefix.

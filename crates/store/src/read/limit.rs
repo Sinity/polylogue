@@ -89,6 +89,11 @@ impl ReadLimit {
         }
     }
 
+    /// When this request's reads stop, when they have a deadline.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
     pub fn stage(&self) -> Option<&'static str> {
         self.stages
             .lock()

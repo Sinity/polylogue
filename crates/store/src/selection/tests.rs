@@ -1044,3 +1044,74 @@ fn a_selection_failure_carries_the_store_code_every_surface_uses() {
         assert_eq!(SelectionError::from(error).code(), code);
     }
 }
+
+/// law: cwd-reads-directory-key-range
+/// `cwd:` finds sessions through a key range over the directories sessions
+/// recorded, never by reading every session row, at a deep directory and at
+/// `/`; and it matches whole path components.
+#[test]
+fn cwd_searches_recorded_directories_and_never_scans_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    for (id, cwd) in [
+        ("test:here", "/work/morrow"),
+        ("test:below", "/work/morrow/sub"),
+        ("test:sibling", "/work/morrow-old"),
+        ("test:elsewhere", "/elsewhere"),
+    ] {
+        f.session(SessionFacts {
+            id,
+            cwd: Some(cwd),
+            last: Some(1),
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    for text in [
+        "sessions where cwd:/work/morrow",
+        "sessions where cwd:/",
+        "sessions where cwd:/work/morrow OR cwd:/elsewhere",
+    ] {
+        let program = crate::query::compile(text, &options()).unwrap();
+        let plan: Vec<String> = reader
+            .query(&format!("EXPLAIN QUERY PLAN {}", program.sql), &[])
+            .unwrap()
+            .into_iter()
+            .map(|row| row["detail"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(
+            plan.iter()
+                .any(|step| step.starts_with("SEARCH session_cwd_member")),
+            "{text}: {plan:#?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|step| step == "SCAN s" || step.starts_with("SCAN s ")),
+            "{text}: {plan:#?}"
+        );
+    }
+    let mut options = options();
+    options.page_size = None;
+    options.fields = vec!["id".into()];
+    let ids = |text: &str| {
+        let selected = reader.prepare_selection(text, &options).unwrap();
+        let mut ids = Vec::new();
+        reader
+            .visit_selection::<SelectionError>(&selected, None, None, |row| {
+                ids.push(row.values["id"].as_str().unwrap().to_owned());
+                Ok(ControlFlow::Continue(()))
+            })
+            .unwrap();
+        ids.sort();
+        ids
+    };
+    assert_eq!(
+        ids("sessions where cwd:/work/morrow"),
+        ["test:below", "test:here"]
+    );
+    assert_eq!(ids("sessions where cwd:/").len(), 4);
+
+}

@@ -126,6 +126,8 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
     let reader = d.daemon.reads.reader().unwrap();
     let brief = crate::briefing::prepare(
         &reader,
+        &d.daemon.scope,
+        None,
         &crate::briefing::Ask::SessionStart {
             cwd: "/nonexistent/dir".into(),
             session: Some(polylogue_model::SessionId::parse("claude-code:s1").unwrap()),

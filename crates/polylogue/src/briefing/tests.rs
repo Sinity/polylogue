@@ -1,4 +1,5 @@
 use super::*;
+use crate::daemon::scope::SharedScopeIndex;
 
 #[test]
 fn a_checkout_root_joins_the_scope() {
@@ -75,6 +76,8 @@ fn recall_fuses_prose_and_tool_output_in_the_querys_order() {
     };
     let p = prepare(
         &reader,
+        &SharedScopeIndex::default(),
+        None,
         &ask,
         "d1",
         &fixture_context(Timestamp::from_unix_ms(0).unwrap()),
@@ -265,7 +268,17 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         source: StartSource::Startup,
     };
     let now = Timestamp::from_unix_ms(T0 + 3_600_000).unwrap();
-    let p = prepare(&reader, &ask, "d1", &fixture_context(now), None, None).unwrap();
+    let p = prepare(
+        &reader,
+        &scope_of(&reader),
+        None,
+        &ask,
+        "d1",
+        &fixture_context(now),
+        None,
+        None,
+    )
+    .unwrap();
     let t = &p.text;
     assert!(!p.empty);
     for expected in [
@@ -366,7 +379,17 @@ fn recall_pages_continue_by_cursor() {
             for_session: None,
             cursor: cursor.clone(),
         };
-        let p = prepare(&reader, &ask, "d", &fixture_context(now), None, None).unwrap();
+        let p = prepare(
+            &reader,
+            &SharedScopeIndex::default(),
+            None,
+            &ask,
+            "d",
+            &fixture_context(now),
+            None,
+            None,
+        )
+        .unwrap();
         seen.extend(p.refs.iter().filter(|r| r.starts_with("message:")).cloned());
         match p.next {
             Some(next) => {
@@ -388,7 +411,182 @@ fn recall_pages_continue_by_cursor() {
         for_session: None,
         cursor: first_next,
     };
-    assert!(prepare(&reader, &ask, "d", &fixture_context(now), None, None,).is_err());
+    assert!(
+        prepare(
+            &reader,
+            &SharedScopeIndex::default(),
+            None,
+            &ask,
+            "d",
+            &fixture_context(now),
+            None,
+            None,
+        )
+        .is_err()
+    );
+}
+
+/// The scope index over everything `reader` sees.
+fn scope_of(reader: &Reader<'_>) -> SharedScopeIndex {
+    let scope = SharedScopeIndex::default();
+    scope.refresh(reader).unwrap();
+    scope
+}
+
+/// law: brief-reads-bounded-by-result
+/// A brief's archive reads depend on what it reports, not on how much work
+/// happened under its directory: at `/`, under a prefix holding 30,000
+/// sessions and over a million messages, in one of its subdirectories and in
+/// a directory nobody worked in, a brief reads at most 100 pages through a
+/// reader whose page cache starts empty.
+#[test]
+fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
+    use polylogue_store::fixture::{Fixture, ManySessions};
+    const SESSIONS: usize = 30_000;
+    const MESSAGES: usize = 34;
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    let pks = f
+        .many_sessions(ManySessions {
+            prefix: "/work/dense",
+            sessions: SESSIONS,
+            messages: MESSAGES,
+            answered: 20,
+            last: T0 - 60_000,
+        })
+        .unwrap();
+    const { assert!(SESSIONS * MESSAGES >= 1_000_000) };
+    // Three of the newest are working there now.
+    for &pk in &pks[SESSIONS - 3..] {
+        f.live(pk, "hook_pre_tool_use", T0 - 30_000, None, None)
+            .unwrap();
+    }
+    let scope = scope_of(&f.reads().unwrap().reader().unwrap());
+    let now = Timestamp::from_unix_ms(T0).unwrap();
+    for cwd in ["/", "/work/dense", "/work/dense/d5", "/unvisited/place"] {
+        // A new pool: its connections' page caches start empty.
+        let pool = f.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        reader.take_page_reads().unwrap();
+        let p = prepare(
+            &reader,
+            &scope,
+            None,
+            &Ask::SessionStart {
+                cwd: cwd.into(),
+                session: None,
+                source: StartSource::Startup,
+            },
+            "d1",
+            &fixture_context(now),
+            None,
+            None,
+        )
+        .unwrap();
+        let pages = reader.take_page_reads().unwrap();
+        assert!(pages <= 100, "{cwd}: {pages} pages read\n{}", p.text);
+        if cwd == "/unvisited/place" {
+            assert!(p.empty, "{}", p.text);
+            continue;
+        }
+        let newest = if cwd == "/work/dense/d5" {
+            // The newest session in d5 is the highest n with n % 97 == 5.
+            (0..SESSIONS).rev().find(|n| n % 97 == 5).unwrap()
+        } else {
+            SESSIONS - 1
+        };
+        for expected in [
+            "Recent sessions here, and what they did:".to_owned(),
+            format!("test:many-{newest}"),
+            format!("({MESSAGES} messages)"),
+            "older sessions here".to_owned(),
+        ] {
+            assert!(
+                p.text.contains(&expected),
+                "{cwd}: missing {expected:?} in\n{}",
+                p.text
+            );
+        }
+        if cwd != "/work/dense/d5" {
+            for expected in [
+                "Other agents working here now:".to_owned(),
+                format!("test:many-{}  untitled: working", SESSIONS - 1),
+                format!(
+                    "last answer: \"Answer {}: the synthetic work is finished.\"",
+                    SESSIONS - 1
+                ),
+            ] {
+                assert!(
+                    p.text.contains(&expected),
+                    "{cwd}: missing {expected:?} in\n{}",
+                    p.text
+                );
+            }
+        }
+    }
+}
+
+/// law: brief-partial-at-deadline
+/// A brief that meets its deadline answers with the sections it has, names
+/// each section it left out with reason `deadline`, and says how to get the
+/// whole brief; it is not empty while a section produced items.
+#[test]
+fn a_brief_past_its_deadline_answers_with_the_sections_it_has() {
+    use polylogue_store::read::limit::ReadLimit;
+    let (_dir, f) = worked_directory();
+    let pool = f.reads().unwrap();
+    let scope = scope_of(&pool.reader().unwrap());
+    let limit = ReadLimit::new(std::time::Duration::from_millis(200), Default::default());
+    let p = limit.scope(|| {
+        let reader = pool.reader().unwrap();
+        while limit.check().is_ok() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        prepare(
+            &reader,
+            &scope,
+            None,
+            &Ask::SessionStart {
+                cwd: "/home/op/proj".into(),
+                session: None,
+                source: StartSource::Startup,
+            },
+            "d1",
+            &fixture_context(Timestamp::from_unix_ms(T0 + 3_600_000).unwrap()),
+            None,
+            None,
+        )
+        .unwrap()
+    });
+    assert!(!p.empty, "{}", p.text);
+    // Open Beads come from the scope index and need no read.
+    assert!(
+        p.text
+            .contains("Beads claimed here this week and still open:\n- pl-1"),
+        "{}",
+        p.text
+    );
+    let late: Vec<&str> = p
+        .left_out
+        .iter()
+        .filter(|l| l.reason == "deadline")
+        .map(|l| l.what.as_str())
+        .collect();
+    assert_eq!(
+        late,
+        [
+            "operator notes",
+            "recent sessions",
+            "notices",
+            "assertions by other authors"
+        ]
+    );
+    assert!(
+        p.text.contains("Not available before the deadline: operator notes, recent sessions, notices, assertions by other authors; the whole brief: `polylogue brief --cwd /home/op/proj --deadline none`"),
+        "{}",
+        p.text
+    );
+    assert!(!p.text.contains("Recent sessions here"), "{}", p.text);
 }
 
 fn fixture_context(now: Timestamp) -> std::sync::Arc<crate::operation::Context> {

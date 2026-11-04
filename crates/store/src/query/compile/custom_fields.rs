@@ -395,11 +395,11 @@ pub(crate) fn cwd(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Quer
     let s = x.s();
     let mut parts = vec![];
     for v in x.values() {
-        let a1 = c.subtree(&format!("{s}.cwd"), &v);
-        let a2 = c.subtree("cj.value", &v);
+        // A key range over every directory the session recorded, its last
+        // one included.
+        let range = c.directory_range("session_cwd_member.cwd", &v);
         parts.push(format!(
-            "({a1} OR EXISTS (SELECT 1 FROM {} cj WHERE {a2}))",
-            fields::working_directories(s)
+            "{s}.pk IN (SELECT session_cwd_member.session_pk FROM session_cwd_member WHERE {range})"
         ));
     }
     any_of(x, parts)

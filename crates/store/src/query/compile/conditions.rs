@@ -978,6 +978,20 @@ impl<'a> Compiler<'a> {
             })
     }
 
+    /// `path` and the directories below it, by whole components, as a key
+    /// range over `expr` that an index on it serves: `path` itself, then
+    /// every value that starts with `path/` (`0` is the character after `/`).
+    pub(super) fn directory_range(&mut self, expr: &str, path: &str) -> String {
+        let base = path.trim_end_matches('/');
+        let exact = self.text_param(if base.is_empty() { "/" } else { base });
+        let first = self.text_param(base);
+        let below = self.text_param(&format!("{base}/"));
+        let end = self.text_param(&format!("{base}0"));
+        format!(
+            "({expr} >= {first} AND {expr} < {end} AND ({expr} = {exact} OR {expr} >= {below}))"
+        )
+    }
+
     /// `path` and the directories below it, by whole components, exactly.
     pub(super) fn subtree(&mut self, expr: &str, path: &str) -> String {
         let path = path.trim_end_matches('/');

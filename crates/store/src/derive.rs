@@ -18,6 +18,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use std::collections::BTreeMap;
 
 mod active_path;
+pub(crate) mod brief;
 mod cost;
 pub(crate) mod counts;
 mod duplicates;
@@ -81,6 +82,7 @@ const ALL: &[Derivation] = &[
     cost::DERIVATION,
     counts::DERIVATION,
     session_span::DERIVATION,
+    brief::DERIVATION,
 ];
 
 /// Declared stored products, in their derivation order.
