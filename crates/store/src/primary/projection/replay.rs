@@ -50,7 +50,6 @@ pub(super) fn validate_context(context: &NativeFactContext) -> Result<()> {
         || context.kind.version == 0
         || !hash(&context.kind_definition_hash)
         || !hash(&context.projection.payload_hash)
-        || context.projection.policy_epoch < 0
         || context
             .origin
             .source

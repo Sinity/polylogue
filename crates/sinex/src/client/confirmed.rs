@@ -66,7 +66,6 @@ fn decode_event(event: &sinex_protocol::ConfirmedEvent) -> Result<Confirmed> {
             },
             kind_definition_hash: event.kind_definition_hash.clone(),
             projection: local::ProjectionIdentity {
-                policy_epoch: event.projection.policy_epoch,
                 payload_hash: event.projection.payload_hash.clone(),
             },
             origin: local::ConfirmedOrigin {
@@ -333,14 +332,14 @@ impl Client {
                     native: None,
                     change: ConfirmedChange::Archived,
                 },
-                sinex_protocol::Confirmed::Unhidden(change) => Confirmed {
-                    position: change.unhidden_seq,
+                sinex_protocol::Confirmed::Restored(change) => Confirmed {
+                    position: change.restored_seq,
                     event: change.event.to_string(),
                     output_index: 0,
                     native: None,
                     change: ConfirmedChange::Restored,
                 },
-                sinex_protocol::Confirmed::Excised {
+                sinex_protocol::Confirmed::Tombstoned {
                     event, commit_seq, ..
                 } => Confirmed {
                     position: commit_seq
@@ -415,3 +414,6 @@ fn control_fact(control: ReplayControl) -> Confirmed {
         change: ConfirmedChange::Control(Box::new(control)),
     }
 }
+
+#[cfg(test)]
+mod tests;
