@@ -25,6 +25,10 @@ and requires the acknowledgment to name their exact definition hashes before
 sending materials or events. Each event selects its declaration by name and
 version. A refused hello returns Sinex's reason.
 
+Confirmed payloads are checked against their current immutable kind declaration
+and payload digest. The saved native context carries that digest and the
+owner-provided source and producer origin.
+
 Message and tool-call declarations request no Sinex text index. Their field
 hints describe defaults for operator-configured output rules; they impose no
 kind-wide admission class floor. Event frame names include declaration hashes.
