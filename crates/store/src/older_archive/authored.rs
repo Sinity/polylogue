@@ -87,13 +87,18 @@ pub fn roots(notes: &[Note]) -> BTreeMap<String, String> {
 /// A note as an assertion fact, checked against this archive's rules for
 /// its kind. `roots` is [`roots`] of every note in the older archive.
 pub fn note(note: &Note, roots: &BTreeMap<String, String>) -> Mapped<AssertionFact> {
-    let kind = kind(&note.kind)?;
+    let kind = if note.kind == "tag" && note.key.as_deref() == Some("hidden") {
+        AssertionKind::Hidden
+    } else {
+        kind(&note.kind)?
+    };
     let mut links = Vec::new();
     for target in &note.targets {
         links.push(AssertionLink {
             role: LinkRole::About,
             reference: reference(target, LinkRole::About, roots)?,
             seen_hash: None,
+            quote: None,
         });
     }
     for (relation, other) in &note.relations {
@@ -102,13 +107,16 @@ pub fn note(note: &Note, roots: &BTreeMap<String, String>) -> Mapped<AssertionFa
             role,
             reference: reference(other, role, roots)?,
             seen_hash: None,
+            quote: None,
         });
     }
     let fact = AssertionFact {
         id: note.id.clone(),
         root: note.first_note.clone(),
         kind,
-        key: note.key.clone(),
+        key: (kind != AssertionKind::Hidden)
+            .then(|| note.key.clone())
+            .flatten(),
         value: value(kind, note.value.as_deref()),
         author: author(&note.author)?,
         via: Channel::Import,
@@ -165,6 +173,7 @@ pub fn settings(rows: &[Setting], machines: &[Machine]) -> Vec<(String, Mapped<A
                             before.clone(),
                         )),
                         seen_hash: None,
+                        quote: None,
                     }],
                 ),
                 None => (row.id.clone(), Vec::new()),

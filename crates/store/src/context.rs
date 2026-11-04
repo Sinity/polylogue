@@ -2,9 +2,8 @@
 //! session did, whether sessions are hidden, a session's own prompts, what
 //! it left open, earlier deliveries and settings.
 
-use crate::read::{parse_name, ts};
-use crate::{Reader, Result, StoreError};
-use polylogue_model::{SessionId, SessionKind, Timestamp};
+use crate::{Reader, Result};
+use polylogue_model::Timestamp;
 
 use rusqlite::OptionalExtension;
 use serde::Serialize;

@@ -35,6 +35,7 @@ fn notes_become_assertions_with_their_identity_revisions_and_withdrawals() {
             role: LinkRole::About,
             reference: Reference::parse("session:claude-code:one").unwrap(),
             seen_hash: None,
+            quote: None,
         }]
     );
     let revised = mapped["n2"].as_ref().unwrap();
@@ -43,6 +44,7 @@ fn notes_become_assertions_with_their_identity_revisions_and_withdrawals() {
         role: LinkRole::Revises,
         reference: exact("n1", "n1"),
         seen_hash: None,
+        quote: None,
     }));
     let tag = mapped["t1"].as_ref().unwrap();
     assert_eq!(tag.key.as_deref(), Some("topic"));
@@ -57,10 +59,29 @@ fn notes_become_assertions_with_their_identity_revisions_and_withdrawals() {
                 revision: None,
             }),
             seen_hash: None,
+            quote: None,
         }]
     );
     let reason = mapped["x1"].as_ref().unwrap_err();
     assert!(reason.contains("distillate"), "{reason}");
+}
+
+#[test]
+fn an_older_hidden_tag_becomes_the_hidden_session_mark() {
+    let (_dir, older) = standard();
+    let notes = older.notes().unwrap();
+    let mut hidden = notes.iter().find(|note| note.id == "t1").unwrap().clone();
+    hidden.key = Some("hidden".into());
+    hidden.value = Some("kept out of ordinary reads".into());
+    let fact = note(&hidden, &roots(&notes)).unwrap();
+    assert_eq!(fact.kind, AssertionKind::Hidden);
+    assert_eq!(fact.key, None);
+    assert_eq!(
+        fact.value,
+        Some(serde_json::json!("kept out of ordinary reads"))
+    );
+    assert_eq!(fact.id, hidden.id);
+    assert_eq!(fact.root, hidden.first_note);
 }
 
 /// law: older-archive-notes
