@@ -115,7 +115,7 @@ fn packages_filtersets_and_a_required_selection_intersect() {
             "-p",
             "polylogue-store",
             "--features",
-            "polylogue-store/faults",
+            "polylogue-store/faults,polylogue-store/fixture",
             "-E",
             "(rdeps(=polylogue-model)) & ((test(a)) | (test(b)))",
             "--no-capture"
@@ -143,7 +143,7 @@ fn native_scopes_and_literal_test_arguments_keep_their_meaning() {
                 "-p",
                 "polylogue-store",
                 "--features",
-                "polylogue-store/faults"
+                "polylogue-store/faults,polylogue-store/fixture"
             ]
         );
     }
@@ -198,7 +198,7 @@ fn package_selection_reaches_the_real_runner_before_unrelated_compilation() {
     for (name, manifest, source) in [
         (
             "polylogue-store",
-            "[features]\nfaults=[]\n[dependencies]\nhelper={path='../helper'}\n",
+            "[features]\nfaults=[]\nfixture=[]\n[dependencies]\nhelper={path='../helper'}\n",
             "#[test] fn selected_read() { assert!(cfg!(feature=\"faults\")); assert_eq!(helper::value(),42); }\n#[test] fn selected_write() { assert!(cfg!(feature=\"faults\")); }\n#[test] #[ignore] fn selected_ignored() {}\n",
         ),
         (

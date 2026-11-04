@@ -164,7 +164,7 @@ in
     LLVM_COV = "${toolchain}/lib/rustlib/${pkgs.stdenv.hostPlatform.rust.rustcTarget}/bin/llvm-cov";
     LLVM_PROFDATA = "${toolchain}/lib/rustlib/${pkgs.stdenv.hostPlatform.rust.rustcTarget}/bin/llvm-profdata";
     TZDIR = "${pkgs.tzdata}/share/zoneinfo";
-    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold -C link-arg=-Wl,--compress-debug-sections=zlib";
     shellHook = ''
       # On a host that provides it, each checkout builds in its own target
       # under the shared compiler cache, seeded from a warm target of the same

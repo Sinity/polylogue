@@ -23,7 +23,12 @@ const FORMATTED: &[&str] = &[
 /// The feature set default test builds use, with the Sinex client excluded.
 /// `test`, `scenarios` and `check` reuse these feature-enabled artifacts.
 /// Native package selection limits which test targets Cargo builds.
-const TEST_FEATURES: &str = "polylogue-engine/faults,polylogue-store/faults";
+/// `polylogue-store/fixture` is named although the engine and the daemon
+/// already enable it as a dev-dependency feature, so a selection without them
+/// (`-p polylogue-store`) builds the same store artifact as every other test
+/// build, and the crates above it are not compiled a second time.
+const TEST_FEATURES: &str =
+    "polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture";
 
 #[derive(Parser)]
 #[command(name = "xtask", about = "Polylogue development checks")]
@@ -253,7 +258,7 @@ fn sinex_client_arguments() -> Vec<String> {
         "-p",
         "polylogue",
         "--features",
-        "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults",
+        "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture",
     ]
     .map(String::from)
     .to_vec()
