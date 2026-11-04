@@ -24,7 +24,6 @@ const ASKED: &[(&str, &[&str])] = &[
     ),
     ("list", &[]),
     ("read", &["session:claude-code:s1"]),
-    ("outline", &["claude-code:s1"]),
     ("read", &["session:claude-code:missing"]),
     ("attachment", &["claude-code:missing", "0"]),
     ("read", &["assertion:missing"]),
@@ -226,10 +225,23 @@ fn expected_transport_answer(baseline: &Answer, name: &str, authorship: &Authors
     expected
 }
 
-// A full read records its own Run. Observe each invocation's descriptor from a
-// fresh native reader before making the call, releasing it before transport I/O.
+// A read's first page records its run after the answer has gone
+// (docs/reading.md: "handed to the writer without waiting and committed on
+// its next turn"), so the previous call's run
+// may still be landing. Observe each invocation's descriptor once the
+// position has settled, from a fresh native reader released before the call.
 fn read_position(w: &test_daemon::TestDaemon) -> polylogue_model::ChangePosition {
-    w.daemon.reads.reader().unwrap().change_position().unwrap()
+    let observe = || w.daemon.reads.reader().unwrap().change_position().unwrap();
+    let mut last = observe();
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let now = observe();
+        if now == last {
+            return now;
+        }
+        last = now;
+    }
+    panic!("the change position kept moving: {last:?}");
 }
 
 fn assert_read_page(answer: &Answer, position: &polylogue_model::ChangePosition) {

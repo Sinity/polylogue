@@ -98,7 +98,9 @@ fn document_pages_preserve_exact_prefix_and_refuse_cross_content_stale_and_tampe
     let other_request: serde_json::Value =
         serde_json::from_str(&other_args[other_request]).unwrap();
     let mut changed = original.clone();
-    changed["root_run"] = other_request["root_run"].clone();
+    // Another reading's cursor: the continuation names its own target
+    // (reading design §2.3: "A page cursor holds: the target; ...").
+    changed["cursor"] = other_request["cursor"].clone();
     let mut invalid = vec![changed];
     for token in [
         "broken".to_string(),

@@ -519,6 +519,7 @@ fn grok_file_blobs(
             format: "markdown".into(),
             budget: None,
             with_blobs: false,
+            cursor: None,
         }) {
             Some(answer) if answer.value().is_some() => {
                 let data = crate::protocol::into_value(answer).unwrap();

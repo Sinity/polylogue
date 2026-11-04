@@ -116,6 +116,7 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
             format: "json".into(),
             budget: None,
             with_blobs: false,
+            cursor: None,
         },
         &daemon.daemon,
     );
@@ -131,7 +132,7 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
     let archive = Archive::at(&daemon.daemon.archive.root);
     let full = mcp_page(
         &archive,
-        json!({"target":"session:claude-code:s1", "harness":"full", "budget":10000}),
+        json!({"target":"session:claude-code:s1", "show":["harness:full"], "budget":10000}),
     );
     assert!(full.document.footer.next.is_none());
     let mut expected = Items::default();
@@ -145,7 +146,7 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
     assert!(expected_text.contains("check blocked"));
     let mut page = mcp_page(
         &archive,
-        json!({"target":"session:claude-code:s1", "harness":"full", "budget":1}),
+        json!({"target":"session:claude-code:s1", "show":["harness:full"], "budget":1}),
     );
     assert_eq!(page.snapshot.query, full.snapshot.query);
     let question = page.snapshot.query.clone();
@@ -162,15 +163,20 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
         let envelope: command_surface::RunnableRequest =
             serde_json::from_value(next.http.arguments).unwrap();
         assert_eq!(envelope.operation, "read");
-        let arguments: crate::protocol::read::ResumeArguments =
+        let arguments: crate::protocol::read::Arguments =
             serde_json::from_value(envelope.arguments.clone()).unwrap();
         if let Some(root) = &root {
-            assert_eq!(&arguments.root_run, root);
+            assert_eq!(&arguments.target, root);
         } else {
-            root = Some(arguments.root_run.clone());
+            root = Some(arguments.target.clone());
         }
         assert!(
-            seen.insert((arguments.root_run, arguments.cursor.as_str().to_owned())),
+            seen.insert(
+                arguments
+                    .cursor
+                    .clone()
+                    .expect("a continuation has a cursor")
+            ),
             "continuation must advance"
         );
         page = mcp_page(&archive, envelope.arguments);

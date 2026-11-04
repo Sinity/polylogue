@@ -355,33 +355,6 @@ fn count_input_change(conn: &Connection, input: &str) -> Result<()> {
     Ok(())
 }
 
-/// Folds the change counter of every import holding an input parsed into
-/// one of `sessions`. Members are never visited.
-pub(crate) fn fold_session_import_versions(
-    conn: &Connection,
-    sessions: &[i64],
-    hash: &mut blake3::Hasher,
-) -> Result<()> {
-    let mut imports = std::collections::BTreeMap::new();
-    let mut statement = conn.prepare_cached(
-        "SELECT DISTINCT own.import_id,coalesce(c.changed,0) FROM parsed p
-         JOIN input_ref ir ON ir.pk=p.input_pk
-         JOIN import_member own ON own.input=ir.id
-         LEFT JOIN import_change c ON c.import_id=own.import_id
-         WHERE p.session_pk=?1",
-    )?;
-    for session in sessions {
-        let rows = statement.query_map([session], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })?;
-        for row in rows {
-            let (import, changed) = row?;
-            imports.insert(import, changed);
-        }
-    }
-    crate::read::fold_serialized(hash, &imports)
-}
-
 pub(crate) fn install(
     conn: &mut Connection,
     archive: &Connection,

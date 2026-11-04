@@ -68,6 +68,7 @@ fn read_request() -> Request {
         delivery: polylogue_model::read::ReadDelivery::Page,
         budget: None,
         with_blobs: false,
+        cursor: None,
     }
 }
 

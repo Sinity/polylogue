@@ -202,9 +202,11 @@ fn capabilities_publish_each_operation_with_its_tool_unlisted_arguments_and_answ
         .unwrap();
     assert_eq!(read["tool"], "polylogue_read");
     let unlisted = read["unlisted"].as_array().unwrap();
-    assert!(unlisted.contains(&json!("thinking")), "{unlisted:?}");
+    // The fold table's `show` replaces the per-kind flags such as
+    // `thinking`; one argument form, so no `FullArguments` definition.
+    assert!(unlisted.contains(&json!("show")), "{unlisted:?}");
     assert!(!unlisted.contains(&json!("target")), "{unlisted:?}");
-    assert!(read["arguments"]["$defs"]["FullArguments"]["properties"]["thinking"].is_object());
+    assert!(read["arguments"]["properties"]["show"].is_object());
     assert!(read["answer"].is_object());
     let list = capabilities
         .iter()

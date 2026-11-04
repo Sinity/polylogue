@@ -322,60 +322,6 @@ fn confirmed_run_phases_reuse_canonical_custody_without_a_new_spool_write() {
 }
 
 #[test]
-fn queued_page_root_lookup_survives_restart_without_copying_or_chaining_bindings() {
-    let dir = tempfile::tempdir().unwrap();
-    let producer = Arc::new(PendingProducer(dir.path().join("named.json")));
-    let object = question("sessions");
-    let mut root = run(
-        &object,
-        "queued-page-root",
-        7,
-        ChangePosition {
-            generation: "synthetic-generation".into(),
-            index: 5,
-            archive: 4,
-        },
-    );
-    root.binding.original_mut().unwrap().presentation = ExecutionPresentation::Read {
-        options: Default::default(),
-        delivery: polylogue_model::read::ReadDelivery::Page,
-        format: polylogue_model::read::Format::Json,
-        page_budget: Some(Default::default()),
-        direct_source: None,
-    };
-    let page = super::pages::child(&root, "queued-page-child", root.read_at.clone());
-    for _ in 0..2 {
-        let (archive, _lock) =
-            crate::Archive::open_primary(&dir.path().join("cache"), &dir.path().join("bytes"))
-                .unwrap();
-        let writer = crate::Writer::start_on_sinex(&archive, producer.clone()).unwrap();
-        assert_eq!(
-            writer.begin_query_run(root.clone()).unwrap(),
-            QueryCustody::Queued
-        );
-        assert_eq!(
-            writer.begin_query_run(page.clone()).unwrap(),
-            QueryCustody::Queued
-        );
-        let pool = crate::ReadPool::open(&archive).unwrap();
-        let reader = pool.reader().unwrap();
-        let retained = reader
-            .query_run_root(&page.id, Some(producer.as_ref()))
-            .unwrap()
-            .unwrap();
-        assert_eq!(retained.custody, QueryCustody::Queued);
-        assert_eq!(retained.value, root);
-        assert!(
-            reader
-                .query_run_outcome(&page.id, Some(producer.as_ref()))
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(producer.writes().unwrap().len(), 2);
-    }
-}
-
-#[test]
 fn confirmed_outcome_first_rejects_another_begin_intent_before_primary_spooling() {
     let dir = tempfile::tempdir().unwrap();
     let producer = Arc::new(PendingProducer(dir.path().join("named.json")));

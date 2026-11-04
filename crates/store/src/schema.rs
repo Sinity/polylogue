@@ -34,7 +34,9 @@ pub const INDEX: &str = concat!(
     "\n",
     include_str!("schema/text_fragments.sql"),
     "\n",
-    include_str!("schema/session_cwd.sql")
+    include_str!("schema/session_cwd.sql"),
+    "\n",
+    include_str!("schema/session_items.sql")
 
 );
 #[cfg(test)]

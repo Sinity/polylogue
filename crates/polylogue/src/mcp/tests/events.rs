@@ -74,7 +74,9 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
     let mut wrong = next.clone();
     wrong.mcp["arguments"]["arguments"]["view"] = json!("dialogue");
     let error = super::read_pages::execute_ready(&archive, &wrong).unwrap_err();
-    assert!(error.contains("bad_request"), "{error}");
+    // docs/query.md: "a cursor from another question is `invalid_query`";
+    // a read continuation with other arguments is refused the same way.
+    assert!(error.contains("invalid_query"), "{error}");
     let (reconstructed, pages) =
         super::read_pages::collect(&daemon, page, None, None, command_surface::Deadline::None);
     let actual = reconstructed

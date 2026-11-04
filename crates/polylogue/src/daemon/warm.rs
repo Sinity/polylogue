@@ -96,6 +96,8 @@ pub struct Warm {
     counting_stopped: std::sync::atomic::AtomicBool,
     query_vectors: Mutex<Recent<Arc<Vec<f32>>>>,
     counts: Counts,
+    /// Session item indexes read by recent reads.
+    pub(crate) items: super::items::ItemCache,
 }
 
 impl Default for Warm {
@@ -111,6 +113,7 @@ impl Default for Warm {
             counting_stopped: std::sync::atomic::AtomicBool::new(false),
             query_vectors: Mutex::new(Recent::new(QUERY_VECTORS)),
             counts: Counts::default(),
+            items: super::items::ItemCache::default(),
         }
     }
 }
@@ -244,6 +247,31 @@ impl Warm {
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some((position.to_owned(), caught_up));
         Ok(caught_up)
+    }
+
+    /// Whether the index had caught up, as the count worker last found it.
+    /// A read never scans for this: when the position moved since, the
+    /// worker is asked to count again and the read reports the last answer.
+    /// Before the first count it is computed once.
+    pub fn caught_up_for_read(
+        &self,
+        reader: &Reader<'_>,
+        position: &str,
+    ) -> polylogue_store::Result<bool> {
+        let known = self
+            .caught_up
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        match known {
+            Some((at, caught_up)) => {
+                if at != position {
+                    self.request_count();
+                }
+                Ok(caught_up)
+            }
+            None => self.caught_up(reader, position),
+        }
     }
 
     fn request_count(&self) {

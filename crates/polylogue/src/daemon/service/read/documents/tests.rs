@@ -137,9 +137,9 @@ fn a_document_page_stops_before_corrupt_later_blocks_but_full_transfer_refuses()
             (expected(&id, 1, "second"), position(7, 2), Some(0)),
         ]
     );
+    assert_eq!(page.position().unwrap().selection, position(7, 2));
     let page = page.finish(ReadFooter::default()).unwrap();
     assert_eq!(page.items, vec![expected(&id, 0, "first")]);
-    assert_eq!(page.footer.position.unwrap().selection, position(7, 2));
     let mut canonical = 0;
     assert!(
         super::super::records::reference(
@@ -178,7 +178,7 @@ fn document_after_and_before_seek_original_blocks_and_keep_full_item_digest_chec
         let reader = pool.reader().unwrap();
         let ordinal = if backwards { 1 } else { 2 };
         let original = expected(&id, ordinal, if backwards { "second" } else { "third" });
-        let start = ReadPosition {
+        let start = ItemPlace {
             selection: position(7, ordinal + 1),
             item: 0,
             character: 0,

@@ -15,13 +15,12 @@ use query_language::{
     identity::QuestionId,
 };
 use serde_json::Value;
-mod content;
+
 mod execution;
 mod prepare;
 pub(crate) use prepare::{ProvisionalQueries, prepare_query_plan_on, saved_queries_on};
-mod replay;
-pub use replay::RunReplayContext;
-mod seek;
+
+mod keyed;
 use std::{collections::BTreeMap, ops::ControlFlow, sync::Arc};
 
 #[derive(Debug, thiserror::Error)]
@@ -83,7 +82,6 @@ pub struct PreparedSelection<'read> {
     context: CursorContext,
     direct: Option<ReadTarget>,
     execution_options: polylogue_model::query_objects::QueryExecutionOptions,
-    replay_authority: Option<replay::ReplayAuthority>,
 }
 impl PreparedSelection<'_> {
     pub fn query_object(
@@ -376,7 +374,6 @@ impl Reader<'_> {
             context,
             direct,
             execution_options: crate::query::execute::options_snapshot(options, false, None)?,
-            replay_authority: None,
         })
     }
 

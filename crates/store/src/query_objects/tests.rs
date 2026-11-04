@@ -614,8 +614,6 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
     );
 }
 
-mod pages;
-
 #[test]
 fn object_run_has_no_question_and_query_or_continuation_cannot_omit_one() {
     use polylogue_model::query_objects::ObjectExecutionBinding;
@@ -665,11 +663,6 @@ fn object_run_has_no_question_and_query_or_continuation_cannot_omit_one() {
     let mut invalid = exact.clone();
     invalid.question = Some(object.id);
     assert!(validate_run(&invalid).is_err());
-    let child = pages::child(&exact, "object-child", exact.read_at.clone());
-    assert!(
-        validate_run(&child).is_err(),
-        "query continuations cannot silently acquire object semantics"
-    );
     let fetched = lookup_run(&conn, Source::Ledger, &exact.id, None)
         .unwrap()
         .unwrap();

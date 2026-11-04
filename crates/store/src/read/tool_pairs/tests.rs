@@ -4,6 +4,7 @@ use crate::{
     fixture::writer::{WriterArchive, call},
     read::limit::{ReadCancellation, ReadLimit},
 };
+use polylogue_model::BlobHash;
 use polylogue_model::Message;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 
@@ -142,9 +143,6 @@ fn metadata_and_collapsed_evidence_never_read_remote_output_or_structured_data()
     drop(conn);
     let pool = ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
-    let before = reader
-        .message_tool_pair_fingerprint(&call.id, &[0])
-        .unwrap();
     reader
         .conn()
         .unwrap()
@@ -162,12 +160,6 @@ fn metadata_and_collapsed_evidence_never_read_remote_output_or_structured_data()
             }
         }))
         .unwrap();
-    assert_eq!(
-        reader
-            .message_tool_pair_fingerprint(&call.id, &[0, 0])
-            .unwrap(),
-        before
-    );
     assert!(
         reader
             .message_tool_pair_sources(&result.id, 0)
@@ -218,12 +210,6 @@ fn metadata_and_collapsed_evidence_never_read_remote_output_or_structured_data()
             }
         }))
         .unwrap();
-    assert_eq!(
-        reader
-            .message_tool_pair_fingerprint(&call.id, &[0])
-            .unwrap(),
-        before
-    );
     assert!(
         reader
             .message_tool_pair_sources(&call.id, 0)
@@ -248,83 +234,6 @@ fn exact_call_coordinate_never_hydrates_other_calls_or_their_results() {
         matches!(selected.result.unwrap().block, Block::ToolResult { output: Some(ref text), .. } if text == "selected")
     );
     assert!(reader.message_tool_pair(&first.id, 1).is_err());
-}
-#[test]
-fn paired_result_version_and_relation_bind_resume_without_breaking_a_pinned_snapshot() {
-    let mut archive = WriterArchive::new();
-    let (call, mut result) = pair("s", 1, "before");
-    archive.write("s", vec![call.clone(), result.clone()]);
-    let pool = ReadPool::open(&archive.archive).unwrap();
-    let reader = pool.reader().unwrap();
-    let before = reader
-        .message_tool_pair_fingerprint(&call.id, &[0])
-        .unwrap();
-    let original_result = result.content_hash().unwrap();
-    if let Block::ToolResult { output, .. } = &mut result.blocks[0] {
-        *output = Some("after".into());
-    }
-    let result_id = result.id.clone();
-    let expected_result = result.content_hash().unwrap();
-    archive.write_snapshot("s", vec![result]);
-    assert_eq!(
-        reader
-            .message_with_projection(&result_id)
-            .unwrap()
-            .unwrap()
-            .1
-            .source_version,
-        original_result
-    );
-    assert_eq!(
-        reader
-            .message_tool_pair_fingerprint(&call.id, &[0])
-            .unwrap(),
-        before
-    );
-    drop(reader);
-    let reader = pool.reader().unwrap();
-    assert_eq!(
-        reader
-            .message_with_projection(&result_id)
-            .unwrap()
-            .unwrap()
-            .1
-            .source_version,
-        expected_result,
-        "the fixture must observe a real changed shown result version"
-    );
-    let after = reader
-        .message_tool_pair_fingerprint(&call.id, &[0])
-        .unwrap();
-    assert_ne!(after, before);
-    assert_eq!(
-        reader
-            .message_with_projection(&call.id)
-            .unwrap()
-            .unwrap()
-            .1
-            .source_version,
-        call.content_hash().unwrap()
-    );
-    drop(reader);
-    let conn = index(&archive);
-    conn.execute("UPDATE tool_call SET result_block_pk=NULL WHERE call_block_pk IN (SELECT b.pk FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?1)", [call.id.to_string()]).unwrap();
-    drop(conn);
-    let reader = pool.reader().unwrap();
-    assert_ne!(
-        reader
-            .message_tool_pair_fingerprint(&call.id, &[0])
-            .unwrap(),
-        after
-    );
-    assert!(
-        reader
-            .message_tool_pair(&call.id, 0)
-            .unwrap()
-            .unwrap()
-            .result
-            .is_none()
-    );
 }
 #[test]
 fn sparse_original_ordinals_and_hidden_current_projection_never_fall_back_to_old_bodies() {
@@ -373,9 +282,6 @@ fn sparse_original_ordinals_and_hidden_current_projection_never_fall_back_to_old
         .unwrap();
     assert_eq!(pair.call.source.block, Some(call_ordinal));
     assert_eq!(pair.result.as_ref().unwrap().source.block, Some(7));
-    let before = reader
-        .message_tool_pair_fingerprint(&call.id, &[call_ordinal])
-        .unwrap();
     drop(reader);
     let conn = index(&archive);
     conn.execute("UPDATE message_projection SET layout=?1 WHERE version_hash=(SELECT s.version_hash FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE m.id=?2 AND s.shown=1)", params![serde_json::to_vec(&(8u64, vec![6u64])).unwrap(), result.id.to_string()]).unwrap();
@@ -395,12 +301,6 @@ fn sparse_original_ordinals_and_hidden_current_projection_never_fall_back_to_old
             .is_none()
     );
     assert!(reader.message_tool_pair(&result.id, 7).unwrap().is_none());
-    assert_ne!(
-        reader
-            .message_tool_pair_fingerprint(&call.id, &[call_ordinal])
-            .unwrap(),
-        before
-    );
 }
 #[test]
 fn a_corrupt_cross_session_or_mismatched_id_relation_cannot_expose_a_result_body() {
@@ -458,10 +358,6 @@ fn scope_and_cancellation_fail_before_pair_payload_work() {
         cancellation.cancel();
         assert!(matches!(
             reader.message_tool_pair(&call.id, 0),
-            Err(StoreError::ReadCancelled)
-        ));
-        assert!(matches!(
-            reader.message_tool_pair_fingerprint(&call.id, &[0]),
             Err(StoreError::ReadCancelled)
         ));
     });

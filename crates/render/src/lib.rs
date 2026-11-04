@@ -11,7 +11,7 @@ pub mod results;
 pub mod schema;
 pub mod terminal;
 pub mod web;
-pub use encode::{ARCHIVE_NOTICE, EncodeOptions, Encoder, encode_document};
+pub use encode::{ARCHIVE_NOTICE, EncodeOptions, Encoder, encode_document, json_bytes};
 pub use layout::{
     layout_record, presentation_text_visible, visit_document_root, visit_record, visit_source_block,
 };

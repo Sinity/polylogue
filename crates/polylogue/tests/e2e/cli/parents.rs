@@ -122,7 +122,8 @@ fn read(
         budget.into(),
     ];
     if inherited {
-        args.push("--inherited".into());
+        args.push("--show".into());
+        args.push("inherited".into());
     }
     let mut items = super::read_current::Items::default();
     let mut seen = std::collections::BTreeSet::new();

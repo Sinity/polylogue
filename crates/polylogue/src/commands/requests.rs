@@ -138,49 +138,36 @@ pub fn list(_: &Command, v: &Values, _: &Caller) -> Built {
 }
 
 pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
-    if v.0.contains_key("root_run") {
-        return crate::protocol::read::resume_from_values(v);
-    }
-    if v.0.contains_key("cursor") {
-        return Err("a read continuation requires root_run and its authenticated cursor".into());
-    }
     if v.integer("budget") == Some(0) {
         return Err("budget must be positive".into());
     }
     use polylogue_model::read::{ReadDelivery, ReadOptions};
-    let expansion = |key| {
-        v.text(key)
-            .map(|value| {
-                serde_json::from_value(serde_json::Value::String(value))
-                    .map_err(|error| error.to_string())
-            })
-            .transpose()
-    };
-    if v.flag("inherited") && v.flag("no_inherited") {
-        return Err("choose inherited or no_inherited".into());
-    }
     let directory = v.text("to").is_some();
-    let options = ReadOptions {
+    let mut options = ReadOptions {
         view: v
             .text("view")
             .unwrap_or_else(|| "transcript".into())
             .parse()
             .map_err(|error: polylogue_model::read::ReadError| error.to_string())?,
-        tools: expansion("tools")?,
-        thinking: expansion("thinking")?,
-        harness: expansion("harness")?,
         output_lines: v.integer("output_lines").unwrap_or(100),
-        inherited: !v.flag("no_inherited") && (directory || v.flag("inherited")),
-        branches: v.flag("branches"),
-        turns: v.flag("turns"),
-        assertions: !v.flag("no_assertions")
-            && v.0
-                .get("assertions")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(true),
+        // A bundle carries inherited prefixes unless they are hidden.
+        inherited: directory,
         for_others: v.flag("for_others"),
         variants: v.list("variant"),
+        at: v
+            .text("at")
+            .map(|at| polylogue_model::MessageId::parse(&at))
+            .transpose()
+            .map_err(|error| error.to_string())?,
+        diff: v.text("diff"),
+        around: v.integer("around"),
+        latest: v.flag("latest"),
+        physical: v.flag("physical"),
+        ..ReadOptions::default()
     };
+    options
+        .apply_fold(&v.list("show"), &v.list("hide"))
+        .map_err(|error| error.to_string())?;
     options.validate().map_err(|error| error.to_string())?;
     let delivery = if directory {
         ReadDelivery::Stream
@@ -204,6 +191,7 @@ pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
             .transpose()
             .map_err(|_| "budget exceeds address space")?,
         with_blobs: v.flag("with_blobs"),
+        cursor: v.text("cursor"),
     })
 }
 
@@ -483,19 +471,6 @@ pub fn backfill_list(_: &Command, _: &Values, _: &Caller) -> Built {
 pub fn backfill_cancel(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(Request::BackfillCancel {
         id: v.text("id").unwrap_or_default(),
-    })
-}
-
-pub fn outline(_: &Command, v: &Values, _: &Caller) -> Built {
-    Ok(Request::Outline {
-        session: polylogue_model::SessionId::parse(
-            &v.text("session").ok_or("session is required")?,
-        )
-        .map_err(|e| e.to_string())?,
-        with_parents: v.flag("with_parents"),
-        page_size: usize::try_from(v.integer("page_size").unwrap_or(50))
-            .map_err(|_| "page_size exceeds address space")?,
-        cursor: v.text("cursor"),
     })
 }
 

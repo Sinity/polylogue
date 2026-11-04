@@ -6,7 +6,7 @@ fn read(
     view: &str,
     format: &str,
     budget: Option<usize>,
-    cursor: Option<&crate::protocol::read::ResumeArguments>,
+    cursor: Option<&crate::protocol::read::Arguments>,
 ) -> command_surface::Answer<serde_json::Value> {
     let Some(view) = polylogue_model::read::View::parse(view) else {
         return error("bad_request", "unknown reading view");
@@ -15,11 +15,9 @@ fn read(
         return error("bad_request", "unknown reading format");
     }
     let request = if let Some(resume) = cursor {
-        Request::ReadResume {
-            root_run: resume.root_run.clone(),
-            cursor: resume.cursor.clone(),
-            budget: budget.map(|value| std::num::NonZeroU64::new(value as u64).unwrap()),
-        }
+        let mut resume = resume.clone();
+        resume.budget = budget.map(|value| std::num::NonZeroU64::new(value as u64).unwrap());
+        resume.into_request().unwrap()
     } else {
         Request::Read {
             target: "session:claude-code:s1".into(),
@@ -31,6 +29,7 @@ fn read(
             format: format.into(),
             budget,
             with_blobs: false,
+            cursor: None,
         }
     };
     handle(request, d)
@@ -75,7 +74,7 @@ fn a_read_honours_its_view_format_and_budget() {
     let call = first.document.footer.next.as_ref().expect("a second page");
     let envelope: command_surface::RunnableRequest =
         serde_json::from_value(call.http.arguments.clone()).unwrap();
-    let cursor: crate::protocol::read::ResumeArguments =
+    let cursor: crate::protocol::read::Arguments =
         serde_json::from_value(envelope.arguments).unwrap();
     let second = typed(read(
         &w.daemon,
@@ -86,7 +85,7 @@ fn a_read_honours_its_view_format_and_budget() {
     ));
     assert_ne!(first.document.items, second.document.items);
     let mut malformed = cursor.clone();
-    malformed.cursor = query_language::cursor::SealedCursor::from_wire("m0.b0.c0");
+    malformed.cursor = Some("m0.b0.c0".into());
     for (view, format, cursor, expected) in [
         ("nope", "json", None, "bad_request"),
         ("transcript", "pdf", None, "bad_request"),
@@ -286,6 +285,7 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_canonic
             format: "jsonl".into(),
             budget: None,
             with_blobs: false,
+            cursor: None,
         };
         let envelope = command_surface::Request {
             operation: "read".into(),
@@ -371,6 +371,8 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_canonic
 mod mode;
 
 mod read_pages;
+
+mod reading_shapes;
 
 mod hook_errors;
 

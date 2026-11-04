@@ -58,18 +58,7 @@ pub use span::SpanSource;
 mod source_snapshot;
 use order::RecordOrder;
 
-pub use parents::{MessageSelection, OutlineEntry, ParentIssue, Parents, VisitStart};
-
-/// Folds one serialized value with its length, so adjacent values cannot run together.
-pub(crate) fn fold_serialized(
-    hash: &mut blake3::Hasher,
-    value: &impl serde::Serialize,
-) -> Result<()> {
-    let bytes = serde_json::to_vec(value)?;
-    hash.update(&(bytes.len() as u64).to_le_bytes());
-    hash.update(&bytes);
-    Ok(())
-}
+pub use parents::{MessageSelection, ParentIssue, Parents, VisitStart};
 
 struct MessageEvidence {
     order: Option<i64>,
@@ -914,14 +903,6 @@ impl Reader<'_> {
         selected.visit_with_projection(&mut visit)
     }
 
-    /// The content version a session read binds, for tests of what moves it.
-    #[cfg(test)]
-    pub fn session_content_version(&self, id: &SessionId, with_parents: bool) -> Result<String> {
-        let selected = self.select_messages(id, with_parents)?;
-        selected.require_complete()?;
-        selected.content_version()
-    }
-
     /// The keys of the messages a session shows with its parents, each once.
     /// Totals with parents refuse a missing parent rather than count what is
     /// stored as complete.
@@ -931,7 +912,7 @@ impl Reader<'_> {
         selected.keys()
     }
 
-    fn session_pk(&self, id: &SessionId) -> Result<Option<i64>> {
+    pub(crate) fn session_pk(&self, id: &SessionId) -> Result<Option<i64>> {
         Ok(self
             .conn()?
             .prepare_cached("SELECT pk FROM session WHERE id = ?1")?

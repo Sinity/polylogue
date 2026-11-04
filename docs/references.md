@@ -53,3 +53,5 @@ Span offsets count in the original stored text, before view filtering or variant
 - **name-ambiguity-refused**: a page name carried by two current roots is refused as `ambiguous`, listing both roots.
 - **exact-revision-stored**: a judgment or `revises` link written against the current revision stores `@<rev>`, and still names that revision after a newer one is written.
 - **no-row-numbers**: no stored or printed reference contains a database row number (checked over every stored reference in the Morrow archive).
+
+- **`root:SESSION`** names the logical session whose root is that session; a read of it shows the root, then each continuation and resume in link order after a `continues` line ([reading.md](reading.md#read-targets)).

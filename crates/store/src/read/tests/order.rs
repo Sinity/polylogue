@@ -46,7 +46,6 @@ fn tied_source_positions_use_ids_in_physical_logical_prompt_and_fingerprint_read
     ];
     let pool = fixture.reads().unwrap();
     let id = SessionId::parse("claude-code:ties").unwrap();
-    let mut fingerprints = Vec::new();
     for changed_plan in [false, true] {
         if changed_plan {
             // Reverse tied native IDs in the actual read index. Row identities,
@@ -81,14 +80,6 @@ fn tied_source_positions_use_ids_in_physical_logical_prompt_and_fingerprint_read
                 );
             }
             assert_eq!(key_ids, visited);
-            if changed_plan {
-                assert_eq!(
-                    selected.content_version().unwrap(),
-                    fingerprints[usize::from(with_parents)]
-                );
-            } else {
-                fingerprints.push(selected.content_version().unwrap());
-            }
         }
         assert_eq!(
             r.prompts("claude-code:ties")

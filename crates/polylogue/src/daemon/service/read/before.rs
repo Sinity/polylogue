@@ -2,33 +2,34 @@
 use super::*;
 use polylogue_store::selection::SelectionRow;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn visit(
     reader: &Reader<'_>,
     selection: &PreparedSelection,
     rendering: &Rendering<'_>,
-    anchor: ReadPosition,
+    anchor: ItemPlace,
+    anchor_row: Option<&OrderPosition>,
+    rows: &mut RowKeys,
     footer: &mut ReadFooter,
     emit: &mut Emit<'_>,
 ) -> Result<(), Failure> {
     let near = rendering.near;
     let mut current = None;
-    reader.visit_selection_from::<Failure>(
-        selection,
-        anchor.selection.row,
-        near,
-        |ordinal, row| {
-            if ordinal != anchor.selection.row {
-                return Err(Failure::new(
-                    "stale_cursor",
-                    "the backward row coordinate changed",
-                ));
-            }
-            current = Some(row);
-            Ok(ControlFlow::Break(()))
-        },
-    )?;
+    reader.visit_selection_from_row::<Failure>(selection, anchor_row, near, |row| {
+        current = Some(row);
+        Ok(ControlFlow::Break(()))
+    })?;
     let current = current
         .ok_or_else(|| Failure::new("stale_cursor", "the backward row is no longer selected"))?;
+    if anchor_row.is_some_and(|anchor| anchor.values != current.position.values) {
+        return Err(Failure::new(
+            "stale_cursor",
+            "the backward row is no longer selected",
+        ));
+    }
+    let anchor_position = current.position.clone();
+    rows.keys
+        .insert(anchor.selection.row, anchor_position.clone());
     let mut walk = Walk {
         reader,
         selection,
@@ -39,18 +40,18 @@ pub(super) fn visit(
     if !walk.row(anchor.selection.row, current, Some(anchor), near)? {
         return Ok(());
     }
-    reader.visit_selection_before::<Failure>(
-        selection,
-        anchor.selection.row,
-        near,
-        |ordinal, row| {
-            Ok(if walk.row(ordinal, row, None, near)? {
-                ControlFlow::Continue(())
-            } else {
-                ControlFlow::Break(())
-            })
-        },
-    )?;
+    let mut ordinal = anchor.selection.row;
+    reader.visit_selection_before_row::<Failure>(selection, &anchor_position, near, |row| {
+        ordinal = ordinal
+            .checked_sub(1)
+            .ok_or_else(|| Failure::new("stale_cursor", "the backward row number underflowed"))?;
+        rows.keys.insert(ordinal, row.position.clone());
+        Ok(if walk.row(ordinal, row, None, near)? {
+            ControlFlow::Continue(())
+        } else {
+            ControlFlow::Break(())
+        })
+    })?;
     Ok(())
 }
 
@@ -66,7 +67,7 @@ impl Walk<'_, '_, '_, '_> {
         &mut self,
         ordinal: u64,
         row: SelectionRow,
-        position: Option<ReadPosition>,
+        position: Option<ItemPlace>,
         near: Option<&polylogue_store::selection::NearFn<'_>>,
     ) -> Result<bool, Failure> {
         let start = position.map(|position| position.selection.record);

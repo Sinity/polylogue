@@ -71,7 +71,7 @@ pub fn header(header: &ReadHeader) -> Markup {
     visible_controls(header_markup(header))
 }
 fn header_markup(header: &ReadHeader) -> Markup {
-    html! { header class="read-header" { h1 { @if let Some(title) = header.title.value() { (title) } @else { (&header.target) } } p class="meta" { code { (&header.target) } " · " (header.view) } dl { @for figure in &header.figures { dt { (&figure.name) } dd { (value(&figure.value)) @if let Some(unit)=&figure.unit { " " (unit) } } } } }
+    html! { header class="read-header" { h1 { @if let Some(title) = header.title.value() { (title) } @else { (&header.target) } } p class="meta" { code { (&header.target) } " · " (header.view) } @if let Some(line) = crate::encode::logical_line(&header.kind) { p class="meta" { (line) } } dl { @for figure in &header.figures { dt { (&figure.name) } dd { (value(&figure.value)) @if let Some(unit)=&figure.unit { " " (unit) } } } } }
     }
 }
 /// Archived Markdown is parsed with raw HTML disabled and link destinations

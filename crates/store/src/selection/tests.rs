@@ -452,70 +452,6 @@ fn model_authored_user_task_does_not_answer_a_turn() {
 }
 
 #[test]
-fn selected_content_binding_tracks_versions_without_decoding_bodies() {
-    use crate::fixture::writer::{WriterArchive, prose};
-    let mut archive = WriterArchive::new();
-    archive.write("one", prose("one", 1, 1, "first body"));
-    archive.write("two", prose("two", 1, 2, "unrelated body"));
-    let fingerprint = |target: &str| {
-        let pool = crate::ReadPool::open(&archive.archive).unwrap();
-        let reader = pool.reader().unwrap();
-        let prepared = reader.prepare_selection(target, &options()).unwrap();
-        reader
-            .selection_content_fingerprint(&prepared, false, None)
-            .unwrap()
-    };
-    let first_session = fingerprint("session:claude-code:one");
-    let first_message = fingerprint("message:claude-code:one-p1");
-    archive.write("two", prose("two", 2, 3, "unrelated append"));
-    let fingerprint = |target: &str| {
-        let pool = crate::ReadPool::open(&archive.archive).unwrap();
-        let reader = pool.reader().unwrap();
-        let prepared = reader.prepare_selection(target, &options()).unwrap();
-        reader
-            .selection_content_fingerprint(&prepared, false, None)
-            .unwrap()
-    };
-    assert_eq!(fingerprint("session:claude-code:one"), first_session);
-    assert_eq!(fingerprint("message:claude-code:one-p1"), first_message);
-    archive.write("one", prose("one", 2, 4, "selected session append"));
-    let pool = crate::ReadPool::open(&archive.archive).unwrap();
-    let reader = pool.reader().unwrap();
-    let session = reader
-        .prepare_selection("session:claude-code:one", &options())
-        .unwrap();
-    assert_ne!(
-        reader
-            .selection_content_fingerprint(&session, false, None)
-            .unwrap(),
-        first_session
-    );
-    drop(session);
-    drop(reader);
-    drop(pool);
-    let conn = crate::archive::open_write(&archive.archive.index_db(), 1).unwrap();
-    conn.execute("UPDATE message_version SET body=X'ff'", [])
-        .unwrap();
-    drop(conn);
-    let pool = crate::ReadPool::open(&archive.archive).unwrap();
-    let reader = pool.reader().unwrap();
-    let message = reader
-        .prepare_selection("message:claude-code:one-p1", &options())
-        .unwrap();
-    assert_eq!(
-        reader
-            .selection_content_fingerprint(&message, false, None)
-            .unwrap(),
-        first_message
-    );
-    assert!(
-        reader
-            .message_with_projection(&MessageId::parse("claude-code:one-p1").unwrap())
-            .is_err()
-    );
-}
-
-#[test]
 fn canonical_object_selection_replays_frozen_definitions_in_the_same_reader() {
     let (_dir, mut f) = fixture();
     save_definition(&mut f, "picked", "sessions where session:test:one");
@@ -875,59 +811,6 @@ fn native_event_read_target_uses_event_grain_without_rebinding_ordinary_queries(
     let ordinary = reader.prepare_query_plan(&target, &options()).unwrap();
     assert!(matches!(&ordinary.bound_query().query().source,
         polylogue_query::ast::Source::Unit { unit, implicit: true, .. } if unit == "sessions"));
-}
-
-#[test]
-fn read_content_binding_retains_incomplete_parent_issues_and_available_tail() {
-    use crate::fixture::writer::{WriterArchive, prose, sid};
-    let mut archive = WriterArchive::new();
-    archive.links.push(polylogue_model::Link {
-        kind: polylogue_model::LinkKind::Copy,
-        parent: sid("missing-one"),
-        child: sid("child"),
-        at: None,
-        call_id: None,
-        evidence: "recorded parent".into(),
-    });
-    archive.write("child", prose("child", 1, 1, "available tail"));
-    let pool = crate::ReadPool::open(&archive.archive).unwrap();
-    let content = |parent: &str| {
-        let reader = pool.reader().unwrap();
-        let selected = reader.select_messages(&sid("child"), true).unwrap();
-        assert!(!selected.parents().complete);
-        assert!(matches!(&selected.parents().issues[..],
-            [crate::read::ParentIssue::MissingParent { child, parent: actual }]
-            if *child == sid("child") && *actual == sid(parent)));
-        assert!(matches!(
-            reader.messages(&sid("child"), true),
-            Err(StoreError::IncompleteParents(_))
-        ));
-        let mut bodies = Vec::new();
-        selected
-            .visit(|message| {
-                bodies.push(message.text());
-                ControlFlow::Continue(())
-            })
-            .unwrap();
-        assert_eq!(bodies, ["available tail"]);
-        let prepared = reader
-            .prepare_selection("session:claude-code:child", &options())
-            .unwrap();
-        reader
-            .selection_content_fingerprint(&prepared, true, None)
-            .unwrap()
-    };
-    let before = content("missing-one");
-    // Only the recorded unresolved relation changes; the available canonical
-    // message and the session's change counter stay identical.
-    let conn = crate::archive::open_write(&archive.archive.index_db(), 1).unwrap();
-    conn.execute(
-        "UPDATE link SET parent_id='claude-code:missing-two' WHERE child_id='claude-code:child'",
-        [],
-    )
-    .unwrap();
-    drop(conn);
-    assert_ne!(before, content("missing-two"));
 }
 
 #[test]

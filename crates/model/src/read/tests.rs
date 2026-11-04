@@ -407,94 +407,89 @@ fn projection_preserves_exact_attachment_slots_and_ambiguous_same_hash_claims() 
     dialogue.validate().unwrap();
 }
 
+/// law: pl.read.surf-fold-kinds
 #[test]
-fn read_seek_codec_is_versioned_closed_and_has_no_native_identity_fallback() {
-    let position = ReadPosition {
-        selection: SelectionLocator {
-            row: 17,
-            record: ReadRecordLocator {
-                kind: ReadRecordKind::TextFragment,
-                ordinal: 9,
-            },
-        },
-        item: 2,
-        character: 184,
-        item_hash: crate::BlobHash::of(b"complete encoded ReadItem"),
-    };
-    let seek = ReadSeek {
-        direction: ReadDirection::After,
-        anchor: position,
-    };
-    let encoded = seek.to_order_position().unwrap();
-    assert_eq!(encoded.row_identity, "read-position-v1");
-    assert_eq!(encoded.values, vec![serde_json::to_value(seek).unwrap()]);
-    assert_eq!(ReadSeek::from_order_position(&encoded).unwrap(), seek);
-    let mut invalid = encoded.clone();
-    invalid.row_identity = "message:native:legacy".into();
+fn fold_words_and_options_round_trip_through_one_table() {
+    let mut options = ReadOptions::default();
+    options
+        .apply_fold(
+            &[
+                "tools:full".into(),
+                "thinking".into(),
+                "inherited".into(),
+                "turns".into(),
+                "context".into(),
+            ],
+            &["assertions".into(), "spawns".into()],
+        )
+        .unwrap();
+    assert_eq!(options.tools, Some(Expansion::Full));
+    assert_eq!(options.thinking, Some(Expansion::Full));
+    assert!(options.inherited && options.turns && options.context_meter);
+    assert!(!options.assertions && options.spawns == SpawnFold::Hidden);
+    let (show, hide) = options.fold_words();
+    let mut again = ReadOptions::default();
+    again.apply_fold(&show, &hide).unwrap();
+    assert_eq!(again, options);
+    for kind in FoldKind::ALL {
+        assert_eq!(FoldKind::parse(kind.name()), Some(kind));
+    }
     assert!(matches!(
-        ReadSeek::from_order_position(&invalid),
-        Err(ReadSeekCodecError::Sentinel)
+        ReadOptions::default().apply_fold(&["tools:loud".into()], &[]),
+        Err(ReadError::UnknownFold { .. })
     ));
-    let mut invalid = encoded.clone();
-    invalid.values.push(serde_json::Value::Null);
     assert!(matches!(
-        ReadSeek::from_order_position(&invalid),
-        Err(ReadSeekCodecError::Arity { found: 2 })
-    ));
-    let mut invalid = encoded.clone();
-    invalid.values.clear();
-    assert!(matches!(
-        ReadSeek::from_order_position(&invalid),
-        Err(ReadSeekCodecError::Arity { found: 0 })
-    ));
-    let mut invalid = encoded.clone();
-    invalid.values[0]["native_reference"] = serde_json::json!("message:synthetic:unexpected");
-    assert!(matches!(
-        ReadSeek::from_order_position(&invalid),
-        Err(ReadSeekCodecError::Value(_))
-    ));
-    let mut invalid = encoded;
-    invalid.values[0]["anchor"]["selection"]["row"] = serde_json::json!(-1);
-    assert!(matches!(
-        ReadSeek::from_order_position(&invalid),
-        Err(ReadSeekCodecError::Value(_))
+        ReadOptions::default().apply_fold(&[], &["nothing".into()]),
+        Err(ReadError::UnknownFold { .. })
     ));
 }
 
+/// law: pl.read.surf-fold-kinds
 #[test]
-fn read_seek_codec_binds_direction_and_rejects_old_or_open_shapes() {
-    let anchor = ReadPosition {
-        selection: SelectionLocator {
-            row: 3,
-            record: ReadRecordLocator {
-                kind: ReadRecordKind::Message,
-                ordinal: 1,
-            },
-        },
-        item: 0,
-        character: 9,
-        item_hash: crate::BlobHash::of(b"current page start"),
+fn spawn_levels_and_the_help_come_from_the_fold_table() {
+    for (word, expected) in [
+        ("spawns", SpawnFold::Inline { depth: None }),
+        ("spawns:full", SpawnFold::Inline { depth: None }),
+        ("spawns:card", SpawnFold::Card),
+        ("spawns:2", SpawnFold::Inline { depth: Some(2) }),
+    ] {
+        let mut options = ReadOptions::default();
+        options.apply_fold(&[word.into()], &[]).unwrap();
+        assert_eq!(options.spawns, expected, "{word}");
+        let (show, hide) = options.fold_words();
+        let mut again = ReadOptions::default();
+        again.apply_fold(&show, &hide).unwrap();
+        assert_eq!(again, options, "{word}");
+    }
+    for refused in ["spawns:N", "spawns:0", "spawns:deep", "tools:2"] {
+        assert!(
+            matches!(
+                ReadOptions::default().apply_fold(&[refused.into()], &[]),
+                Err(ReadError::UnknownFold { .. })
+            ),
+            "{refused}"
+        );
+    }
+    for kind in FoldKind::ALL {
+        let entry = format!(
+            "{}[:{}{}]",
+            kind.name(),
+            kind.levels().join("|"),
+            if kind.takes_depth() { "|N" } else { "" }
+        );
+        assert!(
+            FoldKind::HELP.contains(&entry),
+            "{entry} in {}",
+            FoldKind::HELP
+        );
+    }
+    let inline_context = ReadOptions {
+        view: View::Context,
+        spawns: SpawnFold::Inline { depth: None },
+        ..ReadOptions::default()
     };
-    let before = ReadSeek {
-        direction: ReadDirection::Before,
-        anchor,
-    };
-    let mut encoded = before.to_order_position().unwrap();
-    assert_eq!(ReadSeek::from_order_position(&encoded).unwrap(), before);
-    let after = ReadSeek {
-        direction: ReadDirection::After,
-        anchor,
-    };
-    assert_ne!(encoded, after.to_order_position().unwrap());
-    encoded.values[0] = serde_json::to_value(anchor).unwrap();
     assert!(matches!(
-        ReadSeek::from_order_position(&encoded),
-        Err(ReadSeekCodecError::Value(_))
-    ));
-    encoded.values[0] = serde_json::to_value(before).unwrap();
-    encoded.values[0]["direction"] = serde_json::json!("previous_receipt");
-    assert!(matches!(
-        ReadSeek::from_order_position(&encoded),
-        Err(ReadSeekCodecError::Value(_))
+        inline_context.validate(),
+        Err(ReadError::UnsupportedOption { .. })
     ));
 }

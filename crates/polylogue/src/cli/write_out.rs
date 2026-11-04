@@ -108,7 +108,6 @@ fn deliver(
     let mut request = request.clone();
     let delivery = match &request {
         Request::Read { delivery, .. } => *delivery,
-        Request::ReadResume { .. } => ReadDelivery::Page,
         _ => return Err("a read request is required".into()),
     };
     let destination = values.text("to").map(PathBuf::from);

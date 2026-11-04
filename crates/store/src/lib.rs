@@ -30,6 +30,7 @@ pub(crate) mod first_build;
 pub mod fixture;
 mod fragment;
 pub mod input_rows;
+pub mod items;
 pub mod legacy_import;
 mod live;
 pub mod measure;

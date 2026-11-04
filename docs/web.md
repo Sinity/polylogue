@@ -344,7 +344,7 @@ The most important surface. Message rendering and read views are [reading.md](re
 
 **Read views.** The views and their names are [reading.md](reading.md#views)'s; on the web, *summary* is a definition list, *context* shows what the model had at a selected message (parents → boundaries → tail), *links* is the tree of linked sessions with own and tree cost, *changes* lists files edited (graded known, possible, unknown), commands with outcomes, commits and pull requests, *live* is this session's Running row with follow and controls, and *raw* is the stored input records, inert. The **flow panel** renders the `delegations` and `deliveries` units as the work tree of [Running](#running-running), and the **report** composes summary, changes, the session's tool calls and its claims; neither is a read view, because both are compositions of query units.
 
-**Reading pages.** The reader reads a session in pages through the `read` row with a budget ([reading.md](reading.md#budgets)); the web default is 8,192 tokens. Paging links are First · Previous · Next · Latest; anchors are `/s/ID?message=MID`; changing the view starts a new read at the page's message anchor. The content cursor, the outline cursor and the links cursor are independent URL parameters, and the failure of an optional panel is shown beside the content. A stale cursor offers "Read changed · refresh from this message"; pages are never joined across a stale cursor. Long sessions keep a window of the DOM and fetch by anchor when scrolling past it.
+**Reading pages.** The reader reads a session in pages through the `read` row with a budget ([reading.md](reading.md#budgets)); the web default is 8,192 tokens. Paging links are First · Previous · Next · Latest; anchors are `/s/ID?message=MID`; changing the view starts a new read at the page's message anchor. The content cursor and the links cursor are independent URL parameters; the outline is the `turns` reading of the session, and the failure of an optional panel is shown beside the content. A stale cursor offers "Read changed · refresh from this message"; pages are never joined across a stale cursor. Long sessions keep a window of the DOM and fetch by anchor when scrolling past it.
 
 **Interactions.**
 - **Action rail** per message on hover and focus: **Copy**, **Annotate**, **Decision**, **Tag**, **Star**, **Add to page or bundle**, **Compare from here**, **Continue from here**, **Raw**, **Provenance**, **Permalink**.
@@ -368,7 +368,7 @@ The most important surface. Message rendering and read views are [reading.md](re
 
 **Related sessions.** An inspector panel lists sessions ranked by `related:REF`; while that product is unavailable (no recall figure, or model calls off), the panel shows `unavailable: <reason>`.
 
-Rows: `read` with budget, slices, anchors, cursors and views; `outline`; `attachment` (descriptors, bytes, show in file manager); `assert`; `trace`; `pack`; `open-editor`; the live-session control rows.
+Rows: `read` with budget, slices, anchors, cursors and views (the outline is `turns where session:REF` read); `attachment` (descriptors, bytes, show in file manager); `assert`; `trace`; `pack`; `open-editor`; the live-session control rows.
 
 ### Live-session control panel
 

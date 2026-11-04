@@ -1013,6 +1013,7 @@ pub(crate) fn apply(
         tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
         tx.execute("DELETE FROM primary_pending WHERE position<=?1", [next])?;
         tx.execute("DELETE FROM primary_complete WHERE position<=?1", [next])?;
+        crate::items::refresh_changed(&tx, counter)?;
         crate::fault::check("primary.before_commit", "")?;
         tx.commit()?;
         drop(plan);

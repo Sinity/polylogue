@@ -344,8 +344,8 @@ fn ai_studio_import_and_drive_title_read_identically_after_a_rebuild_from_stored
                 "--json",
                 "read",
                 "session:ai-studio:drive-id",
-                "--harness",
-                "full",
+                "--show",
+                "harness:full",
             ],
         );
         let mut items = read_current::Items::default();

@@ -2,30 +2,9 @@
 //! association is exact; container membership belongs to the query backend.
 use super::*;
 use crate::Reader;
-use rusqlite::OptionalExtension;
 use std::ops::ControlFlow;
 
 impl Reader<'_> {
-    /// An assertion revision is immutable; only its admission position
-    /// changes the version a reader binds.
-    pub(crate) fn fold_assertion_content_version(
-        &self,
-        root: &str,
-        revision: &str,
-        hash: &mut blake3::Hasher,
-    ) -> Result<()> {
-        let source = Source::reading(self.conn()?)?;
-        let row: Option<i64> = self
-            .conn()?
-            .prepare_cached(
-                &source.sql("SELECT commit_seq FROM @source.assertion WHERE id=?1 AND root=?2"),
-            )?
-            .query_row([revision, root], |row| row.get(0))
-            .optional()?;
-        let row =
-            row.ok_or_else(|| StoreError::NotFound(format!("assertion:{root}@{revision}")))?;
-        crate::read::fold_serialized(hash, &row)
-    }
 
     fn resolved_assertion_revision(
         &self,

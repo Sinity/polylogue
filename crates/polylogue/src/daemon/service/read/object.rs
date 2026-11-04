@@ -1,6 +1,15 @@
 //! Exact accepted object reads share durable Begin/Outcome and output codecs.
 use super::*;
-use polylogue_model::Reference;
+use polylogue_model::{Reference, RunId, query_objects::*};
+use std::num::NonZeroU64;
+
+fn accepted(operation: &crate::operation::Context) -> Result<Option<serde_json::Value>, Failure> {
+    operation
+        .accepted_request()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|e| Failure::new("internal", e))
+}
 
 fn target(request: &Request) -> Option<Result<Reference, Failure>> {
     let Request::Read {
@@ -227,8 +236,9 @@ pub(super) fn page(
             evidence::visit_parts(reader, &record, &layout, |item, ordinal| {
                 Ok(pager.push_at(at, ordinal, item).map_err(page_error)? != Push::Full)
             })?;
+            let more = pager.position().is_some();
             let document = pager.finish(footer).map_err(page_error)?;
-            if document.footer.position.is_some() {
+            if more {
                 return Err(Failure::new(
                     "bad_request",
                     "this object exceeds the page budget; use streaming delivery for the complete retained record",

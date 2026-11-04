@@ -2,8 +2,10 @@
 //! session did, whether sessions are hidden, a session's own prompts, what
 //! it left open, earlier deliveries and settings.
 
+use crate::read::{parse_name, ts};
 use crate::{Reader, Result, StoreError};
-use polylogue_model::Timestamp;
+use polylogue_model::{SessionId, SessionKind, Timestamp};
+
 use rusqlite::OptionalExtension;
 use serde::Serialize;
 
@@ -225,29 +227,6 @@ impl Reader<'_> {
     /// Deliveries prepared for a session, newest first.
     pub fn deliveries_to(&self, session: &str) -> Result<Vec<DeliveryRow>> {
         self.deliveries("WHERE d.recipient_id = ?1", session)
-    }
-
-    /// A delivery's text is immutable; what happened to it is appended as events.
-    pub(crate) fn fold_delivery_content_version(
-        &self,
-        id: &str,
-        hash: &mut blake3::Hasher,
-    ) -> Result<()> {
-        let conn = self.conn()?;
-        let commit: i64 = conn
-            .prepare_cached("SELECT commit_seq FROM source_delivery WHERE id=?1")?
-            .query_row([id], |row| row.get(0))
-            .optional()?
-            .ok_or_else(|| StoreError::NotFound(format!("delivery:{id}")))?;
-        let events = conn
-            .prepare_cached(
-                "SELECT what,at,commit_seq FROM source_delivery_event WHERE delivery=?1 ORDER BY at,what",
-            )?
-            .query_map([id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        crate::read::fold_serialized(hash, &(commit, events))
     }
 
     pub fn delivery(&self, id: &str) -> Result<Option<(DeliveryRow, String)>> {

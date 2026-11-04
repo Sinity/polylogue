@@ -69,7 +69,7 @@ fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_p
     assert_eq!(messages[1]["role"], "system");
     assert_eq!(messages[1]["prompt_kind"], "harness");
     assert_eq!(messages[1]["blocks"][0]["data"], result);
-    let inherited = reading(&env, child, &["--inherited"]);
+    let inherited = reading(&env, child, &["--show", "inherited"]);
     // A supplied compression predecessor is retained as a link, rather than
     // a fork whose messages are prepended to the child's active reading.
     let own = reading(&env, child, &[]);

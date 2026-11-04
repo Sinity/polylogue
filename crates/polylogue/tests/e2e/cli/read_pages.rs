@@ -77,7 +77,11 @@ fn cli_read_pages_cover_utf8_once_and_refuse_malformed_and_revoked_cursors() {
     let mut invalid = next_arguments(&next);
     let request = invalid.iter().position(|word| word == "--request").unwrap() + 1;
     let mut arguments: serde_json::Value = serde_json::from_str(&invalid[request]).unwrap();
-    assert!(arguments["root_run"].is_string());
+    // A continuation is the reading's own arguments with a sealed cursor
+    // (reading design §2.3: "A page cursor holds: the target; the reading
+    // options hash; ..."); there is no run to resume.
+    assert!(arguments["target"].is_string());
+    assert!(arguments.get("root_run").is_none());
     assert!(arguments["cursor"].is_string());
     arguments["cursor"] = serde_json::json!("broken");
     invalid[request] = serde_json::to_string(&arguments).unwrap();
