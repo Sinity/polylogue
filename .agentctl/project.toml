@@ -11,7 +11,7 @@ unset = ["PYTHONPATH", "PYTHONHOME"]
 
 [environment.values]
 # Share CPU and memory with other builds.
-CARGO_BUILD_JOBS = "8"
+CARGO_BUILD_JOBS = "2"
 # Incremental state is half of each target directory and the drive is write-bound;
 # agent builds rarely reuse it across commits.
 CARGO_INCREMENTAL = "0"
@@ -76,7 +76,7 @@ exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-
 arguments = "required"
 pool = "normal"
 result = "exit"
-timeout_seconds = 1800
+timeout_seconds = 3600
 scratch = "tmpfs"
 cache = "none"
 unit_properties = ["MemoryHigh=8G"]
