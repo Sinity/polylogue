@@ -572,12 +572,10 @@ impl Engine {
                 let Some(_) = current else {
                     return Ok(Restored::Stored);
                 };
-                Ok(
-                    match writer.restore_assertion(fact) {
-                        Ok(outcome) => restored(&outcome),
-                        Err(error) => refusal(error)?,
-                    },
-                )
+                Ok(match writer.restore_assertion(fact) {
+                    Ok(outcome) => restored(&outcome),
+                    Err(error) => refusal(error)?,
+                })
             };
 
         let notes = older.notes()?;
@@ -639,12 +637,10 @@ impl Engine {
                         .flatten();
                     let outcome = match current {
                         None => Restored::Stored,
-                        Some(_) => {
-                            match writer.restore_authored(prepared) {
-                                Ok(outcome) => restored(&outcome),
-                                Err(error) => refusal(error)?,
-                            }
-                        }
+                        Some(_) => match writer.restore_authored(prepared) {
+                            Ok(outcome) => restored(&outcome),
+                            Err(error) => refusal(error)?,
+                        },
                     };
                     if delivery && let Restored::Refused(reason) = &outcome {
                         not_stored.insert(mapped.id.clone(), reason.clone());

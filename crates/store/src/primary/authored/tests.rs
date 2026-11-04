@@ -585,7 +585,6 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_through_primary_apply
 
 #[test]
 fn restored_actions_keep_their_history_but_never_run() {
-
     let mut source = cache();
     enqueue(&mut source, "a", 10);
     let p = known_request(
