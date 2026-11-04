@@ -358,6 +358,11 @@ impl Writer {
             expected.execute_batch(crate::schema::INDEX)?;
             expected.execute_batch(crate::schema::READ_INDEXES)?;
             let mut defs = Vec::new();
+            // One transaction: each drop committed alone cost a full sync.
+            let tx = rusqlite::Transaction::new_unchecked(
+                &index,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
             for name in deferred_index_names() {
                 let sql: Option<String> = expected
                     .query_row(
@@ -367,10 +372,11 @@ impl Writer {
                     )
                     .optional()?;
                 if let Some(sql) = sql {
-                    index.execute(&format!("DROP INDEX IF EXISTS \"{name}\""), [])?;
+                    tx.execute(&format!("DROP INDEX IF EXISTS \"{name}\""), [])?;
                     defs.push(sql);
                 }
             }
+            tx.commit()?;
             defs
         } else {
             Vec::new()
@@ -1453,14 +1459,26 @@ impl Inner {
     }
 
     /// Clears the build marker only after every deferred index has committed.
+    /// What a finish writes is derived from rows already synced, and the
+    /// marker is cleared last; write-ahead commits survive a crash only in
+    /// order, so a finish lost with the machine is redone at the next start.
+    /// Its commits therefore need no sync of their own, which on a small
+    /// archive were most of the startup's time.
     fn finish_build(&mut self) -> Result<()> {
         if self.first_build.is_none() {
             return Ok(());
         }
-        self.build_deferred()?;
-        self.index
-            .execute("UPDATE meta SET value = '0' WHERE key = 'building'", [])?;
         self.index.pragma_update(None, "synchronous", "normal")?;
+        let finished = self.build_deferred().and_then(|()| {
+            self.index
+                .execute("UPDATE meta SET value = '0' WHERE key = 'building'", [])?;
+            Ok(())
+        });
+        if let Err(error) = finished {
+            // Rows written while the build continues are synced again.
+            self.index.pragma_update(None, "synchronous", "full")?;
+            return Err(error);
+        }
         self.first_build = None;
         self.search.ready();
         self.commits.committed();

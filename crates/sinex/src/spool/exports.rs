@@ -69,11 +69,27 @@ pub(super) fn unknown(capture: &Capture, bindings: &[ExportBinding]) -> bool {
 }
 
 pub(super) fn insert(spool: &Spool, prepared: &Prepared) -> Result<()> {
+    // A reading whose export key is missing or wrong cannot be found by
+    // key, so the input it belongs to records it.
+    if let Some(material) = prepared.material()
+        && material.exports_unknown
+        && let Some(Capture::Input(input)) = &material.capture
+    {
+        let path = spool.index(
+            "export-unknown",
+            &input_key(&input.rows.input, &input.rows.format)?,
+        );
+        insert_order(&path, prepared)?;
+    }
     for binding in prepared.exports() {
         let path = spool.index("export-readings", &binding.key.identity().to_string());
         insert_order(&path, prepared)?;
     }
     Ok(())
+}
+
+fn input_key(input: &str, format: &str) -> Result<String> {
+    Ok(hash(&serde_json::to_vec(&(input, format))?))
 }
 
 fn insert_order(root: &Path, prepared: &Prepared) -> Result<()> {
@@ -108,6 +124,33 @@ impl Spool {
             Ok(())
         })?;
         Ok(found)
+    }
+
+    /// Refuses export progress for `key` while custody of the same input
+    /// holds an export reading that is bound to no valid key: its callback
+    /// may belong to this export, and its body cannot be checked against it.
+    pub fn require_known_exports(&self, key: &ExportReadingKey, through: u64) -> Result<()> {
+        self.ensure_indexes()?;
+        let path = self.index(
+            "export-unknown",
+            &input_key(&key.input.id, &key.input.format)?,
+        );
+        if !path.try_exists()? {
+            return Ok(());
+        }
+        raw_ranges::walk(&path, 0, 0, None, through, usize::MAX, &mut |order, identity| {
+            let entry = self.required(identity)?;
+            if entry.order != order || !entry.material().is_some_and(|m| m.exports_unknown) {
+                return invalid("unknown export index differs from its immutable custody");
+            }
+            if entry.phase.is_refused() || entry.revoked {
+                return Ok(());
+            }
+            Err(Error::Refused {
+                name: key.identity().to_string(),
+                reason: "pending custody of this input holds an export reading without a valid export key".into(),
+            })
+        })
     }
 
     pub fn export_material_key(&self, identity: &str) -> Result<Option<ExportReadingKey>> {

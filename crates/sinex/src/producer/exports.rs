@@ -12,12 +12,15 @@ impl Sinex {
     ) -> Result<()> {
         key.validate()?;
         let through = self.queue()?.raw_cut()?;
+        self.queue()?.require_known_exports(key, through)?;
+        eprintln!("DEBUGEXPORT visit through={through}");
         let mut after = None;
         loop {
             let Some(entry) = self.queue()?.next_export(key, after, through)? else {
                 return Ok(());
             };
             after = Some(entry.order);
+            eprintln!("DEBUGEXPORT entry {} unresolved={} refused={} private={} revoked={} capture={}", entry.identity, entry.unresolved, entry.phase.is_refused(), entry.is_private(), entry.revoked, entry.capture().is_some());
             if entry.unresolved || entry.phase.is_refused() || entry.is_private() || entry.revoked {
                 continue;
             }
@@ -29,7 +32,9 @@ impl Sinex {
                     ));
                 };
                 for reading in &input.parsed {
+                    eprintln!("DEBUGEXPORT reading key_match={} delivery={}", reading.export_key.as_ref() == Some(key), reading.delivery.is_some());
                     if reading.export_key.as_ref() == Some(key) {
+                        eprintln!("DEBUGEXPORT validate {:?}", reading.clone().into_step().validate_export());
                         reading.clone().into_step().validate_export()?;
                         visit(reading)?;
                     }
