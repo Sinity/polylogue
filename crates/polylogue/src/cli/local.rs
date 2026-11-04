@@ -180,7 +180,8 @@ fn hooks(v: &Values, startup: &crate::config::Startup, json: bool, on: bool) -> 
             Err(message) => return fail(startup.output, json, "bad_request", &message, 2),
         },
     };
-    match crate::hook::install(&path, harness, on) {
+    let version = on.then(|| crate::hook::probe_version(harness)).flatten();
+    match crate::hook::install(&path, harness, version.as_ref(), on) {
         Ok(()) => {
             println!(
                 "{} Polylogue's hooks {} {}",
@@ -397,4 +398,47 @@ pub fn manual(
         print!("{text}");
     }
     ExitCode::SUCCESS
+}
+
+/// `polylogue host`: holds a hosted agent's stdio for the daemon until the
+/// agent exits (`crate::hosting`).
+pub fn host(_: &Command, v: &Values, output: crate::config::OutputConfig, json: bool) -> ExitCode {
+    let harness = v.text("harness").unwrap_or_default();
+    let session_id = v.text("session_id");
+    let (Some(argv), Ok(protocol)) = (
+        crate::hosting::agent_command(&harness, session_id.as_deref()),
+        polylogue_model::live::channel::host_channel(&harness),
+    ) else {
+        return fail(
+            output,
+            json,
+            "bad_request",
+            &format!("{harness} is not a harness Polylogue hosts over stdio"),
+            2,
+        );
+    };
+    let path = |name: &str| v.text(name).map(std::path::PathBuf::from);
+    let (Some(socket), Some(cwd), Some(spool)) = (path("socket"), path("cwd"), path("spool"))
+    else {
+        return fail(
+            output,
+            json,
+            "bad_request",
+            "host takes --socket, --cwd and --spool",
+            2,
+        );
+    };
+    let config = crate::hosting::HostConfig {
+        harness,
+        protocol,
+        argv,
+        cwd,
+        socket,
+        spool,
+        session_id,
+    };
+    match crate::hosting::serve(&config) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => fail(output, json, "io", &e.to_string(), 1),
+    }
 }

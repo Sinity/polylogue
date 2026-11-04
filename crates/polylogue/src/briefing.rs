@@ -544,6 +544,19 @@ fn live_items(
                 .as_deref()
                 .map_or("untitled".into(), |t| one_line(t, 80));
             let mut line = format!("- {id}  {title}: {state}");
+            if let Some(on) = s.waiting_on() {
+                let _ = write!(line, " ({on})");
+            }
+            if let Some(cwd) = s.session.cwd.as_deref() {
+                let _ = write!(line, ", in {cwd}");
+            }
+            if let Some(task) = s.task() {
+                let _ = write!(line, ", task {task}");
+            }
+            if s.footprint() > 0 {
+                let _ = write!(line, ", uncommitted edits to {}", s.footprint());
+            }
+
             if let Some(todo) = s.todo() {
                 let _ = write!(line, ", doing \"{}\"", one_line(todo, 100));
             }

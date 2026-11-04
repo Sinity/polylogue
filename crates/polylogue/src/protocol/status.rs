@@ -5,7 +5,11 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct Arguments {}
+pub struct Arguments {
+    /// Print one line for status bars instead of the whole answer.
+    #[serde(default)]
+    pub line: bool,
+}
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Answer {
@@ -20,6 +24,7 @@ pub struct Answer {
     pub loop_status: polylogue_engine::LoopStatus,
     pub signals: Option<Signals>,
     pub notices: Notices,
+    pub running: Running,
     pub warm: Warm,
     pub mode: Mode,
     pub currency: polylogue_model::currency::IndexCurrency,
@@ -150,3 +155,55 @@ pub enum Primary {
 
 #[cfg(test)]
 mod tests;
+
+/// The sessions running now, waiting first; or why they could not be read.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Running {
+    Measured {
+        /// How many of them wait on the operator.
+        waiting: usize,
+        sessions: Vec<polylogue_store::RunningSession>,
+    },
+    Unavailable {
+        error: String,
+    },
+}
+
+impl Running {
+    /// The status line's running part: `3 running · 1 waiting 7m`, the
+    /// wait being the longest; empty with nothing running.
+    pub fn line(&self, now_ms: i64) -> String {
+        let Self::Measured { waiting, sessions } = self else {
+            return "running unavailable".into();
+        };
+        if sessions.is_empty() {
+            return String::new();
+        }
+        let mut line = format!("{} running", sessions.len());
+        if *waiting > 0 {
+            line.push_str(&format!(" · {waiting} waiting"));
+            let longest = sessions
+                .iter()
+                .filter(|s| s.state == polylogue_model::live::LiveState::Waiting)
+                .filter_map(|s| s.since)
+                .min();
+            if let Some(since) = longest {
+                line.push(' ');
+                line.push_str(&short_duration(now_ms.saturating_sub(since)));
+            }
+        }
+        line
+    }
+}
+
+/// `45s`, `7m`, `3h12m`, `2d4h`.
+pub fn short_duration(ms: i64) -> String {
+    let s = ms.max(0) / 1000;
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m", s / 60),
+        3600..86400 => format!("{}h{}m", s / 3600, s % 3600 / 60),
+        _ => format!("{}d{}h", s / 86400, s % 86400 / 3600),
+    }
+}

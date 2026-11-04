@@ -291,3 +291,32 @@ fn rollback_lines_from_the_next_build_are_read() {
         "019b7600-0000-7000-8000-000000000001"
     );
 }
+
+#[test]
+fn process_and_registry_lines_are_live_evidence_of_their_route() {
+    let input = lines(&[
+        json!({"at_ns": "1790531444000000000", "route": "process", "event": "RootGone",
+               "provider": "claude-code", "session_id": "s1",
+               "payload": {"pid": 41, "start": 900, "boot_id": "b1"}}),
+        json!({"at_ns": "1790531445000000000", "route": "registry", "event": "Status",
+               "provider": "codex", "session_id": "t1",
+               "payload": {"status": "busy", "pid": 42, "start": 901, "boot_id": "b1"}}),
+        json!({"at_ns": "1790531446000000000", "route": "elsewhere", "event": "Status",
+               "provider": "codex", "session_id": "t1", "payload": {}}),
+        json!({"at_ns": "1790531447000000000", "event": "PreToolUse", "harness_pid": 42,
+               "harness_start": 901, "boot_id": "b1", "provider": "claude-code",
+               "session_id": "s1", "payload": {"tool_name": "Edit"}}),
+    ]);
+    let step = run(&HookSpool, &mut ParserState::default(), &input, 0).unwrap();
+    let kinds: Vec<&str> = step.output.events.iter().map(|e| e.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        ["process_root_gone", "registry_status", "hook_pre_tool_use"]
+    );
+    assert_eq!(step.output.events[0].data["pid"], 41);
+    assert_eq!(step.output.events[1].data["status"], "busy");
+    // The hook line keeps the whole process identity.
+    assert_eq!(step.output.events[2].data["harness_start"], 901);
+    assert_eq!(step.counts.records, 4);
+    assert!(polylogue_model::live::is_evidence(kinds[0]));
+}

@@ -282,7 +282,7 @@ impl WriterArchive {
 
     pub fn live_task(&self, session: &str) -> Json {
         self.rows(&format!(
-            "SELECT live_task, live_task_evidence FROM session WHERE id = 'claude-code:{session}'"
+            "SELECT json_extract(live_facts, '$.task') AS task FROM session WHERE id = 'claude-code:{session}'"
         ))[0]
             .clone()
     }

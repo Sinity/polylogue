@@ -34,7 +34,7 @@ pub struct OpenItems {
     pub open_tool_call: bool,
     /// The harness's in-progress todo item.
     pub todo: Option<String>,
-    /// What the session is waiting on: permission, question, notification.
+    /// What the session's hooks say it waits on: permission, question, plan, input.
     pub waiting_on: Option<String>,
 }
 
@@ -192,7 +192,9 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let row = conn
             .prepare_cached(
-                "SELECT s.live_open_tool_pk IS NOT NULL, s.live_todo, s.live_waiting_on,
+                "SELECT json_extract(s.live_facts, '$.open_call') IS NOT NULL,
+                        json_extract(s.live_facts, '$.todo'),
+                        json_extract(s.live_facts, '$.hook_waiting_on.value'),
                         (SELECT m.written_by FROM message m WHERE m.session_pk = s.pk AND m.duplicate_of IS NULL
                           ORDER BY m.order_input_id DESC, m.seq DESC, m.record_position DESC, m.id DESC LIMIT 1),
                         (SELECT m.prompt_kind FROM message m WHERE m.session_pk = s.pk AND m.duplicate_of IS NULL
@@ -228,45 +230,58 @@ impl Reader<'_> {
         self.deliveries("WHERE d.recipient_id = ?1", session)
     }
 
-    pub fn delivery(&self, id: &str) -> Result<Option<(DeliveryRow, String)>> {
-        let Some(row) = self.deliveries("WHERE d.id = ?1", id)?.pop() else {
-            return Ok(None);
-        };
-        let body: Vec<u8> = self.conn()?.query_row(
-            "SELECT body FROM source_delivery WHERE id = ?1",
-            [id],
-            |r| r.get(0),
+    /// Pings and notices to `session` with no outcome yet, oldest first,
+    /// with their text: what its next context-accepting hook event claims.
+    pub fn pending_hook_deliveries(&self, session: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT d.id, d.body FROM source_delivery d
+              WHERE d.recipient_id = ?1 AND d.event IN ('ping', 'notice')
+                AND NOT EXISTS (SELECT 1 FROM source_delivery_event e WHERE e.delivery = d.id)
+              ORDER BY d.at, d.id",
         )?;
-        let text = crate::encoding::unpack_text(&body)?;
-        Ok(Some((row, text)))
+        let rows = stmt.query_map([session], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, body) = row?;
+            out.push((id, crate::encoding::unpack_text(&body)?));
+        }
+        Ok(out)
     }
 
-    fn deliveries(&self, filter: &str, arg: &str) -> Result<Vec<DeliveryRow>> {
+    /// The sessions Polylogue started whose first turn (a `pack`
+    /// delivery) refers to `reference`, such as `role:reviewer`, newest
+    /// first: each with the directory it was started in and when.
+    pub fn sessions_started_with(
+        &self,
+        reference: &str,
+    ) -> Result<Vec<(String, Option<String>, i64)>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare_cached(&format!(
-            "SELECT d.id, d.event, d.sender, d.recipient_id, d.at, d.bytes, d.commit_seq,
-                    (SELECT group_concat(e.what, ',') FROM
-                        (SELECT what FROM source_delivery_event e WHERE e.delivery = d.id ORDER BY at) e)
-               FROM source_delivery d {filter}
-              ORDER BY d.commit_seq DESC"
-        ))?;
-        let rows = stmt.query_map([arg], |r| {
-            Ok(DeliveryRow {
-                id: r.get(0)?,
-                event: r.get(1)?,
-                sender: r.get(2)?,
-                recipient_id: r.get(3)?,
-                at: Timestamp::from_unix_ms(r.get(4)?)
-                    .unwrap_or_else(|| Timestamp::from_unix_ms(0).expect("epoch")),
-                bytes: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
-                seq: r.get(6)?,
-                events: r
-                    .get::<_, Option<String>>(7)?
-                    .map(|s| s.split(',').map(str::to_owned).collect())
-                    .unwrap_or_default(),
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let mut stmt = conn.prepare_cached(
+            "SELECT d.recipient_id, d.cwd, d.at FROM source_delivery d
+              WHERE d.event = 'pack' AND d.recipient_id IS NOT NULL
+                AND EXISTS (SELECT 1 FROM json_each(d.refs_json) r WHERE r.value = ?1)
+              ORDER BY d.at DESC, d.id DESC",
+        )?;
+        Ok(stmt
+            .query_map([reference], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The sessions with pings or notices that have no outcome yet.
+    pub fn sessions_with_pending_hook_deliveries(&self) -> Result<Vec<String>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT DISTINCT d.recipient_id FROM source_delivery d
+              WHERE d.recipient_id IS NOT NULL AND d.event IN ('ping', 'notice')
+                AND NOT EXISTS (SELECT 1 FROM source_delivery_event e WHERE e.delivery = d.id)
+              ORDER BY d.recipient_id",
+        )?;
+        Ok(stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?)
     }
 
     /// One catalog-checked value. Defaults and primary ownership are resolved

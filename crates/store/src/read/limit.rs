@@ -147,6 +147,12 @@ impl ReadLimit {
         Ok(())
     }
 
+    /// The time left before the deadline; `None` with no deadline.
+    pub fn remaining(&self) -> Option<Duration> {
+        self.deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    }
+
     pub fn check(&self) -> Result<()> {
         for scope in self
             .scopes

@@ -141,6 +141,14 @@ pub enum Request {
     Changes {
         since: Option<String>,
     },
+    /// Lines for a session or a sessions query as its live state changes
+    /// and its rows arrive, until the deadline; `marks` continues a
+    /// previous follow.
+    Follow {
+        query: String,
+        #[serde(default)]
+        marks: Option<crate::protocol::follow::Marks>,
+    },
     /// A query in the query language. `cursor` continues a previous page;
     /// `page_size` overrides the unit's default page; `why` explains an
     /// empty result clause by clause.
@@ -265,8 +273,75 @@ pub enum Request {
         #[serde(default)]
         sender: Option<String>,
     },
-    /// What happened to a delivery after it was handed out. The daemon
-    /// queues it and answers at once; a repeated request ID is applied once.
+    /// An addressed message to a session, or to every session a quoted
+    /// query (`@[sessions …]`) selects when it is sent.
+    Ping {
+        request_id: String,
+        target: String,
+        text: String,
+        /// Refuse rather than resume a session that is not running.
+        #[serde(default)]
+        live: bool,
+        #[serde(default)]
+        about: Option<String>,
+    },
+    /// A hook takes the pings and notices pending for its session.
+    Claim {
+        session: SessionId,
+        event: String,
+    },
+    /// Approve or deny a session's pending request; `standing` answers the
+    /// same tool and input whenever the session asks next.
+    Answer {
+        request_id: String,
+        session: SessionId,
+        approve: bool,
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        standing: bool,
+    },
+    /// The synchronous permission hook asks for a decision given ahead.
+    Permission {
+        session: SessionId,
+        tool: String,
+        #[serde(default)]
+        input: serde_json::Value,
+    },
+    /// Stop a session's current turn.
+    Interrupt {
+        request_id: String,
+        session: SessionId,
+    },
+    /// Start a session Polylogue hosts, in `cwd`, with `text` as its first
+    /// turn: on `harness`, or as an instance of `role` (its harness and
+    /// instructions).
+    Start {
+        request_id: String,
+        #[serde(default)]
+        harness: Option<String>,
+        #[serde(default)]
+        role: Option<String>,
+        cwd: PathBuf,
+        text: String,
+    },
+    /// Hand a session's work to a new hosted session on `to`, briefed with
+    /// its takeover pack (from message `at`), in `cwd` or the source's; `stop_source` interrupts the
+    /// source afterwards; `print` shows the pack and starts nothing.
+    HandOff {
+        request_id: String,
+        session: SessionId,
+        to: String,
+        #[serde(default)]
+        cwd: Option<PathBuf>,
+        #[serde(default)]
+        at: Option<String>,
+        #[serde(default)]
+        stop_source: bool,
+        #[serde(default)]
+        print: bool,
+    },
+    /// What happened to a delivery after it was handed out.
     DeliveryEvent {
         request_id: String,
         delivery: String,
@@ -317,6 +392,7 @@ impl Request {
         matches!(
             self,
             Self::Changes { .. }
+                | Self::Follow { .. }
                 | Self::Read {
                     delivery: polylogue_model::read::ReadDelivery::Stream,
                     ..
@@ -339,6 +415,7 @@ impl Request {
             | Self::Attachment { .. }
             | Self::Query { .. }
             | Self::Changes { .. }
+            | Self::Follow { .. }
             | Self::Read { .. }
             | Self::Resumable { .. }
             | Self::Continue { .. }
@@ -371,7 +448,14 @@ impl Request {
             | Self::Save { .. }
             | Self::Watch { .. }
             | Self::Withdraw { .. }
-            | Self::DeliveryEvent { .. } => false,
+            | Self::DeliveryEvent { .. }
+            | Self::Ping { .. }
+            | Self::Claim { .. }
+            | Self::Answer { .. }
+            | Self::Permission { .. }
+            | Self::Interrupt { .. }
+            | Self::Start { .. }
+            | Self::HandOff { .. } => false,
         }
     }
 

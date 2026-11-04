@@ -33,6 +33,10 @@ pub mod input_rows;
 pub mod items;
 pub mod legacy_import;
 mod live;
+pub use live::{
+    FollowSnapshot, FollowedCall, FollowedMessage, LiveDetail, LiveFootprint, LiveRoot,
+    LiveSession, ProcessRow, RunningSession,
+};
 pub mod measure;
 pub mod older_archive;
 mod ordered_blocks;

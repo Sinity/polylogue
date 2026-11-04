@@ -191,14 +191,14 @@ fn hook_install_merges_and_is_idempotent() {
             "Stop": [{"hooks": [{"type": "command", "command": "notify-send done"}]}]
         }
     });
-    let once = merge_hooks(other.clone(), Harness::ClaudeCode, true).unwrap();
-    let twice = merge_hooks(once.clone(), Harness::ClaudeCode, true).unwrap();
+    let once = merge_hooks(other.clone(), Harness::ClaudeCode, None, true).unwrap();
+    let twice = merge_hooks(once.clone(), Harness::ClaudeCode, None, true).unwrap();
     assert_eq!(once, twice);
     assert_eq!(once["model"], "opus");
     let stop = once["hooks"]["Stop"].as_array().unwrap();
     assert_eq!(stop.len(), 2);
     assert_eq!(stop[0]["hooks"][0]["command"], "notify-send done");
-    let removed = merge_hooks(once, Harness::ClaudeCode, false).unwrap();
+    let removed = merge_hooks(once, Harness::ClaudeCode, None, false).unwrap();
     assert_eq!(removed["hooks"]["Stop"].as_array().unwrap().len(), 1);
     assert!(removed["hooks"].get("SessionStart").is_none());
 }
@@ -207,26 +207,26 @@ fn hook_install_merges_and_is_idempotent() {
 fn install_writes_a_file_and_refuses_symlinks() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.json");
-    install(&path, Harness::ClaudeCode, true).unwrap();
+    install(&path, Harness::ClaudeCode, None, true).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("polylogue hook SessionStart"));
     let link = dir.path().join("linked.json");
     std::os::unix::fs::symlink(&path, &link).unwrap();
-    assert!(install(&link, Harness::ClaudeCode, true).is_err());
+    assert!(install(&link, Harness::ClaudeCode, None, true).is_err());
 }
 
 #[test]
 fn codex_hooks_name_the_harness_and_replace_their_own() {
-    let once = merge_hooks(json!({}), Harness::Codex, true).unwrap();
+    let once = merge_hooks(json!({}), Harness::Codex, None, true).unwrap();
     let start = &once["hooks"]["SessionStart"][0]["hooks"][0]["command"];
     assert_eq!(start, "polylogue hook SessionStart --harness codex");
     assert!(
         once["hooks"].get("Notification").is_none(),
         "Codex has no such event"
     );
-    let twice = merge_hooks(once.clone(), Harness::Codex, true).unwrap();
+    let twice = merge_hooks(once.clone(), Harness::Codex, None, true).unwrap();
     assert_eq!(once, twice);
-    let removed = merge_hooks(twice, Harness::Codex, false).unwrap();
+    let removed = merge_hooks(twice, Harness::Codex, None, false).unwrap();
     assert!(removed["hooks"].as_object().unwrap().is_empty());
 }
 
@@ -243,7 +243,7 @@ fn install_preserves_permissions_and_ignores_an_old_temporary_name() {
         .path()
         .join(format!(".settings.json.polylogue-{}", std::process::id()));
     std::os::unix::fs::symlink(&other, stale).unwrap();
-    install(&path, Harness::ClaudeCode, true).unwrap();
+    install(&path, Harness::ClaudeCode, None, true).unwrap();
     assert_eq!(std::fs::read(&other).unwrap(), b"unchanged");
     assert!(!path.is_symlink());
     assert_eq!(
@@ -321,9 +321,9 @@ fn web_links_resolve_to_the_same_sessions_as_captures() {
 fn gemini_hooks_use_the_documented_events_and_millisecond_timeouts() {
     let settings =
         json!({"hooks":{"BeforeAgent":[{"hooks":[{"type":"command", "command":"other"}]}]}});
-    let once = merge_hooks(settings.clone(), Harness::GeminiCli, true).unwrap();
+    let once = merge_hooks(settings.clone(), Harness::GeminiCli, None, true).unwrap();
     assert_eq!(
-        merge_hooks(once.clone(), Harness::GeminiCli, true).unwrap(),
+        merge_hooks(once.clone(), Harness::GeminiCli, None, true).unwrap(),
         once
     );
     assert_eq!(
@@ -336,7 +336,7 @@ fn gemini_hooks_use_the_documented_events_and_millisecond_timeouts() {
         "polylogue hook BeforeAgent --harness gemini-cli"
     );
     assert_eq!(
-        merge_hooks(once, Harness::GeminiCli, false).unwrap(),
+        merge_hooks(once, Harness::GeminiCli, None, false).unwrap(),
         settings
     );
     assert_eq!(
@@ -470,4 +470,86 @@ fn successful_native_context_output_produces_a_distinct_parsable_emission_receip
             assert!(claims.is_empty());
         }
     }
+}
+
+/// The newer Claude Code events (permission requests, failed stops,
+/// subagent starts, questions) are registered only for a version a probe
+/// confirmed; an unknown or older version gets the base events, and
+/// removal takes them out whatever version installed them.
+#[test]
+fn newer_events_are_registered_only_for_a_confirmed_version() {
+    use super::settings::HarnessVersion;
+    let newer = |settings: &Value| {
+        [
+            "PermissionRequest",
+            "StopFailure",
+            "SubagentStart",
+            "Elicitation",
+        ]
+        .iter()
+        .filter(|e| settings["hooks"].get(**e).is_some())
+        .count()
+    };
+    assert_eq!(
+        HarnessVersion::parse("2.1.316 (Claude Code)"),
+        HarnessVersion::parse("x 2.1.316")
+    );
+    assert!(HarnessVersion::parse("2.1.40") < HarnessVersion::parse("2.1.316"));
+    assert_eq!(HarnessVersion::parse("no version"), None);
+    let unknown = merge_hooks(json!({}), Harness::ClaudeCode, None, true).unwrap();
+    assert_eq!(newer(&unknown), 0);
+    let older = HarnessVersion::parse("2.1.40").unwrap();
+    let old = merge_hooks(json!({}), Harness::ClaudeCode, Some(&older), true).unwrap();
+    assert_eq!(newer(&old), 0);
+    assert!(old["hooks"].get("SessionStart").is_some());
+    let current = HarnessVersion::parse("2.1.316").unwrap();
+    let new = merge_hooks(json!({}), Harness::ClaudeCode, Some(&current), true).unwrap();
+    assert_eq!(newer(&new), 4);
+    assert_eq!(
+        new["hooks"]["PermissionRequest"][0]["hooks"][0]["command"],
+        "polylogue hook PermissionRequest"
+    );
+    // Installing again for an older version takes the newer events out.
+    let downgraded = merge_hooks(new.clone(), Harness::ClaudeCode, Some(&older), true).unwrap();
+    assert_eq!(newer(&downgraded), 0);
+    let removed = merge_hooks(new, Harness::ClaudeCode, None, false).unwrap();
+    assert!(removed["hooks"].as_object().unwrap().is_empty());
+}
+
+/// law: pl.live.never-mid-tool
+/// Pings and notices are claimed only after a tool result or at a prompt,
+/// never before a tool runs.
+#[test]
+fn the_mailbox_is_claimed_only_between_steps() {
+    for harness in [Harness::ClaudeCode, Harness::Codex] {
+        assert!(accepts_mail(harness, "PostToolUse"));
+        assert!(accepts_mail(harness, "UserPromptSubmit"));
+        assert!(!accepts_mail(harness, "PreToolUse"));
+        assert!(!accepts_mail(harness, "SessionStart"));
+        assert!(!accepts_mail(harness, "PermissionRequest"));
+    }
+    assert!(accepts_mail(Harness::GeminiCli, "AfterTool"));
+    assert!(!accepts_mail(Harness::GeminiCli, "BeforeTool"));
+    assert!(accepts_mail(Harness::Hermes, "pre_llm_call"));
+}
+
+/// A decision given ahead becomes Claude Code's permission decision; no
+/// decision prints nothing, so the harness's own prompt stands.
+#[test]
+fn a_standing_answer_becomes_the_permission_decision() {
+    assert_eq!(permission_output(&json!({"decision": null})), None);
+    assert_eq!(
+        permission_output(&json!({"decision": "approve", "text": null, "delivery": "d"})),
+        Some(
+            json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+            "decision": {"behavior": "allow"}}})
+        )
+    );
+    assert_eq!(
+        permission_output(&json!({"decision": "deny", "text": "not on main"})),
+        Some(
+            json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+            "decision": {"behavior": "deny", "message": "not on main"}}})
+        )
+    );
 }

@@ -36,6 +36,8 @@ pub struct Daemon {
     pub(crate) queued_deliveries: super::queued_deliveries::QueuedDeliveries,
     /// User writes (notes, deliveries, settings) through the one writer.
     pub(crate) writes: Option<WriterSender>,
+    /// Live-session acts: the mailbox, resumed runs and hosted sessions.
+    pub(crate) acts: crate::live_acts::Acts,
     mode: ModeState,
     loop_tx: Mutex<Sender<LoopMsg>>,
     pub(crate) status: Arc<Mutex<LoopStatus>>,
@@ -429,7 +431,7 @@ fn writer(d: &Daemon) -> Result<&WriterSender, Failure> {
     d.writes.as_ref().ok_or_else(|| d.mode.write_refusal())
 }
 
-fn authored_preparation() -> user_writes::PreparationContext {
+pub(crate) fn authored_preparation() -> user_writes::PreparationContext {
     user_writes::PreparationContext::new(
         polylogue_sources::origin::ORIGINS
             .iter()
@@ -720,6 +722,17 @@ fn handle_inner(
             "bad_request",
             "the change feed uses the finite socket stream",
         ),
+        Request::Follow { .. } => error("bad_request", "follow uses the socket stream"),
+        Request::Ping { .. }
+        | Request::Claim { .. }
+        | Request::Answer { .. }
+        | Request::Permission { .. }
+        | Request::Interrupt { .. }
+        | Request::Start { .. }
+        | Request::HandOff { .. } => {
+            drop(reader);
+            acts::handle(request, d, invocation)
+        }
         Request::Explain {
             subject,
             expression,
@@ -1593,6 +1606,8 @@ pub struct Runtime {
     signals_stop: Option<Sender<()>>,
     signals: Option<JoinHandle<()>>,
     counts: Option<JoinHandle<()>>,
+    live_evidence_stop: Option<Sender<()>>,
+    live_evidence: Option<JoinHandle<()>>,
     completion: Option<crate::completion_catalog::publisher::Publisher>,
     scope: Option<super::scope::ScopeWorker>,
     completion_scope: Option<polylogue_store::ScopeInvalidation>,
@@ -1665,6 +1680,13 @@ impl Runtime {
         {
             return Some(failure);
         }
+        if self
+            .live_evidence
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            return Some("live evidence worker terminated");
+        }
         self.completion
             .as_ref()
             .and_then(|worker| worker.worker_failure())
@@ -1696,6 +1718,14 @@ impl Runtime {
             && counts.join().is_err()
         {
             failure.get_or_insert_with(|| std::io::Error::other("count worker panicked"));
+        }
+        if let Some(stop) = self.live_evidence_stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(worker) = self.live_evidence.take()
+            && worker.join().is_err()
+        {
+            failure.get_or_insert_with(|| std::io::Error::other("live evidence worker panicked"));
         }
         if let Some(signals) = self.signals.take()
             && signals.join().is_err()
@@ -1881,6 +1911,8 @@ pub fn start(
         busy: engine.is_some(),
         ..LoopStatus::default()
     }));
+    let mail = crate::mailbox::dir(&archive.root);
+    let hosts = crate::hosting::dir(&archive.root);
     let daemon = Arc::new(Daemon {
         config: deployment,
         operations: std::sync::OnceLock::new(),
@@ -1893,6 +1925,19 @@ pub fn start(
         warm: super::warm::Warm::default(),
         scope: super::scope::SharedScopeIndex::default(),
         queued_deliveries: super::queued_deliveries::QueuedDeliveries::default(),
+        acts: crate::live_acts::Acts::new(
+            mail,
+            hosts,
+            settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
+            polylogue_sources::origin::by_name("codex")
+                .map(|origin| {
+                    settings
+                        .root(origin.root)
+                        .join("app-server-control/app-server-control.sock")
+                })
+                .unwrap_or_default(),
+            "codex".into(),
+        ),
         writes,
         mode,
         loop_tx: Mutex::new(tx.clone()),
@@ -1906,6 +1951,13 @@ pub fn start(
         #[cfg(test)]
         read_limits: Mutex::new(None),
     });
+    daemon.acts.bind(Arc::downgrade(&daemon));
+    // Hosted sessions outlive a daemon restart: their hosts, or Codex's
+    // app-server, kept them running; connect to each again.
+    daemon.acts.reattach();
+    // Pings and notices left pending raise their running sessions' mailbox
+    // flags; those to sessions no longer running are settled.
+    acts::settle_ended(&daemon, daemon.config.requests.now().unix_ms(), true);
     let operations = Arc::new(crate::protocol::operations::table(Arc::clone(&daemon)));
     assert!(
         daemon.operations.set(Arc::downgrade(&operations)).is_ok(),
@@ -1917,6 +1969,8 @@ pub fn start(
         signals_stop: None,
         signals: None,
         counts: None,
+        live_evidence_stop: None,
+        live_evidence: None,
         completion: None,
         scope: None,
         completion_scope: Some(completion_scope),
@@ -2026,6 +2080,31 @@ pub fn start(
                 daemon.warm.count_worker(&daemon.reads, count_commits)
             })?,
     );
+    let (stop, stopped) = channel();
+    runtime.live_evidence_stop = Some(stop);
+    let daemon = Arc::clone(&runtime.daemon);
+    let worker_events = runtime.worker_events.clone();
+    let paths = crate::live_evidence::Paths {
+        spool: settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
+        claude_sessions: polylogue_sources::origin::by_name("claude-code")
+            .map(|origin| settings.root(origin.root).join("sessions"))
+            .unwrap_or_default(),
+        codex_socket: runtime.daemon.acts.codex().1,
+        codex_program: runtime.daemon.acts.codex().0,
+    };
+    let clock = settings.clock.clone();
+    runtime.live_evidence = Some(
+        std::thread::Builder::new()
+            .name("polylogue-live".into())
+            .spawn(move || {
+                let _exit = super::lifecycle::WorkerExit::new(
+                    worker_events,
+                    "live evidence worker terminated",
+                    None,
+                );
+                crate::live_evidence::run(daemon, paths, clock, stopped)
+            })?,
+    );
     // Load the vectors `similar:` ranks by before the first query needs them.
     let daemon = Arc::clone(&runtime.daemon);
     std::thread::Builder::new()
@@ -2052,4 +2131,6 @@ pub(crate) mod read;
 #[cfg(test)]
 mod tests;
 
+pub(crate) mod acts;
 mod feeds;
+pub(crate) mod follow;

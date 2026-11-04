@@ -176,7 +176,7 @@ const SESSION_HAS_NAMES: [&str; 8] = [
     "conflict",
 ];
 const MESSAGE_HAS_NAMES: [&str; 4] = ["thinking", "tool_calls", "attachments", "code"];
-pub const LIVE_STATES: &[&str] = &["working", "waiting", "idle", "unknown", "stale", "ended"];
+pub const LIVE_STATES: &[&str] = polylogue_model::live::LiveState::NAMES;
 pub const SESSION_OUTCOMES: &[&str] = &["solved", "partial", "abandoned", "none"];
 // The shared enums own the vocabulary; the catalog borrows their spellings.
 const TIME_QUALITIES: [&str; query_language::time::TimeQuality::ALL.len()] = {
@@ -444,7 +444,7 @@ pub static FIELDS: &[Field] = &[
         Sessions,
         "live",
         LIVE_STATES,
-        "the live state now, from hook records and the time",
+        "the live state now, from hook, process and registry evidence",
     ),
     sp(Sessions, "waiting", "the live state is waiting").boolean(),
     sp(
@@ -456,56 +456,80 @@ pub static FIELDS: &[Field] = &[
     v(
         Sessions,
         "waiting_on",
-        &["permission", "question", "notification"],
-        "what a waiting session waits for",
+        polylogue_model::live::WaitingOn::NAMES,
+        "what a waiting session waits for from the operator",
+    ),
+    v(
+        Sessions,
+        "stall",
+        polylogue_model::live::Stall::NAMES,
+        "what a stalled session waits for that is not the operator",
+    ),
+    f(
+        Sessions,
+        "process_alive",
+        Bool,
+        "whether the session's harness process is alive; empty when no process was observed",
+    ),
+    f(
+        Sessions,
+        "harness_status",
+        Match,
+        "the harness registry's own word for the session's status",
+    ),
+    f(
+        Sessions,
+        "open_tool",
+        Match,
+        "the tool of the call running now",
+    ),
+    f(
+        Sessions,
+        "footprint",
+        Substring,
+        "files the live session changed through edit tools and has not committed",
     ),
     f(
         Sessions,
         "task",
         Match,
-        "the live task: a job ID or Bead ID",
+        "the live task, from explicit task evidence",
     ),
     f(
         Sessions,
         "live_until",
         Time,
-        "when the live state changes with no new record; empty when only a new record can change it",
+        "when the live state or stall changes with no new evidence; empty when only new evidence can change it",
     ),
     f(
         Sessions,
-        "last_event",
-        Match,
-        "the latest live record: a hook event",
+        "live_since",
+        Time,
+        "when the current live activity began",
     ),
     f(
         Sessions,
         "last_event_at",
         Time,
-        "when the latest live record happened",
-    ),
-    f(
-        Sessions,
-        "waiting_since",
-        Time,
-        "when a waiting session started waiting",
+        "when the latest live evidence happened",
     ),
     f(
         Sessions,
         "todo",
         Substring,
-        "the live todo list, as recorded",
+        "the harness's in-progress todo item, as recorded",
     ),
     f(
         Sessions,
         "live_rank",
         Number,
-        "0 waiting, 1 working, 2 idle, 3 unknown, 4 stale, 5 ended: the order the live view lists",
+        "0 waiting, 1 working, 2 idle, 3 unknown, 4 stale, 5 ended: the order the running list uses",
     ),
     f(
         Sessions,
         "peers",
         Substring,
-        "other working, waiting or idle sessions sharing its repository or working directory",
+        "other working, waiting or idle sessions in the same repository, or the same working directory without one",
     ),
     f(
         Sessions,
@@ -1024,6 +1048,83 @@ pub static FIELDS: &[Field] = &[
     sp(Deliveries, "left_out", "a reference left out for budget"),
     f(Deliveries, "at", Time, ""),
     f(Deliveries, "bytes", Number, ""),
+    sp(
+        LiveIntervals,
+        "session",
+        "the session the interval belongs to",
+    ),
+    v(
+        LiveIntervals,
+        "aspect",
+        polylogue_model::live::Aspect::NAMES,
+        "what the interval measures: activity, waiting_on or stall",
+    ),
+    f(
+        LiveIntervals,
+        "value",
+        Match,
+        "the activity, wait or stall during the interval",
+    ),
+    f(LiveIntervals, "start", Time, "when the interval began"),
+    f(LiveIntervals, "end", Time, "when evidence closed it"),
+    f(
+        LiveIntervals,
+        "duration_ms",
+        Number,
+        "its length in milliseconds",
+    ),
+    f(
+        LiveIntervals,
+        "closed_by",
+        Match,
+        "the kind of the evidence that closed it",
+    ),
+    sp(
+        Processes,
+        "session",
+        "the session whose process tree it is in",
+    ),
+    f(Processes, "boot_id", Match, "the boot it ran in"),
+    f(Processes, "pid", Number, ""),
+    f(
+        Processes,
+        "start",
+        Number,
+        "its start time in clock ticks after boot",
+    ),
+    f(Processes, "parent_pid", Number, ""),
+    f(
+        Processes,
+        "comm",
+        Match,
+        "the kernel's name for its command",
+    ),
+    f(
+        Processes,
+        "argv",
+        Substring,
+        "its arguments, as a JSON array",
+    ),
+    f(Processes, "cwd", Prefix, "its working directory"),
+    f(
+        Processes,
+        "started_at",
+        Time,
+        "when the watcher first saw it",
+    ),
+    f(Processes, "ended_at", Time, "when the watcher saw it exit"),
+    v(
+        Processes,
+        "role",
+        &["harness", "child"],
+        "the harness root or one of its descendants",
+    ),
+    f(
+        Processes,
+        "tool_call",
+        Prefix,
+        "the tool call it started during: between that call's start and its result",
+    ),
     v(
         Changes,
         "kind",

@@ -1,10 +1,12 @@
 use crate::fixture::writer::*;
 use serde_json::json;
 
+/// law: task-from-explicit-evidence
 #[test]
-fn no_task_from_prose() {
-    // A Bead ID in a prompt, or read with `bd show`, claims
-    // nothing; a successful claim holds until a successful close.
+fn no_task_from_prose_or_claim_commands() {
+    // docs/agents.md: "A command's name or arguments, including a tracker's
+    // exact claim command, establish no task state." A Bead ID in a prompt,
+    // read with `bd show`, or claimed with `bd update --claim` gives no task.
     let mut w = WriterArchive::new();
     let mut a = prose("a", 1, 1_000, "please work on demo-ony.7 next");
     a.extend(bash(
@@ -27,14 +29,8 @@ fn no_task_from_prose() {
             "✓ claimed",
         ),
     );
-    assert_eq!(
-        w.live_task("a"),
-        json!({"live_task": null, "live_task_evidence": null})
-    );
-    assert_eq!(
-        w.live_task("b"),
-        json!({"live_task": "demo-ony.7", "live_task_evidence": "claim_command"})
-    );
+    assert_eq!(w.live_task("a"), json!({"task": null}));
+    assert_eq!(w.live_task("b"), json!({"task": null}));
 
     w.write(
         "b",
@@ -47,10 +43,7 @@ fn no_task_from_prose() {
             "✓ closed",
         ),
     );
-    assert_eq!(
-        w.live_task("b"),
-        json!({"live_task": null, "live_task_evidence": null})
-    );
+    assert_eq!(w.live_task("b"), json!({"task": null}));
 }
 
 #[test]
@@ -67,10 +60,7 @@ fn a_failed_claim_claims_nothing() {
             "error: not found",
         ),
     );
-    assert_eq!(
-        w.live_task("s"),
-        json!({"live_task": null, "live_task_evidence": null})
-    );
+    assert_eq!(w.live_task("s"), json!({"task": null}));
 }
 
 #[test]
@@ -102,7 +92,7 @@ fn commits_and_pull_requests_come_from_the_output_of_the_commands_that_made_them
         w.rows("SELECT repo, number FROM pr_link"),
         vec![json!({"repo": "Sinity/polylogue", "number": 6300})]
     );
-    assert_eq!(w.live_task("s")["live_task"], "demo-9");
+    assert_eq!(w.live_task("s")["task"], json!(null));
 }
 
 #[test]
@@ -176,7 +166,7 @@ fn command_only_links_do_not_read_tool_result_bodies() {
     index
         .authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
-    assert_eq!(w.live_task("s")["live_task"], "demo-9");
+    assert_eq!(w.live_task("s")["task"], json!(null));
     assert_eq!(
         w.rows("SELECT count(*) AS n FROM commit_link"),
         vec![json!({"n":0})]

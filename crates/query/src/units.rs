@@ -14,6 +14,8 @@ pub enum Unit {
     Turns,
     Deliveries,
     Changes,
+    LiveIntervals,
+    Processes,
 }
 
 impl Unit {
@@ -593,6 +595,110 @@ pub static UNITS: &[UnitSpec] = &[
                 target: Unit::Sessions,
             },
         ],
+    },
+    UnitSpec {
+        unit: Unit::LiveIntervals,
+        name: "live_intervals",
+        singular: "live_interval",
+        in_session: true,
+        identity: &["session", "aspect", "start"],
+        main_time: Some("start"),
+        columns: &[
+            ColumnSpec {
+                name: "session",
+                kind: Text,
+            },
+            ColumnSpec {
+                name: "aspect",
+                kind: Text,
+            },
+            ColumnSpec {
+                name: "value",
+                kind: Text,
+            },
+            ColumnSpec {
+                name: "start",
+                kind: Time,
+            },
+            ColumnSpec {
+                name: "end",
+                kind: Time,
+            },
+            ColumnSpec {
+                name: "duration_ms",
+                kind: Number,
+            },
+            ColumnSpec {
+                name: "closed_by",
+                kind: Text,
+            },
+        ],
+        relations: &[Relation {
+            prefix: "session",
+            target: Unit::Sessions,
+        }],
+    },
+    UnitSpec {
+        unit: Unit::Processes,
+        name: "processes",
+        singular: "process",
+        in_session: true,
+        identity: &["session", "boot_id", "pid", "start"],
+        main_time: Some("started_at"),
+        columns: &[
+            ColumnSpec {
+                name: "session",
+                kind: Text,
+            },
+            ColumnSpec {
+                name: "boot_id",
+                kind: Text,
+            },
+            ColumnSpec {
+                name: "pid",
+                kind: Number,
+            },
+            ColumnSpec {
+                name: "start",
+                kind: Number,
+            },
+            ColumnSpec {
+                name: "parent_pid",
+                kind: Number,
+            },
+            ColumnSpec {
+                name: "comm",
+                kind: Text,
+            },
+            ColumnSpec {
+                name: "argv",
+                kind: Text,
+            },
+            ColumnSpec {
+                name: "cwd",
+                kind: Text,
+            },
+            ColumnSpec {
+                name: "started_at",
+                kind: Time,
+            },
+            ColumnSpec {
+                name: "ended_at",
+                kind: Time,
+            },
+            ColumnSpec {
+                name: "role",
+                kind: Text,
+            },
+            ColumnSpec {
+                name: "tool_call",
+                kind: Text,
+            },
+        ],
+        relations: &[Relation {
+            prefix: "session",
+            target: Unit::Sessions,
+        }],
     },
     UnitSpec {
         unit: Unit::Changes,

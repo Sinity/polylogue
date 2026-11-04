@@ -23,7 +23,6 @@ async function batch() {
     });
     if (response.status === 401) {
       stopped = true;
-      clearInterval(clock);
       throw new Error("Sign-in expired. Reopen with polylogue web.");
     }
     if (!response.ok) throw new Error("Changes unavailable (" + response.status + ")");
@@ -90,26 +89,20 @@ async function batch() {
   }
 }
 
-// Clock-driven live states can change without an archive write. The callback
-// asks the existing API to refresh; it never infers a state from elapsed time.
-let clock;
+// Live states that change with the clock alone arrive on the change feed
+// like any other session change: the daemon announces each `live_until`.
 function visibility() {
   clearTimeout(timer);
-  clearInterval(clock);
   if (document.hidden || stopped || !subscribers.size) {
     controller?.abort();
     for (const request of initializing.values()) request.abort();
   } else {
     resume();
-    clock = setInterval(() => {
-      for (const subscriber of ready) Promise.resolve().then(() => subscriber.refresh?.()).catch(report);
-    }, 30000);
   }
 }
 document.addEventListener("visibilitychange", visibility);
 window.addEventListener("pagehide", () => {
   clearTimeout(timer);
-  clearInterval(clock);
   controller?.abort();
   for (const request of initializing.values()) request.abort();
 });

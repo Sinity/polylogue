@@ -158,9 +158,9 @@ fn sort_takes_tie_breaking_keys() {
         let end = p.sql.find(&format!(" AS _o{n},")).expect("order column");
         &p.sql[..end]
     };
-    assert!(term(1).ends_with("END))"), "live_rank first: {}", p.sql);
+    assert!(term(1).ends_with("'rank'))"), "live_rank first: {}", p.sql);
     assert!(
-        term(3).ends_with("live_last_event_at)"),
+        term(3).ends_with("live_last_at)"),
         "then last_event_at: {}",
         p.sql
     );

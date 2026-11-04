@@ -118,10 +118,11 @@ pub enum Tool {
     Context,
     Note,
     Chat,
+    Act,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 4] = [Tool::Read, Tool::Context, Tool::Note, Tool::Chat];
+    pub const ALL: [Tool; 5] = [Tool::Read, Tool::Context, Tool::Note, Tool::Chat, Tool::Act];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -129,6 +130,7 @@ impl Tool {
             Tool::Context => "polylogue_context",
             Tool::Note => "polylogue_note",
             Tool::Chat => "polylogue_chat",
+            Tool::Act => "polylogue_act",
         }
     }
 
@@ -138,22 +140,24 @@ impl Tool {
             Tool::Context => "Briefs, recall and takeovers",
             Tool::Note => "Assertions, saved queries, watches, settings",
             Tool::Chat => "Web chats via the browser extension",
+            Tool::Act => "Acts on live sessions: ping, answer, interrupt, start, hand-off",
         }
     }
 
     pub fn writes(self) -> bool {
-        matches!(self, Tool::Note | Tool::Chat)
+        matches!(self, Tool::Note | Tool::Chat | Tool::Act)
     }
 
     /// A retried `request_id` is applied once. Chat and backfill requests
-    /// start a new browser action each time.
+    /// start a new browser action each time, and acts reach a running
+    /// harness or start one.
     pub fn idempotent(self) -> bool {
-        self != Tool::Chat
+        !matches!(self, Tool::Chat | Tool::Act)
     }
 
-    /// Its operations act outside the archive (a web chat).
+    /// Its operations act outside the archive (a web chat, a harness).
     pub fn open_world(self) -> bool {
-        self == Tool::Chat
+        matches!(self, Tool::Chat | Tool::Act)
     }
 
     pub fn named(name: &str) -> Option<Tool> {
@@ -311,7 +315,9 @@ impl Caller {
 }
 
 /// The live view as a query: what `polylogue live` runs.
-pub const LIVE: &str = "sessions where -live:ended | sort by live_rank, last_event_at desc";
+pub const LIVE: &str = "sessions where running:true | sort by live_rank, last_event_at desc";
+/// Sessions waiting on the operator, the longest wait first.
+pub const WAITING: &str = "sessions where waiting:true | sort by live_since";
 /// Signal notices as a query: what `polylogue notices` runs.
 pub const NOTICES: &str = "deliveries where sender:signal | sort by at desc";
 
@@ -690,10 +696,12 @@ const WRITTEN: &[Command] = &[
     }),
     typed_command!(StatusOperation, crate::protocol::status::Arguments, crate::protocol::status::Answer, {
         name: "status",
-        help: "What the archive holds and what the daemon is doing",
+        help: "What the archive holds, what the daemon is doing and which sessions are running, waiting first",
         reason: "Orient the caller with measured archive and daemon state",
         latency: command_surface::LatencyClass::Status,
+        args: &[opt("line", Kind::Bool, "One line for status bars: running sessions and the longest wait")],
         action: Action::Request(requests::status),
+        output: Some(crate::cli::status_output),
         tool: Some(Tool::Read),
         http: true,
         ..CLI
@@ -785,26 +793,6 @@ const WRITTEN: &[Command] = &[
         print: print::read, tool: Some(Tool::Read), http: true,
         ..CLI
     }),
-    Command {
-        name: "follow",
-        help: "Print a session's new items as it grows, in the collapsed reading form, or a query's new rows",
-        args: &[
-            pos("target", Kind::Text, "A session reference or a query"),
-            opt("show", Kind::List, polylogue_model::read::FoldKind::HELP),
-            opt(
-                "hide",
-                Kind::List,
-                "Item kinds to hide, from the same table as show",
-            ),
-            opt(
-                "until_idle",
-                Kind::Bool,
-                "Stop when the session's live state is no longer working",
-            ),
-        ],
-        action: Action::ConfiguredLocal(crate::cli::follow::run),
-        ..CLI
-    },
     typed_command!(AttachmentCommand, crate::protocol::attachment::Arguments, crate::protocol::attachment::Answer, {
         name: "attachment",
         reason: "Retrieve the checked stored bytes behind an attachment descriptor",
@@ -1007,11 +995,21 @@ const WRITTEN: &[Command] = &[
     }),
     typed_command!(LiveOperation, crate::protocol::query_aliases::Live, crate::protocol::query::Rows, {
         name: "live",
-        help: "Sessions running now and what each is doing: the query `sessions where -live:ended | sort by live_rank, last_event_at desc`",
+        help: "Sessions running now and what each is doing: the query `sessions where running:true | sort by live_rank, last_event_at desc`",
         reason: "Show the current running-session view",
         latency: command_surface::LatencyClass::Read,
         args: &[WHY, CURSOR, FIELDS],
         action: Action::Request(requests::live),
+        print: print::query,
+        ..CLI
+    }),
+    typed_command!(WaitingOperation, crate::protocol::query_aliases::Live, crate::protocol::query::Rows, {
+        name: "waiting",
+        help: "Sessions waiting on you (a permission, a question, a plan or input), the longest wait first: the query `sessions where waiting:true | sort by live_since`",
+        reason: "Show what blocks an agent now",
+        latency: command_surface::LatencyClass::Read,
+        args: &[WHY, CURSOR, FIELDS],
+        action: Action::Request(requests::waiting),
         print: print::query,
         ..CLI
     }),
@@ -1034,6 +1032,148 @@ const WRITTEN: &[Command] = &[
             cli: crate::cli::changes::run,
         },
         http: true,
+        ..CLI
+    },
+    Command {
+        name: "follow",
+        help: "Follow a session or a sessions query: one line per live-state change (`→ waiting: permission`) and per new message or tool call, until interrupted",
+        reason: "A live stream records nothing and cannot be a query's page",
+        args: &[
+            pos("target", Kind::Words, "A session reference or a query"),
+            opt("show", Kind::List, polylogue_model::read::FoldKind::HELP),
+            opt(
+                "hide",
+                Kind::List,
+                "Item kinds to hide, from the same table as show",
+            ),
+            opt(
+                "until_idle",
+                Kind::Bool,
+                "Stop when the session's live state is no longer working",
+            ),
+        ],
+        action: Action::Stream {
+            build: requests::follow,
+            produce: crate::daemon::service::follow::produce,
+            cli: crate::cli::follow::run,
+        },
+        ..CLI
+    },
+    Command {
+        name: "ping",
+        help: "Send an addressed message to a session, or to every session a quoted query selects now (`@[sessions repo:x running:true]`): a running session gets it at its next tool result or prompt, one that ended is resumed headlessly with it. Each recipient gets one delivery; there is no undo",
+        reason: "An authored act that reaches a session through its harness",
+        args: &[
+            pos(
+                "target",
+                Kind::Text,
+                "A session reference, @[role:NAME] for the role's running instance (or a new one), or @[QUERY] for every session the query selects now",
+            ),
+            pos("text", Kind::Words, "The message"),
+            opt(
+                "live",
+                Kind::Bool,
+                "Refuse rather than resume a session that is not running",
+            ),
+            opt("about", Kind::Text, "A reference the ping is about"),
+        ],
+        action: Action::Request(requests::ping),
+        tool: Some(Tool::Act),
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "answer",
+        help: "Approve or deny a session's pending permission request; --standing answers the same tool and input whenever the session asks next. The first answer wins; there is no undo",
+        reason: "An authored act on a request a session waits on",
+        args: &[
+            pos("session", Kind::Text, "The waiting session"),
+            pos(
+                "decision",
+                Kind::Choice(&["approve", "deny"]),
+                "approve or deny",
+            ),
+            opt("text", Kind::Text, "A reason given with the answer"),
+            opt(
+                "standing",
+                Kind::Bool,
+                "Answer the same tool and input next time in this session",
+            ),
+        ],
+        action: Action::Request(requests::answer),
+        tool: Some(Tool::Act),
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "interrupt",
+        help: "Stop a session's current turn, through the control connection of a session Polylogue hosts; refused otherwise",
+        reason: "An authored act that reaches a session through its harness",
+        args: &[pos("session", Kind::Text, "The session")],
+        action: Action::Request(requests::interrupt),
+        tool: Some(Tool::Act),
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "start",
+        help: "Start a session Polylogue hosts on the harness's control protocol (Codex's app-server, Claude Code stream-json, Gemini CLI and Hermes ACP): its approvals, questions and turns can then be answered, steered and interrupted from anywhere, and it survives a daemon restart. With --role, an instance of that role: its harness, with its instructions",
+        reason: "Starts a harness session; no query selects one that does not exist yet",
+        args: &[
+            pos("text", Kind::Words, "The first turn"),
+            opt(
+                "harness",
+                Kind::Choice(&["codex", "claude-code", "gemini-cli", "hermes"]),
+                "The harness to host",
+            ),
+            opt("role", Kind::Text, "Start an instance of this role"),
+            opt("cwd", Kind::Text, "The working directory"),
+        ],
+        action: Action::Request(requests::start),
+        tool: Some(Tool::Act),
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "hand-off",
+        help: "Hand a session's work to a new hosted session in any harness, briefed with the session's takeover pack and the message to continue from (--at), in its directory; the new session records what it was briefed from and is never a resume or fork. --stop-source then interrupts the source; --print shows the pack and starts nothing",
+        reason: "Starts a harness session; no query selects one that does not exist yet",
+        args: &[
+            pos(
+                "session",
+                Kind::Text,
+                "The session whose work is handed off",
+            ),
+            opt(
+                "to",
+                Kind::Choice(&["codex", "claude-code", "gemini-cli", "hermes"]),
+                "The harness of the new session",
+            ),
+            opt("at", Kind::Text, "The message to continue from"),
+            opt(
+                "cwd",
+                Kind::Text,
+                "The working directory, when not the source's",
+            ),
+            opt(
+                "stop_source",
+                Kind::Bool,
+                "Interrupt the source session once the new one runs",
+            ),
+            opt(
+                "print",
+                Kind::Bool,
+                "Show the pack and the channel; start nothing",
+            ),
+        ],
+        action: Action::Request(requests::hand_off),
+        tool: Some(Tool::Act),
+        http: true,
+        writes: true,
         ..CLI
     },
     typed_command!(NoticesOperation, crate::protocol::query_aliases::Notices, crate::protocol::query::Rows, {
@@ -1320,6 +1460,27 @@ const WRITTEN: &[Command] = &[
             },
         ],
         action: Action::ConfiguredLocal(local::hook),
+        ..CLI
+    },
+    Command {
+        name: "host",
+        help: "Started by the daemon for a session it hosts over stdio (Claude Code stream-json, Gemini CLI and Hermes ACP): holds the agent's stdin and stdout so a daemon restart never ends it, and relays them to the daemon's connection",
+        args: &[
+            pos(
+                "harness",
+                Kind::Choice(&["claude-code", "gemini-cli", "hermes"]),
+                "The harness to run",
+            ),
+            opt("socket", Kind::Text, "The socket the daemon connects to"),
+            opt("cwd", Kind::Text, "The agent's working directory"),
+            opt("spool", Kind::Text, "The hook spool its status lines go to"),
+            opt(
+                "session_id",
+                Kind::Text,
+                "The session ID to start the agent with, where the harness takes one",
+            ),
+        ],
+        action: Action::Local(local::host),
         ..CLI
     },
     Command {

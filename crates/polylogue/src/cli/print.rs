@@ -90,10 +90,6 @@ pub fn context(data: &Value, _color: bool) -> String {
 }
 
 fn context_text(data: &Value) -> String {
-    if data["off"].as_bool() == Some(true) {
-        return "session-start briefs are off (`polylogue setting briefing.session_start on`)\n"
-            .into();
-    }
     s(&data["prepared"]["text"])
 }
 

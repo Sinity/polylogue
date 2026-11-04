@@ -445,6 +445,47 @@ fn notes(notes: &[String], output: crate::config::OutputConfig) {
     }
 }
 
+/// `status`: the whole answer, or with `--line` the one line a status bar
+/// shows (`3 running · 1 waiting 7m`).
+pub fn status_output(
+    values: &Values,
+    answer: &Answer<Value>,
+    startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
+    let data = answer
+        .value()
+        .expect("output handlers receive answers with values");
+    if !values.flag("line") {
+        if json {
+            println!(
+                "{}",
+                polylogue_render::terminal::json(
+                    &serde_json::to_value(answer).expect("answer serializes"),
+                    false
+                )
+            );
+        } else {
+            print!("{}", print::json(data, startup.output.stdout_color()));
+        }
+        return ExitCode::SUCCESS;
+    }
+    let running: crate::protocol::status::Running =
+        match serde_json::from_value(data["running"].clone()) {
+            Ok(running) => running,
+            Err(error) => {
+                return fail(startup.output, json, "internal", &error.to_string(), 1);
+            }
+        };
+    let line = running.line(startup.clock.now().as_millisecond());
+    if json {
+        println!("{}", serde_json::json!({ "line": line }));
+    } else {
+        println!("{line}");
+    }
+    ExitCode::SUCCESS
+}
+
 /// `continue --exec`: replaces this process with the session's native
 /// resume command; without `--exec`, the plan is printed.
 pub fn resume_output(

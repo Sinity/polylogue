@@ -1,6 +1,6 @@
 //! The daemon request each command sends, built from its checked values.
 
-use super::{Caller, Command, LIVE, NOTICES, Values};
+use super::{Caller, Command, LIVE, NOTICES, Values, WAITING};
 use crate::briefing::{Ask, StartSource};
 use crate::browser::actions::{ChatFile, ChatRequest};
 use crate::daemon::Request;
@@ -335,6 +335,10 @@ pub fn live(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(query_request(LIVE.into(), None, v))
 }
 
+pub fn waiting(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(query_request(WAITING.into(), None, v))
+}
+
 pub fn notices(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(query_request(
         NOTICES.into(),
@@ -480,6 +484,80 @@ pub fn changes(_: &Command, v: &Values, _: &Caller) -> Built {
     }
     Ok(Request::Changes {
         since: v.text("since"),
+    })
+}
+
+fn session_arg(v: &Values) -> Result<polylogue_model::SessionId, String> {
+    polylogue_model::SessionId::parse(&v.text("session").ok_or("a session reference is required")?)
+        .map_err(|e| e.to_string())
+}
+
+pub fn ping(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Ping {
+        request_id: v.request_id(),
+        target: v
+            .text("target")
+            .ok_or("a session reference or @[query] is required")?,
+        text: v.text("text").ok_or("a ping needs text")?,
+        live: v.flag("live"),
+        about: v.text("about"),
+    })
+}
+
+pub fn answer(_: &Command, v: &Values, _: &Caller) -> Built {
+    let approve = match v.text("decision").as_deref() {
+        Some("approve") => true,
+        Some("deny") => false,
+        _ => return Err("answer takes approve or deny".into()),
+    };
+    Ok(Request::Answer {
+        request_id: v.request_id(),
+        session: session_arg(v)?,
+        approve,
+        text: v.text("text"),
+        standing: v.flag("standing"),
+    })
+}
+
+pub fn interrupt(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Interrupt {
+        request_id: v.request_id(),
+        session: session_arg(v)?,
+    })
+}
+
+pub fn start(_: &Command, v: &Values, _: &Caller) -> Built {
+    let (harness, role) = (v.text("harness"), v.text("role"));
+    if harness.is_none() && role.is_none() {
+        return Err("start takes --harness or --role".into());
+    }
+    Ok(Request::Start {
+        request_id: v.request_id(),
+        harness,
+        role,
+        cwd: std::path::PathBuf::from(v.text("cwd").ok_or("start takes --cwd")?),
+        text: v.text("text").ok_or("start needs the first turn's text")?,
+    })
+}
+
+pub fn hand_off(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::HandOff {
+        request_id: v.request_id(),
+        session: session_arg(v)?,
+        to: v.text("to").ok_or("hand-off takes --to")?,
+        cwd: v.text("cwd").map(std::path::PathBuf::from),
+        at: v.text("at"),
+        stop_source: v.flag("stop_source"),
+        print: v.flag("print"),
+    })
+}
+
+pub fn follow(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Follow {
+        query: v
+            .text("target")
+            .ok_or("follow takes a session reference or a sessions query")?,
+        marks: None,
     })
 }
 

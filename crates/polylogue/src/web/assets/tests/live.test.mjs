@@ -73,7 +73,7 @@ test("one active change request serves the tab and hidden tabs abort it", async 
   document.hidden = false; env.events.get("visibilitychange")(); assert.equal(calls, 2);
   stopA(); stopB(); await flush();
 });
-test("expired authentication stops requests and clock refreshes", async t => {
+test("expired authentication stops requests", async t => {
   let calls = 0; const errors = [];
   const env = await environment(t, async url => {
     if (url.startsWith("/api/v1/query")) return currentPage();

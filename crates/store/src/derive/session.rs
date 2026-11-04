@@ -131,38 +131,7 @@ fn reset_live(tx: &Transaction<'_>, pk: i64) -> Result<()> {
     let counter: i64 = tx.query_row("SELECT changed FROM session WHERE pk=?1", [pk], |r| {
         r.get(0)
     })?;
-    tx.execute("UPDATE session SET live_last_event=NULL,live_last_event_at=NULL,live_open_tool_pk=NULL,
-        live_waiting_on=NULL,live_waiting_since=NULL,live_todo=NULL,live_task=NULL,live_task_evidence=NULL,live_reparse=0,live_changed=?2 WHERE pk=?1",rusqlite::params![pk,counter])?;
-    let mut statement = tx.prepare(
-        "SELECT kind,at,data FROM event WHERE session_pk=?1 AND kind LIKE 'hook_%' ORDER BY at,id",
-    )?;
-    let events = statement.query_map([pk], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, Option<i64>>(1)?,
-            r.get::<_, Vec<u8>>(2)?,
-        ))
-    })?;
-    for event in events {
-        let (kind, at, data) = event?;
-        crate::live::apply(
-            tx,
-            pk,
-            &polylogue_model::Event {
-                at_quality: polylogue_model::TimeQuality::Unknown,
-                at_precision: None,
-                at_until: None,
-                session: None,
-                kind,
-                at: at.and_then(polylogue_model::Timestamp::from_unix_ms),
-                after: None,
-                range: None,
-                data: crate::encoding::unpack_json(&data)?,
-            },
-            counter,
-        )?;
-    }
-    Ok(())
+    crate::live::refold(tx, pk, counter)
 }
 
 /// The session's facts from every input, `inputs` sorted by time then

@@ -15,6 +15,10 @@ mod demo;
 mod embeddings;
 mod explain;
 mod hook;
+mod hosting;
+mod live_acts;
+mod live_evidence;
+mod mailbox;
 mod manual;
 mod mcp;
 mod operation;
@@ -163,8 +167,10 @@ fn main() -> ExitCode {
     cli::run(&matches, &startup, cwd)
 }
 
+/// The daemon and `polylogue host` write to peers that may go away, so a
+/// closed pipe is an error to them, never a reason to die.
 fn daemon_command(matches: &clap::ArgMatches) -> bool {
-    matches.subcommand_name() == Some("daemon")
+    matches!(matches.subcommand_name(), Some("daemon" | "host"))
 }
 
 fn native_host(matches: &clap::ArgMatches) -> bool {

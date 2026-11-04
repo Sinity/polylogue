@@ -117,6 +117,7 @@ pub fn run(
         Request::Complete { .. } => ("completion", None),
         Request::Read { .. } => ("read", None),
         Request::Changes { .. } => ("changes", None),
+        Request::Follow { query, .. } => ("follow", Some(query.clone())),
         Request::Attachment { .. } => ("attachment", None),
         Request::SchemaInfer { .. } => ("schema_infer", None),
         Request::SchemaUnread { .. } => ("schema_unread", None),

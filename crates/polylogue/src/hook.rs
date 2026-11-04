@@ -4,13 +4,15 @@
 //!
 //! Every event is appended as one line to the hook spool file of the calling
 //! harness process, with `O_APPEND` and no fsync, naming the harness's
-//! origin and session; the daemon reads those files like any other growing
-//! file. Some events also ask the daemon for context:
+//! origin and session and the harness process's identity (pid, start time
+//! and boot), which the live fold uses as the session's root process; the
+//! daemon reads those files like any other growing file. Some events also
+//! ask the daemon for context:
 //!
 //! - the session's start (`SessionStart`; Hermes: `pre_llm_call` on its
-//!   first turn): the session-start brief, injected by default; the
-//!   `briefing.session_start` setting turns it off. After compaction it
-//!   carries every prompt the operator typed in the session.
+//!   first turn): the session-start brief. Removing the hooks is the only
+//!   off switch. After compaction it carries every prompt the operator
+//!   typed in the session.
 //! - a prompt (`UserPromptSubmit`; Hermes: `pre_llm_call`): a session ID
 //!   or supported web link pasted into it brings that session's takeover context.
 //!
@@ -154,6 +156,7 @@ fn append_record(
         "at_ns": ns.to_string(),
         "event": event,
         "harness_pid": process,
+        "harness_start": crate::live_evidence::identity(process).map(|i| i.start),
         "provider": harness.origin(),
         "payload": payload,
     });
@@ -522,32 +525,129 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
             None
         }
     };
+    let session = session_of(harness, &payload, startup);
+    if harness == Harness::ClaudeCode
+        && event == "PermissionRequest"
+        && let Some(session) = &session
+    {
+        permission(startup, session, &payload);
+        return ExitCode::SUCCESS;
+    }
     let recorder = EmissionRecorder {
         dir: &spool,
         harness,
         event,
         invocation: invocation.as_deref(),
-        session: session_of(harness, &payload, startup),
+        session: session.clone(),
         native: &native,
         startup,
     };
-    if let Some((deliveries, text)) = respond(harness, event, &payload, startup)
-        && recorder.emit(
-            &deliveries.split(',').map(str::to_owned).collect::<Vec<_>>(),
-            &text,
-            emit,
-        )
-    {
-        for d in deliveries.split(',') {
+    // Pings and notices waiting in the mailbox: one `stat`, and a claim
+    // only when the flag is up. Never before a tool runs.
+    let mail = session
+        .as_ref()
+        .filter(|_| accepts_mail(harness, event))
+        .filter(|s| crate::mailbox::raised(&crate::mailbox::dir(&startup.config.archive), s))
+        .and_then(|s| claim(startup, s, event));
+    let responded = respond(harness, event, &payload, startup);
+    let mut ids: Vec<String> = Vec::new();
+    let mut texts: Vec<String> = Vec::new();
+    if let Some((deliveries, text)) = &responded {
+        ids.extend(deliveries.split(',').map(str::to_owned));
+        texts.push(text.clone());
+    }
+    if let Some((claimed, text)) = &mail {
+        ids.extend(claimed.iter().cloned());
+        texts.push(text.clone());
+    }
+    if !texts.is_empty() && recorder.emit(&ids, &texts.join("\n\n"), emit) {
+        for d in &ids {
             delivered(startup, d, DELIVERED_BUDGET);
         }
     }
     ExitCode::SUCCESS
 }
 
+/// The events at which a harness accepts context between steps: after a
+/// tool result and at a prompt, never before a tool runs. Declared with
+/// the harness's other channels (`polylogue_model::live::channel`).
+pub fn accepts_mail(harness: Harness, event: &str) -> bool {
+    polylogue_model::live::channel::harness(harness.origin())
+        .is_some_and(|declared| declared.mail_events.contains(&event))
+}
+
+/// Takes the session's pending pings and notices from the daemon: their
+/// delivery IDs and their texts joined.
+fn claim(startup: &Startup, session: &SessionId, event: &str) -> Option<(Vec<String>, String)> {
+    let reply = ask_daemon(
+        startup,
+        &Request::Claim {
+            session: session.clone(),
+            event: event.to_owned(),
+        },
+        CONTEXT_BUDGET,
+    )?;
+    let data = crate::protocol::into_value(reply).ok()?;
+    let items = data["deliveries"].as_array()?;
+    let ids: Vec<String> = items
+        .iter()
+        .filter_map(|i| i["id"].as_str().map(str::to_owned))
+        .collect();
+    let texts: Vec<&str> = items.iter().filter_map(|i| i["text"].as_str()).collect();
+    (!ids.is_empty()).then(|| (ids, texts.join("\n\n")))
+}
+
+/// Claude Code's synchronous permission hook: a decision given ahead for
+/// the same tool and input is returned at once; with none, nothing is
+/// printed and the harness shows its own prompt.
+fn permission(startup: &Startup, session: &SessionId, payload: &Value) {
+    let Some(reply) = ask_daemon(
+        startup,
+        &Request::Permission {
+            session: session.clone(),
+            tool: payload["tool_name"].as_str().unwrap_or("").to_owned(),
+            input: payload["tool_input"].clone(),
+        },
+        CONTEXT_BUDGET,
+    ) else {
+        return;
+    };
+    let Ok(data) = crate::protocol::into_value(reply) else {
+        return;
+    };
+    if let Some(output) = permission_output(&data) {
+        let mut stdout = std::io::stdout().lock();
+        let _ = writeln!(
+            stdout,
+            "{}",
+            polylogue_render::terminal::json(&output, false)
+        );
+        let _ = stdout.flush();
+    }
+}
+
+/// The hook output for a daemon decision, or `None` without one.
+pub fn permission_output(data: &Value) -> Option<Value> {
+    let behavior = match data["decision"].as_str()? {
+        "approve" => "allow",
+        "deny" => "deny",
+        _ => return None,
+    };
+    let mut decision = json!({ "behavior": behavior });
+    if let Some(text) = data["text"].as_str() {
+        decision["message"] = json!(polylogue_render::terminal::escape(text));
+    }
+    Some(json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PermissionRequest",
+            "decision": decision,
+        }
+    }))
+}
+
 mod native;
 mod settings;
-pub use settings::{install, settings_path};
+pub use settings::{CONFIRMED_FROM, HarnessVersion, install, probe_version, settings_path};
 
 #[cfg(test)]
 mod tests;

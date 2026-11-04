@@ -31,19 +31,6 @@ pub struct NearbySession {
     pub cwd: Option<String>,
 }
 
-/// A session's latest hook facts, read from its `session.live_*` columns.
-/// Private, so the live-state model can replace these columns behind the
-/// [`ScopeSession`] readers.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct LiveFacts {
-    last_event: Option<String>,
-    last_event_at: Option<i64>,
-    waiting_on: Option<String>,
-    open_tool_call: bool,
-    todo: Option<String>,
-    task: Option<String>,
-}
-
 /// One session as the scope index holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeSession {
@@ -52,23 +39,31 @@ pub struct ScopeSession {
     /// Every working directory it recorded, its last one included.
     pub directories: Vec<String>,
     pub repo: Option<String>,
-    live: LiveFacts,
+    live: polylogue_model::live::LiveFacts,
 }
 
 impl ScopeSession {
     /// When its latest hook event happened, Unix ms.
     pub fn last_event_at(&self) -> Option<i64> {
-        self.live.last_event_at
+        self.live.last_at
     }
 
     /// What it is waiting on: permission, question or notification.
     pub fn waiting_on(&self) -> Option<&str> {
-        self.live.waiting_on.as_deref()
+        self.live
+            .hook_waiting_on
+            .as_ref()
+            .map(|waiting| waiting.value.as_str())
     }
 
     /// A tool call started and has not finished.
     pub fn open_tool_call(&self) -> bool {
-        self.live.open_tool_call
+        self.live.open_call.is_some()
+    }
+
+    /// Files structured edit tools changed and no commit has closed.
+    pub fn footprint(&self) -> usize {
+        self.live.footprint.len()
     }
 
     /// The harness's in-progress todo item.
@@ -129,8 +124,7 @@ pub struct ScopeIndex {
 }
 
 const COLUMNS: &str = "pk, id, kind, stub, coalesce(title, derived_title), started_at,
-    last_activity_at, cwd, cwd_json, repo, message_count, live_last_event, live_last_event_at,
-    live_waiting_on, live_open_tool_pk IS NOT NULL, live_todo, live_task";
+    last_activity_at, cwd, cwd_json, repo, message_count, live_facts";
 
 fn scope_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ScopeRow> {
     let pk: i64 = r.get(0)?;
@@ -165,14 +159,19 @@ fn scope_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ScopeRow> {
                 },
                 directories,
                 repo: r.get(9)?,
-                live: LiveFacts {
-                    last_event: r.get(11)?,
-                    last_event_at: r.get(12)?,
-                    waiting_on: r.get(13)?,
-                    open_tool_call: r.get(14)?,
-                    todo: r.get(15)?,
-                    task: r.get(16)?,
-                },
+                live: r
+                    .get::<_, Option<String>>(11)?
+                    .map(|json| {
+                        serde_json::from_str(&json).map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                11,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })
+                    })
+                    .transpose()?
+                    .unwrap_or_default(),
             })
         }
         _ => None,
@@ -387,13 +386,15 @@ impl ScopeIndex {
             .filter_map(|pk| self.sessions.get(&pk))
             .filter(|s| exclude.is_none_or(|exclude| s.session.id.to_string() != exclude))
             .filter_map(|s| {
-                crate::query::fields::active_live_state(
-                    s.live.last_event.as_deref(),
-                    s.live.last_event_at,
-                    s.live.waiting_on.as_deref(),
+                let view = polylogue_model::live::view(
+                    Some(&s.live),
+                    s.session.last_activity.map(|at| at.unix_ms()),
                     now,
-                )
-                .map(|state| LiveSession { session: s, state })
+                );
+                view.state.active().then_some(LiveSession {
+                    session: s,
+                    state: view.state.as_str(),
+                })
             })
             .collect();
         let rank = |state: &str| match state {
@@ -404,12 +405,7 @@ impl ScopeIndex {
         out.sort_by(|a, b| {
             rank(a.state)
                 .cmp(&rank(b.state))
-                .then(
-                    b.session
-                        .live
-                        .last_event_at
-                        .cmp(&a.session.live.last_event_at),
-                )
+                .then(b.session.live.last_at.cmp(&a.session.live.last_at))
                 .then(b.session.pk.cmp(&a.session.pk))
         });
         out

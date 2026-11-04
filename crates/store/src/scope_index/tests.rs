@@ -145,22 +145,10 @@ fn the_index_follows_sessions_changed_after_its_position() {
     assert_eq!(index.repos_under(&dirs), ["proj"]);
 }
 
-/// The live facts the scope index holds come from these `session` columns:
-/// `live_last_event`, `live_last_event_at`, `live_waiting_on`,
-/// `live_open_tool_pk`, `live_todo` and `live_task`. A change to how live
-/// facts are stored changes this test and [`COLUMNS`] together.
+/// The scope index reads the same folded facts as the query's live view.
 #[test]
 fn live_facts_are_read_from_the_session_live_columns() {
-    for column in [
-        "live_last_event",
-        "live_last_event_at",
-        "live_waiting_on",
-        "live_open_tool_pk",
-        "live_todo",
-        "live_task",
-    ] {
-        assert!(COLUMNS.contains(column), "{column}");
-    }
+    assert!(COLUMNS.contains("live_facts"));
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     let pk = session(&mut f, "test:live", "/work/proj", None, NOW);
@@ -169,7 +157,6 @@ fn live_facts_are_read_from_the_session_live_columns() {
     let pool = f.reads().unwrap();
     let index = ScopeIndex::new(pool.reader().unwrap().scope_changes(None).unwrap());
     let held = &index.sessions[&pk];
-    assert_eq!(held.live.last_event.as_deref(), Some("hook_notification"));
     assert_eq!(held.last_event_at(), Some(NOW - 1_000));
     assert_eq!(held.waiting_on(), Some("question"));
     assert!(!held.open_tool_call());

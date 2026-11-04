@@ -242,7 +242,16 @@ fn natural_rows(w: &TestArchive) -> Json {
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
     let mut result = serde_json::Map::new();
-    result.insert("live".into(),json!(r.query("SELECT id,live_last_event,live_last_event_at,live_waiting_on,live_waiting_since,live_todo,live_task FROM session ORDER BY id",&[]).unwrap()));
+    result.insert(
+        "live".into(),
+        json!(
+            r.query(
+                "SELECT id,live_facts,live_last_at FROM session ORDER BY id",
+                &[]
+            )
+            .unwrap()
+        ),
+    );
     for id in [
         "claude-code:main",
         "claude-code:child",

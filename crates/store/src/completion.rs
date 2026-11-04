@@ -36,6 +36,9 @@ impl CommitSubscription {
     pub fn try_recv(&self) -> Result<(), mpsc::TryRecvError> {
         self.receiver.try_recv()
     }
+    pub fn recv_timeout(&self, timeout: std::time::Duration) -> Result<(), mpsc::RecvTimeoutError> {
+        self.receiver.recv_timeout(timeout)
+    }
     /// The owner sets its stop flag before waking a sleeping publisher.
     pub fn wake_handle(&self) -> mpsc::SyncSender<()> {
         self.wake.clone()
