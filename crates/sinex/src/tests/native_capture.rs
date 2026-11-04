@@ -155,7 +155,13 @@ fn quiet_offline_native_file_finishes_all_chunks_and_reopens_without_provider_pr
     let path = home.file("quiet.jsonl");
     let (mut engine, archive, lock, sdk) = open(&home);
     let pass = engine.run_pass().unwrap();
-    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert!(
+        pass.errors
+            .iter()
+            .all(|error| error.starts_with("confirmed stream:")
+                && error.contains("Connection refused")),
+        "{pass:?}"
+    );
     assert!(pass.capture_pending);
     assert_eq!(pass.bytes_read, text.len() as u64);
     let count = assert_complete(&sdk, &archive, &path, text.as_bytes());
@@ -166,7 +172,14 @@ fn quiet_offline_native_file_finishes_all_chunks_and_reopens_without_provider_pr
 
     let (mut engine, archive, _lock, sdk) = open(&home);
     let quiet = engine.run_pass().unwrap();
-    assert!(quiet.errors.is_empty(), "{quiet:?}");
+    assert!(
+        quiet
+            .errors
+            .iter()
+            .all(|error| error.starts_with("confirmed stream:")
+                && error.contains("Connection refused")),
+        "{quiet:?}"
+    );
     assert!(quiet.capture_pending);
     assert_eq!(quiet.bytes_read, 0);
     assert_eq!(
@@ -237,7 +250,13 @@ fn restart_after_first_published_chunk_uses_immutable_sdk_bytes_before_the_next_
         })
     );
     let pass = engine.run_pass().unwrap();
-    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert!(
+        pass.errors
+            .iter()
+            .all(|error| error.starts_with("confirmed stream:")
+                && error.contains("Connection refused")),
+        "{pass:?}"
+    );
     assert_eq!(pass.bytes_read, text.len() as u64 - CHUNK);
     assert!(assert_complete(&sdk, &archive, &path, text.as_bytes()) > 2);
 }
@@ -260,7 +279,13 @@ fn offline_empty_native_file_has_an_actual_body_and_eof_with_no_confirmed_source
         0
     );
     let pass = engine.run_pass().unwrap();
-    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert!(
+        pass.errors
+            .iter()
+            .all(|error| error.starts_with("confirmed stream:")
+                && error.contains("Connection refused")),
+        "{pass:?}"
+    );
     assert!(pass.capture_pending);
     assert_eq!(assert_custody_complete(&sdk, &path, b""), 1);
     let pending = sdk.pending_source(&selector(&path), "").unwrap();

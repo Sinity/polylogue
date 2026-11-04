@@ -311,7 +311,7 @@ fn a_brief_answers_while_the_writer_queue_is_full_and_its_delivery_commits_once_
             UserWrite::KeepResult {
                 name: None,
                 query: "sessions".into(),
-                rows_json: "[]".into(),
+                rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
                 read_at: "{}".into(),
             },
         );

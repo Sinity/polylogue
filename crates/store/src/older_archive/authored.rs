@@ -103,9 +103,23 @@ pub fn note(note: &Note, roots: &BTreeMap<String, String>) -> Mapped<AssertionFa
     }
     for (relation, other) in &note.relations {
         let role = role(relation)?;
+        let target = reference(other, role, roots)?;
+        // A predecessor relation already states what the note is about.
+        if role.is_relation()
+            && !links
+                .iter()
+                .any(|link| link.role == LinkRole::About && link.reference == target)
+        {
+            links.push(AssertionLink {
+                role: LinkRole::About,
+                reference: target.clone(),
+                seen_hash: None,
+                quote: None,
+            });
+        }
         links.push(AssertionLink {
             role,
-            reference: reference(other, role, roots)?,
+            reference: target,
             seen_hash: None,
             quote: None,
         });

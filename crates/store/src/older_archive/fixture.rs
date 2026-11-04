@@ -591,10 +591,10 @@ pub fn standard(root: &Path) -> Standard {
 
     // A kept result and the request that kept it.
     sql(
-        "INSERT INTO kept_result(id, name, query, ran_at, read_at, rows_json) VALUES ('k1', 'kept', 'sessions', 18000, '{\"at\":18000}', '[]')",
+        "INSERT INTO kept_result(id, name, query, ran_at, read_at, rows_json) VALUES ('k1', 'kept', 'sessions', 18000, '{\"at\":18000}', '{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}')",
         &[],
     );
-    b.request("k1", 18_000, &serde_json::json!({"id": "k1", "machine": machine, "at": "1970-01-01T00:00:18Z", "write": {"write": "keep_result", "name": "kept", "query": "sessions", "rows_json": "[]", "read_at": "{\"at\":18000}"}}), 28);
+    b.request("k1", 18_000, &serde_json::json!({"id": "k1", "machine": machine, "at": "1970-01-01T00:00:18Z", "write": {"write": "keep_result", "name": "kept", "query": "sessions", "rows_json": "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}", "read_at": "{\"at\":18000}"}}), 28);
 
     // A prepared delivery with a delivered event, the event reported twice;
     // advice delivered by a hook; and a delivery no kept request wrote.

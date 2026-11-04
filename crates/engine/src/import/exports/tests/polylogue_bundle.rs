@@ -108,7 +108,9 @@ fn authored_crash_child() {
         0,
         1,
     );
-    engine.import(&[base.join("records.jsonl")]).unwrap();
+    let report = engine.import(&[base.join("records.jsonl")]).unwrap();
+    assert!(report.refused.is_empty(), "{report:?}");
+    assert!(report.pass.errors.is_empty(), "{report:?}");
     panic!("the configured custody boundary was not reached");
 }
 

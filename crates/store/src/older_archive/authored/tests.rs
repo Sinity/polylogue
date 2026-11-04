@@ -107,7 +107,19 @@ fn a_relation_to_another_family_names_that_note_exactly() {
     ];
     let roots = roots(&notes);
     let answer = note(&notes[2], &roots).unwrap();
-    assert_eq!(answer.links[0].reference, exact("a1", "a2"));
+    assert_eq!(answer.links.len(), 2);
+    assert!(
+        answer
+            .links
+            .iter()
+            .any(|link| link.role == LinkRole::Answers && link.reference == exact("a1", "a2"))
+    );
+    assert!(
+        answer
+            .links
+            .iter()
+            .any(|link| link.role == LinkRole::About && link.reference == exact("a1", "a2"))
+    );
     let unknown = note_row("c1", "c1", vec![("on_page".into(), "note:a1".into())]);
     assert!(note(&unknown, &roots).unwrap_err().contains("on_page"));
 }
