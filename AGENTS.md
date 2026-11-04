@@ -114,6 +114,7 @@ Put personal settings (`CARGO_TARGET_DIR`, job counts) in a git-ignored
 | `cargo xtask test -p <crate> -E 'test(<name>)'` | selected tests under nextest |
 | `cargo xtask test --changed` | tests selected through changed packages and their dependents |
 | `cargo xtask test --no-run` | build every test binary without running tests |
+| `cargo xtask warm` | build every test binary and both Clippy configurations without running tests: the warm target new checkouts copy |
 | `cargo xtask sinex-client` | Sinex client and primary-mode application tests |
 | `cargo xtask scenarios` | end-to-end tests of the real daemon, CLI and MCP server |
 | `cargo xtask bench ...` | corpus builds and interactive read measurements |

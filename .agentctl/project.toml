@@ -10,23 +10,21 @@ inherit = ["HOME", "USER", "PATH", "LANG", "XDG_RUNTIME_DIR", "CARGO_TARGET_DIR"
 unset = ["PYTHONPATH", "PYTHONHOME"]
 
 [environment.values]
-# Two compile jobs keep linked test builds below MemoryHigh=8G.
-CARGO_BUILD_JOBS = "2"
+# Share CPU and memory with other builds.
+CARGO_BUILD_JOBS = "8"
 # Incremental state is half of each target directory and the drive is write-bound;
 # agent builds rarely reuse it across commits.
 CARGO_INCREMENTAL = "0"
 
 [operations.fast]
-description = "Formatting, crate boundaries and strict Clippy in the development queue"
+description = "Formatting, crate boundaries and strict Clippy"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "fast"]
-pool = "normal"
+pool = "compile"
 result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
-cache = "tree+environment"
-cap = "cargo"
+cache = "none"
 unit_properties = ["MemoryHigh=8G"]
-priority = 10
 
 [operations.check]
 description = "Formatting, boundaries, both clippy configurations and all tests"
@@ -35,18 +33,20 @@ pool = "bulk"
 result = "exit"
 timeout_seconds = 1200
 scratch = "tmpfs"
-cache = "tree+environment"
-cap = "cargo"
+cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.baseline]
-description = "Both configurations on the master baseline; the host queues it on each new master head"
-exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]
-pool = "bulk"
+description = "Warm build of master (test binaries and clippy, nothing run) that seeds new checkouts; the host queues it on each new master head"
+exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "warm"]
+# Its own one-slot pool: a 23-60 minute build never holds a slot lanes use.
+pool = "baseline"
 result = "exit"
-timeout_seconds = 1200
-scratch = "tmpfs"
-cache = "tree+environment"
+# A cold warm build took over 30 minutes for Polylogue and 23 for Sinex
+# (2026-11-02).
+timeout_seconds = 3600
+scratch = "nvme"
+cache = "none"
 cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
@@ -57,22 +57,19 @@ pool = "bulk"
 result = "exit"
 timeout_seconds = 1800
 scratch = "tmpfs"
-cache = "tree+environment"
-cap = "cargo"
+cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.compile]
 description = "Compile selected packages without waiting behind the full suite"
 exec = ["nix", "develop", "--command", "cargo", "check", "--locked"]
 arguments = "required"
-pool = "normal"
+pool = "compile"
 result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
-cache = "tree+environment"
-cap = "cargo"
+cache = "none"
 unit_properties = ["MemoryHigh=8G"]
-priority = 20
 
 [operations.focused]
 description = "Selected package or test checks with the normal development queue"
@@ -82,8 +79,7 @@ pool = "normal"
 result = "exit"
 timeout_seconds = 1800
 scratch = "tmpfs"
-cache = "tree+environment"
-cap = "cargo"
+cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.package]
@@ -94,7 +90,6 @@ result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
 cache = "none"
-cap = "cargo"
 
 [operations.exec]
 description = "Run a command in the Nix development shell"
@@ -105,7 +100,6 @@ result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
 cache = "none"
-cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.bench]
@@ -117,10 +111,9 @@ result = "exit"
 timeout_seconds = 7200
 scratch = "nvme"
 cache = "none"
-cap = "cargo"
 
 [operations.measure]
-description = "Run a performance driver in the measure queue"
+description = "Build and run a performance driver in the measure queue; for a run that compiles nothing, use measure_run"
 exec = ["nix", "develop", "--command"]
 arguments = "required"
 pool = "measure"
@@ -128,7 +121,16 @@ result = "exit"
 timeout_seconds = 7200
 scratch = "nvme"
 cache = "none"
-cap = "cargo"
+
+[operations.measure_run]
+description = "Run a measurement that compiles nothing (a database restore, a benchmark of prebuilt binaries) in the measure queue"
+exec = ["nix", "develop", "--command"]
+arguments = "required"
+pool = "measure"
+result = "exit"
+timeout_seconds = 7200
+scratch = "nvme"
+cache = "none"
 
 [operations.fmt]
 description = "Format the workspace"
@@ -175,5 +177,4 @@ result = "exit"
 timeout_seconds = 1200
 scratch = "tmpfs"
 cache = "none"
-cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]

@@ -33,6 +33,9 @@ enum Cli {
     Fast,
     /// Formatting, crate boundaries, both clippy configurations and all tests.
     Check,
+    /// Build every test binary and both clippy configurations without
+    /// running any test: the warm target that new checkouts copy.
+    Warm,
     /// The end-to-end tests: the real daemon, CLI and MCP server.
     Scenarios,
     /// Tests only: everything, or what changed since the merge base.
@@ -445,6 +448,11 @@ fn main() -> ExitCode {
             run.nextest("test", &nextest(arguments))?;
             sinex_client(run)?;
             Ok(())
+        }),
+        Cli::Warm => run("warm", &[], |run| {
+            // A lint failure on master must not leave the test builds cold.
+            let tests = build_tests(run);
+            clippy(run, true).and(tests)
         }),
         Cli::SinexClient => run("sinex-client", &[], sinex_client),
         Cli::Scenarios => run("scenarios", &[], |run| {
