@@ -83,7 +83,7 @@ pub use read::{
     scope::{ReadScopeToken, ScopeInvalidation},
 };
 pub use scope_index::{
-    LiveSession, NearbySession, OpenBead, ScopeChanges, ScopeIndex, ScopeSession,
+    NearbySession, OpenBead, ScopeChanges, ScopeIndex, ScopeSession, ScopedLiveSession,
 };
 pub use writer::{
     Batch, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep, WriteReport,

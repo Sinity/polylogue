@@ -230,6 +230,47 @@ impl Reader<'_> {
         self.deliveries("WHERE d.recipient_id = ?1", session)
     }
 
+    pub fn delivery(&self, id: &str) -> Result<Option<(DeliveryRow, String)>> {
+        let Some(row) = self.deliveries("WHERE d.id = ?1", id)?.pop() else {
+            return Ok(None);
+        };
+        let body: Vec<u8> = self.conn()?.query_row(
+            "SELECT body FROM source_delivery WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        let text = crate::encoding::unpack_text(&body)?;
+        Ok(Some((row, text)))
+    }
+
+    fn deliveries(&self, filter: &str, arg: &str) -> Result<Vec<DeliveryRow>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT d.id, d.event, d.sender, d.recipient_id, d.at, d.bytes, d.commit_seq,
+                    (SELECT group_concat(e.what, ',') FROM
+                        (SELECT what FROM source_delivery_event e WHERE e.delivery = d.id ORDER BY at) e)
+               FROM source_delivery d {filter}
+              ORDER BY d.commit_seq DESC"
+        ))?;
+        let rows = stmt.query_map([arg], |r| {
+            Ok(DeliveryRow {
+                id: r.get(0)?,
+                event: r.get(1)?,
+                sender: r.get(2)?,
+                recipient_id: r.get(3)?,
+                at: Timestamp::from_unix_ms(r.get(4)?)
+                    .unwrap_or_else(|| Timestamp::from_unix_ms(0).expect("epoch")),
+                bytes: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
+                seq: r.get(6)?,
+                events: r
+                    .get::<_, Option<String>>(7)?
+                    .map(|s| s.split(',').map(str::to_owned).collect())
+                    .unwrap_or_default(),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Pings and notices to `session` with no outcome yet, oldest first,
     /// with their text: what its next context-accepting hook event claims.
     pub fn pending_hook_deliveries(&self, session: &str) -> Result<Vec<(String, String)>> {

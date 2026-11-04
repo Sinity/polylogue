@@ -91,7 +91,7 @@ impl ScopeSession {
 
 /// A session working, waiting or idle now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LiveSession<'a> {
+pub struct ScopedLiveSession<'a> {
     pub session: &'a ScopeSession,
     /// `waiting`, `working` or `idle`.
     pub state: &'static str,
@@ -391,8 +391,8 @@ impl ScopeIndex {
         dirs: &[String],
         exclude: Option<&str>,
         now: i64,
-    ) -> Vec<LiveSession<'_>> {
-        let mut out: Vec<LiveSession<'_>> = self
+    ) -> Vec<ScopedLiveSession<'_>> {
+        let mut out: Vec<ScopedLiveSession<'_>> = self
             .recorded_under(dirs)
             .into_iter()
             .filter_map(|pk| self.sessions.get(&pk))
@@ -403,7 +403,7 @@ impl ScopeIndex {
                     s.session.last_activity.map(|at| at.unix_ms()),
                     now,
                 );
-                view.state.active().then_some(LiveSession {
+                view.state.active().then_some(ScopedLiveSession {
                     session: s,
                     state: view.state.as_str(),
                 })
