@@ -191,10 +191,21 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "authored"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#149e9e2a00b1757d4d3dbaaee0bfb00ed69f3bd0"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7"
 dependencies = [
  "blake3",
  "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "authored"
+version = "0.1.0"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?rev=8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7#8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7"
+dependencies = [
+ "blake3",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -880,7 +891,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2149,7 +2160,7 @@ dependencies = [
 name = "polylogue-model"
 version = "0.1.0"
 dependencies = [
- "authored",
+ "authored 0.1.0 (git+https://github.com/Sinity/polylogue-sinex-common?branch=master)",
  "blake3",
  "jiff",
  "query-language",
@@ -2243,7 +2254,7 @@ dependencies = [
 name = "polylogue-store"
 version = "0.1.0"
 dependencies = [
- "authored",
+ "authored 0.1.0 (git+https://github.com/Sinity/polylogue-sinex-common?branch=master)",
  "base64 0.22.1",
  "blake3",
  "hashed-blobs",
@@ -2466,7 +2477,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2601,6 +2612,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "references"
+version = "0.1.0"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+ "url",
 ]
 
 [[package]]
@@ -2749,7 +2770,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3104,7 +3125,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 [[package]]
 name = "sinex-macros"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=e56f5e8a4900b2bfa8de24e938a4c9d254d6e317#e56f5e8a4900b2bfa8de24e938a4c9d254d6e317"
+source = "git+https://github.com/Sinity/sinex?rev=c0f72bc8aaa0b69cb0136f2c3f2c0c08201ad30c#c0f72bc8aaa0b69cb0136f2c3f2c0c08201ad30c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3114,12 +3135,14 @@ dependencies = [
 [[package]]
 name = "sinex-model"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=e56f5e8a4900b2bfa8de24e938a4c9d254d6e317#e56f5e8a4900b2bfa8de24e938a4c9d254d6e317"
+source = "git+https://github.com/Sinity/sinex?rev=c0f72bc8aaa0b69cb0136f2c3f2c0c08201ad30c#c0f72bc8aaa0b69cb0136f2c3f2c0c08201ad30c"
 dependencies = [
+ "authored 0.1.0 (git+https://github.com/Sinity/polylogue-sinex-common?rev=8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7)",
  "blake3",
  "caseless",
  "jiff",
  "query-language",
+ "references",
  "schemars",
  "serde",
  "serde_json",
@@ -3136,7 +3159,7 @@ dependencies = [
 [[package]]
 name = "sinex-protocol"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=e56f5e8a4900b2bfa8de24e938a4c9d254d6e317#e56f5e8a4900b2bfa8de24e938a4c9d254d6e317"
+source = "git+https://github.com/Sinity/sinex?rev=c0f72bc8aaa0b69cb0136f2c3f2c0c08201ad30c#c0f72bc8aaa0b69cb0136f2c3f2c0c08201ad30c"
 dependencies = [
  "query-language",
  "schemars",
@@ -3149,7 +3172,7 @@ dependencies = [
 [[package]]
 name = "sinex-transport"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=e56f5e8a4900b2bfa8de24e938a4c9d254d6e317#e56f5e8a4900b2bfa8de24e938a4c9d254d6e317"
+source = "git+https://github.com/Sinity/sinex?rev=c0f72bc8aaa0b69cb0136f2c3f2c0c08201ad30c#c0f72bc8aaa0b69cb0136f2c3f2c0c08201ad30c"
 dependencies = [
  "async-nats",
  "base64 0.22.1",
@@ -3291,7 +3314,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3984,7 +4007,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
