@@ -543,7 +543,6 @@ impl Reader<'_> {
     /// As-of assertion reads need the currency of the records written before
     /// `cutoff`, computed once per cutoff in this read transaction. Present
     /// currency is stored and needs no preparation.
-
     pub(crate) fn prepare_assertion_history(&self, cutoff: i64) -> Result<()> {
         let conn = self.conn()?;
         if !self.assertion_history_ready.borrow().contains(&cutoff) {
