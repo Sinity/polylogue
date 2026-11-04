@@ -289,7 +289,7 @@ fn answer<T: serde::de::DeserializeOwned>(
 const REQUEST_SPAN: Duration = Duration::from_secs(60);
 
 fn live_query(
-    _: &crate::commands::Values,
+    values: &crate::commands::Values,
     request: &Request,
     startup: &crate::config::Startup,
     _: &command_surface::RunnableRequest,
@@ -326,7 +326,11 @@ fn live_query(
             match line {
                 Line::Marks { marks } => next = Some(marks),
                 line => {
-                    if let Some(text) = line.text(&zone) {
+                    if values.flag("json") {
+                        serde_json::to_writer(&mut stdout, &line)?;
+                        writeln!(stdout)?;
+                        stdout.flush()?;
+                    } else if let Some(text) = line.text(&zone) {
                         writeln!(stdout, "{}", polylogue_render::terminal::escape(&text))?;
                         stdout.flush()?;
                     }

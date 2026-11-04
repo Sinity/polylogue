@@ -530,6 +530,7 @@ impl Deadline {
 fn live_items(
     reader: &Reader<'_>,
     live: &[(ScopeSession, &'static str)],
+    now: i64,
 ) -> Result<Vec<Item>, StoreError> {
     let ids: Vec<String> = live.iter().map(|(s, _)| s.session.id.to_string()).collect();
     let hidden = reader.hidden_sessions(&ids)?;
@@ -544,7 +545,7 @@ fn live_items(
                 .as_deref()
                 .map_or("untitled".into(), |t| one_line(t, 80));
             let mut line = format!("- {id}  {title}: {state}");
-            if let Some(on) = s.waiting_on() {
+            if let Some(on) = s.waiting_on_at(now) {
                 let _ = write!(line, " ({on})");
             }
             if let Some(cwd) = s.session.cwd.as_deref() {
@@ -792,8 +793,9 @@ fn session_start(
         &operator_notes_command,
     );
     if let Some(live) = live.filter(|live| !live.is_empty())
-        && let Some(items) =
-            deadline.section(reader, "live sessions", || live_items(reader, &live))?
+        && let Some(items) = deadline.section(reader, "live sessions", || {
+            live_items(reader, &live, now.unix_ms())
+        })?
     {
         fit.section(
             "Other agents working here now:",

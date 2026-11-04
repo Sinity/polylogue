@@ -56,6 +56,18 @@ impl ScopeSession {
             .map(|waiting| waiting.value.as_str())
     }
 
+    /// The wait the common live model shows at this instant, including
+    /// harness status and process evidence that outrank an earlier hook.
+    pub fn waiting_on_at(&self, now: i64) -> Option<&'static str> {
+        polylogue_model::live::view(
+            Some(&self.live),
+            self.session.last_activity.map(|at| at.unix_ms()),
+            now,
+        )
+        .waiting_on
+        .map(|waiting| waiting.as_str())
+    }
+
     /// A tool call started and has not finished.
     pub fn open_tool_call(&self) -> bool {
         self.live.open_call.is_some()
