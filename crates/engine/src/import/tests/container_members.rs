@@ -154,7 +154,16 @@ fn identical_and_changed_containers_keep_imports_while_sharing_member_bytes() {
     let (path, original) = archive(&w);
     let other = w.dir.path().join("second.zip");
     let (mut e, _lock) = engine(&w, 1024);
+    assert!(
+        e.import(std::slice::from_ref(&path))
+            .unwrap()
+            .pass
+            .errors
+            .is_empty()
+    );
+    let observed = w.count("SELECT count(*) AS n FROM a.observation");
     assert!(e.import(&[path]).unwrap().pass.errors.is_empty());
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), observed);
     std::fs::write(&other, &original).unwrap();
     assert!(
         e.import(std::slice::from_ref(&other))
@@ -176,7 +185,7 @@ fn identical_and_changed_containers_keep_imports_while_sharing_member_bytes() {
     );
     assert_eq!(
         w.count("SELECT count(DISTINCT container_input) AS n FROM a.observation_container"),
-        2
+        3
     );
-    assert_eq!(w.count("SELECT count(DISTINCT json_extract(o.details_json,'$.import.import_id')) AS n FROM a.observation_container c JOIN a.observation o ON o.id=c.observation_id"),2);
+    assert_eq!(w.count("SELECT count(DISTINCT json_extract(o.details_json,'$.import.import_id')) AS n FROM a.observation_container c JOIN a.observation o ON o.id=c.observation_id"),3);
 }

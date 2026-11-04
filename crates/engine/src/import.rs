@@ -65,7 +65,14 @@ impl Engine {
             let mut authored_records = Vec::new();
             let mut items = Vec::new();
             let mut hashes = std::collections::BTreeMap::new();
-            let import_id = uuid::Uuid::now_v7().to_string();
+            let import_id = import_identity(
+                &self.config.machine,
+                path,
+                options.authorship.as_ref(),
+                members
+                    .iter()
+                    .map(|member| (member.path.as_path(), member.bytes.hash())),
+            );
             for (index, member) in members.into_iter().enumerate() {
                 let Some(origin) = member.origin else {
                     recognition::refuse(&mut report, &member.path, "no declared structure matched");
@@ -465,6 +472,31 @@ impl Engine {
         plan.priority = Priority::Live;
         Ok(Some(plan))
     }
+}
+
+/// One immutable acquisition at one receiving location and by one author.
+/// Retrying that acquisition keeps its namespace; another path, receiver,
+/// member body or author establishes a different namespace.
+fn import_identity<'a>(
+    machine: &str,
+    path: &Path,
+    authorship: Option<&polylogue_model::authorship::Authorship>,
+    members: impl Iterator<Item = (&'a Path, polylogue_model::BlobHash)>,
+) -> String {
+    let mut digest = blake3::Hasher::new();
+    digest.update(b"polylogue-import-1\0");
+    let mut field = |value: &[u8]| {
+        digest.update(&(value.len() as u64).to_le_bytes());
+        digest.update(value);
+    };
+    field(machine.as_bytes());
+    field(path.as_os_str().as_encoded_bytes());
+    field(&serde_json::to_vec(&authorship).expect("authorship encodes"));
+    for (path, hash) in members {
+        field(path.as_os_str().as_encoded_bytes());
+        field(&hash.0);
+    }
+    format!("import:{}", digest.finalize())
 }
 
 /// Generation and length must still describe the descriptor that was captured.

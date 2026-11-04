@@ -813,7 +813,7 @@ fn rows_page(
                 let cursor = PageCursor {
                     target: reading.target.clone(),
                     options: reading.digest.clone(),
-                    versions: Vec::new(),
+                    versions: PageCursor::version(&[]),
                     position: PagePosition::Record {
                         anchor_row: row,
                         place,

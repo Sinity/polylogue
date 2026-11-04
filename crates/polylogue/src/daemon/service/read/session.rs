@@ -27,7 +27,8 @@ pub(super) struct Scope {
 /// the logical session whose root is REF.
 pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, Failure> {
     if let Some(root) = target.strip_prefix("root:") {
-        let reference = Reference::parse(root).map_err(|e| Failure::new("bad_request", e))?;
+        let reference = Reference::parse(&format!("session:{root}"))
+            .map_err(|e| Failure::new("bad_request", e))?;
         let Reference::Session(session) = reference else {
             return Err(Failure::new(
                 "bad_request",
@@ -894,13 +895,15 @@ pub(super) fn page(
     let read_session = reader
         .session(&scope.session)?
         .ok_or_else(|| Failure::new("not_found", format!("no session {}", scope.session)))?;
-    let versions = composed.versions(reader)?;
+    let versions = PageCursor::version(&composed.versions(reader)?);
     if let Some(opened) = &opened
-        && let Some(session) = opened.rewritten(&versions)
+        && opened.rewritten(&versions)
     {
         return Err(Failure::new(
             "stale_cursor",
-            format!("{session} was read again since this cursor was issued; read {target} again"),
+            format!(
+                "the composed reading changed since this cursor was issued; read {target} again"
+            ),
         ));
     }
     let runs = runs(&composed, options)?;
@@ -1015,7 +1018,7 @@ pub(super) fn page(
     if start == 0 && !continues_forward {
         items_out.extend(lead_items(&composed, &runs, options, target, &read_session));
     }
-    let mut laid = lay_out(reader, d, &composed, &shown[start..end], options)?;
+    let mut laid = lay_out(reader, d, &composed, &runs, &shown[start..end], options)?;
     decorate(reader, &composed, &shown, start, &mut laid, options)?;
     // Whole entries up to the transfer size; an entry too large to travel
     // alone is replaced by the ready call that reads its block in pages.
@@ -1102,7 +1105,7 @@ pub(super) fn page(
         let next = PageCursor {
             target: target.clone(),
             options: digest.clone(),
-            versions: versions.clone(),
+            versions,
             position: PagePosition::Entry {
                 key: composed.entries(part)[entry].key.clone(),
                 inside: None,
@@ -1116,7 +1119,7 @@ pub(super) fn page(
             let cursor = PageCursor {
                 target: target.clone(),
                 options: digest.clone(),
-                versions: versions.clone(),
+                versions,
                 position: PagePosition::Entry {
                     key: composed.entries(part)[entry].key.clone(),
                     inside: Some(place),
@@ -1439,6 +1442,7 @@ fn lay_out(
     reader: &Reader<'_>,
     d: &Daemon,
     composed: &Composed,
+    reading: &Runs,
     page: &[(usize, usize)],
     options: &ReadOptions,
 ) -> Result<Vec<Vec<ReadItem>>, Failure> {
@@ -1463,12 +1467,18 @@ fn lay_out(
         }
     }
     let selected = |source: &Source| -> Result<bool, Failure> {
-        Ok(source.message.as_ref().is_some_and(|message| {
-            let key = EntryKey::header(message);
-            composed
-                .indexes
-                .iter()
-                .any(|index| index.places.contains_key(&key))
+        let Some(message) = &source.message else {
+            return Ok(false);
+        };
+        let key = EntryKey::Message {
+            message: message.clone(),
+            block: source.block,
+        };
+        Ok(reading.spans.iter().any(|(part, start, end)| {
+            composed.indexes[*part]
+                .places
+                .get(&key)
+                .is_some_and(|entry| *entry >= *start && *entry < *end)
         }))
     };
     let ready_attachment = |message: &MessageId, block, index, input: Option<&str>| {
@@ -2063,7 +2073,7 @@ pub(super) fn links_page(
         let next = PageCursor {
             target: target.clone(),
             options: digest.clone(),
-            versions: Vec::new(),
+            versions: PageCursor::version(&[]),
             position: PagePosition::Node { session },
             direction,
         };

@@ -357,6 +357,9 @@ fn the_last_page_follows_what_the_session_appends() {
         },
     );
     let follow = last.document.footer.follow.clone().expect("a follow call");
+    let before = handle(Request::Status, &d.daemon).value().unwrap()["store"]["messages"]
+        .as_u64()
+        .unwrap();
     let path = d.home.join(".claude/projects/-p/cont.jsonl");
     let mut source = std::fs::read_to_string(&path).unwrap();
     source.push_str(&user(
@@ -369,7 +372,7 @@ fn the_last_page_follows_what_the_session_appends() {
     d.wait_for(|status| {
         status["store"]["messages"]
             .as_u64()
-            .is_some_and(|n| n >= 17)
+            .is_some_and(|n| n > before)
             && status["store"]["search_pending"] == 0
     });
     let envelope: command_surface::RunnableRequest =

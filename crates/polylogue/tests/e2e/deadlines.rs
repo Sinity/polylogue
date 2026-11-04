@@ -200,11 +200,7 @@ fn a_command_timeout_overrides_the_global_default() {
         b"{\"outcome\":\"ok\",\"value\":{\"ready\":true},\"notes\":[],\"next\":[]}\n",
         command_surface::Deadline::Milliseconds(2000),
     );
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{output:?}");
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let answer: command_surface::Answer<serde_json::Value> = serde_json::from_value(value).unwrap();
     assert_eq!(answer.value().unwrap()["ready"], true);

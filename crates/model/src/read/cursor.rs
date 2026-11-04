@@ -97,7 +97,7 @@ pub struct PageCursor {
     /// A continuation with other options is refused; the page budget may
     /// change for one page.
     pub options: String,
-    pub versions: Vec<SessionVersion>,
+    pub versions: BlobHash,
     pub position: PagePosition,
     pub direction: ReadDirection,
 }
@@ -300,18 +300,13 @@ impl PageCursor {
         Ok(())
     }
 
-    /// The first session whose rewrite version moved since the cursor was
-    /// issued. Sessions newly added to the composition are a rewrite too,
-    /// because the composition itself changed.
-    pub fn rewritten<'a>(&'a self, current: &[SessionVersion]) -> Option<&'a SessionId> {
-        if current.len() != self.versions.len() {
-            return self.versions.first().map(|version| &version.session);
-        }
-        self.versions
-            .iter()
-            .zip(current)
-            .find(|(seen, now)| seen != now)
-            .map(|(seen, _)| &seen.session)
+    /// Bind all composed sessions without making the cursor grow with lineage.
+    pub fn version(versions: &[SessionVersion]) -> BlobHash {
+        BlobHash::of(&serde_json::to_vec(versions).expect("session versions encode"))
+    }
+
+    pub fn rewritten(&self, current: &BlobHash) -> bool {
+        self.versions != *current
     }
 }
 

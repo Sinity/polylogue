@@ -4,11 +4,11 @@ fn cursor() -> PageCursor {
     PageCursor {
         target: "session:test:one".into(),
         options: options_digest(&("transcript", 4000)),
-        versions: vec![SessionVersion {
+        versions: PageCursor::version(&[SessionVersion {
             session: crate::SessionId::parse("test:one").unwrap(),
             rewrite_version: 3,
             attachments: None,
-        }],
+        }]),
         position: PagePosition::Entry {
             key: EntryKey::Message {
                 message: crate::MessageId::parse("test:one:m2").unwrap(),
@@ -72,20 +72,21 @@ fn a_cursor_names_its_own_reading() {
 #[test]
 fn only_a_moved_rewrite_version_stales() {
     let cursor = cursor();
-    assert_eq!(cursor.rewritten(&cursor.versions.clone()), None);
-    let mut moved = cursor.versions.clone();
-    moved[0].rewrite_version = 4;
-    assert_eq!(
-        cursor.rewritten(&moved),
-        Some(&crate::SessionId::parse("test:one").unwrap())
-    );
-    let mut grown = cursor.versions.clone();
-    grown.push(SessionVersion {
+    assert!(!cursor.rewritten(&cursor.versions));
+    let mut versions = vec![SessionVersion {
+        session: crate::SessionId::parse("test:one").unwrap(),
+        rewrite_version: 4,
+        attachments: None,
+    }];
+    assert!(cursor.rewritten(&PageCursor::version(&versions)));
+    versions[0].rewrite_version = 3;
+    assert!(!cursor.rewritten(&PageCursor::version(&versions)));
+    versions.push(SessionVersion {
         session: crate::SessionId::parse("test:parent").unwrap(),
         rewrite_version: 1,
         attachments: None,
     });
-    assert!(cursor.rewritten(&grown).is_some());
+    assert!(cursor.rewritten(&PageCursor::version(&versions)));
 }
 
 #[test]

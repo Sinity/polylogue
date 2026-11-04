@@ -1393,6 +1393,7 @@ fn final_footer_size_can_trim_items_and_regenerate_the_exact_boundary() {
 #[test]
 fn final_footer_size_can_shorten_a_single_item_without_skipping_its_middle() {
     let mut limits = budget();
+    limits.bytes = NonZeroUsize::new(1800).unwrap();
     limits.items = NonZeroUsize::new(2).unwrap();
     let mut builder = pager::PageBuilder::new(header(), limits, None, framing()).unwrap();
     assert_eq!(

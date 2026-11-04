@@ -349,7 +349,7 @@ impl Inner {
                    AND r.length=?2
                    AND (SELECT count(*) FROM extent WHERE input=?1 AND chain=r.chain)=1
                    AND EXISTS(SELECT 1 FROM extent x WHERE x.input=?1 AND x.chain=r.chain AND x.offset=0 AND x.length=?2 AND x.blob=?3)
-                   AND EXISTS(SELECT 1 FROM observation o WHERE o.input=?1 AND o.machine=?4 AND o.path_bytes=?5 AND o.class='imported' AND o.details_json IS ?6)",
+                   AND EXISTS(SELECT 1 FROM observation o WHERE o.input=?1 AND o.machine=?4 AND o.path_bytes=?5 AND o.class='imported' AND json_extract(o.details_json,'$.import') IS json_extract(?6,'$.import') AND json_extract(o.details_json,'$.import_format') IS json_extract(?6,'$.import_format'))",
                 params![b.input.id,b.length as i64,&blob.hash.0[..],observation.machine,observation.path_bytes,details],
                 |row| Ok((row.get(0)?,row.get(1)?)),
             ).optional()?;

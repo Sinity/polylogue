@@ -292,7 +292,12 @@ impl Engine {
             .ok_or_else(|| std::io::Error::other("the kept-file origin is not declared"))?;
         let imported = polylogue_store::ImportMember {
             version: 1,
-            import_id: uuid::Uuid::now_v7().to_string(),
+            import_id: import_identity(
+                &self.config.machine,
+                root,
+                authorship,
+                std::iter::once((at.as_path(), bytes.hash())),
+            ),
             authorship: authorship.cloned(),
             member: member.into(),
             format: None,

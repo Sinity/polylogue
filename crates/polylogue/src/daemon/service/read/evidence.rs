@@ -93,7 +93,10 @@ fn segments(
                     continue;
                 }
                 pair_at = Some((message.clone(), ordinal));
-                if layout.options.tools() == Expansion::Full && result.is_some() {
+                if layout.options.tools() == Expansion::Full
+                    && let Some(result) = &result
+                    && (layout.options.view != View::Context || (layout.selected)(result)?)
+                {
                     let (data, attachments) = reader
                         .message_tool_pair_result_shape(message, ordinal)?
                         .ok_or_else(|| {
@@ -159,6 +162,12 @@ fn pair_parts(
     }?;
     let mut pair =
         pair.ok_or_else(|| Failure::new("stale_cursor", "indexed tool relationship changed"))?;
+    if layout.options.view == View::Context
+        && let Some(result) = &pair.result
+        && !(layout.selected)(&result.source)?
+    {
+        pair.result = None;
+    }
     pair.call.source.inherited = layout.evidence.inherited;
     if let Some(result) = &mut pair.result {
         result.source.inherited = layout.evidence.inherited;
