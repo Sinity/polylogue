@@ -3125,7 +3125,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 [[package]]
 name = "sinex-macros"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=c0f72bc8aaa0b69cb0136f2c3f2c0c08201ad30c#c0f72bc8aaa0b69cb0136f2c3f2c0c08201ad30c"
+source = "git+https://github.com/Sinity/sinex?rev=b609f3efa8e2e708b564c23990494478fd6568b5#b609f3efa8e2e708b564c23990494478fd6568b5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3135,7 +3135,7 @@ dependencies = [
 [[package]]
 name = "sinex-model"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=c0f72bc8aaa0b69cb0136f2c3f2c0c08201ad30c#c0f72bc8aaa0b69cb0136f2c3f2c0c08201ad30c"
+source = "git+https://github.com/Sinity/sinex?rev=b609f3efa8e2e708b564c23990494478fd6568b5#b609f3efa8e2e708b564c23990494478fd6568b5"
 dependencies = [
  "authored 0.1.0 (git+https://github.com/Sinity/polylogue-sinex-common?rev=8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7)",
  "blake3",
@@ -3159,7 +3159,7 @@ dependencies = [
 [[package]]
 name = "sinex-protocol"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=c0f72bc8aaa0b69cb0136f2c3f2c0c08201ad30c#c0f72bc8aaa0b69cb0136f2c3f2c0c08201ad30c"
+source = "git+https://github.com/Sinity/sinex?rev=b609f3efa8e2e708b564c23990494478fd6568b5#b609f3efa8e2e708b564c23990494478fd6568b5"
 dependencies = [
  "query-language",
  "schemars",
@@ -3172,7 +3172,7 @@ dependencies = [
 [[package]]
 name = "sinex-transport"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=c0f72bc8aaa0b69cb0136f2c3f2c0c08201ad30c#c0f72bc8aaa0b69cb0136f2c3f2c0c08201ad30c"
+source = "git+https://github.com/Sinity/sinex?rev=b609f3efa8e2e708b564c23990494478fd6568b5#b609f3efa8e2e708b564c23990494478fd6568b5"
 dependencies = [
  "async-nats",
  "base64 0.22.1",
