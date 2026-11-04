@@ -681,7 +681,7 @@ fn session_parent_links_are_scoped_and_missing_parent_stays_incomplete() {
         assert_eq!(issues,[ParentIssue::MissingParent {child:polylogue_model::SessionId::parse("claude-code:orphan").unwrap(),parent:polylogue_model::SessionId::parse("claude-code:missing").unwrap()}]);
         assert_eq!(serde_json::to_value(&issues[0]).unwrap()["kind"],"missing_parent");
         assert!(items.iter().any(|item|matches!(&item.kind,ItemKind::Card {card} if matches!(card.as_ref(),Card::Session {lineage_complete,..} if lineage_complete==&ValueState::known(false)))));
-        let (status,_,html)=send_html(&r,"/s/claude-code:orphan?inherited=true").await;
+        let (status,_,html)=send_html(&r,"/s/claude-code:orphan?show=inherited").await;
         assert_eq!(status,StatusCode::OK,"{html}");
         assert!(html.contains("Parents incomplete"),"{html}");
 

@@ -326,7 +326,7 @@ fn inheritance_is_an_explicit_shared_read_option() {
         let (_, _, own) = send_html(&r, "/s/claude-code:child").await;
         assert!(own.contains("synthetic child only"));
         assert!(!own.contains("&lt;script&gt;alert"));
-        let (status, _, inherited) = send_html(&r, "/s/claude-code:child?inherited=true").await;
+        let (status, _, inherited) = send_html(&r, "/s/claude-code:child?show=inherited").await;
         assert_eq!(status, StatusCode::OK, "{inherited}");
         assert!(inherited.contains("&lt;script&gt;alert"));
         let page = read_page(&r, "session:claude-code:child", &[("show", "inherited")]).await;

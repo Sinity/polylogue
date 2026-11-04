@@ -143,23 +143,6 @@
       "type": "object",
       "properties": {
         "data": {
-          "$ref": "#/$defs/HistoricalRecord"
-        },
-        "record": {
-          "type": "string",
-          "const": "historical"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "record",
-        "data"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "data": {
           "$ref": "#/$defs/VariantRecord"
         },
         "record": {
@@ -226,75 +209,6 @@
     }
   ],
   "$defs": {
-    "AcceptedEncoding": {
-      "description": "Original encoding retained when a numbered conversion can represent the\nsame accepted action and effects in the current typed prepared request.",
-      "type": "object",
-      "properties": {
-        "content_hash": {
-          "$ref": "#/$defs/BlobHash"
-        },
-        "hash_evidence": {
-          "$ref": "#/$defs/AcceptedHashEvidence"
-        },
-        "native": {
-          "$ref": "#/$defs/NativeProjectionHistory"
-        },
-        "original": {
-          "$ref": "#/$defs/OriginalBytes"
-        },
-        "source": {
-          "$ref": "#/$defs/SourceSchema"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "source",
-        "content_hash",
-        "hash_evidence",
-        "original"
-      ]
-    },
-    "AcceptedHashEvidence": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "evidence": {
-              "type": "string",
-              "const": "observed"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "evidence"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "evidence": {
-              "type": "string",
-              "const": "derived"
-            },
-            "rule": {
-              "$ref": "#/$defs/AcceptedHashRule"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "evidence",
-            "rule"
-          ]
-        }
-      ]
-    },
-    "AcceptedHashRule": {
-      "type": "string",
-      "enum": [
-        "machine_and_intent",
-        "machine_authorship_and_intent"
-      ]
-    },
     "ActiveRule": {
       "type": "object",
       "properties": {
@@ -323,56 +237,6 @@
         "live"
       ]
     },
-    "Aggregate": {
-      "type": "object",
-      "properties": {
-        "fields": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "function": {
-          "$ref": "#/$defs/AggregateFunction"
-        }
-      },
-      "required": [
-        "function",
-        "fields"
-      ]
-    },
-    "AggregateFunction": {
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "count",
-            "sum",
-            "avg",
-            "min",
-            "max",
-            "count_distinct",
-            "histogram",
-            "correlation"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "percentile": {
-              "type": "integer",
-              "format": "uint8",
-              "maximum": 255,
-              "minimum": 0
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "percentile"
-          ]
-        }
-      ]
-    },
     "ApiError": {
       "type": "object",
       "properties": {
@@ -394,21 +258,6 @@
         "kind"
       ]
     },
-    "Argument": {
-      "type": "object",
-      "properties": {
-        "parameter": {
-          "type": "string"
-        },
-        "value": {
-          "$ref": "#/$defs/Value"
-        }
-      },
-      "required": [
-        "parameter",
-        "value"
-      ]
-    },
     "AssertionFact": {
       "type": "object",
       "properties": {
@@ -416,14 +265,7 @@
           "$ref": "#/$defs/Author"
         },
         "created_at": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Timestamp"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/Timestamp"
         },
         "id": {
           "type": "string"
@@ -444,10 +286,7 @@
           }
         },
         "machine": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "root": {
           "type": "string"
@@ -464,14 +303,7 @@
         },
         "value": true,
         "via": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Channel"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/Channel"
         }
       },
       "additionalProperties": false,
@@ -708,6 +540,52 @@
             "required": [
               "value"
             ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "hidden"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "key": {
+                "type": "null"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "predecessor": true,
+                      "text": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                      "predecessor"
+                    ]
+                  }
+                ]
+              }
+            },
+            "required": []
           }
         },
         {
@@ -1160,57 +1038,6 @@
             "properties": {
               "kind": {
                 "const": "problem"
-              }
-            },
-            "required": [
-              "kind"
-            ]
-          },
-          "then": {
-            "properties": {
-              "key": {
-                "anyOf": [
-                  {
-                    "type": "null"
-                  },
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                ]
-              },
-              "value": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "predecessor": true,
-                      "text": {
-                        "type": "string"
-                      }
-                    },
-                    "additionalProperties": false,
-                    "required": [
-                      "text",
-                      "predecessor"
-                    ]
-                  }
-                ]
-              }
-            },
-            "required": [
-              "value"
-            ]
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "kind": {
-                "const": "blocker"
               }
             },
             "required": [
@@ -2930,6 +2757,9 @@
         "root",
         "kind",
         "author",
+        "via",
+        "machine",
+        "created_at",
         "links"
       ]
     },
@@ -2941,6 +2771,7 @@
         "highlight",
         "title",
         "outcome",
+        "hidden",
         "claim",
         "finding",
         "decision",
@@ -2948,7 +2779,6 @@
         "question",
         "goal",
         "problem",
-        "blocker",
         "handoff",
         "correction",
         "forecast",
@@ -2973,6 +2803,17 @@
     "AssertionLink": {
       "type": "object",
       "properties": {
+        "quote": {
+          "description": "For a link to a span: the exact text it covered when written, so a\nreader can find the text again after a re-parse moves its offsets.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quote"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "reference": {
           "$ref": "#/$defs/Reference"
         },
@@ -3031,17 +2872,11 @@
       "additionalProperties": false
     },
     "AssertionRecord": {
-      "description": "An independently restored historical fact need not have an original native\nrequest. Import claims do not certify native authorship or grant privilege.",
+      "description": "One assertion as a bundle carries it: its stored reference and its fact.",
       "type": "object",
       "properties": {
         "assertion": {
           "$ref": "#/$defs/AssertionFact"
-        },
-        "imports": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ImportAttribution"
-          }
         },
         "ref": {
           "type": "string"
@@ -3106,35 +2941,6 @@
       },
       "required": [
         "direction"
-      ]
-    },
-    "Attachment2": {
-      "type": "object",
-      "properties": {
-        "fields": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "span": {
-          "$ref": "#/$defs/Span"
-        },
-        "unit": {
-          "type": "string"
-        },
-        "windows": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Window"
-          }
-        }
-      },
-      "required": [
-        "span",
-        "unit",
-        "fields",
-        "windows"
       ]
     },
     "AttachmentBinding": {
@@ -3532,12 +3338,6 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0
-        },
-        "imports": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ImportAttribution"
-          }
         },
         "prepared": {
           "$ref": "#/$defs/PreparedRequest"
@@ -3943,58 +3743,6 @@
             "data"
           ]
         }
-      ]
-    },
-    "CachedNativeContext": {
-      "description": "The predecessor cache's partial envelope, preserved as historical metadata.\nMissing full fetch fields remain absent; this is not a native observation.",
-      "type": "object",
-      "properties": {
-        "admitted": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "int64"
-        },
-        "event": {
-          "type": "string"
-        },
-        "native": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/NativeFactContext"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "position": {
-          "type": "integer",
-          "format": "int64"
-        },
-        "source_order": {
-          "type": "integer",
-          "format": "int64"
-        },
-        "state": {
-          "$ref": "#/$defs/CachedRecordState"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "event",
-        "position",
-        "source_order",
-        "state"
-      ]
-    },
-    "CachedRecordState": {
-      "type": "string",
-      "enum": [
-        "live",
-        "archived",
-        "tombstoned"
       ]
     },
     "Change": {
@@ -4425,576 +4173,11 @@
         "outlet_attempts"
       ]
     },
-    "ClockWire": {
-      "type": "object",
-      "properties": {
-        "day": {
-          "$ref": "#/$defs/DaySettingWire"
-        },
-        "now": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "now",
-        "day"
-      ]
-    },
-    "Combination": {
-      "type": "string",
-      "enum": [
-        "union",
-        "intersect",
-        "except",
-        "fuse"
-      ]
-    },
     "Compare": {
       "type": "string",
       "enum": [
         "<",
         ">"
-      ]
-    },
-    "Condition": {
-      "type": "object",
-      "properties": {
-        "kind": {
-          "$ref": "#/$defs/ConditionKind"
-        },
-        "span": {
-          "$ref": "#/$defs/Span"
-        }
-      },
-      "required": [
-        "span",
-        "kind"
-      ]
-    },
-    "ConditionKind": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "conditions": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/Condition"
-              }
-            },
-            "kind": {
-              "type": "string",
-              "const": "and"
-            }
-          },
-          "required": [
-            "kind",
-            "conditions"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "conditions": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/Condition"
-              }
-            },
-            "kind": {
-              "type": "string",
-              "const": "or"
-            }
-          },
-          "required": [
-            "kind",
-            "conditions"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "condition": {
-              "$ref": "#/$defs/Condition"
-            },
-            "kind": {
-              "type": "string",
-              "const": "not"
-            }
-          },
-          "required": [
-            "kind",
-            "condition"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "field": {
-              "type": "string"
-            },
-            "kind": {
-              "type": "string",
-              "const": "match"
-            },
-            "value": {
-              "$ref": "#/$defs/Value"
-            }
-          },
-          "required": [
-            "kind",
-            "field",
-            "value"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "compare"
-            },
-            "op": {
-              "$ref": "#/$defs/Op"
-            },
-            "operand": {
-              "$ref": "#/$defs/Operand"
-            },
-            "value": {
-              "$ref": "#/$defs/Value"
-            }
-          },
-          "required": [
-            "kind",
-            "operand",
-            "op",
-            "value"
-          ]
-        },
-        {
-          "description": "Main-time lower bound; span-valued rows are selected by overlap.",
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "since"
-            },
-            "operand": {
-              "$ref": "#/$defs/Operand"
-            },
-            "value": {
-              "$ref": "#/$defs/Value"
-            }
-          },
-          "required": [
-            "kind",
-            "operand",
-            "value"
-          ]
-        },
-        {
-          "description": "Main-time exclusive upper bound. A date resolves to its logical-day\nend, while an instant remains that instant.",
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "until"
-            },
-            "operand": {
-              "$ref": "#/$defs/Operand"
-            },
-            "value": {
-              "$ref": "#/$defs/Value"
-            }
-          },
-          "required": [
-            "kind",
-            "operand",
-            "value"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "from": {
-              "$ref": "#/$defs/Value"
-            },
-            "kind": {
-              "type": "string",
-              "const": "between"
-            },
-            "operand": {
-              "$ref": "#/$defs/Operand"
-            },
-            "to": {
-              "$ref": "#/$defs/Value"
-            }
-          },
-          "required": [
-            "kind",
-            "operand",
-            "from",
-            "to"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "text"
-            },
-            "mode": {
-              "$ref": "#/$defs/TextMode"
-            },
-            "text": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "text",
-            "mode"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "reference"
-            },
-            "reference": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "reference"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "similar"
-            },
-            "value": {
-              "$ref": "#/$defs/Value"
-            }
-          },
-          "required": [
-            "kind",
-            "value"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "condition": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Condition"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "kind": {
-              "type": "string",
-              "const": "exists"
-            },
-            "unit": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "unit"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "field_exists"
-            },
-            "operand": {
-              "$ref": "#/$defs/Operand"
-            }
-          },
-          "required": [
-            "kind",
-            "operand"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "condition": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Condition"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "count": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            },
-            "kind": {
-              "type": "string",
-              "const": "count"
-            },
-            "op": {
-              "$ref": "#/$defs/Op"
-            },
-            "unit": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "unit",
-            "op",
-            "count"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "in"
-            },
-            "operand": {
-              "$ref": "#/$defs/Operand"
-            },
-            "query": {
-              "$ref": "#/$defs/Query"
-            }
-          },
-          "required": [
-            "kind",
-            "operand",
-            "query"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "time_range"
-            },
-            "operand": {
-              "$ref": "#/$defs/Operand"
-            },
-            "value": {
-              "$ref": "#/$defs/Value"
-            }
-          },
-          "required": [
-            "kind",
-            "operand",
-            "value"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "from": {
-              "$ref": "#/$defs/Value"
-            },
-            "kind": {
-              "type": "string",
-              "const": "overlaps"
-            },
-            "to": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Value"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "kind",
-            "from"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "time_difference"
-            },
-            "left": {
-              "$ref": "#/$defs/Operand"
-            },
-            "op": {
-              "$ref": "#/$defs/Op"
-            },
-            "right": {
-              "$ref": "#/$defs/Operand"
-            },
-            "value": {
-              "$ref": "#/$defs/Value"
-            }
-          },
-          "required": [
-            "kind",
-            "left",
-            "right",
-            "op",
-            "value"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "arguments": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/Argument"
-              }
-            },
-            "kind": {
-              "type": "string",
-              "const": "saved"
-            },
-            "name": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "name",
-            "arguments"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "all": {
-              "type": "boolean"
-            },
-            "gaps": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/Gap"
-              }
-            },
-            "kind": {
-              "type": "string",
-              "const": "sequence"
-            },
-            "steps": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/Condition"
-              }
-            },
-            "unit": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "unit",
-            "all",
-            "steps",
-            "gaps"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "arguments": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/ExtensionArgument"
-              }
-            },
-            "kind": {
-              "type": "string",
-              "const": "extension"
-            },
-            "name": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "name",
-            "arguments"
-          ]
-        }
-      ]
-    },
-    "ConfirmedOrigin": {
-      "description": "Only owner fetch metadata supplies origin. Product payloads, names and\nacquisition-route declarations cannot authenticate it.",
-      "type": "object",
-      "properties": {
-        "producer_family": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "producer_identity": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "source": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/NativeSource"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "source_fingerprint": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
-    },
-    "ConservedEffects": {
-      "description": "A migration's typed effect projection accompanies the original bytes. It\nrestores data through historical apply, never by executing the old intent.",
-      "type": "object",
-      "properties": {
-        "current": {
-          "$ref": "#/$defs/AuthoredEffect"
-        },
-        "historical_assertions": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/HistoricalAssertionEvidence"
-          }
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "current",
-        "historical_assertions"
       ]
     },
     "Counts": {
@@ -5114,66 +4297,6 @@
         "behind",
         "unknown",
         "unavailable"
-      ]
-    },
-    "CursorContext": {
-      "description": "Context fixed on the first page. Products bind grants, schema/definition/ranking\nversions and every read position here, and check their continued availability.",
-      "type": "object",
-      "properties": {
-        "clock": {
-          "$ref": "#/$defs/ClockWire"
-        },
-        "question": {
-          "$ref": "#/$defs/QuestionId"
-        },
-        "random_seed": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "read_positions": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "resolved_times": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ResolvedTime"
-          }
-        },
-        "versions": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "question",
-        "clock",
-        "resolved_times",
-        "random_seed",
-        "read_positions",
-        "versions"
-      ]
-    },
-    "DaySettingWire": {
-      "description": "Pure transport data. The caller resolves the named zone before constructing\na runtime setting; deserialization performs no zone database lookup.",
-      "type": "object",
-      "properties": {
-        "start": {
-          "type": "string"
-        },
-        "zone": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "zone",
-        "start"
       ]
     },
     "Deliver": {
@@ -6015,99 +5138,12 @@
         "event"
       ]
     },
-    "ExecutionBinding": {
-      "description": "Complete accepted inputs retained before an execution exposes continuation calls.",
-      "type": "object",
-      "properties": {
-        "accepted_request": {
-          "description": "Original trusted envelope without credentials; provenance grants no authority.\nInternal calls may have none. Replay uses current operation validation."
-        },
-        "presentation": {
-          "$ref": "#/$defs/ExecutionPresentation"
-        },
-        "query_options": {
-          "$ref": "#/$defs/QueryExecutionOptions"
-        },
-        "replay": {
-          "$ref": "#/$defs/ReplayBinding"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "replay",
-        "query_options",
-        "presentation"
-      ]
-    },
     "ExecutionEligibility": {
+      "description": "Whether an action may run here. Actions restored from another archive keep\ntheir state but never run: the receiving host computes this, never a bundle.",
       "type": "string",
       "enum": [
         "live",
         "historical"
-      ]
-    },
-    "ExecutionPresentation": {
-      "description": "Selected source facts are read under the authenticated snapshot, not copied here.",
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "query"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "delivery": {
-              "$ref": "#/$defs/ReadDelivery"
-            },
-            "direct_source": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ReadSpanBinding"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "format": {
-              "$ref": "#/$defs/Format2"
-            },
-            "kind": {
-              "type": "string",
-              "const": "read"
-            },
-            "options": {
-              "$ref": "#/$defs/ReadOptions"
-            },
-            "page_budget": {
-              "description": "Logical limits before reserving this response's envelope bytes.",
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/PageBudget"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "options",
-            "delivery",
-            "format"
-          ]
-        }
       ]
     },
     "Expansion": {
@@ -6116,183 +5152,6 @@
         "none",
         "headers",
         "full"
-      ]
-    },
-    "ExtensionArgument": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "value": {
-              "$ref": "#/$defs/Value"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "value"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "name": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "name"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "optional": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/ExtensionArgument"
-              }
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "optional"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "field": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "field"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "unit": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "unit"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "condition": {
-              "$ref": "#/$defs/Condition"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "condition"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "query": {
-              "$ref": "#/$defs/Query"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "query"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "keyword": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "keyword"
-          ]
-        }
-      ]
-    },
-    "Field": {
-      "type": "object",
-      "properties": {
-        "help": {
-          "type": "string"
-        },
-        "kind": {
-          "$ref": "#/$defs/FieldKind"
-        },
-        "name": {
-          "type": "string"
-        },
-        "read_as": {
-          "type": "string"
-        },
-        "unit": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "unknown": {
-          "$ref": "#/$defs/UnknownRule"
-        },
-        "values": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "required": [
-        "name",
-        "kind",
-        "values",
-        "unknown",
-        "help",
-        "read_as"
-      ]
-    },
-    "FieldKind": {
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "text",
-            "match",
-            "substring",
-            "words",
-            "subtree",
-            "integer",
-            "number",
-            "money",
-            "time",
-            "duration",
-            "bool",
-            "reference",
-            "json"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "list": {
-              "$ref": "#/$defs/FieldKind"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "list"
-          ]
-        }
       ]
     },
     "FileDescriptor": {
@@ -6471,76 +5330,6 @@
         "html"
       ]
     },
-    "Format2": {
-      "type": "string",
-      "enum": [
-        "terminal",
-        "markdown",
-        "html",
-        "json",
-        "jsonl"
-      ]
-    },
-    "FrozenDefinition": {
-      "description": "A saved definition as it was bound, including its actual syntax.",
-      "type": "object",
-      "properties": {
-        "ast": {
-          "$ref": "#/$defs/Query"
-        },
-        "name": {
-          "type": "string"
-        },
-        "question": {
-          "$ref": "#/$defs/QuestionId"
-        },
-        "revision": {
-          "type": "string"
-        },
-        "root": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "name",
-        "root",
-        "revision",
-        "question",
-        "ast"
-      ]
-    },
-    "Gap": {
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "later",
-            "next"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "within": {
-              "type": "object",
-              "properties": {
-                "duration": {
-                  "$ref": "#/$defs/Value"
-                }
-              },
-              "required": [
-                "duration"
-              ]
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "within"
-          ]
-        }
-      ]
-    },
     "Held": {
       "type": "object",
       "properties": {
@@ -6572,482 +5361,6 @@
       "required": [
         "at",
         "policy"
-      ]
-    },
-    "HistoricalAcceptedRequest": {
-      "type": "object",
-      "properties": {
-        "at": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Timestamp"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "authorship": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Authorship"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "conserved_effects": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ConservedEffects"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "content_hash": {
-          "$ref": "#/$defs/BlobHash"
-        },
-        "facts": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Reference"
-          }
-        },
-        "hash_evidence": {
-          "$ref": "#/$defs/AcceptedHashEvidence"
-        },
-        "id": {
-          "type": "string"
-        },
-        "imports": {
-          "$ref": "#/$defs/ImportHistory"
-        },
-        "intent": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Intent"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "machine": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "native": {
-          "$ref": "#/$defs/NativeProjectionHistory"
-        },
-        "original": {
-          "description": "Missing historical bodies and outcomes remain unrecorded.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/OriginalBytes"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "outcome": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/UserOutcome"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "source": {
-          "$ref": "#/$defs/SourceSchema"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "source",
-        "content_hash",
-        "hash_evidence",
-        "facts",
-        "imports"
-      ]
-    },
-    "HistoricalAssertionEvidence": {
-      "description": "A predecessor assertion remains evidence under its recorded value schema.\nIts malformed or missing current fields never become a new native fact.",
-      "type": "object",
-      "properties": {
-        "created_at": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Timestamp"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "id": {
-          "type": "string"
-        },
-        "key": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "kind": {
-          "$ref": "#/$defs/RecordedKind"
-        },
-        "links": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/AssertionLink"
-          }
-        },
-        "machine": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "predecessor": true,
-        "recorded_author": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "relations": {
-          "type": "array",
-          "items": {
-            "type": "array",
-            "maxItems": 2,
-            "minItems": 2,
-            "prefixItems": [
-              {
-                "$ref": "#/$defs/RecordedRelation"
-              },
-              {
-                "type": "string"
-              }
-            ]
-          }
-        },
-        "root": {
-          "type": "string"
-        },
-        "source": {
-          "$ref": "#/$defs/SourceSchema"
-        },
-        "targets": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "valid_until": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Timestamp"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "value": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "root",
-        "source",
-        "kind",
-        "targets",
-        "relations",
-        "links"
-      ]
-    },
-    "HistoricalQueryRun": {
-      "type": "object",
-      "properties": {
-        "cached": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/CachedNativeContext"
-          }
-        },
-        "declared_binding_hash": {
-          "description": "Optional summary claims from the original payload, distinct from the\nactual fetched native record hash and projection evidence.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/BlobHash"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "declared_run_hash": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/BlobHash"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "encoded_run": {
-          "description": "Exact available nested run encoding, not an acquisition-byte claim.",
-          "type": "array",
-          "items": {
-            "type": "integer",
-            "format": "uint8",
-            "maximum": 255,
-            "minimum": 0
-          }
-        },
-        "id": {
-          "$ref": "#/$defs/RunId"
-        },
-        "imports": {
-          "$ref": "#/$defs/ImportHistory",
-          "default": {
-            "declared": [],
-            "observed": []
-          }
-        },
-        "native": {
-          "$ref": "#/$defs/NativeProjectionHistory"
-        },
-        "question": {
-          "$ref": "#/$defs/QuestionId"
-        },
-        "records": {
-          "type": "array",
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "uint8",
-              "maximum": 255,
-              "minimum": 0
-            }
-          }
-        },
-        "replay": {
-          "$ref": "#/$defs/HistoricalRunReplay"
-        },
-        "source": {
-          "$ref": "#/$defs/SourceSchema"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "question",
-        "source",
-        "encoded_run",
-        "native",
-        "replay"
-      ]
-    },
-    "HistoricalRecord": {
-      "type": "object",
-      "properties": {
-        "commit": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "evidence": {
-          "$ref": "#/$defs/HistoricalRecord2"
-        },
-        "imports": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ImportAttribution"
-          }
-        },
-        "ref": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "ref",
-        "commit",
-        "evidence"
-      ]
-    },
-    "HistoricalRecord2": {
-      "description": "Read-only restoration of recorded predecessor evidence, with no native\ncommand or current-schema validation implied by its historical value.",
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "accepted"
-            },
-            "record": {
-              "$ref": "#/$defs/HistoricalAcceptedRequest"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "record"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "assertion"
-            },
-            "record": {
-              "$ref": "#/$defs/HistoricalAssertionEvidence"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "record"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "run"
-            },
-            "record": {
-              "$ref": "#/$defs/HistoricalQueryRun"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "record"
-          ]
-        }
-      ]
-    },
-    "HistoricalRunReplay": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "run": {
-              "$ref": "#/$defs/QueryRun"
-            },
-            "status": {
-              "type": "string",
-              "const": "compatible"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "status",
-            "run"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "reason": {
-              "type": "string"
-            },
-            "status": {
-              "type": "string",
-              "const": "unavailable"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "status",
-            "reason"
-          ]
-        }
-      ]
-    },
-    "HistoricalVariantIntent": {
-      "type": "object",
-      "properties": {
-        "base": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "claimed_author": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "claimed_via": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "from_lang": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "kind": {
-          "$ref": "#/$defs/VariantKind"
-        },
-        "method": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "parts": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/NewVariantPart"
-          }
-        },
-        "source": {
-          "type": "string"
-        },
-        "source_hash": {
-          "$ref": "#/$defs/BlobHash"
-        },
-        "to_lang": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "source",
-        "source_hash",
-        "kind",
-        "parts"
       ]
     },
     "HostPolicy": {
@@ -7126,28 +5439,6 @@
         "chain",
         "actor",
         "at"
-      ]
-    },
-    "ImportHistory": {
-      "description": "Locally observed ingress is distinct from claims carried by a bundle.",
-      "type": "object",
-      "properties": {
-        "declared": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ImportAttribution"
-          }
-        },
-        "observed": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ImportAttribution"
-          }
-        }
-      },
-      "required": [
-        "observed",
-        "declared"
       ]
     },
     "ImportedEventIdentity": {
@@ -7311,156 +5602,6 @@
         "commit",
         "identity",
         "event"
-      ]
-    },
-    "Intent": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "type": "string",
-              "const": "note"
-            },
-            "note": {
-              "$ref": "#/$defs/NoteIntent"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "note"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "type": "string",
-              "const": "saved_query"
-            },
-            "note": {
-              "$ref": "#/$defs/NoteIntent"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "note"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "type": "string",
-              "const": "query_annotation"
-            },
-            "note": {
-              "$ref": "#/$defs/NoteIntent"
-            },
-            "query": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "query",
-            "note"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "type": "string",
-              "const": "withdrawal"
-            },
-            "note": {
-              "type": "string"
-            },
-            "reason": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "note"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "type": "string",
-              "const": "setting"
-            },
-            "claimed_author": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "key": {
-              "type": "string"
-            },
-            "machine": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "value": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "key",
-            "value"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "type": "string",
-              "const": "variant"
-            },
-            "variant": {
-              "$ref": "#/$defs/HistoricalVariantIntent"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "variant"
-          ]
-        },
-        {
-          "description": "Compatible payload fields whose original request metadata or effect\nencoding cannot be represented as an unchanged current request.",
-          "type": "object",
-          "properties": {
-            "action": {
-              "type": "string",
-              "const": "other"
-            },
-            "write": {
-              "$ref": "#/$defs/UserWrite"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "action",
-            "write"
-          ]
-        }
       ]
     },
     "InterruptBudget": {
@@ -7979,29 +6120,6 @@
         "execution"
       ]
     },
-    "NativeFactContext": {
-      "type": "object",
-      "properties": {
-        "kind": {
-          "$ref": "#/$defs/NativeKind"
-        },
-        "kind_definition_hash": {
-          "type": "string"
-        },
-        "origin": {
-          "$ref": "#/$defs/ConfirmedOrigin"
-        },
-        "projection": {
-          "$ref": "#/$defs/ProjectionIdentity"
-        }
-      },
-      "required": [
-        "kind",
-        "kind_definition_hash",
-        "projection",
-        "origin"
-      ]
-    },
     "NativeHookField": {
       "type": "object",
       "properties": {
@@ -8033,337 +6151,6 @@
         "start",
         "end",
         "pointer"
-      ]
-    },
-    "NativeKind": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string"
-        },
-        "version": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        }
-      },
-      "required": [
-        "name",
-        "version"
-      ]
-    },
-    "NativeProjectionHistory": {
-      "type": "object",
-      "properties": {
-        "declared": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/NativeProjectionObservation"
-          }
-        },
-        "observed": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/NativeProjectionObservation"
-          }
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "observed",
-        "declared"
-      ]
-    },
-    "NativeProjectionObservation": {
-      "type": "object",
-      "properties": {
-        "provenance": {
-          "$ref": "#/$defs/NativeProjectionProvenance"
-        },
-        "source": {
-          "$ref": "#/$defs/SourceSchema"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "source",
-        "provenance"
-      ]
-    },
-    "NativeProjectionProvenance": {
-      "description": "What the authenticated owner fetch actually supplied. Record/projection\nhashes are distinct from an accepted intent hash; these fields confer no\noriginal-capture, native-execution or importing-actor authority.",
-      "type": "object",
-      "properties": {
-        "class": {
-          "type": "string"
-        },
-        "commit_seq": {
-          "type": "integer",
-          "format": "int64"
-        },
-        "equivalence_key": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "event": {
-          "type": "string"
-        },
-        "location": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/NativeRecordLocation"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "output_index": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "parents": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "producer_family": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "producer_identity": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "projected_payload": {
-          "type": "array",
-          "items": {
-            "type": "integer",
-            "format": "uint8",
-            "maximum": 255,
-            "minimum": 0
-          }
-        },
-        "projection_epoch": {
-          "type": "integer",
-          "format": "int64"
-        },
-        "projection_payload_hash": {
-          "type": "string"
-        },
-        "reading_order": {
-          "type": "integer",
-          "format": "int64"
-        },
-        "record_hash": {
-          "type": "string"
-        },
-        "record_state": {
-          "type": "string"
-        },
-        "run": {
-          "type": "string"
-        },
-        "ts_coided": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Timestamp"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "ts_orig": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Timestamp"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "ts_persisted": {
-          "$ref": "#/$defs/Timestamp"
-        },
-        "ts_quality": {
-          "type": "string"
-        },
-        "validation": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "event",
-        "run",
-        "commit_seq",
-        "output_index",
-        "record_hash",
-        "projection_epoch",
-        "projection_payload_hash",
-        "parents",
-        "ts_quality",
-        "ts_persisted",
-        "record_state",
-        "class",
-        "validation",
-        "reading_order",
-        "projected_payload"
-      ]
-    },
-    "NativeRecordLocation": {
-      "type": "object",
-      "properties": {
-        "anchor": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "material": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "material",
-        "anchor"
-      ]
-    },
-    "NativeSource": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string"
-        },
-        "version": {
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        }
-      },
-      "required": [
-        "name",
-        "version"
-      ]
-    },
-    "NativeSpanSeek": {
-      "type": "object",
-      "properties": {
-        "end": {
-          "$ref": "#/$defs/NativeTextPosition"
-        },
-        "start": {
-          "$ref": "#/$defs/NativeTextPosition"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "start",
-        "end"
-      ]
-    },
-    "NativeTextBody": {
-      "type": "object",
-      "properties": {
-        "block": {
-          "description": "Original Message block ordinal or canonical Document block ordinal.\nThis is never a text-body sequence index or local database primary key.",
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "field": {
-          "$ref": "#/$defs/TextField"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "block",
-        "field"
-      ]
-    },
-    "NativeTextPiece": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "body": {
-              "$ref": "#/$defs/NativeTextBody"
-            },
-            "kind": {
-              "type": "string",
-              "const": "body"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "body"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "after": {
-              "$ref": "#/$defs/NativeTextBody"
-            },
-            "before": {
-              "$ref": "#/$defs/NativeTextBody"
-            },
-            "kind": {
-              "type": "string",
-              "const": "separator"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "before",
-            "after"
-          ]
-        },
-        {
-          "description": "A complete, accessible container with no text bodies; no block invented.",
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "empty"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ]
-        }
-      ]
-    },
-    "NativeTextPosition": {
-      "type": "object",
-      "properties": {
-        "byte": {
-          "description": "UTF-8 byte offset inside the exact field or two-LF separator.",
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "piece": {
-          "$ref": "#/$defs/NativeTextPiece"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "piece",
-        "byte"
       ]
     },
     "NewAssertion": {
@@ -8550,6 +6337,32 @@
             "required": [
               "value"
             ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "hidden"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "key": {
+                "type": "null"
+              },
+              "value": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": []
           }
         },
         {
@@ -8961,39 +6774,6 @@
             "properties": {
               "kind": {
                 "const": "problem"
-              }
-            },
-            "required": [
-              "kind"
-            ]
-          },
-          "then": {
-            "properties": {
-              "key": {
-                "anyOf": [
-                  {
-                    "type": "null"
-                  },
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                ]
-              },
-              "value": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "value"
-            ]
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "kind": {
-                "const": "blocker"
               }
             },
             "required": [
@@ -10761,131 +8541,6 @@
         "body"
       ]
     },
-    "NormalizedReadSpan": {
-      "description": "Resolver-produced coordinates kept in acknowledged Run custody. Source\nidentity is retained metadata, never a claim that all source text was read.",
-      "type": "object",
-      "properties": {
-        "origin": {
-          "$ref": "#/$defs/TextSpanOrigin"
-        },
-        "seek": {
-          "$ref": "#/$defs/NativeSpanSeek"
-        },
-        "version": {
-          "$ref": "#/$defs/TextSourceVersion"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "origin",
-        "version",
-        "seek"
-      ]
-    },
-    "NoteIntent": {
-      "description": "Original spellings are declared provenance, never runtime reference aliases.",
-      "type": "object",
-      "properties": {
-        "claimed_author": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "key": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "kind": {
-          "$ref": "#/$defs/NoteKind"
-        },
-        "relations": {
-          "type": "array",
-          "items": {
-            "type": "array",
-            "maxItems": 2,
-            "minItems": 2,
-            "prefixItems": [
-              {
-                "$ref": "#/$defs/Relation"
-              },
-              {
-                "type": "string"
-              }
-            ]
-          }
-        },
-        "revises": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "targets": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "valid_until": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Timestamp"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "value": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "targets",
-        "relations"
-      ]
-    },
-    "NoteKind": {
-      "type": "string",
-      "enum": [
-        "tag",
-        "note",
-        "title",
-        "decision",
-        "claim",
-        "lesson",
-        "blocker",
-        "question",
-        "finding",
-        "judgment",
-        "outcome",
-        "hidden",
-        "correction",
-        "handoff",
-        "goal",
-        "problem",
-        "forecast",
-        "saved_query",
-        "ping",
-        "signal",
-        "withdrawal",
-        "rubric",
-        "distillate",
-        "comparison",
-        "page",
-        "slot",
-        "member",
-        "setting"
-      ]
-    },
     "Notice": {
       "description": "The evaluator has already applied quiet hours and the shared host budget.",
       "type": "object",
@@ -11044,41 +8699,6 @@
         "shown_delivery"
       ]
     },
-    "ObjectExecutionBinding": {
-      "description": "An exact object read has no semantic query or invented question identity.\nSerialized fields record inputs; only a current pinned Reader derives them.",
-      "type": "object",
-      "properties": {
-        "accepted_request": true,
-        "content_hash": {
-          "$ref": "#/$defs/BlobHash"
-        },
-        "presentation": {
-          "$ref": "#/$defs/ExecutionPresentation"
-        },
-        "reference": {
-          "$ref": "#/$defs/Reference"
-        },
-        "scope_fingerprint": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "versions": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "reference",
-        "content_hash",
-        "versions",
-        "presentation"
-      ]
-    },
     "Occurrence": {
       "type": "object",
       "properties": {
@@ -11094,62 +8714,6 @@
         "episode"
       ]
     },
-    "Op": {
-      "type": "string",
-      "enum": [
-        "eq",
-        "ne",
-        "lt",
-        "le",
-        "gt",
-        "ge",
-        "contains",
-        "prefix"
-      ]
-    },
-    "Operand": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "field"
-            },
-            "name": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "name"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "arguments": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/Operand"
-              }
-            },
-            "kind": {
-              "type": "string",
-              "const": "function"
-            },
-            "name": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "name",
-            "arguments"
-          ]
-        }
-      ]
-    },
     "Origin": {
       "type": "string",
       "enum": [
@@ -11157,92 +8721,6 @@
         "signal_delivery",
         "injected_context"
       ]
-    },
-    "OriginalBytes": {
-      "type": "object",
-      "properties": {
-        "cached": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/CachedNativeContext"
-          }
-        },
-        "effect": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "integer",
-            "format": "uint8",
-            "maximum": 255,
-            "minimum": 0
-          }
-        },
-        "imports": {
-          "description": "The original store's recorded import classifications. These are source\nmetadata, never observations minted at the receiving store.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ImportHistory"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "intent": {
-          "description": "Exact semantic intent encoding covered by the original content hash.",
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "integer",
-            "format": "uint8",
-            "maximum": 255,
-            "minimum": 0
-          }
-        },
-        "outcome": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "integer",
-            "format": "uint8",
-            "maximum": 255,
-            "minimum": 0
-          }
-        },
-        "records": {
-          "description": "Exact available predecessor envelopes and alternate encodings of one\nobserved JSON value, separate from unavailable acquisition spelling.",
-          "type": "array",
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "uint8",
-              "maximum": 255,
-              "minimum": 0
-            }
-          }
-        },
-        "request": {
-          "description": "Exact retained JSON in the named source encoding. NativeProjection\nidentifies an SDK projection encoding, not unavailable ingress spelling.",
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "integer",
-            "format": "uint8",
-            "maximum": 255,
-            "minimum": 0
-          }
-        }
-      },
-      "additionalProperties": false
     },
     "Outbox": {
       "type": "object",
@@ -11275,115 +8753,6 @@
       "required": [
         "name",
         "configuration"
-      ]
-    },
-    "OutputBinding": {
-      "description": "Deferred output scopes are syntax only and must pass shared binding before execution.",
-      "type": "string",
-      "enum": [
-        "deferred",
-        "known"
-      ]
-    },
-    "OutputSchema": {
-      "type": "object",
-      "properties": {
-        "fields": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Field"
-          }
-        },
-        "main_time": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "unit": {
-          "description": "Actual row domain supplied by the product, used for nested implicit sources.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "fields"
-      ]
-    },
-    "OutputSource": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "arguments": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/Argument"
-              }
-            },
-            "kind": {
-              "type": "string",
-              "const": "saved"
-            },
-            "name": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "name",
-            "arguments"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "result"
-            },
-            "part": {
-              "$ref": "#/$defs/ResultPart"
-            },
-            "reference": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "reference",
-            "part"
-          ]
-        }
-      ]
-    },
-    "PageBudget": {
-      "description": "Logical delivery caps captured before per-page response framing is reserved.\nA continuation reuses all caps; an explicit override changes only that page.",
-      "type": "object",
-      "properties": {
-        "bytes": {
-          "type": "integer",
-          "format": "uint",
-          "minimum": 1
-        },
-        "items": {
-          "type": "integer",
-          "format": "uint",
-          "minimum": 1
-        },
-        "tokens": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 1
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "items",
-        "tokens",
-        "bytes"
       ]
     },
     "Pending": {
@@ -11463,16 +8832,6 @@
       "properties": {
         "effect": {
           "$ref": "#/$defs/AuthoredEffect"
-        },
-        "original": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AcceptedEncoding"
-            },
-            {
-              "type": "null"
-            }
-          ]
         },
         "outcome": {
           "$ref": "#/$defs/UserOutcome"
@@ -11619,22 +8978,6 @@
         }
       }
     },
-    "ProjectionIdentity": {
-      "type": "object",
-      "properties": {
-        "payload_hash": {
-          "type": "string"
-        },
-        "policy_epoch": {
-          "type": "integer",
-          "format": "int64"
-        }
-      },
-      "required": [
-        "policy_epoch",
-        "payload_hash"
-      ]
-    },
     "PromptKind": {
       "description": "A user prompt's category. `Harness` also marks runtime-written notices\ncarried under another native role; the other kinds remain user categories.\nThis keeps harness material out of counts of what a person or model wrote.",
       "oneOf": [
@@ -11659,137 +9002,6 @@
           "const": "model"
         }
       ]
-    },
-    "Query": {
-      "type": "object",
-      "properties": {
-        "attach": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Attachment2"
-          }
-        },
-        "source": {
-          "$ref": "#/$defs/Source"
-        },
-        "stages": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Stage"
-          }
-        }
-      },
-      "required": [
-        "source",
-        "attach",
-        "stages"
-      ]
-    },
-    "QueryExecutionOptions": {
-      "description": "Execution choices that remain after semantic references have been bound.",
-      "type": "object",
-      "properties": {
-        "direct_reference": {
-          "description": "Actual accepted direct presentation, independent of semantic query identity.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Reference"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "embeddings": {
-          "type": "boolean"
-        },
-        "fields": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "ranking_identity": {
-          "description": "The actual provider, model and vector basis required by this execution.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "self_session": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SessionId"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "why": {
-          "type": "boolean"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "fields",
-        "embeddings",
-        "why"
-      ]
-    },
-    "QueryRun": {
-      "description": "One accepted execution. Authorship is computed at the daemon boundary.",
-      "type": "object",
-      "properties": {
-        "at": {
-          "$ref": "#/$defs/Timestamp"
-        },
-        "authorship": {
-          "$ref": "#/$defs/Authorship"
-        },
-        "binding": {
-          "$ref": "#/$defs/RunBinding"
-        },
-        "id": {
-          "$ref": "#/$defs/RunId"
-        },
-        "machine": {
-          "type": "string"
-        },
-        "question": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/QuestionId"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "read_at": {
-          "$ref": "#/$defs/ChangePosition"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "at",
-        "read_at",
-        "machine",
-        "authorship",
-        "binding"
-      ]
-    },
-    "QuestionId": {
-      "type": "array",
-      "items": {
-        "type": "integer",
-        "format": "uint8",
-        "maximum": 255,
-        "minimum": 0
-      },
-      "maxItems": 32,
-      "minItems": 32
     },
     "QuietHours": {
       "type": "object",
@@ -11883,6 +9095,27 @@
         "minutes"
       ]
     },
+    "Quote": {
+      "description": "A text quote selector (W3C Web Annotation `TextQuoteSelector`): the exact\ntext and up to [`Quote::CONTEXT`] characters on either side of it.",
+      "type": "object",
+      "properties": {
+        "exact": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "suffix": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "exact",
+        "prefix",
+        "suffix"
+      ]
+    },
     "RateLimit": {
       "type": "object",
       "properties": {
@@ -11900,40 +9133,49 @@
         "window"
       ]
     },
-    "ReadDelivery": {
-      "description": "Paging and streaming share selection and view; only transfer changes.",
-      "type": "string",
-      "enum": [
-        "page",
-        "stream"
-      ]
-    },
-    "ReadDirection": {
-      "description": "Direction is part of the authenticated content-navigation intent.",
-      "oneOf": [
-        {
-          "description": "Resume at the first unconsumed character, as captured by the prior page.",
-          "type": "string",
-          "const": "after"
-        },
-        {
-          "description": "Read content strictly before this page start after validating its digest.",
-          "type": "string",
-          "const": "before"
-        }
-      ]
-    },
     "ReadOptions": {
       "description": "Absent expansions distinguish defaults from explicit unsupported options.",
       "type": "object",
       "properties": {
+        "around": {
+          "description": "For a message read: this many messages before and after it.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
         "assertions": {
           "type": "boolean",
           "default": true
         },
+        "at": {
+          "description": "The message a context reading is taken at; the latest when absent.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MessageId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "branches": {
           "type": "boolean",
           "default": false
+        },
+        "context_meter": {
+          "description": "The context meter on model message headers.",
+          "type": "boolean",
+          "default": false
+        },
+        "diff": {
+          "description": "The other place of a context difference: a message, or `compaction`\nor `compaction:N` for just before the last or the Nth-last boundary.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "for_others": {
           "type": "boolean",
@@ -11953,12 +9195,27 @@
           "type": "boolean",
           "default": false
         },
+        "latest": {
+          "description": "Start at the last page instead of the first.",
+          "type": "boolean",
+          "default": false
+        },
         "output_lines": {
           "description": "Head and tail lines of expanded tool output. Zero keeps the complete output.",
           "type": "integer",
           "format": "uint64",
           "default": 100,
           "minimum": 0
+        },
+        "physical": {
+          "description": "For `root:REF`: read only the named physical session.",
+          "type": "boolean",
+          "default": false
+        },
+        "spawns": {
+          "description": "Spawned sessions at their calls: hidden, a card, or inline.",
+          "$ref": "#/$defs/SpawnFold",
+          "default": "card"
         },
         "thinking": {
           "anyOf": [
@@ -11997,280 +9254,8 @@
       },
       "additionalProperties": false
     },
-    "ReadPosition": {
-      "type": "object",
-      "properties": {
-        "character": {
-          "description": "Unicode scalar position in the complete C1-safe encoded ReadItem JSON.",
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "item": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "item_hash": {
-          "description": "Digest of that complete encoded item, including its original Source.",
-          "$ref": "#/$defs/BlobHash"
-        },
-        "selection": {
-          "$ref": "#/$defs/SelectionLocator"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "selection",
-        "item",
-        "character",
-        "item_hash"
-      ]
-    },
-    "ReadRecordKind": {
-      "type": "string",
-      "enum": [
-        "session",
-        "link_issue",
-        "message",
-        "event",
-        "link",
-        "document",
-        "authored",
-        "variant",
-        "variant_part",
-        "blob",
-        "text_fragment",
-        "presentation"
-      ]
-    },
-    "ReadRecordLocator": {
-      "type": "object",
-      "properties": {
-        "kind": {
-          "$ref": "#/$defs/ReadRecordKind"
-        },
-        "ordinal": {
-          "description": "Position in the selected row's prepared metadata view, before layout.\nThis is independent of a message's original physical-session order.",
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "ordinal"
-      ]
-    },
-    "ReadSeek": {
-      "type": "object",
-      "properties": {
-        "anchor": {
-          "$ref": "#/$defs/ReadPosition"
-        },
-        "direction": {
-          "$ref": "#/$defs/ReadDirection"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "direction",
-        "anchor"
-      ]
-    },
-    "ReadSpanBinding": {
-      "description": "One actual selected span source, never a native/fragment fallback on replay.",
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "native"
-            },
-            "span": {
-              "$ref": "#/$defs/NormalizedReadSpan"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "span"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "fragments"
-            },
-            "membership": {
-              "description": "Digest of the actual indexed stored-grain metadata, not permissions.",
-              "$ref": "#/$defs/BlobHash"
-            },
-            "origin": {
-              "$ref": "#/$defs/TextSpanOrigin"
-            },
-            "version": {
-              "$ref": "#/$defs/TextSourceVersion"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "origin",
-            "version",
-            "membership"
-          ]
-        }
-      ]
-    },
-    "RecordedKind": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/NoteKind"
-        },
-        {
-          "type": "string"
-        }
-      ]
-    },
-    "RecordedRelation": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/Relation"
-        },
-        {
-          "type": "string"
-        }
-      ]
-    },
     "Reference": {
       "type": "string"
-    },
-    "Relation": {
-      "type": "string",
-      "enum": [
-        "answers",
-        "challenges",
-        "derived_from",
-        "blocks",
-        "corrects",
-        "member_of",
-        "revises",
-        "withdraws",
-        "slot_of",
-        "on_page",
-        "subject"
-      ]
-    },
-    "ReplayBinding": {
-      "description": "Rebinding uses these captured inputs, never current names or the wall clock.",
-      "type": "object",
-      "properties": {
-        "bound_ast": {
-          "$ref": "#/$defs/Query"
-        },
-        "context": {
-          "$ref": "#/$defs/CursorContext"
-        },
-        "definitions": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/FrozenDefinition"
-          }
-        },
-        "original_text": {
-          "type": "string"
-        },
-        "scope_fingerprint": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "source_outputs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/SourceOutput"
-          }
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "bound_ast",
-        "source_outputs",
-        "definitions",
-        "context",
-        "original_text"
-      ]
-    },
-    "ResolutionNote": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "skipped_time"
-            },
-            "local": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "local"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "repeated_time"
-            },
-            "local": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "local"
-          ]
-        }
-      ]
-    },
-    "ResolvedTime": {
-      "type": "object",
-      "properties": {
-        "expression": {
-          "type": "string"
-        },
-        "notes": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ResolutionNote"
-          }
-        },
-        "value": {
-          "$ref": "#/$defs/Time"
-        }
-      },
-      "required": [
-        "expression",
-        "value",
-        "notes"
-      ]
-    },
-    "ResultPart": {
-      "type": "string",
-      "enum": [
-        "rows",
-        "matches"
-      ]
     },
     "Role": {
       "type": "string",
@@ -12526,92 +9511,6 @@
         "revision"
       ]
     },
-    "RunBinding": {
-      "description": "A continuation retains one bounded reference to the original execution.\nIts own envelope is provenance of this invocation, never old authority.",
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "execution": {
-              "$ref": "#/$defs/ObjectExecutionBinding"
-            },
-            "kind": {
-              "type": "string",
-              "const": "original_object"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "execution"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "execution": {
-              "$ref": "#/$defs/ExecutionBinding"
-            },
-            "kind": {
-              "type": "string",
-              "const": "original"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "execution"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "accepted_request": true,
-            "binding_hash": {
-              "$ref": "#/$defs/BlobHash"
-            },
-            "kind": {
-              "type": "string",
-              "const": "continuation"
-            },
-            "root": {
-              "$ref": "#/$defs/RunId"
-            },
-            "seek": {
-              "$ref": "#/$defs/ReadSeek"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "root",
-            "binding_hash",
-            "seek"
-          ]
-        }
-      ]
-    },
-    "RunId": {
-      "type": "string"
-    },
-    "SelectionLocator": {
-      "type": "object",
-      "properties": {
-        "record": {
-          "$ref": "#/$defs/ReadRecordLocator"
-        },
-        "row": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "row",
-        "record"
-      ]
-    },
     "ServerToolUse": {
       "description": "Server tools are billed separately from model tokens.",
       "type": "object",
@@ -12821,233 +9720,6 @@
         "rows"
       ]
     },
-    "SortKey": {
-      "type": "object",
-      "properties": {
-        "descending": {
-          "type": "boolean"
-        },
-        "operand": {
-          "$ref": "#/$defs/Operand"
-        }
-      },
-      "required": [
-        "operand",
-        "descending"
-      ]
-    },
-    "Source": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "condition": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Condition"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "implicit": {
-              "description": "True when the unit was omitted and inherits its enclosing row scope.",
-              "type": "boolean"
-            },
-            "kind": {
-              "type": "string",
-              "const": "unit"
-            },
-            "unit": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "unit",
-            "implicit"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "arguments": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/Argument"
-              }
-            },
-            "condition": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Condition"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "kind": {
-              "type": "string",
-              "const": "saved"
-            },
-            "name": {
-              "type": "string"
-            },
-            "output": {
-              "$ref": "#/$defs/OutputBinding"
-            }
-          },
-          "required": [
-            "kind",
-            "name",
-            "arguments",
-            "output"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "condition": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Condition"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "kind": {
-              "type": "string",
-              "const": "result"
-            },
-            "output": {
-              "$ref": "#/$defs/OutputBinding"
-            },
-            "part": {
-              "$ref": "#/$defs/ResultPart"
-            },
-            "reference": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "reference",
-            "part",
-            "output"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "direction": {
-              "$ref": "#/$defs/WalkDirection"
-            },
-            "kind": {
-              "type": "string",
-              "const": "walk"
-            },
-            "reference": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "direction",
-            "reference"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "recall"
-            },
-            "time": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Value"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "window": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Value"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "kind"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "condition": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Condition"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "kind": {
-              "type": "string",
-              "const": "recall_last"
-            },
-            "unit": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "unit"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "recall_mark"
-            },
-            "number": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            },
-            "window": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Value"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "kind",
-            "number"
-          ]
-        }
-      ]
-    },
     "SourceClaim": {
       "description": "One original source claim carried through a bundle. The receiving\narchive keeps its actual local bundle input and chain separately.",
       "type": "object",
@@ -13086,513 +9758,41 @@
         "source_chain"
       ]
     },
-    "SourceOutput": {
-      "type": "object",
-      "properties": {
-        "schema": {
-          "$ref": "#/$defs/OutputSchema"
-        },
-        "source": {
-          "$ref": "#/$defs/OutputSource"
-        }
-      },
-      "required": [
-        "source",
-        "schema"
-      ]
-    },
-    "SourceSchema": {
+    "SpawnFold": {
+      "description": "How spawned sessions appear at their spawning call.",
       "oneOf": [
         {
-          "type": "object",
-          "properties": {
-            "schema": {
-              "type": "string",
-              "const": "polylogue_archive"
-            },
-            "version": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "schema",
-            "version"
+          "type": "string",
+          "enum": [
+            "hidden"
           ]
         },
         {
-          "type": "object",
-          "properties": {
-            "index_version": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "schema": {
-              "type": "string",
-              "const": "local_projection"
-            },
-            "source_schema_version": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "schema",
-            "index_version",
-            "source_schema_version"
-          ]
+          "description": "A delegation card with the call that reads the child.",
+          "type": "string",
+          "const": "card"
         },
         {
+          "description": "The child's reading inline after the card, to this depth of nested\nspawns; `None` expands every level.",
           "type": "object",
           "properties": {
-            "parser": {
-              "type": "string"
-            },
-            "parser_version": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "schema": {
-              "type": "string",
-              "const": "retained_publication"
-            },
-            "source": {
-              "type": "string"
-            },
-            "source_fingerprint": {
-              "type": "string"
-            },
-            "source_version": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "schema",
-            "source",
-            "source_version",
-            "source_fingerprint",
-            "parser",
-            "parser_version"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string"
-            },
-            "kind_definition_hash": {
-              "type": "string"
-            },
-            "kind_version": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            },
-            "schema": {
-              "type": "string",
-              "const": "native_projection"
-            },
-            "source": {
-              "type": "string"
-            },
-            "source_fingerprint": {
-              "type": "string"
-            },
-            "source_version": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "schema",
-            "source",
-            "source_version",
-            "source_fingerprint",
-            "kind",
-            "kind_version",
-            "kind_definition_hash"
-          ]
-        }
-      ]
-    },
-    "Span": {
-      "type": "object",
-      "properties": {
-        "end": {
-          "type": "integer",
-          "format": "uint",
-          "minimum": 0
-        },
-        "start": {
-          "type": "integer",
-          "format": "uint",
-          "minimum": 0
-        }
-      },
-      "required": [
-        "start",
-        "end"
-      ]
-    },
-    "Stage": {
-      "type": "object",
-      "properties": {
-        "kind": {
-          "$ref": "#/$defs/StageKind"
-        },
-        "span": {
-          "$ref": "#/$defs/Span"
-        }
-      },
-      "required": [
-        "span",
-        "kind"
-      ]
-    },
-    "StageKind": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "condition": {
-              "$ref": "#/$defs/Condition"
-            },
-            "kind": {
-              "type": "string",
-              "const": "where"
-            }
-          },
-          "required": [
-            "kind",
-            "condition"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "keys": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/SortKey"
-              }
-            },
-            "kind": {
-              "type": "string",
-              "const": "sort"
-            }
-          },
-          "required": [
-            "kind",
-            "keys"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "keys": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/Operand"
-              }
-            },
-            "kind": {
-              "type": "string",
-              "const": "group"
-            }
-          },
-          "required": [
-            "kind",
-            "keys"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "aggregates": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/Aggregate"
-              }
-            },
-            "kind": {
-              "type": "string",
-              "const": "aggregate"
-            }
-          },
-          "required": [
-            "kind",
-            "aggregates"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "count": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            },
-            "kind": {
-              "type": "string",
-              "const": "limit"
-            }
-          },
-          "required": [
-            "kind",
-            "count"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "count": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            },
-            "kind": {
-              "type": "string",
-              "const": "offset"
-            }
-          },
-          "required": [
-            "kind",
-            "count"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "count": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            },
-            "kind": {
-              "type": "string",
-              "const": "first"
-            }
-          },
-          "required": [
-            "kind",
-            "count"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "distinct"
-            }
-          },
-          "required": [
-            "kind"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "matches"
-            }
-          },
-          "required": [
-            "kind"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "fill"
-            }
-          },
-          "required": [
-            "kind"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "fields": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            },
-            "kind": {
-              "type": "string",
-              "const": "fields"
-            }
-          },
-          "required": [
-            "kind",
-            "fields"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "condition": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Condition"
-                },
-                {
-                  "type": "null"
+            "inline": {
+              "type": "object",
+              "properties": {
+                "depth": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0
                 }
-              ]
-            },
-            "kind": {
-              "type": "string",
-              "const": "scope"
-            },
-            "unit": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "unit"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "how": {
-              "$ref": "#/$defs/Combination"
-            },
-            "kind": {
-              "type": "string",
-              "const": "combine"
-            },
-            "query": {
-              "$ref": "#/$defs/Query"
-            }
-          },
-          "required": [
-            "kind",
-            "how",
-            "query"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "all": {
-              "type": "boolean"
-            },
-            "at": {
-              "$ref": "#/$defs/TimePoint"
-            },
-            "kind": {
-              "type": "string",
-              "const": "temporal"
-            },
-            "query": {
-              "$ref": "#/$defs/Query"
-            },
-            "relation": {
-              "$ref": "#/$defs/TemporalRelation"
-            },
-            "within": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Value"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "kind",
-            "relation",
-            "query",
-            "at",
-            "all"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "as_of"
-            },
-            "sequence": {
-              "type": "boolean"
-            },
-            "value": {
-              "$ref": "#/$defs/Value"
-            }
-          },
-          "required": [
-            "kind",
-            "value",
-            "sequence"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "by": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/Operand"
               }
-            },
-            "kind": {
-              "type": "string",
-              "const": "measure"
-            },
-            "name": {
-              "type": "string"
             }
           },
+          "additionalProperties": false,
           "required": [
-            "kind",
-            "name",
-            "by"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "arguments": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/ExtensionArgument"
-              }
-            },
-            "kind": {
-              "type": "string",
-              "const": "extension"
-            },
-            "name": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "name",
-            "arguments"
+            "inline"
           ]
         }
       ]
@@ -13608,16 +9808,6 @@
         "event",
         "authored",
         "query"
-      ]
-    },
-    "TemporalRelation": {
-      "type": "string",
-      "enum": [
-        "near",
-        "before",
-        "after",
-        "during",
-        "containing"
       ]
     },
     "TextCoverage": {
@@ -13647,14 +9837,6 @@
       "required": [
         "start",
         "end"
-      ]
-    },
-    "TextField": {
-      "type": "string",
-      "enum": [
-        "text",
-        "thinking",
-        "tool_output"
       ]
     },
     "TextFragment": {
@@ -13741,15 +9923,6 @@
         "fragment"
       ]
     },
-    "TextMode": {
-      "type": "string",
-      "enum": [
-        "word",
-        "phrase",
-        "prefix",
-        "approximate"
-      ]
-    },
     "TextSourceVersion": {
       "oneOf": [
         {
@@ -13814,54 +9987,6 @@
       "additionalProperties": false,
       "required": [
         "reference",
-        "start",
-        "end"
-      ]
-    },
-    "Time": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "at": {
-              "type": "string"
-            },
-            "time": {
-              "type": "string",
-              "const": "instant"
-            }
-          },
-          "required": [
-            "time",
-            "at"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "end": {
-              "type": "string"
-            },
-            "start": {
-              "type": "string"
-            },
-            "time": {
-              "type": "string",
-              "const": "span"
-            }
-          },
-          "required": [
-            "time",
-            "start",
-            "end"
-          ]
-        }
-      ]
-    },
-    "TimePoint": {
-      "type": "string",
-      "enum": [
-        "when",
         "start",
         "end"
       ]
@@ -14062,29 +10187,6 @@
           "description": "Started in the background; completion has not been seen yet.",
           "type": "string",
           "const": "running_in_background"
-        }
-      ]
-    },
-    "UnknownRule": {
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "unknown",
-            "never"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "word": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "word"
-          ]
         }
       ]
     },
@@ -14696,89 +10798,6 @@
         }
       ]
     },
-    "Value": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "scalar"
-            },
-            "quoted": {
-              "type": "boolean"
-            },
-            "text": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "text",
-            "quoted"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "set"
-            },
-            "values": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/Value"
-              }
-            }
-          },
-          "required": [
-            "kind",
-            "values"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "any"
-            }
-          },
-          "required": [
-            "kind"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "unknown"
-            }
-          },
-          "required": [
-            "kind"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "parameter"
-            },
-            "name": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "name"
-          ]
-        }
-      ]
-    },
     "Variant": {
       "description": "One revision. Parts stream independently so a rendition of a large\nsession never requires a session-sized collection.",
       "type": "object",
@@ -14999,58 +11018,6 @@
         "changes",
         "live",
         "raw"
-      ]
-    },
-    "WalkDirection": {
-      "type": "string",
-      "enum": [
-        "trace",
-        "descendants",
-        "parents"
-      ]
-    },
-    "Window": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "first": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "first"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "last": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "last"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "where": {
-              "$ref": "#/$defs/Condition"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "where"
-          ]
-        }
       ]
     }
   }

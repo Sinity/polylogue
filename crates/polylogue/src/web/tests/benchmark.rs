@@ -52,8 +52,8 @@ fn paged_reader_http_measurements() {
         "host_load":std::fs::read_to_string("/proc/loadavg").ok().map(|line|line.split_whitespace().take(3).collect::<Vec<_>>().join(" ")),
         "process_memory":std::fs::read_to_string("/proc/self/status").ok().map(|status|status.lines().filter(|line|line.starts_with("VmRSS:")||line.starts_with("VmHWM:")).collect::<Vec<_>>().join("; ")),
         "budget":8192,"boundary":"authenticated loopback HTTP including socket ownership check; same running daemon and archive",
-        "default_page":repeated(&server,"/api/v1/read?target=session:claude-code:s1&inherited=true"),
-        "first_page":repeated(&server,"/api/v1/read?target=session:claude-code:s1&inherited=true&budget=8192"),
+        "default_page":repeated(&server,"/api/v1/read?target=session:claude-code:s1&show=inherited"),
+        "first_page":repeated(&server,"/api/v1/read?target=session:claude-code:s1&show=inherited&budget=8192"),
         "direct_message":repeated(&server,"/api/v1/read?target=message:claude-code:bench-500&budget=8192"),
     });
     eprintln!("WORKBENCH_HTTP_MEASUREMENTS={report}");

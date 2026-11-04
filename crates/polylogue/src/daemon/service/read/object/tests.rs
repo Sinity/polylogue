@@ -1,6 +1,5 @@
 use super::*;
 use crate::test_daemon;
-use polylogue_model::BlobHash;
 use polylogue_model::{
     Author,
     assertion::{AssertionKind, NewAssertion},

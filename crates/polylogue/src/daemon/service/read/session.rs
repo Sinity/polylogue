@@ -1207,7 +1207,13 @@ fn lead_items(
         kind: ItemKind::Card {
             card: Box::new(Card::Session {
                 session: Box::new(session.clone()),
-                lineage_complete: ValueState::known(composed.issues.is_empty()),
+                // Whether the parents composed, when the reading shows them,
+                // as the stream's session record says.
+                lineage_complete: if options.inherited {
+                    ValueState::known(composed.issues.is_empty())
+                } else {
+                    ValueState::NotApplicable
+                },
                 open: None,
             }),
         },
@@ -1818,6 +1824,8 @@ fn emit(
 struct Node {
     session: String,
     parents: Vec<String>,
+    /// The tree link that reached this node: kind and how.
+    joined: Option<(String, String)>,
     /// Links to a node already shown: drawn once, never expanded again.
     cross: Vec<(String, String)>,
     /// `reference` links from this node, which never join the tree.
@@ -1852,8 +1860,9 @@ fn tree(reader: &Reader<'_>, seed: &SessionId) -> Result<Vec<Node>, Failure> {
     let mut shown: HashSet<String> = HashSet::new();
     let mut nodes = Vec::new();
     for root in roots {
-        let mut stack: Vec<(String, Option<String>)> = vec![(root, None)];
-        while let Some((session, parent)) = stack.pop() {
+        let mut stack: Vec<(String, Option<(String, String, String)>)> = vec![(root, None)];
+        while let Some((session, reached)) = stack.pop() {
+            let parent = reached.as_ref().map(|(parent, _, _)| parent.clone());
             if !shown.insert(session.clone()) {
                 if let (Some(parent), Some(node)) = (
                     parent,
@@ -1868,6 +1877,7 @@ fn tree(reader: &Reader<'_>, seed: &SessionId) -> Result<Vec<Node>, Failure> {
             let mut node = Node {
                 session: session.clone(),
                 parents: parent.into_iter().collect(),
+                joined: reached.map(|(_, kind, how)| (kind, how)),
                 cross: Vec::new(),
                 references: Vec::new(),
             };
@@ -1880,7 +1890,7 @@ fn tree(reader: &Reader<'_>, seed: &SessionId) -> Result<Vec<Node>, Failure> {
                 if link.kind == "reference" {
                     node.references.push((link.child, link.how));
                 } else {
-                    next.push((link.child, Some(session.clone())));
+                    next.push((link.child, Some((session.clone(), link.kind, link.how))));
                 }
             }
             // Depth first, children in link order.
@@ -1987,10 +1997,28 @@ pub(super) fn links_page(
                 }),
             },
         });
-        for (from, to, relation, how, cross) in node
-            .cross
-            .iter()
-            .map(|(from, to)| (from.clone(), to.clone(), "tree", None, true))
+        // The tree link that reached the node, then links to nodes already
+        // shown and `reference` links, as cross-links.
+        let joined = node
+            .parents
+            .first()
+            .zip(node.joined.as_ref())
+            .map(|(parent, (kind, how))| {
+                (
+                    parent.clone(),
+                    node.session.clone(),
+                    kind.as_str(),
+                    Some(how.clone()),
+                    false,
+                )
+            });
+        for (from, to, relation, how, cross) in joined
+            .into_iter()
+            .chain(
+                node.cross
+                    .iter()
+                    .map(|(from, to)| (from.clone(), to.clone(), "tree", None, true)),
+            )
             .chain(node.references.iter().map(|(to, how)| {
                 (
                     node.session.clone(),

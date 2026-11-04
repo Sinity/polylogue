@@ -230,3 +230,64 @@ fn hook_emission_claim_requires_an_exact_typed_receipt_and_never_trusts_a_payloa
         assert!(step.output.native_hook_fields.is_empty());
     }
 }
+
+/// Lines a later build's hook writes, from that build's rollback fixture:
+/// this reader must take every one after a rollback.
+#[test]
+fn rollback_lines_from_the_next_build_are_read() {
+    let input = include_bytes!("rollback-lines.ndjson");
+    assert!(recognize(
+        Path::new("/home/op/.local/state/polylogue/hooks/4242.ndjson"),
+        input
+    ));
+    for line in input.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+        assert!(
+            recognize(Path::new("/s/polylogue/hooks/4242.ndjson"), line),
+            "{}",
+            String::from_utf8_lossy(line)
+        );
+    }
+    let step = run(&HookSpool, &mut ParserState::default(), input, 0).unwrap();
+    assert_eq!(step.counts.records, 6);
+    assert!(
+        step.counts.unreadable.is_empty(),
+        "{:?}",
+        step.counts.unreadable
+    );
+    let sessions: Vec<String> = step
+        .output
+        .events
+        .iter()
+        .map(|e| e.session.as_ref().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        sessions,
+        [
+            "claude-code:rollback-claude",
+            "codex:rollback-codex",
+            "gemini-cli:rollback-gemini",
+            "hermes:rollback-hermes@profile-caa890356da51a01",
+            "claude-code:rollback-claude",
+        ]
+    );
+    let kinds: Vec<&str> = step.output.events.iter().map(|e| e.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "hook_session_start",
+            "hook_pre_tool_use",
+            "hook_after_tool",
+            "hook_pre_llm_call",
+            "hook_hook_context_emitted",
+        ]
+    );
+    assert_eq!(
+        step.counts.skipped["Notification: event names no session"],
+        1
+    );
+    assert_eq!(step.output.events[1].data["tool_name"], "shell");
+    assert_eq!(
+        step.output.events[0].data["event_id"],
+        "019b7600-0000-7000-8000-000000000001"
+    );
+}
