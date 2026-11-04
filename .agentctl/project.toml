@@ -31,7 +31,9 @@ description = "Formatting, boundaries, both clippy configurations and all tests"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]
 pool = "bulk"
 result = "exit"
-timeout_seconds = 3600
+# A cold standalone test build took 37 minutes, then primary mode still
+# compiled at the one-hour job limit. Keep both modes in one qualification.
+timeout_seconds = 7200
 scratch = "tmpfs"
 cache = "none"
 unit_properties = ["MemoryHigh=8G"]
