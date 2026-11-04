@@ -11,7 +11,7 @@
 use crate::archive::{Archive, open_read, open_write};
 use crate::read::Reader;
 use crate::{Result, StoreError};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -149,6 +149,112 @@ impl Vectors {
         tx.commit()?;
         wrote();
         Ok(())
+    }
+
+    /// Stores vectors bought for another archive exactly as they were: the
+    /// same text hash, key, chunk, values and time. A vector this archive
+    /// already holds identically is present; a different vector for the
+    /// same text, key and chunk is refused rather than replaced, since both
+    /// were paid for.
+    pub fn restore(
+        &mut self,
+        vectors: &[crate::older_archive::StoredVector],
+    ) -> Result<Vec<crate::writer::Restored>> {
+        use crate::writer::Restored;
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut out = Vec::with_capacity(vectors.len());
+        let mut stored = false;
+        {
+            let mut find = tx.prepare_cached(
+                "SELECT dims, vector FROM embedded WHERE text_hash = ?1 AND model = ?2 AND chunk = ?3",
+            )?;
+            let mut insert = tx.prepare_cached(
+                "INSERT INTO embedded(text_hash, model, chunk, dims, vector, embedded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for v in vectors {
+                if v.dims < 1 || v.vector.len() as i64 != v.dims * 4 {
+                    out.push(Restored::Refused(format!(
+                        "it holds {} bytes, not {} four-byte values",
+                        v.vector.len(),
+                        v.dims
+                    )));
+                    continue;
+                }
+                let known: Option<(i64, Vec<u8>)> = find
+                    .query_row(params![v.text_hash, v.model, v.chunk], |r| {
+                        Ok((r.get(0)?, r.get(1)?))
+                    })
+                    .optional()?;
+                out.push(match known {
+                    Some((dims, vector)) if dims == v.dims && vector == v.vector => {
+                        Restored::Present
+                    }
+                    Some(_) => Restored::Refused(
+                        "this archive holds a different vector for the same text, key and chunk"
+                            .into(),
+                    ),
+                    None => {
+                        insert.execute(params![
+                            v.text_hash,
+                            v.model,
+                            v.chunk,
+                            v.dims,
+                            v.vector,
+                            v.embedded_at
+                        ])?;
+                        stored = true;
+                        Restored::Stored
+                    }
+                });
+            }
+        }
+        tx.commit()?;
+        if stored {
+            wrote();
+        }
+        Ok(out)
+    }
+
+    /// Stores permanent rejections recorded by another archive, with their
+    /// original error and time. One this archive holds with another error
+    /// is refused rather than replaced.
+    pub fn restore_failures(
+        &mut self,
+        failures: &[crate::older_archive::VectorFailure],
+    ) -> Result<Vec<crate::writer::Restored>> {
+        use crate::writer::Restored;
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut out = Vec::with_capacity(failures.len());
+        {
+            let mut find = tx.prepare_cached(
+                "SELECT error FROM embed_failure WHERE text_hash = ?1 AND model = ?2",
+            )?;
+            let mut insert = tx.prepare_cached(
+                "INSERT INTO embed_failure(text_hash, model, error, failed_at) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for f in failures {
+                let known: Option<String> = find
+                    .query_row(params![f.text_hash, f.model], |r| r.get(0))
+                    .optional()?;
+                out.push(match known {
+                    Some(error) if error == f.error => Restored::Present,
+                    Some(_) => Restored::Refused(
+                        "this archive records another error for the same text and key".into(),
+                    ),
+                    None => {
+                        insert.execute(params![f.text_hash, f.model, f.error, f.failed_at])?;
+                        Restored::Stored
+                    }
+                });
+            }
+        }
+        tx.commit()?;
+        Ok(out)
     }
 
     /// A text the provider permanently rejected, with its error as given.

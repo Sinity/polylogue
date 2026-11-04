@@ -77,12 +77,33 @@ pub fn attachment(_: &Command, v: &Values, _: &Caller) -> Built {
 }
 
 pub fn import(_: &Command, v: &Values, caller: &Caller) -> Built {
-    let paths = v.list("paths").into_iter().map(|path| {
+    let absolute = |path: String| {
         let path = PathBuf::from(path);
-        if path.is_absolute() { Ok(path) }
-        else { caller.cwd.as_ref().map(|base| base.join(path)).ok_or_else(||
-            "relative import paths require a native caller working directory; supply an absolute path".to_string()) }
-    }).collect::<Result<Vec<_>, String>>()?;
+        if path.is_absolute() {
+            Ok(path)
+        } else {
+            caller.cwd.as_ref().map(|base| base.join(path)).ok_or_else(||
+            "relative import paths require a native caller working directory; supply an absolute path".to_string())
+        }
+    };
+    let paths = v
+        .list("paths")
+        .into_iter()
+        .map(absolute)
+        .collect::<Result<Vec<_>, String>>()?;
+    if let Some(archive) = v.text("from_archive") {
+        if !paths.is_empty() {
+            return Err("--from-archive names one archive and takes no other paths".into());
+        }
+        return Ok(Request::ImportArchive {
+            request_id: v.request_id(),
+            path: absolute(archive)?,
+            dry_run: v.flag("dry_run"),
+        });
+    }
+    if v.flag("dry_run") {
+        return Err("--dry-run applies to --from-archive".into());
+    }
     Ok(Request::Import {
         request_id: v.request_id(),
         paths,

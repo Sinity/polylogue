@@ -45,6 +45,8 @@ mod scoped;
 mod source_snapshot;
 pub(crate) use confirmed::apply_confirmed_readings;
 mod native_hook_fields;
+mod older_archive;
+pub use older_archive::{GroupOutcome, OlderGroup, Restored};
 pub(crate) mod resolve;
 mod rows;
 mod search;
@@ -115,6 +117,11 @@ enum Msg {
     RestoreAssertion(
         Box<assertions::Restoration>,
         SyncSender<Result<polylogue_model::user::UserOutcome>>,
+    ),
+    /// Inputs of an archive in the older format, stored as that archive held them.
+    RestoreOlder(
+        Box<older_archive::OlderGroup>,
+        SyncSender<Result<older_archive::GroupOutcome>>,
     ),
     Stop,
     /// A user write is waiting in its own queue.
@@ -583,6 +590,12 @@ impl Writer {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
+    /// Stores a group of an older archive's inputs with their rows as that
+    /// archive held them ([`Inner::restore_older`]).
+    pub fn restore_older(&self, group: OlderGroup) -> Result<GroupOutcome> {
+        older_archive::restore_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, group)
+    }
+
     /// Stores bytes no input holds as one blob ([`Inner::store_blob`]);
     /// `file` is the private file [`crate::Archive::prepare_decoded`] wrote
     /// for a new blob too large to keep inline.
@@ -855,6 +868,11 @@ impl WriterSender {
         user_via(&self.0, request, scope, Some(preparation), Some(parent))
     }
 
+    /// As [`Writer::restore_older`].
+    pub fn restore_older(&self, group: OlderGroup) -> Result<GroupOutcome> {
+        older_archive::restore_via(&self.0, group)
+    }
+
     /// As [`Writer::store_blob`].
     pub fn store_blob(
         &self,
@@ -1121,6 +1139,7 @@ impl Inner {
         let mut assertion_restorations = Vec::new();
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
+        let mut older_groups = Vec::new();
         loop {
             let first = match rx.recv() {
                 Ok(first) => first,
@@ -1177,6 +1196,10 @@ impl Inner {
                     }
                     Msg::RestoreAssertion(restoration, reply) => {
                         assertion_restorations.push((restoration, reply));
+                        false
+                    }
+                    Msg::RestoreOlder(group, reply) => {
+                        older_groups.push((group, reply));
                         false
                     }
                     Msg::RawAcquisitionCursor(generation, reply) => {
@@ -1276,6 +1299,9 @@ impl Inner {
             }
             for (restoration, reply) in assertion_restorations.drain(..) {
                 let _ = reply.send(self.restore_assertion(*restoration));
+            }
+            for (group, reply) in older_groups.drain(..) {
+                let _ = reply.send(self.restore_older(*group));
             }
             self.serve_users(users);
 
