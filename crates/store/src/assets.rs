@@ -198,6 +198,39 @@ impl Reader<'_> {
     }
 }
 
+impl Reader<'_> {
+    /// Attachment presentation depends on every receiving namespace of the
+    /// session's shown source messages, including newly ambiguous membership.
+    pub fn session_attachment_version(
+        &self,
+        session: &polylogue_model::SessionId,
+    ) -> Result<Option<polylogue_model::BlobHash>> {
+        let conn = self.conn()?;
+        let mut statement = conn.prepare_cached(
+            "SELECT DISTINCT im.import_id, coalesce(c.changed,0)
+             FROM session s JOIN message m ON m.session_pk=s.pk
+             JOIN message_source ms ON ms.message_pk=m.pk AND ms.shown=1
+             JOIN input_ref i ON i.pk=ms.input_pk
+             JOIN import_member im ON im.input=i.id
+             LEFT JOIN import_change c ON c.import_id=im.import_id
+             WHERE s.id=?1 ORDER BY im.import_id",
+        )?;
+        let mut rows = statement.query([session.to_string()])?;
+        let mut digest = blake3::Hasher::new();
+        let mut any = false;
+        while let Some(row) = rows.next()? {
+            any = true;
+            let import: String = row.get(0)?;
+            let changed: i64 = row.get(1)?;
+            digest.update(&(import.len() as u64).to_le_bytes());
+            digest.update(import.as_bytes());
+            digest.update(&changed.to_le_bytes());
+        }
+        self.check()?;
+        Ok(any.then(|| polylogue_model::BlobHash(*digest.finalize().as_bytes())))
+    }
+}
+
 /// Visits import metadata inside the caller's source snapshot. Rowids are only
 /// a discovery cursor; replay selects each changed input from zero after source
 /// rematerialization, whose local rowids need not preserve their old order.

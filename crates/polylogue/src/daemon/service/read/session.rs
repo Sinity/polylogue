@@ -130,15 +130,18 @@ impl Composed {
             })
             .collect()
     }
-    fn versions(&self) -> Vec<SessionVersion> {
+    fn versions(&self, reader: &Reader<'_>) -> Result<Vec<SessionVersion>, Failure> {
         let mut seen = HashSet::new();
         self.parts
             .iter()
             .zip(&self.indexes)
             .filter(|(part, _)| seen.insert(part.session.clone()))
-            .map(|(part, index)| SessionVersion {
-                session: part.session.clone(),
-                rewrite_version: index.versions.rewrite_version,
+            .map(|(part, index)| {
+                Ok(SessionVersion {
+                    session: part.session.clone(),
+                    rewrite_version: index.versions.rewrite_version,
+                    attachments: reader.session_attachment_version(&part.session)?,
+                })
             })
             .collect()
     }
@@ -891,7 +894,7 @@ pub(super) fn page(
     let read_session = reader
         .session(&scope.session)?
         .ok_or_else(|| Failure::new("not_found", format!("no session {}", scope.session)))?;
-    let versions = composed.versions();
+    let versions = composed.versions(reader)?;
     if let Some(opened) = &opened
         && let Some(session) = opened.rewritten(&versions)
     {
@@ -1219,7 +1222,7 @@ fn lead_items(
         },
     }];
     let source = Source::record(target);
-    for issue in &composed.issues {
+    for issue in composed.issues.iter().filter(|_| options.inherited) {
         out.push(ReadItem {
             source: source.clone(),
             kind: ItemKind::LinkIssue {

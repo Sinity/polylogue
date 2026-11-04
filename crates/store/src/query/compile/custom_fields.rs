@@ -661,6 +661,10 @@ fn session_id_in(
     Ok(c.session_reference(&column, "id", &x.value()?))
 }
 
+pub(crate) fn live_session(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    session_id_in(c, x, "{s}.id")
+}
+
 pub(crate) fn link_parent(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     session_id_in(c, x, "{r}.parent_id")
 }

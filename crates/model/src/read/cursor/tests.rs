@@ -7,6 +7,7 @@ fn cursor() -> PageCursor {
         versions: vec![SessionVersion {
             session: crate::SessionId::parse("test:one").unwrap(),
             rewrite_version: 3,
+            attachments: None,
         }],
         position: PagePosition::Entry {
             key: EntryKey::Message {
@@ -82,6 +83,7 @@ fn only_a_moved_rewrite_version_stales() {
     grown.push(SessionVersion {
         session: crate::SessionId::parse("test:parent").unwrap(),
         rewrite_version: 1,
+        attachments: None,
     });
     assert!(cursor.rewritten(&grown).is_some());
 }

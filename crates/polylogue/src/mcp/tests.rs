@@ -345,37 +345,6 @@ fn tool_annotations_follow_the_command_table() {
     }
 }
 
-/// law: mcp-surface-size
-#[test]
-fn tools_and_instructions_fit_four_kilobytes() {
-    let mut session = Session::default();
-    let Reply::Message(info) = session.prepare(initialize()) else {
-        panic!("initialize must return server information");
-    };
-    let Reply::Message(list) =
-        session.prepare(json!({"jsonrpc":"2.0", "id":2, "method":"tools/list"}))
-    else {
-        panic!("tools/list must answer at once");
-    };
-    let tools = serde_json::to_string(&list["result"]).unwrap();
-    let instructions = serde_json::to_string(&info["result"]["instructions"]).unwrap();
-    let total = tools.len() + instructions.len();
-    eprintln!(
-        "tools/list {} bytes, instructions {} bytes, total {total}",
-        tools.len(),
-        instructions.len()
-    );
-    assert!(
-        total <= 4096,
-        "tools/list is {} bytes and the instructions {} bytes: {total} in all",
-        tools.len(),
-        instructions.len()
-    );
-    for tool in list["result"]["tools"].as_array().unwrap() {
-        assert!(tool.get("outputSchema").is_none(), "{}", tool["name"]);
-    }
-}
-
 /// law: mcp-covers-command-table
 #[test]
 fn every_tool_operation_is_reachable_from_exactly_one_tool() {

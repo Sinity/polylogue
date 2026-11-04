@@ -254,6 +254,14 @@ fn worked_directory() -> (tempfile::TempDir, polylogue_store::fixture::Fixture) 
         .unwrap();
     }
     f.derive().unwrap();
+    let mut facts = polylogue_model::live::LiveFacts::default();
+    polylogue_model::live::fold(
+        &mut facts,
+        "hook_task_claimed",
+        T0 + 2_000,
+        &serde_json::json!({"task":"pl-1"}),
+    );
+    f.live_facts(s, &facts).unwrap();
     (dir, f)
 }
 

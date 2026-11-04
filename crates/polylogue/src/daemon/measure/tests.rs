@@ -29,7 +29,7 @@ fn measures_on_a_fresh_reader_see_current_tags_without_a_preceding_query() {
         )
         .unwrap();
     }
-    f.note("tag", Some("hidden"), None, "session:codex:hidden")
+    f.note("hidden", None, None, "session:codex:hidden")
         .unwrap();
     let day = DaySetting::new(jiff::tz::TimeZone::UTC, "00:00:00".parse().unwrap()).unwrap();
     let pool = f.reads().unwrap();

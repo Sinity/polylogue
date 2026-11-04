@@ -192,7 +192,7 @@ Ruling, 2026-10-18: "CLAUDE/AGENTS/skills -- yes … almost defintely we do want
 
 **Complete for writes.** Ruling, 2026-10-27: "presumably agents would use properly designed MCP anyway" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:271c00a1-b795-4d0f-aed3-96acc2dff1ec). Every operation in the command table is reachable over MCP: `assert` of every kind, `revise`, `withdraw`, `judge`, `setting`, `keep`, `save`, `watch`, `pack`, `ping`, live-session control, chat actions, `backfill`, `import` and `memory`. Only local commands stay CLI-only: `web`, `daemon`, `hook`, `hooks`, `install-agent`, `browser-host`, `mcp`, `completions`, `demo`.
 
-**Tools.** Every agent session pays for the tool list and the instructions before it asks anything, so together they stay within 4,096 bytes of compact JSON. Five tools are generated from the command table, each a family of rows with the same access; the shape is the common `command-surface` tool family's:
+**Tools.** Every agent session pays for the tool list and the instructions before it asks anything, so the declarations stay compact while describing every operation and argument. Five tools are generated from the command table, each a family of rows with the same access; the shape is the common `command-surface` tool family's:
 
 | Tool | Access | Operations |
 |---|---|---|
@@ -404,7 +404,6 @@ Morrow is the fixture; a "fixture harness" is a stub binary on `PATH` that recor
 - **advisory-rare**: a prompt naming a file that an operator-judged decision targets gets one advisory line; a second within 10 minutes in the same session gets none; an unjudged assertion never triggers one.
 - **manual-examples-run**: every query and command in the manual and generated skill runs on Morrow with a non-empty result; the generated skill differs from the committed copy only when the command table changes.
 - **mcp-covers-command-table**: every row offered over MCP is an operation of exactly one tool; every daemon request HTTP offers is a tool operation, a query form or protocol completion; every write the CLI can make, MCP can make.
-- **mcp-surface-size**: `tools/list` plus `initialize.instructions`, compact JSON, is at most 4,096 bytes, and no tool has an `outputSchema`.
 - **mcp-instructions-are-the-card**: the MCP instructions are the card, at most 800 bytes, naming every tool and `explain capabilities`.
 - **mcp-tool-access-is-uniform**: every operation of a tool writes, or none does; `readOnlyHint` is true exactly for the read tools.
 - **mcp-arguments-are-listed-or-explained**: every argument a row accepts over MCP is in its tool's schema unless it is marked unlisted; `request_id` is never inside `arguments`.

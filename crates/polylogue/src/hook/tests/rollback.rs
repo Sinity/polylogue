@@ -117,6 +117,10 @@ fn the_hook_writes_exactly_the_line_shapes_the_rollback_fixture_holds() {
         assert!(value["harness_pid"].is_u64());
         value["event_id"] = fixture["event_id"].clone();
         value["harness_pid"] = fixture["harness_pid"].clone();
+        if value.get("harness_start").is_some() {
+            assert!(value["harness_start"].is_null() || value["harness_start"].is_u64());
+            value["harness_start"] = fixture["harness_start"].clone();
+        }
         if let Some(receipt) = value["payload"].get_mut("invocation") {
             assert_eq!(receipt.as_str(), Some(invocation.as_str()));
             *receipt = fixture["payload"]["invocation"].clone();

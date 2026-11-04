@@ -331,22 +331,25 @@ impl Inner {
             let (Some(observation), Some(blob)) = (&b.observation, &b.new_blob) else {
                 return Ok(None);
             };
-            let Some(member) = &observation.import else {
-                return Ok(None);
-            };
             if b.input.arrival_rank != 2 || !b.parse.is_empty() || !b.blobs.is_empty() {
                 return Ok(None);
             }
-            let details = serde_json::to_string(
-                &serde_json::json!({"import":member,"import_format":member.format}),
-            )?;
+            let details = observation
+                .import
+                .as_ref()
+                .map(|member| {
+                    serde_json::to_string(
+                        &serde_json::json!({"import":member,"import_format":member.format}),
+                    )
+                })
+                .transpose()?;
             let known: Option<(i64, i64)> = self.archive.query_row(
                 "SELECT r.chain,r.length FROM revision r WHERE r.input=?1
                    AND r.number=(SELECT max(number) FROM revision WHERE input=?1)
                    AND r.length=?2
                    AND (SELECT count(*) FROM extent WHERE input=?1 AND chain=r.chain)=1
                    AND EXISTS(SELECT 1 FROM extent x WHERE x.input=?1 AND x.chain=r.chain AND x.offset=0 AND x.length=?2 AND x.blob=?3)
-                   AND EXISTS(SELECT 1 FROM observation o WHERE o.input=?1 AND o.machine=?4 AND o.path_bytes=?5 AND o.class='imported' AND o.details_json=?6)",
+                   AND EXISTS(SELECT 1 FROM observation o WHERE o.input=?1 AND o.machine=?4 AND o.path_bytes=?5 AND o.class='imported' AND o.details_json IS ?6)",
                 params![b.input.id,b.length as i64,&blob.hash.0[..],observation.machine,observation.path_bytes,details],
                 |row| Ok((row.get(0)?,row.get(1)?)),
             ).optional()?;

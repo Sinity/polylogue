@@ -58,6 +58,8 @@ impl EntryKey {
 pub struct SessionVersion {
     pub session: SessionId,
     pub rewrite_version: u64,
+    /// Receiving namespaces whose members determine attachment presentation.
+    pub attachments: Option<BlobHash>,
 }
 
 /// Where the next page starts.

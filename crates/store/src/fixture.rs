@@ -185,9 +185,23 @@ impl Fixture {
             }
             _ => {}
         }
+        self.live_facts(session_pk, &facts)?;
         self.index.execute(
-            "UPDATE session SET live_facts = ?2, live_last_at = ?3, repo_root = ?4 WHERE pk = ?1",
-            params![session_pk, serde_json::to_string(&facts)?, at, repo_root],
+            "UPDATE session SET repo_root = ?2 WHERE pk = ?1",
+            params![session_pk, repo_root],
+        )?;
+        Ok(())
+    }
+
+    /// Explicit live evidence already folded by the writer.
+    pub fn live_facts(
+        &mut self,
+        session_pk: i64,
+        facts: &polylogue_model::live::LiveFacts,
+    ) -> Result<()> {
+        self.index.execute(
+            "UPDATE session SET live_facts = ?2, live_last_at = ?3 WHERE pk = ?1",
+            params![session_pk, serde_json::to_string(facts)?, facts.last_at],
         )?;
         Ok(())
     }

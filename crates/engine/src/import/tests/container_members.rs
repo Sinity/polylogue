@@ -169,10 +169,10 @@ fn identical_and_changed_containers_keep_imports_while_sharing_member_bytes() {
     assert!(e.import(&[other]).unwrap().pass.errors.is_empty());
     assert_eq!(w.count("SELECT count(*) AS n FROM a.input"), 5);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), 5);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), 8);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), 12);
     assert_eq!(
         w.count("SELECT count(*) AS n FROM a.observation_container"),
-        6
+        9
     );
     assert_eq!(
         w.count("SELECT count(DISTINCT container_input) AS n FROM a.observation_container"),

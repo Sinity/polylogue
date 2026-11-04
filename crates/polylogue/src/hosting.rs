@@ -692,7 +692,17 @@ impl HostedStdio {
         protocol_session: String,
     ) -> std::io::Result<Self> {
         let stream = UnixStream::connect(socket)?;
-        let reader = stream.try_clone()?;
+        let mut reader = BufReader::new(stream.try_clone()?);
+        reader.get_ref().set_read_timeout(Some(ANSWER_WAIT))?;
+        let mut first = String::new();
+        reader.read_line(&mut first)?;
+        let hello: Value = serde_json::from_str(&first)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        let status = hello["polylogue_host"]["status"]
+            .as_str()
+            .ok_or_else(|| std::io::Error::other("the host did not send its initial status"))?;
+        let turn = status != "idle";
+        reader.get_ref().set_read_timeout(None)?;
         let nonce = format!(
             "{:x}",
             std::time::SystemTime::now()
@@ -704,7 +714,7 @@ impl HostedStdio {
                 protocol,
                 writer: stream,
                 requests: VecDeque::new(),
-                turn: false,
+                turn,
                 prompts: Vec::new(),
                 queued: VecDeque::new(),
                 on_sent: None,
@@ -720,7 +730,7 @@ impl HostedStdio {
         std::thread::Builder::new()
             .name("polylogue-hosted".into())
             .spawn(move || {
-                for line in BufReader::new(reader).split(b'\n') {
+                for line in reader.split(b'\n') {
                     let Ok(line) = line else { break };
                     let Ok(message) = serde_json::from_slice::<Value>(&line) else {
                         continue;

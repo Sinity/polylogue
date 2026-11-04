@@ -146,12 +146,7 @@ fn family(d: &test_daemon::TestDaemon) {
     ]
     .concat();
     std::fs::write(dir.join("micro.jsonl"), micro).unwrap();
-    d.wait_for(|status| {
-        status["store"]["messages"]
-            .as_u64()
-            .is_some_and(|n| n >= 16)
-            && status["store"]["search_pending"] == 0
-    });
+    d.wait_for(|status| status["store"]["sessions"] == 8 && status["store"]["search_pending"] == 0);
 }
 
 fn read(d: &test_daemon::TestDaemon, target: &str, options: ReadOptions) -> ReadPage {

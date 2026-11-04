@@ -1333,7 +1333,7 @@ fn one_token_pages_and_accessible_empty_text_always_make_progress() {
 fn large_footer(position: Option<&ItemPlace>) -> Result<ReadFooter, pager::PageError> {
     let mut footer = ReadFooter {
         referenced_by: vec![ReferencedBy {
-            reference: "x".repeat(100),
+            reference: "x".repeat(600),
             role: "evidence".into(),
             open: None,
         }],
