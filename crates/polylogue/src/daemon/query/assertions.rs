@@ -27,7 +27,7 @@ pub fn count(
     context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<u64, StoreError> {
     let page = page(reader, &text(conditions), None, context)?;
-    Ok(page["count"].as_u64().unwrap_or(0))
+    Ok(page.count)
 }
 
 /// Exact association with at least one of `targets`.
@@ -60,20 +60,14 @@ fn ids(
     let mut cursor: Option<String> = None;
     loop {
         let page = page(reader, &text, cursor.as_deref(), context)?;
-        ids.extend(
-            page["rows"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|row| {
-                    Some(RevisionReference::exact(
-                        row["root"].as_str()?.to_owned(),
-                        row["id"].as_str()?.to_owned(),
-                    ))
-                }),
-        );
-        match page["next"].as_str() {
-            Some(next) => cursor = Some(next.to_owned()),
+        ids.extend(page.rows.iter().filter_map(|row| {
+            Some(RevisionReference::exact(
+                row.get("root")?.as_str()?.to_owned(),
+                row.get("id")?.as_str()?.to_owned(),
+            ))
+        }));
+        match page.next {
+            Some(next) => cursor = Some(next),
             None => return Ok(ids),
         }
     }
@@ -84,7 +78,7 @@ fn page(
     text: &str,
     cursor: Option<&str>,
     context: &std::sync::Arc<crate::operation::Context>,
-) -> Result<serde_json::Value, StoreError> {
+) -> Result<crate::protocol::query::Rows, StoreError> {
     run(
         reader,
         Ask {
@@ -100,7 +94,7 @@ fn page(
             fields: &[],
         },
     )
-    .map(|answer| answer.value)
+    .and_then(|answer| answer.value.into_rows())
     .map_err(|f| StoreError::Invalid(format!("assertions query {text:?}: {}", f.message)))
 }
 

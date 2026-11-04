@@ -12,15 +12,10 @@ pub(crate) struct ExportPrefix {
 }
 
 pub(crate) fn is_refusal(step: &ParseStep) -> bool {
-    step.delivery
-        .as_ref()
-        .is_some_and(|delivery| matches!(delivery.source, ExportDeliverySource::ContainerHeader))
-        // RecordCounts::add owns the "kind: reason" key format. Only the
-        // outer export scan's record kind refuses the whole container; bad
-        // provider lines retain their counts while valid items can continue.
-        && step.counts.unreadable.iter().any(|(kind, count)| {
-            *count > 0 && (kind == "export" || kind.starts_with("export: "))
-        })
+    matches!(
+        step.progress,
+        polylogue_model::batch::StepProgress::Refused { .. }
+    )
 }
 
 pub(crate) fn load_prefix(
@@ -63,6 +58,14 @@ pub(crate) fn admit_export(
 }
 
 fn admit(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Result<bool> {
+    // A failure carries no records and moves no cursor, so it switches
+    // neither an export reading nor ordinary byte control.
+    if matches!(
+        step.progress,
+        polylogue_model::batch::StepProgress::Failed { .. }
+    ) {
+        return Ok(true);
+    }
     let Some(delivery) = step.delivery.as_ref() else {
         if previous.is_some_and(|old| old.cursor.is_some() || old.refused) {
             return invalid("an export reading cannot switch to ordinary byte control");
@@ -77,11 +80,15 @@ fn admit(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Resu
         ExportDeliverySource::Complete {
             length: scanned, ..
         } => {
-            if scanned != length || step.start != 0 || step.parsed_upto != length || !step.at_end {
+            if scanned != length
+                || step.start != 0
+                || step.parsed_upto != length
+                || !step.progress.reached_end()
+            {
                 return invalid("export completion differs from its verified source length");
             }
         }
-        _ if step.start != 0 || step.parsed_upto != 0 || step.at_end => {
+        _ if step.start != 0 || step.parsed_upto != 0 || step.progress.reached_end() => {
             return invalid("an export callback cannot acknowledge a partial byte cursor");
         }
         _ => {}

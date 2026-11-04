@@ -400,11 +400,14 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         1
                     } else {
                         match *product {
-                            "message" => 5,
+                            // A product holding a parser reading moved to one
+                            // progress value in place of two flags.
+                            "message" => 6,
                             "request" | "restored_request" => 5,
-                            "input" | "session" | "document" | "event" | "link" | "background"
-                            | "repository" | "parse_progress" => 4,
-                            "fragment" => 2,
+                            "session" | "document" | "event" | "link" | "background"
+                            | "repository" | "parse_progress" => 5,
+                            "input" => 4,
+                            "fragment" => 3,
                             "query_run" => 3,
                             "restored_history" | "restored_assertion" | "attachment_binding"
                             | "query" | "query_run_outcome" => 1,

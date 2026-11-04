@@ -171,7 +171,7 @@ fn complete_reading_custody_uses_the_encoded_plain_identity_and_survives_restart
     let sinex = client(root.path());
     let write = ProductWrite {
         product: Product::Session {
-            reading: serde_json::from_value(json!({"input":{"id":"input-x","format":"codex","arrival_rank":0},"chain":1,"reading_version":"reading-2","order_from":null,"repeats_whole_conversations":false,"start":0,"parsed_upto":12,"at_end":true,"no_parser_yet":false})).unwrap(),
+            reading: serde_json::from_value(json!({"input":{"id":"input-x","format":"codex","arrival_rank":0},"chain":1,"reading_version":"reading-2","order_from":null,"repeats_whole_conversations":false,"start":0,"parsed_upto":12,"progress":"at_end"})).unwrap(),
             facts: polylogue_model::Session::new(polylogue_model::SessionId::parse("codex:session").unwrap(), polylogue_model::SessionKind::Main),
         },
         location: Some(SourceLocation {material:"00000000-0000-0000-0000-000000000001".into(),anchor:0}),

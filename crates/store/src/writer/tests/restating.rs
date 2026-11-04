@@ -11,7 +11,7 @@ fn restating(input: &str, at: u64, texts: &[(&str, &str)]) -> Batch {
         .collect();
     let mut b = batch(input, 0, at, rows, &["s"]);
     b.parse[0].repeats_whole_conversations = true;
-    b.parse[0].at_end = true;
+    b.parse[0].progress = polylogue_model::batch::StepProgress::AtEnd;
     b
 }
 fn read(w: &TestArchive) -> Vec<String> {

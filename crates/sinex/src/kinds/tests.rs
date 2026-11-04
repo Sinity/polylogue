@@ -18,8 +18,7 @@ fn reading(input: &str, start: u64) -> Reading {
         repeats_whole_conversations: false,
         start,
         parsed_upto: 100,
-        at_end: true,
-        no_parser_yet: false,
+        progress: polylogue_model::batch::StepProgress::AtEnd,
     }
 }
 fn message(input: &str, start: u64) -> Product {
@@ -65,22 +64,24 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
         assert_eq!(
             declaration.kind.version,
             match declaration.kind.name.as_str() {
-                "polylogue.message"
-                | "polylogue.kept_result"
+                "polylogue.message" => 6,
+                "polylogue.kept_result"
                 | "polylogue.delivery"
                 | "polylogue.delivery_outcome"
                 | "polylogue.request"
-                | "polylogue.request_restore" => 5,
-                "polylogue.input_observation"
+                | "polylogue.request_restore"
                 | "polylogue.session"
                 | "polylogue.document"
                 | "polylogue.event"
                 | "polylogue.link"
                 | "polylogue.background"
                 | "polylogue.repository"
-                | "polylogue.parse_progress" => 4,
-                "polylogue.query_run" | "polylogue.blob" | "polylogue.coverage" => 3,
-                "polylogue.fragment" => 2,
+                | "polylogue.parse_progress" => 5,
+                "polylogue.input_observation" => 4,
+                "polylogue.query_run"
+                | "polylogue.blob"
+                | "polylogue.coverage"
+                | "polylogue.fragment" => 3,
                 "polylogue.assertion"
                 | "polylogue.assertion_restore"
                 | "polylogue.historical_restore"
@@ -164,7 +165,7 @@ fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
         .into_iter()
         .find(|declaration| declaration.kind.name == "polylogue.fragment")
         .unwrap();
-    assert_eq!(declaration.kind.version, 2);
+    assert_eq!(declaration.kind.version, 3);
     jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap())
         .unwrap()
         .validate(&payload)

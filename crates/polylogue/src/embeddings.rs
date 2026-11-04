@@ -493,8 +493,10 @@ fn query_sessions(
             fields: &[],
         };
         let answer = crate::daemon::query::run(reader, ask)?;
-        let page = &answer.value;
-        if page["unit"] != "sessions" || page["shape"] != "rows" {
+        let crate::protocol::query::Answer::Rows(page) = &answer.value else {
+            return Err(Failure::new("bad_request", "embed takes session rows"));
+        };
+        if page.unit != "sessions" || page.shape != polylogue_query::Shape::Rows {
             return Err(Failure::new("bad_request", "embed takes session rows"));
         }
         if answer.outcome == crate::daemon::query::Outcome::Incomplete {
@@ -503,14 +505,8 @@ fn query_sessions(
                 "embedding selection requires complete query results",
             ));
         }
-        let rows = page["rows"].as_array().ok_or_else(|| {
-            Failure::new(
-                "bad_request",
-                "embedding selection did not return session rows",
-            )
-        })?;
-        for row in rows {
-            let id = row["id"].as_str().ok_or_else(|| {
+        for row in &page.rows {
+            let id = row.get("id").and_then(Value::as_str).ok_or_else(|| {
                 Failure::new(
                     "bad_request",
                     "embedding selection requires session identities",
@@ -518,8 +514,8 @@ fn query_sessions(
             })?;
             ids.push(id.to_owned());
         }
-        match page["next"].as_str() {
-            Some(next) => cursor = Some(next.to_owned()),
+        match &page.next {
+            Some(next) => cursor = Some(next.clone()),
             None => return Ok(ids),
         }
     }

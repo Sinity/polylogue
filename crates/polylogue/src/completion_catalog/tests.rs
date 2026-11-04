@@ -595,7 +595,7 @@ fn frozen_plan_metadata_survives_cache_serialization_without_rebinding_names() {
         serde_json::from_slice(&serde_json::to_vec(&plan.query_object().unwrap()).unwrap())
             .unwrap();
     let replay =
-        polylogue_query::plan::replay(&object, &polylogue_query::plan::catalog_fingerprint())
+        polylogue_query::plan::replay(&object, polylogue_query::plan::catalog_fingerprint())
             .unwrap();
     let metadata = Metadata {
         archive: "synthetic".into(),

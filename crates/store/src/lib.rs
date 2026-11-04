@@ -73,6 +73,7 @@ pub use context::{DeliveryRow, NearbySession, OpenBead, OpenItems, Prompt, Sessi
 pub use read::{
     BehindChain, CapturedSession, CompletenessDimension, CompletenessReason, ImportedAs,
     KnownInput, ReadCompleteness, ReadPool, Reader, ReadingContract, SqlValue, Status,
+    StoppedChains,
     scope::{ReadScopeToken, ScopeInvalidation},
 };
 pub use writer::{
@@ -169,6 +170,35 @@ pub enum StoreError {
     /// A selection refusal with the product code that classifies it.
     #[error("{message}")]
     Selection { code: &'static str, message: String },
+}
+
+impl StoreError {
+    /// The product failure code for this error. Every surface classifies a
+    /// store error through this one mapping.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::ScopeChanged => "scope_changed",
+            Self::Conflict(_) | Self::ReadIndexReplaced => "conflict",
+            Self::Ambiguous { .. } => "ambiguous",
+            Self::Stale { .. } => "stale",
+            Self::ReferenceUnavailable { .. } => "not_yet_available",
+            Self::Projection(issue) => match issue {
+                polylogue_model::bundle::BundleError::ProjectionConflict
+                | polylogue_model::bundle::BundleError::SourceVersionMismatch => "conflict",
+                _ => "bad_request",
+            },
+            Self::ReadDeadlineExceeded => "deadline_exceeded",
+            Self::ReadCancelled => "cancelled",
+            Self::ReadPoolClosed => "shutting_down",
+            Self::NotFound(_) => "not_found",
+            Self::Invalid(_) => "bad_request",
+            Self::Query(error) => error.kind(),
+            Self::Selection { code, .. } => code,
+            Self::IncompleteParents(_) => "incomplete_parents",
+            Self::PrimaryPending { .. } => "degraded",
+            _ => "store",
+        }
+    }
 }
 
 impl From<rusqlite::Error> for StoreError {

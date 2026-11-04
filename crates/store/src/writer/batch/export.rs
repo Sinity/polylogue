@@ -48,7 +48,10 @@ impl ParseStep {
             self.order_from,
             self.reset,
             self.repeats_whole_conversations,
-            self.no_parser_yet,
+            matches!(
+                &self.progress,
+                polylogue_model::batch::StepProgress::NoParserYet { .. }
+            ),
             &self.checkpoint,
         ))?;
         body.sort_all_objects();

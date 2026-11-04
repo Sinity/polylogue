@@ -206,7 +206,7 @@ impl Inner {
                 ));
             }
             version.get_or_insert_with(|| step.reading_version.clone());
-            complete = step.at_end && step.parsed_upto <= length;
+            complete = step.progress.reached_end() && step.parsed_upto <= length;
             refusal = crate::wire_shapes::is_refusal(step);
             has_export |= step.delivery.is_some();
             messages += step.output.messages.len() as u64;

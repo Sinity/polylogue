@@ -26,8 +26,7 @@ pub struct Reading {
     pub repeats_whole_conversations: bool,
     pub start: u64,
     pub parsed_upto: u64,
-    pub at_end: bool,
-    pub no_parser_yet: bool,
+    pub progress: polylogue_model::batch::StepProgress,
 }
 
 /// Authoritative material descriptors supplied by Sinex, never hash lookups.
@@ -216,11 +215,10 @@ pub struct CapturedReading {
     pub counts: RecordCounts,
     pub start: u64,
     pub parsed_upto: u64,
-    pub at_end: bool,
+    pub progress: polylogue_model::batch::StepProgress,
     pub order_from: Option<u64>,
     pub reading_version: String,
     pub repeats_whole_conversations: bool,
-    pub no_parser_yet: bool,
     pub reset: bool,
     pub comparison: Option<crate::tool_databases::Comparison>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -263,11 +261,10 @@ impl CapturedReading {
             counts: step.counts.clone(),
             start: step.start,
             parsed_upto: step.parsed_upto,
-            at_end: step.at_end,
+            progress: step.progress.clone(),
             order_from: step.order_from,
             reading_version: step.reading_version.clone(),
             repeats_whole_conversations: step.repeats_whole_conversations,
-            no_parser_yet: step.no_parser_yet,
             reset: step.reset,
             comparison: step.comparison.clone(),
             checkpoint: step.checkpoint.clone(),
@@ -278,13 +275,13 @@ impl CapturedReading {
             self.output,
             self.counts,
             self.start..self.parsed_upto,
-            self.at_end,
+            false,
         );
+        step.progress = self.progress;
         step.delivery = self.delivery;
         step.order_from = self.order_from;
         step.reading_version = self.reading_version;
         step.repeats_whole_conversations = self.repeats_whole_conversations;
-        step.no_parser_yet = self.no_parser_yet;
         step.reset = self.reset;
         step.comparison = self.comparison;
         step.checkpoint = self.checkpoint;
@@ -365,8 +362,7 @@ pub fn parse(
         repeats_whole_conversations: step.repeats_whole_conversations,
         start: step.start,
         parsed_upto: step.parsed_upto,
-        at_end: step.at_end,
-        no_parser_yet: step.no_parser_yet,
+        progress: step.progress.clone(),
     };
     let mut products = Vec::new();
     products.extend(output.sessions.into_iter().map(|facts| Product::Session {

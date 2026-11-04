@@ -640,7 +640,7 @@ fn revisions_extents_and_parse_state_follow_appends() {
     b2.new_blob = Some(blob2);
     b2.length = 25;
     b2.parse.first_mut().unwrap().parsed_upto = 18;
-    b2.parse.first_mut().unwrap().at_end = false;
+    b2.parse.first_mut().unwrap().progress = polylogue_model::batch::StepProgress::Partway;
     let results = w
         .writer
         .sender()
@@ -705,7 +705,7 @@ fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     first.length = 12;
     let parse = first.parse.first_mut().unwrap();
     parse.parsed_upto = 5;
-    parse.at_end = true;
+    parse.progress = polylogue_model::batch::StepProgress::AtEnd;
     let results = w
         .writer
         .sender()

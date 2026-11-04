@@ -60,15 +60,18 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
             "INSERT INTO input_ref(id) VALUES ('a');
          INSERT INTO parse_state(input_pk,chain,status,parsed_upto)
          SELECT pk,2,'parsing',12 FROM input_ref WHERE id='a';
-         INSERT INTO parse_state(input_pk,chain,status,parsed_upto,detail)
-         SELECT pk,3,'waiting',2,'30' FROM input_ref WHERE id='a';
+         INSERT INTO parse_state(input_pk,chain,status,parsed_upto,at_length)
+         SELECT pk,3,'waiting',2,30 FROM input_ref WHERE id='a';
          INSERT INTO parse_state(input_pk,chain,status,parsed_upto)
          SELECT pk,5,'done',50 FROM input_ref WHERE id='a';",
         )
         .unwrap();
     let pool = fixture.reads().unwrap();
     assert_eq!(
-        pool.reader().unwrap().chains_behind_index(&[]).unwrap(),
+        pool.reader()
+            .unwrap()
+            .chains_behind_index(&[], crate::StoppedChains::Settled)
+            .unwrap(),
         vec![
             // Live inputs first, then most recently observed inputs and newest chains.
             expected("b", 1, 10, true, None, None),
@@ -145,7 +148,9 @@ fn history_work(revisions: usize) -> usize {
             }),
         )
         .unwrap();
-    let found = reader.chains_behind_index(&[]).unwrap();
+    let found = reader
+        .chains_behind_index(&[], crate::StoppedChains::Settled)
+        .unwrap();
     reader
         .conn()
         .unwrap()
@@ -193,13 +198,18 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
     index
         .execute_batch(
             "INSERT INTO input_ref(id) VALUES ('metadata');
-        INSERT INTO parse_state(input_pk,chain,status,parsed_upto,detail,reading_version)
-        SELECT pk,1,'waiting',40,'100','metadata=1' FROM input_ref;",
+        INSERT INTO parse_state(input_pk,chain,status,parsed_upto,at_length,reading_version)
+        SELECT pk,1,'waiting',40,100,'metadata=1' FROM input_ref;",
         )
         .unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    assert!(reader.chains_behind_index(&[]).unwrap().is_empty());
+    assert!(
+        reader
+            .chains_behind_index(&[], crate::StoppedChains::Settled)
+            .unwrap()
+            .is_empty()
+    );
     assert!(reader.input_progress("metadata").unwrap().unwrap().waiting);
     archive
         .execute(
@@ -207,10 +217,17 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
             [],
         )
         .unwrap();
-    assert!(reader.chains_behind_index(&[]).unwrap().is_empty());
+    assert!(
+        reader
+            .chains_behind_index(&[], crate::StoppedChains::Settled)
+            .unwrap()
+            .is_empty()
+    );
     assert!(reader.input_progress("metadata").unwrap().unwrap().waiting);
     let fresh = pool.reader().unwrap();
-    let behind = fresh.chains_behind_index(&[]).unwrap();
+    let behind = fresh
+        .chains_behind_index(&[], crate::StoppedChains::Settled)
+        .unwrap();
     assert_eq!(behind.len(), 1);
     assert_eq!(
         (

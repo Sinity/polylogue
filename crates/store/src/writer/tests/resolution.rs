@@ -274,7 +274,9 @@ fn refused_commit_releases_reservations_for_an_ordinary_retry() {
 fn collection_without_a_parser_commits_its_explicit_status() {
     let w = test_archive();
     let mut input = batch("collected", 0, 0, Vec::new(), &[]);
-    input.parse[0].no_parser_yet = true;
+    input.parse[0].progress = polylogue_model::batch::StepProgress::NoParserYet {
+        at_end: input.parse[0].progress.reached_end(),
+    };
     let input = w.commit_source(input, &SOURCE_RECORD).unwrap();
     w.writer.send(input).unwrap();
     let report = w.writer.flush().unwrap();
@@ -600,26 +602,27 @@ fn no_parser_metadata_waits_at_partial_eof_and_resumes_on_append() {
     let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     let tx = conn.transaction().unwrap();
     let mut partial = batch("metadata", 0, 0, Vec::new(), &[]);
-    partial.parse[0].no_parser_yet = true;
+    partial.parse[0].progress = polylogue_model::batch::StepProgress::NoParserYet {
+        at_end: partial.parse[0].progress.reached_end(),
+    };
     partial.parse[0].parsed_upto = 40;
     write_test_rows(&tx, &partial, &partial.parse[0], 1, 1, None).unwrap();
-    let state: (String, String, String) = tx
+    let state: (String, i64, String) = tx
         .query_row(
-            "SELECT status,detail,reading_version FROM parse_state",
+            "SELECT status,at_length,reading_version FROM parse_state",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    assert_eq!(
-        state,
-        ("waiting".into(), "100".into(), "synthetic=1".into())
-    );
+    assert_eq!(state, ("waiting".into(), 100, "synthetic=1".into()));
     let mut append = batch("metadata", 0, 40, Vec::new(), &[]);
-    append.parse[0].no_parser_yet = true;
+    append.parse[0].progress = polylogue_model::batch::StepProgress::NoParserYet {
+        at_end: append.parse[0].progress.reached_end(),
+    };
     write_test_rows(&tx, &append, &append.parse[0], 1, 2, None).unwrap();
-    let state: (String, i64, Option<String>) = tx
+    let state: (String, i64, Option<i64>) = tx
         .query_row(
-            "SELECT status,parsed_upto,detail FROM parse_state",
+            "SELECT status,parsed_upto,at_length FROM parse_state",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -849,7 +852,7 @@ fn commit_event_bytes(w: &TestArchive, mut input: Batch, bytes: &[u8]) -> Batch 
     for step in &mut input.parse {
         step.start = 0;
         step.parsed_upto = input.length;
-        step.at_end = true;
+        step.progress = polylogue_model::batch::StepProgress::AtEnd;
     }
     let mut retry = input.clone();
     let stored = w

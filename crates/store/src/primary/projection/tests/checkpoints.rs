@@ -15,8 +15,7 @@ fn reading() -> crate::primary::Reading {
         repeats_whole_conversations: false,
         start: 0,
         parsed_upto: 2,
-        at_end: false,
-        no_parser_yet: false,
+        progress: polylogue_model::batch::StepProgress::Partway,
     }
 }
 

@@ -419,6 +419,11 @@ pub fn run(
     if let Answer::Error { error, notes, .. } = &answer {
         return fail_with(policy, json, error, notes);
     }
+    // JSON passes the answer through as received; anything that reads the
+    // value first checks it is the operation's declared type.
+    if let Err(failure) = decoded(cmd, &answer) {
+        return fail_with(policy, json, &failure, &[]);
+    }
     let data = answer.value().expect("a non-error answer has a value");
     if !json && matches!(data["shape"].as_str(), Some("rows" | "matches")) {
         crate::row_numbers::remember(&root, &crate::row_numbers::row_ids(&data["rows"]));
@@ -581,6 +586,20 @@ pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Resul
 }
 
 /// A failure made here, before or instead of a daemon answer.
+/// Refuses an answer whose value is not its operation's declared type, the
+/// same way for every operation, before any printer or output handler reads it.
+pub(crate) fn decoded(
+    cmd: &Command,
+    answer: &Answer<Value>,
+) -> Result<(), command_surface::Failure> {
+    match (cmd.decode_answer, answer.value()) {
+        (Some(decode), Some(value)) => {
+            decode(value).map_err(|error| crate::protocol::protocol_mismatch(cmd.name, error))
+        }
+        _ => Ok(()),
+    }
+}
+
 pub(crate) fn fail(
     output: crate::config::OutputConfig,
     json: bool,

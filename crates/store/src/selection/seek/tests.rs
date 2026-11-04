@@ -58,7 +58,7 @@ fn compact_row_seek_does_not_decode_preceding_answer_bodies() {
                 ControlFlow::Continue(())
             ))
             .unwrap_err()
-            .kind(),
+            .code(),
         "stale_cursor"
     );
 }
@@ -155,7 +155,7 @@ fn reverse_selection_mirrors_nulls_ties_and_selection_stages() {
                     ControlFlow::Continue(())
                 ))
                 .unwrap_err()
-                .kind(),
+                .code(),
             "stale_cursor"
         );
     }

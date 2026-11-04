@@ -183,6 +183,9 @@ fn unreadable_header_keeps_diagnostics_without_a_cursor_and_new_actual_length_ca
     refused
         .counts
         .add("export", &RecordOutcome::unreadable("truncated export"));
+    refused.progress = polylogue_model::batch::StepProgress::Refused {
+        reason: "truncated export".into(),
+    };
     refused
         .seal_export(
             0,
@@ -193,7 +196,11 @@ fn unreadable_header_keeps_diagnostics_without_a_cursor_and_new_actual_length_ca
     apply_step(&mut conn, 1, &refused).unwrap();
     let original = state(&conn);
     let reading: Reading = serde_json::from_str(&original).unwrap();
-    assert!(reading.refused_export && reading.export_cursor.is_none() && !reading.at_end);
+    assert!(
+        reading.refused_export
+            && reading.export_cursor.is_none()
+            && !reading.progress.reached_end()
+    );
     assert_eq!(reading.status(), CoverageStatus::Unreadable);
     assert_eq!(reading.parsed_upto, 0);
     conn.execute_batch("CREATE TABLE parse_state(input_pk INTEGER,chain INTEGER,reading_version TEXT,status TEXT,parsed_upto INTEGER); INSERT INTO parse_state VALUES(1,1,'crate::export::VERSION=2','parsing',0);").unwrap();
@@ -246,6 +253,7 @@ fn semantic_seals_ignore_receiver_receipts_but_bind_original_event_identities_an
 }
 
 #[test]
+
 fn header_line_failures_preserve_counts_and_allow_valid_items_and_complete() {
     let mut conn = database();
     let mut header = callback(
@@ -288,7 +296,7 @@ fn header_line_failures_preserve_counts_and_allow_valid_items_and_complete() {
     let saved = state(&conn);
     let finished: Reading = serde_json::from_str(&saved).unwrap();
     assert!(!finished.refused_export);
-    assert!(finished.at_end);
+    assert!(finished.progress.reached_end());
     assert_eq!(finished.parsed_upto, 2);
     assert_eq!(finished.export_cursor.unwrap().last_ordinal, 2);
     assert_eq!(finished.unreadable, 1);

@@ -51,6 +51,7 @@ pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[];
 /// The version [`ARCHIVE`] creates.
 pub const ARCHIVE_VERSION: u32 = 1 + ARCHIVE_MIGRATIONS.len() as u32;
 
+
 /// The index schema and row encoding version. Reading versions are independent.
 pub const INDEX_VERSION: u32 = 1;
 

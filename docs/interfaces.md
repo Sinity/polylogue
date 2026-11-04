@@ -281,7 +281,7 @@ The exit and HTTP table is the common `command-surface`'s, shared with Sinex; ea
 | 3 | `refused`, with the operation's stated reason |
 | 4 | `not_found`, `conflict`, `io` |
 | 5 | `degraded`: an `incomplete` answer (rows printed, part of what was needed missing), an operation that stopped early, or a write pending in primary mode |
-| 6 | `not_running`: the daemon is down |
+| 6 | `not_running`: the daemon is down, or it answered in a shape this build does not read (`daemon_protocol_mismatch`: a daemon from another build; restart it) |
 | 7 | `timeout`, `cancelled` |
 
 Exit 78 is used only by the daemon process itself, when it refuses to open an archive whose stored format it does not read.

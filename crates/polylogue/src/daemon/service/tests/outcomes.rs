@@ -6,14 +6,55 @@ use super::*;
 use crate::daemon::query::{Outcome, QueryAnswer};
 use crate::test_answers;
 use polylogue_model::currency::IndexCurrency;
-use serde_json::json;
 
 fn query(outcome: Outcome, notes: &[&str]) -> QueryAnswer {
     QueryAnswer {
-        value: json!({"rows": [], "count": 0}),
+        value: crate::protocol::query::Answer::Rows(Box::new(crate::protocol::query::Rows {
+            read_at: crate::protocol::query::Position {
+                currency: None,
+                generation: "synthetic".into(),
+                index: 1,
+                archive: 1,
+                cursor: "synthetic:1:1".into(),
+            },
+            unit: "sessions".into(),
+            shape: polylogue_query::Shape::Rows,
+            columns: vec![],
+            rows: vec![],
+            count: 0,
+            next: None,
+            ranked: false,
+            notes: vec![],
+            incomplete: vec![],
+            resolved: crate::protocol::query::Resolved {
+                context: synthetic_context().provenance(),
+                times: vec![],
+            },
+            definitions: vec![],
+            unknown: Default::default(),
+            why: None,
+        })),
         outcome,
         notes: notes.iter().map(|note| (*note).to_owned()).collect(),
     }
+}
+
+fn synthetic_context() -> crate::operation::Context {
+    crate::operation::Context::standalone(
+        crate::operation::Invocation::new(
+            polylogue_model::Timestamp::parse_rfc3339("2026-03-01T12:00:00Z").unwrap(),
+            "synthetic-outcomes".into(),
+            polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            },
+        ),
+        query_language::time::DaySetting::new(
+            jiff::tz::TimeZone::UTC,
+            jiff::civil::Time::constant(4, 0, 0, 0),
+        )
+        .unwrap(),
+    )
 }
 
 fn behind() -> IndexCurrency {

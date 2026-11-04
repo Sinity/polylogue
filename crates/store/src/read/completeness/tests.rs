@@ -65,8 +65,8 @@ fn exact_waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
         .execute_batch(
             "UPDATE meta SET value='0' WHERE key='building';
         INSERT INTO input_ref(id,format) VALUES('waiting','synthetic');
-        INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto,detail)
-        SELECT pk,1,'v1','waiting',4,'10' FROM input_ref WHERE id='waiting';",
+        INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto,at_length)
+        SELECT pk,1,'v1','waiting',4,10 FROM input_ref WHERE id='waiting';",
         )
         .unwrap();
     let pool = fixture.reads().unwrap();
@@ -90,7 +90,7 @@ fn exact_waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
     assert_eq!(kept.raw_only_chains, 0);
     index
         .execute(
-            "UPDATE parse_state SET detail='9' WHERE reading_version='v1'",
+            "UPDATE parse_state SET at_length=9 WHERE reading_version='v1'",
             [],
         )
         .unwrap();
@@ -104,7 +104,7 @@ fn exact_waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
     );
     index
         .execute(
-            "UPDATE parse_state SET status='no_parser_yet',parsed_upto=10",
+            "UPDATE parse_state SET status='no_parser_yet',parsed_upto=10,at_length=NULL",
             [],
         )
         .unwrap();

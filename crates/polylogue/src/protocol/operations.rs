@@ -222,10 +222,7 @@ fn typed<T: DeserializeOwned>(answer: Answer<Value>, name: &str) -> Answer<T> {
             .ok()
     });
     match problem {
-        Some(error) => Answer::error(Failure::new(
-            FailureKind::Io,
-            format!("invalid {name} answer: {error}"),
-        )),
+        Some(error) => Answer::error(crate::protocol::protocol_mismatch(name, error)),
         None => decoded.map(|value| value.expect("decoded without a problem")),
     }
 }

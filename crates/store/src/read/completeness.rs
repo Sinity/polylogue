@@ -115,45 +115,52 @@ impl Reader<'_> {
         let mut unknown = false;
         let mut kept_chains = 0_u64;
         let mut raw_only_chains = 0_u64;
-        self.visit_chain_states(&versions, true, &mut |state| {
-            match declared.get(state.origin.as_str()).copied() {
-                None => {
-                    unknown = true;
-                    missing.insert(CompletenessReason::MissingDeclaration);
-                }
-                Some(ReadingContract::Kept { .. }) => {
-                    kept_chains += 1;
-                }
-                Some(ReadingContract::RawOnly { .. }) => {
-                    raw_only_chains += 1;
-                    missing.insert(CompletenessReason::KnownRawOnly);
-                }
-                Some(ReadingContract::Expected { version, .. }) => {
-                    let progress = &state.plan.progress;
-                    if !progress.parsed {
-                        missing.insert(CompletenessReason::MissingCheckpoint);
-                    } else if state.version.as_ref() != Some(version) {
-                        missing.insert(CompletenessReason::ReadingVersionChanged);
-                    } else {
-                        match state.status.as_deref() {
-                            Some("no_parser_yet") => {
-                                raw_only_chains += 1;
-                                missing.insert(CompletenessReason::KnownRawOnly);
-                            }
-                            Some("partial") => {
-                                missing.insert(CompletenessReason::MissingSourcePrefix);
-                            }
-                            Some("waiting") if progress.waiting => {}
-                            Some("done") if progress.parsed_upto >= progress.length => {}
-                            _ => {
-                                missing.insert(CompletenessReason::ParserBehind);
+        self.visit_chain_states(
+            &versions,
+            true,
+            super::behind_index::StoppedChains::Settled,
+            &mut |state| {
+                match declared.get(state.origin.as_str()).copied() {
+                    None => {
+                        unknown = true;
+                        missing.insert(CompletenessReason::MissingDeclaration);
+                    }
+                    Some(ReadingContract::Kept { .. }) => {
+                        kept_chains += 1;
+                    }
+                    Some(ReadingContract::RawOnly { .. }) => {
+                        raw_only_chains += 1;
+                        missing.insert(CompletenessReason::KnownRawOnly);
+                    }
+                    Some(ReadingContract::Expected { version, .. }) => {
+                        let progress = &state.plan.progress;
+                        if !progress.parsed {
+                            missing.insert(CompletenessReason::MissingCheckpoint);
+                        } else if state.version.as_ref() != Some(version) {
+                            missing.insert(CompletenessReason::ReadingVersionChanged);
+                        } else {
+                            use polylogue_model::batch::ParseProgress;
+                            match &state.progress {
+                                Some(ParseProgress::NoParserYet) => {
+                                    raw_only_chains += 1;
+                                    missing.insert(CompletenessReason::KnownRawOnly);
+                                }
+                                Some(ParseProgress::Partial) => {
+                                    missing.insert(CompletenessReason::MissingSourcePrefix);
+                                }
+                                Some(ParseProgress::Waiting { .. }) if progress.waiting => {}
+                                Some(ParseProgress::Done)
+                                    if progress.parsed_upto >= progress.length => {}
+                                _ => {
+                                    missing.insert(CompletenessReason::ParserBehind);
+                                }
                             }
                         }
                     }
                 }
-            }
-            Ok(ControlFlow::Continue(()))
-        })?;
+                Ok(ControlFlow::Continue(()))
+            },
+        )?;
         let parsing = if missing.is_empty() {
             CompletenessDimension::Complete
         } else if unknown {

@@ -195,7 +195,8 @@ fn query_outcome(
         outcome,
         notes,
     } = answer;
-    value["read_at"]["currency"] = serde_json::to_value(currency).expect("currency serializes");
+    value.read_at_mut().currency = Some(currency.clone());
+    let value = serde_json::to_value(value).expect("a query result serializes");
     let mut notes = notes;
     notes.extend(crate::protocol::currency_note(currency).map(str::to_owned));
     let degraded = currency.degraded() || outcome == super::query::Outcome::Incomplete;

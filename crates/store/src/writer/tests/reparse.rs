@@ -194,7 +194,7 @@ fn chain_selection_keeps_changed_readings_and_incomplete_stored_bytes() {
     let index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     index
         .execute_batch(
-            "UPDATE parse_state SET status='waiting',parsed_upto=40,detail='100'
+            "UPDATE parse_state SET status='waiting',parsed_upto=40,at_length=100
             WHERE input_pk=(SELECT pk FROM input_ref WHERE id='waiting');
          UPDATE parse_state SET status='parsing',parsed_upto=40
             WHERE input_pk=(SELECT pk FROM input_ref WHERE id='partial');
@@ -212,7 +212,7 @@ fn chain_selection_keeps_changed_readings_and_incomplete_stored_bytes() {
         let mut chains: Vec<_> = pool
             .reader()
             .unwrap()
-            .chains_behind_index(&versions)
+            .chains_behind_index(&versions, crate::StoppedChains::Settled)
             .unwrap()
             .into_iter()
             .map(|c| (c.input, c.reading_changed))

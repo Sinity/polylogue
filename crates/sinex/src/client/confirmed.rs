@@ -50,6 +50,7 @@ fn decode_event(event: &sinex_protocol::ConfirmedEvent) -> Result<Confirmed> {
         ))
     })?;
     if declared != event.kind_definition_hash {
+
         return Err(Error::Invalid(
             "a confirmed event's kind definition differs from Polylogue's".into(),
         ));

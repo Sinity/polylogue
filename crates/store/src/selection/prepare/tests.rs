@@ -29,6 +29,7 @@ fn definition(id: &str, name: &str, text: &str, hash: QuestionId) -> AssertionFa
 }
 
 #[test]
+
 fn accepting_preparation_uses_original_native_rows_and_scratch_definitions() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
@@ -89,7 +90,7 @@ fn accepting_preparation_uses_original_native_rows_and_scratch_definitions() {
     .unwrap();
     assert_eq!(by_hash.definitions()[0].question_id, unnamed.id);
     let restored =
-        polylogue_query::plan::replay(&unnamed, &polylogue_query::plan::catalog_fingerprint())
+        polylogue_query::plan::replay(&unnamed, polylogue_query::plan::catalog_fingerprint())
             .unwrap();
     assert_eq!(
         by_hash.expanded_query().query(),
@@ -107,7 +108,7 @@ fn accepting_preparation_uses_original_native_rows_and_scratch_definitions() {
             None
         )
         .unwrap_err()
-        .kind(),
+        .code(),
         "not_yet_available"
     );
     let refused = prepare_query_plan_on(
@@ -122,7 +123,7 @@ fn accepting_preparation_uses_original_native_rows_and_scratch_definitions() {
     .unwrap_err();
     let message = refused.to_string();
     let roundtrip = SelectionError::from(refused.into_store_error());
-    assert_eq!(roundtrip.kind(), "not_yet_available");
+    assert_eq!(roundtrip.code(), "not_yet_available");
     assert_eq!(roundtrip.to_string(), message);
     let mut native = Bindings {
         origins: vec!["test".into()],
@@ -217,7 +218,7 @@ fn accepting_preparation_uses_original_native_rows_and_scratch_definitions() {
             None
         )
         .unwrap_err()
-        .kind(),
+        .code(),
         "not_yet_available"
     );
     let prepared = prepare_query_plan_on(
@@ -246,7 +247,7 @@ fn accepting_preparation_uses_original_native_rows_and_scratch_definitions() {
             None
         )
         .unwrap_err()
-        .kind(),
+        .code(),
         "not_yet_available"
     );
     prepare_query_plan_on(

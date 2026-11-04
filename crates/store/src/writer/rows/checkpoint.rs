@@ -1,12 +1,12 @@
 //! Checkpoint evidence is changed by admitted parser state, never by a retry.
 use super::*;
+use polylogue_model::batch::{ParseProgress, StepProgress};
 
 #[derive(PartialEq)]
 struct State {
     cursor: u64,
     version: String,
-    status: String,
-    detail: Option<String>,
+    progress: ParseProgress,
     counts: [i64; 4],
     checkpoint: Option<Vec<u8>>,
 }
@@ -25,8 +25,21 @@ impl Stored {
 }
 
 pub(super) fn read(tx: &Transaction<'_>, input: i64, chain: i64) -> Result<Option<Stored>> {
-    Ok(tx.query_row("SELECT parsed_upto,reading_version,status,detail,records,used,skipped,unreadable,commit_seq,checkpoint FROM parse_state WHERE input_pk=?1 AND chain=?2",
-        params![input,chain],|r|Ok(Stored{state:State {cursor:r.get::<_,i64>(0)? as u64,version:r.get(1)?,status:r.get(2)?,detail:r.get(3)?,counts:[r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?],checkpoint:r.get(9)?},commit:r.get(8)?})).optional()?)
+    let row = tx.query_row("SELECT parsed_upto,reading_version,status,at_length,records,used,skipped,unreadable,commit_seq,checkpoint,reason FROM parse_state WHERE input_pk=?1 AND chain=?2",
+        params![input,chain],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<i64>>(3)?,[r.get::<_,i64>(4)?,r.get(5)?,r.get(6)?,r.get(7)?],r.get::<_,Option<i64>>(8)?,r.get::<_,Option<Vec<u8>>>(9)?,r.get::<_,Option<String>>(10)?))).optional()?;
+    let Some((cursor, version, status, at_length, counts, commit, checkpoint, reason)) = row else {
+        return Ok(None);
+    };
+    Ok(Some(Stored {
+        state: State {
+            cursor,
+            version,
+            progress: crate::read::stored_parse_progress(&status, at_length, reason)?,
+            counts,
+            checkpoint,
+        },
+        commit,
+    }))
 }
 
 pub(super) struct Update {
@@ -62,27 +75,24 @@ impl Update {
                 StoreError::Invalid("record accounting exceeds SQLite's integer range".into())
             })?;
         }
-        let status = if step.source_prefix_missing {
-            "partial"
+        let progress = if step.source_prefix_missing {
+            ParseProgress::Partial
+        } else if matches!(
+            step.progress,
+            StepProgress::Refused { .. } | StepProgress::Failed { .. }
+        ) {
+            ParseProgress::after(step.progress.clone(), step.parsed_upto, batch.length)
         } else if let Some(delivery) = &step.delivery {
             if matches!(
                 delivery.source,
                 polylogue_model::batch::ExportDeliverySource::Complete { .. }
             ) {
-                "done"
+                ParseProgress::Done
             } else {
-                "parsing"
+                ParseProgress::Parsing
             }
-        } else if step.at_end && step.parsed_upto < batch.length {
-            "waiting"
-        } else if step.no_parser_yet {
-            "no_parser_yet"
-        } else if step.at_end && step.parsed_upto >= batch.length {
-            "done"
-        } else if step.at_end {
-            "waiting"
         } else {
-            "parsing"
+            ParseProgress::after(step.progress.clone(), step.parsed_upto, batch.length)
         };
         if let Some(checkpoint) = &step.checkpoint
             && !checkpoint.matches(&step.reading_version, step.parsed_upto)
@@ -94,14 +104,20 @@ impl Update {
         let state = State {
             cursor: step.parsed_upto,
             version: step.reading_version.clone(),
-            status: status.into(),
-            detail: (status == "waiting").then(|| batch.length.to_string()),
+            progress,
             counts: totals,
-            checkpoint: step
-                .checkpoint
-                .as_ref()
-                .map(crate::encoding::pack_json)
-                .transpose()?,
+            checkpoint: match (&step.checkpoint, &step.progress, previous) {
+                (Some(checkpoint), _, _) => Some(crate::encoding::pack_json(checkpoint)?),
+                // A refusal or failure leaves the cursor where it was, so the
+                // parser state saved there still resumes it.
+                (None, StepProgress::Refused { .. } | StepProgress::Failed { .. }, Some(prior))
+                    if prior.state.cursor == step.parsed_upto
+                        && prior.state.version == step.reading_version =>
+                {
+                    prior.state.checkpoint.clone()
+                }
+                (None, _, _) => None,
+            },
         };
         let commit = if confirmed {
             receipt
@@ -117,12 +133,21 @@ impl Update {
     }
 
     pub(super) fn write(&self, tx: &Transaction<'_>, input: i64, chain: i64) -> Result<()> {
-        tx.prepare_cached("INSERT INTO parse_state(input_pk,chain,status,parsed_upto,records,used,skipped,unreadable,detail,reading_version,commit_seq,checkpoint)
-            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+        let at_length = self
+            .state
+            .progress
+            .at_length()
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| {
+                StoreError::Invalid("a stored length exceeds SQLite's integer range".into())
+            })?;
+        tx.prepare_cached("INSERT INTO parse_state(input_pk,chain,status,parsed_upto,records,used,skipped,unreadable,at_length,reading_version,commit_seq,checkpoint,reason)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
             ON CONFLICT(input_pk,chain) DO UPDATE SET status=excluded.status,parsed_upto=excluded.parsed_upto,
             records=excluded.records,used=excluded.used,skipped=excluded.skipped,unreadable=excluded.unreadable,
-            detail=excluded.detail,reading_version=excluded.reading_version,commit_seq=excluded.commit_seq,checkpoint=excluded.checkpoint")?
-            .execute(params![input,chain,self.state.status,self.state.cursor as i64,self.state.counts[0],self.state.counts[1],self.state.counts[2],self.state.counts[3],self.state.detail,self.state.version,self.commit,self.state.checkpoint])?;
+            at_length=excluded.at_length,reading_version=excluded.reading_version,commit_seq=excluded.commit_seq,checkpoint=excluded.checkpoint,reason=excluded.reason")?
+            .execute(params![input,chain,self.state.progress.status(),self.state.cursor as i64,self.state.counts[0],self.state.counts[1],self.state.counts[2],self.state.counts[3],at_length,self.state.version,self.commit,self.state.checkpoint,self.state.progress.reason()])?;
         Ok(())
     }
 }

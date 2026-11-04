@@ -414,6 +414,9 @@ pub struct Engine {
     /// Rejected writes awaiting checkpoint reload after their plans finish.
     /// Paths excluded from every nested live scan until their readings commit.
     reparsing: HashMap<PathBuf, usize>,
+    /// Every chain whose refusal or failure the parse state records has been
+    /// offered one new read since this engine started.
+    stopped_offered: bool,
     loaded: bool,
     captures: Databases,
     wake: Option<Sender<LoopMsg>>,
@@ -464,6 +467,7 @@ impl Engine {
             blobs,
             inputs: HashMap::new(),
             reparsing: HashMap::new(),
+            stopped_offered: false,
             loaded: false,
             captures: Databases::default(),
             wake: None,
@@ -529,8 +533,7 @@ impl Engine {
                     parser_state: None,
                     tail: None,
                     chain: k.chain,
-                    failed: None,
-                    failed_history: HashMap::new(),
+                    unread: None,
                     working: None,
                 },
             );

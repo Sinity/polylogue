@@ -99,7 +99,12 @@ pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
     (FailureKind::StoppedEarly, &["stopped_early"]),
     (
         FailureKind::NotRunning,
-        &["not_running", "daemon_required", "shutting_down"],
+        &[
+            "not_running",
+            "daemon_required",
+            "shutting_down",
+            "daemon_protocol_mismatch",
+        ],
     ),
     (FailureKind::Timeout, &["timeout", "deadline_exceeded"]),
     (FailureKind::Cancelled, &["cancelled"]),
@@ -147,31 +152,16 @@ pub fn kind(code: &str) -> FailureKind {
         .unwrap_or(FailureKind::Io)
 }
 
-/// Every store boundary uses this code before the shared transport mapping.
-pub fn store_code(error: &polylogue_store::StoreError) -> &'static str {
-    use polylogue_store::StoreError;
-    match error {
-        StoreError::ScopeChanged => "scope_changed",
-        StoreError::Conflict(_) | StoreError::ReadIndexReplaced => "conflict",
-        StoreError::Ambiguous { .. } => "ambiguous",
-        StoreError::Stale { .. } => "stale",
-        StoreError::ReferenceUnavailable { .. } => "not_yet_available",
-        StoreError::Projection(issue) => match issue {
-            polylogue_model::bundle::BundleError::ProjectionConflict
-            | polylogue_model::bundle::BundleError::SourceVersionMismatch => "conflict",
-            _ => "bad_request",
-        },
-        StoreError::ReadDeadlineExceeded => "deadline_exceeded",
-        StoreError::ReadCancelled => "cancelled",
-        StoreError::ReadPoolClosed => "shutting_down",
-        StoreError::NotFound(_) => "not_found",
-        StoreError::Invalid(_) => "bad_request",
-        StoreError::Query(error) => error.kind(),
-        StoreError::Selection { code, .. } => code,
-        StoreError::IncompleteParents(_) => "incomplete_parents",
-        StoreError::PrimaryPending { .. } => "degraded",
-        _ => "store",
-    }
+/// An answer whose value does not decode as its operation's declared type:
+/// the daemon that answered was built from other sources.
+pub fn protocol_mismatch(operation: &str, error: impl std::fmt::Display) -> Failure {
+    failure(
+        "daemon_protocol_mismatch",
+        format!(
+            "the daemon answered {operation} in a shape this build does not read ({error}); \
+             it speaks another protocol version, so restart it with `polylogue daemon`"
+        ),
+    )
 }
 
 /// A product failure code, classified once into the shared kind.
@@ -214,9 +204,9 @@ pub fn store_failure(error: &polylogue_store::StoreError) -> Failure {
     match error {
         polylogue_store::StoreError::Query(error) => query_failure(error),
         polylogue_store::StoreError::Ambiguous { candidates, .. } => {
-            failure(store_code(error), error.to_string()).with_candidates(candidates.clone())
+            failure(error.code(), error.to_string()).with_candidates(candidates.clone())
         }
-        error => failure(store_code(error), error.to_string()),
+        error => failure(error.code(), error.to_string()),
     }
 }
 

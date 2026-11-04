@@ -200,9 +200,6 @@ fn physical_verification_preserves_parent_cancellation_before_byte_work() {
             panic!("cancelled attachment preparation did not refuse: {result:?}");
         };
         let kind = failure.code().to_owned();
-        assert_eq!(
-            kind,
-            crate::protocol::store_code(&StoreError::ReadCancelled)
-        );
+        assert_eq!(kind, StoreError::ReadCancelled.code());
     });
 }

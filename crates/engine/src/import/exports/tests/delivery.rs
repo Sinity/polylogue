@@ -89,7 +89,7 @@ fn semantic_delivery_order_keeps_nonmonotone_physical_item_ranges() {
                 assert_eq!(item_count, items);
                 assert_eq!(delivery_count, ordinal as u64);
                 assert_eq!(step.parsed_upto, raw.len() as u64);
-                assert!(step.at_end);
+                assert!(step.progress.reached_end());
                 assert!(
                     step.checkpoint
                         .as_ref()
@@ -148,7 +148,7 @@ fn assert_refusal(step: &ParseStep) {
     ));
     step.validate_export().unwrap();
     assert_eq!((step.start, step.parsed_upto), (0, 0));
-    assert!(!step.at_end);
+    assert!(!step.progress.reached_end());
     assert!(step.checkpoint.is_none());
     assert!(step.complete_output().unwrap().messages.is_empty());
     assert!(step.complete_output().unwrap().sessions.is_empty());
@@ -172,7 +172,13 @@ fn malformed_scan_publishes_one_unreadable_refusal_without_a_checkpoint() {
             .execute_export(&mut plan, &mut *export, &mut pass)
             .unwrap();
         assert_eq!(plan.parse_pos, 0);
-        assert!(plan.failed && plan.parse_failed);
+        assert!(plan.failed && plan.failure_recorded);
+        assert_eq!(
+            home.count(
+                "SELECT count(*) AS n FROM parse_state WHERE status='refused' AND reason IS NOT NULL AND at_length IS NOT NULL"
+            ),
+            1
+        );
         assert_eq!(home.count("SELECT count(*) AS n FROM message"), 0);
         assert_eq!(home.count("SELECT parsed_upto AS n FROM parse_state"), 0);
         assert_eq!(
@@ -184,7 +190,7 @@ fn malformed_scan_publishes_one_unreadable_refusal_without_a_checkpoint() {
             0
         );
         assert_eq!(
-            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_extract(state,'$.at_end')=0 AND json_extract(state,'$.last.footprint.source.kind')='container_header'"),
+            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_type(state,'$.progress.refused')='object' AND json_extract(state,'$.last.footprint.source.kind')='container_header'"),
             1
         );
         let wire = engine
@@ -194,9 +200,11 @@ fn malformed_scan_publishes_one_unreadable_refusal_without_a_checkpoint() {
             .wire_shapes(polylogue_store::wire_shapes::Scope::current(None))
             .unwrap();
         assert_eq!(wire.coverage.len(), 1);
+        // The refusal is the chain's parse state (docs/archive.md), which
+        // coverage names over the source's unreadable record.
         assert_eq!(
             wire.coverage[0].status(),
-            polylogue_store::wire_shapes::CoverageStatus::Unreadable
+            polylogue_store::wire_shapes::CoverageStatus::Refused
         );
         fs::remove_file(&plan.path).unwrap();
         let (progress, stored) = {
@@ -259,7 +267,7 @@ fn malformed_scan_publishes_one_unreadable_refusal_without_a_checkpoint() {
             0
         );
         assert_eq!(
-            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_extract(state,'$.at_end')=0 AND json_extract(state,'$.last.footprint.source.kind')='container_header'"),
+            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_type(state,'$.progress.refused')='object' AND json_extract(state,'$.last.footprint.source.kind')='container_header'"),
             1
         );
     }

@@ -484,17 +484,12 @@ fn step(
     output: polylogue_model::Output,
     counts: polylogue_model::RecordCounts,
 ) -> crate::ParseStep {
-    let mut step = crate::ParseStep::new(
-        output,
-        counts,
-        reading.start..reading.parsed_upto,
-        reading.at_end,
-    );
+    let mut step = crate::ParseStep::new(output, counts, reading.start..reading.parsed_upto, false);
+    step.progress = reading.progress.clone();
     step.delivery = reading.delivery;
     step.order_from = reading.order_from;
     step.reading_version = reading.reading_version.clone();
     step.repeats_whole_conversations = reading.repeats_whole_conversations;
-    step.no_parser_yet = reading.no_parser_yet;
     step
 }
 

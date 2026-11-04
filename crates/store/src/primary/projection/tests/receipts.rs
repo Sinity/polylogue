@@ -75,8 +75,7 @@ fn source(input: &str, message: &Message, ordinal: usize, position: i64) -> Vec<
         repeats_whole_conversations: false,
         start: 0,
         parsed_upto: 2,
-        at_end: true,
-        no_parser_yet: false,
+        progress: polylogue_model::batch::StepProgress::AtEnd,
     };
     let mut subset = message.clone();
     subset.blocks = vec![message.blocks[ordinal].clone()];

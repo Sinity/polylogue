@@ -5,7 +5,6 @@ use crate::pool::{self, Done, Job, Priority};
 use polylogue_model::Json;
 use polylogue_sources::OriginSpec;
 use polylogue_store::{Change, FileFacts, InputKey, Observation};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// What the loop knows about one input between passes. Its parser state
@@ -18,18 +17,20 @@ pub(crate) struct InputState {
     pub(crate) parsed_upto: u64,
     /// Whether the current chain was parsed at all.
     pub(crate) parsed: bool,
-    /// A successful parse reached source EOF with an incomplete last record.
+    /// The chain is not read again until its bytes grow: a parse reached
+    /// source EOF with an incomplete last record, or this engine recorded a
+    /// refusal or failure at the stored length (a restart reads it again).
     pub(crate) waiting: bool,
     pub(crate) parser_state: Option<Json>,
     pub(crate) tail: Option<Vec<u8>>,
     /// The revision chain whose bytes are stored, when known from the
     /// archive; `None` once this run stored a new chain.
     pub(crate) chain: Option<i64>,
-    /// The file facts a parse failed at: the input is tried again only when
-    /// its bytes change or the daemon restarts.
-    pub(crate) failed: Option<FileFacts>,
-    /// Failed immutable chains wait for changed bytes or a restart.
-    pub(crate) failed_history: HashMap<i64, FailedChain>,
+    /// The file facts a read failed at when no parse state could record the
+    /// failure (nothing of the file was stored, or the record itself failed):
+    /// the file is tried again only when its bytes change or the daemon
+    /// restarts. A failure the parse state records is that table's fact.
+    pub(crate) unread: Option<FileFacts>,
     /// A cache of actual SDK working state, separate from confirmed progress.
     pub(crate) working: Option<WorkingState>,
 }
@@ -39,11 +40,6 @@ pub(crate) struct WorkingState {
     pub(crate) group: String,
     pub(crate) facts: Option<FileFacts>,
     pub(crate) stored: u64,
-}
-
-#[derive(PartialEq, Eq)]
-pub(crate) struct FailedChain {
-    pub(crate) length: u64,
 }
 
 /// Physical custody has its own continuation and cannot update source state.
@@ -74,7 +70,8 @@ pub(crate) struct Plan {
     /// A location the loop keeps watching (not a one-off import).
     pub(crate) tracked: bool,
     pub(crate) failed: bool,
-    pub(crate) parse_failed: bool,
+    /// The chain's parse state records this plan's failure or refusal.
+    pub(crate) failure_recorded: bool,
     pub(crate) replace: bool,
     /// The bytes after `parse_pos` are an incomplete last record.
     pub(crate) waiting: bool,
@@ -127,7 +124,7 @@ impl Plan {
             priority: Priority::Bulk,
             tracked,
             failed: false,
-            parse_failed: false,
+            failure_recorded: false,
             replace: false,
             waiting: false,
             source,
@@ -229,10 +226,10 @@ impl Plan {
             return;
         }
         if d.error.is_some() {
+            self.failure_recorded |= d.failure_recorded && !d.write_failed;
             if d.stored > 0 && !d.write_failed {
                 // The parser failed after custody succeeded. Preserve its last
                 // valid cursor while continuing raw acquisition through EOF.
-                self.parse_failed = true;
                 self.parser_deferred = true;
                 self.parser_state = d.parser_state;
                 return;

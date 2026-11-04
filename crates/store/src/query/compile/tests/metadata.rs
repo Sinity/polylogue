@@ -72,7 +72,7 @@ fn matches_declarations_follow_actual_producer_columns_and_replay_frozen_saved_b
         assert!(!String::from_utf8_lossy(&bytes).contains("match_outputs"));
         let restored = serde_json::from_slice(&bytes).unwrap();
         let replay =
-            polylogue_query::plan::replay(&restored, &polylogue_query::plan::catalog_fingerprint())
+            polylogue_query::plan::replay(&restored, polylogue_query::plan::catalog_fingerprint())
                 .unwrap();
         assert_eq!(replay.question_id(), plan.question_id());
         assert_eq!(
@@ -128,7 +128,7 @@ fn frozen_unshaped_saved_scope_keeps_native_relations_without_persisting_them_as
     assert!(!String::from_utf8_lossy(&encoded).contains("relation_scope"));
     let restored = serde_json::from_slice(&encoded).unwrap();
     let replay =
-        polylogue_query::plan::replay(&restored, &polylogue_query::plan::catalog_fingerprint())
+        polylogue_query::plan::replay(&restored, polylogue_query::plan::catalog_fingerprint())
             .unwrap();
     let source = &replay.bound_query().query().source;
     assert!(
@@ -154,7 +154,7 @@ fn frozen_unshaped_saved_scope_keeps_native_relations_without_persisting_them_as
     assert_eq!(serde_json::to_vec(&runtime_forgery).unwrap(), encoded);
     let checked = polylogue_query::plan::replay(
         &runtime_forgery,
-        &polylogue_query::plan::catalog_fingerprint(),
+        polylogue_query::plan::catalog_fingerprint(),
     )
     .unwrap();
     assert!(
@@ -210,11 +210,8 @@ fn frozen_unshaped_saved_scope_keeps_native_relations_without_persisting_them_as
             .iter()
             .any(|field| field.name == "codex")
     );
-    polylogue_query::plan::replay(
-        &scoped_object,
-        &polylogue_query::plan::catalog_fingerprint(),
-    )
-    .unwrap();
+    polylogue_query::plan::replay(&scoped_object, polylogue_query::plan::catalog_fingerprint())
+        .unwrap();
     options.kept.insert(
         "artifact".into(),
         Kept {

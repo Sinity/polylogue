@@ -19,33 +19,51 @@ pub fn json(data: &Value, _color: bool) -> String {
 /// A query's rows as a table, or a measurement in its
 /// own text view.
 pub fn query(data: &Value, color: bool) -> String {
-    if data["outcome"] == "measure" {
-        let text = crate::daemon::measure::find(data["measure"].as_str().unwrap_or(""))
-            .map_or(polylogue_render::measures::json as fn(&_) -> _, |(m, _)| {
-                m.text
-            });
-        let mut out = text(&data["data"]);
-        if let Some(next) = polylogue_render::results::next_page(data) {
-            if !out.ends_with('\n') {
-                out.push('\n');
-            }
-            let _ = writeln!(out, "{next}");
+    use crate::protocol::query::Answer;
+    match query_answer(data) {
+        Answer::PagedMeasure(measure) => {
+            measurement(&measure.measure, &measure.data, measure.next.as_deref())
         }
-        return out;
+        Answer::Measure(measure) => measurement(&measure.measure, &measure.data, None),
+        Answer::Rows(_) => {
+            let mut out = Vec::new();
+            let _ = polylogue_render::results::terminal_with_color(data, color, &mut out);
+            String::from_utf8_lossy(&out).into_owned()
+        }
     }
-    let mut out = Vec::new();
-    let _ = polylogue_render::results::terminal_with_color(data, color, &mut out);
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Query text for the tour, whose final display handles styling.
 pub fn query_plain(data: &Value) -> String {
-    if data["outcome"] == "measure" {
-        return query(data, false);
+    match query_answer(data) {
+        crate::protocol::query::Answer::Rows(_) => {
+            let mut out = Vec::new();
+            let _ = polylogue_render::results::plain_terminal(data, &mut out);
+            String::from_utf8_lossy(&out).into_owned()
+        }
+        _ => query(data, false),
     }
-    let mut out = Vec::new();
-    let _ = polylogue_render::results::plain_terminal(data, &mut out);
-    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The query operation's declared answer.
+fn query_answer(data: &Value) -> crate::protocol::query::Answer {
+    serde::Deserialize::deserialize(data).expect("query operation returns its declared answer")
+}
+
+/// A measurement in its measure's text view, with the continuation line.
+fn measurement(what: &str, data: &Value, next: Option<&str>) -> String {
+    let text = crate::daemon::measure::find(what)
+        .map_or(polylogue_render::measures::json as fn(&_) -> _, |(m, _)| {
+            m.text
+        });
+    let mut out = text(data);
+    if let Some(next) = next {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        let _ = writeln!(out, "{}", polylogue_render::results::continuation(next));
+    }
+    out
 }
 
 /// The same typed read document, rendered for an MCP/model-facing transcript.

@@ -25,6 +25,7 @@ fn every_database_starts_at_its_one_baseline() {
         ensure_index,
         ensure_primary_index,
         ensure_embeddings,
+
     ] {
         let conn = Connection::open_in_memory().unwrap();
         create(&conn).unwrap();
@@ -321,4 +322,64 @@ fn an_unversioned_file_with_tables_is_refused_unchanged() {
             "{name}"
         );
     }
+}
+
+#[test]
+fn parse_standings_require_their_length_and_reason() {
+    let conn = Connection::open_in_memory().unwrap();
+    ensure_index(&conn).unwrap();
+    conn.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(1,'waiting','synthetic'),(2,'done','synthetic'),(3,'collected','synthetic');
+        INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto,at_length) VALUES
+          (1,1,'v1','waiting',40,100),(2,1,'v1','done',90,NULL),(3,1,'v1','no_parser_yet',30,NULL);").unwrap();
+    assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
+    let rows: Vec<(String, i64, Option<i64>)> = conn
+        .prepare("SELECT status,parsed_upto,at_length FROM parse_state ORDER BY input_pk")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        [
+            ("waiting".to_owned(), 40, Some(100)),
+            ("done".to_owned(), 90, None),
+            ("no_parser_yet".to_owned(), 30, None),
+        ]
+    );
+    let detail: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('parse_state') WHERE name='detail')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!detail);
+    // A waiting status always names its length.
+    assert!(
+        conn.execute("UPDATE parse_state SET at_length=NULL WHERE input_pk=1", [])
+            .is_err()
+    );
+    // Every designed standing is storable, and a refusal or failure keeps its reason.
+    for (status, reason) in [
+        ("refused", "synthetic reason"),
+        ("failed", "synthetic error"),
+    ] {
+        conn.execute(
+            "UPDATE parse_state SET status=?1,reason=?2,at_length=90 WHERE input_pk=2",
+            [status, reason],
+        )
+        .unwrap();
+        assert!(
+            conn.execute("UPDATE parse_state SET reason=NULL WHERE input_pk=2", [])
+                .is_err()
+        );
+    }
+    assert!(
+        conn.execute(
+            "UPDATE parse_state SET status='done',reason='stray',at_length=NULL WHERE input_pk=2",
+            []
+        )
+        .is_err()
+    );
 }

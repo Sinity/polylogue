@@ -177,6 +177,9 @@ pub type StreamProducer = fn(
     &mut dyn std::io::Write,
 ) -> Option<Result<(), crate::daemon::Failure>>;
 
+/// Checks that an answer's value is the operation's declared type.
+pub type AnswerDecoder = fn(&Value) -> Result<(), String>;
+
 pub type TypedRequestBuilder =
     fn(Value, &Caller, &str) -> Result<Request, command_surface::Failure>;
 pub type OutputHandler =
@@ -223,6 +226,9 @@ pub struct Command {
     >,
     pub typed_schemas: Option<fn() -> (Value, Value)>,
     pub build_typed: Option<TypedRequestBuilder>,
+    /// Decodes an answer's value as the operation's declared type, so a
+    /// value from a daemon of another build is refused before it is printed.
+    pub decode_answer: Option<AnswerDecoder>,
     /// The command-line words (`assert-query`), also the operation's name
     /// within its MCP tool; the HTTP route joins them with `/`.
     pub name: &'static str,
@@ -394,6 +400,7 @@ const CLI: Command = Command {
     register: None,
     typed_schemas: None,
     build_typed: None,
+    decode_answer: None,
     name: "",
     help: "",
     args: &[],
@@ -437,6 +444,13 @@ pub const GROUPS: &[Group] = &[
     },
 ];
 
+/// Whether `value` decodes as the declared answer type `T`.
+fn decodes<T: serde::de::DeserializeOwned>(value: &Value) -> Result<(), String> {
+    T::deserialize(value)
+        .map(drop)
+        .map_err(|error| error.to_string())
+}
+
 macro_rules! typed_command {
     ($marker:ident, $arguments:ty, $answer:ty, { name: $name:literal, $($fields:tt)* }) => {{
         struct $marker;
@@ -450,6 +464,7 @@ macro_rules! typed_command {
             register: Some(crate::protocol::operations::register::<$marker>),
             build_typed: Some(crate::protocol::operations::build::<$marker>),
             typed_schemas: Some(|| (schemars::schema_for!($arguments).to_value(), schemars::schema_for!(command_surface::Answer<$answer>).to_value())),
+            decode_answer: Some(decodes::<$answer>),
             $($fields)*
         }
     }};
@@ -500,6 +515,7 @@ fn measure_command(m: &'static Measure) -> Command {
         args: args.leak(),
         action: Action::Request(requests::measure),
         print: print::query,
+        decode_answer: Some(decodes::<crate::protocol::query::Answer>),
         ..CLI
     }
 }

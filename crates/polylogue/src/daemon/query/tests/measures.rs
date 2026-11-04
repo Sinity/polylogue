@@ -94,7 +94,12 @@ fn time_comparison_and_facets_page_with_the_query_cursor() {
             match page["next"].as_str() {
                 Some(next) => {
                     let command = crate::commands::command("query").unwrap();
-                    assert!((command.print)(&page, false).contains(&format!("--cursor {next}")));
+                    // The test helper puts the typed outcome beside the document.
+                    let mut document = page.clone();
+                    document.as_object_mut().unwrap().remove("outcome");
+                    assert!(
+                        (command.print)(&document, false).contains(&format!("--cursor {next}"))
+                    );
                     cursor = Some(next.into());
                 }
                 None => break page["count"].as_u64().unwrap(),
@@ -287,7 +292,11 @@ fn clustered_fields_print_the_parameter_in_query_output() {
             .iter()
             .any(|n| n.as_str().is_some_and(|n| n.contains("5-minute gap")))
     );
-    assert!(crate::cli::print::query(&result, false).contains("5-minute gap"));
+    let printed = crate::cli::print::query(
+        &super::document(&archive, "sessions | agg p50:clustered_time"),
+        false,
+    );
+    assert!(printed.contains("5-minute gap"));
 }
 
 #[test]

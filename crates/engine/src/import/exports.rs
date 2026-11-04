@@ -165,7 +165,7 @@ impl Engine {
             plan.parse_pos = plan.size;
         } else {
             plan.failed = true;
-            plan.parse_failed = true;
+            plan.failure_recorded = true;
         }
         Ok(())
     }
@@ -402,6 +402,8 @@ pub(crate) struct ExportStep {
     ordinal: u64,
     source: Option<ExportDeliverySource>,
     previous_prefix: BlobHash,
+    /// The scanner declined the container, for this reason.
+    refused: Option<String>,
 }
 
 impl ExportStep {
@@ -433,6 +435,9 @@ impl ExportStep {
         step.repeats_whole_conversations = self.repeats;
         step.reset = self.reset;
         step.reading_version = plan.origin.reading_version();
+        if let Some(reason) = self.refused {
+            step.progress = polylogue_model::batch::StepProgress::Refused { reason };
+        }
         if self.done {
             step.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
                 step.reading_version.clone(),
@@ -478,7 +483,7 @@ pub(crate) fn parse_export(
         }
     };
     if let Some(error) = refusal {
-        let step = export::refused(error, plan.size);
+        let step = export::refused(error.clone(), plan.size);
         // A refusal has no complete source footprint or parser checkpoint.
         // Staged prefix items remain unpublished until the entire scan succeeds.
         delivered(
@@ -492,6 +497,7 @@ pub(crate) fn parse_export(
                 ordinal: 0,
                 source: Some(ExportDeliverySource::ContainerHeader),
                 previous_prefix: ExportDelivery::seed(),
+                refused: Some(error),
             })?,
             0,
         )?;
@@ -527,6 +533,7 @@ pub(crate) fn parse_export(
                 ordinal,
                 source: Some(ExportDeliverySource::ContainerHeader),
                 previous_prefix,
+                refused: None,
             })?,
             ordinal,
         )?;
@@ -560,6 +567,7 @@ pub(crate) fn parse_export(
                     end: range.end,
                 }),
                 previous_prefix,
+                refused: None,
             })?,
             ordinal,
         )?;
@@ -591,6 +599,7 @@ pub(crate) fn parse_export(
                 delivery_count: ordinal,
             }),
             previous_prefix,
+            refused: None,
         })?,
         ordinal,
     )?;

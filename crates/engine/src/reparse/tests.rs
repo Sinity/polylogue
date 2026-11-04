@@ -101,7 +101,10 @@ fn chains_parse_together_and_continue_while_the_writer_is_blocked() {
         .reads
         .reader()
         .unwrap()
-        .chains_behind_index(&[("claude-code".into(), "before".into())])
+        .chains_behind_index(
+            &[("claude-code".into(), "before".into())],
+            polylogue_store::StoppedChains::Settled,
+        )
         .unwrap();
     let watched: HashMap<_, _> = engine
         .inputs
@@ -246,7 +249,10 @@ fn a_committed_live_path_can_append_while_another_chain_is_still_parsing() {
         .reads
         .reader()
         .unwrap()
-        .chains_behind_index(&[("claude-code".into(), "before".into())])
+        .chains_behind_index(
+            &[("claude-code".into(), "before".into())],
+            polylogue_store::StoppedChains::Settled,
+        )
         .unwrap();
     let watched: HashMap<_, _> = engine
         .inputs
