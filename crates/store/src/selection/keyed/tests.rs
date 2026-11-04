@@ -68,7 +68,6 @@ fn a_row_continuation_resumes_at_its_anchor_by_key_without_earlier_bodies() {
     assert_eq!(
         kinds_from(&reader, &selection, Some(&keys[2])),
         ["synthetic-c"]
-
     );
 }
 
@@ -153,7 +152,6 @@ fn reverse_selection_mirrors_nulls_ties_and_selection_stages() {
                 "{query}, from row {end}"
             );
         }
-
     }
 }
 

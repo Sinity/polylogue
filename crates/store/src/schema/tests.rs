@@ -25,8 +25,6 @@ fn every_database_starts_at_its_one_baseline() {
         ensure_index,
         ensure_primary_index,
         ensure_embeddings,
-
-
     ] {
         let conn = Connection::open_in_memory().unwrap();
         create(&conn).unwrap();

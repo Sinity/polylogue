@@ -5,7 +5,6 @@ use crate::Reader;
 use std::ops::ControlFlow;
 
 impl Reader<'_> {
-
     fn resolved_assertion_revision(
         &self,
         reference: &RevisionReference,

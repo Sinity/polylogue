@@ -243,7 +243,9 @@ impl Reading {
         match &self.progress {
             StepProgress::NoParserYet { .. } => CoverageStatus::NoParserYet,
             _ if self.unreadable > 0 => CoverageStatus::Unreadable,
-            StepProgress::AtEnd if !self.prefix_missing && self.parsed_upto >= self.length => CoverageStatus::Complete,
+            StepProgress::AtEnd if !self.prefix_missing && self.parsed_upto >= self.length => {
+                CoverageStatus::Complete
+            }
             StepProgress::AtEnd | StepProgress::Partway => CoverageStatus::Partial,
             StepProgress::Refused { .. } => CoverageStatus::Refused,
             StepProgress::Failed { .. } => CoverageStatus::Failed,

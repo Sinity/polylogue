@@ -996,5 +996,4 @@ fn cwd_searches_recorded_directories_and_never_scans_sessions() {
         ["test:below", "test:here"]
     );
     assert_eq!(ids("sessions where cwd:/").len(), 4);
-
 }

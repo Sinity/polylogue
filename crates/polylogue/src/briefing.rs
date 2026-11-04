@@ -490,7 +490,6 @@ impl Here {
                 .map(|live| (live.session.clone(), live.state))
                 .collect(),
             beads: index.open_beads(dirs, claims_since),
-
         }
     }
 }
@@ -731,7 +730,6 @@ fn session_start(
             "assertions where NOT author:operator judged:unknown ({assertion_scope})"
         ))
     );
-
 
     let mut header = format!("Polylogue brief for {here} (delivery {delivery_id})\n");
     if let Some(p) = &previous {
