@@ -10,6 +10,7 @@
 //! - [`text_search`]: whether a text is still stored or indexed anywhere.
 
 pub mod authored;
+pub mod signals;
 pub mod text_search;
 pub mod writer;
 

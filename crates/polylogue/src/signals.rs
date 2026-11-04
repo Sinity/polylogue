@@ -12,8 +12,8 @@ use polylogue_model::{
     user::UserWrite,
 };
 use serde_json::{Value, json};
-use shared_signals::{DayCalendar, Evaluator, HostPolicy, InterruptBudget, Policy};
-use std::{collections::BTreeMap, sync::Arc};
+use shared_signals::{DayCalendar, Evaluator, HostPolicy, HostSettings, InterruptBudget};
+use std::sync::Arc;
 
 pub fn duration(text: &str) -> Option<i64> {
     query_language::time::duration_ms(text).filter(|n| *n >= 0)
@@ -80,7 +80,6 @@ fn operation(d: &Daemon) -> Result<Arc<crate::operation::Context>, Held> {
 struct LocalAttention {
     quiet: Option<shared_signals::QuietHours>,
     budget: usize,
-    identity: String,
 }
 fn local_attention(
     reader: &polylogue_store::Reader<'_>,
@@ -89,46 +88,41 @@ fn local_attention(
     let catalog = reader
         .settings_catalog(&context.machine)
         .map_err(|e| e.to_string())?;
-    let encoded =
-        serde_json::to_vec(&(context.clock.day.wire(), &catalog)).map_err(|e| e.to_string())?;
     let (quiet, budget) = polylogue_model::settings::Snapshot::new(catalog)
         .standalone_attention()
         .map_err(|e| e.to_string())?;
     Ok(LocalAttention {
         quiet: quiet.map(|[from, to]| shared_signals::QuietHours { from, to }),
         budget,
-        identity: blake3::hash(&encoded).to_hex().to_string(),
     })
 }
 fn initial(
+    d: &Daemon,
     context: &crate::operation::Context,
     attention: Option<&LocalAttention>,
 ) -> Result<Checkpoint, String> {
     let calendar = DayCalendar::new(context.clock.day.clone());
     let host = attention.map(|a| {
         HostPolicy::new(
+            HostSettings {
+                product: "polylogue".into(),
+                quiet_hours: a.quiet,
+                away_command: d.config.signals.notifications.away_command.is_some(),
+                ..HostSettings::default()
+            },
             InterruptBudget {
                 per_hour: a.budget,
                 handoffs: vec![],
             },
-            a.quiet,
         )
     });
     Ok(Checkpoint {
         owner: context.machine.clone(),
-        evaluator: Evaluator::new(
-            context.clock.now.as_millisecond(),
-            vec![],
-            Policy::default(),
-            &calendar,
-        )
-        .map_err(|e| e.to_string())?,
+        evaluator: Evaluator::new(context.clock.now.as_millisecond(), vec![], &calendar)
+            .map_err(|e| e.to_string())?,
         rules: vec![],
-        rule_sources: BTreeMap::new(),
-        rule_revisions: BTreeMap::new(),
         host,
         notifications: None,
-        outlet_attempts: BTreeMap::new(),
     })
 }
 
@@ -202,7 +196,7 @@ fn tick(d: &Daemon) -> Result<Tick, Held> {
         .map_err(|e| e.to_string())?;
     let checkpoint = match previous {
         Some(value) => value,
-        None => initial(&context, attention.as_ref())?,
+        None => initial(d, &context, attention.as_ref())?,
     };
     if clock.now.as_millisecond() < checkpoint.evaluator.now() {
         return Err("clock precedes the durable evaluator checkpoint".into());

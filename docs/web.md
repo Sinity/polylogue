@@ -500,7 +500,7 @@ Saved queries are names on query hashes, listed in the facet rail and at `/notes
 
 Settings are archive records with history and author. This page edits those a person sets through the web:
 - **View preferences:** density; fold defaults (tool output and pastes over N lines); single-key shortcuts on or off; theme (system, light, dark) and the palette source; rail and panel state per view; default reader toggles.
-- **The operator's facts and open choices** ([operations.md](operations.md#configuration)): logical day (read from Sinex in primary mode), subscription plan and price table, enabled variants, quiet hours and interrupt budget (Sinex's in primary mode), listen address and authentication, the optional notification route command.
+- **The operator's facts and open choices** ([operations.md](operations.md#configuration)): logical day (read from Sinex in primary mode), subscription plan and price table, enabled variants, quiet hours and interrupt budget (Sinex's in primary mode), listen address and authentication, the optional away command.
 
 Every change shows who made it and when.
 

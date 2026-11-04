@@ -397,13 +397,13 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 kind: KindRef {
                     name: (*name).into(),
                     version: if *name == "polylogue.assertion" {
-                        1
+                        2
                     } else {
                         match *product {
                             // A product holding a parser reading moved to one
                             // progress value in place of two flags.
                             "message" => 6,
-                            "request" | "restored_request" => 5,
+                            "request" | "restored_request" => 6,
                             "session" | "document" | "event" | "link" | "background"
                             | "repository" | "parse_progress" => 5,
                             "input" => 4,

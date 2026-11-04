@@ -1,152 +1,8 @@
 use super::*;
-use shared_signals::notifications::{NotificationState, SendDecision};
-use shared_signals::{Calendar, Condition};
-use signal_delivery::{
-    Authorization, CancellationToken, Deliverer, Interrupted, NotificationRequest,
-    NotificationUpdate, PolicyCheck, PolicyFailure, PolicyRequest,
-};
+use shared_signals::notifications::NotificationState;
+use signal_delivery::{Deliverer, NotificationRequest, NotificationUpdate};
 use tokio::sync::mpsc;
-
-/// The SQLite read snapshot ends inside this synchronous calculation. The
-/// returned future owns immutable decisions and no database handle or guard.
-fn admission(d: &Daemon, request: PolicyRequest) -> Result<Authorization, PolicyFailure> {
-    let attempt = &request.attempt;
-    attempt.check().map_err(PolicyFailure::Interrupted)?;
-    if d.archive.is_primary() {
-        return Err(PolicyFailure::Unavailable);
-    }
-    let context = operation(d).map_err(|_| unavailable(attempt))?;
-    attempt.check().map_err(PolicyFailure::Interrupted)?;
-    let clock = &context.clock;
-    let reader = d.reads.reader().map_err(|_| unavailable(attempt))?;
-    attempt.check().map_err(PolicyFailure::Interrupted)?;
-    let checkpoint = reader
-        .signal_checkpoint(&context.machine)
-        .map_err(|_| unavailable(attempt))?
-        .ok_or(PolicyFailure::Unavailable)?;
-    attempt.check().map_err(PolicyFailure::Interrupted)?;
-    let attention = local_attention(&reader, &context).map_err(|_| unavailable(attempt))?;
-    attempt.check().map_err(PolicyFailure::Interrupted)?;
-    let policy = attention.identity;
-
-    let calendar = DayCalendar::new(clock.day.clone());
-    let now = clock.now.as_millisecond();
-    let quiet_until = attention
-        .quiet
-        .and_then(|hours| calendar.quiet_until(now, hours));
-    let mut outboxes = BTreeMap::new();
-    reader
-        .visit_signals(|value| {
-            attempt.check().map_err(|interrupted| match interrupted {
-                Interrupted::Deadline => polylogue_store::StoreError::ReadDeadlineExceeded,
-                Interrupted::Cancelled => polylogue_store::StoreError::ReadCancelled,
-            })?;
-            outboxes.insert(value.id.clone(), value);
-            Ok(())
-        })
-        .map_err(|_| unavailable(attempt))?;
-    attempt.check().map_err(PolicyFailure::Interrupted)?;
-    let mut decisions = BTreeMap::new();
-    for notice in &request.notices {
-        attempt.check().map_err(PolicyFailure::Interrupted)?;
-        let outbox = outboxes
-            .get(&notice.delivery_id)
-            .ok_or(PolicyFailure::Unavailable)?;
-        let metadata = &outbox.outbox.metadata;
-        if metadata.notice != *notice {
-            return Err(PolicyFailure::Unavailable);
-        }
-        let decision = if metadata.execution != ExecutionEligibility::Live {
-            SendDecision::Cancel
-        } else {
-            let active = checkpoint
-                .rules
-                .iter()
-                .find(|rule| rule.version == metadata.delivery.trigger.rule)
-                .ok_or(PolicyFailure::Unavailable)?;
-            if !active.rule.enabled {
-                SendDecision::Cancel
-            } else if let Some(at) = quiet_until {
-                SendDecision::HoldUntil {
-                    at,
-                    policy: policy.clone(),
-                }
-            } else {
-                // Missing producer proof never becomes permission at a timer.
-                let intent = shared_signals::FiredIntent {
-                    delivery: metadata.delivery.clone(),
-                    author: shared_signals::Author::Agent("adapter".into()),
-                    quiet_hours: None,
-                    rate_limit: None,
-                    current: notice.current,
-                };
-                match checkpoint.evaluator.condition(&intent, now) {
-                    Condition::Ended => SendDecision::Cancel,
-                    Condition::Incomplete => SendDecision::HoldUntil {
-                        at: now.saturating_add(30_000),
-                        policy: policy.clone(),
-                    },
-                    Condition::Matching => SendDecision::HoldUntil {
-                        at: now.saturating_add(30_000),
-                        policy: format!("{policy}:input-proof-unavailable"),
-                    },
-                }
-            }
-        };
-        decisions.insert(notice.delivery_id.clone(), decision);
-    }
-    // All synchronous read/transaction scopes end before this immutable result.
-    // The common caller checks this same lifetime again before platform I/O.
-    attempt.check().map_err(PolicyFailure::Interrupted)?;
-    Ok(Authorization { decisions })
-}
-
-fn unavailable(attempt: &signal_delivery::AttemptContext) -> PolicyFailure {
-    attempt
-        .check()
-        .err()
-        .map_or(PolicyFailure::Unavailable, PolicyFailure::Interrupted)
-}
-
-pub(super) fn policy(d: Arc<Daemon>) -> PolicyCheck {
-    Arc::new(move |request| {
-        let d = Arc::clone(&d);
-        let attempt = request.attempt.clone();
-        Box::pin(read_admission(attempt, move || admission(&d, request)))
-    })
-}
-
-/// SQLite owns a thread-bound scoped limit. The async owner drives its existing
-/// cancellation while always observing blocking completion and reader cleanup.
-async fn read_admission<T: Send + 'static>(
-    attempt: signal_delivery::AttemptContext,
-    work: impl FnOnce() -> Result<T, PolicyFailure> + Send + 'static,
-) -> Result<T, PolicyFailure> {
-    use polylogue_store::read::limit::{ReadCancellation, ReadLimit};
-    attempt.check().map_err(PolicyFailure::Interrupted)?;
-    let cancellation = ReadCancellation::default();
-    let deadline = attempt.deadline().into_std();
-    let read_cancellation = cancellation.clone();
-    let mut worker =
-        tokio::task::spawn_blocking(move || ReadLimit::at(deadline, read_cancellation).scope(work));
-    let completed = tokio::select! {
-        biased;
-        _ = attempt.cancellation().cancelled() => {
-            cancellation.cancel();
-            worker.await
-        }
-        _ = tokio::time::sleep_until(attempt.deadline()) => {
-            cancellation.cancel();
-            worker.await
-        }
-        result = &mut worker => result,
-    };
-    // Never detach a timed-out read, and never turn a completed late read into
-    // authority. SQLite pool waits/progress/busy hooks observe the same limit.
-    let result = completed.map_err(|_| unavailable(&attempt))?;
-    attempt.check().map_err(PolicyFailure::Interrupted)?;
-    result
-}
+use tokio_util::sync::CancellationToken;
 
 async fn connect(d: &Daemon) -> Option<zbus::Connection> {
     let address = d.config.notification_bus_address.as_deref()?;
@@ -157,11 +13,6 @@ async fn connect(d: &Daemon) -> Option<zbus::Connection> {
 }
 
 fn persist_update(d: &Daemon, update: &NotificationUpdate) -> Result<bool, Held> {
-    if update.released.is_some() {
-        return Err(
-            "notification ownership transfer requires the confirmed producer outbox".into(),
-        );
-    }
     let context = operation(d)?;
     let reader = d.reads.reader().map_err(|e| e.to_string())?;
     let previous = reader
@@ -180,7 +31,7 @@ fn persist_update(d: &Daemon, update: &NotificationUpdate) -> Result<bool, Held>
             } else {
                 Some(local_attention(&reader, &context)?)
             };
-            initial(&context, attention.as_ref())?
+            initial(d, &context, attention.as_ref())?
         }
     };
     drop(reader);
@@ -209,7 +60,7 @@ fn recover(
                     .iter()
                     .any(|event| matches!(event.event, Event::Desktop { .. }));
             if metadata.execution == ExecutionEligibility::Live
-                && metadata.delivery.channel == shared_signals::Channel::Interrupt
+                && metadata.delivery.decision.interrupts()
                 && !attempted
             {
                 requests
@@ -291,16 +142,9 @@ async fn drive(
             connection = connect(d) => connection,
         };
         let deliverer = Deliverer::new(connection, d.config.signals.notification_config(), state);
-        let wall = d.config.requests.clone();
+        // The worker ends when the request channel closes; stopping drops it.
         Some(tokio::spawn(signal_delivery::run(
-            deliverer,
-            receiver,
-            updates,
-            policy(Arc::clone(d)),
-            Arc::new(move || wall.now().unix_ms()),
-            stop.clone(),
-            // This background worker has no enclosing request deadline.
-            None,
+            deliverer, receiver, updates,
         )))
     };
     let mut evaluate = true;

@@ -72,12 +72,7 @@ let
         default = { };
         type = types.submodule {
           options = {
-            route = optional (types.enum [
-              "dbus"
-              "command"
-              "both"
-            ]) "Notification route.";
-            command = optional commandType "Explicit notification command.";
+            away_command = optional commandType "Command that receives each notice sent away, as JSON on standard input.";
             deadline_ms = optional types.ints.positive "Notification delivery deadline in milliseconds.";
           };
         };

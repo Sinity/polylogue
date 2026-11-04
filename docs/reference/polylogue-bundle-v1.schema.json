@@ -222,6 +222,14 @@
         "rule": {
           "$ref": "#/$defs/Rule"
         },
+        "shipped": {
+          "description": "Urgency and inhibition, from the product's shipped table only.",
+          "$ref": "#/$defs/Shipped",
+          "default": {
+            "inhibition_scope": "host",
+            "urgency": "normal"
+          }
+        },
         "version": {
           "$ref": "#/$defs/RuleVersion"
         },
@@ -2016,6 +2024,14 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "to": {
+                    "description": "Recipients besides the operator's inbox. `scope` only routes to briefs.",
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^(session:.+|@.+|role:.+)$"
+                    }
                   }
                 },
                 "additionalProperties": false,
@@ -3141,7 +3157,7 @@
             }
           ]
         },
-        "dbus": {
+        "desktop": {
           "anyOf": [
             {
               "$ref": "#/$defs/DeliveryOutcome"
@@ -3150,27 +3166,6 @@
               "type": "null"
             }
           ]
-        },
-        "handoff": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "held": {
-          "type": "object",
-          "properties": {
-            "both": {
-              "$ref": "#/$defs/HeldRoute"
-            },
-            "command": {
-              "$ref": "#/$defs/HeldRoute"
-            },
-            "dbus": {
-              "$ref": "#/$defs/HeldRoute"
-            }
-          },
-          "additionalProperties": false
         },
         "notice": {
           "$ref": "#/$defs/Notice"
@@ -3199,14 +3194,202 @@
           ]
         },
         "shown": {
-          "type": "boolean",
-          "default": false
+          "type": "boolean"
         }
       },
       "required": [
         "notice",
+        "shown",
         "retried",
         "active"
+      ]
+    },
+    "Attention": {
+      "description": "The deliverer's snapshot of the operator's attention at one instant, kept\ncurrent from facts it already has. Every field has a value meaning\n\"unknown\", and unknown inputs only ever leave routing as quiet hours and the\nbudget decide it.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "away_command": {
+          "description": "The deployment configures a command that sends notices away.",
+          "type": "boolean"
+        },
+        "breakpoint": {
+          "description": "A breakpoint happens at `at`: an app or work-episode switch, the end of an\ninput bout, an unlock.",
+          "type": "boolean"
+        },
+        "budget_per_hour": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "budget_used": {
+          "description": "Interrupting handoffs charged to the host budget in the last hour.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "deep_work": {
+          "type": "boolean"
+        },
+        "deep_work_deferral": {
+          "$ref": "#/$defs/DeepWorkDeferral"
+        },
+        "focus": {
+          "description": "References shown in the focused window: an agent session joined to the\nwindow, a repository, a web route. Empty when unknown.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "presence": {
+          "$ref": "#/$defs/Presence"
+        },
+        "quiet_until": {
+          "description": "The end of an explicit `quiet until T` act.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        }
+      },
+      "required": [
+        "at",
+        "presence",
+        "focus",
+        "deep_work",
+        "breakpoint",
+        "budget_used",
+        "budget_per_hour",
+        "away_command",
+        "deep_work_deferral"
+      ]
+    },
+    "AttentionFacts": {
+      "type": "object",
+      "properties": {
+        "breakpoint_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "deep_work": {
+          "type": "boolean"
+        },
+        "focus": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "presence": {
+          "$ref": "#/$defs/Presence"
+        },
+        "quiet_until": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        }
+      },
+      "required": [
+        "presence",
+        "focus",
+        "deep_work"
+      ]
+    },
+    "AttentionInput": {
+      "description": "A fact about the operator's attention, applied at its instant.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "string",
+              "const": "presence"
+            },
+            "presence": {
+              "$ref": "#/$defs/Presence"
+            }
+          },
+          "required": [
+            "input",
+            "presence"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "string",
+              "const": "focus"
+            },
+            "references": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "input",
+            "references"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "input": {
+              "type": "string",
+              "const": "deep_work"
+            }
+          },
+          "required": [
+            "input",
+            "active"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "string",
+              "const": "breakpoint"
+            }
+          },
+          "required": [
+            "input"
+          ]
+        },
+        {
+          "description": "The operator's `quiet until T` act, or `quiet off` with `None`.",
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "string",
+              "const": "quiet_until"
+            },
+            "until": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          "required": [
+            "input"
+          ]
+        }
       ]
     },
     "Attribution": {
@@ -3267,6 +3450,19 @@
           "additionalProperties": false,
           "required": [
             "agent"
+          ]
+        },
+        {
+          "description": "A program that submitted a notice through its producer credential.",
+          "type": "object",
+          "properties": {
+            "producer": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "producer"
           ]
         }
       ]
@@ -3367,6 +3563,30 @@
       "required": [
         "author",
         "via"
+      ]
+    },
+    "AwayEntry": {
+      "type": "object",
+      "properties": {
+        "delivery": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/AwayState"
+        }
+      },
+      "required": [
+        "delivery",
+        "state"
+      ]
+    },
+    "AwayState": {
+      "type": "string",
+      "enum": [
+        "held",
+        "sent_away",
+        "cleared",
+        "acknowledged"
       ]
     },
     "BackfillChange": {
@@ -3958,11 +4178,11 @@
       ]
     },
     "Channel2": {
+      "description": "The channel a rule asks for. Routing decides what happens to a notice.",
       "type": "string",
       "enum": [
         "notice",
         "interrupt",
-        "brief",
         "value",
         "action"
       ]
@@ -4113,7 +4333,7 @@
           "$ref": "#/$defs/Evaluator"
         },
         "host": {
-          "description": "Present only for the standalone host deliverer. Primary uses Forward.",
+          "description": "Present only for the standalone host deliverer. In primary mode the\nevaluator's reports go to Sinex, whose deliverer decides.",
           "anyOf": [
             {
               "$ref": "#/$defs/HostPolicy"
@@ -4133,30 +4353,9 @@
             }
           ]
         },
-        "outlet_attempts": {
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/DeliveryOutcome"
-          }
-        },
         "owner": {
           "description": "The accepting machine's configured identity, within this archive.",
           "type": "string"
-        },
-        "rule_revisions": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0
-          }
-        },
-        "rule_sources": {
-          "description": "Source revision identities for the local monotone adoption ordinal.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
         },
         "rules": {
           "type": "array",
@@ -4169,8 +4368,28 @@
       "required": [
         "owner",
         "evaluator",
-        "rules",
-        "outlet_attempts"
+        "rules"
+      ]
+    },
+    "CloseReason": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "expired",
+            "dismissed"
+          ]
+        },
+        {
+          "description": "The condition ended or the deliverer closed it.",
+          "type": "string",
+          "const": "cleared"
+        },
+        {
+          "description": "A later notification about the same occurrence took its place.",
+          "type": "string",
+          "const": "replaced"
+        }
       ]
     },
     "Compare": {
@@ -4299,6 +4518,110 @@
         "unavailable"
       ]
     },
+    "Decision": {
+      "oneOf": [
+        {
+          "description": "Shown as a desktop notification; critical notices are also sent away\nwhile the operator is away.",
+          "type": "object",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "const": "show"
+            },
+            "send_away": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "decision",
+            "send_away"
+          ]
+        },
+        {
+          "description": "Sent to the deployment's away command.",
+          "type": "object",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "const": "send_away"
+            }
+          },
+          "required": [
+            "decision"
+          ]
+        },
+        {
+          "description": "Waits until `until`, or until its releasing input changes when `None`.",
+          "type": "object",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "const": "hold"
+            },
+            "reason": {
+              "$ref": "#/$defs/HoldReason"
+            },
+            "until": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          "required": [
+            "decision",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "const": "passive"
+            },
+            "reason": {
+              "$ref": "#/$defs/PassiveReason"
+            }
+          },
+          "required": [
+            "decision",
+            "reason"
+          ]
+        },
+        {
+          "description": "A value or action delivery, run through its configured target.",
+          "type": "object",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "const": "run"
+            }
+          },
+          "required": [
+            "decision"
+          ]
+        }
+      ]
+    },
+    "DeepWorkDeferral": {
+      "description": "Which non-critical interrupting notices wait for a breakpoint in deep work.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "never",
+            "all"
+          ]
+        },
+        {
+          "description": "Notices from agents' rules and producers wait; the operator's own and\nshipped rules show at once.",
+          "type": "string",
+          "const": "agents_and_producers"
+        }
+      ]
+    },
     "Deliver": {
       "type": "string",
       "enum": [
@@ -4308,75 +4631,6 @@
       ]
     },
     "Delivery": {
-      "type": "object",
-      "properties": {
-        "at": {
-          "type": "integer",
-          "format": "int64"
-        },
-        "basis": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Row"
-          }
-        },
-        "change": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Change"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "channel": {
-          "$ref": "#/$defs/Channel2"
-        },
-        "downgrade": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Downgrade"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "id": {
-          "type": "string"
-        },
-        "matched": {
-          "type": "integer",
-          "format": "int64"
-        },
-        "scope": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "trigger": {
-          "$ref": "#/$defs/Trigger"
-        },
-        "value": {
-          "type": [
-            "number",
-            "null"
-          ],
-          "format": "double"
-        }
-      },
-      "required": [
-        "id",
-        "trigger",
-        "matched",
-        "at",
-        "basis",
-        "channel"
-      ]
-    },
-    "Delivery2": {
       "type": "object",
       "properties": {
         "cwd": {
@@ -4424,6 +4678,39 @@
         "refs"
       ]
     },
+    "Delivery2": {
+      "description": "The record of one handoff. It never changes; later news is an outcome.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "attention": {
+          "description": "The attention the decision was taken under.",
+          "$ref": "#/$defs/Attention"
+        },
+        "decision": {
+          "$ref": "#/$defs/Decision"
+        },
+        "fired": {
+          "$ref": "#/$defs/Fired"
+        },
+        "held": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HoldRecord"
+          }
+        }
+      },
+      "required": [
+        "fired",
+        "at",
+        "decision",
+        "held",
+        "attention"
+      ]
+    },
     "DeliveryChange": {
       "type": "object",
       "properties": {
@@ -4468,7 +4755,7 @@
       ]
     },
     "DeliveryOutcome": {
-      "description": "A durable attempt begins unknown before effects run. Persist this record in\nthe same owner as deliveries; only a returned receipt changes its outcome.",
+      "description": "A durable value or action effect starts with an unknown receipt. Persist it\nwith the delivery; only a returned receipt changes its outcome.",
       "oneOf": [
         {
           "type": "object",
@@ -4547,14 +4834,14 @@
         "outcome": {
           "$ref": "#/$defs/DeliveryOutcome"
         },
-        "route": {
+        "outlet": {
           "type": "string"
         }
       },
       "required": [
         "delivery_id",
         "at",
-        "route",
+        "outlet",
         "outcome"
       ]
     },
@@ -4574,7 +4861,7 @@
           "type": "string"
         },
         "prepared": {
-          "$ref": "#/$defs/Delivery2"
+          "$ref": "#/$defs/Delivery"
         },
         "signal": {
           "anyOf": [
@@ -4597,9 +4884,15 @@
     "DesktopEvent": {
       "oneOf": [
         {
-          "description": "The product opens this reference through its ordinary read operation.",
+          "description": "The default action. The product opens the reference, passing the\nactivation token to the browser launch so focus moves under Wayland.",
           "type": "object",
           "properties": {
+            "activation_token": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "event": {
               "type": "string",
               "const": "open_reference"
@@ -4618,7 +4911,7 @@
           "properties": {
             "event": {
               "type": "string",
-              "const": "seen"
+              "const": "snooze"
             }
           },
           "required": [
@@ -4631,6 +4924,36 @@
             "event": {
               "type": "string",
               "const": "acknowledged"
+            }
+          },
+          "required": [
+            "event"
+          ]
+        },
+        {
+          "description": "A rule-supplied action.",
+          "type": "object",
+          "properties": {
+            "event": {
+              "type": "string",
+              "const": "action"
+            },
+            "key": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "key"
+          ]
+        },
+        {
+          "description": "Another notice of a summary was opened.",
+          "type": "object",
+          "properties": {
+            "event": {
+              "type": "string",
+              "const": "seen"
             }
           },
           "required": [
@@ -4789,13 +5112,6 @@
         "document"
       ]
     },
-    "Downgrade": {
-      "type": "string",
-      "enum": [
-        "rate_limit",
-        "interrupt_budget_spent"
-      ]
-    },
     "Duration": {
       "oneOf": [
         {
@@ -4905,6 +5221,7 @@
       ]
     },
     "Evaluator": {
+      "description": "The serializable evaluator checkpoint. Products persist it with the\ndeliveries it produced.",
       "type": "object",
       "properties": {
         "consumed": {
@@ -4924,14 +5241,17 @@
           "type": "integer",
           "format": "int64"
         },
+        "open": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Open"
+          }
+        },
         "pending": {
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/Pending"
           }
-        },
-        "policy": {
-          "$ref": "#/$defs/Policy"
         },
         "products": {
           "type": "array",
@@ -4939,6 +5259,13 @@
             "type": "string"
           },
           "uniqueItems": true
+        },
+        "reports": {
+          "description": "Reports not yet handed to a host policy or returned to the caller.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Report"
+          }
         },
         "rules": {
           "type": "object",
@@ -4949,12 +5276,13 @@
       },
       "required": [
         "now",
-        "policy",
         "rules",
         "products",
         "inputs",
         "consumed",
-        "pending"
+        "pending",
+        "open",
+        "reports"
       ]
     },
     "Event": {
@@ -5056,7 +5384,7 @@
           "type": "object",
           "properties": {
             "delivery": {
-              "$ref": "#/$defs/Delivery"
+              "$ref": "#/$defs/Delivery2"
             },
             "event": {
               "type": "string",
@@ -5176,18 +5504,48 @@
         "size"
       ]
     },
-    "FiredIntent": {
-      "description": "A firing is an intent until the host's quiet hours and attention budget have\nbeen applied. Authorship comes from the authenticated product write path.",
+    "Fired": {
+      "description": "One firing of a rule, before routing. Its basis (rows and their\nobservation) is fixed when it matched, never when it is handed off.",
       "type": "object",
       "properties": {
+        "at": {
+          "description": "When the evaluator fired it.",
+          "type": "integer",
+          "format": "int64"
+        },
         "author": {
           "$ref": "#/$defs/Author2"
         },
+        "basis": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        },
+        "change": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Change"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "channel": {
+          "$ref": "#/$defs/Channel2"
+        },
         "current": {
+          "description": "A current-state notice: it rechecks its condition until handoff and is\nclosed by a `Cleared` report when the condition ends.",
           "type": "boolean"
         },
-        "delivery": {
-          "$ref": "#/$defs/Delivery"
+        "id": {
+          "description": "Deterministic: product, rule ID and revision, occurrence and period.",
+          "type": "string"
+        },
+        "matched": {
+          "type": "integer",
+          "format": "int64"
         },
         "quiet_hours": {
           "anyOf": [
@@ -5208,12 +5566,48 @@
               "type": "null"
             }
           ]
+        },
+        "rule_name": {
+          "type": "string"
+        },
+        "scope": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shipped": {
+          "$ref": "#/$defs/Shipped"
+        },
+        "to": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Recipient"
+          }
+        },
+        "trigger": {
+          "$ref": "#/$defs/Trigger"
+        },
+        "value": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
         }
       },
       "required": [
-        "delivery",
+        "id",
+        "trigger",
+        "rule_name",
+        "matched",
+        "at",
+        "basis",
+        "channel",
+        "to",
         "author",
-        "current"
+        "current",
+        "shipped"
       ]
     },
     "Fires": {
@@ -5331,44 +5725,115 @@
       ]
     },
     "Held": {
+      "description": "A notice waiting in the host policy: the inbox's Held section.",
       "type": "object",
       "properties": {
-        "due": {
-          "type": "integer",
+        "deferred_since": {
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "int64"
         },
-        "intent": {
-          "$ref": "#/$defs/FiredIntent"
+        "due": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "fired": {
+          "$ref": "#/$defs/Fired"
+        },
+        "holds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HoldRecord"
+          }
+        },
+        "release": {
+          "$ref": "#/$defs/Release"
         }
       },
       "required": [
-        "intent",
-        "due"
+        "fired",
+        "holds",
+        "release"
       ]
     },
-    "HeldRoute": {
-      "description": "The owner policy that deferred this exact route. Deadlines are absolute\nmilliseconds; the owner resolves its current policy again after waking.",
+    "HoldReason": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "quiet",
+            "away",
+            "deep_work",
+            "snoozed"
+          ]
+        },
+        {
+          "description": "The producer has not confirmed that its data is up to date.",
+          "type": "string",
+          "const": "incomplete"
+        }
+      ]
+    },
+    "HoldRecord": {
       "type": "object",
       "properties": {
         "at": {
           "type": "integer",
           "format": "int64"
         },
-        "policy": {
-          "type": "string"
+        "reason": {
+          "$ref": "#/$defs/HoldReason"
+        },
+        "until": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
         }
       },
       "required": [
         "at",
-        "policy"
+        "reason"
       ]
     },
     "HostPolicy": {
-      "description": "One value belongs to the host deliverer, including all local and forwarded\nproduct intents. Persist it atomically with emitted delivery records.",
+      "description": "One value belongs to the host deliverer. Persist it atomically with the\ndeliveries, outcomes and summaries each advance returns.",
       "type": "object",
       "properties": {
+        "attention": {
+          "$ref": "#/$defs/AttentionFacts"
+        },
+        "away": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AwayEntry"
+          }
+        },
         "budget": {
           "$ref": "#/$defs/InterruptBudget"
+        },
+        "budget_passive": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "caused": {
+          "description": "Current consequences handed off as passive under each root.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/$defs/Fired"
+            }
+          }
         },
         "consumed": {
           "type": "array",
@@ -5377,11 +5842,118 @@
           },
           "uniqueItems": true
         },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "$ref": "#/$defs/AttentionInput"
+              }
+            ]
+          }
+        },
+        "keys": {
+          "description": "The latest delivery for each producer key.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "news": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OutcomeRecord"
+          }
+        },
+        "now": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "open": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/OpenNotice"
+          }
+        },
         "pending": {
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/Held"
           }
+        },
+        "progress": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Progress"
+          }
+        },
+        "rearmed_late": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RuleVersion"
+          }
+        },
+        "rules": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/RuleRevision"
+          }
+        },
+        "sent": {
+          "description": "Actual handoffs per rule, for rate limits.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        },
+        "settings": {
+          "$ref": "#/$defs/HostSettings"
+        }
+      },
+      "required": [
+        "settings",
+        "budget",
+        "now",
+        "attention",
+        "inputs",
+        "pending",
+        "consumed",
+        "sent",
+        "rules",
+        "progress",
+        "open",
+        "caused",
+        "away",
+        "budget_passive",
+        "keys",
+        "news",
+        "rearmed_late"
+      ]
+    },
+    "HostSettings": {
+      "description": "The deliverer's settings. Quiet hours and the budget are changeable\nsettings of the deliverer's product; the away command comes from\ndeployment configuration.",
+      "type": "object",
+      "properties": {
+        "away_command": {
+          "type": "boolean"
+        },
+        "deep_work_deferral": {
+          "$ref": "#/$defs/DeepWorkDeferral"
+        },
+        "product": {
+          "description": "The product whose deliverer this is; it owns the summary notifications.",
+          "type": "string"
         },
         "quiet_hours": {
           "anyOf": [
@@ -5392,23 +5964,12 @@
               "type": "null"
             }
           ]
-        },
-        "sent": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "int64"
-            }
-          }
         }
       },
       "required": [
-        "budget",
-        "pending",
-        "consumed",
-        "sent"
+        "product",
+        "away_command",
+        "deep_work_deferral"
       ]
     },
     "ImportAttribution": {
@@ -5539,6 +6100,14 @@
         }
       ]
     },
+    "InhibitionScope": {
+      "description": "Where an inhibiting rule's open occurrence folds the inhibited rules:\nanywhere on the host, or only deliveries with the same `scope` (a source).",
+      "type": "string",
+      "enum": [
+        "host",
+        "source"
+      ]
+    },
     "InjectionEvidence": {
       "description": "Missing observed evidence means unknown injection attribution. Declared\nhistorical claims remain available without becoming local observations.",
       "type": "object",
@@ -5605,6 +6174,7 @@
       ]
     },
     "InterruptBudget": {
+      "description": "Interrupting handoffs charged in the last hour. One per host, covering\nevery product and producer; the operator's and shipped rules are never\ncharged.",
       "type": "object",
       "properties": {
         "handoffs": {
@@ -5623,23 +6193,6 @@
       "required": [
         "per_hour",
         "handoffs"
-      ]
-    },
-    "Interval": {
-      "type": "object",
-      "properties": {
-        "end": {
-          "type": "integer",
-          "format": "int64"
-        },
-        "start": {
-          "type": "integer",
-          "format": "int64"
-        }
-      },
-      "required": [
-        "start",
-        "end"
       ]
     },
     "KeptResult": {
@@ -6084,20 +6637,11 @@
       "type": "object",
       "properties": {
         "delivery": {
-          "$ref": "#/$defs/Delivery"
+          "description": "The host policy's handoff record: the firing, its decision and the\nattention it was decided under.",
+          "$ref": "#/$defs/Delivery2"
         },
         "execution": {
           "$ref": "#/$defs/ExecutionEligibility"
-        },
-        "forward": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/FiredIntent"
-            },
-            {
-              "type": "null"
-            }
-          ]
         },
         "notice": {
           "$ref": "#/$defs/Notice"
@@ -7671,6 +8215,14 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "to": {
+                    "description": "Recipients besides the operator's inbox. `scope` only routes to briefs.",
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^(session:.+|@.+|role:.+)$"
+                    }
                   }
                 },
                 "additionalProperties": false,
@@ -8542,43 +9094,54 @@
       ]
     },
     "Notice": {
-      "description": "The evaluator has already applied quiet hours and the shared host budget.",
       "type": "object",
       "properties": {
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NoticeAction"
+          }
+        },
         "body": {
           "type": "string"
-        },
-        "budget_passive_count": {
-          "description": "The evaluator supplies a cumulative count of budget-downgraded notices.\nSuch notices update one host summary rather than showing individually.",
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint64",
-          "minimum": 0
         },
         "command_hint": {
           "description": "Shown when the server cannot offer actions.",
           "type": "string"
         },
-        "current": {
+        "critical": {
+          "description": "Only where captured data is being lost now.",
           "type": "boolean"
         },
-        "data_loss": {
-          "description": "Critical urgency is reserved for capture losing data now.",
+        "current": {
+          "description": "A current-state notice stays until its condition clears (`resident`).",
           "type": "boolean"
         },
         "delivery_id": {
           "type": "string"
         },
+        "desktop_entry": {
+          "description": "The product's web app, for the `desktop-entry` hint.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "icon": {
           "type": "string"
         },
-        "interrupt": {
-          "type": "boolean"
+        "lines": {
+          "description": "Lines of consequences folded into this root cause.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "occurrence": {
           "type": "string"
+        },
+        "outlets": {
+          "$ref": "#/$defs/Outlets"
         },
         "product": {
           "type": "string"
@@ -8589,8 +9152,20 @@
         "rule": {
           "type": "string"
         },
+        "showing": {
+          "description": "Each showing of the same delivery counts up; a snoozed notice shown\nagain is a new showing under the same identity.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "minimum": 0
+        },
         "summary": {
+          "description": "`<subject> · <what>`, one line.",
           "type": "string"
+        },
+        "transient": {
+          "description": "Kept out of the server's history (`transient`).",
+          "type": "boolean"
         }
       },
       "required": [
@@ -8603,9 +9178,26 @@
         "body",
         "reference",
         "command_hint",
-        "interrupt",
         "current",
-        "data_loss"
+        "transient",
+        "critical",
+        "outlets"
+      ]
+    },
+    "NoticeAction": {
+      "description": "A button a rule supplies besides Open, Snooze and Acknowledge (Live\nsessions: Approve, Deny).",
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "label"
       ]
     },
     "NotificationReceipt": {
@@ -8635,8 +9227,8 @@
         "outcome": {
           "$ref": "#/$defs/DeliveryOutcome"
         },
-        "route": {
-          "$ref": "#/$defs/Route"
+        "outlet": {
+          "$ref": "#/$defs/Outlet2"
         },
         "via": {
           "description": "Desktop actions are operator acts, never acts by a rule's author.",
@@ -8648,7 +9240,7 @@
       },
       "required": [
         "delivery_id",
-        "route",
+        "outlet",
         "outcome"
       ]
     },
@@ -8702,16 +9294,79 @@
     "Occurrence": {
       "type": "object",
       "properties": {
-        "episode": {
+        "id": {
           "type": "string"
         },
-        "id": {
+        "period": {
           "type": "string"
         }
       },
       "required": [
         "id",
-        "episode"
+        "period"
+      ]
+    },
+    "Open": {
+      "description": "A fired current-state delivery whose condition is still checked.",
+      "type": "object",
+      "properties": {
+        "basis": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        },
+        "change": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Change"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "trigger": {
+          "$ref": "#/$defs/Trigger"
+        }
+      },
+      "required": [
+        "trigger",
+        "basis"
+      ]
+    },
+    "OpenNotice": {
+      "description": "A current-state delivery that has fired and not cleared, held or handed off.",
+      "type": "object",
+      "properties": {
+        "handed_off": {
+          "type": "boolean"
+        },
+        "inhibitor": {
+          "type": "boolean"
+        },
+        "product": {
+          "type": "string"
+        },
+        "rule_name": {
+          "type": "string"
+        },
+        "scope": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shipped": {
+          "$ref": "#/$defs/Shipped"
+        }
+      },
+      "required": [
+        "product",
+        "rule_name",
+        "inhibitor",
+        "shipped",
+        "handed_off"
       ]
     },
     "Origin": {
@@ -8729,13 +9384,182 @@
           "$ref": "#/$defs/Metadata"
         },
         "record": {
-          "$ref": "#/$defs/Delivery2"
+          "$ref": "#/$defs/Delivery"
         }
       },
       "additionalProperties": false,
       "required": [
         "record",
         "metadata"
+      ]
+    },
+    "Outcome": {
+      "oneOf": [
+        {
+          "description": "One outlet's attempt: unknown, delivered or not sent.",
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "attempt"
+            },
+            "result": {
+              "$ref": "#/$defs/DeliveryOutcome"
+            }
+          },
+          "required": [
+            "outcome",
+            "result"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "shown"
+            }
+          },
+          "required": [
+            "outcome"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "updated"
+            }
+          },
+          "required": [
+            "outcome"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "closed"
+            },
+            "reason": {
+              "$ref": "#/$defs/CloseReason"
+            }
+          },
+          "required": [
+            "outcome",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "opened"
+            },
+            "via": {
+              "$ref": "#/$defs/Via"
+            }
+          },
+          "required": [
+            "outcome",
+            "via"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "acknowledged"
+            }
+          },
+          "required": [
+            "outcome"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "snoozed"
+            },
+            "until": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "required": [
+            "outcome",
+            "until"
+          ]
+        },
+        {
+          "description": "A snoozed or folded notice routed again.",
+          "type": "object",
+          "properties": {
+            "decision": {
+              "$ref": "#/$defs/Decision"
+            },
+            "outcome": {
+              "type": "string",
+              "const": "released"
+            }
+          },
+          "required": [
+            "outcome",
+            "decision"
+          ]
+        },
+        {
+          "description": "The current-state condition ended.",
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "cleared"
+            }
+          },
+          "required": [
+            "outcome"
+          ]
+        },
+        {
+          "description": "Displayed successfully to an explicit consumer. Previews, on-screen\nsuppression and agent reads never count.",
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "seen"
+            }
+          },
+          "required": [
+            "outcome"
+          ]
+        }
+      ]
+    },
+    "OutcomeRecord": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "delivery": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/$defs/Outcome"
+        }
+      },
+      "required": [
+        "delivery",
+        "at",
+        "outcome"
       ]
     },
     "Outlet": {
@@ -8753,6 +9577,127 @@
       "required": [
         "name",
         "configuration"
+      ]
+    },
+    "Outlet2": {
+      "type": "string",
+      "enum": [
+        "desktop",
+        "command"
+      ]
+    },
+    "Outlets": {
+      "description": "Where an interrupting notice goes: the desktop, the away command, or both\n(a critical notice while the operator is away).",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "boolean"
+        },
+        "desktop": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "desktop",
+        "command"
+      ]
+    },
+    "PassiveReason": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "rule_is_passive"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "delivery": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "caused_by"
+            }
+          },
+          "required": [
+            "kind",
+            "delivery"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "budget_spent"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "on_screen"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "rate_limit"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Shown as a line of one summary notification (the away summary, or the\nconsequences of a cleared root cause) instead of on its own.",
+          "type": "object",
+          "properties": {
+            "delivery": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "summarised"
+            }
+          },
+          "required": [
+            "kind",
+            "delivery"
+          ]
+        },
+        {
+          "description": "Acknowledged while it was held.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "acknowledged"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
       ]
     },
     "Pending": {
@@ -8800,20 +9745,6 @@
         "basis"
       ]
     },
-    "Policy": {
-      "type": "object",
-      "properties": {
-        "private": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Interval"
-          }
-        }
-      },
-      "required": [
-        "private"
-      ]
-    },
     "Precision": {
       "description": "Precision is carried separately from the represented half-open period.",
       "type": "string",
@@ -8845,6 +9776,22 @@
         "request",
         "outcome",
         "effect"
+      ]
+    },
+    "Presence": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "present",
+            "away"
+          ]
+        },
+        {
+          "description": "Never counts as away: a standalone product, or a gap in capture.",
+          "type": "string",
+          "const": "unknown"
+        }
       ]
     },
     "Production": {
@@ -8977,6 +9924,26 @@
           ]
         }
       }
+    },
+    "Progress": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "incomplete": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "at",
+        "incomplete"
+      ]
     },
     "PromptKind": {
       "description": "A user prompt's category. `Harness` also marks runtime-written notices\ncarried under another native role; the other kinds remain user categories.\nThis keeps harness material out of counts of what a person or model wrote.",
@@ -9254,8 +10221,193 @@
       },
       "additionalProperties": false
     },
+    "Recipient": {
+      "type": "string",
+      "pattern": "^(session:.+|@.+|role:.+)$"
+    },
     "Reference": {
       "type": "string"
+    },
+    "Release": {
+      "description": "Why a held notice will be routed again.",
+      "oneOf": [
+        {
+          "description": "Never handed off yet.",
+          "type": "object",
+          "properties": {
+            "release": {
+              "type": "string",
+              "const": "first"
+            }
+          },
+          "required": [
+            "release"
+          ]
+        },
+        {
+          "description": "Handed off before and snoozed.",
+          "type": "object",
+          "properties": {
+            "release": {
+              "type": "string",
+              "const": "snoozed"
+            }
+          },
+          "required": [
+            "release"
+          ]
+        },
+        {
+          "description": "Folded into a root cause that has now cleared.",
+          "type": "object",
+          "properties": {
+            "release": {
+              "type": "string",
+              "const": "after_root"
+            },
+            "root": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "release",
+            "root"
+          ]
+        }
+      ]
+    },
+    "Report": {
+      "description": "What an evaluator tells the deliverer. A standalone product hands these to\nits own host policy; in primary mode Polylogue sends them to Sinex as facts.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "report": {
+              "type": "string",
+              "const": "fired"
+            }
+          },
+          "$ref": "#/$defs/Fired",
+          "required": [
+            "report"
+          ]
+        },
+        {
+          "description": "A current-state condition ended, or its rule changed or was withdrawn.",
+          "type": "object",
+          "properties": {
+            "at": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "delivery": {
+              "type": "string"
+            },
+            "report": {
+              "type": "string",
+              "const": "cleared"
+            }
+          },
+          "required": [
+            "report",
+            "delivery",
+            "at"
+          ]
+        },
+        {
+          "description": "The active revision of a rule, and whether it runs.",
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "report": {
+              "type": "string",
+              "const": "rule"
+            },
+            "version": {
+              "$ref": "#/$defs/RuleVersion"
+            }
+          },
+          "required": [
+            "report",
+            "version",
+            "enabled"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "product": {
+              "type": "string"
+            },
+            "report": {
+              "type": "string",
+              "const": "withdrawn"
+            }
+          },
+          "required": [
+            "report",
+            "product",
+            "id"
+          ]
+        },
+        {
+          "description": "The product's evaluation is up to date as of `at`, except the named\nrules, whose data is behind.",
+          "type": "object",
+          "properties": {
+            "at": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "incomplete": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "product": {
+              "type": "string"
+            },
+            "report": {
+              "type": "string",
+              "const": "progress"
+            }
+          },
+          "required": [
+            "report",
+            "product",
+            "at",
+            "incomplete"
+          ]
+        },
+        {
+          "description": "A rebuilt threshold rule found its condition already true, so a\ncrossing during the lost checkpoint cannot be told apart from the baseline.",
+          "type": "object",
+          "properties": {
+            "at": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "report": {
+              "type": "string",
+              "const": "rearmed_late"
+            },
+            "rule": {
+              "$ref": "#/$defs/RuleVersion"
+            }
+          },
+          "required": [
+            "report",
+            "rule",
+            "at"
+          ]
+        }
+      ]
     },
     "Role": {
       "type": "string",
@@ -9263,14 +10415,6 @@
         "user",
         "assistant",
         "system"
-      ]
-    },
-    "Route": {
-      "type": "string",
-      "enum": [
-        "dbus",
-        "command",
-        "both"
       ]
     },
     "Row": {
@@ -9386,12 +10530,36 @@
             "string",
             "null"
           ]
+        },
+        "to": {
+          "description": "Recipients besides the operator's inbox. `scope` only routes to briefs.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Recipient"
+          }
         }
       },
       "additionalProperties": false,
       "required": [
         "name",
         "query"
+      ]
+    },
+    "RuleRevision": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "revision",
+        "enabled"
       ]
     },
     "RuleState": {
@@ -9457,6 +10625,10 @@
             "$ref": "#/$defs/Occurrence"
           }
         },
+        "rebuilt": {
+          "description": "Built after its checkpoint was lost, from stored deliveries.",
+          "type": "boolean"
+        },
         "reported": {
           "type": "boolean"
         },
@@ -9487,7 +10659,8 @@
         "rows",
         "order",
         "incomplete",
-        "reported"
+        "reported",
+        "rebuilt"
       ]
     },
     "RuleVersion": {
@@ -9693,6 +10866,27 @@
         "commit",
         "session"
       ]
+    },
+    "Shipped": {
+      "description": "What only a shipped rule may declare, because it encodes product knowledge.",
+      "type": "object",
+      "properties": {
+        "inhibition_scope": {
+          "$ref": "#/$defs/InhibitionScope",
+          "default": "host"
+        },
+        "inhibits": {
+          "description": "Names of the same product's rules folded into this rule's notification\nwhile it has an open current-state occurrence.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "urgency": {
+          "$ref": "#/$defs/Urgency",
+          "default": "normal"
+        }
+      }
     },
     "Snapshot": {
       "type": "object",
@@ -10190,6 +11384,21 @@
         }
       ]
     },
+    "Urgency": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "normal"
+          ]
+        },
+        {
+          "description": "Only where captured data is being lost now; never deferred.",
+          "type": "string",
+          "const": "critical"
+        }
+      ]
+    },
     "Usage": {
       "description": "Token counts for one model response or recorded usage observation, by kind: uncached input, cached\ninput, output and reasoning, plus cache writes. A count the source did\nnot report is `None`, never 0.",
       "type": "object",
@@ -10510,7 +11719,7 @@
               "const": "deliver"
             }
           },
-          "$ref": "#/$defs/Delivery2",
+          "$ref": "#/$defs/Delivery",
           "required": [
             "write"
           ]
@@ -10524,7 +11733,7 @@
               "const": "delivered_advice"
             }
           },
-          "$ref": "#/$defs/Delivery2",
+          "$ref": "#/$defs/Delivery",
           "required": [
             "write"
           ]
@@ -11005,6 +12214,14 @@
         "omits",
         "expands",
         "reorders"
+      ]
+    },
+    "Via": {
+      "type": "string",
+      "enum": [
+        "desktop",
+        "web",
+        "cli"
       ]
     },
     "View": {

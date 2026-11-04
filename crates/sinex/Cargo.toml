@@ -15,7 +15,7 @@ polylogue-store.workspace = true
 polylogue-model.workspace = true
 hashed-blobs.workspace = true
 query-language.workspace = true
-signals.workspace = true
+shared-signals.workspace = true
 jiff.workspace = true
 sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "e56f5e8a4900b2bfa8de24e938a4c9d254d6e317" }
 sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "e56f5e8a4900b2bfa8de24e938a4c9d254d6e317" }

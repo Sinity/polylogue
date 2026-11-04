@@ -26,8 +26,7 @@ let
     };
     signals = {
       notifications = {
-        route = "both";
-        command = {
+        away_command = {
           program = "/bin/notify";
           arguments = [
             "two words"
