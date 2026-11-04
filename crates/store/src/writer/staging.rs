@@ -126,6 +126,11 @@ impl Inner {
                 return errors(&group, error);
             }
         }
+        match self.repeated_imports(&group) {
+            Ok(Some(stored)) => return stored.into_iter().map(Ok).collect(),
+            Ok(None) => {}
+            Err(error) => return errors(&group, error),
+        }
         let files = group
             .iter_mut()
             .flat_map(|item| item.files.drain(..))
@@ -314,6 +319,48 @@ impl Inner {
         self.report.transactions += 1;
         self.report.batches += group.iter().filter(|g| g.batch.parse.is_empty()).count() as u64;
         Ok(stored)
+    }
+
+    /// An exact retry of an immutable import group has no new fact to write.
+    /// Format validation has already run through `check_staged`; a new path,
+    /// receiver or import membership is a new observation even for known bytes.
+    fn repeated_imports(&self, group: &[PreparedBatch]) -> Result<Option<Vec<StoredInput>>> {
+        let mut stored = Vec::with_capacity(group.len());
+        for item in group {
+            let b = &item.batch;
+            let (Some(observation), Some(blob)) = (&b.observation, &b.new_blob) else {
+                return Ok(None);
+            };
+            let Some(member) = &observation.import else {
+                return Ok(None);
+            };
+            if b.input.arrival_rank != 2 || !b.parse.is_empty() || !b.blobs.is_empty() {
+                return Ok(None);
+            }
+            let details = serde_json::to_string(
+                &serde_json::json!({"import":member,"import_format":member.format}),
+            )?;
+            let known: Option<(i64, i64)> = self.archive.query_row(
+                "SELECT r.chain,r.length FROM revision r WHERE r.input=?1
+                   AND r.number=(SELECT max(number) FROM revision WHERE input=?1)
+                   AND r.length=?2
+                   AND (SELECT count(*) FROM extent WHERE input=?1 AND chain=r.chain)=1
+                   AND EXISTS(SELECT 1 FROM extent x WHERE x.input=?1 AND x.chain=r.chain AND x.offset=0 AND x.length=?2 AND x.blob=?3)
+                   AND EXISTS(SELECT 1 FROM observation o WHERE o.input=?1 AND o.machine=?4 AND o.path_bytes=?5 AND o.class='imported' AND o.details_json=?6)",
+                params![b.input.id,b.length as i64,&blob.hash.0[..],observation.machine,observation.path_bytes,details],
+                |row| Ok((row.get(0)?,row.get(1)?)),
+            ).optional()?;
+            let Some((chain, length)) = known else {
+                return Ok(None);
+            };
+            stored.push(StoredInput {
+                input: b.input.id.clone(),
+                chain,
+                length: length as u64,
+                already_stored: true,
+            });
+        }
+        Ok(Some(stored))
     }
 
     /// What a batch must satisfy before any of its rows are written.
