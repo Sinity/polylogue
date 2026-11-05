@@ -219,9 +219,10 @@ fn a_typed_import_keeps_its_write_reply_beyond_the_aggregate_read_default() {
         command_surface::Deadline::Default,
     );
     assert!(output.status.success(), "{output:?}");
-    let reply: command_surface::Answer<polylogue_engine::ImportReport> =
+    let reply: command_surface::Answer<serde_json::Value> =
         serde_json::from_slice(&output.stdout).unwrap();
-    assert!(reply.value().is_some(), "{reply:?}");
+    let _: polylogue_engine::ImportReport =
+        serde_json::from_value(reply.value().expect("import result").clone()).unwrap();
 }
 
 #[test]
@@ -254,9 +255,10 @@ fn a_read_deadline_does_not_cancel_a_real_typed_import() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
-    let reply: command_surface::Answer<polylogue_engine::ImportReport> =
+    let reply: command_surface::Answer<serde_json::Value> =
         serde_json::from_slice(&output.stdout).unwrap();
-    let report = reply.value().expect("import result");
+    let report: polylogue_engine::ImportReport =
+        serde_json::from_value(reply.value().expect("import result").clone()).unwrap();
     assert_eq!(report.imported, [path]);
     assert!(report.refused.is_empty(), "{report:?}");
 }
