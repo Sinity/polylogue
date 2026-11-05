@@ -43,7 +43,6 @@ fn selected(reader: &crate::Reader<'_>, text: &str) -> Vec<String> {
             .unwrap(),
         ),
         origins: vec!["codex".into()],
-        command_words: vec![],
         page_size: None,
         random_seed: None,
         embeddings: false,

@@ -12,7 +12,6 @@ fn options() -> Options {
             .unwrap(),
         ),
         origins: vec!["claude-code".into()],
-        command_words: vec![],
         page_size: Some(1),
         random_seed: Some(9),
         embeddings: false,

@@ -38,35 +38,22 @@ pub fn safe_url(url: &str) -> bool {
     }
 }
 pub fn value<T: Display>(state: &ValueState<T>) -> Markup {
-    use web_shell::ValueState as Shared;
-    let shared = match state {
-        ValueState::Value { value } => Shared::Measured(value.to_string()),
-        ValueState::Unknown { reason } => Shared::Unknown {
-            reason: reason.clone(),
-        },
-        ValueState::NotRecorded => Shared::NotRecorded,
-        ValueState::NotApplicable => Shared::NotApplicable,
-        ValueState::Partial { value, unknown } => Shared::Partial {
-            value: value.to_string(),
-            unknown: *unknown,
-        },
-        ValueState::Inferred { value } => Shared::Inferred(value.to_string()),
-        ValueState::Pending => Shared::Pending,
-        ValueState::Error { reason } => Shared::Error {
-            reason: reason.clone(),
-        },
-        ValueState::Unavailable { .. } => {
-            return html! { span class="value-state" data-state="unavailable" { (value_text(state)) } };
-        }
-        ValueState::Stale { .. } => {
-            return html! { span class="value-state" data-state="stale" { (value_text(state)) } };
-        }
-        ValueState::Inherited { .. } => {
-            return html! { span class="value-state" data-state="inherited" { (value_text(state)) } };
-        }
+    let name = match state {
+        ValueState::Value { .. } => "measured",
+        ValueState::Unknown { .. } => "unknown",
+        ValueState::NotRecorded => "not-recorded",
+        ValueState::NotApplicable => "not-applicable",
+        ValueState::Partial { .. } => "partial",
+        ValueState::Inferred { .. } => "inferred",
+        ValueState::Pending => "pending",
+        ValueState::Error { .. } => "error",
+        ValueState::Unavailable { .. } => "unavailable",
+        ValueState::Stale { .. } => "stale",
+        ValueState::Inherited { .. } => "inherited",
     };
-    web_shell::value_cell(&shared)
+    html! { span class="value-state" data-state=(name) { (value_text(state)) } }
 }
+
 pub fn header(header: &ReadHeader) -> Markup {
     visible_controls(header_markup(header))
 }

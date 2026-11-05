@@ -52,16 +52,16 @@ fn matches_declarations_follow_actual_producer_columns_and_replay_frozen_saved_b
                 .collect::<Vec<_>>(),
             "{text}"
         );
-        assert!(schema.match_patterns.is_empty());
+        assert!(schema.match_units.is_none());
     }
     for (definition, text) in [
         (
             "sessions where exists tool_call(outcome:error) | matches",
-            "query:matching | sort by command",
+            "query:matching | sort by step.command",
         ),
         (
             "sessions where exists tool_call(outcome:error)",
-            "query:matching | matches | sort by command",
+            "query:matching | matches | sort by step.command",
         ),
     ] {
         let options = opts(&[("matching", definition)]);
@@ -85,7 +85,7 @@ fn matches_declarations_follow_actual_producer_columns_and_replay_frozen_saved_b
             schema
                 .fields
                 .iter()
-                .find(|field| field.name == "outcome")
+                .find(|field| field.name == "step.outcome")
                 .unwrap()
                 .values,
             ["ok", "error", "pending", "unknown"]
@@ -102,7 +102,7 @@ fn matches_declarations_follow_actual_producer_columns_and_replay_frozen_saved_b
 }
 
 #[test]
-fn frozen_unshaped_saved_scope_keeps_native_relations_without_persisting_them_as_columns() {
+fn frozen_saved_semantic_scope_preserves_native_fields_and_refuses_forged_declarations() {
     let mut options = opts(&[
         ("failing", "tool_calls where outcome:error"),
         ("grouped", "tool_calls | group by action | count"),
@@ -117,13 +117,12 @@ fn frozen_unshaped_saved_scope_keeps_native_relations_without_persisting_them_as
     .unwrap();
     let object = plan.query_object().unwrap();
     assert!(
-        !object.source_outputs[0]
+        object.source_outputs[0]
             .schema
             .fields
             .iter()
             .any(|field| field.name == "session.repo")
     );
-    assert!(object.source_outputs[0].relation_scope.is_none());
     let encoded = serde_json::to_vec(&object).unwrap();
     assert!(!String::from_utf8_lossy(&encoded).contains("relation_scope"));
     let restored = serde_json::from_slice(&encoded).unwrap();
@@ -134,37 +133,24 @@ fn frozen_unshaped_saved_scope_keeps_native_relations_without_persisting_them_as
     assert!(
         replay
             .catalog()
-            .source_scope(source)
+            .source_output(source)
             .unwrap()
             .fields
             .iter()
             .any(|field| field.name == "session.repo")
     );
     assert_eq!(replay.question_id(), plan.question_id());
-    let mut runtime_forgery = restored.clone();
-    runtime_forgery.source_outputs[0].relation_scope =
-        Some(query_language::catalog::OutputSchema {
-            unit: Some("tool_calls".into()),
-            fields: vec![query_language::catalog::Field {
-                name: "invented".into(),
-                ..Default::default()
-            }],
+    let mut forged = restored.clone();
+    forged.source_outputs[0]
+        .schema
+        .fields
+        .push(query_language::catalog::Field {
+            name: "invented".into(),
             ..Default::default()
         });
-    assert_eq!(serde_json::to_vec(&runtime_forgery).unwrap(), encoded);
-    let checked = polylogue_query::plan::replay(
-        &runtime_forgery,
-        polylogue_query::plan::catalog_fingerprint(),
-    )
-    .unwrap();
     assert!(
-        !checked
-            .catalog()
-            .source_scope(&checked.bound_query().query().source)
-            .unwrap()
-            .fields
-            .iter()
-            .any(|field| field.name == "invented")
+        polylogue_query::plan::replay(&forged, polylogue_query::plan::catalog_fingerprint(),)
+            .is_err()
     );
     let expected = lower(&replay, &options).unwrap();
     let changed = polylogue_query::plan::prepare(
@@ -243,7 +229,7 @@ fn frozen_unshaped_saved_scope_keeps_native_relations_without_persisting_them_as
         "unknown_field"
     );
     let schema = options
-        .output_schema("tool_calls | group by action | agg sum:exit_code")
+        .output_schema("tool_calls | group by action | agg sum(exit_code)")
         .unwrap();
     assert!(schema.fields.iter().any(|field| field.name == "count"));
 }

@@ -117,9 +117,17 @@ impl<'a> Compiler<'a> {
                 match &gaps[i - 1] {
                     Gap::Later => w.push(format!("{o}.n > {prev}.n")),
                     Gap::Next => w.push(format!("{o}.n = {prev}.n + 1")),
+                    Gap::Within {
+                        distance: Distance::Steps { count },
+                    } => {
+                        w.push(format!("{o}.n > {prev}.n"));
+                        w.push(format!("{o}.n - {prev}.n <= {count}"));
+                    }
                     // Both times known, the later strictly later: a missing
                     // or reversed time does not satisfy a window.
-                    Gap::Within { duration } => {
+                    Gap::Within {
+                        distance: Distance::Time { duration },
+                    } => {
                         let ms = time::duration_ms(value_text(duration)?)
                             .ok_or_else(|| not_built("this sequence duration"))?;
                         w.push(format!("{o}.n > {prev}.n"));
@@ -160,31 +168,31 @@ impl<'a> Compiler<'a> {
             w.push(self.cond(cond, &child, false)?);
         }
         w.push(format!("({parent_rows})"));
-        let (parent_pk, parent_cols) =
-            row_columns(parent.unit, &parent.a, self.opts.clock.now.as_millisecond());
+        let parent_pk = parent.a.expand(units::spec(parent.unit).key);
         let (child_pk, child_cols) =
             row_columns(unit, &child.a, self.opts.clock.now.as_millisecond());
-        let mut columns = vec![];
-        let mut select = vec![format!("{child_pk} AS _pk")];
-        let child_names: Vec<&str> = child_cols.iter().map(|(n, _, _, _)| n.as_str()).collect();
-        if !(parent.unit == Unit::Sessions && child_names.contains(&"session")) {
-            let id = parent_cols
-                .iter()
-                .find(|(n, _, _, _)| n == "id")
-                .map_or_else(|| parent_pk.clone(), |(_, e, _, _)| e.clone());
-            select.push(format!("{id} AS parent_id"));
-            columns.push(("parent_id".to_owned(), ColKind::Text));
-        }
+        let parent_ref = row_reference(parent)?;
+        let child_ref = row_reference(&child)?;
         let child_order = self.default_order(&child);
         let parent_order = self.default_order(parent);
-        select.push(format!(
-            "row_number() OVER (PARTITION BY {parent_pk} ORDER BY {}) AS match",
-            child_order.join(", ")
-        ));
-        columns.push(("match".to_owned(), ColKind::Number));
-        for (n, e, k, _) in &child_cols {
-            select.push(format!("{e} AS {n}"));
-            columns.push((n.clone(), *k));
+        let mut select = vec![
+            format!("{child_pk} AS _pk"),
+            format!("{parent_ref} AS parent"),
+            format!(
+                "row_number() OVER (PARTITION BY {parent_pk} ORDER BY {}) AS match",
+                child_order.join(", ")
+            ),
+            "1 AS position".into(),
+            format!("{child_ref} AS step"),
+        ];
+        let mut columns = match_columns();
+        let catalog = self.opts.catalog();
+        for (name, expression, kind, _) in child_cols {
+            if catalog.field(unit.name(), &name).is_some() {
+                let name = format!("step.{name}");
+                select.push(format!("{expression} AS {}", column_sql(&name)));
+                columns.push((name, kind));
+            }
         }
         let (hidden, order) = hidden_order(&[parent_order, child_order].concat(), "_m");
         select.extend(hidden);
@@ -247,7 +255,15 @@ impl<'a> Compiler<'a> {
             Ok(match &gaps[i - 1] {
                 Gap::Later => vec![format!("{oi}.n > {prev_n}")],
                 Gap::Next => vec![format!("{oi}.n = {prev_n} + 1")],
-                Gap::Within { duration } => {
+                Gap::Within {
+                    distance: Distance::Steps { count },
+                } => vec![
+                    format!("{oi}.n > {prev_n}"),
+                    format!("{oi}.n - {prev_n} <= {count}"),
+                ],
+                Gap::Within {
+                    distance: Distance::Time { duration },
+                } => {
                     let ms = time::duration_ms(value_text(duration)?)
                         .ok_or_else(|| not_built("this sequence duration"))?;
                     vec![
@@ -320,64 +336,70 @@ impl<'a> Compiler<'a> {
             first = pick(0, "ow.pk", "0", "NULL")?,
             cases = next.join(" ")
         ));
-        let mut inner = vec![
-            "q.session_pk AS session_pk".to_owned(),
-            "q.mt AS mt".to_owned(),
-            "min(CASE WHEN q.step = 0 THEN q.pk END) AS _pk".to_owned(),
-        ];
-        for i in 0..k {
-            inner.push(format!("max(CASE WHEN q.step = {i} THEN q.pk END) AS p{i}"));
-            inner.push(format!("max(CASE WHEN q.step = {i} THEN q.n END) AS n{i}"));
-            inner.push(format!("max(CASE WHEN q.step = {i} THEN q.at END) AS a{i}"));
-        }
+        let child = RowContext {
+            unit: Unit::ToolCalls,
+            a: self.fresh(),
+        };
+        let (_, child_cols) =
+            row_columns(child.unit, &child.a, self.opts.clock.now.as_millisecond());
+        let catalog = self.opts.catalog();
         let mut select = vec![
-            "g._pk AS _pk".to_owned(),
-            "(SELECT ss.id FROM session ss WHERE ss.pk = g.session_pk) AS session".to_owned(),
-            "g.mt AS match".to_owned(),
+            "q.pk AS _pk".into(),
+            format!("{} AS parent", row_reference(parent)?),
+            "q.mt AS match".into(),
+            "q.step + 1 AS position".into(),
+            format!("{} AS step", row_reference(&child)?),
         ];
-        let mut columns = vec![
-            ("session".to_owned(), ColKind::Text),
-            ("match".to_owned(), ColKind::Number),
-        ];
-        for i in 0..k {
-            let n = i + 1;
-            select.push(format!(
-                "(SELECT mm.id FROM tool_call tt JOIN block bb ON bb.pk = tt.call_block_pk \
-                 JOIN message mm ON mm.pk = bb.message_pk WHERE tt.pk = g.p{i}) AS step{n}_message"
-            ));
-            select.push(format!(
-                "(SELECT tt.command FROM tool_call tt WHERE tt.pk = g.p{i}) AS step{n}_command"
-            ));
-            select.push(format!(
-                "(SELECT tt.outcome FROM tool_call tt WHERE tt.pk = g.p{i}) AS step{n}_outcome"
-            ));
-            select.push(format!("g.a{i} AS step{n}_at"));
-            columns.push((format!("step{n}_message"), ColKind::Text));
-            columns.push((format!("step{n}_command"), ColKind::Text));
-            columns.push((format!("step{n}_outcome"), ColKind::Text));
-            columns.push((format!("step{n}_at"), ColKind::Time));
+        let mut columns = match_columns();
+        for (name, expression, kind, _) in child_cols {
+            if catalog.field(child.unit.name(), &name).is_some() {
+                let name = format!("step.{name}");
+                select.push(format!("{expression} AS {}", column_sql(&name)));
+                columns.push((name, kind));
+            }
         }
-        for i in 1..k {
-            let (steps_col, time_col) = if k == 2 {
-                ("gap_steps".to_owned(), "gap_time".to_owned())
-            } else {
-                (format!("gap{i}_steps"), format!("gap{i}_time"))
-            };
-            select.push(format!("g.n{i} - g.n{} - 1 AS {steps_col}", i - 1));
-            select.push(format!("g.a{i} - g.a{} AS {time_col}", i - 1));
-            columns.push((steps_col, ColKind::Number));
-            columns.push((time_col, ColKind::Duration));
-        }
+        // A recursive prefix is exposed only after its final step exists.
         let sql = format!(
-            "SELECT {} FROM (SELECT {} FROM {name} q GROUP BY q.session_pk, q.mt) g ORDER BY g.session_pk, g.mt",
+            "SELECT {} FROM {name} q JOIN {} ON {} = q.pk, {} \
+             WHERE {s}.pk=q.session_pk AND ({parent_rows}) AND EXISTS (SELECT 1 FROM {name} complete WHERE complete.session_pk=q.session_pk \
+             AND complete.mt=q.mt AND complete.step={last}) ORDER BY parent,q.mt,q.step",
             select.join(", "),
-            inner.join(", ")
+            base_from(child.unit, &child.a),
+            child.a.expand(units::spec(child.unit).key),
+            base_from(parent.unit, &parent.a)
         );
         Ok(MatchRel {
             sql,
             columns,
-            order: vec![OrderKey::ascending("session"), OrderKey::ascending("match")],
+            order: vec![
+                OrderKey::ascending("parent"),
+                OrderKey::ascending("match"),
+                OrderKey::ascending("position"),
+            ],
             recursive: true,
         })
     }
+}
+
+fn match_columns() -> Vec<(String, ColKind)> {
+    vec![
+        ("parent".into(), ColKind::Text),
+        ("match".into(), ColKind::Number),
+        ("position".into(), ColKind::Number),
+        ("step".into(), ColKind::Text),
+    ]
+}
+fn row_reference(scope: &RowContext) -> Result<String, QueryError> {
+    let a = &scope.a;
+    Ok(match scope.unit {
+        Unit::Sessions => format!("'session:' || {}.id", a.s),
+        Unit::Messages => format!("'message:' || {}.id", a.m),
+        Unit::Blocks => format!("'block:' || {}.id || '#' || {}.idx", a.m, a.b),
+        Unit::ToolCalls => format!("'block:' || {}.id || '#' || {}.idx", a.m, a.cb),
+        Unit::Documents => format!("'document:' || {}.id", a.row),
+        Unit::Events => format!("'event:' || {}.id", a.row),
+        Unit::Assertions => format!("'assertion:' || {}.id", a.row),
+        Unit::Deliveries => format!("'delivery:' || {}.id", a.row),
+        _ => return Err(not_built("match references at this row grain")),
+    })
 }

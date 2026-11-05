@@ -135,7 +135,11 @@ mod tests {
             .failure()
             .expect("typed scope failure")
             .answer::<serde_json::Value>();
-        let command_surface::Answer::Error { error, .. } = failure else {
+        let command_surface::Answer {
+            outcome: command_surface::Outcome::Error(error),
+            ..
+        } = failure
+        else {
             panic!("scope changed failure");
         };
         assert_eq!(error.code.as_deref(), Some("scope_changed"));

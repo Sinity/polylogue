@@ -12,9 +12,6 @@ pub struct Options {
     /// Origin names (`claude-code`, `codex`, …): a word whose part before
     /// the first `:` is one of these is a session reference, not a field.
     pub origins: Vec<String>,
-    /// The CLI's command names: a query starting with one, or a near miss
-    /// of one, is refused rather than searched for.
-    pub command_words: Vec<String>,
     /// Rows per page when the query sets none: 20 sessions, 50 otherwise.
     pub page_size: Option<u64>,
     /// One seed for otherwise unseeded random order across pages.
@@ -156,6 +153,7 @@ fn value_text(value: &Value) -> Result<String, QueryError> {
     match value {
         Value::Scalar { text, .. } => Ok(text.clone()),
         Value::Unknown => Ok("unknown".into()),
+        Value::Known => Ok("known".into()),
         // Forwarding keeps the symbolic marker until its caller supplies a value.
         Value::Parameter { name } => Ok(format!("${name}")),
         _ => Err(not_built("set in scalar position")),
@@ -168,13 +166,6 @@ pub fn definition_parameters(
 ) -> Result<Vec<String>, QueryError> {
     let mut query = crate::parse::with_catalog(text, catalog)?;
     Parameters::names(&mut query)
-}
-/// Pure metadata for the same declared Matches projection used by execution.
-pub fn matches_schema(
-    catalog: &query_language::catalog::Catalog,
-    source: &query_language::catalog::MatchSource,
-) -> Result<query_language::catalog::OutputSchema, QueryError> {
-    schema::match_output(source, catalog)
 }
 pub fn columns_schema(
     catalog: &query_language::catalog::Catalog,
@@ -205,7 +196,6 @@ pub fn compile(text: &str, options: &Options) -> Result<crate::plan::Plan, Query
 #[derive(Debug, Clone, Default)]
 pub struct Bindings {
     pub origins: Vec<String>,
-    pub command_words: Vec<String>,
     pub saved: std::collections::BTreeMap<String, Vec<SavedQuery>>,
     pub kept: std::collections::BTreeMap<String, Kept>,
 }
@@ -274,7 +264,6 @@ impl Options {
     pub fn bindings(&self) -> Bindings {
         Bindings {
             origins: self.origins.clone(),
-            command_words: self.command_words.clone(),
             saved: self.saved.clone(),
             kept: self.kept.clone(),
         }

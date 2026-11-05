@@ -13,7 +13,6 @@ fn opts(saved: &[(&str, &str)]) -> Options {
             .unwrap(),
         ),
         origins: vec!["claude-code".into(), "codex".into()],
-        command_words: vec!["list".into(), "brief".into()],
         page_size: None,
         random_seed: None,
         embeddings: false,
@@ -212,28 +211,6 @@ fn deliveries_take_their_outcome_from_the_latest_event() {
 }
 
 #[test]
-fn a_query_starting_with_a_command_is_refused() {
-    assert!(
-        compile_err("list repo:x").contains("is a command"),
-        "{}",
-        compile_err("list repo:x")
-    );
-    let near = compile_err("brife now");
-    assert!(near.contains("brief"), "{near}");
-    assert_eq!(
-        compile("brife now", &opts(&[])).unwrap_err().kind(),
-        "not_a_query"
-    );
-    assert_eq!(
-        compile("brife now", &opts(&[])).unwrap_err().suggestion(),
-        Some("brief now")
-    );
-    assert!(compile(r#""list" repo:x"#, &opts(&[])).is_ok());
-}
-
-/// Every value the model stores in a closed-set column can be queried, and
-/// the field offers no value the model never stores.
-#[test]
 fn every_stored_value_can_be_queried() {
     use polylogue_model::{
         BlockKind, LINK_HOW_NAMES, LINK_KIND_NAMES, LinkKind, PromptKind, Role, SessionKind,
@@ -279,7 +256,7 @@ fn change_selections_are_output_arrays_not_scalar_operands() {
         "changes where messages > 0",
         "changes | sort by sessions",
         "changes | group by messages | count",
-        "changes | agg sum:messages",
+        "changes | agg sum(messages)",
     ] {
         assert!(compile_err(text).contains("selection array"), "{text}");
     }
@@ -332,7 +309,7 @@ fn column_references_follow_fields_and_projection_owners() {
     for query in [
         "sessions | group by id",
         "documents | group by id",
-        "sessions | agg min:id",
+        "sessions | agg min(id)",
     ] {
         assert!(
             c(query).columns.iter().all(|c| c.reference.is_none()),
@@ -410,7 +387,7 @@ fn near_builds_only_when_an_answer_needs_ranking() {
         for text in [
             "similar:dates | count",
             "similar:dates | group by origin",
-            "similar:dates | agg sum:cost",
+            "similar:dates | agg sum(cost)",
             "similar:dates | measure activity",
             "similar:dates | messages",
             "similar:dates | sort by started | limit 1 | count",
@@ -507,10 +484,10 @@ fn kept_references_use_query_literals_without_splitting_their_ids() {
 
 #[test]
 fn saved_query_parameters_bind_typed_time_bounds() {
-    let options = opts(&[("window", "sessions where since $lower until $upper")]);
+    let options = opts(&[("window", "sessions where since:$lower until:$upper")]);
     same(
         "query:window(lower=2026-10-24,upper=2026-10-25)",
-        "sessions where since 2026-10-24 until 2026-10-25",
+        "sessions where since:2026-10-24 until:2026-10-25",
         &options,
     );
 }

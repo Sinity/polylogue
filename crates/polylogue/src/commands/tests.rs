@@ -127,34 +127,6 @@ fn only_daemon_requests_go_over_mcp_and_http() {
 }
 
 #[test]
-fn command_words_are_every_first_word() {
-    let words = command_words();
-    for w in [
-        "status",
-        "list",
-        "assert",
-        "assert-query",
-        "revise",
-        "withdraw",
-        "measure",
-        "embed",
-        "hooks",
-        "keep",
-        "browser-host",
-    ] {
-        assert!(words.iter().any(|x| x == w), "{w} missing from {words:?}");
-    }
-    assert!(!words.iter().any(|w| w == "query"));
-    assert_eq!(
-        words.len(),
-        words
-            .iter()
-            .collect::<std::collections::BTreeSet<_>>()
-            .len()
-    );
-}
-
-#[test]
 fn cli_help_lists_every_command() {
     let help = crate::cli::command()
         .try_get_matches_from(["polylogue", "--help"])
@@ -184,7 +156,7 @@ fn one_operation_makes_one_request_on_every_surface() {
         "claude-code:s1",
         "--view",
         "dialogue",
-        "--budget",
+        "--page-tokens",
         "100",
         "--show",
         "inherited",
@@ -193,7 +165,7 @@ fn one_operation_makes_one_request_on_every_surface() {
     let mcp = Values::from_json(
         read,
         Surface::Mcp,
-        json!({"target": "claude-code:s1", "view": "dialogue", "budget": 100, "show": ["inherited"]})
+        json!({"target": "claude-code:s1", "view": "dialogue", "page_tokens": 100, "show": ["inherited"]})
             .as_object()
             .unwrap()
             .clone(),
@@ -205,7 +177,7 @@ fn one_operation_makes_one_request_on_every_surface() {
         vec![
             ("target".into(), "claude-code:s1".into()),
             ("view".into(), "dialogue".into()),
-            ("budget".into(), "100".into()),
+            ("page_tokens".into(), "100".into()),
             ("show".into(), "inherited".into()),
         ],
     )
@@ -249,7 +221,7 @@ fn typed_read_validation_owns_defaults_and_conditional_requirements() {
     let caller = mcp_caller();
     for invalid in [
         json!({"target":"claude-code:s1","pages":2}),
-        json!({"target":"claude-code:s1","budget":"many"}),
+        json!({"target":"claude-code:s1","page_tokens":"many"}),
         json!({"target":"claude-code:s1","view":"sideways"}),
         json!({}),
         json!({"target":"claude-code:s1","to":"synthetic-output"}),

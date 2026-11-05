@@ -131,7 +131,7 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     assert!(e.starts_with("error (not_found)"), "{e}");
 }
 
-mod read_pages;
+pub(crate) mod read_pages;
 
 mod events;
 
@@ -308,7 +308,7 @@ fn manual_query_examples_compile_through_the_public_command() {
 fn errors_show_archived_controls_as_text() {
     let hostile = "\x1b]0;title\x07\x1b]2;title\x1b\\\x1b]52;c;YQ==\x07\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\x1b[2J\x1b\u{9b}2J\u{202e}";
     let mut failure = crate::protocol::failure("bad_request", hostile)
-        .with_suggestion(serde_json::json!(hostile));
+        .with_suggestion(command_surface::Suggestion::Query(hostile.into()));
     failure.code = Some(hostile.into());
     let failure = failure.with_candidates(vec![hostile.into()]);
     let text = super::error_text(&failure);
@@ -508,7 +508,7 @@ fn tool_requests_and_answers_keep_terminal_controls_visible() {
         serde_json::to_value(command_surface::Answer::ok(json!({"value":hostile}))).unwrap(),
         serde_json::to_value(command_surface::Answer::<Value>::error(
             command_surface::Failure::new(command_surface::FailureKind::Cancelled, hostile)
-                .with_suggestion(json!(hostile)),
+                .with_suggestion(command_surface::Suggestion::Query(hostile.into())),
         ))
         .unwrap(),
     ] {
@@ -543,6 +543,10 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
             arguments: json!({"query":"sessions"}),
             request_id: "mcp-ready-id".into(),
             deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         })
         .unwrap();
     let mut session = Session {
@@ -568,6 +572,10 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
             arguments: json!({"statement":"SELECT 1"}),
             request_id: "mcp-ready-sql".into(),
             deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         })
         .unwrap();
     assert_eq!(sql.mcp, Value::Null);
@@ -612,7 +620,11 @@ fn typed_admission_failure_has_the_same_shared_answer_without_opening_a_daemon()
     assert!(failed);
     assert!(text.starts_with("error (bad_request)"), "{text}");
     let answer: command_surface::Answer<Value> = serde_json::from_value(structured).unwrap();
-    let command_surface::Answer::Error { error, .. } = answer else {
+    let command_surface::Answer {
+        outcome: command_surface::Outcome::Error(error),
+        ..
+    } = answer
+    else {
         panic!("canonical admission error");
     };
     assert_eq!(error.kind, command_surface::FailureKind::BadRequest);

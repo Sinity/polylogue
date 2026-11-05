@@ -29,7 +29,6 @@ fn read_values(
     let options = polylogue_query::Options {
         clock: query_language::time::Clock::new("2026-10-29T12:00:00Z".parse().unwrap(), day),
         origins: vec!["claude-code".into()],
-        command_words: vec![],
         page_size: None,
         random_seed: Some(1),
         embeddings: false,

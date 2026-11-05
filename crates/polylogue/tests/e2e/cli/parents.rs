@@ -118,7 +118,7 @@ fn read(
         target,
         "--format".into(),
         format.into(),
-        "--budget".into(),
+        "--page-tokens".into(),
         budget.into(),
     ];
     if inherited {

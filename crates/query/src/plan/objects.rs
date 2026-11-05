@@ -1,7 +1,7 @@
 //! Canonical object admission and replay use the product's native declarations.
 use super::*;
 use polylogue_model::query_objects::{FrozenQueryDefinition, QueryEdge, QueryObject};
-use query_language::{catalog::OutputSchema, identity};
+use query_language::identity;
 use std::collections::{BTreeSet, VecDeque};
 
 fn invalid(message: impl Into<String>) -> QueryError {
@@ -14,7 +14,7 @@ fn language(error: query_language::Error) -> QueryError {
     QueryError::language(error, "")
 }
 fn native_catalog() -> Catalog {
-    crate::catalog::catalog(&[], &[])
+    crate::catalog::catalog(&[])
 }
 
 /// A supported native declaration version, independent of transport vocabulary.
@@ -32,10 +32,6 @@ pub fn catalog_fingerprint() -> &'static str {
 fn catalog(outputs: &[SourceOutput]) -> Catalog {
     let mut catalog = native_catalog();
     catalog.source_outputs = outputs.to_vec();
-    for output in &mut catalog.source_outputs {
-        output.schema.match_patterns.clear();
-        output.relation_scope = None;
-    }
     catalog
 }
 fn parse_id(name: &str) -> Result<QuestionId, QueryError> {
@@ -129,15 +125,13 @@ fn used_outputs(query: &Query, catalog: &Catalog) -> Result<Vec<SourceOutput>, Q
     for (source, key) in sources(query)? {
         // Shared binding owns semantic argument matching, including lexical
         // quoting and argument order. Its validated catalog rejects duplicates.
-        let mut schema = catalog
+        let schema = catalog
             .source_output(&source)
             .cloned()
             .ok_or_else(|| invalid("canonical source needs exactly one frozen output schema"))?;
-        schema.match_patterns.clear();
         let output = SourceOutput {
             source: key,
             schema,
-            relation_scope: None,
         };
         if !outputs.contains(&output) {
             outputs.push(output);
@@ -168,9 +162,10 @@ fn edges(query: &Query, native: &Catalog) -> Result<Vec<QueryEdge>, QueryError> 
                 }),
                 _ => {}
             }
-            for stage in &query.stages {
-                if let StageKind::Combine { query, .. } | StageKind::Temporal { query, .. } =
-                    &stage.kind
+            for stage in &query.transforms {
+                if let TransformKind::Combine { query, .. }
+                | TransformKind::Join { query, .. }
+                | TransformKind::Diff { query } = &stage.kind
                 {
                     output.borrow_mut().push(QueryEdge::Combine {
                         query: identity::question_id(query, native, &BTreeMap::new())
@@ -264,9 +259,8 @@ fn all_outputs(object: &QueryObject) -> Result<Vec<SourceOutput>, QueryError> {
             .iter()
             .flat_map(|node| node.source_outputs.iter()),
     ) {
-        let mut output = output.clone();
-        output.schema.match_patterns.clear();
-        output.relation_scope = None;
+        let output = output.clone();
+
         if let Some(previous) = outputs.iter().find(|old| old.source == output.source) {
             if previous.schema != output.schema {
                 return Err(invalid("conflicting frozen output schemas"));
@@ -305,70 +299,9 @@ pub fn saved_query_bindings(
     Ok(saved)
 }
 
-/// Runtime qualifier/projection metadata is rebuilt exclusively from the
-/// retained frozen closure. No current saved-name lookup or clock is involved.
+/// Bind only the declarations retained with this immutable definition closure.
 fn runtime_catalog(object: &QueryObject) -> Result<Catalog, QueryError> {
-    let mut native = catalog(&all_outputs(object)?);
-    let mut nodes = BTreeMap::new();
-    for node in &object.definitions {
-        if nodes.insert(node.question.to_string(), node).is_some() {
-            return Err(invalid("duplicate frozen question body"));
-        }
-    }
-    fn hydrate(
-        index: usize,
-        native: &mut Catalog,
-        nodes: &BTreeMap<String, &FrozenQueryDefinition>,
-        done: &mut BTreeSet<usize>,
-        visiting: &mut BTreeSet<usize>,
-    ) -> Result<(), QueryError> {
-        if done.contains(&index) {
-            return Ok(());
-        }
-        if !visiting.insert(index) {
-            return Err(invalid("recursive frozen output metadata"));
-        }
-        let OutputSource::Saved { name, .. } = native.source_outputs[index].source.clone() else {
-            visiting.remove(&index);
-            done.insert(index);
-            return Ok(());
-        };
-        let node = nodes
-            .get(&name)
-            .ok_or_else(|| invalid(format!("missing frozen question {name}")))?;
-        for output in &node.source_outputs {
-            let dependency = native
-                .source_outputs
-                .iter()
-                .position(|stored| stored.source == output.source)
-                .ok_or_else(|| invalid("missing frozen output schema"))?;
-            hydrate(dependency, native, nodes, done, visiting)?;
-        }
-        crate::compile::schema::supply_matches(&node.identity_ast, native)?;
-        let bound = query_language::bind::bind(&node.identity_ast, native).map_err(language)?;
-        let text = query_language::format::format_query(bound.query(), native).map_err(language)?;
-        let patterns = query_language::parse::relation_patterns(&text, native)
-            .map_err(language)?
-            .ok_or_else(|| invalid("frozen relation qualifier metadata is unresolved"))?;
-        native.source_outputs[index].schema.match_patterns = patterns;
-        native.source_outputs[index].relation_scope = Some(crate::compile::schema::relation_scope(
-            &bound,
-            &native.source_outputs[index].schema,
-        )?);
-        visiting.remove(&index);
-        done.insert(index);
-        Ok(())
-    }
-    let mut done = BTreeSet::new();
-    let mut visiting = BTreeSet::new();
-    for index in 0..native.source_outputs.len() {
-        hydrate(index, &mut native, &nodes, &mut done, &mut visiting)?;
-    }
-    for node in &object.definitions {
-        crate::compile::schema::supply_matches(&node.identity_ast, &mut native)?;
-    }
-    crate::compile::schema::supply_matches(&object.identity_ast, &mut native)?;
-    Ok(native)
+    Ok(catalog(&all_outputs(object)?))
 }
 fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, QueryError> {
     let mut bindings = Bindings::default();
@@ -445,9 +378,7 @@ fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, Q
 }
 fn expand(query: &Query, native: &Catalog, bindings: &Bindings) -> Result<Query, QueryError> {
     let text = query_language::format::format_query(query, native).map_err(language)?;
-    let (query, _) = crate::compile::source::expand(&text, bindings)?;
-    let mut native = native.clone();
-    crate::compile::schema::supply_matches(&query, &mut native)?;
+    let (query, _) = crate::compile::source::expand_ast(query.clone(), &text, bindings)?;
     Ok(query_language::bind::bind(&query, &native)
         .map_err(language)?
         .into_query())
@@ -458,19 +389,8 @@ fn check_node(
     parameters: &BTreeMap<String, String>,
     query: &Query,
     outputs: &[SourceOutput],
-    runtime: &Catalog,
 ) -> Result<(), QueryError> {
-    let mut native = catalog(outputs);
-    native.match_outputs = runtime.match_outputs.clone();
-    for output in &mut native.source_outputs {
-        let stored = runtime
-            .source_outputs
-            .iter()
-            .find(|stored| stored.source == output.source)
-            .ok_or_else(|| invalid("missing runtime output schema"))?;
-        output.schema.match_patterns = stored.schema.match_patterns.clone();
-        output.relation_scope = stored.relation_scope.clone();
-    }
+    let native = catalog(outputs);
     let actual = identity::question_id_from_normal_form(form, parameters).map_err(language)?;
     if actual != id || identity::normal_form(query, &native).map_err(language)? != *form {
         return Err(invalid(
@@ -483,11 +403,7 @@ fn check_node(
             "canonical question changes when bound to native declarations",
         ));
     }
-    let mut recorded = outputs.to_vec();
-    for output in &mut recorded {
-        output.schema.match_patterns.clear();
-        output.relation_scope = None;
-    }
+    let recorded = outputs.to_vec();
     if used_outputs(query, &native)? != recorded {
         return Err(invalid(
             "question contains unused or unordered output schemas",
@@ -505,7 +421,6 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
         &object.parameters,
         &object.identity_ast,
         &object.source_outputs,
-        &native,
     )?;
     let actual_edges = edges(&object.identity_ast, &native)?;
     if actual_edges != object.edges || dependencies(&actual_edges) != object.dependencies {
@@ -521,7 +436,6 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
             &node.parameters,
             &node.identity_ast,
             &node.source_outputs,
-            &native,
         )?;
         if by_id.insert(node.question.to_string(), node).is_some() {
             return Err(invalid("duplicate frozen question body"));
@@ -543,8 +457,8 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
         return Err(invalid("question contains an unrelated frozen definition"));
     }
     let bindings = replay_bindings(object, &native)?;
-    // A supplied schema cannot promote a field that its frozen definition does
-    // not actually produce. Kept outputs remain identified immutable inputs.
+    // A supplied schema cannot promote a field outside the semantic relation
+    // declared by its frozen definition. Kept outputs remain identified immutable inputs.
     for output in &native.source_outputs {
         if let OutputSource::Saved { name, arguments } = &output.source {
             let source = Query {
@@ -552,13 +466,13 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
                     name: name.clone(),
                     arguments: arguments.clone(),
                     condition: None,
-                    output: OutputBinding::Known,
+                    output: SourceColumns::Known,
                 },
                 attach: vec![],
-                stages: vec![],
+                transforms: vec![],
             };
             let expanded = expand(&source, &native, &bindings)?;
-            let actual: OutputSchema = crate::compile::schema::infer(&expanded, &native)?;
+            let (_, actual) = crate::compile::schema::output_metadata(&expanded, &native)?;
             if actual != output.schema {
                 return Err(invalid(
                     "saved output schema differs from its frozen definition",
@@ -578,14 +492,14 @@ pub fn replay(object: &QueryObject, expected_catalog: &str) -> Result<Plan, Quer
         });
     }
     validate_object(object)?;
-    let mut native = runtime_catalog(object)?;
+    let native = runtime_catalog(object)?;
     let original = query_language::bind::bind(&object.identity_ast, &native).map_err(language)?;
     let expanded = expand(
         original.query(),
         &native,
         &replay_bindings(object, &native)?,
     )?;
-    crate::compile::schema::supply_matches(&expanded, &mut native)?;
+
     let expanded = query_language::bind::bind(&expanded, &native).map_err(language)?;
     let text = query_language::format::format_query(original.query(), &native).map_err(language)?;
     let bindings = replay_bindings(object, &native)?;

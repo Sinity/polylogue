@@ -13,7 +13,7 @@ use super::*;
 fn page_navigation_and_message_routes_use_the_shared_selection() {
     let r = reader();
     rt().block_on(async {
-        let first = read_page(&r, "session:claude-code:s1", &[("budget", "2")]).await;
+        let first = read_page(&r, "session:claude-code:s1", &[("page_tokens", "2")]).await;
         let next = first
             .document
             .footer
@@ -125,7 +125,7 @@ fn finite_http_changes_are_authenticated_and_resume_only_from_complete() {
 fn changed_generation_refuses_content_continuation_and_replaces_change_population() {
     let r = reader();
     rt().block_on(async {
-        let first = read_page(&r, "session:claude-code:s1", &[("budget", "2")]).await;
+        let first = read_page(&r, "session:claude-code:s1", &[("page_tokens", "2")]).await;
         let next =
             polylogue_render::web::http_url(&first.document.footer.next.unwrap().http).unwrap();
         let (_, _, body) = send(
@@ -351,7 +351,7 @@ fn previous_links_reopen_exact_unicode_fragments_without_browser_history() {
             && data["store"]["search_pending"] == 0
     });
     rt().block_on(async {
-        let first = read_page(&r, "message:claude-code:u1", &[("budget", "20")]).await;
+        let first = read_page(&r, "message:claude-code:u1", &[("page_tokens", "20")]).await;
         let next = first
             .document
             .footer

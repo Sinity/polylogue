@@ -55,6 +55,10 @@ fn setting_envelope(id: &str) -> String {
         arguments: serde_json::json!({"key":"reading.variants", "value":"[]"}),
         request_id: id.into(),
         deadline: command_surface::Deadline::Default,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     })
     .unwrap()
 }
@@ -90,9 +94,9 @@ pub(super) fn application_body(body: String) -> String {
         return body;
     };
     match answer {
-        command_surface::Answer::Error { error, .. } => serde_json::json!({
+        command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. } => serde_json::json!({
             "error": error.code, "message": error.message,
-            "detail": {"position": error.position, "suggestion": error.suggestion, "hint": error.hint, "retryable": error.retryable},
+            "detail": {"position": error.position, "suggestion": error.suggestion(), "hint": error.hint, "retryable": error.retryable},
         }).to_string(),
         answer => answer.value().unwrap().to_string(),
     }

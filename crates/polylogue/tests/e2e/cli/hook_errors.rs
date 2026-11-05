@@ -97,7 +97,7 @@ fn hook_items(
         "session:claude-code:hooks",
         "--format",
         format,
-        "--budget",
+        "--page-tokens",
         budget,
     ]
     .into_iter()

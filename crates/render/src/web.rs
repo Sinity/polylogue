@@ -52,10 +52,12 @@ pub fn read(
         .find(|description| description.spec.name == request.operation)
         .ok_or_else(|| Failure::new(FailureKind::BadRequest, "unknown read operation"))?
         .spec
-        .http_route;
+        .http_route
+        .as_deref()
+        .ok_or_else(|| Failure::new(FailureKind::BadRequest, "read operation has no HTTP route"))?;
     let body = html! {
         (currency_notice(&page.snapshot.currency, &frame.command))
-        nav class="read-views" aria-label="Read view" { @for view in View::ALL { a href=(view_url(request,&route,view)?) aria-current=[(view==page.document.header.view).then_some("page")] { (view) } } }
+        nav class="read-views" aria-label="Read view" { @for view in View::ALL { a href=(view_url(request,route,view)?) aria-current=[(view==page.document.header.view).then_some("page")] { (view) } } }
         (navigation(page))
         (crate::html::document(&page.document))
         (navigation(page))

@@ -752,6 +752,7 @@ const WRITTEN: &[Command] = &[
         )],
         action: Action::Request(requests::verify),
         print: print::verify,
+        tool: Some(Tool::Read),
         ..CLI
     }),
     typed_command!(ListOperation, crate::protocol::query_aliases::List, crate::protocol::query::Answer, {
@@ -763,6 +764,7 @@ const WRITTEN: &[Command] = &[
         action: Action::Request(requests::list),
         print: print::query,
         http: true,
+        tool: Some(Tool::Read),
         ..CLI
     }),
     typed_command!(ReadCommand, crate::protocol::read::Arguments, crate::protocol::read::Answer, {
@@ -775,7 +777,7 @@ const WRITTEN: &[Command] = &[
             Arg { default: Some("transcript"), ..opt("view", Kind::Choice(VIEWS), "The reading view") },
             unlisted(opt("format", Kind::Choice(FORMATS), "The output format")),
             unlisted(opt("delivery", Kind::Choice(&["page", "stream"]), "Page or finite SSE transfer")),
-            opt("budget", Kind::Integer, "Page budget in estimated tokens"), CURSOR,
+            opt("page_tokens", Kind::Integer, "Tokens transferred in one read page"), CURSOR,
             unlisted(opt("show", Kind::List, polylogue_model::read::FoldKind::HELP)),
             unlisted(opt("hide", Kind::List, "Item kinds to hide, from the same table as show")),
             unlisted(Arg { default: Some("100"), ..opt("output_lines", Kind::Integer, "Tool output head and tail lines; zero keeps all lines") }),
@@ -1001,6 +1003,7 @@ const WRITTEN: &[Command] = &[
         args: &[WHY, CURSOR, FIELDS],
         action: Action::Request(requests::live),
         print: print::query,
+        tool: Some(Tool::Read),
         ..CLI
     }),
     typed_command!(WaitingOperation, crate::protocol::query_aliases::Live, crate::protocol::query::Rows, {
@@ -1011,6 +1014,7 @@ const WRITTEN: &[Command] = &[
         args: &[WHY, CURSOR, FIELDS],
         action: Action::Request(requests::waiting),
         print: print::query,
+        tool: Some(Tool::Read),
         ..CLI
     }),
     Command {
@@ -1192,6 +1196,7 @@ const WRITTEN: &[Command] = &[
         ],
         action: Action::Request(requests::notices),
         print: print::query,
+        tool: Some(Tool::Read),
         ..CLI
     }),
     Command {
@@ -1276,6 +1281,7 @@ const WRITTEN: &[Command] = &[
         args: &[pos("statement", Kind::Text, "One SQL statement")],
         action: Action::Request(requests::sql),
         http: true,
+        tool: Some(Tool::Read),
         ..CLI
     }),
     Command {
@@ -1592,6 +1598,7 @@ const WRITTEN: &[Command] = &[
         action: Action::Request(requests::complete),
         cli: Cli::Hidden,
         http: true,
+        tool: Some(Tool::Read),
         ..CLI
     }),
 ];
@@ -1599,21 +1606,6 @@ const WRITTEN: &[Command] = &[
 /// The command called `name` (`assert-query`).
 pub fn command(name: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.name == name)
-}
-
-/// The first word of every command the command line has: a query starting
-/// with one of these is refused rather than searched for.
-pub fn command_words() -> Vec<String> {
-    let mut words: Vec<String> = Vec::new();
-    for c in COMMANDS.iter() {
-        if matches!(c.cli, Cli::Subcommand | Cli::Hidden) {
-            let first = c.name.split(' ').next().unwrap_or(c.name);
-            if !words.iter().any(|w| w == first) {
-                words.push(first.to_owned());
-            }
-        }
-    }
-    words
 }
 
 /// A command's argument values as one JSON object, keyed by argument name.

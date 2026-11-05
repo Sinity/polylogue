@@ -23,7 +23,6 @@ fn query_result(
             .unwrap(),
         ),
         origins: vec!["claude-code".into()],
-        command_words: vec![],
         page_size: None,
         random_seed: Some(1),
         embeddings: false,

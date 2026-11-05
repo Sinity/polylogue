@@ -10,10 +10,16 @@ impl Read for Bytes<'_> {
     }
 }
 fn refusal() -> Answer<serde_json::Value> {
-    Answer::Error {
-        error: crate::protocol::failure("scope_changed", "scope changed: λ"),
-        notes: vec!["acquire a new reader".into()],
-        next: vec![],
+    command_surface::Answer {
+        outcome: command_surface::Outcome::Error(crate::protocol::failure(
+            "scope_changed",
+            "scope changed: λ",
+        )),
+        envelope: command_surface::Envelope {
+            notes: vec!["acquire a new reader".into()],
+            next: vec![],
+            ..Default::default()
+        },
     }
 }
 

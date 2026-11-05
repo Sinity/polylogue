@@ -16,7 +16,7 @@ fn every_spec_example_parses_through_the_product_catalog() {
     for text in [
         "origin:claude-code",
         "origin:claude-code kind:subagent",
-        "kind:* | agg count, sum:cost",
+        "kind:* | agg count, sum(cost)",
         "sessions | group by origin | count",
         "repo:morrow",
         "tag:project:morrow",
@@ -68,8 +68,12 @@ fn shared_tree_retains_boolean_modes_values_and_spans() {
         matches!(&conditions[2].kind, ConditionKind::Text { text, mode: TextMode::Prefix } if text == "refactor")
     );
     assert_eq!(conditions[0].span, Span { start: 0, end: 6 });
+    assert_eq!(
+        parse("cats and dogs").unwrap_err().suggestion(),
+        Some("cats AND dogs")
+    );
     assert!(
-        matches!(cond("cats and dogs"), ConditionKind::And { conditions } if conditions.len() == 3)
+        matches!(cond("cats \"and\" dogs"), ConditionKind::And { conditions } if conditions.len() == 3)
     );
     assert!(matches!(cond("a OR b"), ConditionKind::Or { .. }));
     for text in ["NOT tag:x", "-tag:x"] {
@@ -133,7 +137,7 @@ fn references_calls_and_sequences_keep_structural_identity() {
                 ..
             }),
         ..
-    } = p("tool_calls where seq(tool:Bash -> [next] tool:Edit -> [within:5m] tool:Bash)").source
+    } = p("tool_calls where seq(tool:Bash -> [next] tool:Edit -> [within 5m] tool:Bash)").source
     else {
         panic!()
     };
@@ -145,7 +149,9 @@ fn references_calls_and_sequences_keep_structural_identity() {
         vec![
             Gap::Next,
             Gap::Within {
-                duration: Value::scalar("5m")
+                distance: Distance::Time {
+                    duration: Value::scalar("5m")
+                }
             }
         ]
     );
@@ -170,8 +176,8 @@ fn shared_units_stages_and_nested_queries_use_product_names() {
         cond("messages >= 10"),
         ConditionKind::Compare { .. }
     ));
-    let source = "tool_calls | group by day(at), tool | agg count, sum:duration, p90:duration, count_distinct:session | sort by count desc | where count >= 3 | limit 5 | offset 10";
-    let mut catalog = crate::catalog::catalog(&[], &[]);
+    let source = "tool_calls | group by day(at), tool | agg count, sum(duration), p90(duration), count_distinct(session) | sort by count desc | where count >= 3 | limit 5 | offset 10";
+    let mut catalog = crate::catalog::catalog(&[]);
     catalog
         .units
         .iter_mut()
@@ -189,19 +195,20 @@ fn shared_units_stages_and_nested_queries_use_product_names() {
         "unknown_field",
         "elapsed duration has no product producer yet"
     );
-    assert_eq!(query.stages.len(), 6);
-    let StageKind::Aggregate { aggregates } = &query.stages[1].kind else {
+    assert_eq!(query.transforms.len(), 6);
+    let TransformKind::Aggregate { aggregates } = &query.transforms[1].kind else {
         panic!()
     };
     assert_eq!(aggregates[2].column(), "p90_duration");
+    assert!(parse("sessions | except (messages where chrono)").is_err());
     let nested =
-        p("origin:codex | union (repo:morrow | where cost > 1) | except (messages where chrono)");
-    assert_eq!(nested.stages.len(), 2);
+        p("origin:codex | union (repo:morrow | where cost > 1) | except (sessions where chrono)");
+    assert_eq!(nested.transforms.len(), 2);
     assert!(
         matches!(cond("count(tool_call where outcome:error) >= 3"), ConditionKind::Count { unit, op: Op::Ge, count: 3, condition: Some(_), .. } if unit == "tool_calls")
     );
     assert!(
-        matches!(cond("id in (messages where chrono | group by session)"), ConditionKind::In { query, .. } if query.stages.len() == 1)
+        matches!(cond("id in (messages where chrono | group by session)"), ConditionKind::In { query, .. } if query.transforms.len() == 1)
     );
 }
 
@@ -245,7 +252,10 @@ fn former_semantic_spelling_refuses_with_the_canonical_correction() {
     assert_eq!(error.suggestion(), Some("similar:dates"));
     assert!(matches!(
         cond("similar:dates"),
-        ConditionKind::Similar { .. }
+        ConditionKind::Rank {
+            list: RankList::Similar,
+            ..
+        }
     ));
 }
 
@@ -267,7 +277,7 @@ fn shorthand_time_bounds_keep_their_shared_typed_meaning() {
 
 #[test]
 fn product_namespace_spelling_binds_to_the_same_declared_unit() {
-    let catalog = crate::catalog::catalog(&[], &[]);
+    let catalog = crate::catalog::catalog(&[]);
     for (qualified, local) in [
         (
             "pl.sessions where repo:morrow",
@@ -314,7 +324,7 @@ fn native_time_companion_catalog_keeps_closed_precision_and_literal_unknown_dist
     assert!(
         matches!(cond("events where at.time_quality:\"unknown\""), ConditionKind::Match { value: Value::Scalar { text, quoted: true }, .. } if text == "unknown")
     );
-    let catalog = crate::catalog::catalog(&[], &[]);
+    let catalog = crate::catalog::catalog(&[]);
     let text = "events where at.time_quality:unk";
     let completions = query_language::complete::complete(text, text.len(), &catalog);
     let literal = completions

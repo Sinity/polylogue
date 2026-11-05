@@ -20,7 +20,6 @@ fn the_manual_gives_working_example_queries() {
             .unwrap(),
         ),
         origins: Vec::new(),
-        command_words: Vec::new(),
         page_size: None,
         random_seed: None,
         embeddings: true,

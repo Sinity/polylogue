@@ -1,12 +1,12 @@
 //! Product catalog binding for the shared parser.
 use crate::{
     QueryError,
-    ast::{ConditionKind, Query, Source, Value},
+    ast::{ConditionKind, Query, Source},
     catalog,
 };
 
 pub fn parse(text: &str) -> Result<Query, QueryError> {
-    with_catalog(text, &catalog::catalog(&[], &[]))
+    with_catalog(text, &catalog::catalog(&[]))
 }
 
 pub fn with_catalog(
@@ -58,7 +58,7 @@ pub fn with_catalog(
 /// the assertions unit: the revision is one row whatever the default unit.
 /// Every other lone reference stays a condition on the default unit.
 fn bind_lone_reference(query: &mut Query) {
-    if !query.stages.is_empty() || !query.attach.is_empty() {
+    if !query.transforms.is_empty() || !query.attach.is_empty() {
         return;
     }
     let Source::Unit {
@@ -72,16 +72,11 @@ fn bind_lone_reference(query: &mut Query) {
     if !*implicit {
         return;
     }
-    let text = match &condition.kind {
-        ConditionKind::Reference { reference } => reference.clone(),
-        ConditionKind::Match {
-            field,
-            value: Value::Scalar { text, .. },
-        } => format!("{field}:{text}"),
-        _ => return,
+    let ConditionKind::Reference { reference: text } = &condition.kind else {
+        return;
     };
     if let Ok(polylogue_model::Reference::Assertion(revision)) =
-        polylogue_model::Reference::parse(&text)
+        polylogue_model::Reference::parse(text)
         && revision.revision.is_some()
     {
         // Explicit, so the unit survives formatting the query back to text.

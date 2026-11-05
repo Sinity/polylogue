@@ -399,7 +399,7 @@ pub(crate) struct Compiler<'a> {
     /// An unavailable semantic order affects the answer or an earlier selection.
     near_unavailable: bool,
     /// Conditions at or after this position belong to a stage.
-    stages_start: usize,
+    transforms_start: usize,
 }
 
 /// A fused ranking: the join that brings it to the rows, and the rank
@@ -436,7 +436,7 @@ impl<'a> Compiler<'a> {
             definitions: vec![],
             near_request: None,
             near_unavailable: false,
-            stages_start: usize::MAX,
+            transforms_start: usize::MAX,
         }
     }
 
@@ -472,6 +472,9 @@ pub(crate) enum FieldOp<'q> {
 }
 
 /// A column of `| matches` rows, by name.
+fn column_sql(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
 fn match_column(rel: &MatchRel, name: &str, at: usize) -> Result<(String, ColKind), QueryError> {
     let column = rel
         .columns
@@ -500,26 +503,34 @@ fn match_agg(
     at: usize,
 ) -> Result<Vec<(String, String, ColKind)>, QueryError> {
     let col = f.column();
-    let Some(field) = f.field() else {
+    let Some(field) = f.field()? else {
         return Ok(vec![(col, "count(*)".into(), ColKind::Number)]);
     };
     let (name, kind) = match_column(rel, field, at)?;
+    let expression = column_sql(&name);
     let unknown = (
-        format!("unknown_{name}"),
-        format!("count(*) - count({name})"),
+        format!("unknown_{}", flat(&name)),
+        format!("count(*) - count({expression})"),
         ColKind::Number,
     );
     Ok(match &f.function {
-        AggregateFunction::Count => unreachable!("handled above"),
-        AggregateFunction::Sum => vec![(col, format!("sum({name})"), kind), unknown],
-        AggregateFunction::Avg => vec![(col, format!("avg({name})"), kind), unknown],
-        AggregateFunction::Min => vec![(col, format!("min({name})"), kind), unknown],
-        AggregateFunction::Max => vec![(col, format!("max({name})"), kind), unknown],
+        AggregateFunction::Count => vec![(col, format!("count({expression})"), ColKind::Number)],
+        AggregateFunction::Sum => vec![(col, format!("sum({expression})"), kind), unknown],
+        AggregateFunction::Avg => vec![(col, format!("avg({expression})"), kind), unknown],
+        AggregateFunction::Min => vec![(col, format!("min({expression})"), kind), unknown],
+        AggregateFunction::Max => vec![(col, format!("max({expression})"), kind), unknown],
         AggregateFunction::Percentile(p) => {
-            vec![(col, format!("pl_percentile({name}, {p})"), kind), unknown]
+            vec![
+                (col, format!("pl_percentile({expression}, {p})"), kind),
+                unknown,
+            ]
         }
         AggregateFunction::CountDistinct => {
-            vec![(col, format!("count(DISTINCT {name})"), ColKind::Number)]
+            vec![(
+                col,
+                format!("count(DISTINCT {expression})"),
+                ColKind::Number,
+            )]
         }
         _ => return Err(not_built("this aggregate")),
     })
@@ -559,11 +570,10 @@ fn named_fields(top: &[Condition], unit: Unit) -> HashSet<String> {
                 Some((field, _)) => field,
                 None => continue,
             },
-            ConditionKind::Compare { operand, .. }
-            | ConditionKind::Between { operand, .. }
-            | ConditionKind::Since { operand, .. }
-            | ConditionKind::Until { operand, .. } => match operand {
-                Operand::Field { name } => name,
+            ConditionKind::Since { field, .. } | ConditionKind::Until { field, .. } => field,
+            ConditionKind::Compare { left, .. } | ConditionKind::Between { left, .. } => match left
+            {
+                Expression::Field { name } => name,
                 _ => continue,
             },
             _ => continue,
@@ -611,6 +621,7 @@ fn alternatives(v: &Value) -> Vec<String> {
         Value::Scalar { text, .. } => vec![text.clone()],
         Value::Set { values } => values.iter().flat_map(alternatives).collect(),
         Value::Unknown => vec!["unknown".into()],
+        Value::Known => vec!["known".into()],
         Value::Parameter { name } => vec![format!("${name}")],
         Value::Any => vec![],
     }
@@ -667,12 +678,17 @@ fn closed_set_message(def: &fields::Field, value: &str) -> String {
 /// SQL projection, ordering and cursor comparisons.
 fn group_key_order(keys: &[(String, String, ColKind)], prefix: &str) -> Vec<String> {
     keys.iter()
-        .flat_map(|(name, _, _)| [format!("{prefix}{name} IS NULL"), format!("{prefix}{name}")])
+        .flat_map(|(name, _, _)| {
+            [
+                format!("{prefix}{} IS NULL", column_sql(name)),
+                format!("{prefix}{}", column_sql(name)),
+            ]
+        })
         .collect()
 }
 
 fn group_sort(
-    key: &Operand,
+    key: &Expression,
     desc: bool,
     keys: Option<&[(String, String, ColKind)]>,
     aggs: Option<&[(String, String, ColKind)]>,
@@ -680,13 +696,13 @@ fn group_sort(
 ) -> Result<Vec<String>, QueryError> {
     let keys = keys.unwrap_or(&[]);
     let mut order = match key {
-        Operand::Function { .. } => {
+        Expression::Function { .. } => {
             let seed = parse_random_seed(key)?;
             if let Some(seed) = seed.or(random_seed) {
                 let identity = format!(
                     "json_array({})",
                     keys.iter()
-                        .map(|(n, _, _)| format!("g.{n}"))
+                        .map(|(n, _, _)| format!("g.{}", column_sql(n)))
                         .collect::<Vec<_>>()
                         .join(",")
                 );
@@ -695,8 +711,13 @@ fn group_sort(
                 vec!["random()".into()]
             }
         }
-        Operand::Field { name: field } => {
-            let name = flat(field);
+        Expression::Field { name: field } => {
+            let name = keys
+                .iter()
+                .chain(aggs.unwrap_or(&[]).iter())
+                .find(|(name, _, _)| name == field || *name == flat(field))
+                .map(|(name, _, _)| name.clone())
+                .unwrap_or_else(|| flat(field));
             if !keys
                 .iter()
                 .chain(aggs.unwrap_or(&[]).iter())
@@ -710,8 +731,10 @@ fn group_sort(
                 });
             }
             let dir = if desc { " DESC" } else { "" };
+            let name = column_sql(&name);
             vec![format!("g.{name} IS NULL"), format!("g.{name}{dir}")]
         }
+        _ => return Err(not_built("this computed sort expression")),
     };
     // A group's complete key is its stable identity, even when counts tie.
     order.extend(group_key_order(keys, "g."));
@@ -812,10 +835,16 @@ fn bind_unit(name: &str) -> Result<Unit, QueryError> {
     Unit::from_name(name.strip_prefix("pl.").unwrap_or(name))
         .ok_or_else(|| not_built(&format!("unit {name}")))
 }
-fn field_operand(operand: &Operand) -> Result<&str, QueryError> {
+fn field_operand(operand: &Expression) -> Result<&str, QueryError> {
     match operand {
-        Operand::Field { name } => Ok(name),
+        Expression::Field { name } => Ok(name),
         _ => Err(not_built("this computed field")),
+    }
+}
+fn literal_expression(expression: &Expression) -> Result<&Value, QueryError> {
+    match expression {
+        Expression::Value { value } => Ok(value),
+        _ => Err(not_built("a computed value in this position")),
     }
 }
 fn value_text(value: &Value) -> Result<&str, QueryError> {
@@ -827,11 +856,15 @@ fn value_text(value: &Value) -> Result<&str, QueryError> {
     }
 }
 trait AggregateField {
-    fn field(&self) -> Option<&str>;
+    fn field(&self) -> Result<Option<&str>, QueryError>;
 }
 impl AggregateField for Aggregate {
-    fn field(&self) -> Option<&str> {
-        self.fields.first().map(String::as_str)
+    fn field(&self) -> Result<Option<&str>, QueryError> {
+        match self.arguments.as_slice() {
+            [] if self.function == AggregateFunction::Count => Ok(None),
+            [Expression::Field { name }] => Ok(Some(name)),
+            _ => Err(not_built("this aggregate expression")),
+        }
     }
 }
 #[derive(Clone, Copy)]
@@ -840,10 +873,10 @@ enum Bucket {
     Week,
     Month,
 }
-fn group_operand(operand: &Operand) -> Result<(&str, Option<Bucket>), QueryError> {
+fn group_operand(operand: &Expression) -> Result<(&str, Option<Bucket>), QueryError> {
     match operand {
-        Operand::Field { name } => Ok((name, None)),
-        Operand::Function { name, arguments } if arguments.len() == 1 => {
+        Expression::Field { name } => Ok((name, None)),
+        Expression::Function { name, arguments } if arguments.len() == 1 => {
             let bucket = match name.as_str() {
                 "day" => Bucket::Day,
                 "week" => Bucket::Week,
@@ -855,8 +888,8 @@ fn group_operand(operand: &Operand) -> Result<(&str, Option<Bucket>), QueryError
         _ => Err(not_built("this group key")),
     }
 }
-fn parse_random_seed(operand: &Operand) -> Result<Option<u64>, QueryError> {
-    let Operand::Function { name, arguments } = operand else {
+fn parse_random_seed(operand: &Expression) -> Result<Option<u64>, QueryError> {
+    let Expression::Function { name, arguments } = operand else {
         return Ok(None);
     };
     if name != "random" {
@@ -865,7 +898,9 @@ fn parse_random_seed(operand: &Operand) -> Result<Option<u64>, QueryError> {
     arguments
         .first()
         .map(|v| {
-            field_operand(v)?
+            literal_expression(v)?
+                .text()
+                .ok_or_else(|| not_built("this random seed"))?
                 .parse()
                 .map_err(|_| not_built("this random seed"))
         })

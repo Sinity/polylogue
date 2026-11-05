@@ -47,7 +47,7 @@ fn prepare_with(
     pending: &[PreparedRequest],
     blobs: &[NewBlob],
 ) -> Result<PreparedRequest> {
-    let context = crate::user_writes::PreparationContext::new(vec!["codex".into()], Vec::new());
+    let context = crate::user_writes::PreparationContext::new(vec!["codex".into()]);
     prepare(
         conn,
         r,

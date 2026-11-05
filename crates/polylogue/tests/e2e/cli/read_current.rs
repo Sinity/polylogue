@@ -110,7 +110,7 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
             target,
             "--view",
             "transcript",
-            "--budget",
+            "--page-tokens",
             "10000",
         ],
     ));
@@ -124,7 +124,7 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
             target,
             "--view",
             "transcript",
-            "--budget",
+            "--page-tokens",
             "1",
         ],
     );

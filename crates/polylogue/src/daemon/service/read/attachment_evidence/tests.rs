@@ -36,7 +36,6 @@ fn ready(
         attachment: index,
         input: input.map(str::to_owned),
         length: crate::daemon::attachment::PAGE_BYTES as u64,
-        cursor: None,
     };
     daemon
         .daemon
@@ -45,6 +44,10 @@ fn ready(
             arguments: serde_json::to_value(arguments).unwrap(),
             request_id: "synthetic-attachment-evidence".into(),
             deadline: command_surface::Deadline::Default,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         })
         .map_err(crate::daemon::Failure::from)
 }

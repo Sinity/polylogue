@@ -143,9 +143,8 @@ impl ItemUniverse {
     fn from_root(daemon: &test_daemon::TestDaemon, next: &ReadyCall) -> Self {
         let child: crate::protocol::operations::ToolCall =
             serde_json::from_value(next.mcp["arguments"].clone()).unwrap();
-        let mut arguments: crate::protocol::read::Arguments =
+        let arguments: crate::protocol::read::Arguments =
             serde_json::from_value(child.arguments).unwrap();
-        arguments.cursor = None;
         let mut request = arguments.into_request().unwrap();
         let crate::daemon::Request::Read {
             delivery,
@@ -368,9 +367,7 @@ pub(super) fn collect(
             requests.insert(request_id.to_owned()),
             "next page reused an invocation identity"
         );
-        let cursor = envelope["arguments"]["cursor"]
-            .as_str()
-            .expect("opaque continuation");
+        let cursor = envelope["cursor"].as_str().expect("opaque continuation");
         assert!(
             cursors.insert(cursor.to_owned()),
             "continuation repeated a position"
@@ -385,7 +382,7 @@ pub(super) fn collect(
             root = Some(identity);
         }
         if let Some(budget) = budget {
-            ready.mcp["arguments"]["arguments"]["budget"] = json!(budget);
+            ready.mcp["arguments"]["arguments"]["page_tokens"] = json!(budget);
         }
         page = execute_ready(&archive, &ready).unwrap();
     }
@@ -413,6 +410,7 @@ pub(super) fn read_without_deadline(archive: &Archive, arguments: Value) -> Resu
     let envelope = serde_json::to_value(crate::protocol::operations::ToolCall {
         operation: Some("read".into()),
         arguments,
+        cursor: None,
         request_id: uuid::Uuid::now_v7().to_string(),
         deadline: command_surface::Deadline::None,
     })
@@ -429,7 +427,7 @@ pub(super) fn read_without_deadline(archive: &Archive, arguments: Value) -> Resu
     if failed { Err(text) } else { Ok(text) }
 }
 
-pub(super) fn execute_ready(archive: &Archive, ready: &ReadyCall) -> Result<ReadPage, String> {
+pub(crate) fn execute_ready(archive: &Archive, ready: &ReadyCall) -> Result<ReadPage, String> {
     let name = ready.mcp["name"].as_str().expect("generated MCP tool name");
     let arguments = ready.mcp["arguments"]
         .as_object()
@@ -457,7 +455,7 @@ fn mcp_read_pages_execute_the_generated_continuation_without_losing_unicode() {
     let archive = Archive::at(&daemon.daemon.archive.root);
     let first = read_without_deadline(
         &archive,
-        json!({"target":"session:claude-code:s1", "budget":256}),
+        json!({"target":"session:claude-code:s1", "page_tokens":256}),
     )
     .unwrap();
     let page: ReadPage = serde_json::from_str(&first).unwrap();
@@ -491,7 +489,7 @@ fn budgeted_mcp_output_contains_one_bounded_layout_and_no_duplicate_source_recor
     let archive = Archive::at(&daemon.daemon.archive.root);
     let output = read_without_deadline(
         &archive,
-        json!({"target":"session:claude-code:s1","budget":2048}),
+        json!({"target":"session:claude-code:s1","page_tokens":2048}),
     )
     .unwrap();
     let page: ReadPage = serde_json::from_str(&output).unwrap();
@@ -524,7 +522,7 @@ fn an_omitted_read_deadline_stays_default_in_the_next_call() {
     let first = call(
         &archive,
         "read",
-        args(json!({"target":"session:claude-code:s1","budget":256})),
+        args(json!({"target":"session:claude-code:s1","page_tokens":256})),
     )
     .unwrap();
     let page: ReadPage = serde_json::from_str(&first).unwrap();
@@ -541,9 +539,7 @@ fn an_omitted_read_deadline_stays_default_in_the_next_call() {
     let child: crate::protocol::operations::ToolCall =
         serde_json::from_value(envelope.clone()).unwrap();
     assert_eq!(child.deadline, command_surface::Deadline::Default);
-    let arguments: crate::protocol::read::Arguments =
-        serde_json::from_value(child.arguments).unwrap();
-    assert!(arguments.cursor.is_some());
+    assert!(child.cursor.is_some());
     let continued = execute_ready(&archive, &next).unwrap();
     assert_eq!(continued.snapshot.query, page.snapshot.query);
 }

@@ -72,7 +72,7 @@ fn check(env: &crate::Fixture) {
         json(&descriptor)["descriptor"]["matches"][0]["names"],
         json!(["promoted.png"])
     );
-    let page = cli(env, &["--json", "read", SESSION, "--budget", "100000"]);
+    let page = cli(env, &["--json", "read", SESSION, "--page-tokens", "100000"]);
     let page = typed_page(&page);
     let item = one_attachment(&page.document.items);
     let descriptor = json(&descriptor)["descriptor"].clone();

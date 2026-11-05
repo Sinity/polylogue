@@ -138,8 +138,8 @@ pub fn list(_: &Command, v: &Values, _: &Caller) -> Built {
 }
 
 pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
-    if v.integer("budget") == Some(0) {
-        return Err("budget must be positive".into());
+    if v.integer("page_tokens") == Some(0) {
+        return Err("page_tokens must be positive".into());
     }
     use polylogue_model::read::{ReadDelivery, ReadOptions};
     let directory = v.text("to").is_some();
@@ -186,10 +186,10 @@ pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
             .text("format")
             .unwrap_or_else(|| if caller.json { "json" } else { "terminal" }.into()),
         budget: v
-            .integer("budget")
+            .integer("page_tokens")
             .map(usize::try_from)
             .transpose()
-            .map_err(|_| "budget exceeds address space")?,
+            .map_err(|_| "page_tokens exceeds address space")?,
         with_blobs: v.flag("with_blobs"),
         cursor: v.text("cursor"),
     })

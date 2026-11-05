@@ -6,7 +6,7 @@ use polylogue_model::{
 };
 
 fn context() -> crate::user_writes::PreparationContext {
-    crate::user_writes::PreparationContext::new(vec!["codex".into()], Vec::new())
+    crate::user_writes::PreparationContext::new(vec!["codex".into()])
 }
 
 fn bindings() -> polylogue_query::Bindings {

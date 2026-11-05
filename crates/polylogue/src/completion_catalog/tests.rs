@@ -19,7 +19,7 @@ fn populated(path: &Path) {
         },
         written_at: 100,
     };
-    let catalog = polylogue_query::catalog::catalog(&["codex".into()], &["status".into()]);
+    let catalog = polylogue_query::catalog::catalog(&["codex".into()]);
     CatalogWriter::build(path, &metadata, |writer| {
         writer.put_catalog(&catalog)?;
         writer.put_session(&Session {
@@ -45,6 +45,7 @@ fn populated(path: &Path) {
             parameters: vec![],
             help: "Count native actions".into(),
             schema: Some(OutputSchema {
+                match_units: None,
                 unit: Some("tool_calls".into()),
                 fields: vec![
                     Field {
@@ -59,7 +60,6 @@ fn populated(path: &Path) {
                     },
                 ],
                 main_time: None,
-                match_patterns: Vec::new(),
             }),
         })?;
         writer.put_kept(&Kept {
@@ -68,6 +68,7 @@ fn populated(path: &Path) {
             unit: Some("tool_calls".into()),
             row_count: Some(3),
             rows: Some(OutputSchema {
+                match_units: None,
                 unit: Some("tool_calls".into()),
                 fields: vec![Field {
                     name: "count".into(),
@@ -75,9 +76,9 @@ fn populated(path: &Path) {
                     ..Default::default()
                 }],
                 main_time: None,
-                match_patterns: Vec::new(),
             }),
             matches: Some(OutputSchema {
+                match_units: None,
                 unit: Some("tool_calls".into()),
                 fields: vec![Field {
                     name: "tool".into(),
@@ -85,7 +86,6 @@ fn populated(path: &Path) {
                     ..Default::default()
                 }],
                 main_time: None,
-                match_patterns: Vec::new(),
             }),
         })
     })

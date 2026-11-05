@@ -38,10 +38,7 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
                     denominator: None,
                 },
             },
-            polylogue_store::user_writes::PreparationContext::new(
-                vec!["claude-code".into()],
-                vec![],
-            ),
+            polylogue_store::user_writes::PreparationContext::new(vec!["claude-code".into()]),
             None,
         )
         .unwrap();
@@ -212,7 +209,7 @@ fn public_keep_refuses_a_stale_change_cursor_without_keeping_a_result() {
         &daemon.daemon,
     );
     assert!(
-        matches!(result, command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("resync_required"))
+        matches!(result, command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("resync_required"))
     );
     let pool = polylogue_store::ReadPool::open(&daemon.daemon.archive).unwrap();
     assert_eq!(

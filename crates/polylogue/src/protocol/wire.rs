@@ -38,6 +38,10 @@ mod tests {
             arguments: serde_json::json!({}),
             request_id: "bare-shared-envelope".into(),
             deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         };
         let (accepted, caller) = incoming(&serde_json::to_string(&request).unwrap())
             .unwrap()

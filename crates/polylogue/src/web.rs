@@ -373,14 +373,34 @@ fn browser_response(answer: Answer<Value>, root: &std::path::Path) -> Answer<Val
         value
     });
     let notes = match &mut answer {
-        Answer::Error { error, notes, .. } => {
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Error(error),
+            envelope: command_surface::Envelope { notes, .. },
+            ..
+        } => {
             error.message = access::scrub(&error.message, root);
             error.hint = error.hint.as_deref().map(|hint| access::scrub(hint, root));
             notes
         }
-        Answer::Ok { notes, .. } | Answer::Empty { notes, .. } | Answer::Degraded { notes, .. } => {
-            notes
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Ok(_),
+            envelope: command_surface::Envelope { notes, .. },
+            ..
         }
+        | command_surface::Answer {
+            outcome: command_surface::Outcome::Empty(_),
+            envelope: command_surface::Envelope { notes, .. },
+            ..
+        }
+        | command_surface::Answer {
+            outcome:
+                command_surface::Outcome::Degraded {
+                    value: _,
+                    missing: notes,
+                    ..
+                },
+            ..
+        } => notes,
     };
     for note in notes {
         *note = access::scrub(note, root);

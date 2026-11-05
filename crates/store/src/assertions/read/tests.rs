@@ -316,7 +316,7 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
 fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
     use polylogue_model::{BlobHash, assertion::values::SavedQuery};
     let (_dir, _archive, _lock, writer, reads) = setup();
-    let context = || crate::user_writes::PreparationContext::new(vec!["codex".into()], Vec::new());
+    let context = || crate::user_writes::PreparationContext::new(vec!["codex".into()]);
     let save = |id: &str, text: &str| {
         crate::fixture::authored::operator_request(
             id.into(),

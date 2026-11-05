@@ -75,7 +75,11 @@ fn cli_reports_deadline_refusals_with_exit_seven() {
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["error"]["code"], "deadline_exceeded");
     let answer: command_surface::Answer<serde_json::Value> = serde_json::from_value(value).unwrap();
-    let command_surface::Answer::Error { error, .. } = answer else {
+    let command_surface::Answer {
+        outcome: command_surface::Outcome::Error(error),
+        ..
+    } = answer
+    else {
         panic!("typed timeout required")
     };
     assert_eq!(error.kind, command_surface::FailureKind::Timeout);
@@ -219,10 +223,9 @@ fn a_typed_import_keeps_its_write_reply_beyond_the_aggregate_read_default() {
         command_surface::Deadline::Default,
     );
     assert!(output.status.success(), "{output:?}");
-    let reply: command_surface::Answer<serde_json::Value> =
+    let reply: command_surface::Answer<polylogue_engine::ImportReport> =
         serde_json::from_slice(&output.stdout).unwrap();
-    let _: polylogue_engine::ImportReport =
-        serde_json::from_value(reply.value().expect("import result").clone()).unwrap();
+    reply.value().expect("typed import result");
 }
 
 #[test]
@@ -255,10 +258,9 @@ fn a_read_deadline_does_not_cancel_a_real_typed_import() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
-    let reply: command_surface::Answer<serde_json::Value> =
+    let reply: command_surface::Answer<polylogue_engine::ImportReport> =
         serde_json::from_slice(&output.stdout).unwrap();
-    let report: polylogue_engine::ImportReport =
-        serde_json::from_value(reply.value().expect("import result").clone()).unwrap();
+    let report = reply.value().expect("typed import result");
     assert_eq!(report.imported, [path]);
     assert!(report.refused.is_empty(), "{report:?}");
 }

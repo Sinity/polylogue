@@ -6,7 +6,7 @@ use super::*;
 impl<'a> Compiler<'a> {
     pub(super) fn sort(
         &mut self,
-        key: &Operand,
+        key: &Expression,
         desc: bool,
         scope: &RowContext,
         at: usize,
@@ -17,19 +17,21 @@ impl<'a> Compiler<'a> {
             .map(|term| scope.a.expand(term))
             .collect();
         Ok(match key {
-            Operand::Function { .. } => match parse_random_seed(key)?.or(self.opts.random_seed) {
-                Some(seed) => {
-                    let name = match identity.as_slice() {
-                        [one] => format!("CAST({one} AS TEXT)"),
-                        terms => format!("json_array({})", terms.join(", ")),
-                    };
-                    let mut order = vec![format!("pl_random({name}, '{seed}')")];
-                    order.extend(identity);
-                    order
+            Expression::Function { .. } => {
+                match parse_random_seed(key)?.or(self.opts.random_seed) {
+                    Some(seed) => {
+                        let name = match identity.as_slice() {
+                            [one] => format!("CAST({one} AS TEXT)"),
+                            terms => format!("json_array({})", terms.join(", ")),
+                        };
+                        let mut order = vec![format!("pl_random({name}, '{seed}')")];
+                        order.extend(identity);
+                        order
+                    }
+                    None => vec!["random()".into()],
                 }
-                None => vec!["random()".into()],
-            },
-            Operand::Field { name: field } => {
+            }
+            Expression::Field { name: field } => {
                 let (expr, kind) = self.expr(field, scope, at)?;
                 scalar(kind, field, at)?;
                 self.show(field, &expr, kind, Self::field_reference(field, scope));
@@ -38,6 +40,7 @@ impl<'a> Compiler<'a> {
                 order.extend(identity.iter().map(|term| format!("{term}{dir}")));
                 order
             }
+            _ => return Err(not_built("this computed sort expression")),
         })
     }
 
@@ -87,7 +90,7 @@ impl<'a> Compiler<'a> {
 
     pub(super) fn group_key(
         &mut self,
-        key: &Operand,
+        key: &Expression,
         scope: &RowContext,
         at: usize,
     ) -> Result<(String, String, ColKind), QueryError> {
@@ -123,7 +126,7 @@ impl<'a> Compiler<'a> {
         at: usize,
     ) -> Result<Vec<(String, String, ColKind)>, QueryError> {
         let col = f.column();
-        let Some(field) = f.field() else {
+        let Some(field) = f.field()? else {
             return Ok(vec![(col, "count(*)".into(), ColKind::Number)]);
         };
         let (expr, kind) = self.expr(field, scope, at)?;
@@ -139,7 +142,7 @@ impl<'a> Compiler<'a> {
             ColKind::Number,
         );
         let mut out = match &f.function {
-            AggregateFunction::Count => unreachable!("handled above"),
+            AggregateFunction::Count => vec![(col, format!("count({expr})"), ColKind::Number)],
             AggregateFunction::Sum => vec![(col, value(format!("sum({expr})")), kind), unknown],
             AggregateFunction::Avg => vec![(col, value(format!("avg({expr})")), kind), unknown],
             AggregateFunction::Min => vec![(col, value(format!("min({expr})")), kind), unknown],
@@ -249,8 +252,8 @@ impl<'a> Compiler<'a> {
             .collect();
         let find = |field: &str| {
             cols.iter()
-                .find(|(n, _, _)| *n == flat(field))
-                .map(|(n, _, k)| (n.clone(), *k))
+                .find(|(n, _, _)| n == field || *n == flat(field))
+                .map(|(n, _, k)| (column_sql(n), *k))
         };
         let missing = |field: &str, at: usize| QueryError::Invalid {
             message: format!(
@@ -280,9 +283,9 @@ impl<'a> Compiler<'a> {
             ConditionKind::Not { condition: cond } => {
                 format!("NOT ({})", self.group_cond(cond, keys, aggs)?)
             }
-            ConditionKind::Compare { operand, op, value } => {
-                let field = field_operand(operand)?;
-                let value = value_text(value)?;
+            ConditionKind::Compare { left, op, right } => {
+                let field = field_operand(left)?;
+                let value = value_text(literal_expression(right)?)?;
                 let (n, _) = find(field).ok_or_else(|| missing(field, c.span.start))?;
                 let v = match value.parse::<f64>() {
                     Ok(x) if x.is_finite() => format!("{x}"),

@@ -83,7 +83,6 @@ fn options() -> Options {
     Options {
         clock,
         origins: vec!["test".into()],
-        command_words: vec![],
         page_size: Some(1),
         random_seed: Some(7),
         embeddings: false,

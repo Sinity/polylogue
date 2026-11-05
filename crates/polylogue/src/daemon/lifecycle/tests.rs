@@ -145,10 +145,20 @@ fn sigterm_and_sigint_drain_real_daemons_and_preserve_admitted_writes() {
             arguments: serde_json::json!({"key":"browser.actions", "value":"on"}),
             request_id: "accepted-before-signal".into(),
             deadline: command_surface::Deadline::Milliseconds(5000),
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         };
         let answer = crate::client::call_ready(&archive, &call).unwrap();
         assert!(
-            matches!(answer, command_surface::Answer::Ok { .. }),
+            matches!(
+                answer,
+                command_surface::Answer {
+                    outcome: command_surface::Outcome::Ok(_),
+                    ..
+                }
+            ),
             "{answer:?}"
         );
         let stopping = std::time::Instant::now();

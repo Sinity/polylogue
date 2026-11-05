@@ -92,10 +92,11 @@ impl<'a> Compiler<'a> {
         unit: Unit,
         at: usize,
     ) -> Result<Program, QueryError> {
-        if let Some(stage) = query.stages.iter().find(|s| {
+        if let Some(stage) = query.transforms.iter().find(|s| {
             matches!(
                 s.kind,
-                StageKind::Distinct | StageKind::Measure { .. } | StageKind::Matches
+                TransformKind::Distinct | TransformKind::Matches
+            ) || matches!(&s.kind, TransformKind::Extension { name, .. } if name == polylogue_query::catalog::MEASURE
             )
         }) {
             return Err(QueryError::Invalid {
@@ -134,8 +135,8 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         span: Span,
     ) -> Result<String, QueryError> {
-        let grouped_by_one = query.stages.iter().rev().find_map(|s| match &s.kind {
-            StageKind::Group { keys } => Some(keys.len() == 1),
+        let grouped_by_one = query.transforms.iter().rev().find_map(|s| match &s.kind {
+            TransformKind::Group { keys } => Some(keys.len() == 1),
             _ => None,
         });
         if grouped_by_one != Some(true) {

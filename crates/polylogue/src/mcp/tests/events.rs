@@ -56,7 +56,7 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
     let page: ReadPage = serde_json::from_str(
         &super::read_pages::read_without_deadline(
             &archive,
-            json!({"target":reference,"budget":128}),
+            json!({"target":reference,"page_tokens":128}),
         )
         .unwrap(),
     )

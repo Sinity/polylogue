@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn frozen_native_output_columns_ignore_parser_atoms_and_rebuild_runtime_qualifiers() {
-    use query_language::catalog::{Field, FieldKind, MatchPattern};
+fn frozen_semantic_outputs_ignore_parser_atoms_and_replay_exactly() {
+    use query_language::catalog::{Field, FieldKind};
     let mut previous = None;
     for origins in [vec![], vec!["claude-code".into(), "codex".into()]] {
         let mut bindings = Bindings {
@@ -10,7 +10,7 @@ fn frozen_native_output_columns_ignore_parser_atoms_and_rebuild_runtime_qualifie
             ..Bindings::default()
         };
         let definition = prepare(
-            "sessions where exists tool_call(outcome:error)",
+            "sessions where exists tool_calls(outcome:error)",
             &bindings,
             |_| Ok(()),
         )
@@ -24,26 +24,15 @@ fn frozen_native_output_columns_ignore_parser_atoms_and_rebuild_runtime_qualifie
             )
             .unwrap();
         let plan = prepare(
-            "query:qualified | matches | sort by outcome",
+            "query:qualified | matches | sort by step.outcome",
             &bindings,
             |_| Ok(()),
         )
         .unwrap();
         let object = plan.query_object().unwrap();
-        let expected_columns = crate::units::spec(crate::units::Unit::Sessions)
-            .columns
-            .iter()
-            .map(|column| column.name)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            object.source_outputs[0]
-                .schema
-                .fields
-                .iter()
-                .map(|field| field.name.as_str())
-                .collect::<Vec<_>>(),
-            expected_columns
-        );
+        let fields = &object.source_outputs[0].schema.fields;
+        assert!(fields.iter().any(|field| field.name == "title"));
+        assert!(!fields.iter().any(|field| field.name == "codex"));
         let bytes = serde_json::to_vec(&object).unwrap();
         assert!(!String::from_utf8_lossy(&bytes).contains("match_patterns"));
         let decoded = serde_json::from_slice(&bytes).unwrap();
@@ -57,23 +46,6 @@ fn frozen_native_output_columns_ignore_parser_atoms_and_rebuild_runtime_qualifie
             assert_eq!(previous, &object);
         }
         previous = Some(object.clone());
-
-        // Runtime metadata is recomputed, including when a caller supplies an
-        // incorrect vector. Canonical fields and their order remain mandatory.
-        let mut changed = object.clone();
-        changed.source_outputs[0].schema.match_patterns = vec![MatchPattern::Sequence {
-            unit: "messages".into(),
-            steps: 7,
-        }];
-        assert_eq!(serde_json::to_vec(&changed).unwrap(), bytes);
-        validate_object(&changed).unwrap();
-        assert_eq!(
-            replay(&changed, catalog_fingerprint())
-                .unwrap()
-                .output_schema()
-                .unwrap(),
-            plan.output_schema().unwrap()
-        );
 
         let mut changed = object.clone();
         changed.source_outputs[0].schema.fields.push(Field {
@@ -191,11 +163,11 @@ fn metadata_preparation_uses_shared_binding_before_value_and_reference_formattin
 
     // The fast path inspects the whole tree, including nested compiled bodies.
     let nested = prepare(
-        "sessions | union (sessions where exists tool_call() | matches)",
+        "sessions | fields id | union (sessions where exists tool_calls() | matches | fields parent as id)",
         &bindings,
         |_| Ok(()),
     )
     .unwrap();
-    assert!(nested.catalog().match_outputs.iter().any(|output| matches!(&output.source.pattern, query_language::catalog::MatchPattern::Exists { unit } if unit == "tool_calls")));
+    assert!(nested.bound_query().typing().queries.len() > 1);
     nested.query_object().unwrap();
 }

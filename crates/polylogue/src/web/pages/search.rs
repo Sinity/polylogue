@@ -17,7 +17,7 @@ pub fn search(
             "<div class=\"error\" role=\"alert\"><p>{}</p>",
             esc(&e.message)
         );
-        if let Some(fix) = e.suggestion.as_deref().and_then(Value::as_str) {
+        if let Some(fix) = crate::protocol::suggestion_text(e).as_deref() {
             let _ = write!(
                 body,
                 "<p>Try <a href=\"/search?q={}\"><code>{}</code></a></p>",

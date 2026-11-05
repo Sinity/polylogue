@@ -142,7 +142,6 @@ pub(crate) fn prepare_with(
         let opts = Options {
             clock: clock.clone(),
             origins: Vec::new(),
-            command_words: Vec::new(),
             page_size: None,
             random_seed: Some(0),
             embeddings: false,

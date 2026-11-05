@@ -2,7 +2,7 @@
 use polylogue_store::completion::CatalogReader;
 use query_language::{
     ast::ResultPart,
-    catalog::{Catalog, MatchOutput, OutputSource, SourceOutput},
+    catalog::{Catalog, OutputSource, SourceOutput},
     complete::{Completion, CompletionKind},
 };
 use std::path::Path;
@@ -13,14 +13,13 @@ pub(super) fn base_catalog() -> Catalog {
         .iter()
         .map(|origin| origin.name.to_owned())
         .collect::<Vec<_>>();
-    polylogue_query::catalog::catalog(&origins, &crate::commands::command_words())
+    polylogue_query::catalog::catalog(&origins)
 }
 pub(crate) fn grammar(text: &str, position: usize) -> Vec<Completion> {
     if position > text.len() || !text.is_char_boundary(position) {
         return vec![];
     }
-    let mut catalog = base_catalog();
-    supply_matches(text, position, &mut catalog);
+    let catalog = base_catalog();
     query_language::complete::complete(text, position, &catalog)
 }
 /// Completion opens only the supplied derived catalog, never the archive.
@@ -36,17 +35,6 @@ pub(crate) fn complete_file(
     let reader = CatalogReader::open(path, archive).ok().flatten();
     complete_snapshot(reader.as_ref(), text, position).unwrap_or_else(|_| grammar(text, position))
 }
-/// Requirements and projection shapes come from the same shared scope and
-/// product declarations used by Plan binding. Unsupported shapes stay deferred.
-fn supply_matches(text: &str, position: usize, catalog: &mut Catalog) {
-    for source in query_language::complete::requirements(text, position, catalog).match_outputs {
-        if catalog.match_output(&source).is_none()
-            && let Ok(schema) = polylogue_query::compile::matches_schema(catalog, &source)
-        {
-            catalog.match_outputs.push(MatchOutput { source, schema });
-        }
-    }
-}
 fn complete_snapshot(
     reader: Option<&CatalogReader>,
     text: &str,
@@ -58,45 +46,36 @@ fn complete_snapshot(
     let mut catalog = reader.catalog()?;
     let mut loaded = Vec::new();
     loop {
-        let before = (catalog.source_outputs.len(), catalog.match_outputs.len());
+        let before = catalog.source_outputs.len();
         for source in query_language::complete::requirements(text, position, &catalog).sources {
             if loaded.contains(&source) {
                 continue;
             }
             loaded.push(source.clone());
-            let (schema, relation_scope) = match &source {
+            let schema = match &source {
                 OutputSource::Saved { name, .. } => {
                     let definitions = reader.saved(name)?;
                     if definitions.len() == 1 {
                         definitions
                             .into_iter()
                             .next()
-                            .map(|definition| (definition.schema, definition.relation_scope))
-                            .unwrap_or((None, None))
+                            .and_then(|definition| definition.relation_scope)
                     } else {
-                        (None, None)
+                        None
                     }
                 }
-                OutputSource::Result { reference, part } => (
-                    reader
-                        .kept(reference.strip_prefix("result:").unwrap_or(reference))?
-                        .and_then(|kept| match part {
-                            ResultPart::Rows => kept.rows,
-                            ResultPart::Matches => kept.matches,
-                        }),
-                    None,
-                ),
+                OutputSource::Result { reference, part } => reader
+                    .kept(reference.strip_prefix("result:").unwrap_or(reference))?
+                    .and_then(|kept| match part {
+                        ResultPart::Rows => kept.rows,
+                        ResultPart::Matches => kept.matches,
+                    }),
             };
             if let Some(schema) = schema {
-                catalog.source_outputs.push(SourceOutput {
-                    source,
-                    schema,
-                    relation_scope,
-                });
+                catalog.source_outputs.push(SourceOutput { source, schema });
             }
         }
-        supply_matches(text, position, &mut catalog);
-        if before == (catalog.source_outputs.len(), catalog.match_outputs.len()) {
+        if before == catalog.source_outputs.len() {
             break;
         }
     }
@@ -218,7 +197,7 @@ fn complete_snapshot(
                 name: saved.name,
                 arguments: vec![],
                 condition: None,
-                output: query_language::ast::OutputBinding::Deferred,
+                output: query_language::ast::SourceColumns::Unknown,
             };
             if let Some(value) = source_spelling(source, &catalog) {
                 candidates.push(Completion {
@@ -234,7 +213,7 @@ fn complete_snapshot(
                 reference: format!("result:{}", kept.id),
                 part: ResultPart::Rows,
                 condition: None,
-                output: query_language::ast::OutputBinding::Deferred,
+                output: query_language::ast::SourceColumns::Unknown,
             };
             if let Some(value) = source_spelling(source, &catalog) {
                 candidates.push(Completion {
@@ -276,7 +255,7 @@ fn source_spelling(source: query_language::ast::Source, catalog: &Catalog) -> Op
         &query_language::ast::Query {
             source,
             attach: vec![],
-            stages: vec![],
+            transforms: vec![],
         },
         catalog,
     )
@@ -375,19 +354,11 @@ fn fill_values(
         .units
         .iter_mut()
         .flat_map(|unit| &mut unit.fields)
-        .chain(catalog.source_outputs.iter_mut().flat_map(|source| {
-            source.schema.fields.iter_mut().chain(
-                source
-                    .relation_scope
-                    .iter_mut()
-                    .flat_map(|scope| &mut scope.fields),
-            )
-        }))
         .chain(
             catalog
-                .match_outputs
+                .source_outputs
                 .iter_mut()
-                .flat_map(|output| &mut output.schema.fields),
+                .flat_map(|source| &mut source.schema.fields),
         )
     {
         if field.name == name || field.name.strip_prefix("session.") == Some(name) {

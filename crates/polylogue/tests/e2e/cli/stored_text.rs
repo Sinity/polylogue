@@ -37,7 +37,10 @@ fn wait_for_source(fixture: &crate::Fixture, messages: usize) {
         );
         // A standalone archive's status is current, so never degraded.
         let value = match answer {
-            command_surface::Answer::Ok { value, .. } => value,
+            command_surface::Answer {
+                outcome: command_surface::Outcome::Ok(value),
+                ..
+            } => value,
             answer => panic!("startup status failed: {answer:?}; {output:?}"),
         };
         if value["busy"] == false && value["store"]["messages"] == messages {
@@ -61,7 +64,7 @@ pub(super) fn page(fixture: &crate::Fixture, options: &[&str]) -> ReadPage {
         "--json",
         "read",
         "session:claude-code:stored",
-        "--budget",
+        "--page-tokens",
         "100000",
     ];
     arguments.extend_from_slice(options);
@@ -201,7 +204,7 @@ fn tool_aliases_preserve_exact_input_values_and_result_bytes() {
                     "tools:full",
                     "--output-lines",
                     "0",
-                    "--budget",
+                    "--page-tokens",
                     "100000",
                 ],
             );
@@ -291,7 +294,7 @@ fn indexed_tool_result_pages_reconstruct_the_exact_pair_once() {
                 "tools:full",
                 "--output-lines",
                 "0",
-                "--budget",
+                "--page-tokens",
                 "1000",
             ]
             .into_iter()

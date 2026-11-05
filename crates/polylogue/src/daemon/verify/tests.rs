@@ -54,7 +54,11 @@ fn a_manifest_path_must_be_absolute_on_the_daemon() {
         },
     )
     .unwrap();
-    let command_surface::Answer::Error { error, .. } = &answer else {
+    let command_surface::Answer {
+        outcome: command_surface::Outcome::Error(error),
+        ..
+    } = &answer
+    else {
         panic!("{answer:?}");
     };
     assert!(error.message.contains("must be absolute"), "{answer:?}");

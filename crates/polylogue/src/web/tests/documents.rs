@@ -193,7 +193,7 @@ fn document_previous_pages_restore_exact_unicode_body_fragments() {
         let first = read_page(
             &r,
             "document:claude-ai:project:paged-project:doc:paged-doc",
-            &[("budget", "64")],
+            &[("page_tokens", "64")],
         )
         .await;
         let current = follow_read(

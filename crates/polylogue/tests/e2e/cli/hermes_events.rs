@@ -188,7 +188,7 @@ fn hermes_observer_preserves_exact_evidence_and_rebuilds_without_conversations()
         let joined = joined_items(&env, &reference, "16");
         assert_eq!(
             joined,
-            reading(&env, &reference, &["--budget", "100000"])
+            reading(&env, &reference, &["--page-tokens", "100000"])
                 .document
                 .items
         );
@@ -241,11 +241,17 @@ pub(super) fn query_rows(out: &Output) -> serde_json::Value {
     let answer: command_surface::Answer<serde_json::Value> =
         serde_json::from_slice(&out.stdout).unwrap();
     match answer {
-        command_surface::Answer::Ok { value, .. } => {
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Ok(value),
+            ..
+        } => {
             assert!(out.status.success(), "{out:?}");
             value
         }
-        command_surface::Answer::Empty { value, .. } => {
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Empty(value),
+            ..
+        } => {
             assert_eq!(out.status.code(), Some(1), "{out:?}");
             assert_eq!(value["count"], 0, "{value}");
             assert_eq!(value["rows"], json!([]), "{value}");
@@ -427,7 +433,7 @@ fn hermes_atif_documents_preserve_roles_unknown_media_and_exact_ordered_parts() 
                 reading(
                     &env,
                     &reference,
-                    &["--show", "tools:full", "--budget", "100000"]
+                    &["--show", "tools:full", "--page-tokens", "100000"]
                 )
                 .document
                 .items

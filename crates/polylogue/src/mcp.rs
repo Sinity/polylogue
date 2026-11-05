@@ -64,7 +64,7 @@ fn input_schema(tool: Tool) -> Value {
     for row in &rows {
         for arg in row
             .args_for(Surface::Mcp)
-            .filter(|arg| !arg.unlisted && arg.name != "request_id")
+            .filter(|arg| !arg.unlisted && !matches!(arg.name, "request_id" | "cursor"))
         {
             // A list is listed by its bare type, as command-surface lists it.
             let schema = match arg.kind {
@@ -115,6 +115,7 @@ fn input_schema(tool: Tool) -> Value {
             "arguments": {"type": "object", "properties": arguments},
             "request_id": {"type": "string"},
             "deadline": {"type": ["integer", "null"], "description": "ms; null: none"},
+            "cursor": {"type": ["string", "null"]},
         },
         "required": required,
         "additionalProperties": false,
@@ -132,7 +133,7 @@ fn error_text(failure: &command_surface::Failure) -> String {
             .unwrap_or_default()
     });
     let mut text = format!("error ({code}): {}", failure.message);
-    if let Some(suggestion) = failure.suggestion.as_deref().and_then(Value::as_str) {
+    if let Some(suggestion) = crate::protocol::suggestion_text(failure).as_deref() {
         text.push_str(&format!("\ntry: {suggestion}"));
     }
     for candidate in failure.candidates() {
@@ -160,6 +161,9 @@ fn build_request(command: &Command, call: &ToolCall) -> Result<Request, String> 
     let Value::Object(mut arguments) = call.arguments.clone() else {
         return Err(bad_request("arguments must be an object"));
     };
+    if arguments.contains_key("cursor") {
+        return Err(bad_request("cursor goes beside arguments, not inside them"));
+    }
     if arguments.contains_key("request_id") {
         return Err(bad_request(
             "request_id goes beside arguments, not inside them",
@@ -178,7 +182,11 @@ fn build_request(command: &Command, call: &ToolCall) -> Result<Request, String> 
         cwd: std::env::current_dir().ok(),
         json: true,
     };
-    build(command, &values, &caller).map_err(|e| bad_request(&e))
+    crate::protocol::operations::with_cursor(
+        build(command, &values, &caller).map_err(|e| bad_request(&e))?,
+        call.cursor.as_deref(),
+    )
+    .map_err(|error| bad_request(&error.message))
 }
 
 /// The text content beside the structured answer. A value stays parseable
@@ -193,13 +201,14 @@ fn format_answer(
             "error (daemon_required): no Polylogue daemon answered ({e}); start it with `polylogue daemon`"
         ))
     })?;
-    let notes = answer
-        .notes()
-        .iter()
+    let notes = crate::protocol::notes(answer)
         .map(|note| format!("\nnote: {}", polylogue_render::terminal::escape(note)))
         .collect::<String>();
     match answer {
-        Answer::Error { error, .. } => Err(format!("{}{notes}", error_text(error))),
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Error(error),
+            ..
+        } => Err(format!("{}{notes}", error_text(error))),
         answer => {
             let value = answer.value().expect("a non-error answer has a value");
             Ok(if matches!(request, Request::Context { .. }) {
@@ -278,6 +287,10 @@ fn run(
             arguments: call.arguments.clone(),
             request_id: call.request_id.clone(),
             deadline: call.deadline,
+            budget_tokens: Default::default(),
+            cursor: call.cursor.clone(),
+            fresh: false,
+            format: Default::default(),
         });
     let request = if let Some(canonical) = &canonical {
         let caller = Caller {
@@ -285,13 +298,7 @@ fn run(
             cwd: None,
             json: true,
         };
-        match command
-            .build_typed
-            .expect("registered commands validate typed arguments")(
-            canonical.arguments.clone(),
-            &caller,
-            &canonical.request_id,
-        ) {
+        match crate::protocol::operations::admit(command, canonical, &caller) {
             Ok(request) => request,
             Err(failure) => {
                 let text = error_text(&failure);
@@ -349,7 +356,13 @@ fn run(
         ))
         .expect("failure serializes"),
     };
-    let failed = matches!(answer, Ok(command_surface::Answer::Error { .. }) | Err(_));
+    let failed = matches!(
+        answer,
+        Ok(command_surface::Answer {
+            outcome: command_surface::Outcome::Error(_),
+            ..
+        }) | Err(_)
+    );
     let text = match format_answer(&request, answer.as_ref()) {
         Ok(text) | Err(text) => text,
     };

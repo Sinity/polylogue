@@ -118,7 +118,7 @@ fn walk(env: &crate::Fixture, expected: &[String]) -> (Value, String) {
     // A page limit from this fixed population, so a broken cursor cannot loop.
     let max_pages = expected.iter().map(String::len).sum::<usize>() / PAGE_BUDGET + MAIN_MESSAGES;
     for _ in 0..max_pages {
-        let mut args = vec!["--json", "read", LARGE, "--budget", &budget];
+        let mut args = vec!["--json", "read", LARGE, "--page-tokens", &budget];
         if let Some(token) = cursor.as_deref() {
             args.extend(["--cursor", token]);
         }
@@ -165,7 +165,7 @@ fn reference_windows(env: &crate::Fixture, bodies: &[String]) -> (String, Vec<Wi
     let began = Instant::now();
     let budget = bodies.iter().map(String::len).sum::<usize>().to_string();
     eprintln!("native read bench: starting complete reference read");
-    let (whole, seconds) = request(env, &["--json", "read", LARGE, "--budget", &budget]);
+    let (whole, seconds) = request(env, &["--json", "read", LARGE, "--page-tokens", &budget]);
     assert!(
         whole["next"].is_null(),
         "reference read must include the whole declared population"
@@ -187,7 +187,7 @@ fn reference_windows(env: &crate::Fixture, bodies: &[String]) -> (String, Vec<Wi
         } else {
             eprintln!("native read bench: preparing {name} reference cursor");
             let budget = (page * PAGE_BUDGET).to_string();
-            let (prefix, _) = request(env, &["--json", "read", LARGE, "--budget", &budget]);
+            let (prefix, _) = request(env, &["--json", "read", LARGE, "--page-tokens", &budget]);
             assert_eq!(prefix["text"].as_str().unwrap(), &reference[..byte]);
             Some(
                 prefix["next"]
@@ -209,7 +209,7 @@ fn window(env: &crate::Fixture, start: &WindowStart, reference: &str) -> Value {
     let mut samples = Vec::new();
     let budget = PAGE_BUDGET.to_string();
     for _ in 0..WINDOW_PAGES {
-        let mut args = vec!["--json", "read", LARGE, "--budget", &budget];
+        let mut args = vec!["--json", "read", LARGE, "--page-tokens", &budget];
         if let Some(token) = cursor.as_deref() {
             args.extend(["--cursor", token]);
         }
@@ -246,7 +246,7 @@ fn cancelled_client(env: &crate::Fixture) {
     let budget = PAGE_BUDGET.to_string();
     let mut command = super::command(env);
     command
-        .args(["--json", "read", LARGE, "--budget", &budget])
+        .args(["--json", "read", LARGE, "--page-tokens", &budget])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = Daemon(polylogue_testkit::spawn_daemon(&mut command).unwrap());
@@ -279,7 +279,7 @@ fn check_cancelled_client(env: &crate::Fixture, daemon: &Daemon, expected: &[Str
             "--json",
             "read",
             LARGE,
-            "--budget",
+            "--page-tokens",
             &PAGE_BUDGET.to_string(),
         ],
     );

@@ -17,10 +17,14 @@ fn typed_query_runs_through_the_shared_table_and_socket() {
         arguments: json!({"query":"sessions"}),
         request_id: "query-witness".into(),
         deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     let answer = runtime().block_on(table.call(
         envelope.clone(),
-        command_surface::Origin::Cli,
+        command_surface::Via::Cli,
         Default::default(),
     ));
     assert_eq!(answer.exit_code(), 0, "{answer:?}");
@@ -49,12 +53,13 @@ fn typed_query_refuses_unknown_fields_and_another_operations_arguments() {
             arguments,
             request_id: "refusal".into(),
             deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         };
-        let answer = runtime().block_on(table.call(
-            envelope,
-            command_surface::Origin::Mcp,
-            Default::default(),
-        ));
+        let answer =
+            runtime().block_on(table.call(envelope, command_surface::Via::Mcp, Default::default()));
         assert_eq!(answer.exit_code(), 2, "{answer:?}");
         assert!(answer.value().is_none());
     }
@@ -90,6 +95,10 @@ fn status_operation_uses_its_typed_answer_on_the_shared_socket_path() {
             arguments: json!({}),
             request_id: "status-wire".into(),
             deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         },
     )
     .unwrap();
@@ -181,10 +190,20 @@ fn canonical_socket_rejects_another_operations_arguments_before_execution() {
             arguments: json!({"query":"sessions"}),
             request_id: "bad-status-wire".into(),
             deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         },
     )
     .unwrap();
-    assert!(matches!(answer, Answer::Error { .. }));
+    assert!(matches!(
+        answer,
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Error(_),
+            ..
+        }
+    ));
     assert_eq!(answer.http_status(), Some(400));
 }
 
@@ -198,11 +217,21 @@ fn typed_schema_selection_refuses_conflicting_origin_controls_on_the_socket() {
             arguments: json!({"origin":"claude-code", "all":true}),
             request_id: "schema-selection-wire".into(),
             deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         },
     )
     .unwrap();
     assert_eq!(answer.http_status(), Some(400));
-    assert!(matches!(answer, Answer::Error { .. }));
+    assert!(matches!(
+        answer,
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Error(_),
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -251,8 +280,12 @@ fn typed_setting_catalog_is_a_real_table_answer() {
             arguments: json!({}),
             request_id: "catalog-witness".into(),
             deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         },
-        command_surface::Origin::Cli,
+        command_surface::Via::Cli,
         Default::default(),
     ));
     let catalog: Vec<polylogue_model::settings::Current> = serde_json::from_value(
@@ -273,8 +306,12 @@ fn typed_setting_catalog_is_a_real_table_answer() {
             arguments: json!({"key":"browser.actions", "machine":true}),
             request_id: "invalid-catalog-witness".into(),
             deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         },
-        command_surface::Origin::Cli,
+        command_surface::Via::Cli,
         Default::default(),
     ));
     assert!(invalid.value().is_none());
@@ -284,8 +321,12 @@ fn typed_setting_catalog_is_a_real_table_answer() {
             arguments: json!({"machine":"*"}),
             request_id: "invalid-host-witness".into(),
             deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         },
-        command_surface::Origin::Cli,
+        command_surface::Via::Cli,
         Default::default(),
     ));
     assert!(invalid_host.value().is_none());
@@ -437,6 +478,10 @@ fn measurement_answers_retain_the_actual_resolved_context_on_the_shared_socket()
                 arguments: json!({"query":text}),
                 request_id: format!("measurement-context-{paged}"),
                 deadline: command_surface::Deadline::None,
+                budget_tokens: Default::default(),
+                cursor: None,
+                fresh: false,
+                format: Default::default(),
             },
         )
         .unwrap();

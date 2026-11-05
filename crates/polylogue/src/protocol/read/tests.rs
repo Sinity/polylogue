@@ -2,15 +2,10 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn a_continuation_is_the_same_arguments_with_a_cursor() {
-    let typed: Arguments = serde_json::from_value(json!({
-        "target": "session:test:one",
-        "cursor": "sealed-by-the-daemon",
-    }))
-    .unwrap();
-    assert_eq!(typed.cursor.as_deref(), Some("sealed-by-the-daemon"));
+fn page_options_are_not_operation_arguments() {
     for value in [
-        json!({"target":"sessions","budget":0}),
+        json!({"target":"session:test:one","cursor":"sealed"}),
+        json!({"target":"sessions","page_tokens":0}),
         json!({"target":"sessions","root_run":"019a0000-0000-7000-8000-000000000001"}),
         json!({"cursor":"no target"}),
     ] {
@@ -19,30 +14,30 @@ fn a_continuation_is_the_same_arguments_with_a_cursor() {
 }
 
 #[test]
-fn every_read_builder_keeps_the_cursor_with_its_reading_options() {
+fn every_read_builder_keeps_the_envelope_cursor_with_its_reading_options() {
     let command = crate::commands::command("read").unwrap();
     let caller = crate::commands::Caller {
         surface: crate::commands::Surface::Http,
         cwd: None,
         json: true,
     };
-    let build = command.build_typed.unwrap();
-    let request = build(
-        json!({"target":"session:test:one","view":"dialogue","cursor":"sealed"}),
-        &caller,
+    let mut envelope = command_surface::RunnableRequest::new(
+        "read",
+        json!({"target":"session:test:one","view":"dialogue"}),
         "continuation-witness",
-    )
-    .unwrap();
+    );
+    envelope.cursor = Some("sealed".into());
+    let request = crate::protocol::operations::admit(command, &envelope, &caller).unwrap();
     let crate::daemon::Request::Read {
         options, cursor, ..
     } = &request
     else {
-        panic!("read request");
+        panic!("read request")
     };
     assert_eq!(options.view, polylogue_model::read::View::Dialogue);
     assert_eq!(cursor.as_deref(), Some("sealed"));
     let round = Arguments::from_request(&request).unwrap();
-    assert_eq!(round.cursor.as_deref(), Some("sealed"));
+    assert!(serde_json::to_value(round).unwrap().get("cursor").is_none());
     let (chosen, values) = crate::cli::parse(&[
         "polylogue",
         "read",

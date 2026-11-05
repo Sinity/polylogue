@@ -9,7 +9,7 @@ impl<'a> Compiler<'a> {
         q: &Query,
         preset: Option<MatchRel>,
     ) -> Result<Program, QueryError> {
-        self.stages_start = q.stages.first().map_or(usize::MAX, |s| s.span.start);
+        self.transforms_start = q.transforms.first().map_or(usize::MAX, |s| s.span.start);
         let (mut scope, wheres, mut top) = match &q.source {
             Source::Unit {
                 unit, condition, ..
@@ -32,7 +32,7 @@ impl<'a> Compiler<'a> {
         }
         for c in &top {
             // `similar:` ranks rather than filters: it keeps every row.
-            let ranking = matches!(&c.kind, ConditionKind::Similar { .. });
+            let ranking = matches!(&c.kind, ConditionKind::Rank { .. });
             if ranking {
                 continue;
             }
@@ -53,7 +53,7 @@ impl<'a> Compiler<'a> {
         let mut matched: Option<MatchRel> = preset;
         let mut measure: Option<Measure> = None;
         let mut pending = combine::PendingFusion::default();
-        for stage in &q.stages {
+        for stage in &q.transforms {
             if measure.is_some() {
                 return Err(QueryError::Invalid {
                     message: "`| measure WHAT` is the last stage".into(),
@@ -62,7 +62,7 @@ impl<'a> Compiler<'a> {
             }
             let fusing = matches!(
                 stage.kind,
-                StageKind::Combine {
+                TransformKind::Combine {
                     how: Combination::Union | Combination::Fuse,
                     ..
                 }
@@ -78,21 +78,21 @@ impl<'a> Compiler<'a> {
             let grouped = group.is_some() || aggs.is_some();
             if let Some(rel) = &matched {
                 match &stage.kind {
-                    StageKind::Limit { count: n } => {
+                    TransformKind::Limit { count: n } => {
                         let (_, off) = selection.unwrap_or((None, None));
                         selection = Some((Some(*n), off));
                     }
-                    StageKind::Offset { count: n } => {
+                    TransformKind::Offset { count: n } => {
                         let (lim, _) = selection.unwrap_or((None, None));
                         selection = Some((lim, Some(*n)));
                     }
-                    StageKind::Aggregate { .. } if aggregated => {
+                    TransformKind::Aggregate { .. } if aggregated => {
                         return Err(QueryError::Invalid {
                             message: "a query aggregates once".into(),
                             position: stage.span.start,
                         });
                     }
-                    StageKind::Aggregate { aggregates: fns } => {
+                    TransformKind::Aggregate { aggregates: fns } => {
                         aggregated = true;
                         let mut cols = vec![];
                         if group.is_some()
@@ -107,26 +107,27 @@ impl<'a> Compiler<'a> {
                         }
                         aggs = Some(cols);
                     }
-                    StageKind::Group { keys } if !grouped => {
+                    TransformKind::Group { keys } if !grouped => {
                         let mut cols = vec![];
                         for k in keys {
-                            let (field, bucket) = group_operand(k)?;
+                            let (field, bucket) = group_operand(&k.expression)?;
                             let (name, kind) = match_column(rel, field, stage.span.start)?;
                             if bucket.is_some() {
                                 return Err(not_built("time buckets after `| matches`"));
                             }
-                            cols.push((name.clone(), name, kind));
+                            cols.push((k.column(), column_sql(&name), kind));
                         }
                         group = Some(cols);
                         aggs = Some(vec![("count".into(), "count(*)".into(), ColKind::Number)]);
                     }
-                    StageKind::Sort { keys } if !grouped && keys.len() == 1 => {
+                    TransformKind::Sort { keys } if !grouped && keys.len() == 1 => {
                         let key = &keys[0];
-                        let field = field_operand(&key.operand)?;
+                        let field = field_operand(&key.expression)?;
                         let (name, _) = match_column(rel, field, stage.span.start)?;
                         let dir = if key.descending { " DESC" } else { "" };
+                        let name = column_sql(&name);
                         let mut sorted = vec![format!("{name} IS NULL"), format!("{name}{dir}")];
-                        for identity in ["parent_id", "session", "match"] {
+                        for identity in ["parent", "match", "position"] {
                             if rel.columns.iter().any(|(name, _)| name == identity) {
                                 sorted.push(format!("\"{identity}\"{dir}"));
                             }
@@ -142,7 +143,7 @@ impl<'a> Compiler<'a> {
                 continue;
             }
             match &stage.kind {
-                StageKind::Scope {
+                TransformKind::Scope {
                     unit,
                     condition: cond,
                 } => {
@@ -191,7 +192,7 @@ impl<'a> Compiler<'a> {
                     self.fusion = None;
                     self.shown.retain(|(name, ..)| name != "found_in");
                 }
-                StageKind::Combine { how, query } => {
+                TransformKind::Combine { how, query } => {
                     if grouped {
                         return Err(QueryError::Invalid {
                             message: "rows combine before they are grouped or counted".into(),
@@ -215,7 +216,7 @@ impl<'a> Compiler<'a> {
                     }
                     why.clear();
                 }
-                StageKind::Where { condition: cond } if !grouped => {
+                TransformKind::Where { condition: cond } if !grouped => {
                     if selection.is_some() {
                         self.apply_selection(&scope, &mut where_sql, &order, selection.take());
                     }
@@ -224,18 +225,19 @@ impl<'a> Compiler<'a> {
                     // unless a sort already ordered them.
                     let sql = self.cond(cond, &scope, order.is_none());
                     where_sql.push(sql?);
+                    top.extend(top_level(cond));
                 }
-                StageKind::Where { condition: cond } => {
+                TransformKind::Where { condition: cond } => {
                     having.push(self.group_cond(cond, group.as_deref(), aggs.as_deref())?);
                 }
-                StageKind::Sort { keys } if !grouped => {
+                TransformKind::Sort { keys } if !grouped => {
                     if selection.is_some() {
                         self.apply_selection(&scope, &mut where_sql, &order, selection.take());
                     }
                     let mut sorted = vec![];
                     for key in keys {
                         let mut terms =
-                            self.sort(&key.operand, key.descending, &scope, stage.span.start)?;
+                            self.sort(&key.expression, key.descending, &scope, stage.span.start)?;
                         // Identity is appended once, after every explicit sort operand.
                         let identity = units::spec(scope.unit).identity.len();
                         if keys.len() > 1 && terms.len() >= identity {
@@ -253,22 +255,22 @@ impl<'a> Compiler<'a> {
                     }
                     order = Some(sorted);
                 }
-                StageKind::Sort { keys } if keys.len() != 1 => {
+                TransformKind::Sort { keys } if keys.len() != 1 => {
                     return Err(not_built(
                         "a grouped or matched sort with more than one key",
                     ));
                 }
-                StageKind::Sort { keys } => {
+                TransformKind::Sort { keys } => {
                     let key = &keys[0];
                     group_order = Some(group_sort(
-                        &key.operand,
+                        &key.expression,
                         key.descending,
                         group.as_deref(),
                         aggs.as_deref(),
                         self.opts.random_seed,
                     )?);
                 }
-                StageKind::Group { keys } => {
+                TransformKind::Group { keys } => {
                     if grouped {
                         return Err(QueryError::Invalid {
                             message: "a query groups once".into(),
@@ -280,12 +282,14 @@ impl<'a> Compiler<'a> {
                     }
                     let mut cols = vec![];
                     for k in keys {
-                        cols.push(self.group_key(k, &scope, stage.span.start)?);
+                        let (_, expression, kind) =
+                            self.group_key(&k.expression, &scope, stage.span.start)?;
+                        cols.push((k.column(), expression, kind));
                     }
                     group = Some(cols);
                     aggs = Some(vec![("count".into(), "count(*)".into(), ColKind::Number)]);
                 }
-                StageKind::Aggregate { aggregates: fns } => {
+                TransformKind::Aggregate { aggregates: fns } => {
                     if aggregated {
                         return Err(QueryError::Invalid {
                             message: "a query aggregates once".into(),
@@ -309,17 +313,22 @@ impl<'a> Compiler<'a> {
                     }
                     aggs = Some(cols);
                 }
-                StageKind::Limit { count: n } => {
+                TransformKind::Limit { count: n } => {
                     let (_, off) = selection.unwrap_or((None, None));
                     selection = Some((Some(*n), off));
                 }
-                StageKind::Offset { count: n } => {
+                TransformKind::Offset { count: n } => {
                     let (lim, _) = selection.unwrap_or((None, None));
                     selection = Some((lim, Some(*n)));
                 }
-                StageKind::Distinct => distinct = true,
-                StageKind::Measure { name: what, by } => {
-                    if !by.is_empty() {
+                TransformKind::Distinct => distinct = true,
+                TransformKind::Extension { name, arguments }
+                    if name == polylogue_query::catalog::MEASURE =>
+                {
+                    let [ExtensionArgument::Name(what), rest @ ..] = arguments.as_slice() else {
+                        return Err(not_built("this measure declaration"));
+                    };
+                    if rest.iter().any(|argument| !matches!(argument, ExtensionArgument::Optional(values) if values.is_empty())) {
                         return Err(not_built("measure by"));
                     }
                     if grouped || scope.unit != Unit::Sessions || measure.is_some() {
@@ -338,7 +347,7 @@ impl<'a> Compiler<'a> {
                         everything: wheres.is_empty(),
                     });
                 }
-                StageKind::Matches => {
+                TransformKind::Matches => {
                     if selection.is_some() || distinct {
                         return Err(not_built("Matches after row selection or distinct"));
                     }
@@ -394,7 +403,7 @@ impl<'a> Compiler<'a> {
                         }
                     });
                     order = None;
-                    self.notes.push("one row per match".into());
+                    self.notes.push("one row per step of each match".into());
                 }
                 _ => return Err(not_built("this shared query stage")),
             }
@@ -465,9 +474,14 @@ impl<'a> Compiler<'a> {
                 let keys = group.clone().unwrap_or_default();
                 let aggs = aggs
                     .unwrap_or_else(|| vec![("count".into(), "count(*)".into(), ColKind::Number)]);
-                let mut select: Vec<String> =
-                    keys.iter().map(|(n, e, _)| format!("{e} AS {n}")).collect();
-                select.extend(aggs.iter().map(|(n, e, _)| format!("{e} AS {n}")));
+                let mut select: Vec<String> = keys
+                    .iter()
+                    .map(|(n, e, _)| format!("{e} AS {}", column_sql(n)))
+                    .collect();
+                select.extend(
+                    aggs.iter()
+                        .map(|(n, e, _)| format!("{e} AS {}", column_sql(n))),
+                );
                 let columns: Vec<Column> = keys
                     .iter()
                     .chain(aggs.iter())
@@ -483,7 +497,7 @@ impl<'a> Compiler<'a> {
                 } else {
                     let group_by = keys
                         .iter()
-                        .map(|(n, _, _)| n.as_str())
+                        .map(|(n, _, _)| column_sql(n))
                         .collect::<Vec<_>>()
                         .join(", ");
                     let order = order.unwrap_or_else(|| {
@@ -534,9 +548,14 @@ impl<'a> Compiler<'a> {
             let keys = group.clone().unwrap_or_default();
             let aggs =
                 aggs.unwrap_or_else(|| vec![("count".into(), "count(*)".into(), ColKind::Number)]);
-            let mut select: Vec<String> =
-                keys.iter().map(|(n, e, _)| format!("{e} AS {n}")).collect();
-            select.extend(aggs.iter().map(|(n, e, _)| format!("{e} AS {n}")));
+            let mut select: Vec<String> = keys
+                .iter()
+                .map(|(n, e, _)| format!("{e} AS {}", column_sql(n)))
+                .collect();
+            select.extend(
+                aggs.iter()
+                    .map(|(n, e, _)| format!("{e} AS {}", column_sql(n))),
+            );
             let mut columns: Vec<Column> = keys
                 .iter()
                 .chain(aggs.iter())
@@ -552,7 +571,7 @@ impl<'a> Compiler<'a> {
             } else {
                 let group_by = keys
                     .iter()
-                    .map(|(n, _, _)| n.as_str())
+                    .map(|(n, _, _)| column_sql(n))
                     .collect::<Vec<_>>()
                     .join(", ");
                 let inner = format!(
@@ -631,7 +650,10 @@ impl<'a> Compiler<'a> {
                 });
             }
             let mut select: Vec<String> = vec![format!("{pk} AS _pk")];
-            select.extend(cols.iter().map(|(n, e, _, _)| format!("{e} AS {n}")));
+            select.extend(
+                cols.iter()
+                    .map(|(n, e, _, _)| format!("{e} AS {}", column_sql(n))),
+            );
             select.push(format!(
                 "{} AS _near",
                 self.near_rank.as_deref().unwrap_or("1")

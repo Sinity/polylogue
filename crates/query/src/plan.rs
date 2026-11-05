@@ -74,11 +74,9 @@ impl Plan {
     /// Figures declare the denominator of the root measurement, independently
     /// of count predicates used merely to select ordinary rows.
     pub fn requires_denominator(&self) -> bool {
-        self.expanded.query().stages.iter().any(|stage| {
-            matches!(
-                stage.kind,
-                StageKind::Aggregate { .. } | StageKind::Measure { .. }
-            )
+        self.expanded.query().transforms.iter().any(|transform| {
+            matches!(transform.kind, TransformKind::Aggregate { .. })
+                || matches!(&transform.kind, TransformKind::Extension { name, .. } if name == crate::catalog::MEASURE)
         })
     }
 }
@@ -110,24 +108,20 @@ fn prepare_inner(
             } = &query.source
             {
                 let mut source = query.clone();
-                source.stages.clear();
+                source.transforms.clear();
                 source.attach.clear();
                 if let Source::Saved { condition, .. } = &mut source.source {
                     *condition = None;
                 }
                 let source_text = query_language::format::format_query(&source, &catalog)
                     .map_err(|e| QueryError::language(e, text))?;
-                let (schema, relation_scope) = options.output_metadata(&source_text)?;
+                let (_, schema) = options.output_metadata(&source_text)?;
                 let source = OutputSource::Saved {
                     name: name.clone(),
                     arguments: arguments.clone(),
                 };
                 if catalog.source_output(&query.source).is_none() {
-                    catalog.source_outputs.push(SourceOutput {
-                        source,
-                        schema,
-                        relation_scope: Some(relation_scope),
-                    });
+                    catalog.source_outputs.push(SourceOutput { source, schema });
                 }
             }
             Ok(())
@@ -135,7 +129,7 @@ fn prepare_inner(
         &mut |_| Ok(()),
     )?;
     canonical_references(&mut query)?;
-    crate::compile::schema::supply_matches(&query, &mut catalog)?;
+
     let bound =
         query_language::bind::bind(&query, &catalog).map_err(|e| QueryError::language(e, text))?;
     query = bound.query().clone();
@@ -244,10 +238,9 @@ fn prepare_inner(
     let question_id =
         query_language::identity::question_id(&identity, &identity_catalog, &BTreeMap::new())
             .map_err(|e| QueryError::language(e, text))?;
-    let rendered = query_language::format::format_query(original.query(), &catalog)
-        .map_err(|e| QueryError::language(e, text))?;
-    let (expanded, _) = crate::compile::source::expand(&rendered, options)?;
-    crate::compile::schema::supply_matches(&expanded, &mut catalog)?;
+    let (expanded, _) =
+        crate::compile::source::expand_ast(original.query().clone(), text, options)?;
+
     let expanded = query_language::bind::bind(&expanded, &catalog)
         .map_err(|e| QueryError::language(e, text))?;
     Ok(Plan {
@@ -273,13 +266,11 @@ pub(crate) fn walk(
     match &mut query.source {
         Source::Unit { condition, .. }
         | Source::Saved { condition, .. }
-        | Source::Result { condition, .. }
-        | Source::RecallLast { condition, .. } => {
+        | Source::Result { condition, .. } => {
             if let Some(c) = condition {
                 visit_condition(c, on_query, on_condition)?;
             }
         }
-        _ => {}
     }
     for attachment in &mut query.attach {
         for window in &mut attachment.windows {
@@ -288,14 +279,17 @@ pub(crate) fn walk(
             }
         }
     }
-    for stage in &mut query.stages {
+    for stage in &mut query.transforms {
         match &mut stage.kind {
-            StageKind::Where { condition: c }
-            | StageKind::Scope {
+            TransformKind::Where { condition: c }
+            | TransformKind::Scope {
                 condition: Some(c), ..
             } => visit_condition(c, on_query, on_condition)?,
-            StageKind::Combine { query, .. } | StageKind::Temporal { query, .. } => {
-                walk(query, on_query, on_condition)?
+            TransformKind::Combine { query, .. }
+            | TransformKind::Join { query, .. }
+            | TransformKind::Diff { query } => walk(query, on_query, on_condition)?,
+            TransformKind::Extension { arguments, .. } => {
+                visit_extensions(arguments, on_query, on_condition)?
             }
             _ => {}
         }
@@ -325,36 +319,49 @@ fn visit_condition(
         | ConditionKind::Count {
             condition: Some(c), ..
         } => visit_condition(c, on_query, on_condition)?,
-        ConditionKind::In { query, .. } => walk(query, on_query, on_condition)?,
+        ConditionKind::In { query, .. } | ConditionKind::Order { query, .. } => {
+            walk(query, on_query, on_condition)?
+        }
+        ConditionKind::Extension { arguments, .. } => {
+            visit_extensions(arguments, on_query, on_condition)?
+        }
         _ => {}
+    }
+    Ok(())
+}
+fn visit_extensions(
+    arguments: &mut [ExtensionArgument],
+    on_query: &mut impl FnMut(&mut Query) -> Result<(), QueryError>,
+    on_condition: &mut impl FnMut(&mut Condition) -> Result<(), QueryError>,
+) -> Result<(), QueryError> {
+    for argument in arguments {
+        match argument {
+            ExtensionArgument::Query(query) => walk(query, on_query, on_condition)?,
+            ExtensionArgument::Condition(condition) => {
+                visit_condition(condition, on_query, on_condition)?
+            }
+            ExtensionArgument::Optional(arguments) | ExtensionArgument::List(arguments) => {
+                visit_extensions(arguments, on_query, on_condition)?
+            }
+            _ => {}
+        }
     }
     Ok(())
 }
 
 fn canonical_references(query: &mut Query) -> Result<(), QueryError> {
     walk(query, &mut |_| Ok(()), &mut |condition| {
-        let text = match &condition.kind {
-            ConditionKind::Reference { reference } => reference.clone(),
-            ConditionKind::Match {
-                field,
-                value: Value::Scalar { text, .. },
-            } => format!("{field}:{text}"),
-            _ => return Ok(()),
+        let ConditionKind::Reference { reference: text } = &condition.kind else {
+            return Ok(());
         };
-        let Some(reference) = polylogue_model::Reference::parse(&text)
+        let Some(reference) = polylogue_model::Reference::parse(text)
             .ok()
             .filter(|reference| crate::catalog::reference_unit(reference).is_some())
         else {
             return Ok(());
         };
-        let text = reference.to_string();
-        let (kind, value) = text.split_once(':').expect("native reference namespace");
-        condition.kind = ConditionKind::Match {
-            field: kind.into(),
-            value: Value::Scalar {
-                text: value.into(),
-                quoted: true,
-            },
+        condition.kind = ConditionKind::Reference {
+            reference: reference.to_string(),
         };
         Ok(())
     })

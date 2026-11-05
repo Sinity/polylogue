@@ -21,6 +21,8 @@ pub struct ToolCall {
     pub request_id: String,
     #[serde(default, skip_serializing_if = "default_deadline")]
     pub deadline: command_surface::Deadline,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 fn default_deadline(deadline: &command_surface::Deadline) -> bool {
@@ -63,6 +65,100 @@ pub(crate) fn admitted_deadline(
     }
 }
 
+pub(crate) fn specification(command: &Command) -> OperationSpec {
+    use command_surface::{Access, ArgumentForm, ArgumentSpec, OperationKind};
+    let tool = command.tool.expect("typed request declares its tool");
+    OperationSpec {
+        name: command.name.into(),
+        command: command.cli_words(),
+        summary: command.help.into(),
+        reason: command.reason.into(),
+        kind: OperationKind::Request {
+            tool: tool
+                .name()
+                .strip_prefix("polylogue_")
+                .expect("product tool prefix")
+                .into(),
+        },
+        http_route: Some(format!("/api/v1{}", command.http_path())),
+        latency: command.latency,
+        failures: command.failures.to_vec(),
+        access: if command.writes {
+            Access::Write
+        } else {
+            Access::Read
+        },
+        arguments: command
+            .args
+            .iter()
+            .filter(|arg| !matches!(arg.name, "request_id" | "cursor"))
+            .map(|arg| ArgumentSpec {
+                name: arg.name.into(),
+                form: match arg.kind {
+                    crate::commands::Kind::Bool => ArgumentForm::Flag,
+                    crate::commands::Kind::Words => ArgumentForm::Words,
+                    crate::commands::Kind::Rest => ArgumentForm::Rest,
+                    crate::commands::Kind::List if arg.positional => ArgumentForm::Words,
+                    crate::commands::Kind::List => ArgumentForm::Repeated,
+                    _ if arg.positional => ArgumentForm::Positional,
+                    _ => ArgumentForm::Named,
+                },
+                help: arg.help.into(),
+                short: arg.short,
+                calling_process: arg.cli_only,
+                listed: !arg.unlisted,
+            })
+            .collect(),
+        listed: true,
+        default_budget_tokens: None,
+    }
+}
+
+pub(crate) fn cursor(request: &crate::daemon::Request) -> Option<&str> {
+    match request {
+        crate::daemon::Request::Query { cursor, .. }
+        | crate::daemon::Request::Read { cursor, .. }
+        | crate::daemon::Request::Attachment { cursor, .. } => cursor.as_deref(),
+        _ => None,
+    }
+}
+
+pub(crate) fn with_cursor(
+    mut request: crate::daemon::Request,
+    cursor: Option<&str>,
+) -> Result<crate::daemon::Request, Failure> {
+    if let Some(cursor) = cursor {
+        match &mut request {
+            crate::daemon::Request::Query { cursor: target, .. }
+            | crate::daemon::Request::Read { cursor: target, .. }
+            | crate::daemon::Request::Attachment { cursor: target, .. } => {
+                *target = Some(cursor.into())
+            }
+            _ => {
+                return Err(Failure::new(
+                    FailureKind::BadRequest,
+                    "operation does not continue a page",
+                ));
+            }
+        }
+    }
+    Ok(request)
+}
+
+pub(crate) fn admit(
+    command: &Command,
+    envelope: &command_surface::RunnableRequest,
+    caller: &Caller,
+) -> Result<crate::daemon::Request, Failure> {
+    let build = command
+        .build_typed
+        .ok_or_else(|| Failure::new(FailureKind::BadRequest, "operation has no typed builder"))?;
+    with_cursor(
+        build(envelope.arguments.clone(), caller, &envelope.request_id)?,
+        envelope.cursor.as_deref(),
+    )
+}
+
 pub fn register<C: CommandType>(daemon: Arc<Daemon>, table: &mut OperationTable) {
     table
         .register(TypedCommand::<C> {
@@ -90,17 +186,7 @@ impl<C: CommandType> Operation for TypedCommand<C> {
     type Response = C::Answer;
 
     fn spec(&self) -> OperationSpec {
-        let command = crate::commands::command(C::NAME).expect("typed command exists");
-        OperationSpec {
-            name: C::NAME.into(),
-            command: command.cli_words(),
-            summary: command.help.into(),
-            reason: command.reason.into(),
-            http_route: format!("/api/v1{}", command.http_path()),
-            latency: command.latency,
-            failures: command.failures.to_vec(),
-            write: command.writes,
-        }
+        specification(crate::commands::command(C::NAME).expect("typed command exists"))
     }
 
     fn execute(
@@ -111,9 +197,9 @@ impl<C: CommandType> Operation for TypedCommand<C> {
         Box::pin(async move {
             let command = crate::commands::command(C::NAME).expect("typed command exists");
             let caller = Caller {
-                surface: match context.origin {
-                    command_surface::Origin::Http => Surface::Http,
-                    command_surface::Origin::Mcp => Surface::Mcp,
+                surface: match context.via {
+                    command_surface::Via::Web => Surface::Http,
+                    command_surface::Via::Mcp => Surface::Mcp,
                     _ => Surface::Cli,
                 },
                 cwd: context
@@ -137,6 +223,10 @@ impl<C: CommandType> Operation for TypedCommand<C> {
                         arguments: Value::Object(arguments),
                         request_id: context.request_id.clone(),
                         deadline: command_surface::Deadline::Default,
+                        budget_tokens: Default::default(),
+                        cursor: None,
+                        fresh: false,
+                        format: Default::default(),
                     }
                 });
             if let Err(error) = context.progress_unknown(C::NAME, narrower) {
@@ -174,6 +264,10 @@ impl<C: CommandType> Operation for TypedCommand<C> {
                     }
                 },
             };
+            let request = match with_cursor(request, context.cursor()) {
+                Ok(request) => request,
+                Err(error) => return Answer::error(error),
+            };
             if let Err(error) = context.check_cancelled() {
                 return Answer::error(error);
             }
@@ -183,9 +277,9 @@ impl<C: CommandType> Operation for TypedCommand<C> {
             let authorship = accepted
                 .map(|caller| caller.authorship.clone())
                 .unwrap_or_else(|| {
-                    let via = match context.origin {
-                        command_surface::Origin::Http => polylogue_model::authorship::Channel::Web,
-                        command_surface::Origin::Mcp => polylogue_model::authorship::Channel::Mcp,
+                    let via = match context.via {
+                        command_surface::Via::Web => polylogue_model::authorship::Channel::Web,
+                        command_surface::Via::Mcp => polylogue_model::authorship::Channel::Mcp,
                         _ => polylogue_model::authorship::Channel::Cli,
                     };
                     polylogue_model::authorship::compute_authorship(via, &Default::default(), None)
@@ -307,11 +401,31 @@ pub fn deadlines() -> command_surface::Deadlines {
 
 pub fn table(daemon: Arc<Daemon>) -> OperationTable {
     let mut table = OperationTable::new(PRODUCT, deadlines());
+    table.accept(command_surface::RequestOption::Cursor);
     for (kind, codes) in super::FAILURE_CLASSES {
         for code in *codes {
             table
                 .register_failure_code(*code, *kind)
                 .expect("failure classification is unique");
+        }
+    }
+    for tool in crate::commands::Tool::ALL {
+        if crate::commands::COMMANDS
+            .iter()
+            .any(|command| command.register.is_some() && command.tool == Some(tool))
+        {
+            table
+                .declare_tool(command_surface::ToolFamily {
+                    name: tool
+                        .name()
+                        .strip_prefix("polylogue_")
+                        .expect("product tool prefix")
+                        .into(),
+                    description: tool.description().into(),
+                    open_world: tool.open_world(),
+                    idempotent: tool.idempotent(),
+                })
+                .expect("declared tool is unique");
         }
     }
     for command in crate::commands::COMMANDS.iter() {
@@ -328,6 +442,7 @@ pub fn request(
     request_id: String,
     deadline: command_surface::Deadline,
 ) -> command_surface::RunnableRequest {
+    let cursor = arguments.text("cursor");
     command_surface::Request {
         operation: command.name.into(),
         arguments: Value::Object(
@@ -335,15 +450,18 @@ pub fn request(
                 .0
                 .into_iter()
                 .filter(|(name, _)| {
-                    command
-                        .args
-                        .iter()
-                        .any(|argument| argument.name == name && !argument.cli_only)
+                    command.args.iter().any(|argument| {
+                        argument.name == name && !argument.cli_only && name != "cursor"
+                    })
                 })
                 .collect(),
         ),
         request_id,
         deadline,
+        budget_tokens: Default::default(),
+        cursor,
+        fresh: false,
+        format: Default::default(),
     }
 }
 

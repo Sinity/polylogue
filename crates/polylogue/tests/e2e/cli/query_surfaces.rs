@@ -72,7 +72,10 @@ impl Mcp {
 
 fn value(answer: command_surface::Answer<Value>) -> Result<Value, command_surface::Failure> {
     match answer {
-        command_surface::Answer::Error { error, .. } => Err(error),
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Error(error),
+            ..
+        } => Err(error),
         other => Ok(other
             .value()
             .expect("an answered query carries a value")
@@ -107,6 +110,10 @@ fn surface_answer(
                 arguments: json!({"query":text}),
                 request_id: uuid::Uuid::now_v7().to_string(),
                 deadline: command_surface::Deadline::Default,
+                budget_tokens: Default::default(),
+                cursor: None,
+                fresh: false,
+                format: Default::default(),
             };
             writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
             let mut line = String::new();
@@ -126,7 +133,13 @@ fn surface_answer(
                 serde_json::from_value(result["structuredContent"].clone()).unwrap();
             assert_eq!(
                 result["isError"],
-                matches!(answered, command_surface::Answer::Error { .. })
+                matches!(
+                    answered,
+                    command_surface::Answer {
+                        outcome: command_surface::Outcome::Error(_),
+                        ..
+                    }
+                )
             );
             answered
         }
@@ -145,7 +158,7 @@ fn answer(
 }
 
 fn same_question(actual: &str, expected: &str) {
-    let catalog = polylogue_query::catalog::catalog(&[], &[]);
+    let catalog = polylogue_query::catalog::catalog(&[]);
     let identity = |text: &str| {
         let query = query_language::parse::parse(text, &catalog).unwrap();
         query_language::identity::question_id(&query, &catalog, &Default::default()).unwrap()
@@ -159,7 +172,7 @@ fn same_question(actual: &str, expected: &str) {
 /// search; the same words quoted, a field comparison, a unit, short words
 /// and correct values run as queries.
 #[test]
-fn every_surface_refuses_command_words_and_values_outside_a_set() {
+fn every_surface_preserves_query_words_unit_corrections_and_closed_sets() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let archive = dir.path().join("archive");
@@ -176,46 +189,26 @@ fn every_surface_refuses_command_words_and_values_outside_a_set() {
     wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(1));
     let mut mcp = Mcp::start(&env);
     for surface in ["cli", "socket", "mcp"] {
-        for (text, kind) in [
-            ("brief yesterday", command_surface::FailureKind::NotAQuery),
-            ("status", command_surface::FailureKind::NotAQuery),
-            ("messges cargo", command_surface::FailureKind::NotAQuery),
-            (
-                "sessin where repo:morrow",
-                command_surface::FailureKind::NotAQuery,
-            ),
-            ("statsu", command_surface::FailureKind::NotAQuery),
-        ] {
+        for text in ["brief yesterday", "status", "statsu"] {
+            let value = answer(&env, &archive, &mut mcp, surface, text).unwrap();
             if surface == "cli" && text == "status" {
-                let status = answer(&env, &archive, &mut mcp, surface, text).unwrap();
-                assert!(status["store"].is_object(), "{status}");
-                continue;
-            }
-            let failure = answer(&env, &archive, &mut mcp, surface, text).unwrap_err();
-            assert_eq!(failure.kind, kind, "{surface}: {text}: {failure:?}");
-            assert_eq!(failure.position.as_ref().unwrap().offset, 0);
-            match text {
-                "brief yesterday" | "status" => {
-                    let word = text.split_whitespace().next().unwrap();
-                    assert_eq!(
-                        failure.hint.as_deref(),
-                        Some(format!("run the `{word}` command").as_str())
-                    );
-                }
-                "statsu" => assert_eq!(failure.suggestion.as_deref(), Some(&json!("status"))),
-                _ => {
-                    let corrected = failure.suggestion.as_deref().unwrap().as_str().unwrap();
-                    let expected = if text == "messges cargo" {
-                        "messages where cargo"
-                    } else {
-                        "sessions where repo:morrow"
-                    };
-                    same_question(corrected, expected);
-                    assert!(answer(&env, &archive, &mut mcp, surface, corrected).is_ok());
-                }
+                assert!(value["store"].is_object());
             }
         }
-        let catalog = polylogue_query::catalog::catalog(&[], &[]);
+        for (text, expected) in [
+            ("messges cargo", "messages where cargo"),
+            ("sessin where repo:morrow", "sessions where repo:morrow"),
+        ] {
+            let failure = answer(&env, &archive, &mut mcp, surface, text).unwrap_err();
+            assert_eq!(failure.kind, command_surface::FailureKind::NotAQuery);
+            assert_eq!(failure.position.as_ref().unwrap().offset, 0);
+            let Some(command_surface::Suggestion::Query(corrected)) = failure.suggestion() else {
+                panic!("missing typed correction: {failure:?}");
+            };
+            same_question(corrected, expected);
+            assert!(answer(&env, &archive, &mut mcp, surface, corrected).is_ok());
+        }
+        let catalog = polylogue_query::catalog::catalog(&[]);
         for (text, unit, field, rejected) in [
             (
                 "sessions where outcome:error",
@@ -308,7 +301,16 @@ fn a_degraded_answer_keeps_its_outcome_and_notes_on_every_surface() {
     let mut answers = Vec::new();
     for surface in ["cli", "socket", "mcp"] {
         let answer = surface_answer(&env, &archive, &mut mcp, surface, text);
-        let command_surface::Answer::Degraded { value, notes, .. } = &answer else {
+        let command_surface::Answer {
+            outcome:
+                command_surface::Outcome::Degraded {
+                    value,
+                    missing: notes,
+                    ..
+                },
+            ..
+        } = &answer
+        else {
             panic!("{surface}: {answer:?}");
         };
         assert_eq!(answer.exit_code(), 5, "{surface}");

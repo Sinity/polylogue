@@ -198,20 +198,18 @@ pub(crate) async fn call_ready_as(
     let class = command
         .map(|command| command.latency)
         .unwrap_or(command_surface::LatencyClass::Local);
-    let admitted = command
-        .and_then(|command| command.build_typed)
-        .and_then(|build| {
-            build(
-                request.arguments.clone(),
-                &crate::commands::Caller {
-                    surface: crate::commands::Surface::Cli,
-                    cwd: std::env::current_dir().ok(),
-                    json: true,
-                },
-                &request.request_id,
-            )
-            .ok()
-        });
+    let admitted = command.and_then(|command| {
+        crate::protocol::operations::admit(
+            command,
+            request,
+            &crate::commands::Caller {
+                surface: crate::commands::Surface::Cli,
+                cwd: std::env::current_dir().ok(),
+                json: true,
+            },
+        )
+        .ok()
+    });
     let budget = crate::protocol::operations::admitted_deadline(
         command,
         admitted.as_ref(),

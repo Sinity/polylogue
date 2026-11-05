@@ -391,7 +391,6 @@ pub fn options_from_snapshot(
     super::Options {
         clock,
         origins: vec![],
-        command_words: vec![],
         page_size,
         random_seed: Some(random_seed),
         embeddings: options.embeddings,

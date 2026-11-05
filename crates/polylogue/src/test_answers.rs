@@ -8,7 +8,10 @@ use std::fmt::Debug;
 #[track_caller]
 pub(crate) fn ok<T: Debug>(answer: Answer<T>) -> T {
     match answer {
-        Answer::Ok { value, .. } => value,
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Ok(value),
+            ..
+        } => value,
         other => panic!("expected an ok answer, got {other:?}"),
     }
 }
@@ -16,7 +19,10 @@ pub(crate) fn ok<T: Debug>(answer: Answer<T>) -> T {
 #[track_caller]
 pub(crate) fn empty<T: Debug>(answer: Answer<T>) -> T {
     match answer {
-        Answer::Empty { value, .. } => value,
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Empty(value),
+            ..
+        } => value,
         other => panic!("expected an empty answer, got {other:?}"),
     }
 }
@@ -25,7 +31,15 @@ pub(crate) fn empty<T: Debug>(answer: Answer<T>) -> T {
 #[track_caller]
 pub(crate) fn degraded<T: Debug>(answer: Answer<T>) -> (T, Vec<String>) {
     match answer {
-        Answer::Degraded { value, notes, .. } => (value, notes),
+        command_surface::Answer {
+            outcome:
+                command_surface::Outcome::Degraded {
+                    value: value,
+                    missing: notes,
+                    ..
+                },
+            ..
+        } => (value, notes),
         other => panic!("expected a degraded answer, got {other:?}"),
     }
 }

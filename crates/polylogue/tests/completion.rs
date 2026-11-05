@@ -15,7 +15,7 @@ fn seed(root: &Path, cache: &Path, model: &str) {
     let key = blake3::hash(root.canonicalize().unwrap().as_os_str().as_encoded_bytes()).to_hex()
         [..12]
         .to_owned();
-    let catalog = polylogue_query::catalog::catalog(&["codex".into()], &["status".into()]);
+    let catalog = polylogue_query::catalog::catalog(&["codex".into()]);
     CatalogWriter::build(
         &cache.join("polylogue").join(&key).join("catalog"),
         &Metadata {
@@ -60,13 +60,13 @@ fn seed(root: &Path, cache: &Path, model: &str) {
                 parameters: vec![],
                 help: "Count native actions".into(),
                 schema: Some(OutputSchema {
+                    match_units: None,
                     unit: Some("tool_calls".into()),
                     fields: vec![
                         field("action", FieldKind::Text),
                         field("count", FieldKind::Number),
                     ],
                     main_time: None,
-                    match_patterns: Vec::new(),
                 }),
             })?;
             writer.put_kept(&Kept {
@@ -75,16 +75,16 @@ fn seed(root: &Path, cache: &Path, model: &str) {
                 unit: Some("tool_calls".into()),
                 row_count: Some(3),
                 rows: Some(OutputSchema {
+                    match_units: None,
                     unit: Some("tool_calls".into()),
                     fields: vec![field("count", FieldKind::Number)],
                     main_time: None,
-                    match_patterns: Vec::new(),
                 }),
                 matches: Some(OutputSchema {
+                    match_units: None,
                     unit: Some("tool_calls".into()),
                     fields: vec![field("tool", FieldKind::Text)],
                     main_time: None,
-                    match_patterns: Vec::new(),
                 }),
             })?;
             for (key, choices) in [

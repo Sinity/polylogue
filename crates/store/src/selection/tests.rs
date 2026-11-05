@@ -11,7 +11,6 @@ pub(super) fn options() -> Options {
             .unwrap(),
         ),
         origins: vec!["test".into()],
-        command_words: vec![],
         page_size: Some(1),
         random_seed: Some(7),
         embeddings: false,
@@ -204,7 +203,7 @@ fn pure_bindings_preserve_closed_group_values_without_a_clock() {
         .iter()
         .find(|field| field.name == "outcome")
         .unwrap();
-    assert_eq!(outcome.kind, query_language::catalog::FieldKind::Match);
+    assert_eq!(outcome.kind, query_language::catalog::FieldKind::Exact);
     assert!(outcome.values.iter().any(|value| value == "error"));
     let kept = polylogue_query::compile::columns_schema(
         &bindings.catalog(),

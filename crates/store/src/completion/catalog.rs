@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-const VERSION: u32 = 5;
+const VERSION: u32 = 6;
 const SCHEMA: &str = "
 CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE session(id TEXT PRIMARY KEY,native_id TEXT NOT NULL,prefix TEXT NOT NULL,title TEXT NOT NULL,title_key TEXT NOT NULL,origin TEXT NOT NULL,repo TEXT,last_activity INTEGER,first_prompt TEXT) WITHOUT ROWID;
@@ -62,29 +62,7 @@ pub struct Saved {
     pub parameters: Vec<Parameter>,
     pub help: String,
     pub schema: Option<OutputSchema>,
-    #[serde(skip)]
     pub relation_scope: Option<OutputSchema>,
-}
-// This recomputable cache envelope is separate from canonical SourceOutput
-// serialization, which deliberately excludes runtime relation qualifiers.
-#[derive(Serialize, Deserialize)]
-struct SavedSnapshot {
-    #[serde(flatten)]
-    saved: Saved,
-    match_patterns: Vec<query_language::catalog::MatchPattern>,
-    relation_scope: Option<OutputSchema>,
-}
-impl SavedSnapshot {
-    fn restore(mut self) -> Saved {
-        if let Some(schema) = &mut self.saved.schema {
-            schema.match_patterns = self.match_patterns.clone();
-        }
-        if let Some(scope) = &mut self.relation_scope {
-            scope.match_patterns = self.match_patterns;
-        }
-        self.saved.relation_scope = self.relation_scope;
-        self.saved
-    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Kept {
@@ -322,17 +300,9 @@ impl CatalogWriter {
         Ok(())
     }
     pub fn put_saved(&mut self, item: &Saved) -> Result<()> {
-        let snapshot = SavedSnapshot {
-            saved: item.clone(),
-            relation_scope: item.relation_scope.clone(),
-            match_patterns: item
-                .schema
-                .as_ref()
-                .map(|schema| schema.match_patterns.clone())
-                .unwrap_or_default(),
-        };
-        self.put_item("saved", &item.family, &item.name, &snapshot)
+        self.put_item("saved", &item.family, &item.name, item)
     }
+
     pub fn put_kept(&mut self, item: &Kept) -> Result<()> {
         self.put_item(
             "kept",
@@ -461,7 +431,7 @@ impl CatalogReader {
             .prepare("SELECT payload FROM item WHERE kind='saved' AND name=?1 ORDER BY id")?;
         statement
             .query_map([name], |row| row.get::<_, String>(0))?
-            .map(|row| Ok(serde_json::from_str::<SavedSnapshot>(&row?)?.restore()))
+            .map(|row| Ok(serde_json::from_str::<Saved>(&row?)?))
             .collect()
     }
     pub fn kept(&self, id: &str) -> Result<Option<Kept>> {
@@ -492,8 +462,7 @@ impl CatalogReader {
         self.items("setting", prefix)
     }
     pub fn saved_names(&self, prefix: &str) -> Result<Vec<Saved>> {
-        self.items::<SavedSnapshot>("saved", prefix)
-            .map(|items| items.into_iter().map(SavedSnapshot::restore).collect())
+        self.items("saved", prefix)
     }
     pub fn kept_names(&self, prefix: &str) -> Result<Vec<Kept>> {
         let mut statement=self.conn.prepare("SELECT payload FROM item WHERE kind='kept' AND ((name>=?1 AND (?2 IS NULL OR name<?2)) OR (id>=?1 AND (?2 IS NULL OR id<?2))) ORDER BY name,id")?;

@@ -392,7 +392,6 @@ impl State {
                 .iter()
                 .map(|origin| origin.name.to_owned())
                 .collect(),
-            command_words: crate::commands::command_words(),
             saved,
             kept: self.kept.clone(),
         };

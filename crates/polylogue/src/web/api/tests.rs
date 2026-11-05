@@ -92,6 +92,10 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
                     arguments: serde_json::json!({"uncapped":true}),
                     request_id: "http-accepted-stream".into(),
                     deadline: command_surface::Deadline::None,
+                    budget_tokens: Default::default(),
+                    cursor: None,
+                    fresh: false,
+                    format: Default::default(),
                 }),
             )
             .await;
@@ -161,6 +165,10 @@ fn generated_http_ready_call_executes_without_translating_its_arguments() {
         arguments: serde_json::json!({"query":"sessions"}),
         request_id: "http-ready-id".into(),
         deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     let ready = daemon.daemon.ready_call(&call).unwrap();
     let encode = |text: &str| {
@@ -317,7 +325,11 @@ fn native_scope_reset_terminates_a_begun_http_stream_without_final_completion() 
             );
             let answer: command_surface::Answer<serde_json::Value> =
                 serde_json::from_str(&events[1].data).unwrap();
-            let command_surface::Answer::Error { error, .. } = answer else {
+            let command_surface::Answer {
+                outcome: command_surface::Outcome::Error(error),
+                ..
+            } = answer
+            else {
                 panic!("stale stream was successful")
             };
             assert_eq!(error.code.as_deref(), Some("scope_changed"));
@@ -352,7 +364,11 @@ fn scope_reset_after_http_encoding_cannot_activate_the_old_body() {
     assert!(!String::from_utf8_lossy(&bytes).contains("synthetic-old-scope-value"));
     let answer: command_surface::Answer<serde_json::Value> =
         serde_json::from_slice(&bytes).unwrap();
-    let command_surface::Answer::Error { error, .. } = answer else {
+    let command_surface::Answer {
+        outcome: command_surface::Outcome::Error(error),
+        ..
+    } = answer
+    else {
         panic!("old scope must not activate");
     };
     assert_eq!(error.code.as_deref(), Some("scope_changed"));
@@ -397,6 +413,10 @@ fn a_captured_parent_deadline_is_not_renewed_during_dispatch_wait() {
         arguments: serde_json::json!({}),
         request_id: "queued-parent-bound".into(),
         deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let response = runtime.block_on(crate::web::READ_LIMIT.scope(
@@ -418,7 +438,11 @@ fn a_captured_parent_deadline_is_not_renewed_during_dispatch_wait() {
         .unwrap();
     let answer: command_surface::Answer<serde_json::Value> =
         serde_json::from_slice(&bytes).unwrap();
-    let command_surface::Answer::Error { error, .. } = answer else {
+    let command_surface::Answer {
+        outcome: command_surface::Outcome::Error(error),
+        ..
+    } = answer
+    else {
         panic!("original expired parent must reach the blocking handler");
     };
     assert_eq!(error.kind, command_surface::FailureKind::Timeout);
@@ -452,6 +476,10 @@ fn a_cancelled_http_parent_without_a_header_cannot_submit_a_pure_write() {
         arguments: serde_json::json!({"key":"reading.variants","value":"[]"}),
         request_id: id.into(),
         deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let response = runtime.block_on(crate::web::READ_LIMIT.scope((None, cancellation), async {
@@ -468,7 +496,11 @@ fn a_cancelled_http_parent_without_a_header_cannot_submit_a_pure_write() {
         .unwrap();
     let answer: command_surface::Answer<crate::protocol::setting::Answer> =
         serde_json::from_slice(&bytes).unwrap();
-    let command_surface::Answer::Error { error, .. } = answer else {
+    let command_surface::Answer {
+        outcome: command_surface::Outcome::Error(error),
+        ..
+    } = answer
+    else {
         panic!("cancelled admission cannot yield a receipt")
     };
     assert_eq!(error.kind, command_surface::FailureKind::Cancelled);
@@ -504,6 +536,10 @@ fn writer_dispatch_refuses_queued_expiry_but_finishes_an_already_owned_write() {
             arguments: serde_json::json!({"key":"reading.variants","value":"[]"}),
             request_id: id.into(),
             deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         };
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let task = runtime.spawn(crate::web::READ_LIMIT.scope(
@@ -558,7 +594,11 @@ fn writer_dispatch_refuses_queued_expiry_but_finishes_an_already_owned_write() {
             );
         } else {
             assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
-            let command_surface::Answer::Error { error, .. } = answer else {
+            let command_surface::Answer {
+                outcome: command_surface::Outcome::Error(error),
+                ..
+            } = answer
+            else {
                 panic!("unadmitted write cannot return a receipt")
             };
             assert_eq!(error.kind, command_surface::FailureKind::Timeout);
@@ -580,6 +620,10 @@ fn actual_ready_http_calls_preserve_absent_null_and_finite_deadlines() {
             arguments: serde_json::json!({"query":"sessions","cursor":null,"session":null,"limit":null,"fields":[]}),
             request_id: "actual-ready-http-deadline".into(),
             deadline,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         };
         let ready = daemon.daemon.ready_call(&request).unwrap();
         assert_eq!(

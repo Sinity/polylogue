@@ -50,6 +50,10 @@ fn acknowledged_socket_write_survives_runtime_shutdown() {
         arguments: serde_json::json!({"key":"browser.actions","value":"on"}),
         request_id: "durable-socket-setting".into(),
         deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
     let mut response = String::new();
@@ -172,6 +176,10 @@ fn disconnect_interrupts_sql_and_releases_the_reader_slot() {
         arguments: serde_json::json!({"statement":"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}),
         request_id: "disconnect-sql".into(),
         deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     serde_json::to_writer(&mut stream, &request).unwrap();
     stream.write_all(b"\n").unwrap();
@@ -195,6 +203,10 @@ fn socket_honours_the_client_deadline_without_closing_the_connection() {
         arguments: serde_json::json!({"statement":"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}),
         request_id: "bounded-sql".into(),
         deadline: command_surface::Deadline::Milliseconds(50),
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     serde_json::to_writer(&mut stream, &request).unwrap();
     stream.write_all(b"\n").unwrap();
@@ -203,7 +215,7 @@ fn socket_honours_the_client_deadline_without_closing_the_connection() {
     input.read_line(&mut line).unwrap();
     let response: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
     assert!(
-        matches!(&response,command_surface::Answer::Error {error,..} if error.kind==command_surface::FailureKind::Timeout),
+        matches!(&response,command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. } if error.kind==command_surface::FailureKind::Timeout),
         "{response:?}"
     );
     let next = command_surface::Request {
@@ -211,6 +223,10 @@ fn socket_honours_the_client_deadline_without_closing_the_connection() {
         arguments: serde_json::json!({"statement":"SELECT 1"}),
         request_id: "after-timeout".into(),
         deadline: command_surface::Deadline::Default,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     writeln!(input.get_mut(), "{}", serde_json::to_string(&next).unwrap()).unwrap();
     line.clear();
@@ -259,6 +275,10 @@ fn complete_queued_requests_receive_shutting_down_before_socket_drain() {
         arguments: serde_json::json!({"statement":"SELECT 1 AS n"}),
         request_id: id.into(),
         deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     writeln!(
         stream,
@@ -285,7 +305,11 @@ fn complete_queued_requests_receive_shutting_down_before_socket_drain() {
     line.clear();
     responses.read_line(&mut line).unwrap();
     let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
-    let command_surface::Answer::Error { error, .. } = answer else {
+    let command_surface::Answer {
+        outcome: command_surface::Outcome::Error(error),
+        ..
+    } = answer
+    else {
         panic!("queued request must be refused");
     };
     assert_eq!(error.code.as_deref(), Some("shutting_down"));
@@ -323,7 +347,11 @@ fn a_scope_reset_during_json_serialization_publishes_only_the_safe_failure() {
     BufReader::new(input).read_line(&mut line).unwrap();
     assert!(!line.contains("synthetic-old-scope-value"));
     let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
-    let command_surface::Answer::Error { error, .. } = answer else {
+    let command_surface::Answer {
+        outcome: command_surface::Outcome::Error(error),
+        ..
+    } = answer
+    else {
         panic!("old scope must not publish a value");
     };
     assert_eq!(error.code.as_deref(), Some("scope_changed"));

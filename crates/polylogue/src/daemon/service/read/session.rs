@@ -672,6 +672,10 @@ fn card(
                 blake3::hash(format!("{target}\0{reference}").as_bytes()).to_hex()
             ),
             deadline: command_surface::Deadline::Default,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         })
         .map_err(Failure::from)?;
     let kind = if link.kind == "subagent" {
@@ -1476,7 +1480,6 @@ fn lay_out(
             attachment: index,
             input: input.map(str::to_owned),
             length: crate::daemon::attachment::PAGE_BYTES as u64,
-            cursor: None,
         })
         .map_err(|e| Failure::new("internal", e))?;
         let identity = blake3::hash(arguments.to_string().as_bytes());
@@ -1485,6 +1488,10 @@ fn lay_out(
             arguments,
             request_id: format!("read-attachment-{}", identity.to_hex()),
             deadline: command_surface::Deadline::Default,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         })
         .map_err(Failure::from)
     };

@@ -1,5 +1,5 @@
 use super::*;
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[test]
 fn a_pending_write_is_degraded_with_its_note_and_http_success() {
@@ -8,8 +8,17 @@ fn a_pending_write_is_degraded_with_its_note_and_http_success() {
     assert_eq!(answer.exit_code(), 5);
     assert_eq!(answer.http_status(), Some(200));
     assert_eq!(answer.value(), Some(&receipt));
-    assert_eq!(answer.notes(), [AWAITING_CONFIRMATION]);
-    assert!(matches!(written(receipt, false), Answer::Ok { .. }));
+    assert_eq!(
+        crate::protocol::notes(&answer).collect::<Vec<_>>(),
+        [AWAITING_CONFIRMATION]
+    );
+    assert!(matches!(
+        written(receipt, false),
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Ok(_),
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -47,7 +56,10 @@ fn a_degraded_answer_keeps_its_outcome_and_notes_on_the_socket_wire() {
     let bytes = serde_json::to_vec(&answer).unwrap();
     let read: Answer<Value> = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(read, answer);
-    assert_eq!(read.notes(), [AWAITING_CONFIRMATION]);
+    assert_eq!(
+        crate::protocol::notes(&read).collect::<Vec<_>>(),
+        [AWAITING_CONFIRMATION]
+    );
     assert_eq!(read.exit_code(), 5);
 }
 
@@ -57,7 +69,17 @@ fn pending_capture_returns_receipt_instead_of_storage_failure() {
         crate::daemon::service::store_error(&polylogue_store::StoreError::PrimaryPending {
             identity: "capture:pending".into(),
         });
-    assert!(matches!(answer, Answer::Degraded { .. }));
+    assert!(matches!(
+        answer,
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Degraded {
+                value: _,
+                missing: _,
+                ..
+            },
+            ..
+        }
+    ));
     assert_eq!(answer.value().unwrap()["identity"], "capture:pending");
     assert_eq!(answer.http_status(), Some(200));
 }
@@ -72,7 +94,11 @@ fn projection_failures_distinguish_conflicts_from_invalid_input() {
     ] {
         let answer =
             crate::daemon::service::store_error(&polylogue_store::StoreError::Projection(issue));
-        let Answer::Error { error, .. } = answer else {
+        let command_surface::Answer {
+            outcome: command_surface::Outcome::Error(error),
+            ..
+        } = answer
+        else {
             panic!("projection failure is not success")
         };
         assert_eq!(error.kind, kind);
@@ -115,8 +141,18 @@ fn noncurrent_primary_reads_keep_their_data_and_say_why() {
         assert_eq!(result.exit_code(), 5);
         assert_eq!(result.http_status(), Some(200));
         assert_eq!(result.value(), Some(&value));
-        assert_eq!(result.notes().len(), 1, "{currency:?}");
+        assert_eq!(
+            crate::protocol::notes(&result).collect::<Vec<_>>().len(),
+            1,
+            "{currency:?}"
+        );
     }
     let current = IndexCurrency::primary(Some(8), Some(8), Some(0.5), Some(true), None);
-    assert!(matches!(read(json!({}), &current), Answer::Ok { .. }));
+    assert!(matches!(
+        read(json!({}), &current),
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Ok(_),
+            ..
+        }
+    ));
 }

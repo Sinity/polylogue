@@ -71,7 +71,7 @@ fn save_retries_keep_the_first_revision_after_the_definition_changes() {
         save("first", "other", "sessions"),
     ] {
         assert!(
-            matches!(answer(&d, request), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("conflict"))
+            matches!(answer(&d, request), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("conflict"))
         );
     }
 }
@@ -96,7 +96,7 @@ fn keep_retries_return_the_original_rows_after_membership_changes() {
         keep("kept", "assertions", "after"),
     ] {
         assert!(
-            matches!(answer(&d, request), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("conflict"))
+            matches!(answer(&d, request), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("conflict"))
         );
     }
 }
@@ -110,7 +110,10 @@ fn a_save_that_query_names_could_not_say_is_refused() {
         ("broken", "\"unclosed"),
     ] {
         match answer(&d, save("r", name, text)) {
-            command_surface::Answer::Error { .. } => {}
+            command_surface::Answer {
+                outcome: command_surface::Outcome::Error(_),
+                ..
+            } => {}
             other => panic!("{name:?} {text:?}: {other:?}"),
         }
     }
@@ -141,7 +144,10 @@ fn a_watch_is_a_signal_rule_delivering_notices() {
         watch("w3", "kind:*", Some("soon")),
     ] {
         match answer(&d, bad) {
-            command_surface::Answer::Error { .. } => {}
+            command_surface::Answer {
+                outcome: command_surface::Outcome::Error(_),
+                ..
+            } => {}
             other => panic!("{other:?}"),
         }
     }
@@ -211,7 +217,7 @@ fn accepting_caller_is_preserved_on_retry_and_another_actor_cannot_reuse_the_id(
         },
     ] {
         assert!(
-            matches!(call(&changed), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("conflict"))
+            matches!(call(&changed), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("conflict"))
         );
     }
     let reads = d.daemon.reads.reader().unwrap();

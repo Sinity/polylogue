@@ -86,6 +86,10 @@ fn follow_session(
         arguments,
         request_id: format!("follow-{}", uuid::Uuid::now_v7()),
         deadline: command_surface::Deadline::Default,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -181,6 +185,10 @@ fn live_state(archive: &Archive, session: Option<&str>) -> Result<String, (Strin
         }),
         request_id: format!("follow-live-{}", uuid::Uuid::now_v7()),
         deadline: command_surface::Deadline::Default,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     let rows: serde_json::Value = answer(archive, &call)?;
     Ok(rows["rows"][0]["live"]
@@ -214,6 +222,10 @@ fn follow_query(
                     arguments: serde_json::json!({ "query": query, "cursor": cursor }),
                     request_id: format!("follow-query-{}", uuid::Uuid::now_v7()),
                     deadline: command_surface::Deadline::Default,
+                    budget_tokens: Default::default(),
+                    cursor: None,
+                    fresh: false,
+                    format: Default::default(),
                 },
             )
         };

@@ -59,7 +59,7 @@ impl<'a> Compiler<'a> {
         let definition = saved_definition(self.text, span.start, name, self.opts)?;
         let mut query = parse_query(definition.executable_text()?, self.opts)?;
         Parameters::new(name, arguments).bind(&mut query, span.start)?;
-        if !query.stages.is_empty() || !query.attach.is_empty() {
+        if !query.transforms.is_empty() || !query.attach.is_empty() {
             return Err(QueryError::Invalid {
                 message: format!(
                     "query:{name} is a shaped result (it has stages), so it cannot be a condition; \

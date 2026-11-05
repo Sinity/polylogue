@@ -239,7 +239,16 @@ impl TestDaemon {
             },
             &self.daemon,
         );
-        assert!(matches!(r, command_surface::Answer::Ok { .. }), "{r:?}");
+        assert!(
+            matches!(
+                r,
+                command_surface::Answer {
+                    outcome: command_surface::Outcome::Ok(_),
+                    ..
+                }
+            ),
+            "{r:?}"
+        );
     }
 }
 

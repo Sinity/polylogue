@@ -126,7 +126,6 @@ fn fractional_compiled_since_until_and_comparisons_keep_index_boundaries_exclusi
             .unwrap(),
         ),
         origins: vec!["test".into()],
-        command_words: vec![],
         page_size: None,
         random_seed: Some(1),
         embeddings: false,

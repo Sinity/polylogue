@@ -696,27 +696,41 @@ fn exists_and_seq_match_one_call_and_an_order() {
 #[test]
 fn matches_return_the_rows_that_matched() {
     let w = morrow();
-    // seq: one row per step tuple, with the gap between the steps.
+    // A sequence exposes each selected step with its parent and match.
     let v = q(
         &w,
         "sessions where seq(command:\"cargo test\" AND outcome:error -> command:\"cargo test\" AND outcome:ok) | matches",
     );
     assert_eq!(v["unit"], "matches");
     assert_eq!(v["shape"], "matches");
-    assert_eq!(ids(&v), ["#2"]);
-    let row = &v["rows"][0];
-    assert_eq!(row["match"], 1);
-    assert_eq!(row["step1_outcome"], "error");
-    assert_eq!(row["step2_outcome"], "ok");
-    assert_eq!(row["gap_steps"], 1, "the Edit between them");
-    assert_eq!(row["gap_time"], 3_600_000 * 2);
-    // An aggregate after `| matches` is over the tuples.
+    let rows = v["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter()
+            .all(|r| short(r["parent"].as_str().unwrap()) == "#2")
+    );
+    assert_eq!(rows[0]["match"], 1);
+    assert_eq!(rows[1]["match"], 1);
+    assert_eq!(rows[0]["position"], 1);
+    assert_eq!(rows[1]["position"], 2);
+    assert_eq!(rows[0]["step.outcome"], "error");
+    assert_eq!(rows[1]["step.outcome"], "ok");
+    let time = |row: &Value| {
+        row["step.at"]
+            .as_str()
+            .unwrap()
+            .parse::<jiff::Timestamp>()
+            .unwrap()
+            .as_millisecond()
+    };
+    assert_eq!(time(&rows[1]) - time(&rows[0]), 3_600_000 * 2);
+    // Aggregation after Matches counts the selected steps.
     let v = q(
         &w,
-        "sessions where seq(command:\"cargo test\" AND outcome:error -> command:\"cargo test\" AND outcome:ok) | matches | agg p50:gap_time, count",
+        "sessions where seq(command:\"cargo test\" AND outcome:error -> command:\"cargo test\" AND outcome:ok) | matches | agg count()",
     );
     assert_eq!(v["shape"], "summary");
-    assert_eq!(v["rows"][0]["count"], 1);
+    assert_eq!(v["rows"][0]["count"], 2);
     // exists: one row per parent row and matching child.
     let v = q(
         &w,
@@ -727,7 +741,7 @@ fn matches_return_the_rows_that_matched() {
     assert!(!rows.is_empty());
     assert!(
         rows.iter()
-            .all(|r| r["outcome"] == "error" && r["match"].as_u64() >= Some(1))
+            .all(|r| r["step.outcome"] == "error" && r["match"].as_u64() >= Some(1))
     );
     // Without one exists or seq, there is nothing to return as matches.
     let err = run_q(&w, ask("sessions where repo:morrow | matches")).unwrap_err();
@@ -743,29 +757,28 @@ fn seq_matches_are_earliest_first_and_never_overlap() {
         "sessions where seq(action:shell -> action:shell) | matches",
     );
     let rows = v["rows"].as_array().unwrap();
-    let pairs: Vec<(String, String)> = rows
+    let steps: Vec<(u64, u64, &str)> = rows
         .iter()
         .map(|r| {
             (
-                r["step1_command"].as_str().unwrap().to_owned(),
-                r["step2_command"].as_str().unwrap().to_owned(),
+                r["match"].as_u64().unwrap(),
+                r["position"].as_u64().unwrap(),
+                r["step.command"].as_str().unwrap(),
             )
         })
         .collect();
     assert_eq!(
-        pairs,
+        steps,
         [
-            (
-                "bd update demo-7 --claim".to_owned(),
-                "cargo test -p store".to_owned()
-            ),
-            (
-                "cargo test -p store".to_owned(),
-                "git commit -m fix".to_owned()
-            ),
+            (1, 1, "bd update demo-7 --claim"),
+            (1, 2, "cargo test -p store"),
+            (2, 1, "cargo test -p store"),
+            (2, 2, "git commit -m fix"),
         ]
     );
-    assert_eq!(rows[1]["match"], 2);
+    let identities: std::collections::BTreeSet<_> =
+        rows.iter().map(|r| r["step"].as_str().unwrap()).collect();
+    assert_eq!(identities.len(), 4, "matches never reuse a step");
     // `[next]` with a condition that no later call meets: no match.
     let v = q(
         &w,
@@ -941,7 +954,6 @@ fn assert_same_question(actual: &str, expected: &str) {
             .iter()
             .map(|origin| origin.name.to_owned())
             .collect::<Vec<_>>(),
-        &crate::commands::command_words(),
     );
     let identity = |text: &str| {
         let query = query_language::parse::parse(text, &catalog).unwrap();
@@ -972,7 +984,7 @@ fn errors_point_at_the_problem_and_offer_a_fix() {
         query_language::ErrorKind::BadValue,
         "sessions where outcome:".len(),
     );
-    let catalog = polylogue_query::catalog::catalog(&[], &[]);
+    let catalog = polylogue_query::catalog::catalog(&[]);
     let values = &catalog.field("sessions", "outcome").unwrap().values;
     assert_eq!(values, &["solved", "partial", "abandoned", "none"]);
     assert_eq!(
@@ -1407,8 +1419,10 @@ fn shared_query_diagnostics_keep_correction_and_byte_position_at_the_operation_b
     let shared = failure.error;
     assert_eq!(shared.position.unwrap().offset, 5);
     assert_eq!(
-        shared.suggestion.as_deref(),
-        Some(&serde_json::json!(r#"repo:"morrow""#))
+        shared.suggestion(),
+        Some(&command_surface::Suggestion::Query(
+            r#"repo:"morrow""#.into()
+        ))
     );
     assert!(polylogue_query::parse(r#"repo:"morrow""#).is_ok());
 }

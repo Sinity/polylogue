@@ -110,20 +110,21 @@ impl Daemon {
                 )
             })?;
         let description = table
-            .describe()
+            .descriptions()
+            .into_iter()
             .find(|description| description.spec.name == request.operation)
             .ok_or_else(|| Failure::new(FailureKind::BadRequest, "unknown operation"))?;
         let command =
             crate::commands::command(&request.operation).expect("registered command exists");
-        if let Some(build) = command.build_typed {
-            build(
-                request.arguments.clone(),
+        if command.build_typed.is_some() {
+            crate::protocol::operations::admit(
+                command,
+                request,
                 &crate::commands::Caller {
                     surface: crate::commands::Surface::Http,
                     cwd: None,
                     json: true,
                 },
-                &request.request_id,
             )?;
         }
         let mcp = command.tool.map_or(serde_json::Value::Null, |tool| {
@@ -132,6 +133,7 @@ impl Daemon {
                 arguments: request.arguments.clone(),
                 request_id: request.request_id.clone(),
                 deadline: request.deadline,
+                cursor: request.cursor.clone(),
             };
             serde_json::json!({"name": tool.name(), "arguments": call})
         });
@@ -139,13 +141,15 @@ impl Daemon {
             cli: table.cli_command(request)?,
             mcp,
             http: polylogue_model::read::HttpCall {
-                method: if description.spec.write {
+                method: if description.spec.access != command_surface::Access::Read {
                     "POST"
                 } else {
                     "GET"
                 }
                 .into(),
-                path: description.spec.http_route.clone(),
+                path: description.spec.http_route.clone().ok_or_else(|| {
+                    Failure::new(FailureKind::BadRequest, "operation has no HTTP route")
+                })?,
                 arguments: serde_json::to_value(request).expect("request serializes"),
             },
         })
@@ -207,22 +211,33 @@ fn query_outcome(
     notes.extend(crate::protocol::currency_note(currency).map(str::to_owned));
     let degraded = currency.degraded() || outcome == super::query::Outcome::Incomplete;
     if degraded {
-        Answer::Degraded {
-            value,
-            notes,
-            next: vec![],
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Degraded {
+                value: value,
+                missing: notes,
+            },
+            envelope: command_surface::Envelope {
+                next: vec![],
+                ..Default::default()
+            },
         }
     } else if outcome == super::query::Outcome::Empty {
-        Answer::Empty {
-            value,
-            notes,
-            next: vec![],
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Empty(value),
+            envelope: command_surface::Envelope {
+                notes: notes,
+                next: vec![],
+                ..Default::default()
+            },
         }
     } else {
-        Answer::Ok {
-            value,
-            notes,
-            next: vec![],
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Ok(value),
+            envelope: command_surface::Envelope {
+                notes: notes,
+                next: vec![],
+                ..Default::default()
+            },
         }
     }
 }
@@ -437,7 +452,6 @@ pub(crate) fn authored_preparation() -> user_writes::PreparationContext {
             .iter()
             .map(|origin| origin.name.to_owned())
             .collect(),
-        crate::commands::command_words(),
     )
 }
 
@@ -519,10 +533,13 @@ pub(crate) fn now_ms() -> i64 {
 fn listed<T: serde::Serialize>(items: Vec<T>) -> Answer<Value> {
     let empty = items.is_empty();
     match serde_json::to_value(items) {
-        Ok(value) if empty => Answer::Empty {
-            value,
-            notes: vec![],
-            next: vec![],
+        Ok(value) if empty => command_surface::Answer {
+            outcome: command_surface::Outcome::Empty(value),
+            envelope: command_surface::Envelope {
+                notes: vec![],
+                next: vec![],
+                ..Default::default()
+            },
         },
         Ok(value) => Answer::ok(value),
         Err(cause) => error("internal", cause),

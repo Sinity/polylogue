@@ -920,7 +920,7 @@ fn direct_reference(
     query: &polylogue_query::ast::Query,
 ) -> Result<Option<Reference>, SelectionError> {
     use polylogue_query::ast::{Source, Value as Scalar};
-    if !query.stages.is_empty() || !query.attach.is_empty() {
+    if !query.transforms.is_empty() || !query.attach.is_empty() {
         return Ok(None);
     }
     let Source::Unit {

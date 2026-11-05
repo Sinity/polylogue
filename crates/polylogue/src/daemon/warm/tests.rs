@@ -122,7 +122,7 @@ fn completion_reads_declared_values_and_refreshes_observed_models() {
         s["store"]["messages"] == 2
             && matches!(
                 values("model:model"),
-                command_surface::Answer::Ok { value, .. } if value
+                command_surface::Answer { outcome: command_surface::Outcome::Ok(value), .. } if value
                     .as_array()
                     .unwrap()
                     .iter()
@@ -150,7 +150,10 @@ fn completion_request_preserves_full_text_offsets_and_reports_invalid_boundaries
         },
         &daemon.daemon,
     ) {
-        command_surface::Answer::Ok { value: data, .. } => {
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Ok(data),
+            ..
+        } => {
             let candidate = data
                 .as_array()
                 .unwrap()
@@ -180,7 +183,10 @@ fn completion_request_preserves_full_text_offsets_and_reports_invalid_boundaries
             },
             &daemon.daemon,
         ) {
-            command_surface::Answer::Error { error, .. } => {
+            command_surface::Answer {
+                outcome: command_surface::Outcome::Error(error),
+                ..
+            } => {
                 assert_eq!(error.code.as_deref(), Some("bad_request"))
             }
             other => panic!("{other:?}"),

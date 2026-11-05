@@ -461,6 +461,10 @@ async fn probe(runtime: &Runtime, budget: Duration) -> bool {
         arguments: serde_json::json!({}),
         request_id: "daemon-liveness".into(),
         deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     matches!(
         tokio::time::timeout(

@@ -19,7 +19,7 @@ fn attachment_read_refuses_once_the_daemon_stops_accepting() {
         &daemon.daemon,
     );
     assert!(
-        matches!(response,command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("shutting_down"))
+        matches!(response,command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
     );
 }
 

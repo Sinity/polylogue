@@ -110,7 +110,10 @@ fn write(
                 )
                 .map_err(|e| e.to_string())?
                 {
-                    command_surface::Answer::Error { error, .. } => {
+                    command_surface::Answer {
+                        outcome: command_surface::Outcome::Error(error),
+                        ..
+                    } => {
                         return Err(format!(
                             "{}: {}",
                             error.code.as_deref().unwrap_or_default(),

@@ -42,6 +42,10 @@ async fn send_raw(
         arguments,
         request_id: id.into(),
         deadline: command_surface::Deadline::Default,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     let command = crate::commands::command(operation).expect("declared HTTP operation");
     let (builder, body) = if command.writes {
@@ -702,7 +706,11 @@ fn grouped_assertion_population_returns_a_typed_refusal() {
         let f = fixture();
         let (status,answer)=send(&f,"assert-query","grouped",json!({"query":"sessions | group by origin","assertion":statement("note",None,json!("review"),&[])})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{answer:?}");
-        let command_surface::Answer::Error { error, .. } = answer else {
+        let command_surface::Answer {
+            outcome: command_surface::Outcome::Error(error),
+            ..
+        } = answer
+        else {
             panic!("group rows cannot name assertion targets")
         };
         assert_eq!(error.kind, command_surface::FailureKind::BadRequest);

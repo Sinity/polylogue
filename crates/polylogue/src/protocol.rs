@@ -17,11 +17,9 @@ pub mod status;
 pub mod stream;
 pub mod verify;
 pub mod wire;
-use command_surface::{Answer, Failure, FailureKind, Position};
-use serde_json::Value;
+use command_surface::{Answer, Failure, FailureKind, InputSpan};
 
 pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
-    (FailureKind::Empty, &["empty"]),
     (
         FailureKind::InvalidQuery,
         &["query", "sql", "invalid_query", "invalid_cursor"],
@@ -96,7 +94,6 @@ pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
             "browser_actions_off",
         ],
     ),
-    (FailureKind::Degraded, &["degraded"]),
     (FailureKind::StoppedEarly, &["stopped_early"]),
     (
         FailureKind::NotRunning,
@@ -193,10 +190,10 @@ pub fn query_failure(error: &polylogue_store::query::QueryError) -> Failure {
         QueryError::UnknownField { similar, .. } => similar.clone(),
         _ => Vec::new(),
     });
-    failure.position = position.map(|offset| Position { offset, length: 1 });
-    failure.suggestion = error
-        .suggestion()
-        .map(|text| Box::new(Value::String(text.to_owned())));
+    failure.position = position.map(|offset| InputSpan { offset, length: 1 });
+    if let Some(text) = error.suggestion() {
+        failure = failure.with_suggestion(command_surface::Suggestion::Query(text.to_owned()));
+    }
     failure
 }
 
@@ -211,23 +208,69 @@ pub fn store_failure(error: &polylogue_store::StoreError) -> Failure {
     }
 }
 
+/// Human-facing diagnostics include the missing parts beside ordinary notes.
+pub fn notes<T>(answer: &Answer<T>) -> impl Iterator<Item = &String> {
+    answer.envelope.notes.iter().chain(
+        match &answer.outcome {
+            command_surface::Outcome::Degraded { missing, .. } => missing.as_slice(),
+            _ => &[],
+        }
+        .iter(),
+    )
+}
+
+pub fn suggestion_text(failure: &Failure) -> Option<std::borrow::Cow<'_, str>> {
+    match failure.suggestion()? {
+        command_surface::Suggestion::Query(text) => Some(text.as_str().into()),
+        command_surface::Suggestion::Request(request) => Some(
+            format!(
+                "polylogue --request {}",
+                polylogue_render::shell_quote(
+                    &serde_json::to_string(request).expect("request serializes")
+                )
+            )
+            .into(),
+        ),
+    }
+}
+
 /// The value of an answer that carries one, or its failure.
 pub fn into_value<T>(answer: Answer<T>) -> Result<T, Failure> {
     match answer {
-        Answer::Ok { value, .. } | Answer::Empty { value, .. } | Answer::Degraded { value, .. } => {
-            Ok(value)
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Ok(value),
+            ..
         }
-        Answer::Error { error, .. } => Err(error),
+        | command_surface::Answer {
+            outcome: command_surface::Outcome::Empty(value),
+            ..
+        }
+        | command_surface::Answer {
+            outcome:
+                command_surface::Outcome::Degraded {
+                    value, missing: _, ..
+                },
+            ..
+        } => Ok(value),
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Error(error),
+            ..
+        } => Err(error),
     }
 }
 
 /// A write accepted into the local primary spool is degraded until Sinex confirms it.
 pub fn written<T>(value: T, pending: bool) -> Answer<T> {
     if pending {
-        Answer::Degraded {
-            value,
-            notes: vec![AWAITING_CONFIRMATION.into()],
-            next: vec![],
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Degraded {
+                value,
+                missing: vec![AWAITING_CONFIRMATION.into()],
+            },
+            envelope: command_surface::Envelope {
+                next: vec![],
+                ..Default::default()
+            },
         }
     } else {
         Answer::ok(value)
@@ -239,10 +282,15 @@ pub const AWAITING_CONFIRMATION: &str = "accepted locally; awaiting Sinex confir
 /// A read over an index that is not current keeps its value and says why.
 pub fn read<T>(value: T, currency: &polylogue_model::currency::IndexCurrency) -> Answer<T> {
     match currency_note(currency) {
-        Some(note) => Answer::Degraded {
-            value,
-            notes: vec![note.into()],
-            next: vec![],
+        Some(note) => command_surface::Answer {
+            outcome: command_surface::Outcome::Degraded {
+                value,
+                missing: vec![note.into()],
+            },
+            envelope: command_surface::Envelope {
+                next: vec![],
+                ..Default::default()
+            },
         },
         None => Answer::ok(value),
     }

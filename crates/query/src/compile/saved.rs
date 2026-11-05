@@ -103,18 +103,11 @@ impl Parameters {
         position: usize,
     ) -> Result<(), QueryError> {
         match &mut query.source {
-            Source::Unit {
-                condition: Some(condition),
-                ..
+            Source::Unit { condition, .. } | Source::Result { condition, .. } => {
+                if let Some(condition) = condition {
+                    self.cond(condition, used, position)?;
+                }
             }
-            | Source::RecallLast {
-                condition: Some(condition),
-                ..
-            }
-            | Source::Result {
-                condition: Some(condition),
-                ..
-            } => self.cond(condition, used, position)?,
             Source::Saved {
                 arguments,
                 condition,
@@ -127,23 +120,55 @@ impl Parameters {
                     self.cond(condition, used, position)?;
                 }
             }
-            _ => {}
         }
         for child in &mut query.attach {
             for window in &mut child.windows {
-                if let Window::Where(cond) = window {
-                    self.cond(cond, used, position)?;
+                if let Window::Where(condition) = window {
+                    self.cond(condition, used, position)?;
                 }
             }
         }
-        for stage in &mut query.stages {
-            match &mut stage.kind {
-                StageKind::Where { condition: cond }
-                | StageKind::Scope {
-                    condition: Some(cond),
+        for transform in &mut query.transforms {
+            match &mut transform.kind {
+                TransformKind::Where { condition }
+                | TransformKind::Scope {
+                    condition: Some(condition),
                     ..
-                } => self.cond(cond, used, position)?,
-                StageKind::Combine { query, .. } => self.query(query, used, position)?,
+                } => self.cond(condition, used, position)?,
+                TransformKind::Combine { query, .. } | TransformKind::Diff { query } => {
+                    self.query(query, used, position)?
+                }
+                TransformKind::Join { query, on } => {
+                    self.query(query, used, position)?;
+                    if let JoinOn::Order {
+                        within: Some(within),
+                        ..
+                    } = on
+                    {
+                        self.distance(within, used, position)?;
+                    }
+                }
+                TransformKind::Group { keys: columns } | TransformKind::Fields { columns } => {
+                    for column in columns {
+                        self.expression(&mut column.expression, used, position)?;
+                    }
+                }
+                TransformKind::Sort { keys } => {
+                    for key in keys {
+                        self.expression(&mut key.expression, used, position)?;
+                    }
+                }
+                TransformKind::Aggregate { aggregates } => {
+                    for aggregate in aggregates {
+                        for expression in &mut aggregate.arguments {
+                            self.expression(expression, used, position)?;
+                        }
+                    }
+                }
+                TransformKind::AsOf { value, .. } => self.value(value, used, position)?,
+                TransformKind::Extension { arguments, .. } => {
+                    self.extension(arguments, used, position)?
+                }
                 _ => {}
             }
         }
@@ -157,13 +182,19 @@ impl Parameters {
         position: usize,
     ) -> Result<(), QueryError> {
         match &mut c.kind {
-            ConditionKind::And { conditions }
-            | ConditionKind::Or { conditions }
-            | ConditionKind::Sequence {
-                steps: conditions, ..
-            } => {
+            ConditionKind::And { conditions } | ConditionKind::Or { conditions } => {
                 for condition in conditions {
                     self.cond(condition, used, position)?;
+                }
+            }
+            ConditionKind::Sequence { steps, gaps, .. } => {
+                for condition in steps {
+                    self.cond(condition, used, position)?;
+                }
+                for gap in gaps {
+                    if let Gap::Within { distance } = gap {
+                        self.distance(distance, used, position)?;
+                    }
                 }
             }
             ConditionKind::Not { condition }
@@ -175,22 +206,36 @@ impl Parameters {
                 condition: Some(condition),
                 ..
             } => self.cond(condition, used, position)?,
-            ConditionKind::In { query, .. } => self.query(query, used, position)?,
+            ConditionKind::In { left, query } => {
+                self.expression(left, used, position)?;
+                self.query(query, used, position)?;
+            }
+            ConditionKind::Order { query, within, .. } => {
+                self.query(query, used, position)?;
+                if let Some(within) = within {
+                    self.distance(within, used, position)?;
+                }
+            }
+            ConditionKind::Compare { left, right, .. } => {
+                self.expression(left, used, position)?;
+                self.expression(right, used, position)?;
+            }
             ConditionKind::Match { value, .. }
-            | ConditionKind::Compare { value, .. }
             | ConditionKind::Since { value, .. }
             | ConditionKind::Until { value, .. }
-            | ConditionKind::Similar { value }
-            | ConditionKind::TimeRange { value, .. } => self.value(value, used, position)?,
-            ConditionKind::Between { from, to, .. } => {
+            | ConditionKind::Rank { value, .. } => self.value(value, used, position)?,
+            ConditionKind::TimeRange { left, value } => {
+                self.expression(left, used, position)?;
+                self.value(value, used, position)?;
+            }
+            ConditionKind::Between { left, from, to } => {
+                self.expression(left, used, position)?;
                 self.value(from, used, position)?;
                 self.value(to, used, position)?;
             }
             ConditionKind::Text { text, .. } => {
                 if let Some(argument) = self.argument(text, used, position)? {
                     *text = value_text(&argument.value)?;
-                    // Canonical formatting may quote any scalar argument. Its
-                    // lexical spelling does not change the declaration's text mode.
                 }
             }
             ConditionKind::Saved { arguments, .. } => {
@@ -198,7 +243,67 @@ impl Parameters {
                     self.value(&mut argument.value, used, position)?;
                 }
             }
+            ConditionKind::Extension { arguments, .. } => {
+                self.extension(arguments, used, position)?
+            }
             _ => {}
+        }
+        Ok(())
+    }
+
+    fn expression(
+        &self,
+        expression: &mut Expression,
+        used: &mut Vec<String>,
+        position: usize,
+    ) -> Result<(), QueryError> {
+        match expression {
+            Expression::Value { value } => self.value(value, used, position)?,
+            Expression::Function { arguments, .. } => {
+                for argument in arguments {
+                    self.expression(argument, used, position)?;
+                }
+            }
+            Expression::Arithmetic { left, right, .. } => {
+                self.expression(left, used, position)?;
+                self.expression(right, used, position)?;
+            }
+            Expression::Field { .. } => {}
+        }
+        Ok(())
+    }
+
+    fn distance(
+        &self,
+        distance: &mut Distance,
+        used: &mut Vec<String>,
+        position: usize,
+    ) -> Result<(), QueryError> {
+        if let Distance::Time { duration } = distance {
+            self.value(duration, used, position)?;
+        }
+        Ok(())
+    }
+
+    fn extension(
+        &self,
+        arguments: &mut [ExtensionArgument],
+        used: &mut Vec<String>,
+        position: usize,
+    ) -> Result<(), QueryError> {
+        for argument in arguments {
+            match argument {
+                ExtensionArgument::Value(value) => self.value(value, used, position)?,
+                ExtensionArgument::Expression(expression) => {
+                    self.expression(expression, used, position)?
+                }
+                ExtensionArgument::Query(query) => self.query(query, used, position)?,
+                ExtensionArgument::Condition(condition) => self.cond(condition, used, position)?,
+                ExtensionArgument::Optional(arguments) | ExtensionArgument::List(arguments) => {
+                    self.extension(arguments, used, position)?
+                }
+                _ => {}
+            }
         }
         Ok(())
     }

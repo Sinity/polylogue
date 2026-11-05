@@ -45,7 +45,11 @@ fn answer_serialization_keeps_source_values_keys_and_empty_fields() {
     let encoded = serde_json::to_vec(&response).unwrap();
     let decoded: command_surface::Answer<serde_json::Value> =
         serde_json::from_slice(&encoded).unwrap();
-    let command_surface::Answer::Ok { value: actual, .. } = decoded else {
+    let command_surface::Answer {
+        outcome: command_surface::Outcome::Ok(actual),
+        ..
+    } = decoded
+    else {
         panic!("expected success");
     };
     assert_eq!(actual, data);

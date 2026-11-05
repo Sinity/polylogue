@@ -114,7 +114,10 @@ fn failure(bytes: &[u8]) -> io::Result<Error> {
     let answer: Answer<serde_json::Value> =
         serde_json::from_slice(bytes).map_err(io::Error::other)?;
     match answer {
-        answer @ Answer::Error { .. } => Ok(Error::Answer(Box::new(answer))),
+        answer @ command_surface::Answer {
+            outcome: command_surface::Outcome::Error(_),
+            ..
+        } => Ok(Error::Answer(Box::new(answer))),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "an error frame must contain a failure answer",

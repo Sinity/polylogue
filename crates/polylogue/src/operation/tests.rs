@@ -114,6 +114,10 @@ fn accepted_envelope_survives_context_replay_without_becoming_public_evidence() 
             arguments: serde_json::json!({"target":"synthetic-private-input", "options":{"output_lines":0}}),
             request_id: "actual-accepted-id".into(),
             deadline,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         });
         let invocation =
             Invocation::new(at, "fixture".into(), Context::worker_authorship("fixture"))

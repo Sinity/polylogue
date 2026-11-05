@@ -127,7 +127,7 @@ async fn answer(
         };
         let parent_deadline = super::parent_deadline();
         let internal = match c.build_typed {
-            Some(build) => match build(request.arguments.clone(), &caller, &request.request_id) {
+            Some(_) => match crate::protocol::operations::admit(c, &request, &caller) {
                 Ok(internal) => Some(internal),
                 Err(failure) => {
                     return json_answer(
@@ -193,17 +193,18 @@ async fn answer(
                 .with_parent(accepted.parent.clone()),
         );
         let scope = accepted.scope();
-        let trusted = command_surface::Caller::authenticated(scope, accepted);
+        let trusted = command_surface::Caller::authenticated(scope, accepted)
+            .with_access(command_surface::Access::Write);
         let dispatched = table
             .call_as(
                 request.clone(),
-                command_surface::Origin::Http,
+                command_surface::Via::Web,
                 trusted,
                 Default::default(),
             )
             .await;
-        let publication = crate::protocol::ReadScopes::dispatched(&dispatched, read_scope.clone());
-        let answer = crate::protocol::scope_answer(dispatched.answer, &publication);
+        let publication = crate::protocol::ReadScopes::single(read_scope.clone());
+        let answer = crate::protocol::scope_answer(dispatched, &publication);
         if c.name == "read"
             && headers
                 .get(header::ACCEPT)

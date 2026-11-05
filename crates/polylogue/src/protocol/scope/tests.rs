@@ -27,18 +27,9 @@ impl Operation for HeldCatalog {
     type Request = crate::protocol::setting::Arguments;
     type Response = crate::protocol::setting::Answer;
     fn spec(&self) -> OperationSpec {
-        let command = crate::commands::command("setting").unwrap();
-        OperationSpec {
-            name: command.name.into(),
-            command: command.cli_words(),
-            summary: command.help.into(),
-            reason: command.reason.into(),
-            http_route: format!("/api/v1{}", command.http_path()),
-            latency: command.latency,
-            failures: command.failures.to_vec(),
-            write: command.writes,
-        }
+        crate::protocol::operations::specification(crate::commands::command("setting").unwrap())
     }
+
     fn execute(
         &self,
         _: Self::Request,
@@ -100,7 +91,8 @@ fn admitted(
     accepted.admitted_request = Some(internal);
     accepted.read_scope = scope.clone();
     (
-        command_surface::Caller::authenticated(accepted.scope(), accepted),
+        command_surface::Caller::authenticated(accepted.scope(), accepted)
+            .with_access(command_surface::Access::Write),
         scope,
     )
 }
@@ -116,11 +108,19 @@ async fn pending<T>(mut future: Pin<&mut impl Future<Output = T>>) {
 }
 
 #[tokio::test]
-async fn a_new_scope_waiter_cannot_publish_the_old_scope_shared_catalog() {
-    let daemon = crate::test_daemon::start("native coalesced publication scope");
+async fn each_request_publishes_only_under_its_own_native_scope() {
+    let daemon = crate::test_daemon::start("native per-request publication scope");
     let release = Arc::new(Semaphore::new(0));
     let calls = Arc::new(AtomicUsize::new(0));
     let mut table = command_surface::OperationTable::new("polylogue", Default::default());
+    table
+        .declare_tool(command_surface::ToolFamily {
+            name: "note".into(),
+            description: "Settings".into(),
+            open_world: false,
+            idempotent: true,
+        })
+        .unwrap();
     table
         .register(HeldCatalog {
             daemon: Arc::clone(&daemon.daemon),
@@ -133,11 +133,15 @@ async fn a_new_scope_waiter_cannot_publish_the_old_scope_shared_catalog() {
         arguments: json!({}),
         request_id: "same-id-across-generation".into(),
         deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     let (owner_caller, owner_scope) = admitted(&daemon.daemon, &envelope);
     let mut owner = Box::pin(table.call_as(
         envelope.clone(),
-        command_surface::Origin::Mcp,
+        command_surface::Via::Mcp,
         owner_caller,
         Default::default(),
     ));
@@ -149,27 +153,28 @@ async fn a_new_scope_waiter_cannot_publish_the_old_scope_shared_catalog() {
     assert!(waiter_scope.as_ref().unwrap().check().is_ok());
     let mut waiter = Box::pin(table.call_as(
         envelope,
-        command_surface::Origin::Mcp,
+        command_surface::Via::Mcp,
         waiter_caller,
         Default::default(),
     ));
     pending(waiter.as_mut()).await;
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        1,
-        "coalescing identity must not change with the epoch"
+        2,
+        "each admission selects its own source data"
     );
-    release.add_permits(1);
+    release.add_permits(2);
     let owner = owner.await;
     let waiter = waiter.await;
-    assert_eq!(owner.answer, waiter.answer);
-    assert!(
-        waiter.answer.value().is_some(),
-        "the shared producer returned its selected catalog"
-    );
-    let publication = ReadScopes::dispatched(&waiter, waiter_scope);
-    let answer = super::answer(waiter.answer, &publication);
-    let Answer::Error { error, .. } = answer else {
+    let fresh = ReadScopes::single(waiter_scope);
+    assert!(super::answer(waiter, &fresh).value().is_some());
+    let publication = ReadScopes::single(owner_scope);
+    let answer = super::answer(owner, &publication);
+    let command_surface::Answer {
+        outcome: command_surface::Outcome::Error(error),
+        ..
+    } = answer
+    else {
         panic!("old selected data escaped to a fresh scope");
     };
     assert_eq!(error.code.as_deref(), Some("scope_changed"));
@@ -183,7 +188,7 @@ async fn a_new_scope_waiter_cannot_publish_the_old_scope_shared_catalog() {
             .is_err()
     );
     assert!(!published.load(Ordering::SeqCst));
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 
     // The same group's actual write form uses Writer admission, not a read-output token.
     let write = command_surface::Request {
@@ -191,6 +196,10 @@ async fn a_new_scope_waiter_cannot_publish_the_old_scope_shared_catalog() {
         arguments: json!({"key":"browser.actions","value":"on"}),
         request_id: "pure-write-admission".into(),
         deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     let (caller, scope) = admitted(&daemon.daemon, &write);
     assert!(scope.is_none());

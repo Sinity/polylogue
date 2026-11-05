@@ -94,7 +94,7 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         &d.daemon,
     );
     assert!(
-        matches!(refused, command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("bad_request")),
+        matches!(refused, command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("bad_request")),
         "{refused:?}"
     );
     ok(
@@ -211,7 +211,7 @@ fn a_note_applies_to_every_row_of_a_query() {
         &d.daemon,
     );
     assert!(
-        matches!(refused, command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("empty")),
+        matches!(refused, command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("empty")),
         "{refused:?}"
     );
     let refused = handle(
@@ -223,7 +223,7 @@ fn a_note_applies_to_every_row_of_a_query() {
         &d.daemon,
     );
     assert!(
-        matches!(refused, command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("bad_request")),
+        matches!(refused, command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("bad_request")),
         "{refused:?}"
     );
 }

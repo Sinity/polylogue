@@ -116,8 +116,12 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                         json: true,
                     };
                     let internal = match command.and_then(|command| command.build_typed) {
-                        Some(build) => {
-                            match build(request.arguments.clone(), &caller, &request.request_id) {
+                        Some(_) => {
+                            match crate::protocol::operations::admit(
+                                command.expect("typed command exists"),
+                                &request,
+                                &caller,
+                            ) {
                                 Ok(internal) => Some(internal),
                                 Err(failure) => {
                                     let answer =
@@ -210,12 +214,13 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                         continue;
                     }
                     let origin = if channel == polylogue_model::authorship::Channel::Mcp {
-                        command_surface::Origin::Mcp
+                        command_surface::Via::Mcp
                     } else {
-                        command_surface::Origin::Socket
+                        command_surface::Via::Cli
                     };
                     let trusted =
-                        command_surface::Caller::authenticated(accepted.scope(), accepted);
+                        command_surface::Caller::authenticated(accepted.scope(), accepted)
+                            .with_access(command_surface::Access::Write);
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
@@ -226,9 +231,8 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                         trusted,
                         Default::default(),
                     ));
-                    publication =
-                        crate::protocol::ReadScopes::dispatched(&dispatched, read_scope.clone());
-                    dispatched.answer
+                    publication = crate::protocol::ReadScopes::single(read_scope.clone());
+                    dispatched
                 }
             };
             let answer = crate::protocol::scope_answer(answer, &publication);
@@ -316,6 +320,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
         let mut publication = crate::protocol::ReadScopes::single(read_scope.clone());
         let answer = if let Some((operation, arguments)) = typed {
             let table = operations;
+            let cursor = crate::protocol::operations::cursor(&request).map(str::to_owned);
             let request = command_surface::Request {
                 operation: operation.into(),
                 arguments,
@@ -331,23 +336,28 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                         )
                     },
                 ),
+                budget_tokens: Default::default(),
+                cursor,
+                fresh: false,
+                format: Default::default(),
             };
             let mut accepted = accepted.clone();
             accepted.read_scope = read_scope.clone();
             let scope = accepted.scope();
-            let trusted = command_surface::Caller::authenticated(scope, accepted.clone());
+            let trusted = command_surface::Caller::authenticated(scope, accepted.clone())
+                .with_access(command_surface::Access::Write);
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("operation runtime starts");
             let dispatched = runtime.block_on(table.call_as(
                 request,
-                command_surface::Origin::Socket,
+                command_surface::Via::Cli,
                 trusted,
                 Default::default(),
             ));
-            publication = crate::protocol::ReadScopes::dispatched(&dispatched, read_scope.clone());
-            dispatched.answer
+            publication = crate::protocol::ReadScopes::single(read_scope.clone());
+            dispatched
         } else {
             service::handle_with_caller(request, d, &limit, &accepted.authorship)
         };

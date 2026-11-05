@@ -431,7 +431,6 @@ fn executed_selection_records_its_actual_clock_resolution_and_read_context() {
                 .unwrap(),
             ),
             origins: vec![],
-            command_words: vec![],
             page_size: Some(20),
             random_seed: Some(91),
             embeddings: false,

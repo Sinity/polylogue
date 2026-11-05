@@ -19,7 +19,6 @@ fn options() -> Options {
             .iter()
             .map(|origin| origin.name.to_owned())
             .collect(),
-        command_words: crate::commands::command_words(),
         page_size: None,
         random_seed: Some(7),
         embeddings: false,
@@ -225,7 +224,7 @@ fn a_value_outside_a_closed_set_is_refused() {
     let pool = w.reads();
     let r = pool.reader().unwrap();
     let options = options();
-    let catalog = polylogue_query::catalog::catalog(&options.origins, &options.command_words);
+    let catalog = polylogue_query::catalog::catalog(&options.origins);
     // A value of another unit's field of the same name, and the unit that has it.
     for (bad, unit, field, elsewhere) in [
         (

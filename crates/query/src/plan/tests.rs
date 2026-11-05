@@ -40,6 +40,15 @@ fn canonical_object_replays_frozen_names_and_shapes_without_a_clock() {
             .iter()
             .map(|f| f.name.as_str())
             .collect::<Vec<_>>(),
+        ["count", "origin"]
+    );
+    assert_eq!(
+        plan.output_schema()
+            .unwrap()
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         ["origin", "count"]
     );
     let restored = replay(&object, catalog_fingerprint()).unwrap();
@@ -77,9 +86,9 @@ fn object_validation_refuses_forged_ast_schema_and_missing_closure() {
         .query_object()
         .unwrap();
     let mut changed = object.clone();
-    changed.identity_ast.stages.push(Stage {
+    changed.identity_ast.transforms.push(Transform {
         span: Span::default(),
-        kind: StageKind::Limit { count: 1 },
+        kind: TransformKind::Limit { count: 1 },
     });
     assert!(validate_object(&changed).is_err());
     let mut changed = object.clone();
@@ -98,16 +107,16 @@ fn object_validation_refuses_forged_ast_schema_and_missing_closure() {
         .unwrap()
         .query_object()
         .unwrap();
-    changed.identity_ast.stages.push(Stage {
+    changed.identity_ast.transforms.push(Transform {
         span: Span::default(),
-        kind: StageKind::Sort {
+        kind: TransformKind::Sort {
             keys: vec![SortKey {
-                operand: Operand::field("invented"),
+                expression: Expression::field("invented"),
                 descending: false,
             }],
         },
     });
-    let native = crate::catalog::catalog(&[], &[]);
+    let native = crate::catalog::catalog(&[]);
     changed.normal_form = identity::normal_form(&changed.identity_ast, &native).unwrap();
     changed.id =
         identity::question_id_from_normal_form(&changed.normal_form, &changed.parameters).unwrap();
@@ -353,6 +362,6 @@ fn the_catalog_fingerprint_is_computed_once_per_process() {
     let first = catalog_fingerprint();
     // Every caller borrows the same hashed value instead of rebuilding the catalog.
     assert!(std::ptr::eq(first, catalog_fingerprint()));
-    let bytes = serde_json::to_vec(&crate::catalog::catalog(&[], &[])).unwrap();
+    let bytes = serde_json::to_vec(&crate::catalog::catalog(&[])).unwrap();
     assert_eq!(first, blake3::hash(&bytes).to_hex().as_str());
 }

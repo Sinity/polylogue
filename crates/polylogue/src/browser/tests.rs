@@ -263,8 +263,14 @@ fn send(
         files,
     };
     match crate::daemon::service::handle(request, &w.daemon) {
-        command_surface::Answer::Ok { value: data, .. } => Ok(data["action"].clone()),
-        command_surface::Answer::Error { error, .. } => Err(error.code.unwrap_or_default()),
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Ok(data),
+            ..
+        } => Ok(data["action"].clone()),
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Error(error),
+            ..
+        } => Err(error.code.unwrap_or_default()),
         other => panic!("a queued action is ok or refused, got {other:?}"),
     }
 }
@@ -442,7 +448,11 @@ fn a_backfill_job_runs_through_the_daemon_and_survives_an_extension_restart() {
         || conversations(&host, &["listed-1"]),
         |v| v["conversations"][0]["state"] == "archived",
     );
-    let command_surface::Answer::Error { error, .. } = start("gemini") else {
+    let command_surface::Answer {
+        outcome: command_surface::Outcome::Error(error),
+        ..
+    } = start("gemini")
+    else {
         panic!("gemini has no conversation list")
     };
     assert_eq!(error.code.as_deref(), Some("unsupported_provider"));

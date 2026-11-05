@@ -64,6 +64,10 @@ fn generated_ready_cli_call_reaches_the_socket_with_its_identity_and_deadline() 
         arguments: serde_json::json!({"query":"sessions"}),
         request_id: "quoted ' identity".into(),
         deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     let ready = daemon.daemon.ready_call(&request).unwrap();
     let stages = polylogue_model::command::effective_stages(&ready.cli);
@@ -259,6 +263,10 @@ fn a_json_value_without_its_final_line_boundary_is_not_a_completed_answer() {
         arguments: serde_json::json!({}),
         request_id: "incomplete-answer-witness".into(),
         deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     let error = crate::client::call_ready(&archive, &call).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
@@ -278,6 +286,10 @@ fn literal_read_envelope_is_not_expanded_with_cli_defaults() {
         arguments: serde_json::json!({"target":"sessions"}),
         request_id: "literal-read".into(),
         deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     let ready = daemon.daemon.ready_call(&expected).unwrap();
     let arguments = polylogue_model::command::effective_stages(&ready.cli)[0]

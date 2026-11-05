@@ -57,7 +57,6 @@ pub(crate) fn prepare_query_plan_on(
     let definitions = crate::assertions::saved_query_snapshot(authored)?;
     let mut bindings = Bindings {
         origins: native.origins.clone(),
-        command_words: native.command_words.clone(),
         saved: saved_queries_from(
             original,
             authored,

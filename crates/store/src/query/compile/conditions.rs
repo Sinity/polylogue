@@ -189,9 +189,10 @@ impl<'a> Compiler<'a> {
                 scope,
                 c.span,
             )?,
-            ConditionKind::In { operand, query } => {
-                self.member_of(field_operand(operand)?, query, scope, c.span)?
-            }
+            ConditionKind::In {
+                left: operand,
+                query,
+            } => self.member_of(field_operand(operand)?, query, scope, c.span)?,
             ConditionKind::Saved { name, arguments } => {
                 self.saved_cond(name, arguments, scope, c.span)?
             }
@@ -204,7 +205,12 @@ impl<'a> Compiler<'a> {
             ConditionKind::Match { field, value } => {
                 self.field_cond(field, FieldOp::Match(value), scope, c.span, top)?
             }
-            ConditionKind::Compare { operand, op, value } => {
+            ConditionKind::Compare {
+                left: operand,
+                op,
+                right,
+            } => {
+                let value = literal_expression(right)?;
                 if matches!(op, Op::Contains | Op::Prefix) {
                     return Err(not_built("this string comparison operator"));
                 }
@@ -216,8 +222,7 @@ impl<'a> Compiler<'a> {
                     top,
                 )?
             }
-            ConditionKind::Since { operand, value } | ConditionKind::Until { operand, value } => {
-                field_operand(operand)?;
+            ConditionKind::Since { value, .. } | ConditionKind::Until { value, .. } => {
                 let field = if matches!(&c.kind, ConditionKind::Since { .. }) {
                     "since"
                 } else {
@@ -225,16 +230,21 @@ impl<'a> Compiler<'a> {
                 };
                 self.field_cond(field, FieldOp::Match(value), scope, c.span, top)?
             }
-            ConditionKind::Between { operand, from, to } => self.field_cond(
+            ConditionKind::Between {
+                left: operand,
+                from,
+                to,
+            } => self.field_cond(
                 field_operand(operand)?,
                 FieldOp::Between(value_text(from)?, value_text(to)?),
                 scope,
                 c.span,
                 top,
             )?,
-            ConditionKind::Similar { value } => {
-                self.field_cond("similar", FieldOp::Match(value), scope, c.span, top)?
-            }
+            ConditionKind::Rank {
+                list: RankList::Similar,
+                value,
+            } => self.field_cond("similar", FieldOp::Match(value), scope, c.span, top)?,
             _ => return Err(not_built("this shared condition")),
         })
     }
@@ -645,6 +655,7 @@ impl<'a> Compiler<'a> {
             FieldOp::Match(Value::Unknown) => {
                 return Ok(format!("NOT ({})", self.native_time_test(native, P::Known)));
             }
+            FieldOp::Match(Value::Known) => return Ok(self.native_time_test(native, P::Known)),
             FieldOp::Match(Value::Scalar {
                 text,
                 quoted: false,
@@ -799,6 +810,7 @@ impl<'a> Compiler<'a> {
         match (kind, op) {
             (_, FieldOp::Match(Value::Any)) => Ok("1".into()),
             (_, FieldOp::Match(Value::Unknown)) => Ok(format!("({expr}) IS NULL")),
+            (_, FieldOp::Match(Value::Known)) => Ok(format!("({expr}) IS NOT NULL")),
             (
                 _,
                 FieldOp::Match(Value::Scalar {

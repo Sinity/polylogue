@@ -5,7 +5,7 @@ use query_language::catalog::{
 };
 
 pub(crate) fn catalog(options: &Bindings) -> Catalog {
-    let mut catalog = crate::catalog::catalog(&options.origins, &options.command_words);
+    let mut catalog = crate::catalog::catalog(&options.origins);
     for (id, kept) in &options.kept {
         for (part, columns) in [
             (ResultPart::Rows, &kept.columns),
@@ -13,7 +13,6 @@ pub(crate) fn catalog(options: &Bindings) -> Catalog {
         ] {
             let schema = schema(&catalog, &kept.unit, columns);
             catalog.source_outputs.push(SourceOutput {
-                relation_scope: None,
                 source: OutputSource::Result {
                     reference: format!("result:{id}"),
                     part,
@@ -49,7 +48,7 @@ pub(crate) fn schema(catalog: &Catalog, unit_name: &str, columns: &[Column]) -> 
                                 || column.kind == ColKind::Text
                                     && matches!(
                                         field.kind,
-                                        FieldKind::Match
+                                        FieldKind::Exact
                                             | FieldKind::Text
                                             | FieldKind::Substring
                                             | FieldKind::Subtree
@@ -65,7 +64,7 @@ pub(crate) fn schema(catalog: &Catalog, unit_name: &str, columns: &[Column]) -> 
             } else if column.kind == ColKind::Text
                 && matches!(
                     field.kind,
-                    FieldKind::Match
+                    FieldKind::Exact
                         | FieldKind::Text
                         | FieldKind::Substring
                         | FieldKind::Subtree
@@ -83,10 +82,10 @@ pub(crate) fn schema(catalog: &Catalog, unit_name: &str, columns: &[Column]) -> 
         .and_then(|unit| unit.main_time.clone())
         .filter(|name| fields.iter().any(|field| &field.name == name));
     OutputSchema {
+        match_units: None,
         unit: Some(unit_name.to_owned()),
         fields,
         main_time,
-        match_patterns: Vec::new(),
     }
 }
 
@@ -94,7 +93,15 @@ pub(crate) fn expand(
     text: &str,
     options: &Bindings,
 ) -> Result<(Query, Vec<Definition>), QueryError> {
-    let mut query = parse_query(text, options)?;
+    expand_ast(parse_query(text, options)?, text, options)
+}
+
+/// Expand the already parsed question; text is retained only for diagnostics.
+pub(crate) fn expand_ast(
+    mut query: Query,
+    text: &str,
+    options: &Bindings,
+) -> Result<(Query, Vec<Definition>), QueryError> {
     let mut definitions = vec![];
     expand_query(&mut query, text, options, &mut vec![], &mut definitions)?;
     Ok((query, definitions))
@@ -136,10 +143,10 @@ fn expand_query(
         )?;
         stack.pop();
         if let Some(condition) = condition {
-            if !base.stages.is_empty() || !base.attach.is_empty() {
+            if !base.transforms.is_empty() || !base.attach.is_empty() {
                 return Err(QueryError::Invalid {
                     message: format!(
-                        "query:{name} is a shaped result (it has stages); read it as `query:{name} | where …`, it cannot take conditions"
+                        "query:{name} is a shaped result (it has transforms); read it as `query:{name} | where …`, it cannot take conditions"
                     ),
                     position: condition.span.start,
                 });
@@ -161,7 +168,7 @@ fn expand_query(
                 },
             });
         }
-        base.stages.append(&mut query.stages);
+        base.transforms.append(&mut query.transforms);
         base.attach.append(&mut query.attach);
         *query = base;
         let used = Definition {
@@ -180,10 +187,6 @@ fn expand_query(
         | Source::Result {
             condition: Some(condition),
             ..
-        }
-        | Source::RecallLast {
-            condition: Some(condition),
-            ..
         } => expand_condition(condition, text, options, stack, definitions)?,
         _ => {}
     }
@@ -194,15 +197,20 @@ fn expand_query(
             }
         }
     }
-    for stage in &mut query.stages {
+    for stage in &mut query.transforms {
         match &mut stage.kind {
-            StageKind::Where { condition }
-            | StageKind::Scope {
+            TransformKind::Where { condition }
+            | TransformKind::Scope {
                 condition: Some(condition),
                 ..
             } => expand_condition(condition, text, options, stack, definitions)?,
-            StageKind::Combine { query, .. } | StageKind::Temporal { query, .. } => {
+            TransformKind::Combine { query, .. }
+            | TransformKind::Join { query, .. }
+            | TransformKind::Diff { query } => {
                 expand_query(query, text, options, stack, definitions)?
+            }
+            TransformKind::Extension { arguments, .. } => {
+                expand_extensions(arguments, text, options, stack, definitions)?
             }
             _ => {}
         }
@@ -236,8 +244,36 @@ fn expand_condition(
             condition: Some(condition),
             ..
         } => expand_condition(condition, text, options, stack, definitions)?,
-        ConditionKind::In { query, .. } => expand_query(query, text, options, stack, definitions)?,
+        ConditionKind::In { query, .. } | ConditionKind::Order { query, .. } => {
+            expand_query(query, text, options, stack, definitions)?
+        }
+        ConditionKind::Extension { arguments, .. } => {
+            expand_extensions(arguments, text, options, stack, definitions)?
+        }
         _ => {}
+    }
+    Ok(())
+}
+fn expand_extensions(
+    arguments: &mut [ExtensionArgument],
+    text: &str,
+    options: &Bindings,
+    stack: &mut Vec<String>,
+    definitions: &mut Vec<Definition>,
+) -> Result<(), QueryError> {
+    for argument in arguments {
+        match argument {
+            ExtensionArgument::Query(query) => {
+                expand_query(query, text, options, stack, definitions)?
+            }
+            ExtensionArgument::Condition(condition) => {
+                expand_condition(condition, text, options, stack, definitions)?
+            }
+            ExtensionArgument::Optional(arguments) | ExtensionArgument::List(arguments) => {
+                expand_extensions(arguments, text, options, stack, definitions)?
+            }
+            _ => {}
+        }
     }
     Ok(())
 }

@@ -56,10 +56,15 @@ pub(super) fn run(d: &Daemon, manifest: Option<&Path>) -> Answer<Value> {
                 if found.problems.len() == 1 { "" } else { "s" }
             );
             match serde_json::to_value(found) {
-                Ok(value) => Answer::Degraded {
-                    value,
-                    notes: vec![note],
-                    next: vec![],
+                Ok(value) => command_surface::Answer {
+                    outcome: command_surface::Outcome::Degraded {
+                        value: value,
+                        missing: vec![note],
+                    },
+                    envelope: command_surface::Envelope {
+                        next: vec![],
+                        ..Default::default()
+                    },
                 },
                 Err(cause) => error("internal", cause),
             }

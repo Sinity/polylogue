@@ -1,6 +1,8 @@
 //! The language vocabulary is projected from the product's execution registry.
 use crate::{ast::Unit, fields, units};
-use query_language::catalog::{Catalog, Field, FieldKind, ReferenceSyntax, UnknownRule};
+use query_language::catalog::{Catalog, Field, FieldKind, ReferenceForm, UnknownRule};
+
+pub const MEASURE: &str = "measure";
 
 fn field(value: &fields::Field, name: String) -> Field {
     use fields::Kind;
@@ -10,7 +12,7 @@ fn field(value: &fields::Field, name: String) -> Field {
             FieldKind::List(Box::new(FieldKind::Reference))
         } else {
             match value.kind {
-                Kind::Match | Kind::Special => FieldKind::Match,
+                Kind::Match | Kind::Special => FieldKind::Exact,
                 Kind::Prefix => FieldKind::Reference,
                 Kind::Substring => FieldKind::Substring,
                 Kind::Subtree => FieldKind::Subtree,
@@ -36,10 +38,28 @@ fn field(value: &fields::Field, name: String) -> Field {
     }
 }
 
-pub fn catalog(origins: &[String], commands: &[String]) -> Catalog {
+pub fn catalog(origins: &[String]) -> Catalog {
     let mut catalog = Catalog::new("sessions");
-    catalog.recall_last_unit = Some("messages".into());
-    catalog.commands = commands.to_vec();
+    catalog.namespace = Some("pl".into());
+    catalog.functions.push(query_language::catalog::Function {
+        name: "program".into(),
+        arguments: 1,
+        result: FieldKind::Exact,
+        help: "The program invoked by a command".into(),
+    });
+    use query_language::catalog::{Extension, ExtensionPosition, ExtensionSlot};
+    catalog.extensions.push(Extension {
+        name: MEASURE.into(),
+        position: ExtensionPosition::Transform,
+        arguments: vec![
+            ExtensionSlot::Name,
+            ExtensionSlot::Optional(vec![
+                ExtensionSlot::Keyword("by".into()),
+                ExtensionSlot::List(Box::new(ExtensionSlot::Expression)),
+            ]),
+        ],
+        help: "Measure the selected sessions".into(),
+    });
     catalog.units = Unit::all()
         .map(|unit| {
             let spec = units::spec(unit);
@@ -49,6 +69,13 @@ pub fn catalog(origins: &[String], commands: &[String]) -> Catalog {
                 .map(|f| field(f, f.name.into()))
                 .collect();
             if fields::has_session(unit) {
+                declarations.push(Field {
+                    name: "session".into(),
+                    kind: FieldKind::Reference,
+                    unit: Some("sessions".into()),
+                    help: "The session containing this row".into(),
+                    ..Field::default()
+                });
                 for f in fields::FIELDS.iter().filter(|f| f.unit == Unit::Sessions) {
                     if !declarations.iter().any(|d| d.name == f.name) {
                         declarations.push(field(f, f.name.into()));
@@ -60,37 +87,9 @@ pub fn catalog(origins: &[String], commands: &[String]) -> Catalog {
                     declarations.push(field(f, format!("{}.{}", relation.prefix, f.name)));
                 }
             }
-            // These reference atoms are compiled at the product identity seam.
-            for name in origins.iter().map(String::as_str).chain([
-                "session",
-                "message",
-                "block",
-                "query",
-                "result",
-                "run",
-                "request",
-                "document",
-                "event",
-                "span",
-                "assertion",
-                "delivery",
-                "similar",
-            ]) {
-                if !declarations.iter().any(|f| f.name == name) {
-                    declarations.push(Field {
-                        name: name.into(),
-                        kind: FieldKind::Reference,
-                        ..Field::default()
-                    });
-                }
-            }
             query_language::catalog::Unit {
                 name: spec.name.into(),
-                aliases: vec![
-                    spec.singular.into(),
-                    format!("pl.{}", spec.name),
-                    format!("pl.{}", spec.singular),
-                ],
+                singular: Some(spec.singular.into()),
                 sequence_unit: Some("tool_calls".into()),
                 fields: declarations,
                 identity: spec
@@ -110,23 +109,39 @@ pub fn catalog(origins: &[String], commands: &[String]) -> Catalog {
         ("message:", Some(":")),
         ("block:", Some("#")),
         ("document:", Some(":")),
+        ("event:", None),
         ("span:", Some("#")),
-        ("assertion:", Some("@")),
+        ("assertion:", None),
         ("delivery:", None),
         ("run:", None),
         ("page:", None),
         ("file:", Some("@")),
+        ("https://", None),
+        ("http://", None),
     ]
     .into_iter()
-    .map(|(prefix, marker)| ReferenceSyntax {
+    .map(|(prefix, marker)| ReferenceForm::Prefix {
         prefix: prefix.into(),
         marker: marker.map(str::to_owned),
     })
     .collect();
+    catalog.references.extend(
+        origins
+            .iter()
+            .map(|origin| ReferenceForm::prefix(format!("{origin}:"))),
+    );
+    catalog.references.extend(
+        ["self", "last", "latest"]
+            .into_iter()
+            .map(ReferenceForm::word),
+    );
+    catalog
+        .references
+        .push(ReferenceForm::Identifier { min_length: 8 });
     catalog
 }
 
-pub use query_language::catalog::{AGGREGATES, KEY_FUNCTIONS, STAGES};
+pub use query_language::catalog::{AGGREGATES, FUNCTIONS, TRANSFORMS};
 pub use query_language::complete::{Completion, CompletionKind};
 pub fn complete(text: &str, position: usize, catalog: &Catalog) -> Vec<Completion> {
     query_language::complete::complete(text, position, catalog)

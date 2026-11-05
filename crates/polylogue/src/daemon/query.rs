@@ -89,7 +89,6 @@ pub(crate) fn options(reader: &Reader<'_>, ask: &Ask<'_>, seed: u64) -> Result<O
             .iter()
             .map(|o| o.name.to_owned())
             .collect(),
-        command_words: crate::commands::command_words(),
         page_size: ask.page_size,
         random_seed: Some(seed),
         embeddings: ask.embeddings,
@@ -152,7 +151,7 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     if let Some(identities) = identities {
         kept["identities"] = json!(identities);
     }
-    if polylogue_query::parse(ask.text)?.stages.is_empty()
+    if polylogue_query::parse(ask.text)?.transforms.is_empty()
         && let Ok(m) = polylogue_store::query::compile(&format!("{} | matches", ask.text), &opts)
     {
         validate(reader, &m)?;

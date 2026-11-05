@@ -13,7 +13,6 @@ pub struct Arguments {
     pub limit: Option<u64>,
     #[serde(default)]
     pub why: bool,
-    pub cursor: Option<String>,
     pub session: Option<String>,
     #[serde(default)]
     pub fields: Vec<String>,
@@ -23,7 +22,7 @@ impl Arguments {
     pub fn from_request(request: &Request) -> Option<Self> {
         let Request::Query {
             text,
-            cursor,
+            cursor: _,
             page_size,
             why,
             fields,
@@ -36,7 +35,6 @@ impl Arguments {
             query: text.clone(),
             limit: *page_size,
             why: *why,
-            cursor: cursor.clone(),
             session: session.clone(),
             fields: fields.clone(),
         })

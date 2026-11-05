@@ -134,7 +134,7 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
             "--format",
             "markdown",
         ],
-        vec!["read", "session:claude-code:hostile", "--budget", "10"],
+        vec!["read", "session:claude-code:hostile", "--page-tokens", "10"],
         vec!["sessions where kind:*"],
         vec!["\"title\""],
         vec!["status"],

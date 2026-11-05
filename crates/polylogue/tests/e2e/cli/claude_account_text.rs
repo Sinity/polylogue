@@ -110,14 +110,14 @@ pub(super) fn joined_items_with_options(
     budget: &str,
     options: &[&str],
 ) -> Vec<polylogue_model::read::ReadItem> {
-    assert!(!options.contains(&"--budget"));
+    assert!(!options.contains(&"--page-tokens"));
     let mut whole_options = options.to_vec();
-    whole_options.extend(["--budget", "100000"]);
+    whole_options.extend(["--page-tokens", "100000"]);
     let whole = reading(env, reference, &whole_options);
     assert!(whole.document.footer.next.is_none());
     let bound = serde_json::to_vec(&whole.document.items).unwrap().len();
     let mut page_options = options.to_vec();
-    page_options.extend(["--budget", budget]);
+    page_options.extend(["--page-tokens", budget]);
     let mut page = reading(env, reference, &page_options);
     let mut items = super::read_current::Items::default();
     let mut seen = std::collections::BTreeSet::new();
@@ -182,7 +182,11 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
     assert_eq!(authored.status.code(), Some(1), "{authored:?}");
     let answer: command_surface::Answer<serde_json::Value> =
         serde_json::from_slice(&authored.stdout).unwrap();
-    let command_surface::Answer::Empty { value, .. } = answer else {
+    let command_surface::Answer {
+        outcome: command_surface::Outcome::Empty(value),
+        ..
+    } = answer
+    else {
         panic!("expected typed empty query: {answer:?}");
     };
     assert_eq!(value["count"], 0);
@@ -210,7 +214,7 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
     );
     assert!(sources.status.success(), "{sources:?}");
     assert_eq!(json(&sources)[0]["n"], 1);
-    let whole = reading(&env, reference, &["--budget", "100000"]);
+    let whole = reading(&env, reference, &["--page-tokens", "100000"]);
     assert_eq!(joined_items(&env, reference, "3"), whole.document.items);
     assert!(
         serde_json::to_string(&whole)

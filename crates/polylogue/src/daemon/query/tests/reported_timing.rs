@@ -33,7 +33,7 @@ fn reported_duration_and_result_time_preserve_their_native_meaning() {
     assert_eq!(answer["count"], 1);
     assert_eq!(answer["rows"][0]["reported_duration"], 1500);
     assert_eq!(answer["rows"][0]["result_at"], "2026-10-07T10:00:02Z");
-    let catalog = polylogue_query::catalog::catalog(&[], &[]);
+    let catalog = polylogue_query::catalog::catalog(&[]);
     assert_eq!(
         polylogue_query::parse::with_catalog("tool_calls where duration >= 1s", &catalog)
             .unwrap_err()

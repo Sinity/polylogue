@@ -12,7 +12,6 @@ pub struct Arguments {
     pub input: Option<String>,
     #[serde(default = "range_bytes")]
     pub length: u64,
-    pub cursor: Option<String>,
 }
 fn range_bytes() -> u64 {
     crate::daemon::attachment::PAGE_BYTES as u64

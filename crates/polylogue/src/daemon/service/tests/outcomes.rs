@@ -75,7 +75,12 @@ fn a_query_with_rows_or_a_measure_over_a_current_index_is_ok() {
     for outcome in [Outcome::Rows, Outcome::Measure] {
         let answer = query_outcome(query(outcome, &[]), &IndexCurrency::Standalone);
         assert_eq!(answer.exit_code(), 0, "{outcome:?}");
-        assert!(answer.notes().is_empty(), "{outcome:?}");
+        assert!(
+            crate::protocol::notes(&answer)
+                .collect::<Vec<_>>()
+                .is_empty(),
+            "{outcome:?}"
+        );
         test_answers::ok(answer);
     }
 }
@@ -128,6 +133,10 @@ fn an_import_with_pending_user_state_is_degraded_with_its_note() {
     };
     let answer = import_answer(report);
     assert_eq!(answer.exit_code(), 0);
-    assert!(answer.notes().is_empty());
+    assert!(
+        crate::protocol::notes(&answer)
+            .collect::<Vec<_>>()
+            .is_empty()
+    );
     test_answers::ok(answer);
 }

@@ -14,7 +14,7 @@ pub struct Arguments {
     pub format: Option<Format>,
     #[serde(default)]
     pub delivery: ReadDelivery,
-    pub budget: Option<NonZeroU64>,
+    pub page_tokens: Option<NonZeroU64>,
     /// Item kinds to show, each `KIND` or `KIND:LEVEL`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub show: Vec<String>,
@@ -44,10 +44,6 @@ pub struct Arguments {
     /// With `root:REF`: read only the named physical session.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub physical: bool,
-    /// A page cursor from an earlier page's `next` or `previous`; the other
-    /// arguments must be the ones that page was read with.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
 }
 fn output_lines() -> u64 {
     100
@@ -78,7 +74,7 @@ impl Arguments {
             format,
             budget,
             with_blobs,
-            cursor,
+            cursor: _,
         } = request
         else {
             return Err("a read request is required".into());
@@ -91,7 +87,7 @@ impl Arguments {
                 Format::parse(format).ok_or_else(|| format!("unknown format {format:?}"))?,
             ),
             delivery: *delivery,
-            budget: budget
+            page_tokens: budget
                 .map(|value| {
                     NonZeroU64::new(value as u64)
                         .ok_or_else(|| "budget must be positive".to_string())
@@ -108,7 +104,6 @@ impl Arguments {
             around: options.around,
             latest: options.latest,
             physical: options.physical,
-            cursor: cursor.clone(),
         })
     }
 }

@@ -441,7 +441,6 @@ fn attachment_call(
         attachment,
         input: input.map(str::to_owned),
         length: crate::daemon::attachment::PAGE_BYTES as u64,
-        cursor: None,
     })
     .map_err(|e| Failure::new("internal", e))?;
     let identity = blake3::hash(arguments.to_string().as_bytes());
@@ -450,6 +449,10 @@ fn attachment_call(
         arguments,
         request_id: format!("read-attachment-{}", identity.to_hex()),
         deadline: command_surface::Deadline::Default,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     })
     .map_err(Failure::from)
 }
@@ -606,12 +609,18 @@ fn next_call(
     let arguments = crate::protocol::read::Arguments::from_request(&continued)
         .map_err(|e| Failure::new("internal", e))?;
     let arguments = serde_json::to_value(arguments).map_err(|e| Failure::new("internal", e))?;
-    let identity = blake3::hash(arguments.to_string().as_bytes());
+    let cursor = crate::protocol::operations::cursor(&continued).map(str::to_owned);
+    let identity =
+        blake3::hash(&serde_json::to_vec(&(&arguments, &cursor)).expect("continuation serializes"));
     d.ready_call(&command_surface::RunnableRequest {
         operation: "read".into(),
         arguments,
         request_id: format!("read-page-{}", identity.to_hex()),
         deadline,
+        budget_tokens: Default::default(),
+        cursor,
+        fresh: false,
+        format: Default::default(),
     })
     .map_err(Failure::from)
 }

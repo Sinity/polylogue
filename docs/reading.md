@@ -273,13 +273,13 @@ What the model had been given at a message, in the order it received it:
 
 **The session item index.** For each physical session the writer keeps, in the same transaction as the rows, an ordered list of index entries, one per layout item a transcript can show: a message header, each block by its original ordinal, and each in-place event after the message it follows (events with no message at the end). Each entry holds its kind, `written_by` and `prompt_kind`, active path and branch point, time, body length, two token estimates (the one-line and the full form), for calls the action and the target cut to 120 characters, for model messages the provider-reported input (the context meter), and for events the context boundary they are (for a microcompaction, the call IDs whose results it removed). A session has two counters: `append_seq`, which moves when entries are added at the end (including blocks added to the last message), and `rewrite_version`, which moves when an indexed entry changes, moves or disappears, or when the links that compose the session change. A read pages the index with running token sums per fold and reads the bodies of one page only; the daemon keeps recent indexes in memory and checks the two counters on every use.
 
-**One token estimator** in `model`, used by pages, briefs, packs and `list --budget`: `max(ceil(utf8_bytes / 4), ceil(words × 1.3))`, a run over 16 characters counting `len/8` words. It over-estimates on purpose, and its name is recorded in every budgeted response.
+**One token estimator** in `model`, used by pages, briefs, packs and `list --page-tokens`: `max(ceil(utf8_bytes / 4), ceil(words × 1.3))`, a run over 16 characters counting `len/8` words. It over-estimates on purpose, and its name is recorded in every budgeted response.
 
 **MCP transport limit:** a response's encoded size stays under the harnesses' MCP output limit (25,000 bytes of content, with 4 KiB of headroom for the envelope); a response that would pass it is returned as a shorter page with `next`, never truncated and never an error.
 
 **Streaming:** an unbudgeted read to the pager, a file or a directory is produced item by item from the selection. No whole session or selection is built in memory.
 
-**Options:** CLI `--view`, `--show` and `--hide`, `--output-lines`, `--variant`, `--at`, `--diff`, `--around`, `--latest`, `--physical`, `--budget`, `--cursor`, `--format`, `--to`, `--for-others`. MCP and HTTP take the same names as typed fields, without `to`.
+**Options:** CLI `--view`, `--show` and `--hide`, `--output-lines`, `--variant`, `--at`, `--diff`, `--around`, `--latest`, `--physical`, `--page-tokens`, `--cursor`, `--format`, `--to`, `--for-others`. MCP and HTTP take the same names as typed fields, without `to`.
 
 **Folds** are one table of item kinds, used by `--show`/`--hide`, MCP `show`/`hide` and the web's fold keys: `tools[:line|full]`, `thinking[:line|full]`, `harness[:line|full]`, `inherited`, `branches`, `spawns[:card|N|full]` (delegation cards at spawning calls, shown by default; `full` reads each spawned session inline after its card, and a number `N` does so for N levels of nested spawns, deeper ones staying cards; a session already in the reading stays a card; an inline session keeps its own turn numbers and context meter, and the context view refuses inline spawns), `assertions` (shown by default), `turns` (a divider before each prompt with the turn's call count) and `context` (the context meter on model message headers: the provider-reported input, `≈` an estimate since the last boundary, or unknown). A kind given without a level uses its fullest. The command help is generated from the same table. `--hide inherited` writes a bundle without inherited prefixes.
 
@@ -371,7 +371,7 @@ Oracles: Morrow goldens written by hand ([testing.md](testing.md#morrow)) and sy
 - **summary-differs**: `--view summary` differs from `--view transcript` and matches its golden.
 - **pages-concatenate**: concatenating every page at budgets 50, 500 and 4,000 equals the unbudgeted read, in every format.
 - **mcp-read-bounded**: an MCP read without arguments is at most 4,000 estimated tokens, starts with the fixed line, and its encoded size is under the transport limit.
-- **envelope-outside-content**: `--budget` with `--format markdown` returns Markdown, and the envelope is not in the content.
+- **envelope-outside-content**: `--page-tokens` with `--format markdown` returns Markdown, and the envelope is not in the content.
 - **large-block-reachable**: a 2 MB single tool result is reachable in full through block continuations.
 - **stale-cursor-after-reparse**: a cursor used after a re-parse returns `stale_cursor`.
 - **idx-equiv**: for generated sessions and every fold, page boundaries found by binary search over the index's running sums equal those found by adding each entry's cost in order.

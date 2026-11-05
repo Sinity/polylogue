@@ -134,10 +134,10 @@ fn read_only_snapshot_never_writes_and_typed_items_use_exact_identity() {
     let path = directory.path().join("catalog");
     let mut writer = writer(&path);
     let schema = query_language::catalog::OutputSchema {
+        match_units: None,
         unit: Some("messages".into()),
         fields: vec![],
         main_time: None,
-        match_patterns: Vec::new(),
     };
     writer
         .update(&metadata(2), |writer| {
@@ -260,13 +260,11 @@ fn derived_saved_pattern_codec_is_atomic_and_old_versions_are_invalidated() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog");
     let mut writer = writer(&path);
-    let patterns = vec![query_language::catalog::MatchPattern::Exists {
-        unit: "tool_calls".into(),
-    }];
+    let patterns = Some(vec!["tool_calls".to_owned()]);
     let saved = Saved {
         relation_scope: Some(OutputSchema {
+            match_units: patterns.clone(),
             unit: Some("sessions".into()),
-            match_patterns: patterns.clone(),
             ..OutputSchema::default()
         }),
         family: "family".into(),
@@ -276,10 +274,10 @@ fn derived_saved_pattern_codec_is_atomic_and_old_versions_are_invalidated() {
         parameters: vec![],
         help: "Qualified sessions".into(),
         schema: Some(OutputSchema {
+            match_units: patterns.clone(),
             unit: Some("sessions".into()),
             fields: vec![],
             main_time: None,
-            match_patterns: patterns.clone(),
         }),
     };
     writer
@@ -291,7 +289,7 @@ fn derived_saved_pattern_codec_is_atomic_and_old_versions_are_invalidated() {
             .schema
             .as_ref()
             .unwrap()
-            .match_patterns,
+            .match_units,
         patterns
     );
     assert_eq!(
@@ -299,7 +297,7 @@ fn derived_saved_pattern_codec_is_atomic_and_old_versions_are_invalidated() {
             .schema
             .as_ref()
             .unwrap()
-            .match_patterns,
+            .match_units,
         patterns
     );
     assert_eq!(
@@ -307,7 +305,7 @@ fn derived_saved_pattern_codec_is_atomic_and_old_versions_are_invalidated() {
             .relation_scope
             .as_ref()
             .unwrap()
-            .match_patterns,
+            .match_units,
         patterns
     );
     drop(reader);
@@ -327,26 +325,31 @@ fn derived_saved_pattern_codec_is_atomic_and_old_versions_are_invalidated() {
             .schema
             .as_ref()
             .unwrap()
-            .match_patterns,
+            .match_units,
         patterns
     );
     drop(reader);
     writer
         .conn
         .execute(
-            "UPDATE item SET payload=json_remove(payload,'$.match_patterns') WHERE kind='saved'",
+            "UPDATE item SET payload=json_remove(payload,'$.match_units') WHERE kind='saved'",
             [],
         )
         .unwrap();
     let reader = CatalogReader::open(&path, "synthetic").unwrap().unwrap();
-    assert!(
-        reader.saved("qualified").is_err(),
-        "missing metadata must not become known empty qualifiers"
+    assert_eq!(
+        reader.saved("qualified").unwrap()[0]
+            .relation_scope
+            .as_ref()
+            .unwrap()
+            .match_units,
+        None,
+        "missing provenance stays unknown instead of becoming known empty qualifiers"
     );
     drop(reader);
     writer
         .conn
-        .execute("UPDATE metadata SET value='4' WHERE key='version'", [])
+        .execute("UPDATE metadata SET value='5' WHERE key='version'", [])
         .unwrap();
     assert!(CatalogReader::open(&path, "synthetic").unwrap().is_none());
 }

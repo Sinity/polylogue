@@ -8,7 +8,6 @@ use serde_json::{Map, Value};
 pub struct Live {
     #[serde(default)]
     pub why: bool,
-    pub cursor: Option<String>,
     #[serde(default)]
     pub fields: Vec<String>,
 }
@@ -18,7 +17,6 @@ pub struct Notices {
     pub limit: Option<u64>,
     #[serde(default)]
     pub why: bool,
-    pub cursor: Option<String>,
     #[serde(default)]
     pub fields: Vec<String>,
 }
@@ -37,7 +35,6 @@ pub struct List {
     pub limit: Option<u64>,
     #[serde(default)]
     pub why: bool,
-    pub cursor: Option<String>,
     #[serde(default)]
     pub fields: Vec<String>,
 }

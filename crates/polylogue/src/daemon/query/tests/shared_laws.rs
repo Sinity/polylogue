@@ -25,7 +25,6 @@ fn options() -> Options {
     Options {
         clock: fixture_clock(0, "UTC", 240),
         origins: vec!["claude-code".into()],
-        command_words: vec![],
         page_size: None,
         random_seed: Some(7),
         embeddings: false,
@@ -36,10 +35,14 @@ fn options() -> Options {
         chat_pages: vec![],
     }
 }
-fn operand(value: &mut Operand, child: bool) {
+fn operand(value: &mut Expression, child: bool) {
     match value {
-        Operand::Field { name } if child && name == "cost" => *name = "exit_code".into(),
-        Operand::Function { arguments, .. } => {
+        Expression::Field { name } if child && name == "cost" => *name = "exit_code".into(),
+        Expression::Arithmetic { left, right, .. } => {
+            operand(left, child);
+            operand(right, child);
+        }
+        Expression::Function { arguments, .. } => {
             for argument in arguments {
                 operand(argument, child);
             }
@@ -55,9 +58,13 @@ fn condition(value: &mut Condition, child: bool) {
             }
         }
         ConditionKind::Not { condition: value } => condition(value, child),
-        ConditionKind::Compare { operand: value, .. }
-        | ConditionKind::Between { operand: value, .. }
-        | ConditionKind::In { operand: value, .. } => operand(value, child),
+        ConditionKind::Compare { left, right, .. } => {
+            operand(left, child);
+            operand(right, child);
+        }
+        ConditionKind::Between { left: value, .. } | ConditionKind::In { left: value, .. } => {
+            operand(value, child)
+        }
         ConditionKind::Exists {
             condition: Some(value),
             ..
@@ -73,7 +80,9 @@ fn condition(value: &mut Condition, child: bool) {
         }
         _ => {}
     }
-    if let ConditionKind::In { query: value, .. } = &mut value.kind {
+    if let ConditionKind::In { query: value, .. } | ConditionKind::Order { query: value, .. } =
+        &mut value.kind
+    {
         query(value);
     }
 }
@@ -86,10 +95,12 @@ fn query(value: &mut Query) {
     {
         condition(value, unit == "tool_calls");
     }
-    for stage in &mut value.stages {
+    for stage in &mut value.transforms {
         match &mut stage.kind {
-            StageKind::Where { condition: value } => condition(value, false),
-            StageKind::Combine { query: value, .. } => query(value),
+            TransformKind::Where { condition: value } => condition(value, false),
+            TransformKind::Combine { query: value, .. }
+            | TransformKind::Join { query: value, .. }
+            | TransformKind::Diff { query: value } => query(value),
             _ => {}
         }
     }
@@ -100,7 +111,7 @@ impl laws::Compiler for Product {
         let mut value = value.clone();
         query(&mut value);
         let options = options();
-        let catalog = polylogue_query::catalog::catalog(&options.origins, &options.command_words);
+        let catalog = polylogue_query::catalog::catalog(&options.origins);
         let text = query_language::format::format_query(&value, &catalog)?;
         let prepared = polylogue_query::compile(&text, &options).map_err(error)?;
         let program = polylogue_store::query::lower(&prepared, &options).map_err(error)?;
@@ -111,7 +122,7 @@ impl laws::Compiler for Product {
             .query(&query_language::scope::NodePath::default())
             .unwrap();
         let output = typing
-            .stages
+            .transforms
             .last()
             .map_or(&typing.source, |stage| &stage.after);
         let mut fields: std::collections::BTreeSet<_> = output
@@ -192,6 +203,7 @@ impl Execution {
                 .session(SessionFacts {
                     id: &name,
                     repo: string(row.fields.get("repo")),
+                    title: string(row.fields.get("title")),
                     // Map the oracle's source order into the actual native
                     // descending activity order before any page is selected.
                     last: Some(positions[row.id.as_str()]),
@@ -317,15 +329,38 @@ impl laws::Executor<Plan> for Execution {
                     row
                 }
                 Shape::Matches => {
-                    let parent = id(&value["session"]);
+                    let reference = |field: &str| {
+                        let parsed =
+                            polylogue_model::Reference::parse(value[field].as_str().unwrap())
+                                .unwrap();
+                        match parsed {
+                            polylogue_model::Reference::Session(session) => session
+                                .to_string()
+                                .strip_prefix("claude-code:")
+                                .unwrap()
+                                .to_owned(),
+                            polylogue_model::Reference::Block { message, .. } => message
+                                .to_string()
+                                .strip_prefix("claude-code:")
+                                .unwrap()
+                                .to_owned(),
+                            other => panic!("unexpected match reference: {other}"),
+                        }
+                    };
+                    let parent = reference("parent");
+                    let step = reference("step");
                     let n = value["match"].as_u64().unwrap();
-                    let first = id(&value["step1_message"]);
-                    let second = id(&value["step2_message"]);
-                    let mut row = Row::new(format!("{parent}:match:{n}"))
-                        .with("step1_id", first.as_str())
-                        .with("step2_id", second.as_str());
+                    let position = value["position"].as_u64().unwrap();
+                    let mut row = Row::new(format!("{parent}:match:{n}:{position}"))
+                        .with("parent", parent.as_str())
+                        .with("match", n as f64)
+                        .with("position", position as f64)
+                        .with("step", step.as_str());
+                    if let Some(number) = value.get("step.exit_code") {
+                        row = row.with("step.cost", scalar(number));
+                    }
                     row.parent = Some(parent);
-                    row.matches = vec![first, second];
+                    row.matches = vec![step];
                     row
                 }
             })
@@ -347,28 +382,9 @@ fn shared_language_laws_run_through_product_compilation_and_keyset_pages() {
         children: "tool_calls".into(),
         number: "cost".into(),
         category: "repo".into(),
+        text: "title".into(),
+        end: "last_active".into(),
     });
-    let built: Vec<_> = cases
-        .iter()
-        .filter(|case| case.law != "join-match-order-independent")
-        .cloned()
-        .collect();
-    assert_eq!(built.len() + 1, cases.len());
-    let failures = laws::check(&Product, &mut Execution::default(), &built);
+    let failures = laws::check(&Product, &mut Execution::default(), &cases);
     assert!(failures.is_empty(), "{failures:#?}");
-    let future = cases
-        .iter()
-        .find(|case| case.law == "join-match-order-independent")
-        .unwrap();
-    let text = query_language::format::format_query(
-        &future.query,
-        &polylogue_query::catalog::catalog(&[], &[]),
-    )
-    .unwrap();
-    assert_eq!(
-        polylogue_store::query::compile(&text, &options())
-            .unwrap_err()
-            .kind(),
-        "not_built"
-    );
 }

@@ -20,11 +20,10 @@ pub struct PreparationContext {
     bindings: polylogue_query::Bindings,
 }
 impl PreparationContext {
-    pub fn new(origins: Vec<String>, command_words: Vec<String>) -> Self {
+    pub fn new(origins: Vec<String>) -> Self {
         Self {
             bindings: polylogue_query::Bindings {
                 origins,
-                command_words,
                 ..Default::default()
             },
         }

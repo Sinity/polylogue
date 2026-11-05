@@ -368,7 +368,7 @@ fn unicode_attachment_pages_check_the_descriptor_and_refuse_a_changed_file() {
     let fixture = TestArchive::with_label(false, SECRET, &label);
     let whole = cli(
         &fixture.env(),
-        &["--json", "read", SESSION, "--budget", "100000"],
+        &["--json", "read", SESSION, "--page-tokens", "100000"],
     );
     assert!(whole.status.success(), "{whole:?}");
     let whole = typed_page(&whole);
@@ -381,7 +381,7 @@ fn unicode_attachment_pages_check_the_descriptor_and_refuse_a_changed_file() {
         "--json".to_owned(),
         "read".into(),
         SESSION.into(),
-        "--budget".into(),
+        "--page-tokens".into(),
         "3".into(),
     ];
     let mut original_next = None;

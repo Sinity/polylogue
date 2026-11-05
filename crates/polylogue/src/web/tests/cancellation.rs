@@ -71,7 +71,11 @@ fn http_deadline_returns_a_typed_refusal_with_an_unknown_count() {
         .block_on(send_wire(&r, request));
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
     let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&body).unwrap();
-    let command_surface::Answer::Error { error, .. } = answer else {
+    let command_surface::Answer {
+        outcome: command_surface::Outcome::Error(error),
+        ..
+    } = answer
+    else {
         panic!("expired parent must fail")
     };
     assert_eq!(error.kind, command_surface::FailureKind::Timeout);
@@ -98,6 +102,10 @@ fn typed_url(
         arguments,
         request_id: request_id.into(),
         deadline,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
     };
     let ready = daemon.daemon.ready_call(&request).unwrap();
     polylogue_render::web::http_url(&ready.http).unwrap()
@@ -156,7 +164,11 @@ fn outer_parent_expires_during_actual_sql_under_a_null_envelope() {
         .unwrap();
     let answer: command_surface::Answer<serde_json::Value> =
         serde_json::from_slice(&bytes).unwrap();
-    let command_surface::Answer::Error { error, .. } = answer else {
+    let command_surface::Answer {
+        outcome: command_surface::Outcome::Error(error),
+        ..
+    } = answer
+    else {
         panic!("SQL parent expiry must fail")
     };
     assert_eq!(error.kind, command_surface::FailureKind::Timeout);
@@ -176,7 +188,7 @@ fn a_null_stream_envelope_is_still_capped_by_the_outer_parent() {
         let (status,_,body) = send_wire(&r,request).await;
         assert_eq!(status,StatusCode::GATEWAY_TIMEOUT,"{body}");
         let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&body).unwrap();
-        let command_surface::Answer::Error { error, .. } = answer else { panic!("expired stream parent must fail before begin") };
+        let command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. } = answer else { panic!("expired stream parent must fail before begin") };
         assert_eq!(error.kind,command_surface::FailureKind::Timeout);
         assert!(!body.contains("event: complete"));
     });
@@ -193,7 +205,7 @@ fn a_finite_stream_envelope_keeps_its_shorter_bound_than_the_outer_parent() {
         let (status,_,body) = send_wire(&r,request).await;
         assert_eq!(status,StatusCode::GATEWAY_TIMEOUT,"{body}");
         let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&body).unwrap();
-        let command_surface::Answer::Error { error, .. } = answer else { panic!("expired logical stream cap must fail") };
+        let command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. } = answer else { panic!("expired logical stream cap must fail") };
         assert_eq!(error.kind,command_surface::FailureKind::Timeout);
     });
 }
@@ -208,6 +220,10 @@ fn an_expired_http_parent_never_submits_a_new_pure_write() {
             arguments: serde_json::json!({"key":"reading.variants","value":"[]"}),
             request_id: id.into(),
             deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         };
         let request = own_origin(authed(post("/api/v1/setting")))
             .header(
@@ -220,7 +236,11 @@ fn an_expired_http_parent_never_submits_a_new_pure_write() {
         assert_eq!(status, StatusCode::GATEWAY_TIMEOUT, "{body}");
         let answer: command_surface::Answer<crate::protocol::setting::Answer> =
             serde_json::from_str(&body).unwrap();
-        let command_surface::Answer::Error { error, .. } = answer else {
+        let command_surface::Answer {
+            outcome: command_surface::Outcome::Error(error),
+            ..
+        } = answer
+        else {
             panic!("expired admission cannot yield a receipt: {body}")
         };
         assert_eq!(error.kind, command_surface::FailureKind::Timeout);
@@ -305,7 +325,11 @@ fn an_expired_http_read_parent_creates_no_query_object_begin_or_outcome() {
         assert_eq!(status, StatusCode::GATEWAY_TIMEOUT, "{body}");
         let answer: command_surface::Answer<serde_json::Value> =
             serde_json::from_str(&body).unwrap();
-        let command_surface::Answer::Error { error, .. } = answer else {
+        let command_surface::Answer {
+            outcome: command_surface::Outcome::Error(error),
+            ..
+        } = answer
+        else {
             panic!("expired read cannot begin: {body}")
         };
         assert_eq!(error.kind, command_surface::FailureKind::Timeout);

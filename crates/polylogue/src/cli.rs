@@ -277,9 +277,10 @@ pub fn run(
     };
     let raw = m.get_one::<String>("request");
     if raw.is_some()
-        && cmd
-            .args_for(Surface::Cli)
-            .any(|argument| m.value_source(argument.name) == Some(ValueSource::CommandLine))
+        && cmd.args_for(Surface::Cli).any(|argument| {
+            argument.name != "cursor"
+                && m.value_source(argument.name) == Some(ValueSource::CommandLine)
+        })
     {
         return fail(
             policy,
@@ -309,6 +310,7 @@ pub fn run(
         .get_one::<String>("request_id")
         .cloned()
         .unwrap_or_else(|| values.request_id());
+    let cursor = values.text("cursor");
     let mut literal_arguments = None;
     let request = if let Some(raw) = raw {
         let Some(build) = cmd.build_typed else {
@@ -324,7 +326,9 @@ pub fn run(
             Ok(arguments) => arguments,
             Err(error) => return fail(policy, json, "bad_request", &error.to_string(), 2),
         };
-        let request = match build(arguments.clone(), &caller, &request_id) {
+        let request = match build(arguments.clone(), &caller, &request_id).and_then(|request| {
+            crate::protocol::operations::with_cursor(request, cursor.as_deref())
+        }) {
             Ok(request) => request,
             Err(error) => return fail(policy, json, "bad_request", &error.message, 2),
         };
@@ -360,6 +364,10 @@ pub fn run(
             arguments,
             request_id,
             deadline,
+            budget_tokens: Default::default(),
+            cursor,
+            fresh: false,
+            format: Default::default(),
         },
         None => crate::protocol::operations::request(cmd, values.clone(), request_id, deadline),
     };
@@ -413,7 +421,12 @@ pub fn run(
         );
         return ExitCode::from(outcome_code);
     }
-    if let Answer::Error { error, notes, .. } = &answer {
+    if let command_surface::Answer {
+        outcome: command_surface::Outcome::Error(error),
+        envelope: command_surface::Envelope { notes, .. },
+        ..
+    } = &answer
+    {
         return fail_with(policy, json, error, notes);
     }
     // JSON passes the answer through as received; anything that reads the
@@ -429,7 +442,10 @@ pub fn run(
         Some(output) => output(&values, &answer, startup, json),
         None => {
             print!("{}", (cmd.print)(data, policy.stdout_color()));
-            notes(answer.notes(), policy);
+            notes(
+                &crate::protocol::notes(&answer).cloned().collect::<Vec<_>>(),
+                policy,
+            );
             ExitCode::from(outcome_code)
         }
     }
@@ -657,10 +673,12 @@ fn fail_with(
     notes: &[String],
 ) -> ExitCode {
     if json {
-        let answer = Answer::<Value>::Error {
-            error: failure.clone(),
-            notes: notes.to_vec(),
-            next: vec![],
+        let answer = command_surface::Answer::<Value> {
+            outcome: command_surface::Outcome::Error(failure.clone()),
+            envelope: command_surface::Envelope {
+                notes: notes.to_vec(),
+                ..Default::default()
+            },
         };
         println!(
             "{}",
@@ -681,7 +699,7 @@ fn fail_with(
             print::diagnostic(
                 &code,
                 &failure.message,
-                failure.suggestion.as_deref().and_then(Value::as_str),
+                crate::protocol::suggestion_text(failure).as_deref(),
                 output.stderr_color()
             )
         );

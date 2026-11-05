@@ -6,7 +6,7 @@ fn read(
     view: &str,
     format: &str,
     budget: Option<usize>,
-    cursor: Option<&crate::protocol::read::Arguments>,
+    cursor: Option<&command_surface::RunnableRequest>,
 ) -> command_surface::Answer<serde_json::Value> {
     let Some(view) = polylogue_model::read::View::parse(view) else {
         return error("bad_request", "unknown reading view");
@@ -16,8 +16,21 @@ fn read(
     }
     let request = if let Some(resume) = cursor {
         let mut resume = resume.clone();
-        resume.budget = budget.map(|value| std::num::NonZeroU64::new(value as u64).unwrap());
-        resume.into_request().unwrap()
+        let mut arguments: crate::protocol::read::Arguments =
+            serde_json::from_value(resume.arguments.clone()).unwrap();
+        arguments.page_tokens =
+            budget.map(|value| std::num::NonZeroU64::new(value as u64).unwrap());
+        resume.arguments = serde_json::to_value(arguments).unwrap();
+        crate::protocol::operations::admit(
+            crate::commands::command("read").unwrap(),
+            &resume,
+            &crate::commands::Caller {
+                surface: crate::commands::Surface::Http,
+                cwd: None,
+                json: true,
+            },
+        )
+        .unwrap()
     } else {
         Request::Read {
             target: "session:claude-code:s1".into(),
@@ -74,8 +87,7 @@ fn a_read_honours_its_view_format_and_budget() {
     let call = first.document.footer.next.as_ref().expect("a second page");
     let envelope: command_surface::RunnableRequest =
         serde_json::from_value(call.http.arguments.clone()).unwrap();
-    let cursor: crate::protocol::read::Arguments =
-        serde_json::from_value(envelope.arguments).unwrap();
+    let cursor = envelope;
     let second = typed(read(
         &w.daemon,
         "transcript",
@@ -94,7 +106,7 @@ fn a_read_honours_its_view_format_and_budget() {
         assert!(
             matches!(
                 read(&w.daemon, view, format, None, cursor),
-                command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some(expected)
+                command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some(expected)
             ),
             "{view} {format} {cursor:?}"
         );
@@ -128,7 +140,7 @@ fn runtime_shutdown_wakes_signals_releases_lock_and_refuses_old_handles() {
         .unwrap();
     thread.join().unwrap();
     assert!(
-        matches!(handle(Request::Status, &daemon), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("shutting_down"))
+        matches!(handle(Request::Status, &daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
     );
     assert!(
         Archive::open_or_create(&root).is_ok(),
@@ -201,7 +213,7 @@ fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
     crate::test_answers::ok(handle(Request::Status, &next.daemon));
     next.shutdown().unwrap();
     assert!(
-        matches!(handle(Request::Status, &old), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("shutting_down"))
+        matches!(handle(Request::Status, &old), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
     );
 }
 
@@ -249,13 +261,13 @@ fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_
     runtime.stop_accepting();
     for request in requests {
         assert!(
-            matches!(request.join().unwrap(), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("shutting_down"))
+            matches!(request.join().unwrap(), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
         );
     }
     runtime.shutdown().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
     assert!(
-        matches!(handle(Request::Status, &daemon), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("shutting_down"))
+        matches!(handle(Request::Status, &daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
     );
 }
 
@@ -295,6 +307,10 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_canonic
             .unwrap(),
             request_id: uuid::Uuid::now_v7().to_string(),
             deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         };
         let mut socket =
             std::os::unix::net::UnixStream::connect(w.daemon.archive.socket()).unwrap();
@@ -411,7 +427,7 @@ fn an_invalidated_read_phase_does_not_enter_the_authored_writer() {
         )
     });
     assert!(
-        matches!(response,command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("scope_changed")),
+        matches!(response,command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("scope_changed")),
         "{response:?}"
     );
     let reader = daemon.daemon.reads.reader().unwrap();
@@ -450,7 +466,7 @@ fn read_derived_write_keeps_its_selected_scope_after_reader_release() {
         selected_scope,
     );
     assert!(
-        matches!(response, command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("scope_changed")),
+        matches!(response, command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("scope_changed")),
         "{response:?}"
     );
     let reader = daemon.daemon.reads.reader().unwrap();

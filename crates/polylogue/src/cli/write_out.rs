@@ -54,16 +54,18 @@ pub(crate) fn run(
                         false
                     )
                 );
-            } else if let command_surface::Answer::Error { error, notes, .. } = answer.as_ref() {
+            } else if let command_surface::Answer {
+                outcome: command_surface::Outcome::Error(error),
+                envelope: command_surface::Envelope { notes, .. },
+                ..
+            } = answer.as_ref()
+            {
                 eprint!(
                     "{}",
                     super::print::diagnostic(
                         error.code.as_deref().unwrap_or("read_output"),
                         &error.message,
-                        error
-                            .suggestion
-                            .as_deref()
-                            .and_then(serde_json::Value::as_str),
+                        crate::protocol::suggestion_text(error).as_deref(),
                         startup.output.stderr_color()
                     )
                 );
@@ -381,10 +383,22 @@ fn consume(
         };
         return Err(match error {
             crate::client::stream::Error::Answer(mut answer)
-                if matches!(answer.as_ref(), command_surface::Answer::Error { .. }) =>
+                if matches!(
+                    answer.as_ref(),
+                    command_surface::Answer {
+                        outcome: command_surface::Outcome::Error(_),
+                        ..
+                    }
+                ) =>
             {
-                if let (Some(note), command_surface::Answer::Error { notes, .. }) =
-                    (retained, answer.as_mut())
+                if let (
+                    Some(note),
+                    command_surface::Answer {
+                        outcome: command_surface::Outcome::Error(_),
+                        envelope: command_surface::Envelope { notes, .. },
+                        ..
+                    },
+                ) = (retained, answer.as_mut())
                 {
                     notes.push(note);
                 }
@@ -400,16 +414,26 @@ fn consume(
 }
 fn written(value: serde_json::Value, code: u8) -> io::Result<()> {
     let answer = if code == 5 {
-        command_surface::Answer::Degraded {
-            value,
-            notes: vec!["the reading has incomplete coverage or noncurrent index currency".into()],
-            next: vec![],
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Degraded {
+                value,
+                missing: vec![
+                    "the reading has incomplete coverage or noncurrent index currency".into(),
+                ],
+            },
+            envelope: command_surface::Envelope {
+                next: vec![],
+                ..Default::default()
+            },
         }
     } else if code == 1 {
-        command_surface::Answer::Empty {
-            value,
-            notes: vec![],
-            next: vec![],
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Empty(value),
+            envelope: command_surface::Envelope {
+                notes: vec![],
+                next: vec![],
+                ..Default::default()
+            },
         }
     } else {
         command_surface::Answer::ok(value)

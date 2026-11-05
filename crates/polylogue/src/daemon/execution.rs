@@ -161,9 +161,9 @@ pub fn refusal(
     limit: &ReadLimit,
 ) -> Answer<Value> {
     let mut failure = crate::protocol::store_failure(error);
-    failure.suggestion = text
-        .and_then(narrower)
-        .map(|query| Box::new(Value::String(query)));
+    if let Some(query) = text.and_then(narrower) {
+        failure = failure.with_suggestion(command_surface::Suggestion::Query(query));
+    }
     failure.hint = Some("restrict the query to a shorter time range or one session".into());
     failure.retryable = true;
     let stage = limit
@@ -179,10 +179,13 @@ pub fn refusal(
             .into_iter()
             .map(|(stage, spent)| format!("{stage} took {:.1} ms", spent.as_secs_f64() * 1000.0)),
     );
-    Answer::Error {
-        error: failure,
-        notes,
-        next: vec![],
+    command_surface::Answer {
+        outcome: command_surface::Outcome::Error(failure),
+        envelope: command_surface::Envelope {
+            notes: notes,
+            next: vec![],
+            ..Default::default()
+        },
     }
 }
 

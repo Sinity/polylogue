@@ -167,7 +167,10 @@ fn brief(d: &test_daemon::TestDaemon, request_id: &str, source: StartSource) -> 
         sender: Some(polylogue_model::DeliverySender::Hook.as_str().into()),
     };
     match handle(request, &d.daemon) {
-        command_surface::Answer::Ok { value: data, .. } => data,
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Ok(data),
+            ..
+        } => data,
         other => panic!("{other:?}"),
     }
 }

@@ -46,7 +46,7 @@ fn document_pages_preserve_exact_prefix_and_refuse_cross_content_stale_and_tampe
     let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
     let _ = import_report(&imported);
     let reference = "document:claude-ai:manual";
-    let whole = reading(&env, reference, &["--budget", "100000"]);
+    let whole = reading(&env, reference, &["--page-tokens", "100000"]);
     let encoded = serde_json::to_string(&whole).unwrap();
     assert!(encoded.contains("synthetic-secret-tail"));
     assert!(encoded.contains("Visible λ🙂 tail"));
@@ -80,41 +80,27 @@ fn document_pages_preserve_exact_prefix_and_refuse_cross_content_stale_and_tampe
     let html = std::fs::read_to_string(html_path).unwrap();
     assert!(!html.contains("<script>alert('synthetic')</script>"));
     assert!(html.contains("&lt;script&gt;") && html.contains("synthetic-secret-tail"));
-    let first = reading(&env, reference, &["--budget", "1"]);
+    let first = reading(&env, reference, &["--page-tokens", "1"]);
     let next = first.document.footer.next.unwrap();
     let args = next_args(&next);
-    let request = args.iter().position(|arg| arg == "--request").unwrap() + 1;
-    let original: serde_json::Value = serde_json::from_str(&args[request]).unwrap();
-    assert!(original["cursor"].is_string());
-    assert!(!original.to_string().contains("synthetic-secret-tail"));
-    // A real sealed continuation binds its own acknowledged content and view.
-    let other_page = reading(&env, "document:claude-ai:other", &["--budget", "1"]);
+    let cursor = args.iter().position(|arg| arg == "--cursor").unwrap() + 1;
+    assert!(!args[cursor].is_empty());
+    assert!(!args[cursor].contains("synthetic-secret-tail"));
+    let other_page = reading(&env, "document:claude-ai:other", &["--page-tokens", "1"]);
     let other_args = next_args(&other_page.document.footer.next.unwrap());
-    let other_request = other_args
-        .iter()
-        .position(|arg| arg == "--request")
-        .unwrap()
-        + 1;
-    let other_request: serde_json::Value =
-        serde_json::from_str(&other_args[other_request]).unwrap();
-    let mut changed = original.clone();
-    // Another reading's cursor: the continuation names its own target
-    // (reading design §2.3: "A page cursor holds: the target; ...").
-    changed["cursor"] = other_request["cursor"].clone();
-    let mut invalid = vec![changed];
+    let other_cursor = other_args.iter().position(|arg| arg == "--cursor").unwrap() + 1;
     for token in [
-        "broken".to_string(),
+        other_args[other_cursor].clone(),
+        "broken".into(),
         String::new(),
-        format!("{}x", original["cursor"].as_str().unwrap()),
+        format!("{}x", args[cursor]),
     ] {
-        let mut changed = original.clone();
-        changed["cursor"] = json!(token);
-        invalid.push(changed);
-    }
-    for changed in invalid {
-        let mut args = args.clone();
-        args[request] = serde_json::to_string(&changed).unwrap();
-        let result = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
+        let mut changed = args.clone();
+        changed[cursor] = token;
+        let result = cli(
+            &env,
+            &changed.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
         assert!(!result.status.success(), "{result:?}");
     }
     let notes = serde_json::to_string(&[polylogue_model::assertion::NewAssertion {
@@ -135,9 +121,12 @@ fn document_pages_preserve_exact_prefix_and_refuse_cross_content_stale_and_tampe
     let index = rusqlite::Connection::open(archive.join("index.db")).unwrap();
     index.execute("UPDATE document_block SET body=x'00' WHERE idx=2 AND document_pk=(SELECT pk FROM document WHERE id='claude-ai:manual')",[]).unwrap();
     drop(index);
-    let prefix = reading(&env, reference, &["--budget", "1"]);
+    let prefix = reading(&env, reference, &["--page-tokens", "1"]);
     assert!(!prefix.document.items.is_empty());
-    let full = cli(&env, &["--json", "read", reference, "--budget", "100000"]);
+    let full = cli(
+        &env,
+        &["--json", "read", reference, "--page-tokens", "100000"],
+    );
     assert!(!full.status.success(), "{full:?}");
     doc.set_time(
         Timestamp::from_unix_ms(2),

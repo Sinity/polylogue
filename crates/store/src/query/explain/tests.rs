@@ -1,6 +1,6 @@
 use super::*;
 use query_language::{
-    ast::{OutputBinding, Source},
+    ast::{Source, SourceColumns},
     time::{Clock, DaySetting},
 };
 use std::collections::BTreeMap;
@@ -17,7 +17,6 @@ fn explanation_uses_the_same_closed_saved_binding_as_lowering() {
             .unwrap(),
         ),
         origins: vec!["test".into()],
-        command_words: vec![],
         page_size: None,
         random_seed: Some(7),
         embeddings: false,
@@ -43,7 +42,7 @@ fn explanation_uses_the_same_closed_saved_binding_as_lowering() {
     assert!(matches!(
         explanation.parsed.source,
         Source::Saved {
-            output: OutputBinding::Known,
+            output: SourceColumns::Known,
             ..
         }
     ));

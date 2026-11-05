@@ -1,5 +1,5 @@
 use super::*;
-use crate::protocol::read::Arguments as ResumeArguments;
+use command_surface::RunnableRequest as ResumeArguments;
 use polylogue_model::read::{
     ItemKind, ItemPlace, ReadDelivery, ReadItem, ReadOptions, ReadPage, View,
 };
@@ -13,8 +13,17 @@ fn request(
 ) -> Request {
     if let Some(resume) = cursor {
         let mut resume = resume.clone();
-        resume.budget = Some(std::num::NonZeroU64::new(budget as u64).unwrap());
-        return resume.into_request().unwrap();
+        resume.arguments["page_tokens"] = serde_json::json!(budget);
+        return crate::protocol::operations::admit(
+            crate::commands::command("read").unwrap(),
+            &resume,
+            &crate::commands::Caller {
+                surface: crate::commands::Surface::Http,
+                cwd: None,
+                json: true,
+            },
+        )
+        .unwrap();
     }
     Request::Read {
         target: target.into(),
@@ -46,7 +55,7 @@ fn page(
 }
 fn refused(response: command_surface::Answer<serde_json::Value>, expected: &str) {
     assert!(
-        matches!(&response, command_surface::Answer::Error { error, .. } if error.code.as_deref() == Some(expected)),
+        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. } if error.code.as_deref() == Some(expected)),
         "{response:?}"
     );
 }
@@ -54,7 +63,7 @@ fn call_cursor(call: &polylogue_model::read::ReadyCall) -> ResumeArguments {
     let envelope: command_surface::RunnableRequest =
         serde_json::from_value(call.http.arguments.clone()).unwrap();
     assert_eq!(envelope.operation, "read");
-    serde_json::from_value(envelope.arguments).unwrap()
+    envelope
 }
 fn next(page: &ReadPage) -> Option<ResumeArguments> {
     page.document.footer.next.as_ref().map(call_cursor)
@@ -120,7 +129,7 @@ fn all(d: &Daemon, target: &str, inherited: bool, view: View) -> String {
         let continued = next(&page);
         if let (Some(previous), Some(next)) = (&cursor, &continued) {
             assert_eq!(
-                next.target, previous.target,
+                next.arguments["target"], previous.arguments["target"],
                 "a continuation reads the same target"
             );
         }
@@ -227,10 +236,9 @@ fn read_pages_refuse_malformed_cross_view_and_tampered_positions() {
     ] {
         // A cursor is bound to its reading: other arguments are refused
         // when the page is read (docs/reading.md, Budgets).
-        let mut arguments = serde_json::to_value(&token).unwrap();
-        arguments[field] = value;
-        let request =
-            command.build_typed.unwrap()(arguments, &caller, "closed-resume-witness").unwrap();
+        let mut changed = token.clone();
+        changed.arguments[field] = value;
+        let request = crate::protocol::operations::admit(command, &changed, &caller).unwrap();
         refused(handle(request, &d.daemon), "invalid_query");
     }
     let wire = token.cursor.clone().unwrap();
@@ -291,7 +299,7 @@ fn read_pages_survive_unrelated_writes_and_refuse_changed_earlier_content() {
         &d.daemon,
     );
     assert!(
-        matches!(&response, command_surface::Answer::Error { error, .. } if error.code.as_deref() == Some("stale_cursor")),
+        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. } if error.code.as_deref() == Some("stale_cursor")),
         "{response:?}"
     );
 }
@@ -398,7 +406,10 @@ fn direct_anchors_keep_their_own_original_text_and_refuse_missing_sources() {
             ),
             &d.daemon
         ),
-        command_surface::Answer::Error { .. }
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Error(_),
+            ..
+        }
     ));
 }
 

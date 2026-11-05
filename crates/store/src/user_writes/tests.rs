@@ -33,7 +33,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
         w.writer
             .user_preparing(
                 request.clone(),
-                PreparationContext::new(vec!["codex".into()], Vec::new()),
+                PreparationContext::new(vec!["codex".into()]),
                 None,
             )
             .unwrap();
@@ -132,11 +132,7 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_r
         },
     );
     w.writer
-        .user_preparing(
-            saved,
-            PreparationContext::new(vec!["codex".into()], Vec::new()),
-            None,
-        )
+        .user_preparing(saved, PreparationContext::new(vec!["codex".into()]), None)
         .unwrap();
 }
 

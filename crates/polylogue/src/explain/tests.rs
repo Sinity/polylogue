@@ -167,7 +167,10 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         assert!(
             matches!(
                 handle(explain(expression), &w.daemon),
-                command_surface::Answer::Error { .. }
+                command_surface::Answer {
+                    outcome: command_surface::Outcome::Error(_),
+                    ..
+                }
             ),
             "{expression:?}"
         );

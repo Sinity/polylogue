@@ -145,7 +145,7 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
     ];
     for request in requests {
         assert!(
-            matches!(handle(request, &runtime.daemon), command_surface::Answer::Error { error, .. }
+            matches!(handle(request, &runtime.daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. }
             if error.code.as_deref() == Some("sinex_unavailable")
                 && error.hint.as_deref().is_some_and(|hint| hint.contains(path.to_str().unwrap())))
         );
@@ -170,7 +170,7 @@ fn malformed_config_keeps_primary_status_and_refuses_reads_and_writes() {
         let runtime = launch(startup).unwrap();
         blocked(&runtime, &path(&w));
         assert!(
-            matches!(handle(read_request(), &runtime.daemon), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("sinex_unavailable"))
+            matches!(handle(read_request(), &runtime.daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("sinex_unavailable"))
         );
         assert!(
             crate::test_answers::ok(handle(
@@ -235,7 +235,7 @@ fn primary_outage_preserves_raw_custody_without_standalone_fallback_or_owner_day
         let (status, _) = crate::test_answers::degraded(handle(Request::Status, &runtime.daemon));
         assert_eq!(status["mode"]["state"], "primary");
         assert!(
-            matches!(handle(read_request(), &runtime.daemon), command_surface::Answer::Error { error, .. }
+            matches!(handle(read_request(), &runtime.daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. }
             if matches!(error.code.as_deref(), Some("primary_context_missing" | "primary_context_unavailable")))
         );
         let ModeState::Primary { connection } = &runtime.daemon.mode else {

@@ -17,9 +17,6 @@ fn query(node: &Query, typing: &Typing, path: NodePath) -> Result<(), QueryError
         Source::Unit {
             condition: Some(c), ..
         }
-        | Source::RecallLast {
-            condition: Some(c), ..
-        }
         | Source::Saved {
             condition: Some(c), ..
         }
@@ -36,17 +33,17 @@ fn query(node: &Query, typing: &Typing, path: NodePath) -> Result<(), QueryError
             }
         }
     }
-    for (index, stage) in node.stages.iter().enumerate() {
-        let at = path.field("stages").index(index).field("kind");
+    for (index, stage) in node.transforms.iter().enumerate() {
+        let at = path.field("transforms").index(index).field("kind");
         match &stage.kind {
-            StageKind::Where { condition: c }
-            | StageKind::Scope {
+            TransformKind::Where { condition: c }
+            | TransformKind::Scope {
                 condition: Some(c), ..
             } => condition(c, typing, at.field("condition"))?,
-            StageKind::Combine { query: q, .. } | StageKind::Temporal { query: q, .. } => {
-                query(q, typing, at.field("query"))?
-            }
-            StageKind::Extension { arguments, .. } => {
+            TransformKind::Combine { query: q, .. }
+            | TransformKind::Join { query: q, .. }
+            | TransformKind::Diff { query: q } => query(q, typing, at.field("query"))?,
+            TransformKind::Extension { arguments, .. } => {
                 extension(arguments, typing, at.field("arguments"))?
             }
             _ => {}
@@ -69,20 +66,27 @@ fn condition(c: &Condition, typing: &Typing, path: NodePath) -> Result<(), Query
             values(typing, &at.field("field"), value, position)?;
         }
         ConditionKind::Compare {
-            operand: Operand::Field { .. },
-            value,
+            left: Expression::Field { .. },
+            right: Expression::Value { value },
             ..
-        } => values(typing, &at.field("operand"), value, position)?,
+        } => values(typing, &at.field("left"), value, position)?,
+        ConditionKind::Compare {
+            left: Expression::Value { value },
+            right: Expression::Field { .. },
+            ..
+        } => values(typing, &at.field("right"), value, position)?,
         ConditionKind::Between {
-            operand: Operand::Field { .. },
+            left: Expression::Field { .. },
             from,
             to,
             ..
         } => {
-            values(typing, &at.field("operand"), from, position)?;
-            values(typing, &at.field("operand"), to, position)?;
+            values(typing, &at.field("left"), from, position)?;
+            values(typing, &at.field("left"), to, position)?;
         }
-        ConditionKind::In { query: q, .. } => query(q, typing, at.field("query"))?,
+        ConditionKind::In { query: q, .. } | ConditionKind::Order { query: q, .. } => {
+            query(q, typing, at.field("query"))?
+        }
         ConditionKind::Exists {
             condition: Some(c), ..
         }
@@ -115,6 +119,7 @@ fn extension(
             ExtensionArgument::Optional(arguments) => {
                 extension(arguments, typing, at.field("optional"))?
             }
+            ExtensionArgument::List(arguments) => extension(arguments, typing, at.field("list"))?,
             _ => {}
         }
     }
