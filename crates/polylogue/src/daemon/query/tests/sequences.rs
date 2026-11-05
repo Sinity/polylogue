@@ -80,10 +80,10 @@ fn sequences_follow_session_order_when_times_run_backwards() {
     assert_eq!(
         order,
         [
-            (1, 1, "block:claude-code:b0#0"),
-            (1, 2, "block:claude-code:b2#0"),
-            (2, 1, "block:claude-code:b3#0"),
-            (2, 2, "block:claude-code:b4#0"),
+            (1, 1, "block:claude-code:b0#1"),
+            (1, 2, "block:claude-code:b2#1"),
+            (2, 1, "block:claude-code:b3#1"),
+            (2, 2, "block:claude-code:b4#1"),
         ]
     );
     let time = |row: &Value| {
@@ -100,8 +100,8 @@ fn sequences_follow_session_order_when_times_run_backwards() {
     let v = q(&w, &format!("{pass_then_fail} | matches"));
     let rows = v["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 2, "{v}");
-    assert_eq!(rows[0]["step"], "block:claude-code:b2#0");
-    assert_eq!(rows[1]["step"], "block:claude-code:b3#0");
+    assert_eq!(rows[0]["step"], "block:claude-code:b2#1");
+    assert_eq!(rows[1]["step"], "block:claude-code:b3#1");
     // A time window needs the later call to be later in time too.
     let within = "sessions where seq(command:\"cargo test\" AND outcome:error -> [within 5h] command:\"cargo test\" AND outcome:ok)";
     assert_eq!(q(&w, within)["outcome"], "empty");

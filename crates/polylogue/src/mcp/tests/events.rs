@@ -67,9 +67,7 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
         .next
         .clone()
         .expect("structured event is paged");
-    let token = next.mcp["arguments"]["arguments"]["cursor"]
-        .as_str()
-        .unwrap();
+    let token = next.mcp["arguments"]["cursor"].as_str().unwrap();
     assert!(!token.contains("synthetic-later-value"));
     let mut wrong = next.clone();
     wrong.mcp["arguments"]["arguments"]["view"] = json!("dialogue");

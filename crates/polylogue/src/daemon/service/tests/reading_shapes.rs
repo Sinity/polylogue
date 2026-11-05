@@ -377,9 +377,17 @@ fn the_last_page_follows_what_the_session_appends() {
     });
     let envelope: command_surface::RunnableRequest =
         serde_json::from_value(follow.http.arguments).unwrap();
-    let arguments: crate::protocol::read::Arguments =
-        serde_json::from_value(envelope.arguments).unwrap();
-    let response = handle(arguments.into_request().unwrap(), &d.daemon);
+    let native = crate::protocol::operations::admit(
+        crate::commands::command("read").unwrap(),
+        &envelope,
+        &crate::commands::Caller {
+            surface: crate::commands::Surface::Http,
+            cwd: None,
+            json: true,
+        },
+    )
+    .unwrap();
+    let response = handle(native, &d.daemon);
     let page: ReadPage = serde_json::from_value(response.value().cloned().unwrap()).unwrap();
     let texts = texts(&page);
     assert_eq!(

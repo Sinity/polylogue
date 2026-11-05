@@ -42,6 +42,23 @@ pub(crate) fn call_as(
             json!({"name": operation, "arguments": {"arguments": arguments, "request_id": request_id}})
         }
     };
+    call_params(archive, params)
+}
+
+pub(crate) fn call_page(
+    archive: &Archive,
+    operation: &str,
+    arguments: Value,
+    cursor: Option<&str>,
+) -> Result<String, String> {
+    let mut params = tool_call(operation, arguments, &uuid::Uuid::now_v7().to_string());
+    if let Some(cursor) = cursor {
+        params["arguments"]["cursor"] = json!(cursor);
+    }
+    call_params(archive, params)
+}
+
+fn call_params(archive: &Archive, params: Value) -> Result<String, String> {
     call_with_limit(
         archive,
         params["name"].as_str().unwrap(),
@@ -459,7 +476,14 @@ fn a_tool_call_names_one_of_its_operations() {
             &tokio_util::sync::CancellationToken::new(),
             None,
         )
-        .unwrap_err()
+        .map_or_else(
+            |error| error,
+            |(text, answer, failed)| {
+                assert!(failed, "{answer}");
+                assert_eq!(answer["error"]["kind"], "bad_request", "{answer}");
+                text
+            },
+        )
     };
     let missing = run(
         "polylogue_read",
@@ -485,7 +509,7 @@ fn a_tool_call_names_one_of_its_operations() {
         "polylogue_context",
         json!({"operation": "brief", "arguments": {"cwd": "/synthetic", "detail": "full"}, "request_id": "unknown-argument"}),
     );
-    assert!(unknown.contains("has no argument `detail`"), "{unknown}");
+    assert!(unknown.contains("unknown field `detail`"), "{unknown}");
     let live = crate::test_daemon::start("lifted context deadline");
     let (_, answer, failed) = call_with_limit(
         &live.daemon.archive, "polylogue_context",
@@ -567,7 +591,7 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
     );
     assert_eq!(ready.mcp["name"], "polylogue_read");
     assert_eq!(ready.mcp["arguments"]["operation"], "query");
-    // An operation MCP does not offer has no MCP form; its other forms stay.
+    // Every declared request retains an executable MCP form.
     let sql = daemon
         .daemon
         .ready_call(&command_surface::Request {
@@ -581,7 +605,13 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
             format: Default::default(),
         })
         .unwrap();
-    assert_eq!(sql.mcp, Value::Null);
+    assert_eq!(sql.mcp["name"], "polylogue_read");
+    assert_eq!(sql.mcp["arguments"]["operation"], "sql");
+    let reply = session
+        .prepare(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":sql.mcp}))
+        .answer(&daemon.daemon.archive)
+        .unwrap();
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
     assert_eq!(sql.http.path, "/api/v1/sql");
     let legacy = call_with_limit(
         &daemon.daemon.archive,

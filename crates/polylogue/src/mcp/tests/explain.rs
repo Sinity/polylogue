@@ -16,10 +16,11 @@ fn explain_is_a_table_tool_with_paged_declarations_and_query_errors() {
     .unwrap();
     let next = page["next"].as_str().unwrap();
     let second: serde_json::Value = serde_json::from_str(
-        &call(
+        &call_page(
             &archive,
             "explain",
-            args(json!({"subject": "fields", "page_size": 1, "cursor": next})),
+            json!({"subject":"fields","page_size":1}),
+            Some(next),
         )
         .unwrap(),
     )

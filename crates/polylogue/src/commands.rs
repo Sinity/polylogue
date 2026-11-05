@@ -458,12 +458,16 @@ fn decodes<T: serde::de::DeserializeOwned>(value: &Value) -> Result<(), String> 
 }
 
 macro_rules! typed_command {
-    ($marker:ident, $arguments:ty, $answer:ty, { name: $name:literal, $($fields:tt)* }) => {{
+    ($marker:ident, $arguments:ty, $answer:ty, { name: $name:literal, $($fields:tt)* }) => {
+        typed_command!($marker, $arguments, $answer, |_arguments: &$arguments| crate::protocol::operations::declared_access($name), {name: $name, $($fields)*})
+    };
+    ($marker:ident, $arguments:ty, $answer:ty, $access:expr, { name: $name:literal, $($fields:tt)* }) => {{
         struct $marker;
         impl crate::protocol::operations::CommandType for $marker {
             type Arguments = $arguments;
             type Answer = $answer;
             const NAME: &'static str = $name;
+            fn required_access(arguments: &Self::Arguments) -> command_surface::Access { ($access)(arguments) }
         }
         Command {
             name: $name,
@@ -979,7 +983,7 @@ const WRITTEN: &[Command] = &[
         tool: Some(Tool::Context),
         ..CLI
     },
-    typed_command!(SettingOperation, crate::protocol::setting::Arguments, crate::protocol::setting::Answer, {
+    typed_command!(SettingOperation, crate::protocol::setting::Arguments, crate::protocol::setting::Answer, crate::protocol::setting::required_access, {
         name: "setting",
         help: "List the typed runtime settings catalog, read KEY, or write KEY VALUE. Includes reading.variants, browser.actions, embed.*, plan.* and price.*. Standalone attention settings are local; primary attention names its Sinex owner",
         reason: "Inspect declared runtime settings and author changes at their declared scope",

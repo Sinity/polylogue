@@ -9,12 +9,11 @@ fn mcp_attachment_pages_preserve_credential_shaped_bytes_and_labels() {
     let mut bytes = Vec::new();
     let mut cursor = None::<String>;
     loop {
-        let response = call(
+        let response = call_page(
             &archive,
             "attachment",
-            args(json!({
-                "message":message,"block":0,"length":7,"cursor":cursor
-            })),
+            json!({"message":message,"block":0,"length":7}),
+            cursor.as_deref(),
         )
         .unwrap();
         let page: serde_json::Value = serde_json::from_str(&response).unwrap();

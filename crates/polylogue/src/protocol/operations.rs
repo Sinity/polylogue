@@ -35,6 +35,20 @@ pub trait CommandType: Send + Sync + 'static {
     type Arguments: Serialize + DeserializeOwned + JsonSchema + Send + 'static;
     type Answer: Serialize + DeserializeOwned + JsonSchema + Send + 'static;
     const NAME: &'static str;
+    fn required_access(_arguments: &Self::Arguments) -> command_surface::Access {
+        declared_access(Self::NAME)
+    }
+}
+
+pub fn declared_access(name: &str) -> command_surface::Access {
+    if crate::commands::command(name)
+        .expect("typed command exists")
+        .writes
+    {
+        command_surface::Access::Write
+    } else {
+        command_surface::Access::Read
+    }
 }
 
 /// Mixed read/write rows are classified from their admitted request, not row metadata.
@@ -66,7 +80,7 @@ pub(crate) fn admitted_deadline(
 }
 
 pub(crate) fn specification(command: &Command) -> OperationSpec {
-    use command_surface::{Access, ArgumentForm, ArgumentSpec, OperationKind};
+    use command_surface::{ArgumentForm, ArgumentSpec, OperationKind};
     let tool = command.tool.expect("typed request declares its tool");
     OperationSpec {
         name: command.name.into(),
@@ -83,11 +97,7 @@ pub(crate) fn specification(command: &Command) -> OperationSpec {
         http_route: Some(format!("/api/v1{}", command.http_path())),
         latency: command.latency,
         failures: command.failures.to_vec(),
-        access: if command.writes {
-            Access::Write
-        } else {
-            Access::Read
-        },
+        access: declared_access(command.name),
         arguments: command
             .args
             .iter()
@@ -118,7 +128,8 @@ pub(crate) fn cursor(request: &crate::daemon::Request) -> Option<&str> {
     match request {
         crate::daemon::Request::Query { cursor, .. }
         | crate::daemon::Request::Read { cursor, .. }
-        | crate::daemon::Request::Attachment { cursor, .. } => cursor.as_deref(),
+        | crate::daemon::Request::Attachment { cursor, .. }
+        | crate::daemon::Request::Explain { cursor, .. } => cursor.as_deref(),
         _ => None,
     }
 }
@@ -131,7 +142,8 @@ pub(crate) fn with_cursor(
         match &mut request {
             crate::daemon::Request::Query { cursor: target, .. }
             | crate::daemon::Request::Read { cursor: target, .. }
-            | crate::daemon::Request::Attachment { cursor: target, .. } => {
+            | crate::daemon::Request::Attachment { cursor: target, .. }
+            | crate::daemon::Request::Explain { cursor: target, .. } => {
                 *target = Some(cursor.into())
             }
             _ => {
@@ -187,6 +199,10 @@ impl<C: CommandType> Operation for TypedCommand<C> {
 
     fn spec(&self) -> OperationSpec {
         specification(crate::commands::command(C::NAME).expect("typed command exists"))
+    }
+
+    fn required_access(&self, arguments: &Self::Request) -> command_surface::Access {
+        C::required_access(arguments)
     }
 
     fn execute(
