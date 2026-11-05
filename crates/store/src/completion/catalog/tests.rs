@@ -332,7 +332,7 @@ fn derived_saved_pattern_codec_is_atomic_and_old_versions_are_invalidated() {
     writer
         .conn
         .execute(
-            "UPDATE item SET payload=json_remove(payload,'$.match_units') WHERE kind='saved'",
+            "UPDATE item SET payload=json_remove(payload,'$.relation_scope.match_units') WHERE kind='saved'",
             [],
         )
         .unwrap();

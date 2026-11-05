@@ -32,7 +32,7 @@ fn every_agent_string_gets_rows_or_a_corrected_query() {
         "fix the \"parser",
         "(origin:codex OR origin:chatgpt",
         "reop:morrow",
-        "messges cargo",
+        "messges where cargo",
         "sessin where repo:morrow",
     ] {
         let f = run_q(&w, ask(text))

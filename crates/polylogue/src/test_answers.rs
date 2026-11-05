@@ -34,7 +34,7 @@ pub(crate) fn degraded<T: Debug>(answer: Answer<T>) -> (T, Vec<String>) {
         command_surface::Answer {
             outcome:
                 command_surface::Outcome::Degraded {
-                    value: value,
+                    value,
                     missing: notes,
                     ..
                 },

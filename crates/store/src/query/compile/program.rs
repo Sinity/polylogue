@@ -325,7 +325,7 @@ impl<'a> Compiler<'a> {
                 TransformKind::Extension { name, arguments }
                     if name == polylogue_query::catalog::MEASURE =>
                 {
-                    let [ExtensionArgument::Name(what), rest @ ..] = arguments.as_slice() else {
+                    let [ExtensionArgument::Value(what), rest @ ..] = arguments.as_slice() else {
                         return Err(not_built("this measure declaration"));
                     };
                     if rest.iter().any(|argument| !matches!(argument, ExtensionArgument::Optional(values) if values.is_empty())) {
@@ -341,7 +341,7 @@ impl<'a> Compiler<'a> {
                         self.apply_selection(&scope, &mut where_sql, &order, selection.take());
                     }
                     measure = Some(Measure {
-                        what: what.clone(),
+                        what: value_text(what)?.into(),
                         population_sql: String::new(),
                         selection_sql: String::new(),
                         everything: wheres.is_empty(),

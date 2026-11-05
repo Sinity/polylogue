@@ -52,7 +52,7 @@ pub fn catalog(origins: &[String]) -> Catalog {
         name: MEASURE.into(),
         position: ExtensionPosition::Transform,
         arguments: vec![
-            ExtensionSlot::Name,
+            ExtensionSlot::Value,
             ExtensionSlot::Optional(vec![
                 ExtensionSlot::Keyword("by".into()),
                 ExtensionSlot::List(Box::new(ExtensionSlot::Expression)),
@@ -107,7 +107,7 @@ pub fn catalog(origins: &[String]) -> Catalog {
         ("@", None),
         ("session:", Some(":")),
         ("message:", Some(":")),
-        ("block:", Some("#")),
+        ("block:", None),
         ("document:", Some(":")),
         ("event:", None),
         ("span:", Some("#")),

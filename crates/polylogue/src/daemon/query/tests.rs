@@ -577,7 +577,7 @@ fn session_queries_follow_the_morrow_examples() {
 fn aggregates_count_unknowns_apart() {
     let w = morrow();
     // 3: kind:* drops the subagent default; unknown costs are counted, not summed as 0.
-    let v = q(&w, "kind:* | agg count, sum:cost");
+    let v = q(&w, "kind:* | agg count, sum(cost)");
     let row = &v["rows"][0];
     assert_eq!(v["shape"], "summary");
     assert_eq!(row["count"], 8);
@@ -652,7 +652,7 @@ fn row_units_and_their_defaults() {
         "messages where written_by:human | group by session.origin | count",
     );
     assert_eq!(
-        groups(&v, "session_origin"),
+        groups(&v, "session.origin"),
         [
             ("claude-code".into(), 9),
             ("chatgpt".into(), 1),
@@ -944,6 +944,9 @@ fn query_failure_detail(
     let mut detail = serde_json::to_value(&failure.error).unwrap();
     // The message carries the source line and caret below its first line.
     detail["message"] = failure.message.lines().next().unwrap_or_default().into();
+    if let Some(suggestion) = crate::protocol::suggestion_text(failure) {
+        detail["suggestion"] = suggestion.as_ref().into();
+    }
     detail
 }
 
@@ -1221,7 +1224,10 @@ fn worked() -> TestArchive {
         })
         .unwrap();
     let m = fx
-        .message(s, msg("w1a", "assistant", "model", "", at(2, 12)))
+        .message(
+            s,
+            msg("claude-code:w1a", "assistant", "model", "", at(2, 12)),
+        )
         .unwrap();
     let calls: [(&str, &str, &str, i64); 5] = [
         ("bd update demo-7 --claim", "ok", "", 0),

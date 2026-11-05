@@ -202,7 +202,7 @@ fn query_commands_carry_every_option() {
     ])
     .unwrap();
     let r = request_json(c, &v, &cli_caller());
-    assert_eq!(r["text"], "repo:x | measure survival-turns");
+    assert_eq!(r["text"], "repo:x | measure \"survival-turns\"");
     assert_eq!(r["why"], true);
     assert_eq!(r["fields"], json!(["id", "cost"]));
 

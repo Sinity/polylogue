@@ -70,6 +70,7 @@ fn declaration_and_typed_query_schema_have_the_same_argument_names() {
     let command = crate::commands::command("query").unwrap();
     let declared = command
         .args_for(Surface::Mcp)
+        .filter(|arg| !matches!(arg.name, "request_id" | "cursor"))
         .map(|arg| arg.name.to_owned())
         .collect::<std::collections::BTreeSet<_>>();
     let schema = (command.typed_schemas.unwrap())().0;
@@ -156,7 +157,7 @@ fn each_typed_declaration_exposes_exactly_its_runtime_arguments() {
     {
         let declared = command
             .args_for(Surface::Mcp)
-            .filter(|arg| arg.name != "request_id")
+            .filter(|arg| !matches!(arg.name, "request_id" | "cursor"))
             .map(|arg| arg.name.to_owned())
             .collect::<std::collections::BTreeSet<_>>();
         let schema = (command.typed_schemas.unwrap())().0;

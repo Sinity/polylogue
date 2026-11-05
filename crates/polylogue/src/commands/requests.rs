@@ -324,6 +324,7 @@ pub fn measure(c: &Command, v: &Values, _: &Caller) -> Built {
         Some(metric) => format!("{name}:{metric}"),
         None => name.to_owned(),
     };
+    let what = polylogue_query::quoted(&what);
     let text = match v.text("query").filter(|q| !q.trim().is_empty()) {
         Some(q) => format!("{q} | measure {what}"),
         None => format!("sessions | measure {what}"),

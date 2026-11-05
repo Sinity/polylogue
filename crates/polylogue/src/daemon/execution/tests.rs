@@ -28,7 +28,7 @@ fn slow_read_returns_a_typed_deadline_with_unknown_count() {
     );
     let command_surface::Answer {
         outcome: command_surface::Outcome::Error(error),
-        envelope: command_surface::Envelope { notes: notes, .. },
+        envelope: command_surface::Envelope { notes, .. },
         ..
     } = &response
     else {
@@ -191,7 +191,7 @@ fn streamed_read_has_no_default_deadline_and_explicit_deadlines_still_apply() {
         |_| panic!("expired streamed read started"),
     );
     assert!(
-        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(error), envelope: command_surface::Envelope { notes: notes, .. }, .. } if error.code.as_deref() == Some("deadline_exceeded") && notes[0].starts_with("stopped during read "))
+        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(error), envelope: command_surface::Envelope { notes, .. }, .. } if error.code.as_deref() == Some("deadline_exceeded") && notes[0].starts_with("stopped during read "))
     );
 }
 
@@ -201,7 +201,7 @@ fn other_read_requests_use_their_operation_name_in_refusals() {
     let limit = ReadLimit::new(Duration::ZERO, Default::default());
     let response = run(request, &limit, |_| panic!("expired request started"));
     assert!(
-        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(_), envelope: command_surface::Envelope { notes: notes, .. }, .. } if notes[0].starts_with("stopped during backfill_jobs "))
+        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(_), envelope: command_surface::Envelope { notes, .. }, .. } if notes[0].starts_with("stopped during backfill_jobs "))
     );
 }
 

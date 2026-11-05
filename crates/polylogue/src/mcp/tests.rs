@@ -390,8 +390,9 @@ fn every_argument_is_in_its_tool_schema_or_unlisted() {
             .unwrap();
         let properties = &tool["inputSchema"]["properties"]["arguments"]["properties"];
         for arg in command.args_for(Surface::Mcp) {
-            if arg.name == "request_id" {
-                assert!(properties.get("request_id").is_none());
+            if matches!(arg.name, "request_id" | "cursor") {
+                assert!(properties.get(arg.name).is_none());
+                assert!(tool["inputSchema"]["properties"].get(arg.name).is_some());
                 continue;
             }
             assert_eq!(
@@ -438,7 +439,7 @@ fn typed_operations_declare_every_field_of_their_arguments() {
         let declared: std::collections::BTreeSet<String> = command
             .args_for(Surface::Mcp)
             .map(|arg| arg.name.to_owned())
-            .filter(|name| name != "request_id")
+            .filter(|name| !matches!(name.as_str(), "request_id" | "cursor"))
             .collect();
         assert_eq!(typed, declared, "{}", command.name);
     }
@@ -485,11 +486,13 @@ fn a_tool_call_names_one_of_its_operations() {
         json!({"operation": "brief", "arguments": {"cwd": "/synthetic", "detail": "full"}, "request_id": "unknown-argument"}),
     );
     assert!(unknown.contains("has no argument `detail`"), "{unknown}");
-    let lifted = run(
-        "polylogue_context",
-        json!({"operation": "brief", "arguments": {"cwd": "/synthetic"}, "request_id": "lifted", "deadline": null}),
-    );
-    assert!(lifted.contains("cannot be lifted"), "{lifted}");
+    let live = crate::test_daemon::start("lifted context deadline");
+    let (_, answer, failed) = call_with_limit(
+        &live.daemon.archive, "polylogue_context",
+        json!({"operation":"brief", "arguments":{"cwd":"/synthetic"}, "request_id":"lifted", "deadline":null}).as_object().unwrap().clone(),
+        None, &tokio_util::sync::CancellationToken::new(), None,
+    ).unwrap();
+    assert!(!failed, "{answer}");
 }
 
 mod cancellation;

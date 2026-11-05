@@ -81,7 +81,7 @@ fn a_missing_child_makes_the_tree_cost_partial() {
     .unwrap();
     let total = |text: &str| q(&w, text)["rows"][0].clone();
     let one = total(
-        "sessions where id:claude-code:7f3a2c10-0001-4000-8000-000000000001 | agg sum:tree_cost",
+        "sessions where id:claude-code:7f3a2c10-0001-4000-8000-000000000001 | agg sum(tree_cost)",
     );
     assert_eq!(one["partial_tree_cost"], 1, "{one}");
     assert!(
@@ -90,7 +90,7 @@ fn a_missing_child_makes_the_tree_cost_partial() {
     );
     // #2's tree has its subagent #3, priced, so it is complete.
     let two = total(
-        "sessions where id:claude-code:7f3a2c10-0002-4000-8000-000000000002 | agg sum:tree_cost",
+        "sessions where id:claude-code:7f3a2c10-0002-4000-8000-000000000002 | agg sum(tree_cost)",
     );
     assert_eq!(two["partial_tree_cost"], 0, "{two}");
 }

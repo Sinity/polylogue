@@ -35,7 +35,9 @@ fn catalog_measures_use_selected_sessions_and_typed_fields() {
             .iter()
             .all(|s| s["session"].as_str().unwrap().starts_with("claude-code:"))
     );
-    assert!(q(&archive, "sessions | measure compare:origin,words")["data"]["sessions"].is_array());
+    assert!(
+        q(&archive, "sessions | measure \"compare:origin,words\"")["data"]["sessions"].is_array()
+    );
     assert!(run_q(&archive, ask("sessions | measure time:unsupported")).is_err());
     assert!(run_q(&archive, ask("sessions | measure compare:unsupported")).is_err());
 }
@@ -176,7 +178,7 @@ fn paged_measures_preserve_query_order_when_display_fields_omit_the_id() {
 fn comparisons_keep_whole_selection_differences_on_every_page() {
     let mut archive = morrow();
     archive.fx.derive().unwrap();
-    let text = "sessions | sort by id | measure compare:origin,words,wall_span";
+    let text = "sessions | sort by id | measure \"compare:origin,words,wall_span\"";
     let mut request = ask(text);
     request.page_size = Some(1);
     let first = run_q(&archive, request).unwrap();
@@ -275,7 +277,7 @@ fn stored_counts_and_time_match_morrow_after_the_real_loop() {
 #[test]
 fn aggregate_counts_report_pending_and_compute_current_rows() {
     let archive = morrow();
-    let answer = q(&archive, "sessions | agg sum:messages");
+    let answer = q(&archive, "sessions | agg sum(messages)");
     assert!(answer["rows"][0]["sum_messages"].as_i64().unwrap() > 0);
     assert!(answer["rows"][0]["pending_messages"].as_i64().unwrap() > 0);
 }
@@ -284,7 +286,7 @@ fn aggregate_counts_report_pending_and_compute_current_rows() {
 fn clustered_fields_print_the_parameter_in_query_output() {
     let mut archive = morrow();
     archive.fx.derive().unwrap();
-    let result = q(&archive, "sessions | agg p50:clustered_time");
+    let result = q(&archive, "sessions | agg p50(clustered_time)");
     assert!(
         result["notes"]
             .as_array()
@@ -293,7 +295,7 @@ fn clustered_fields_print_the_parameter_in_query_output() {
             .any(|n| n.as_str().is_some_and(|n| n.contains("5-minute gap")))
     );
     let printed = crate::cli::print::query(
-        &super::document(&archive, "sessions | agg p50:clustered_time"),
+        &super::document(&archive, "sessions | agg p50(clustered_time)"),
         false,
     );
     assert!(printed.contains("5-minute gap"));
@@ -313,7 +315,7 @@ fn tool_time_aggregates_and_default_comparisons_report_unmeasured_calls() {
     let reader = pool.reader().unwrap();
     let answer = run(
         &reader,
-        ask("sessions | agg sum:tool_time, sum:tool_time_union"),
+        ask("sessions | agg sum(tool_time), sum(tool_time_union)"),
     )
     .unwrap();
     assert_eq!(answer["rows"][0]["sum_tool_time"], 120);

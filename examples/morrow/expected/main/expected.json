@@ -9,7 +9,7 @@
     "2 origin:claude-code kind:subagent": [
       "#3"
     ],
-    "3 kind:* | agg count, sum:cost": {
+    "3 kind:* | agg count, sum(cost)": {
       "count": 8,
       "sum_cost": 5.8626,
       "unknown_cost": 4,

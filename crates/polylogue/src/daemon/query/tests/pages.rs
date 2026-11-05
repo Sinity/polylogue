@@ -171,7 +171,7 @@ fn pages_cover_every_shape_and_allow_new_page_sizes_and_the_original_clock() {
         "messages | distinct",
         "tool_calls | group by action | count",
         "sessions where exists tool_call(action:shell) | matches",
-        "sessions where exists tool_call(action:shell) | matches | sort by command desc",
+        "sessions where exists tool_call(action:shell) | matches | sort by step.command desc",
         "sessions where seq(action:shell -> action:shell) | matches",
     ] {
         let mut request = ask(query);

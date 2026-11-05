@@ -506,7 +506,7 @@ proptest! {
         prop_assert!(both.is_subset(&only_a));
     }
 
-    /// `Q | agg count` counts `Q`'s rows; `sessions where Q | agg sum:cost`
+    /// `Q | agg count` counts `Q`'s rows; `sessions where Q | agg sum(cost)`
     /// adds each matched session's cost once and counts the unknown ones;
     /// `S | tool_calls where C` returns only tool calls of `S`'s sessions,
     /// exactly those `C` holds for.
@@ -529,7 +529,7 @@ proptest! {
             .filter(|i| matched.contains(&reference::session_id(&rows, *i)))
             .map(|i| rows.sessions[i].cost())
             .collect();
-        let summed = all(&w, &format!("{sessions} | agg sum:cost"));
+        let summed = all(&w, &format!("{sessions} | agg sum(cost)"));
         let known: i64 = costs.iter().flatten().sum();
         let sum = summed["rows"][0]["sum_cost"].as_f64();
         if costs.iter().any(Option::is_some) {

@@ -225,7 +225,7 @@ impl Execution {
                 )
                 .map_err(error)?;
         }
-        for row in &dataset["tool_calls"] {
+        for row in dataset.get("tool_calls").into_iter().flatten() {
             let parent = row.parent.as_ref().expect("shared child parent");
             let session = sessions[parent];
             let at = row.time.map(|time| time.start);

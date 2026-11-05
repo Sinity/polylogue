@@ -4,6 +4,8 @@ Everything Polylogue computes from parsed sessions: the rules every derived prod
 
 Measurement answers four questions for someone who runs many agents on subscriptions: how much of the subscription is left and when it runs out; what something cost, and would have cost at API prices; where an agent's time went and how agents behave; what one set of sessions looks like beside another. Every figure is computed from records, never guessed from prose, and says what it counts and what it could not count.
 
+Measurement options are one query scalar. Quote an option containing commas, for example `sessions | measure "compare:origin,words"`. The `measure` CLI builds the same literal.
+
 ## Principles
 
 - **The outlook leads for a subscription user.** The current window, its burn and when it runs out come first in status, the overview, the cost page and `analyze --cost`. API-equivalent money follows, labelled as a comparison.

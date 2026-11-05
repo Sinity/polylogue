@@ -64,7 +64,7 @@ fn empty_exists_and_scoped_matches_use_the_real_child_projection() {
             .as_array()
             .unwrap()
             .iter()
-            .all(|row| row["session"] == "claude-code:7f3a2c10-0001-4000-8000-000000000001")
+            .all(|row| row["step.session"] == "claude-code:7f3a2c10-0001-4000-8000-000000000001")
     );
     let scoped = q(
         &archive,
@@ -130,7 +130,7 @@ fn grouped_aggregate_keeps_implicit_count_partial_evidence_and_nullable_keyset_o
     assert_eq!(implicit["rows"][0]["repo"], "east");
     assert_eq!(implicit["rows"][0]["count"], 2);
     for direction in ["asc", "desc"] {
-        let text = format!("sessions | group by repo | agg sum:cost | sort by repo {direction}");
+        let text = format!("sessions | group by repo | agg sum(cost) | sort by repo {direction}");
         let whole = q(&archive, &text);
         let expected = whole["rows"].as_array().unwrap();
         assert_eq!(expected.len(), 3);

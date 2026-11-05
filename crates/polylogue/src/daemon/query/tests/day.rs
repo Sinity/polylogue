@@ -53,7 +53,7 @@ fn until_date_uses_logical_day_end_and_until_instant_stays_exclusive() {
     let reader = pool.reader().unwrap();
     for (text, expected) in [
         (
-            "messages where until 2026-10-24 | sort by at",
+            "messages where until:2026-10-24 | sort by at",
             vec!["before", "start", "inside", "last"],
         ),
         (
@@ -61,11 +61,11 @@ fn until_date_uses_logical_day_end_and_until_instant_stays_exclusive() {
             vec!["before"],
         ),
         (
-            "messages where until 2026-10-24T12:00:00Z | sort by at",
+            "messages where until:2026-10-24T12:00:00Z | sort by at",
             vec!["before", "start"],
         ),
         (
-            "messages where since 2026-10-24 until 2026-10-24 | sort by at",
+            "messages where since:2026-10-24 until:2026-10-24 | sort by at",
             vec!["start", "inside", "last"],
         ),
     ] {

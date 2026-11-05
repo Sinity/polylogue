@@ -360,7 +360,7 @@ impl<'a> Compiler<'a> {
         }
         // A recursive prefix is exposed only after its final step exists.
         let sql = format!(
-            "SELECT {} FROM {name} q JOIN {} ON {} = q.pk, {} \
+            "SELECT {} FROM {name} q JOIN ({}) ON {} = q.pk, {} \
              WHERE {s}.pk=q.session_pk AND ({parent_rows}) AND EXISTS (SELECT 1 FROM {name} complete WHERE complete.session_pk=q.session_pk \
              AND complete.mt=q.mt AND complete.step={last}) ORDER BY parent,q.mt,q.step",
             select.join(", "),
