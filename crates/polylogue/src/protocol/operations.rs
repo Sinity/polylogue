@@ -46,6 +46,23 @@ pub(crate) fn read_scope_required(
     )
 }
 
+/// Pure writes retain their result instead of inheriting a read deadline.
+/// Mixed operations use the admitted request, including bounded preparation.
+pub(crate) fn admitted_deadline(
+    command: Option<&Command>,
+    admitted: Option<&crate::daemon::Request>,
+    deadline: command_surface::Deadline,
+) -> command_surface::Deadline {
+    if admitted.map_or_else(
+        || command.is_none_or(|command| !command.writes),
+        crate::daemon::Request::has_read_phase,
+    ) {
+        deadline
+    } else {
+        command_surface::Deadline::None
+    }
+}
+
 pub fn register<C: CommandType>(daemon: Arc<Daemon>, table: &mut OperationTable) {
     table
         .register(TypedCommand::<C> {

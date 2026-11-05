@@ -7,6 +7,7 @@ use polylogue_model::{
     Session,
 };
 use serde::{Deserialize, Serialize};
+mod capture_compat;
 mod rebuild;
 pub(crate) use rebuild::AssembledReading;
 mod export;
@@ -205,7 +206,7 @@ pub struct CapturedInput {
 }
 
 /// Complete parser facts retained with an immutable source acquisition.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct CapturedReading {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub export_key: Option<ExportReadingKey>,

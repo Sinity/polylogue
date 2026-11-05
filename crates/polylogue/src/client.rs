@@ -194,12 +194,30 @@ pub(crate) async fn call_ready_as(
     cancelled: &CancellationToken,
     caller: polylogue_model::authorship::CallerEvidence,
 ) -> io::Result<command_surface::Answer<serde_json::Value>> {
-    let class = crate::commands::command(&request.operation)
+    let command = crate::commands::command(&request.operation);
+    let class = command
         .map(|command| command.latency)
         .unwrap_or(command_surface::LatencyClass::Local);
-    let budget = request
-        .deadline
-        .socket_timeout(crate::protocol::operations::deadlines().get(class));
+    let admitted = command
+        .and_then(|command| command.build_typed)
+        .and_then(|build| {
+            build(
+                request.arguments.clone(),
+                &crate::commands::Caller {
+                    surface: crate::commands::Surface::Cli,
+                    cwd: std::env::current_dir().ok(),
+                    json: true,
+                },
+                &request.request_id,
+            )
+            .ok()
+        });
+    let budget = crate::protocol::operations::admitted_deadline(
+        command,
+        admitted.as_ref(),
+        request.deadline,
+    )
+    .socket_timeout(crate::protocol::operations::deadlines().get(class));
     let ready_deadline = budget.map(crate::daemon::execution::deadline);
     let outgoing = crate::protocol::wire::Outgoing { request, caller };
     let work = async {

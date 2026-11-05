@@ -359,6 +359,22 @@ fn mixed_setting_reads_use_scope_fences_from_the_admitted_request() {
     .unwrap();
     assert!(read_scope_required(Some(command), Some(&read)));
     assert!(!read_scope_required(Some(command), Some(&write)));
+    assert_eq!(
+        admitted_deadline(
+            Some(command),
+            Some(&read),
+            command_surface::Deadline::Milliseconds(0)
+        ),
+        command_surface::Deadline::Milliseconds(0),
+    );
+    assert_eq!(
+        admitted_deadline(
+            Some(command),
+            Some(&write),
+            command_surface::Deadline::Milliseconds(0)
+        ),
+        command_surface::Deadline::None,
+    );
 }
 
 #[test]

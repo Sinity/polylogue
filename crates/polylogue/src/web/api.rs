@@ -107,7 +107,7 @@ async fn answer(
         json: true,
     };
     if c.register.is_some() {
-        let request = match values {
+        let mut request = match values {
             Ok(Input::Ready(request)) if request.operation == c.name => request,
             Ok(Input::Ready(_)) => {
                 return json_answer(
@@ -126,10 +126,6 @@ async fn answer(
             }
         };
         let parent_deadline = super::parent_deadline();
-        let logical_deadline = request
-            .deadline
-            .duration(crate::protocol::operations::deadlines().get(c.latency))
-            .and_then(|duration| std::time::Instant::now().checked_add(duration));
         let internal = match c.build_typed {
             Some(build) => match build(request.arguments.clone(), &caller, &request.request_id) {
                 Ok(internal) => Some(internal),
@@ -142,6 +138,15 @@ async fn answer(
             },
             None => None,
         };
+        request.deadline = crate::protocol::operations::admitted_deadline(
+            Some(c),
+            internal.as_ref(),
+            request.deadline,
+        );
+        let logical_deadline = request
+            .deadline
+            .duration(crate::protocol::operations::deadlines().get(c.latency))
+            .and_then(|duration| std::time::Instant::now().checked_add(duration));
         let scope_required =
             crate::protocol::operations::read_scope_required(Some(c), internal.as_ref());
         let admitted_request = internal.clone();

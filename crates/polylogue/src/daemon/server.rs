@@ -140,6 +140,12 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                         None => None,
                     };
                     accepted.admitted_request = internal.clone();
+                    let mut request = request;
+                    request.deadline = crate::protocol::operations::admitted_deadline(
+                        command,
+                        internal.as_ref(),
+                        request.deadline,
+                    );
                     if crate::protocol::operations::read_scope_required(command, internal.as_ref())
                     {
                         match d.reads.scope_token() {

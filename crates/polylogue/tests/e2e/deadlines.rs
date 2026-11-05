@@ -205,3 +205,58 @@ fn a_command_timeout_overrides_the_global_default() {
     let answer: command_surface::Answer<serde_json::Value> = serde_json::from_value(value).unwrap();
     assert_eq!(answer.value().unwrap(), &serde_json::json!([]));
 }
+
+#[test]
+fn a_typed_import_keeps_its_write_reply_beyond_the_aggregate_read_default() {
+    let response = serde_json::to_vec(&command_surface::Answer::ok(
+        polylogue_engine::ImportReport::default(),
+    ))
+    .unwrap();
+    let output = answer(
+        &["--json", "import"],
+        Duration::from_millis(1250),
+        [response, b"\n".to_vec()].concat(),
+        command_surface::Deadline::Default,
+    );
+    assert!(output.status.success(), "{output:?}");
+    let reply: command_surface::Answer<polylogue_engine::ImportReport> =
+        serde_json::from_slice(&output.stdout).unwrap();
+    assert!(reply.value().is_some(), "{reply:?}");
+}
+
+#[test]
+fn a_read_deadline_does_not_cancel_a_real_typed_import() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = crate::Fixture::new(
+        &directory.path().join("archive"),
+        &directory.path().join("home"),
+        &directory.path().join("config"),
+    );
+    let _daemon = crate::cli::start_daemon(&fixture);
+    let path = directory.path().join("conversations.json");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!([{
+            "id":"deadline-import", "mapping":{"node":{
+                "id":"node", "parent":null, "children":[], "message":{
+                    "id":"deadline-message", "author":{"role":"user"},
+                    "content":{"content_type":"text","parts":["synthetic import"]}
+                }
+            }}, "current_node":"node"
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = fixture
+        .command()
+        .args(["--deadline", "0", "--json", "import"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let reply: command_surface::Answer<polylogue_engine::ImportReport> =
+        serde_json::from_slice(&output.stdout).unwrap();
+    let report = reply.value().expect("import result");
+    assert_eq!(report.imported, [path]);
+    assert!(report.refused.is_empty(), "{report:?}");
+}
