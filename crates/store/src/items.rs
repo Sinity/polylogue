@@ -334,16 +334,7 @@ pub(crate) fn refresh_changed(conn: &Connection, counter: i64) -> Result<()> {
         .query_map([counter], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     for pk in sessions {
-        conn.execute_batch("SAVEPOINT fixture_items")?;
-        match refresh_session(conn, pk) {
-            Ok(()) => conn.execute_batch("RELEASE fixture_items")?,
-            Err(error) => {
-                conn.execute_batch("ROLLBACK TO fixture_items; RELEASE fixture_items")?;
-                if !matches!(error, StoreError::Invalid(_) | StoreError::Json(_)) {
-                    return Err(error);
-                }
-            }
-        }
+        refresh_session(conn, pk)?;
     }
     Ok(())
 }
@@ -353,6 +344,7 @@ pub(crate) fn refresh_changed(conn: &Connection, counter: i64) -> Result<()> {
 /// the writer would refuse (message IDs without an origin, partial block
 /// bodies) for tests that never read them as sessions; such a session is
 /// left unindexed, so only a session read of it is refused.
+#[cfg(any(test, feature = "fixture"))]
 pub(crate) fn refresh_stale(conn: &Connection) -> Result<()> {
     let sessions: Vec<i64> = conn
         .prepare(

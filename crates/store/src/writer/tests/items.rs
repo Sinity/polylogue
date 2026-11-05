@@ -290,3 +290,59 @@ fn lineage_walks_links_transitively_and_skips_references() {
         ["test:b", "test:a"]
     );
 }
+
+/// A failed item refresh must reject the rows, even when the old index exists.
+#[test]
+fn indexing_errors_abort_the_changed_rows_transaction() {
+    for invalid_json in [false, true] {
+        let w = test_archive();
+        w.store_reading(
+            batch(
+                "i1",
+                0,
+                0,
+                vec![row(10, message("a", Role::User, "original"))],
+                &["s"],
+            ),
+            Some(&SOURCE_RECORD),
+        )
+        .unwrap();
+        w.writer.flush().unwrap();
+        let before = stored(&w, "s");
+        let mut conn =
+            crate::archive::open_write(&w.archive.index_db(), crate::archive::cache::SETUP)
+                .unwrap();
+        {
+            let tx = conn.transaction().unwrap();
+            let counter = bump_counter(&tx).unwrap();
+            tx.execute(
+                "UPDATE session SET changed = ?1 WHERE pk = ?2",
+                params![counter, before.session_pk],
+            )
+            .unwrap();
+            tx.execute("UPDATE message SET on_active_path = 0", [])
+                .unwrap();
+            if invalid_json {
+                let body =
+                    crate::encoding::pack_json(&serde_json::json!({"type":"not-a-block"})).unwrap();
+                tx.execute("UPDATE block SET body = ?1", [body]).unwrap();
+            } else {
+                tx.execute("UPDATE block SET idx = -1, ordinal = NULL", [])
+                    .unwrap();
+            }
+            let error = crate::items::refresh_changed(&tx, counter)
+                .expect_err("a transaction cannot commit rows whose item index did not refresh");
+            assert!(
+                matches!(
+                    error,
+                    crate::StoreError::Invalid(_) | crate::StoreError::Json(_)
+                ),
+                "{error}"
+            );
+            // Dropping the same transaction production callers own rolls all
+            // changed rows back together with any attempted index updates.
+        }
+        assert_eq!(stored(&w, "s"), before);
+        assert_matches_rows(&w, "s");
+    }
+}
