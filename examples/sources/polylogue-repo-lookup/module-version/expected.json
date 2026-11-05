@@ -1,0 +1,26 @@
+{
+  "counts": {
+    "records": 1,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
+    "used": {
+      "repo_lookup": 1
+    }
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [],
+    "repo_lookups": [
+      {
+        "path": "/work/project",
+        "remote": "https://example.invalid/repo.git",
+        "root_commit": "abc"
+      }
+    ],
+    "sessions": []
+  }
+}

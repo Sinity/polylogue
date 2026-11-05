@@ -9,7 +9,12 @@ use serde_json::Value;
 use std::io::{self, Write};
 
 pub fn render(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<()> {
-    render_with_links(data, format, out, None, crate::terminal::color_enabled())
+    render_with_links(data, format, out, None, false)
+}
+
+/// The displaying client supplies its captured output policy.
+pub fn terminal_with_color(data: &Value, color: bool, out: &mut dyn Write) -> io::Result<()> {
+    render_with_links(data, Format::Terminal, out, None, color)
 }
 
 /// Plain text for a transcript whose displaying client chooses its styling.
@@ -31,7 +36,7 @@ fn render_with_links(
     target: Option<&LinkTarget<'_>>,
     color: bool,
 ) -> io::Result<()> {
-    if format == Format::Json {
+    if matches!(format, Format::Json | Format::Jsonl) {
         return writeln!(out, "{}", crate::terminal::json(data, false));
     }
     let columns: Vec<String> = data["columns"]
@@ -211,7 +216,7 @@ fn markdown(
     if cells.is_empty() {
         return Ok(());
     }
-    let esc = |s: &str| s.replace('|', "\\|");
+    let esc = crate::encode::markdown_escape;
     let with_snippet = rows.iter().any(|r| r["snippet"].is_object());
     let mut head: Vec<String> = columns.iter().map(|c| esc(c)).collect();
     if with_snippet {
@@ -268,7 +273,10 @@ fn html(
         for (i, v) in r.iter().enumerate() {
             let column = descriptors[i];
             let value = &row[columns[i].as_str()];
-            match target.and_then(|target| target(column, value)) {
+            match target
+                .and_then(|target| target(column, value))
+                .filter(|href| crate::html::safe_url(href))
+            {
                 Some(href) => write!(
                     out,
                     "<td><a href=\"{}\">{}</a></td>",
@@ -288,24 +296,28 @@ fn html(
 }
 
 /// The shared continuation line for row and measure text views.
-pub fn next_page(data: &Value) -> Option<String> {
-    data["next"]
-        .as_str()
-        .map(|next| format!("more: --cursor {next}"))
+pub fn continuation(next: &str) -> String {
+    format!("more: --cursor {next}")
+}
+
+fn next_page(data: &Value) -> Option<String> {
+    data["next"].as_str().map(continuation)
 }
 
 fn footer(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<()> {
     let count = data["count"].as_u64().unwrap_or(0);
     let shown = data["rows"].as_array().map_or(0, Vec::len);
     let mut lines = vec![];
-    match data["outcome"].as_str() {
-        Some("empty") => lines.push("no rows".to_owned()),
-        _ => lines.push(if shown as u64 == count {
-            format!("{count} row{}", if count == 1 { "" } else { "s" })
-        } else {
-            format!("{shown} of {count} rows")
-        }),
-    }
+    let incomplete = data["incomplete"]
+        .as_array()
+        .is_some_and(|parts| !parts.is_empty());
+    lines.push(if count == 0 && !incomplete {
+        "no rows".to_owned()
+    } else if shown as u64 == count {
+        format!("{count} row{}", if count == 1 { "" } else { "s" })
+    } else {
+        format!("{shown} of {count} rows")
+    });
     if let Some(next) = next_page(data) {
         lines.push(next);
     }

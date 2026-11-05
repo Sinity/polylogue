@@ -6,6 +6,8 @@
 //! a listed example that starts to match fails the test, so the list is
 //! removed from as features land.
 
+use super::fixture_context;
+use super::run;
 use crate::daemon::query::*;
 use polylogue_testkit::{Morrow, Set, morrow_dir, short};
 use std::collections::BTreeMap;
@@ -29,8 +31,9 @@ const GAPS: &[(&str, &str)] = &[
 
 fn archive_with_notes() -> Morrow {
     use crate::daemon::service::ArchiveMode;
-    use crate::daemon::{Request, Response, service};
-    use polylogue_model::{Author, Block, NewNote, NoteKind, Target};
+    use crate::daemon::{Request, service};
+    use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+    use polylogue_model::{Block, Reference};
     use polylogue_testkit::session;
 
     let archive = Morrow::build(Set::Main);
@@ -51,50 +54,54 @@ fn archive_with_notes() -> Morrow {
             .id
     };
     let mut runtime =
-        service::start(&archive.root, archive.config(), ArchiveMode::Standalone).unwrap();
+        crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
+            .unwrap();
     for (id, kind, key, value, targets) in [
         (
             "morrow-project",
-            NoteKind::Tag,
+            AssertionKind::Tag,
             Some("project:morrow"),
             None,
             [1, 2, 4, 5, 6]
                 .into_iter()
-                .map(|n| Target::Session(session(n)))
+                .map(|n| Reference::Session(session(n)))
                 .collect(),
         ),
         (
             "morrow-research",
-            NoteKind::Tag,
+            AssertionKind::Tag,
             Some("research"),
             None,
-            vec![Target::Session(session(7))],
+            vec![Reference::Session(session(7))],
         ),
         (
             "morrow-decision",
-            NoteKind::Decision,
+            AssertionKind::Decision,
             None,
             Some("decided: chrono, not time"),
-            vec![Target::Message(decision)],
+            vec![Reference::Message(decision)],
         ),
     ] {
         let response = service::handle(
-            Request::AddNote {
+            Request::Assert {
                 request_id: id.into(),
-                note: NewNote {
+                assertions: vec![NewAssertion {
                     kind,
                     key: key.map(Into::into),
-                    value: value.map(Into::into),
-                    author: Author::Operator,
-                    targets,
-                    relations: vec![],
-                    revises: None,
+                    value: value.map(|value| serde_json::json!(value)),
+                    links: targets
+                        .into_iter()
+                        .map(|reference| NewAssertionLink {
+                            role: LinkRole::About,
+                            reference,
+                        })
+                        .collect(),
                     valid_until: None,
-                },
+                }],
             },
             &runtime.daemon,
         );
-        assert!(matches!(response, Response::Ok { .. }), "{response:?}");
+        crate::test_answers::ok(response);
     }
     runtime.shutdown().unwrap();
     archive
@@ -107,9 +114,9 @@ fn ask(text: &str) -> Ask<'_> {
         page_size: Some(1000),
         why: false,
         session: None,
-        now: NOW,
-        day: Some(LogicalDay::named("Europe/Warsaw", 240).unwrap()),
+        context: fixture_context(NOW, "Europe/Warsaw", 240),
         embeddings: false,
+        ranking_identity: None,
         near: None,
         fields: &[],
     }
@@ -150,10 +157,14 @@ fn compare(
 ) -> Result<(), String> {
     let v = match (got, want) {
         (Err(f), _) if want.get("outcome") == Some(&json!("error")) => {
-            let _ = f;
+            if number == "35" {
+                let detail =
+                    super::query_failure_detail(f, query_language::ErrorKind::UnknownField, 0);
+                super::assert_same_question(detail["suggestion"].as_str().unwrap(), "repo:morrow");
+            }
             return Ok(());
         }
-        (Err(f), _) => return Err(format!("error {} {}", f.kind, f.message)),
+        (Err(f), _) => return Err(format!("error {} {}", f.code(), f.message)),
         (Ok(v), _) => v,
     };
     let differ = |got: String, want: String| {
@@ -172,10 +183,10 @@ fn compare(
             n.to_string(),
         ),
         Value::Array(items) if number == "31" => {
-            use polylogue_model::{Block, Target};
+            use polylogue_model::{Block, Reference};
             let mut got: Vec<_> = rows(v)
                 .iter()
-                .map(|note| json!([note["value"], note["target"]]).to_string())
+                .map(|note| json!([note["value"], note["about"]]).to_string())
                 .collect();
             let mut wanted = Vec::new();
             for item in items {
@@ -198,7 +209,8 @@ fn compare(
                         })
                     })
                     .ok_or_else(|| format!("decision target prompt missing in #{number}"))?;
-                wanted.push(json!([item[0], Target::Message(message.id).to_string()]).to_string());
+                wanted
+                    .push(json!([item[0], Reference::Message(message.id).to_string()]).to_string());
             }
             got.sort();
             wanted.sort();
@@ -398,7 +410,7 @@ fn pages_of_every_size_concatenate_to_the_whole_answer() {
                         ..ask(text)
                     },
                 )
-                .unwrap_or_else(|f| panic!("{key} by {size}: {} {}", f.kind, f.message));
+                .unwrap_or_else(|f| panic!("{key} by {size}: {} {}", f.code(), f.message));
                 if page["count"] != whole["count"] {
                     wrong.push(format!(
                         "{key} by {size}: count {} of {}",

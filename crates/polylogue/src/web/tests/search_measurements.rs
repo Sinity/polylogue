@@ -40,11 +40,11 @@ fn search_measurements() {
         ),
         (
             "semantic",
-            "messages where origin:claude-code near:\"parser\"",
+            "messages where origin:claude-code similar:\"parser\"",
         ),
         (
             "mixed",
-            "messages where origin:claude-code parser near:\"parser\"",
+            "messages where origin:claude-code parser similar:\"parser\"",
         ),
     ] {
         let request = Request::Query {
@@ -56,18 +56,12 @@ fn search_measurements() {
             fields: vec![],
         };
         let started = Instant::now();
-        assert!(matches!(
-            handle(request.clone(), &r.web.daemon),
-            Response::Ok { .. }
-        ));
+        crate::test_answers::ok(handle(request.clone(), &r.web.daemon));
         let first_ms = started.elapsed().as_secs_f64() * 1000.0;
         let mut samples = Vec::new();
         for _ in 0..30 {
             let started = Instant::now();
-            assert!(matches!(
-                handle(request.clone(), &r.web.daemon),
-                Response::Ok { .. }
-            ));
+            crate::test_answers::ok(handle(request.clone(), &r.web.daemon));
             samples.push(started.elapsed().as_secs_f64() * 1000.0);
         }
         eprintln!(

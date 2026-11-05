@@ -345,7 +345,7 @@ fn writer_pairs_tools_and_behind_reads_equal_the_next_derivation() {
 }
 
 #[test]
-fn notes_settings_and_read_clocks_do_not_change_stored_time_products() {
+fn assertions_settings_and_read_clocks_do_not_change_stored_time_products() {
     use crate::fixture::{Fixture, MessageFacts, SessionFacts};
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
@@ -374,10 +374,10 @@ fn notes_settings_and_read_clocks_do_not_change_stored_time_products() {
         let r = pool.reader().unwrap();
         compute(r.conn().unwrap(), s, CLUSTER_GAP_MS).unwrap()
     };
-    f.note("tag", None, Some("new"), "session:codex:independent")
+    f.note("tag", Some("new"), None, "session:codex:independent")
         .unwrap();
-    f.setting("day.zone", "Pacific/Auckland").unwrap();
-    f.setting("plan.example", "irrelevant setting").unwrap();
+    f.setting("browser.actions", "on").unwrap();
+    f.setting("reading.variants", r#"["summary"]"#).unwrap();
     let after = {
         let pool = f.reads().unwrap();
         let r = pool.reader().unwrap();

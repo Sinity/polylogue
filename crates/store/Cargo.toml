@@ -7,22 +7,31 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+query-language.workspace = true
+schemars = "1"
 libc.workspace = true
 polylogue-model.workspace = true
+polylogue-query.workspace = true
+strsim.workspace = true
 hashed-blobs.workspace = true
+shared-signals.workspace = true
 rusqlite = { workspace = true, features = ["blob", "hooks"] }
 blake3.workspace = true
 memchr.workspace = true
 zstd.workspace = true
 uuid.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["unbounded_depth"] }
 base64.workspace = true
 thiserror.workspace = true
 jiff.workspace = true
 tempfile.workspace = true
+authored.workspace = true
 
 [dev-dependencies]
+authored = { workspace = true, features = ["generator"] }
+proptest.workspace = true
+shared-signals.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 rusqlite = { workspace = true, features = ["hooks"] }
 

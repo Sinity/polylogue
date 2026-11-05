@@ -1,0 +1,1 @@
+{"id":"task_e_synthetic_clock","title":"Native missing clock","turns":[{"id":"turn-synthetic","role":"user","input_items":[{"type":"message","role":"user","content":[{"content_type":"text","text":"Read clocks."}]}]}]}

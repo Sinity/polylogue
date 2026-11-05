@@ -9,16 +9,37 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "event_msg/item_completed.item.process_id": 4,
+      "event_msg/item_completed.item.source": 4,
+      "event_msg/item_completed.item.stderr": 5
+    }
   },
   "output": {
     "background": [],
     "blobs": [],
     "events": [
       {
+        "session": "codex:codex-item-completed",
+        "kind": "session_meta",
+        "at": "2026-09-02T10:00:00Z",
+        "range": [
+          0,
+          120
+        ],
+        "data": {
+          "id": "codex-item-completed",
+          "timestamp": "2026-09-02T10:00:00Z",
+          "cwd": "/repo"
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "second"
+      },
+      {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:codex-item-completed"
+        "session": "codex:codex-item-completed",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -41,7 +62,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 121
       },
@@ -81,14 +103,16 @@
                 }
               },
               "output": "FAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\n2 failed, 3 passed\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 4000
             }
           ],
           "duration_ms": 4000,
           "id": "codex:exec-aaaa1111",
           "prompt_kind": "harness",
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 352
       },
@@ -102,13 +126,24 @@
                 "kind": "ok"
               },
               "output": "Script completed\nWall time 4.0 seconds\nOutput:\n\n2 failed, 3 passed\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "data": [
+                {
+                  "type": "input_text",
+                  "text": "Script completed\nWall time 4.0 seconds\nOutput:\n"
+                },
+                {
+                  "type": "input_text",
+                  "text": "2 failed, 3 passed\n"
+                }
+              ]
             }
           ],
           "id": "codex:ctco-a",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 8424
       },
@@ -130,7 +165,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 8689
       },
@@ -145,13 +181,20 @@
                 "reason": "running_in_background"
               },
               "output": "Script running with cell ID 3\nWall time 1.0 seconds\nOutput:\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "data": [
+                {
+                  "type": "input_text",
+                  "text": "Script running with cell ID 3\nWall time 1.0 seconds\nOutput:\n"
+                }
+              ]
             }
           ],
           "id": "codex:ctco-b",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 8942
       },
@@ -187,14 +230,16 @@
                 "kind": "ok"
               },
               "output": "built 2 targets\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 9000
             }
           ],
           "duration_ms": 9000,
           "id": "codex:exec-bbbb2222",
           "prompt_kind": "harness",
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 9164
       },
@@ -216,7 +261,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 9668
       },
@@ -252,14 +298,16 @@
                 "kind": "ok"
               },
               "output": "12 alpha.py\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 0
             }
           ],
           "duration_ms": 0,
           "id": "codex:exec-cccc3333",
           "prompt_kind": "harness",
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 9879
       },
@@ -299,14 +347,16 @@
                 }
               },
               "output": "wc: beta.py: No such file or directory\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 0
             }
           ],
           "duration_ms": 0,
           "id": "codex:exec-dddd4444",
           "prompt_kind": "harness",
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 10385
       },
@@ -320,13 +370,20 @@
                 "kind": "ok"
               },
               "output": "Script completed\nWall time 0.1 seconds\nOutput:\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "data": [
+                {
+                  "type": "input_text",
+                  "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"
+                }
+              ]
             }
           ],
           "id": "codex:ctco-c",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 10967
       },
@@ -348,7 +405,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 11176
       },
@@ -382,7 +440,8 @@
           "id": "codex:exec-eeee5555",
           "prompt_kind": "harness",
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 11406
       },
@@ -396,13 +455,20 @@
                 "kind": "ok"
               },
               "output": "Script completed\nWall time 0.1 seconds\nOutput:\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "data": [
+                {
+                  "type": "input_text",
+                  "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"
+                }
+              ]
             }
           ],
           "id": "codex:ctco-d",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 11745
       }
@@ -414,7 +480,9 @@
         ],
         "id": "codex:codex-item-completed",
         "kind": "main",
-        "started": "2026-09-02T10:00:00Z"
+        "started": "2026-09-02T10:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

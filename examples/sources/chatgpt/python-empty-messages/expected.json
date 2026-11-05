@@ -7,7 +7,10 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "node.children": 2,
+      "node.children[]": 4
+    }
   },
   "output": {
     "background": [],
@@ -16,19 +19,21 @@
       {
         "at": "2023-11-14T22:13:23Z",
         "data": {
-          "conversation_id": "neutral-empty-native",
-          "create_time": 1700000000.0,
-          "current_node": "tool-node",
           "id": "neutral-empty-native",
+          "conversation_id": "neutral-empty-native",
           "title": "Neutral empty native messages",
-          "update_time": 1700000003.0
+          "create_time": 1700000000.0,
+          "update_time": 1700000003.0,
+          "current_node": "tool-node"
         },
         "kind": "conversation_settings",
         "range": [
           3,
           2417
         ],
-        "session": "chatgpt:neutral-empty-native"
+        "session": "chatgpt:neutral-empty-native",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "after": "chatgpt:tool-message",
@@ -38,7 +43,8 @@
           3,
           2417
         ],
-        "session": "chatgpt:neutral-empty-native"
+        "session": "chatgpt:neutral-empty-native",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -56,7 +62,12 @@
           "id": "chatgpt:user-message",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "chatgpt:neutral-empty-native"
+          "session": "chatgpt:neutral-empty-native",
+          "attrs": {
+            "metadata": {}
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3
       },
@@ -68,7 +79,19 @@
           "id": "chatgpt:assistant-message",
           "parent": "chatgpt:user-message",
           "role": "assistant",
-          "session": "chatgpt:neutral-empty-native"
+          "session": "chatgpt:neutral-empty-native",
+          "attrs": {
+            "metadata": {
+              "reasoning_title": "Neutral stage",
+              "reasoning_titles": [
+                "Neutral first",
+                "Neutral second"
+              ],
+              "reasoning_status": "in_progress"
+            }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3
       },
@@ -90,7 +113,18 @@
           "parent": "chatgpt:assistant-message",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "chatgpt:neutral-empty-native"
+          "session": "chatgpt:neutral-empty-native",
+          "attrs": {
+            "metadata": {
+              "reasoning_title": "Neutral stage",
+              "reasoning_titles": [
+                "Neutral first",
+                "Neutral second"
+              ],
+              "reasoning_status": "in_progress"
+            }
+          },
+          "at_quality": "unknown"
         },
         "offset": 3
       },
@@ -102,7 +136,19 @@
           "id": "chatgpt:branch-message",
           "parent": "chatgpt:user-message",
           "role": "assistant",
-          "session": "chatgpt:neutral-empty-native"
+          "session": "chatgpt:neutral-empty-native",
+          "attrs": {
+            "metadata": {
+              "reasoning_title": "Neutral stage",
+              "reasoning_titles": [
+                "Neutral first",
+                "Neutral second"
+              ],
+              "reasoning_status": "in_progress"
+            }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3
       }
@@ -115,7 +161,9 @@
         "title": {
           "source": "generated",
           "text": "Neutral empty native messages"
-        }
+        },
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

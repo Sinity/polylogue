@@ -37,52 +37,131 @@ impl ReadCancellation {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct Stages {
+    current: Option<(&'static str, Instant)>,
+    totals: Vec<(&'static str, Duration)>,
+}
+
+impl Stages {
+    fn close(&mut self, now: Instant) {
+        if let Some((name, began)) = self.current.take() {
+            let spent = now.saturating_duration_since(began);
+            match self.totals.iter_mut().find(|(total, _)| *total == name) {
+                Some((_, total)) => *total += spent,
+                None => self.totals.push((name, spent)),
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ReadLimit {
     deadline: Option<Instant>,
     steps: Arc<AtomicU64>,
-    stage: Arc<Mutex<Option<&'static str>>>,
+    stages: Arc<Mutex<Stages>>,
+    scopes: Arc<Mutex<Vec<super::scope::ReadScopeToken>>>,
     pub cancellation: ReadCancellation,
 }
 
 impl ReadLimit {
     pub fn new(duration: Duration, cancellation: ReadCancellation) -> Self {
-        Self {
-            deadline: Instant::now().checked_add(duration),
-            cancellation,
-            steps: Arc::new(AtomicU64::new(0)),
-            stage: Arc::new(Mutex::new(None)),
-        }
+        Self::with_deadline(Instant::now().checked_add(duration), cancellation)
+    }
+
+    /// Bind an already admitted absolute deadline without renewing its budget.
+    pub fn at(deadline: Instant, cancellation: ReadCancellation) -> Self {
+        Self::with_deadline(Some(deadline), cancellation)
     }
 
     /// Export has cancellation even when its caller has asked for no deadline.
     pub fn without_deadline(cancellation: ReadCancellation) -> Self {
+        Self::with_deadline(None, cancellation)
+    }
+
+    fn with_deadline(deadline: Option<Instant>, cancellation: ReadCancellation) -> Self {
         Self {
-            deadline: None,
+            deadline,
             cancellation,
             steps: Arc::new(AtomicU64::new(0)),
-            stage: Arc::new(Mutex::new(None)),
+            stages: Default::default(),
+            scopes: Default::default(),
         }
+    }
+
+    /// When this request's reads stop, when they have a deadline.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.deadline
     }
 
     pub fn stage(&self) -> Option<&'static str> {
-        *self.stage.lock().unwrap_or_else(|error| error.into_inner())
+        self.stages
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .current
+            .map(|(name, _)| name)
     }
 
+    /// Enters a named stage; the time since the previous stage began is added
+    /// to that stage's total. Re-entering the current stage changes nothing.
     pub fn set_stage(stage: &'static str) {
         if let Some(limit) = Self::current() {
-            *limit
-                .stage
+            let mut stages = limit
+                .stages
                 .lock()
-                .unwrap_or_else(|error| error.into_inner()) = Some(stage);
+                .unwrap_or_else(|error| error.into_inner());
+            if stages.current.is_some_and(|(name, _)| name == stage) {
+                return;
+            }
+            let now = Instant::now();
+            stages.close(now);
+            stages.current = Some((stage, now));
         }
+    }
+
+    /// Elapsed time per stage in first-entered order, the current stage
+    /// counted up to now.
+    pub fn stage_timings(&self) -> Vec<(&'static str, Duration)> {
+        let mut stages = self
+            .stages
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        stages.close(Instant::now());
+        stages.totals
     }
 
     pub fn sqlite_steps(&self) -> u64 {
         self.steps.load(Ordering::Relaxed)
     }
 
+    pub(crate) fn bind_scope(&self, scope: super::scope::ReadScopeToken) -> Result<()> {
+        scope.check()?;
+        let mut scopes = self
+            .scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !scopes.iter().any(|existing| existing.same(&scope)) {
+            scopes.push(scope);
+        }
+        Ok(())
+    }
+
+    /// The time left before the deadline; `None` with no deadline.
+    pub fn remaining(&self) -> Option<Duration> {
+        self.deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    }
+
     pub fn check(&self) -> Result<()> {
+        for scope in self
+            .scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+        {
+            scope.check()?;
+        }
         if self.cancellation.is_cancelled() {
             Err(StoreError::ReadCancelled)
         } else if self

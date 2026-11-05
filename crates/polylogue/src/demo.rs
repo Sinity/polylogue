@@ -3,7 +3,7 @@
 mod files;
 
 use crate::commands::{self, Action, Caller, Command, Surface, Values};
-use crate::daemon::{Response, service};
+use crate::daemon::service;
 use polylogue_engine::Config;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -35,9 +35,14 @@ struct Tour {
     transcript: String,
 }
 
-pub fn tour(_: &Command, values: &Values, json: bool) -> ExitCode {
+pub fn tour(
+    _: &Command,
+    values: &Values,
+    startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
     let directory = values.text("directory").unwrap_or_default();
-    match run(Path::new(&directory)) {
+    match run(Path::new(&directory), startup) {
         Ok(tour) => {
             if json {
                 println!(
@@ -52,11 +57,11 @@ pub fn tour(_: &Command, values: &Values, json: bool) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(error) => crate::cli::fail(json, "demo", &error, 1),
+        Err(error) => crate::cli::fail(startup.output, json, "demo", &error, 1),
     }
 }
 
-fn run(directory: &Path) -> Result<Tour, String> {
+fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, String> {
     let preparing = Instant::now();
     // Creation is exclusive: a tour never changes an existing directory.
     fs::create_dir(directory).map_err(|e| format!("create a new tour directory: {e}"))?;
@@ -68,23 +73,34 @@ fn run(directory: &Path) -> Result<Tour, String> {
             .map_err(|e| e.to_string())?;
         fs::write(path, bytes).map_err(|e| e.to_string())?;
     }
-    let environment = Config::from_env();
     let config = Config {
+        clock: startup.clock.clone(),
         home,
         tool_dirs: Default::default(),
         workers: 2,
         reader_memory_bytes: 64 << 20,
         bytes_in_flight: 64 << 20,
-        machine: environment.machine,
-        host: environment.host,
+        machine: startup.engine.machine.clone(),
+        host: startup.engine.host.clone(),
         chunk: 64 << 20,
         rescan_every: Duration::from_secs(60),
         live_every: Duration::from_secs(2),
+        reads_sources: true,
     };
+    let day = query_language::time::DaySetting::new(
+        jiff::tz::TimeZone::UTC,
+        jiff::civil::Time::constant(0, 0, 0, 0),
+    )
+    .map_err(|e| e.to_string())?;
+    let deployment = startup
+        .config
+        .standalone_for_archive(directory.join("archive"), day)
+        .map_err(|e| e.to_string())?;
     let mut runtime = service::start(
-        &directory.join("archive"),
+        deployment,
         config,
         service::ArchiveMode::Standalone,
+        polylogue_engine::Lifetime::UntilStopped,
     )
     .map_err(|e| e.to_string())?;
     let invoke = |command: &str, arguments: Value| -> Result<Value, String> {
@@ -98,8 +114,9 @@ fn run(directory: &Path) -> Result<Tour, String> {
                 .ok_or("arguments must be an object")?
                 .clone(),
         )?;
-        let Action::Request(build) = declaration.action else {
-            return Err(format!("{command} must use the daemon"));
+        let build = match declaration.action {
+            Action::Request(build) | Action::Stream { build, .. } => build,
+            _ => return Err(format!("{command} must use the daemon")),
         };
         let request = build(
             declaration,
@@ -110,10 +127,13 @@ fn run(directory: &Path) -> Result<Tour, String> {
                 json: true,
             },
         )?;
-        match service::handle(request, &runtime.daemon) {
-            Response::Ok { data, .. } => Ok(data),
-            Response::Error { kind, message, .. } => Err(format!("{command}: {kind}: {message}")),
-        }
+        crate::protocol::into_value(service::handle(request, &runtime.daemon)).map_err(|failure| {
+            format!(
+                "{command}: {}: {}",
+                failure.code.as_deref().unwrap_or_default(),
+                failure.message
+            )
+        })
     };
     invoke(
         "import",
@@ -130,7 +150,7 @@ fn run(directory: &Path) -> Result<Tour, String> {
             let text = if command == "query" {
                 crate::cli::print::query_plain(&result)
             } else {
-                (declaration.print)(&result)
+                (declaration.print)(&result, false)
             };
             steps.push(Step {
                 title: title.into(),
@@ -154,7 +174,7 @@ fn run(directory: &Path) -> Result<Tour, String> {
         "Read the parser session",
         "Read the session around the decision, including the assistant's account of its work.",
         "read",
-        json!({"session": PARSER, "format": "markdown"}),
+        json!({"target": format!("session:{PARSER}"), "format": "markdown"}),
     )?;
     step(
         "Check recorded tool failures",
@@ -172,7 +192,7 @@ fn run(directory: &Path) -> Result<Tour, String> {
         "Read the continuation with its parents",
         "Inherited messages appear with the continuation when requested.",
         "read",
-        json!({"session": RESUME, "with_parents": true, "format": "markdown"}),
+        json!({"target": format!("session:{RESUME}"), "show": ["inherited"], "format": "markdown"}),
     )?;
     step(
         "Keep unknown costs visible",
@@ -189,18 +209,18 @@ fn run(directory: &Path) -> Result<Tour, String> {
     step(
         "Add a decision note",
         "Write a note only in this tour's archive.",
-        "note add",
-        json!({"targets": [format!("session:{PARSER}")], "kind": "decision", "body": "Use chrono for date parsing."}),
+        "assert",
+        json!({"assertions": [{"kind":"decision","value":"Use chrono for date parsing.","links":[{"role":"about","reference":format!("session:{PARSER}")}]}]}),
     )?;
     step(
         "Read the note",
         "Notes can be retrieved independently of the conversation.",
-        "note list",
-        json!({"targets": [format!("session:{PARSER}")]}),
+        "query",
+        json!({"query":format!("assertions where about:\"session:{PARSER}\"")}),
     )?;
     step(
         "Prepare takeover context",
-        "Takeover combines the session's work and notes for the next reader.",
+        "Takeover carries the session's prompts and last answer for the next reader. It names the assertion without quoting it, because another author wrote it and the operator has not accepted it; the previous step still reads it.",
         "takeover",
         json!({"session": PARSER}),
     )?;

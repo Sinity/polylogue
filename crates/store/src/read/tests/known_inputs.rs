@@ -14,19 +14,21 @@ fn known_inputs_choose_the_latest_eligible_observation_and_keep_parser_facts() {
          INSERT INTO observation(id,input,machine,path,class,device,inode,size,mtime_ns,ctime_ns,polylogue_version,seen_at) VALUES
            ('first','watched','m','/home/op/session.jsonl','first',1,2,10,3,4,'test',100),
            ('gone','watched','m','/home/op/session.jsonl','deleted',NULL,NULL,NULL,NULL,NULL,'test',50),
-           ('excised','watched','m','/home/op/session.jsonl','excised',NULL,NULL,NULL,NULL,NULL,'test',200),
            ('manual','manual','m','/home/op/session.jsonl','imported',5,6,5,7,8,'test',300),
            ('manual-tail','manual','m','/home/op/session.jsonl','appended',5,6,7,7,8,'test',200),
-           ('manual-excised','manual','m','/home/op/session.jsonl','excised',NULL,NULL,NULL,NULL,NULL,'test',400),
            ('facts','watched','m','/home/op/renamed.jsonl','back',9,10,20,11,12,'test',40),
            ('other','other','other-machine','/home/op/session.jsonl','first',13,14,99,15,16,'test',500);"
     ).unwrap();
+    // These fixture paths are explicitly synthetic UTF-8 native observations.
+    archive
+        .execute("UPDATE observation SET path_bytes=CAST(path AS BLOB)", [])
+        .unwrap();
     let index = Connection::open(fixture.archive.index_db()).unwrap();
     index
         .execute_batch(
             "INSERT INTO input_ref(id) VALUES ('watched');
-         INSERT INTO parse_state(input_pk,chain,status,parsed_upto,detail)
-         SELECT pk,1,'waiting',17,'20' FROM input_ref WHERE id='watched';",
+         INSERT INTO parse_state(input_pk,chain,status,parsed_upto,at_length)
+         SELECT pk,1,'waiting',17,20 FROM input_ref WHERE id='watched';",
         )
         .unwrap();
     let pool = fixture.reads().unwrap();
@@ -44,7 +46,7 @@ fn known_inputs_choose_the_latest_eligible_observation_and_keep_parser_facts() {
     assert_eq!(gone.parsed_upto, 17);
     assert!(gone.parsed && gone.waiting);
     let renamed = reader
-        .known_watched_input_at("m", "/home/op/renamed.jsonl")
+        .known_watched_input_at("m", b"/home/op/renamed.jsonl")
         .unwrap()
         .unwrap();
     let facts = renamed.facts.unwrap();
@@ -65,7 +67,7 @@ fn known_inputs_choose_the_latest_eligible_observation_and_keep_parser_facts() {
     );
     assert!(
         reader
-            .known_watched_input_at("m", "/home/op/missing")
+            .known_watched_input_at("m", b"/home/op/missing")
             .unwrap()
             .is_none()
     );
@@ -102,6 +104,8 @@ fn lookup_work(history: usize, point: bool, unrelated: usize) -> usize {
             .unwrap();
         }
     }
+    tx.execute("UPDATE observation SET path_bytes=CAST(path AS BLOB)", [])
+        .unwrap();
     tx.commit().unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
@@ -117,7 +121,7 @@ fn lookup_work(history: usize, point: bool, unrelated: usize) -> usize {
         .unwrap();
     let found = if point {
         reader
-            .known_watched_input_at("m", "/home/op/session.jsonl")
+            .known_watched_input_at("m", b"/home/op/session.jsonl")
             .map(|found| found.into_iter().collect::<Vec<_>>())
     } else {
         reader.known_watched_inputs("m")

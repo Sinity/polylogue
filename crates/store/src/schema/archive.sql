@@ -12,15 +12,19 @@ CREATE TABLE machine (
   PRIMARY KEY (id, host)
 ) STRICT, WITHOUT ROWID;
 
--- Bytes by content. Small blobs inline, large ones as files under blobs/.
+-- The committed end of each append-only segment. Bytes after it are an
+-- uncommitted tail, removed by the ordinary writer-open path.
+CREATE TABLE segment (
+  name          TEXT PRIMARY KEY,
+  committed_end INTEGER NOT NULL CHECK(committed_end >= 0)
+) STRICT, WITHOUT ROWID;
+
+-- The complete shared extent descriptor is the hash index's byte authority.
 CREATE TABLE blob (
-  hash          BLOB PRIMARY KEY,        -- BLAKE3 of the uncompressed bytes
-  size          INTEGER NOT NULL,        -- uncompressed bytes
-  stored_size   INTEGER NOT NULL,        -- compressed bytes
-  place         TEXT NOT NULL,           -- inline | file
-  encoding      TEXT NOT NULL,           -- plain (seekable zstd)
-  state         TEXT NOT NULL,           -- writing | present | deleting
-  data          BLOB                     -- zstd bytes, when place = 'inline'
+  hash          BLOB PRIMARY KEY,
+  size          INTEGER NOT NULL,
+  stored_size   INTEGER NOT NULL,
+  storage       BLOB NOT NULL
 ) STRICT;
 
 -- One file as Polylogue tracks it: one location's history, or one imported file.
@@ -32,7 +36,7 @@ CREATE TABLE input (
                                          --  named by content is the same row on every machine)
 ) STRICT;
 
--- Every distinct content of an input. Never deleted except by excision. The
+-- Every distinct content of an input. Never deleted. The
 -- observation that first saw a revision is a query (the earliest by seen_at, then
 -- id), not a column, so the rows of an input named by content are identical on
 -- every machine.
@@ -58,6 +62,8 @@ CREATE TABLE extent (
   length        INTEGER NOT NULL,
   blob          BLOB NOT NULL REFERENCES blob(hash),
   blob_offset   INTEGER NOT NULL,
+  commit_seq    INTEGER NOT NULL,
+  acquisition   BLOB,                    -- receiver acquisition evidence
   PRIMARY KEY (input, chain, offset),
   FOREIGN KEY (input, chain) REFERENCES revision(input, number)
 ) STRICT, WITHOUT ROWID;
@@ -81,76 +87,23 @@ CREATE TABLE observation (
   machine       TEXT NOT NULL,           -- machine.id; paths from two machines never collide
   path          TEXT NOT NULL,           -- filesystem path, 'drive:<file id>', 'repo-lookup:<dir>', 'agentctl-job:<id>',
                                          --   or 'capture:<id>'
-  class         TEXT NOT NULL,           -- first | appended | rewritten | deleted | back | imported | excised
-  revision      INTEGER,                 -- the revision produced or confirmed (none for deleted and excised)
-  excision      TEXT REFERENCES excision(id),  -- excised: the excision that changed this input's stored bytes
-  length        INTEGER,                 -- that revision's length
+  class         TEXT NOT NULL,           -- first | appended | rewritten | deleted | back | imported
+  revision      INTEGER,                 -- exact revision endpoint produced or confirmed
+  chain         INTEGER,                 -- proven prefix only: revision NULL, length is observed bytes
+  length        INTEGER,                 -- actual observed byte length
   device        INTEGER, inode INTEGER, size INTEGER,
   mtime_ns      INTEGER, ctime_ns INTEGER,
   details_json  TEXT,                    -- imported: the import member it was read as, and its format
   polylogue_version TEXT NOT NULL,
   seen_at       INTEGER NOT NULL,        -- Polylogue's clock
-  commit_seq    INTEGER NOT NULL DEFAULT 0
+  commit_seq    INTEGER NOT NULL DEFAULT 0,
+  path_bytes    BLOB                      -- exact acquired location; NULL is historical missing evidence
 ) STRICT;
 CREATE INDEX observation_input ON observation(input, seen_at);
 CREATE INDEX observation_commit_seq ON observation(commit_seq);
 CREATE INDEX observation_path ON observation(machine, path, seen_at);
+CREATE INDEX observation_path_bytes ON observation(machine,path_bytes,commit_seq);
 
--- Notes, tags, titles, saved queries, withdrawals and everything else people
--- and agents add.
--- One row per client write request: its ID and the hash of its content, so a resent
--- request (same ID, same content) writes nothing and a reused ID with other content is
--- refused as `conflict`. Rows created by the request take their IDs
--- from it. The request itself is kept: replayed in commit order with the
--- excisions, the requests rebuild every row they wrote, which is how user
--- state moves to another archive (`export user-state`).
-CREATE TABLE client_request (
-  id            TEXT PRIMARY KEY,        -- UUIDv7 chosen by the client, once per user action
-  content_hash  BLOB NOT NULL,           -- BLAKE3 of the request's sorted-key JSON, without the ID
-  created_at    INTEGER NOT NULL,
-  request       BLOB,                    -- the whole request as JSON, zstd; NULL before archive version 3
-  commit_seq    INTEGER NOT NULL DEFAULT 0  -- the write counter of the transaction that wrote it
-) STRICT, WITHOUT ROWID;
-
-CREATE TABLE note (
-  id            TEXT PRIMARY KEY,        -- the writing request's ID (UUIDv7, chosen by the client), with '.<n>' for
-                                         --   its n-th further row
-  first_note    TEXT NOT NULL,           -- the first note of its revisions; = id for a first note
-  kind          TEXT NOT NULL,           -- tag | note | title | decision | claim | lesson | blocker | question
-                                         -- | finding | judgment | outcome | hidden | withdrawal | saved_query
-                                         -- | forecast | goal | problem | correction
-                                         -- | rubric | distillate | signal
-                                         -- | comparison | page | slot | member | ping
-  key           TEXT,                    -- key:value tags; a saved query's name
-  value         TEXT,                    -- text or JSON; a saved query's text, plus `unit` and
-                                         --   `denominator` when it defines a reported figure
-  author        TEXT NOT NULL,           -- operator | agent session id | agent | script
-  machine       TEXT NOT NULL,           -- where it was written
-  created_at    INTEGER NOT NULL,        -- the writer's clock: display and the evidence cutoff only, never orders revisions
-  valid_until   INTEGER,                 -- optional: shown as expired after it, left out of briefings
-  commit_seq    INTEGER NOT NULL         -- the write counter of the transaction that wrote it
-) STRICT;
-CREATE INDEX note_commit_seq ON note(commit_seq);              -- the change feed
-CREATE INDEX note_first_note ON note(first_note);
-CREATE INDEX note_kind ON note(kind, key, value);        -- tag:, outcome:, hidden, query:<name>
-
--- What a note is about (one or more references).
-CREATE TABLE note_target (
-  note_id       TEXT NOT NULL REFERENCES note(id),
-  ref           TEXT NOT NULL,           -- 'session:...', 'message:...', 'block:...', 'result:...', ...
-  PRIMARY KEY (note_id, ref)
-) STRICT;
-CREATE INDEX note_target_ref ON note_target(ref);       -- notes about X; the hidden filter
-
--- Typed relations between notes and other things.
-CREATE TABLE note_relation (
-  note_id       TEXT NOT NULL REFERENCES note(id),
-  kind          TEXT NOT NULL,           -- revises | withdraws | answers | challenges | derived_from
-                                         -- | blocks | corrects | slot_of | member_of | on_page | subject (pages)
-  other         TEXT NOT NULL,           -- a reference
-  PRIMARY KEY (note_id, kind, other)
-) STRICT;
-CREATE INDEX note_relation_other ON note_relation(other, kind);  -- current revision; withdrawn?
 
 -- A query result kept as it was (cited in a note, a briefing or a page).
 CREATE TABLE kept_result (
@@ -162,40 +115,6 @@ CREATE TABLE kept_result (
   rows_json     TEXT NOT NULL            -- row references (notes pinned to a revision), the displayed values,
                                          -- and the match rows of each match
 ) STRICT;
-
--- Content removed on purpose (docs/excision.md). Recorded once; `excised`
--- names what it removed, never the content.
-CREATE TABLE excision (
-  id            TEXT PRIMARY KEY,        -- the request's ID
-  target        TEXT NOT NULL,           -- 'input:<id>', 'session:<id>', 'document:<id>', 'text:<blake3>'
-  reason        TEXT,
-  created_at    INTEGER NOT NULL,
-  commit_seq    INTEGER NOT NULL         -- the write counter of the transaction that wrote it
-) STRICT;
-CREATE INDEX excision_commit_seq ON excision(commit_seq);
-
--- Settings (day.zone, subscription.anthropic, embeddings, ...).
--- The Sinex mode and address live in `$XDG_CONFIG_HOME/polylogue/sinex.toml`
--- instead, so a rebuild from Sinex can start from an empty archive. Insert-only:
--- a change is a new row, so the value in force at any time is kept. Each key has a fixed
--- scope in code: per machine (embeddings, signal.interrupts_per_hour)
--- or archive-wide under machine '*' (subscription.*, which belongs to a provider
--- account; day.logical_start and day.zone, one setting for the operator).
--- A machine reads its own rows for per-machine keys and '*' rows for the
--- rest; the current value is its row with the largest (set_at, id), the value
--- in force at time T the largest (set_at, id) with set_at <= T, and a key with
--- no row has the default.
-CREATE TABLE setting (
-  id            TEXT PRIMARY KEY,        -- UUIDv7 chosen by the writer
-  machine       TEXT NOT NULL,           -- the machine it applies to (as note.machine), or '*' for an archive-wide key
-  key           TEXT NOT NULL,
-  value         TEXT NOT NULL,
-  author        TEXT NOT NULL,           -- 'operator' or the agent session that set it
-  set_at        INTEGER NOT NULL,        -- the writer's clock, shown by `polylogue setting`
-  commit_seq    INTEGER NOT NULL         -- the write counter at the insert; never a key
-) STRICT;
-CREATE INDEX setting_current ON setting(machine, key, set_at, id);
-CREATE INDEX setting_commit_seq ON setting(commit_seq);
 
 -- Exactly what was put into a model's context, kept because it cannot be
 -- recomputed. Prepared, delivered and used are
@@ -227,21 +146,12 @@ CREATE TABLE delivery_event (
   what              TEXT NOT NULL CHECK (what IN ('delivered','failed','not_sent','used')),
   at                INTEGER NOT NULL,
   detail            TEXT,                   -- failed/not_sent: the reason; used: the evidence
+  request           TEXT NOT NULL,       -- original authored request identity
   commit_seq        INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (delivery, what, at)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX delivery_event_commit_seq ON delivery_event(commit_seq);
-
--- What each excision removed, by identity: the writer never stores these
--- sessions, messages and documents again, and refuses these inputs, blob
--- hashes and locations ('["machine","path"]') on later reads.
-CREATE TABLE excised (
-  excision_id TEXT NOT NULL REFERENCES excision(id),
-  kind        TEXT NOT NULL CHECK(kind IN ('session','message','document','input','blob','location')),
-  value       TEXT NOT NULL,
-  PRIMARY KEY(kind, value, excision_id)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX excised_excision ON excised(excision_id, kind);
+CREATE UNIQUE INDEX delivery_event_request ON delivery_event(delivery,request);
 
 -- Chat actions: turns the operator asks the browser extension to draft or
 -- submit in a chat web page (`browser.actions`). The request is stored once;
@@ -255,6 +165,7 @@ CREATE TABLE chat_action (
   stage_only        INTEGER NOT NULL,       -- 1: fill the composer and stop; a submit is refused
   needs_approval    INTEGER NOT NULL,       -- 1: a submit into an existing conversation waits for the operator
   created_at        INTEGER NOT NULL,
+  execution         TEXT NOT NULL DEFAULT 'live' CHECK(execution IN ('live','historical')),
   commit_seq        INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX chat_action_commit_seq ON chat_action(commit_seq);
@@ -263,7 +174,7 @@ CREATE INDEX chat_action_commit_seq ON chat_action(commit_seq);
 CREATE TABLE chat_action_attachment (
   action            TEXT NOT NULL REFERENCES chat_action(id),
   id                TEXT NOT NULL,          -- UUIDv7, for the extension to fetch it by
-  blob              BLOB NOT NULL REFERENCES blob(hash),
+  blob              BLOB NOT NULL,
   name              TEXT NOT NULL,          -- a file name, never a path
   media_type        TEXT NOT NULL,
   size              INTEGER NOT NULL,
@@ -283,18 +194,22 @@ CREATE TABLE chat_action_event (
   detail            TEXT,
   by                TEXT,                   -- the extension instance holding the claim, or the operator
   receipt_json      TEXT,                   -- the provider's record of the result, as the extension saw it
+  request           TEXT NOT NULL,       -- original authored request identity
   commit_seq        INTEGER NOT NULL,
   PRIMARY KEY (action, n)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX chat_action_event_commit_seq ON chat_action_event(commit_seq);
+CREATE UNIQUE INDEX chat_action_event_request ON chat_action_event(action,request);
 
--- Which export ZIP a member observation was read from, and where in it.
-CREATE TABLE observation_zip (
+-- Exact member names and positions in retained container bytes.
+CREATE TABLE observation_container (
     observation_id TEXT PRIMARY KEY REFERENCES observation(id),
-    zip_input TEXT NOT NULL REFERENCES input(id),
-    member_index INTEGER NOT NULL CHECK(member_index>=0)
+    container_input TEXT NOT NULL REFERENCES input(id),
+    member_index INTEGER NOT NULL CHECK(member_index>=0),
+    kind TEXT NOT NULL,
+    path_bytes BLOB NOT NULL
 ) STRICT;
-CREATE INDEX observation_zip_input ON observation_zip(zip_input);
+CREATE INDEX observation_container_input ON observation_container(container_input);
 
 -- Backfill jobs: the operator asks the browser extension to capture a web
 -- chat's older conversations. The job is stored once; what happened to it is
@@ -305,6 +220,7 @@ CREATE TABLE backfill_job (
   provider          TEXT NOT NULL,          -- the web chat, by the extension's name for it (chatgpt, claude-ai, grok)
   since             INTEGER,                -- only conversations the provider changed at or after this time; NULL: all
   created_at        INTEGER NOT NULL,
+  execution         TEXT NOT NULL DEFAULT 'live' CHECK(execution IN ('live','historical')),
   commit_seq        INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX backfill_job_commit_seq ON backfill_job(commit_seq);
@@ -324,10 +240,12 @@ CREATE TABLE backfill_job_event (
   unchanged         INTEGER NOT NULL,       -- already in the archive as the provider has them
   failed            INTEGER NOT NULL,       -- could not be captured
   detail            TEXT,
+  request           TEXT NOT NULL,       -- original authored request identity
   commit_seq        INTEGER NOT NULL,
   PRIMARY KEY (job, n)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX backfill_job_event_commit_seq ON backfill_job_event(commit_seq);
+CREATE UNIQUE INDEX backfill_job_event_request ON backfill_job_event(job,request);
 
 -- How many inputs and revisions the archive holds and the bytes of its present
 -- blobs, kept by the triggers below so that status does not scan the tables.
@@ -340,10 +258,5 @@ CREATE TRIGGER input_added AFTER INSERT ON input BEGIN UPDATE row_count SET n = 
 CREATE TRIGGER input_removed AFTER DELETE ON input BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'input'; END;
 CREATE TRIGGER revision_added AFTER INSERT ON revision BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'revision'; END;
 CREATE TRIGGER revision_removed AFTER DELETE ON revision BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'revision'; END;
-CREATE TRIGGER blob_added AFTER INSERT ON blob WHEN new.state = 'present' BEGIN UPDATE row_count SET n = n + new.size WHERE name = 'stored_bytes'; END;
-CREATE TRIGGER blob_changed AFTER UPDATE OF state, size ON blob BEGIN
-  UPDATE row_count SET n = n + (CASE WHEN new.state = 'present' THEN new.size ELSE 0 END)
-    - (CASE WHEN old.state = 'present' THEN old.size ELSE 0 END)
-  WHERE name = 'stored_bytes';
-END;
-CREATE TRIGGER blob_removed AFTER DELETE ON blob WHEN old.state = 'present' BEGIN UPDATE row_count SET n = n - old.size WHERE name = 'stored_bytes'; END;
+CREATE TRIGGER blob_added AFTER INSERT ON blob BEGIN UPDATE row_count SET n = n + new.size WHERE name = 'stored_bytes'; END;
+CREATE TRIGGER blob_removed AFTER DELETE ON blob BEGIN UPDATE row_count SET n = n - old.size WHERE name = 'stored_bytes'; END;

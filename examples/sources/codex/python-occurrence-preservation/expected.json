@@ -18,9 +18,25 @@
     "blobs": [],
     "events": [
       {
+        "session": "codex:neutral-occurrences",
+        "kind": "session_meta",
+        "at": "2026-01-01T00:00:00Z",
+        "range": [
+          0,
+          97
+        ],
+        "data": {
+          "id": "neutral-occurrences",
+          "timestamp": "2026-01-01T00:00:00Z"
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "second"
+      },
+      {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:neutral-occurrences"
+        "session": "codex:neutral-occurrences",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -38,7 +54,9 @@
           "id": "codex:prompt-one",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "codex:neutral-occurrences"
+          "session": "codex:neutral-occurrences",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 98
       },
@@ -55,7 +73,9 @@
           "id": "codex:prompt-two",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "codex:neutral-occurrences"
+          "session": "codex:neutral-occurrences",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 408
       },
@@ -74,7 +94,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:neutral-occurrences"
+          "session": "codex:neutral-occurrences",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 544
       },
@@ -98,7 +120,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:neutral-occurrences"
+          "session": "codex:neutral-occurrences",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 721
       }
@@ -107,7 +131,9 @@
       {
         "id": "codex:neutral-occurrences",
         "kind": "main",
-        "started": "2026-01-01T00:00:00Z"
+        "started": "2026-01-01T00:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

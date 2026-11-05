@@ -5,7 +5,8 @@ use serde_json::json;
 #[test]
 fn names_its_databases_and_their_exports() {
     assert!(is_database(Path::new("/h/.codex/state_5.sqlite")));
-    assert!(is_database(Path::new("/h/.codex/thread_history_1.sqlite")));
+    assert!(is_database(Path::new("/h/.codex/queue_1.sqlite")));
+    assert!(!is_database(Path::new("/h/.codex/thread_history_1.sqlite")));
     assert!(!is_database(Path::new("/h/.codex/logs_2.sqlite")));
     assert!(!is_database(Path::new("/h/.codex/state_5.sqlite-wal")));
     assert!(recognize(
@@ -48,4 +49,42 @@ fn rows_become_sessions_links_and_events() {
     assert_eq!(step.output.events[0].kind, "goal");
     assert_eq!(step.counts.skipped.values().sum::<u64>(), 2);
     assert_eq!(step.counts.used.values().sum::<u64>(), 4);
+}
+
+#[test]
+fn unknown_database_table_has_explicit_schema_identity_without_row_values() {
+    let step = crate::parse::run(
+        &Database,
+        &mut NoState::default(),
+        b"{\"t\":\"future_facts\",\"k\":1,\"r\":{\"body\":\"distinctive-private-body\"}}\n",
+        0,
+    )
+    .unwrap();
+    let key = serde_json::to_string(&("row", "future_facts", "")).unwrap();
+    let shape = &step.counts.wire_shapes[&key];
+    assert_eq!(shape.table.as_deref(), Some("future_facts"));
+    assert_eq!(shape.unknown_table_count, 1);
+    assert_eq!(step.counts.unread_fields["future_facts.body"], 1);
+    assert!(
+        !serde_json::to_string(&step.counts.wire_shapes)
+            .unwrap()
+            .contains("distinctive-private-body")
+    );
+}
+
+#[test]
+fn consumed_native_thread_fields_are_declared_and_future_leaves_stay_visible() {
+    let step = run(&Database, &mut NoState::default(), br#"{"t":"threads","k":["s"],"h":"00","r":{"id":"s","name":"Clock","cwd":"/work/project","thread_source":"user","created_at_ms":1700000000000,"future":{"flag":true}}}
+"#, 0).unwrap();
+    assert_eq!(step.counts.unread_fields.len(), 3);
+    assert_eq!(step.counts.unread_fields["threads.future.flag"], 1);
+    let session = &step.output.sessions[0];
+    assert_eq!(
+        session.started_quality,
+        polylogue_model::TimeQuality::Intrinsic
+    );
+    assert_eq!(
+        session.started_precision,
+        Some(polylogue_model::Precision::Instant)
+    );
 }

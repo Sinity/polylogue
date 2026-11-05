@@ -5,9 +5,13 @@
 //! The export has no conversation ID. Its first message in declared order
 //! names the session. Matching message IDs unite repeated room exports.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::parse::{ExtractedBlob, MessageRow, Output, Parse, Step};
 use crate::{RecordOutcome, Records};
@@ -44,9 +48,9 @@ static DOCUMENT_FIELDS: Fields = Fields::new(&[
         "version",
         Rule::Excluded("the export format's version string"),
     ),
-    ("title", Rule::Read),
-    ("characters", Rule::Read),
-    ("messages", Rule::Read),
+    ("title", Rule::Read(T::String)),
+    ("characters", Rule::Kept("complete room_models event")),
+    ("messages", Rule::Read(T::Array)),
     ("artifacts", Rule::Kept("artifact panes, kept as an event")),
     (
         "artifactFiles",
@@ -60,22 +64,26 @@ static DOCUMENT_FIELDS: Fields = Fields::new(&[
         "artifactFileContents",
         Rule::Kept("artifact panes, kept as an event"),
     ),
-]);
+])
+.shape(&["characters"], &[])
+.for_kind("document");
 
 static MESSAGE_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read),
-    ("type", Rule::Read),
-    ("content", Rule::Read),
-    ("contentType", Rule::Read),
-    ("characterId", Rule::Read),
-    ("parentMessageId", Rule::Read),
-    ("createdAt", Rule::Read),
+    ("attachments[].type", Rule::Read(T::String)),
+    ("attachments[].content", Rule::Read(T::String)),
+    ("id", Rule::Read(T::String)),
+    ("type", Rule::Read(T::String)),
+    ("content", Rule::Read(T::StringOrArray)),
+    ("contentType", Rule::Read(T::String)),
+    ("characterId", Rule::Read(T::String)),
+    ("parentMessageId", Rule::Read(T::String)),
+    ("createdAt", Rule::Read(T::String)),
     (
         "updatedAt",
         Rule::Excluded("edit time; the creation time orders messages"),
     ),
-    ("attachments", Rule::Read),
-    ("files", Rule::Read),
+    ("attachments", Rule::Read(T::Array)),
+    ("files", Rule::Read(T::Array)),
     ("citations", Rule::Kept("web search citations")),
     (
         "context",
@@ -88,16 +96,16 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
         "isEdited",
         Rule::Kept("the operator edited the message after sending"),
     ),
-    ("metadata", Rule::Read),
-    ("metadata.tokensCount", Rule::Read),
-    ("metadata.generateDuration", Rule::Read),
-    ("metadata.latencyDuration", Rule::Read),
-    ("metadata.cost", Rule::Read),
+    ("metadata", Rule::Read(T::Object)),
+    ("metadata.tokensCount", Rule::Read(T::Number)),
+    ("metadata.generateDuration", Rule::Read(T::Number)),
+    ("metadata.latencyDuration", Rule::Read(T::Number)),
+    ("metadata.cost", Rule::Read(T::Number)),
     (
         "metadata.provider",
         Rule::Kept("the upstream host that served the reply"),
     ),
-    ("metadata.variantSlug", Rule::Read),
+    ("metadata.variantSlug", Rule::Read(T::String)),
     (
         "metadata.tokensPerSecond",
         Rule::Excluded("tokens divided by duration, both read"),
@@ -106,8 +114,9 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
         "metadata.plugins",
         Rule::Kept("plugins enabled for the reply"),
     ),
-    ("metadata.reasoning", Rule::Read),
-]);
+    ("metadata.reasoning", Rule::Read(T::String)),
+])
+.for_kind("message");
 
 impl ExportParser for OpenRouter {
     fn scan(
@@ -201,20 +210,28 @@ impl OpenRouter {
             session.offer_title(title, TitleSource::Generated);
         }
         if let Some(at) = first.and_then(|m| m.get("createdAt")).and_then(time_of) {
-            session.offer_start(at);
+            session
+                .offer_start(at.timestamp(), at.evidence())
+                .expect("decoded source time is valid");
         }
         self.session = Some(sid.clone());
         sink.out.sessions.push(session);
         sink.records.record("room", &RecordOutcome::Used);
 
         self.characters = doc.get("characters").cloned().unwrap_or(Json::Null);
-        sink.out.events.push(Event {
-            session: Some(sid.clone()),
-            kind: "room_models".into(),
-            at: None,
-            after: None,
-            range: None,
-            data: self.characters.clone(),
+        sink.out.events.push({
+            let (at, time_evidence) = crate::time::parts(None);
+            Event {
+                session: Some(sid.clone()),
+                kind: "room_models".into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: None,
+                range: None,
+                data: self.characters.clone(),
+            }
         });
         let artifacts: serde_json::Map<String, Json> = [
             "artifacts",
@@ -231,13 +248,19 @@ impl OpenRouter {
         })
         .collect();
         if !artifacts.is_empty() {
-            sink.out.events.push(Event {
-                session: Some(sid.clone()),
-                kind: "artifacts".into(),
-                at: None,
-                after: None,
-                range: None,
-                data: Json::Object(artifacts),
+            sink.out.events.push({
+                let (at, time_evidence) = crate::time::parts(None);
+                Event {
+                    session: Some(sid.clone()),
+                    kind: "artifacts".into(),
+                    at,
+                    at_quality: time_evidence.quality,
+                    at_precision: time_evidence.precision,
+                    at_until: time_evidence.until,
+                    after: None,
+                    range: None,
+                    data: Json::Object(artifacts),
+                }
             });
         }
     }
@@ -259,7 +282,11 @@ fn message_order(raw: &serde_json::value::RawValue, key: &str) -> Vec<u8> {
         .get("id")
         .and_then(|raw| serde_json::from_str::<String>(raw.get()).ok())
         .filter(|id| !id.is_empty());
-    room_order(at, id.as_deref(), key)
+    room_order(
+        at.map(crate::time::SourceTime::timestamp),
+        id.as_deref(),
+        key,
+    )
 }
 
 fn room_order(at: Option<polylogue_model::Timestamp>, id: Option<&str>, key: &str) -> Vec<u8> {
@@ -406,30 +433,37 @@ fn message(
             .and_then(Json::as_u64),
         ..Usage::default()
     };
-    Ok(Message {
-        id,
-        session: sid.clone(),
-        parent: str_of(m, "parentMessageId").and_then(|p| message_id(ORIGIN, p)),
-        role,
-        at: m.get("createdAt").and_then(time_of),
-        model: if role == Role::Assistant { model } else { None },
-        prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
-        blocks,
-        usage: if role == Role::Assistant {
-            usage
-        } else {
-            Usage::default()
-        },
-        stop_reason: None,
-        reported_cost_usd: if role == Role::Assistant {
-            reported_cost_usd
-        } else {
-            None
-        },
-        duration_ms: meta
-            .and_then(|x| x.get("generateDuration"))
-            .and_then(Json::as_u64),
-        production,
+    Ok({
+        let (at, time_evidence) = crate::time::parts(m.get("createdAt").and_then(time_of));
+        Message {
+            id,
+            session: sid.clone(),
+            parent: str_of(m, "parentMessageId").and_then(|p| message_id(ORIGIN, p)),
+            role,
+            at,
+            at_quality: time_evidence.quality,
+            at_precision: time_evidence.precision,
+            at_until: time_evidence.until,
+            model: if role == Role::Assistant { model } else { None },
+            prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
+            blocks,
+            usage: if role == Role::Assistant {
+                usage
+            } else {
+                Usage::default()
+            },
+            stop_reason: None,
+            reported_cost_usd: if role == Role::Assistant {
+                reported_cost_usd
+            } else {
+                None
+            },
+            duration_ms: meta
+                .and_then(|x| x.get("generateDuration"))
+                .and_then(Json::as_u64),
+            attrs: crate::fields::attributes(m, &MESSAGE_FIELDS),
+            production,
+        }
     })
 }
 

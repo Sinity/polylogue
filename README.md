@@ -25,8 +25,10 @@ nix develop                             # a development shell
 ```
 
 The flake also provides a Home Manager module (the user service, hooks, MCP
-registration, the browser extension's host, completions) and a NixOS module;
-see [operations](docs/operations.md#deployment).
+registration, the browser extension's host, completions) and a NixOS module,
+each serving one or more named archives; see
+[development](docs/development.md#deployment-modules) for their use and
+[operations](docs/operations.md#deployment) for the deployment contract.
 
 With Cargo, from a checkout:
 

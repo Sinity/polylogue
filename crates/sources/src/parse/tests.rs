@@ -38,8 +38,11 @@ impl Parser for ClassifiedLines {
     ) -> RecordOutcome {
         let kind = self.kind(value);
         parser_state.push((record.offset, kind.clone()));
-        static FIELDS: crate::fields::Fields =
-            crate::fields::Fields::new(&[("kind", crate::fields::Rule::Read)]);
+        static FIELDS: crate::fields::Fields = crate::fields::Fields::new(&[(
+            "kind",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        )])
+        .for_kind("record");
         records.fields(&kind, value, &FIELDS);
         match kind.as_str() {
             "message" => RecordOutcome::Used,
@@ -130,6 +133,9 @@ impl DocumentParser for DocumentEvent {
             session: Some(polylogue_model::SessionId::parse("example:session").unwrap()),
             kind: "metadata".into(),
             at: None,
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
             after: None,
             range: None,
             data: serde_json::json!({"kept":true}),

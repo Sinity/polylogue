@@ -123,7 +123,10 @@ fn browser_capture_turn_attachments_use_the_turn_role() {
     let assistant = message(&p, ":assistant-turn");
     assert_eq!(directions(assistant), ["output"]);
     assert_eq!(attachments(assistant)[0]["type"], "image");
-    assert!(p["counts"]["unread_fields"].as_object().unwrap().is_empty());
+    assert_eq!(
+        p["counts"]["unread_fields"],
+        json!({"capture.capture_id":1})
+    );
 }
 
 #[test]
@@ -155,4 +158,24 @@ fn a_capture_attachment_already_on_its_message_is_not_added_twice() {
     assert_eq!(files.len(), 1);
     assert_eq!(files[0]["size"], 3);
     assert!(files[0]["blob"].is_string());
+}
+
+#[test]
+fn browser_turn_bytes_and_known_blocks_are_accounted_at_their_own_boundaries() {
+    let c = capture(
+        json!([{"provider_turn_id":"one","role":"user","blocks":[{"type":"text","text":"read","future":1},{"type":"provider_native","payload":{"kept":true}}],"attachments":[{"provider_attachment_id":"file","content_base64":"YWJj","name":"file.bin"}]}]),
+        json!([]),
+    );
+    let p = parse("browser-capture", CAPTURE, c.to_string().as_bytes());
+    let turn = message(&p, ":one");
+    assert_eq!(
+        attachments(turn)[0]["blob"],
+        polylogue_model::BlobHash::of(b"abc").to_string()
+    );
+    assert_eq!(attachments(turn)[0]["size"], 3);
+    assert_eq!(p["output"]["blobs"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        p["counts"]["unread_fields"],
+        json!({"capture.capture_id":1,"block.future":1})
+    );
 }

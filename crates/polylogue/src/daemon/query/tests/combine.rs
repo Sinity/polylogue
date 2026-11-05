@@ -63,7 +63,7 @@ fn set_stages_refuse_what_does_not_combine() {
         "origin:codex | count | union (origin:claude-code)",
         "origin:codex | union (origin:claude-code | distinct)",
     ] {
-        assert_eq!(error(&w, bad).kind, "invalid_query", "{bad}");
+        assert_eq!(error(&w, bad).code(), "invalid_query", "{bad}");
     }
 }
 
@@ -91,7 +91,7 @@ fn a_union_of_ranked_rows_fuses_their_orders() {
             .iter()
             .map(|n| n.as_u64().unwrap())
             .collect();
-        let expected = if text.starts_with("m1p") { 1 } else { 2 };
+        let expected = if text.contains(":m1p") { 1 } else { 2 };
         assert_eq!(lists, [expected], "{r}");
     }
     // Both first places tie, and each list's later places follow them.
@@ -171,15 +171,14 @@ fn in_compares_with_the_values_a_query_groups_by() {
         ids(&q(&w, "sessions where exists message(chrono)"))
     );
     assert_eq!(
-        error(&w, "sessions where id in (messages where chrono)").kind,
+        error(&w, "sessions where id in (messages where chrono)").code(),
         "invalid_query"
     );
 }
 
-/// A saved query: a note of kind `saved_query` named by its key.
+/// An independently restored current definition with actual object custody.
 fn saved(w: &mut TestArchive, name: &str, text: &str) {
-    w.fx.note("saved_query", Some(name), Some(text), "repo:synthetic")
-        .unwrap();
+    save_definition(w, name, text);
 }
 
 #[test]
@@ -199,7 +198,7 @@ fn saved_queries_take_their_parameters_as_values() {
     );
     // A value is one value: it cannot add a condition.
     assert_eq!(
-        error(&w, "query:by-outcome(outcome=\"error OR outcome:ok\")").kind,
+        error(&w, "query:by-outcome(outcome=\"error OR outcome:ok\")").code(),
         "bad_value"
     );
     for bad in [
@@ -207,7 +206,7 @@ fn saved_queries_take_their_parameters_as_values() {
         "query:by-outcome(outcome=error, extra=1)",
         "tool_calls where query:by-outcome(result=error)",
     ] {
-        assert_eq!(error(&w, bad).kind, "invalid_query", "{bad}");
+        assert_eq!(error(&w, bad).code(), "invalid_query", "{bad}");
     }
     // `$word` the caller writes is a word.
     assert_eq!(q(&w, "messages where \"$HOME\"")["outcome"], "empty");
@@ -219,6 +218,25 @@ fn a_name_two_saved_queries_share_is_refused() {
     saved(&mut w, "twice", "origin:codex");
     saved(&mut w, "twice", "origin:chatgpt");
     let f = error(&w, "query:twice");
-    assert_eq!(f.kind, "invalid_query");
-    assert!(f.message.contains("2 saved queries"), "{}", f.message);
+    assert_eq!(f.code(), "ambiguous");
+    let expected = q(&w, "assertions where kind:saved_query key:twice");
+    let references: std::collections::BTreeSet<_> = expected["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            polylogue_model::Reference::parse(row["reference"].as_str().unwrap())
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(references.len(), 2);
+    assert!(f.message.starts_with("query:twice "), "{}", f.message);
+    assert_eq!(
+        f.candidates()
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        references
+    );
 }

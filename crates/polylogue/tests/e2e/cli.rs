@@ -17,12 +17,9 @@ impl Drop for Daemon {
     }
 }
 
-pub(super) fn start_daemon(env: &[(&str, &Path)]) -> Daemon {
+pub(super) fn start_daemon(env: &crate::Fixture) -> Daemon {
     let mut command = command(env);
     command.arg("daemon").stderr(Stdio::piped());
-    for (key, value) in env {
-        command.env(key, value);
-    }
     let mut daemon = Daemon(polylogue_testkit::spawn_daemon(&mut command).unwrap());
     let mut first = String::new();
     BufReader::new(daemon.0.stderr.as_mut().unwrap())
@@ -33,20 +30,31 @@ pub(super) fn start_daemon(env: &[(&str, &Path)]) -> Daemon {
 }
 
 /// Polls `status` until `ready` holds and the loop is idle, so whatever pass
-/// made `ready` true has also derived from its rows. A state that never comes
-/// is ended by the test runner's timeout.
+/// made `ready` true has also derived from its rows. Polls pause briefly so
+/// the CLI processes do not compete with the daemon for the host; a state
+/// that has not come within the deadline fails with the last status seen.
 pub(super) fn wait_status(
-    env: &[(&str, &Path)],
+    env: &crate::Fixture,
     ready: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
+    const DEADLINE: Duration = Duration::from_secs(60);
+    const PAUSE: Duration = Duration::from_millis(25);
+    let started = Instant::now();
     loop {
-        let out = cli(env, &["--json", "status"]);
+        // The poll lifts its deadline, so a loaded host delays the answer
+        // instead of turning it into a timeout.
+        let out = cli(env, &["--deadline", "none", "--json", "status"]);
         assert!(out.status.success(), "{out:?}");
         let status = json(&out);
         // The archive counts come once the daemon's first count ends.
         if status["busy"] == false && status["store"].is_object() && ready(&status) {
             return status;
         }
+        assert!(
+            started.elapsed() < DEADLINE,
+            "the awaited status did not come within {DEADLINE:?}; last status: {status}"
+        );
+        std::thread::sleep(PAUSE);
     }
 }
 
@@ -58,7 +66,7 @@ fn killing_the_test_parent_stops_its_real_daemon() {
     let dir = tempfile::tempdir().unwrap();
     let mut owner = Daemon(
         polylogue_testkit::spawn_daemon(
-            Command::new(std::env::current_exe().unwrap())
+            crate::test_process(dir.path())
                 .args([
                     "--exact",
                     "cli::daemon_parent_fixture",
@@ -102,8 +110,6 @@ fn killing_the_test_parent_stops_its_real_daemon() {
     }
     let running = crate::command(dir.path())
         .args(["--json", "status"])
-        .env("POLYLOGUE_ARCHIVE", dir.path().join("archive"))
-        .env("POLYLOGUE_HOME", dir.path().join("home"))
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .output()
         .unwrap();
@@ -137,8 +143,6 @@ fn daemon_parent_fixture() {
         polylogue_testkit::spawn_daemon(
             crate::command(&dir)
                 .arg("daemon")
-                .env("POLYLOGUE_ARCHIVE", dir.join("archive"))
-                .env("POLYLOGUE_HOME", dir.join("home"))
                 .env("XDG_CONFIG_HOME", dir.join("config"))
                 .stderr(Stdio::inherit()),
         )
@@ -185,11 +189,7 @@ fn idle_passes_do_not_reread_complete_or_waiting_input_contents() {
         format!("{complete}{}", &partial[..20]),
     )
     .unwrap();
-    let env = [
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let first = start_daemon(&env);
     wait_status(&env, |s| s["last_pass"]["inputs_seen"].as_u64() == Some(2));
     drop(first);
@@ -235,26 +235,22 @@ fn idle_passes_do_not_reread_complete_or_waiting_input_contents() {
     assert_eq!(status["store"]["parse_states"]["done"], 2);
 }
 
-fn command(env: &[(&str, &Path)]) -> Command {
-    let archive = env
-        .iter()
-        .find(|(key, _)| *key == "POLYLOGUE_ARCHIVE")
-        .expect("test commands name their archive")
-        .1;
-    crate::command(archive.parent().expect("fixture archive has a parent"))
+fn command(env: &crate::Fixture) -> Command {
+    env.command()
 }
 
-pub(super) fn cli(env: &[(&str, &Path)], args: &[&str]) -> Output {
+pub(super) fn cli(env: &crate::Fixture, args: &[&str]) -> Output {
     let mut c = command(env);
-    for (k, v) in env {
-        c.env(k, v);
-    }
     c.args(args).output().unwrap()
 }
 
 fn json(out: &Output) -> serde_json::Value {
-    serde_json::from_slice(&out.stdout)
-        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)))
+    let answer: command_surface::Answer<serde_json::Value> = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+    answer
+        .value()
+        .cloned()
+        .unwrap_or_else(|| serde_json::to_value(answer).unwrap())
 }
 
 fn line(uuid: &str, session: &str, text: &str) -> String {
@@ -281,13 +277,12 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
         line("u1", "live", "from a live file"),
     )
     .unwrap();
-    let export = dir.path().join("export.jsonl");
+    // Unrelated JSONL is recognized only in its preserved tool layout
+    // (docs/capture.md, Import).
+    let export = dir.path().join("exports/.claude/projects/-p/export.jsonl");
+    std::fs::create_dir_all(export.parent().unwrap()).unwrap();
     std::fs::write(&export, line("x1", "exported", "from an import")).unwrap();
-    let env = [
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
 
     let daemon = start_daemon(&env);
 
@@ -300,7 +295,12 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(json(&out)["imported"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        json(&out)["imported"].as_array().unwrap().len(),
+        1,
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 
     let out = cli(&env, &["--json", "list"]);
     let ids: Vec<String> = json(&out)["rows"]
@@ -312,113 +312,231 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
     assert!(ids.contains(&"claude-code:live".to_owned()), "{ids:?}");
     assert!(ids.contains(&"claude-code:exported".to_owned()), "{ids:?}");
 
-    let out = cli(&env, &["--json", "read", "claude-code:exported"]);
-    let read = json(&out);
-    assert_eq!(read["messages"][0]["blocks"][0]["text"], "from an import");
+    let out = cli(&env, &["--json", "read", "session:claude-code:exported"]);
+    let read: polylogue_model::read::ReadPage = serde_json::from_value(json(&out)).unwrap();
+    let mut imported_items = read_current::Items::default();
+    imported_items.push(&read);
+    assert!(
+        read.document.footer.next.is_none(),
+        "single short imported message must fit its root"
+    );
+    assert_eq!(imported_items.text(), "from an import");
 
-    let out = cli(&env, &["read", "claude-code:live"]);
+    let out = cli(&env, &["read", "session:claude-code:live"]);
     assert!(String::from_utf8_lossy(&out.stdout).contains("from a live file"));
 
     drop(daemon);
     let out = cli(&env, &["--json", "status"]);
     assert_eq!(out.status.code(), Some(6));
-    assert_eq!(json(&out)["error"]["kind"], "daemon_required");
+    assert_eq!(json(&out)["error"]["code"], "daemon_required");
 }
 
 #[test]
 fn ai_studio_import_and_drive_title_read_identically_after_a_rebuild_from_stored_bytes() {
+    use polylogue_model::read::{ItemKind, ReadHeader, ReadItem, ReadPage, ValueState};
+
+    fn reading(env: &crate::Fixture) -> (ReadHeader, Vec<ReadItem>) {
+        // The system instruction is a harness message, which a default read
+        // collapses to an indicator (docs/reading.md, harness messages).
+        let mut out = cli(
+            env,
+            &[
+                "--json",
+                "read",
+                "session:ai-studio:drive-id",
+                "--show",
+                "harness:full",
+            ],
+        );
+        let mut items = read_current::Items::default();
+        let mut header = None;
+        let mut continuations = std::collections::BTreeSet::new();
+        loop {
+            assert!(out.status.success(), "{out:?}");
+            let page: ReadPage = serde_json::from_value(json(&out)).unwrap();
+            if let Some(expected) = &header {
+                assert_eq!(&page.document.header, expected);
+            } else {
+                header = Some(page.document.header.clone());
+            }
+            items.push(&page);
+            let Some(next) = page.document.footer.next else {
+                break;
+            };
+            assert!(
+                continuations.insert(next.cli.clone()),
+                "repeated continuation"
+            );
+            let stages = polylogue_model::command::effective_stages(&next.cli);
+            assert_eq!(stages.len(), 1);
+            assert_eq!(stages[0].program, "polylogue");
+            let mut args = vec!["--json"];
+            args.extend(stages[0].args.iter().map(String::as_str));
+            out = cli(env, &args);
+        }
+        (header.unwrap(), items.into_values())
+    }
+
+    fn messages(env: &crate::Fixture, destination: &Path) -> Vec<polylogue_model::Message> {
+        std::fs::create_dir(destination).unwrap();
+        let out = cli(
+            env,
+            &[
+                "--json",
+                "read",
+                "session:ai-studio:drive-id",
+                "--format",
+                "jsonl",
+                "--to",
+                destination.to_str().unwrap(),
+            ],
+        );
+        assert!(out.status.success(), "{out:?}");
+        let bytes = std::fs::read_to_string(destination.join("records.jsonl")).unwrap();
+        let mut records = bytes
+            .lines()
+            .map(|line| serde_json::from_str::<polylogue_model::bundle::Record>(line).unwrap());
+        let Some(polylogue_model::bundle::Record::Manifest(manifest)) = records.next() else {
+            panic!("canonical bundle must start with its manifest");
+        };
+        manifest.validate().unwrap();
+        records
+            .filter_map(|record| match record {
+                polylogue_model::bundle::Record::Message(row) => Some(row.message),
+                _ => None,
+            })
+            .collect()
+    }
+
     let w = polylogue_testkit::ClaudeHome::new();
     let config = w.dir.path().join("config");
-    let dir = w.config(8).spool_dir("ai-studio");
+    let env = crate::Fixture::new(w.root.as_path(), w.home.as_path(), config.as_path());
+    // Read the actual child environment, whose XDG state root differs from
+    // ClaudeHome's standalone engine fixture and its HOME fallback.
+    let child = command(&env);
+    let state = child
+        .get_envs()
+        .find_map(|(key, value)| {
+            (key == "XDG_STATE_HOME").then(|| std::path::PathBuf::from(value.unwrap()))
+        })
+        .unwrap();
+    let dir = state.join("polylogue/drive/ai-studio");
     std::fs::create_dir_all(&dir).unwrap();
     let listing = dir.join("files.json");
-    std::fs::write(&listing,serde_json::to_vec(&serde_json::json!({"files":[{"id":"drive-id","name":"Electrons","createdTime":"2026-05-17T12:00:00Z"}]})).unwrap()).unwrap();
+    let listing_bytes = serde_json::to_vec(&serde_json::json!({"files":[{"id":"drive-id","name":"Electrons","createdTime":"2026-05-17T12:00:00Z"}]})).unwrap();
+    std::fs::write(&listing, &listing_bytes).unwrap();
     let prompt = w.dir.path().join("drive-id.json");
-    std::fs::write(&prompt,serde_json::to_vec(&serde_json::json!({
+    let prompt_bytes = serde_json::to_vec(&serde_json::json!({
         "chunkedPrompt":{"chunks":[{"role":"user","text":"What is an electron?"},{"role":"model","text":"A lepton.","tokenCount":3}]},
         "runSettings":{"model":"models/example"},"systemInstruction":{"text":"Be brief."}
-    })).unwrap()).unwrap();
-    let env = [
-        ("POLYLOGUE_ARCHIVE", w.root.as_path()),
-        ("POLYLOGUE_HOME", w.home.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    })).unwrap();
+    std::fs::write(&prompt, &prompt_bytes).unwrap();
     let daemon = start_daemon(&env);
     wait_status(&env, |s| s["store"]["sessions"].as_u64() == Some(1));
     let imported = cli(&env, &["--json", "import", prompt.to_str().unwrap()]);
-    assert!(
-        imported.status.success(),
-        "{}",
-        String::from_utf8_lossy(&imported.stderr)
-    );
-    let read = cli(&env, &["--json", "read", "ai-studio:drive-id"]);
-    assert!(
-        read.status.success(),
-        "{}",
-        String::from_utf8_lossy(&read.stderr)
-    );
-    let before = json(&read);
-    assert_eq!(before["session"]["title"]["text"], "Electrons");
-    assert_eq!(before["messages"][0]["blocks"][0]["text"], "Be brief.");
+    assert!(imported.status.success(), "{imported:?}");
+    wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(3));
+    let before = reading(&env);
+    assert_eq!(before.0.title, ValueState::known("Electrons".to_owned()));
+    let texts: Vec<_> = before
+        .1
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ItemKind::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["Be brief.", "What is an electron?", "A lepton."]);
+    let headers: Vec<_> = before
+        .1
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ItemKind::MessageHeader { header } => Some((&item.source.reference, header)),
+            _ => None,
+        })
+        .collect();
+    let expected_ids = [
+        "ai-studio:8:drive-id#system:0:",
+        "ai-studio:8:drive-id#position:1:0",
+        "ai-studio:8:drive-id#position:1:1",
+    ];
     assert_eq!(
-        before["messages"][1]["blocks"][0]["text"],
-        "What is an electron?"
+        headers
+            .iter()
+            .map(|(reference, _)| reference.as_str())
+            .collect::<Vec<_>>(),
+        expected_ids.map(|id| format!("message:{id}"))
     );
-    assert_eq!(before["messages"][2]["blocks"][0]["text"], "A lepton.");
-    assert_eq!(before["messages"][2]["model"], "example");
-    assert_eq!(before["messages"][2]["usage"]["output"], 3);
+    assert_eq!(headers[2].1.model, ValueState::known("example".to_owned()));
+    // Usage belongs to canonical Message, rather than the presentation header.
+    let before_messages = messages(&env, &w.dir.path().join("before-bundle"));
+    assert_eq!(
+        before_messages
+            .iter()
+            .map(|m| m.id.to_string())
+            .collect::<Vec<_>>(),
+        expected_ids
+    );
+    assert_eq!(before_messages[2].model.as_deref(), Some("example"));
+    assert_eq!(before_messages[2].usage.output, Some(3));
+    assert_eq!(std::fs::read(&prompt).unwrap(), prompt_bytes);
+    assert_eq!(std::fs::read(&listing).unwrap(), listing_bytes);
     drop(daemon);
-    std::fs::remove_file(prompt).unwrap();
-    std::fs::remove_file(listing).unwrap();
+    std::fs::remove_file(&prompt).unwrap();
+    std::fs::remove_file(&listing).unwrap();
     polylogue_testkit::delete_index(&w.root);
     let daemon = start_daemon(&env);
-    // The title comes from the Drive listing, a separate input that the
-    // same pass parses after the messages; an idle loop has done both.
+    // The title's separate Drive input and prompt must both reparse from
+    // retained source bytes, after their provider files have disappeared.
     wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(3));
-    let after = cli(&env, &["--json", "read", "ai-studio:drive-id"]);
-    assert!(
-        after.status.success(),
-        "{}",
-        String::from_utf8_lossy(&after.stderr)
+    let after = reading(&env);
+    assert_eq!(after, before);
+    assert_eq!(
+        messages(&env, &w.dir.path().join("after-bundle")),
+        before_messages
     );
-    assert_eq!(json(&after), before);
+    assert!(!prompt.exists() && !listing.exists());
     drop(daemon);
 }
 
 #[test]
-fn the_hook_spools_where_the_daemon_reads_never_outside_polylogue_home() {
+fn the_hook_spools_in_the_captured_xdg_state_directory() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let elsewhere = dir.path().join("xdg");
     let mut child = crate::command(dir.path())
         .args(["hook", "Stop"])
-        .env("POLYLOGUE_HOME", &home)
         .env("XDG_STATE_HOME", &elsewhere)
-        .env("POLYLOGUE_ARCHIVE", dir.path().join("archive"))
         .stdin(Stdio::piped())
         .spawn()
         .unwrap();
     std::io::Write::write_all(child.stdin.as_mut().unwrap(), br#"{"session_id": "s1"}"#).unwrap();
     assert!(child.wait().unwrap().success());
-    let spool = home.join(".local/state/polylogue/hooks");
+    let spool = elsewhere.join("polylogue/hooks");
     let spool_files: Vec<_> = std::fs::read_dir(&spool)
         .unwrap_or_else(|e| panic!("{}: {e}", spool.display()))
         .collect();
     assert_eq!(spool_files.len(), 1);
-    assert!(!elsewhere.exists(), "the tools' own state is not touched");
+    assert!(
+        !home.join(".local/state/polylogue/hooks").exists(),
+        "captured XDG state must not spill into the HOME default"
+    );
+    let record = std::fs::read_to_string(spool_files[0].as_ref().unwrap().path()).unwrap();
+    let record: serde_json::Value = serde_json::from_str(record.trim()).unwrap();
+    assert_eq!(record["session_id"], "s1");
+    assert_eq!(record["event"], "Stop");
 }
 
 mod structured_json;
 
+mod read_current;
 mod read_pages;
 
-mod read_masking;
+mod stored_text;
 
 mod search_snippets;
 
 mod hook_errors;
-
-mod hook_advice;
 
 mod grok_export;
 
@@ -451,13 +569,11 @@ fn the_daemon_refuses_an_archive_it_has_no_migration_from_and_exits_with_its_cod
     // tables.
     rusqlite::Connection::open(opened.archive_db())
         .unwrap()
-        .execute_batch("DROP TABLE excised")
+        .execute_batch("DROP TABLE revision")
         .unwrap();
     let mut command = crate::command(dir.path());
     command
         .arg("daemon")
-        .env("POLYLOGUE_ARCHIVE", &archive)
-        .env("POLYLOGUE_HOME", &home)
         .env("XDG_CONFIG_HOME", &config)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -488,11 +604,7 @@ fn killed_daemon_runtime_files_are_removed_with_its_fixture() {
     let archive = dir.path().join("archive");
     let home = dir.path().join("home");
     let config = dir.path().join("config");
-    let env = [
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let daemon = start_daemon(&env);
     wait_status(&env, |_| true);
     let runtime = dir.path().join("runtime/polylogue");
@@ -520,3 +632,5 @@ mod agent_guidance;
 
 #[cfg(target_os = "linux")]
 mod terminal;
+
+mod index_open;

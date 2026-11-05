@@ -20,7 +20,8 @@ fn every_agent_string_gets_rows_or_a_corrected_query() {
         "\"fix the parser\"",
         "messages where \"run the tests\"",
     ] {
-        let v = run_q(&w, ask(text)).unwrap_or_else(|f| panic!("{text}: {} {}", f.kind, f.message));
+        let v =
+            run_q(&w, ask(text)).unwrap_or_else(|f| panic!("{text}: {} {}", f.code(), f.message));
         assert!(
             !v["rows"].as_array().unwrap().is_empty(),
             "{text}: no rows: {v}"
@@ -39,15 +40,16 @@ fn every_agent_string_gets_rows_or_a_corrected_query() {
             .unwrap_err();
         assert!(!f.message.is_empty(), "{text}: no message");
         let suggestion = f
-            .detail
-            .as_ref()
-            .and_then(|d| d["suggestion"].as_str())
-            .unwrap_or_else(|| panic!("{text}: no corrected query: {} {}", f.kind, f.message))
+            .suggestion
+            .as_deref()
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{text}: no corrected query: {} {}", f.code(), f.message))
             .to_owned();
         if let Err(again) = run_q(&w, ask(&suggestion)) {
             panic!(
                 "{text}: the corrected query {suggestion:?} fails too: {} {}",
-                again.kind, again.message
+                again.code(),
+                again.message
             );
         }
     }
@@ -84,16 +86,15 @@ fn a_reference_two_sessions_share_is_refused_listing_both() {
         let f = run_q(&w, ask(text))
             .map(|v| panic!("{text} was answered: {v}"))
             .unwrap_err();
-        assert_eq!(f.kind, "ambiguous", "{text}: {}", f.message);
-        let ids: Vec<&str> = f.detail.as_ref().unwrap()["ids"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(Value::as_str)
-            .collect();
+        assert_eq!(f.code(), "ambiguous", "{text}: {}", f.message);
+        let ids = f.candidates();
         assert!(ids.len() >= 2, "{text}: {ids:?}");
-        for id in &ids {
-            assert!(f.message.contains(id), "{text}: {} lacks {id}", f.message);
+        for id in ids {
+            assert!(
+                f.message.contains(id.as_str()),
+                "{text}: {} lacks {id}",
+                f.message
+            );
         }
     }
     let s =
@@ -113,5 +114,5 @@ fn a_reference_two_sessions_share_is_refused_listing_both() {
         assert_eq!(ids(&q(&w, text)), ["#2"], "{text}");
     }
     let f = run_q(&w, ask("claude-code:7f3a2c10-9999")).unwrap_err();
-    assert_eq!(f.kind, "not_found", "{}", f.message);
+    assert_eq!(f.code(), "not_found", "{}", f.message);
 }

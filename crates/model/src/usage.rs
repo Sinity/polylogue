@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Token counts for one model response or recorded usage observation, by kind: uncached input, cached
 /// input, output and reasoning, plus cache writes. A count the source did
 /// not report is `None`, never 0.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Usage {
     /// Input tokens not served from a cache.
     pub input: Option<u64>,

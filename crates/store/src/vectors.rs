@@ -11,13 +11,13 @@
 use crate::archive::{Archive, open_read, open_write};
 use crate::read::Reader;
 use crate::{Result, StoreError};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-/// Commits that stored or removed vectors in this process. Only the daemon
-/// writes `embeddings.db` (its embedding build and excision), so a copy
+/// Commits that stored vectors in this process. Only the daemon
+/// writes `embeddings.db` (its embedding build), so a copy
 /// loaded at the same count holds what the file holds.
 static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -58,7 +58,6 @@ pub struct KeyStatus {
 pub struct Vectors {
     conn: Connection,
     writable: bool,
-    index: std::path::PathBuf,
 }
 
 impl Vectors {
@@ -81,11 +80,7 @@ impl Vectors {
         if !writable {
             conn.execute_batch("BEGIN")?;
         }
-        Ok(Self {
-            conn,
-            writable,
-            index: archive.index_db(),
-        })
+        Ok(Self { conn, writable })
     }
 
     pub(crate) fn writable(&self) -> bool {
@@ -123,60 +118,12 @@ impl Vectors {
         Ok(out)
     }
 
-    /// Runs `write` under the archive's write lock, which an excision holds
-    /// from its embeddings commit to its index commit, with the text hashes
-    /// the current index still holds, and refuses while the index misses an
-    /// excision: a build that read a text before it was excised cannot store
-    /// a vector for it afterwards.
-    fn while_texts_exist<T>(
-        &self,
-        hashes: impl Iterator<Item = Vec<u8>>,
-        write: impl FnOnce(&HashSet<Vec<u8>>) -> Result<T>,
-    ) -> Result<T> {
-        Self::while_texts_exist_at(&self.index, hashes, write)
-    }
-
-    fn while_texts_exist_at<T>(
-        index: &std::path::Path,
-        hashes: impl Iterator<Item = Vec<u8>>,
-        write: impl FnOnce(&HashSet<Vec<u8>>) -> Result<T>,
-    ) -> Result<T> {
-        let archive = open_read(&index.with_file_name("archive.db"))?;
-        let index = open_read(index)?;
-        let _lock = crate::write_lock::hold(&index)?;
-        if crate::excise::index_behind(&archive, &index)? {
-            return Err(StoreError::Invalid(
-                "an excision has not reached the index yet; reopen the archive".into(),
-            ));
-        }
-        let mut exists = index.prepare("SELECT EXISTS(SELECT 1 FROM text WHERE hash = ?1)")?;
-        let mut present = HashSet::new();
-        for hash in hashes {
-            if exists.query_row([&hash], |r| r.get::<_, bool>(0))? {
-                present.insert(hash);
-            }
-        }
-        write(&present)
-    }
-
-    /// Stores vectors in one transaction, except for texts no longer in the
-    /// index.
+    /// Stores every purchased vector, keyed by its content.
     pub fn put(&mut self, key: &str, vectors: &[Vector]) -> Result<()> {
-        let conn = &mut self.conn;
-        let index = self.index.clone();
-        Self::while_texts_exist_at(
-            &index,
-            vectors.iter().map(|v| v.text_hash.clone()),
-            |present| Self::insert(conn, key, vectors, present),
-        )
+        Self::insert(&mut self.conn, key, vectors)
     }
 
-    fn insert(
-        conn: &mut Connection,
-        key: &str,
-        vectors: &[Vector],
-        present: &HashSet<Vec<u8>>,
-    ) -> Result<()> {
+    fn insert(conn: &mut Connection, key: &str, vectors: &[Vector]) -> Result<()> {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         {
             let mut stmt = tx.prepare_cached(
@@ -187,7 +134,7 @@ impl Vectors {
                      embedded_at = excluded.embedded_at",
             )?;
             let now = now_ms();
-            for v in vectors.iter().filter(|v| present.contains(&v.text_hash)) {
+            for v in vectors {
                 let bytes: Vec<u8> = v.values.iter().flat_map(|f| f.to_le_bytes()).collect();
                 stmt.execute(params![
                     v.text_hash,
@@ -204,14 +151,115 @@ impl Vectors {
         Ok(())
     }
 
+    /// Stores vectors bought for another archive exactly as they were: the
+    /// same text hash, key, chunk, values and time. A vector this archive
+    /// already holds identically is present; a different vector for the
+    /// same text, key and chunk is refused rather than replaced, since both
+    /// were paid for.
+    pub fn restore(
+        &mut self,
+        vectors: &[crate::older_archive::StoredVector],
+    ) -> Result<Vec<crate::writer::Restored>> {
+        use crate::writer::Restored;
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut out = Vec::with_capacity(vectors.len());
+        let mut stored = false;
+        {
+            let mut find = tx.prepare_cached(
+                "SELECT dims, vector FROM embedded WHERE text_hash = ?1 AND model = ?2 AND chunk = ?3",
+            )?;
+            let mut insert = tx.prepare_cached(
+                "INSERT INTO embedded(text_hash, model, chunk, dims, vector, embedded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for v in vectors {
+                if v.dims < 1 || v.vector.len() as i64 != v.dims * 4 {
+                    out.push(Restored::Refused(format!(
+                        "it holds {} bytes, not {} four-byte values",
+                        v.vector.len(),
+                        v.dims
+                    )));
+                    continue;
+                }
+                let known: Option<(i64, Vec<u8>)> = find
+                    .query_row(params![v.text_hash, v.model, v.chunk], |r| {
+                        Ok((r.get(0)?, r.get(1)?))
+                    })
+                    .optional()?;
+                out.push(match known {
+                    Some((dims, vector)) if dims == v.dims && vector == v.vector => {
+                        Restored::Present
+                    }
+                    Some(_) => Restored::Refused(
+                        "this archive holds a different vector for the same text, key and chunk"
+                            .into(),
+                    ),
+                    None => {
+                        insert.execute(params![
+                            v.text_hash,
+                            v.model,
+                            v.chunk,
+                            v.dims,
+                            v.vector,
+                            v.embedded_at
+                        ])?;
+                        stored = true;
+                        Restored::Stored
+                    }
+                });
+            }
+        }
+        tx.commit()?;
+        if stored {
+            wrote();
+        }
+        Ok(out)
+    }
+
+    /// Stores permanent rejections recorded by another archive, with their
+    /// original error and time. One this archive holds with another error
+    /// is refused rather than replaced.
+    pub fn restore_failures(
+        &mut self,
+        failures: &[crate::older_archive::VectorFailure],
+    ) -> Result<Vec<crate::writer::Restored>> {
+        use crate::writer::Restored;
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut out = Vec::with_capacity(failures.len());
+        {
+            let mut find = tx.prepare_cached(
+                "SELECT error FROM embed_failure WHERE text_hash = ?1 AND model = ?2",
+            )?;
+            let mut insert = tx.prepare_cached(
+                "INSERT INTO embed_failure(text_hash, model, error, failed_at) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for f in failures {
+                let known: Option<String> = find
+                    .query_row(params![f.text_hash, f.model], |r| r.get(0))
+                    .optional()?;
+                out.push(match known {
+                    Some(error) if error == f.error => Restored::Present,
+                    Some(_) => Restored::Refused(
+                        "this archive records another error for the same text and key".into(),
+                    ),
+                    None => {
+                        insert.execute(params![f.text_hash, f.model, f.error, f.failed_at])?;
+                        Restored::Stored
+                    }
+                });
+            }
+        }
+        tx.commit()?;
+        Ok(out)
+    }
+
     /// A text the provider permanently rejected, with its error as given.
     pub fn fail(&self, key: &str, text_hash: &[u8], error: &str) -> Result<()> {
-        self.while_texts_exist(std::iter::once(text_hash.to_vec()), |present| {
-            if present.is_empty() {
-                return Ok(());
-            }
-            self.record_failure(key, text_hash, error)
-        })
+        self.record_failure(key, text_hash, error)
     }
 
     fn record_failure(&self, key: &str, text_hash: &[u8], error: &str) -> Result<()> {

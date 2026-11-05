@@ -19,14 +19,6 @@ fn controls_are_visible_and_escaping_is_idempotent() {
 }
 
 #[test]
-fn color_requires_a_terminal_and_no_color_takes_precedence() {
-    assert!(color_for(true, false));
-    assert!(!color_for(false, false));
-    assert!(!color_for(true, true));
-    assert!(!color_for(false, true));
-}
-
-#[test]
 fn json_controls_round_trip_without_terminal_sequences() {
     let value = serde_json::json!({HOSTILE: HOSTILE});
     for pretty in [true, false] {

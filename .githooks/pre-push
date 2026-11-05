@@ -1,20 +1,29 @@
 #!/usr/bin/env bash
-# Seconds-long checks only: formatting and crate boundaries. Clippy and the
-# test suite are heavy and run as agentctl jobs (`agentctl job start polylogue
-# check`), which queue them against the rest of the machine's work.
+# Formatting and crate boundaries are short checks; the full check owns tests.
 set -euo pipefail
 build_inputs=(Cargo.toml Cargo.lock flake.nix flake.lock rust-toolchain
-    rust-toolchain.toml .cargo build.rs crates xtask)
+    rust-toolchain.toml rustfmt.toml .rustfmt.toml .cargo build.rs crates xtask)
+check_build=false
 while read -r _local_ref local_sha _remote_ref remote_sha; do
-    [[ "$local_sha" =~ ^0+$ ]] && continue # branch deletion
+    [[ "$local_sha" =~ ^0+$ ]] && continue
     base="$remote_sha"
     if [[ "$base" =~ ^0+$ ]]; then
         base=$(git merge-base "$local_sha" refs/remotes/origin/master) || base=""
     fi
     if [[ -z "$base" || "$local_sha" != "$(git rev-parse HEAD)" ]] ||
         ! git diff --quiet "$base" "$local_sha" -- "${build_inputs[@]}"; then
-        nix develop --command cargo fmt --all -- --check
-        exec nix develop --command cargo run --locked -q -p xtask -- boundaries
+        check_build=true
     fi
 done
-echo "pre-push: no Rust build inputs changed; skipping the fast check."
+if $check_build; then
+    if [[ -n "${IN_NIX_SHELL:-}" ]] && command -v cargo >/dev/null; then
+        cargo fmt --all -- --check
+        cargo run --locked -q -p xtask -- boundaries
+    else
+        nix develop --command cargo fmt --all -- --check
+        nix develop --command cargo run --locked -q -p xtask -- boundaries
+    fi
+else
+    echo "pre-push: no Rust build inputs changed; skipping the fast check."
+fi
+git diff --check

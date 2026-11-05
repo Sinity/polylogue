@@ -1,10 +1,11 @@
 use super::*;
 
 #[test]
-fn bound_event_wire_bytes_stay_unchanged_and_unbound_facts_have_no_session() {
+fn unknown_event_time_has_unknown_evidence_and_unbound_facts_have_no_session() {
     let old = r#"{"session":"hermes:native","kind":"observation","data":{"n":7}}"#;
     let event: Event = serde_json::from_str(old).unwrap();
-    assert_eq!(serde_json::to_string(&event).unwrap(), old);
+    assert_eq!(event.time_evidence(), crate::TimeEvidence::UNKNOWN);
+    assert!(event.time_evidence().validate(event.at).is_ok());
     let unbound = Event {
         session: None,
         range: Some((10, 20)),
@@ -34,4 +35,11 @@ fn link_parts_merge_from_either_side() {
     from_child.merge(&from_parent);
     assert_eq!(from_child.call_id.as_deref(), Some("toolu_1"));
     assert_eq!(from_child.evidence, "agentId");
+    assert_eq!(from_child.selection_tag(), from_parent.selection_tag());
+    let mut different = from_parent.clone();
+    different.kind = LinkKind::Continuation;
+    assert_ne!(from_child.selection_tag(), different.selection_tag());
+    different = from_parent;
+    different.child = s("claude-code:agent-2");
+    assert_ne!(from_child.selection_tag(), different.selection_tag());
 }

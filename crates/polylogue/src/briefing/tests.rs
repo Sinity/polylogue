@@ -1,4 +1,5 @@
 use super::*;
+use crate::daemon::scope::SharedScopeIndex;
 
 #[test]
 fn a_checkout_root_joins_the_scope() {
@@ -75,9 +76,12 @@ fn recall_fuses_prose_and_tool_output_in_the_querys_order() {
     };
     let p = prepare(
         &reader,
+        &SharedScopeIndex::default(),
+        None,
         &ask,
         "d1",
-        Timestamp::from_unix_ms(0).unwrap(),
+        &fixture_context(Timestamp::from_unix_ms(0).unwrap()),
+        None,
         None,
     )
     .unwrap();
@@ -250,30 +254,14 @@ fn worked_directory() -> (tempfile::TempDir, polylogue_store::fixture::Fixture) 
         .unwrap();
     }
     f.derive().unwrap();
-    // The development tooling's run history: a failed check in the
-    // checkout, and a test run there that failed and then passed.
-    let history = dir.path().join("history.db");
-    let runs = rusqlite::Connection::open(&history).unwrap();
-    runs.execute_batch(
-        "CREATE TABLE runs (id INTEGER PRIMARY KEY, project TEXT NOT NULL, checkout TEXT NOT NULL,
-            command TEXT NOT NULL, args TEXT NOT NULL, agentctl_job TEXT, started_ms INTEGER NOT NULL,
-            status TEXT NOT NULL, failure TEXT);",
-    )
-    .unwrap();
-    for (command, status, at) in [
-        ("check", "failed", 7_000),
-        ("test", "failed", 8_000),
-        ("test", "passed", 9_000),
-    ] {
-        runs.execute(
-            "INSERT INTO runs(project, checkout, command, args, agentctl_job, started_ms, status, failure)
-             VALUES ('proj', '/home/op/proj', ?1, '[]', 'proj-' || ?1, ?3, ?2, 'clippy failed')",
-            rusqlite::params![command, status, T0 + at],
-        )
-        .unwrap();
-    }
-    f.setting("briefing.check_history", &history.to_string_lossy())
-        .unwrap();
+    let mut facts = polylogue_model::live::LiveFacts::default();
+    polylogue_model::live::fold(
+        &mut facts,
+        "hook_task_claimed",
+        T0 + 2_000,
+        &serde_json::json!({"task":"pl-1"}),
+    );
+    f.live_facts(s, &facts).unwrap();
     (dir, f)
 }
 
@@ -288,25 +276,32 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         source: StartSource::Startup,
     };
     let now = Timestamp::from_unix_ms(T0 + 3_600_000).unwrap();
-    let p = prepare(&reader, &ask, "d1", now, None).unwrap();
+    let p = prepare(
+        &reader,
+        &scope_of(&reader),
+        None,
+        &ask,
+        "d1",
+        &fixture_context(now),
+        None,
+        None,
+    )
+    .unwrap();
     let t = &p.text;
     assert!(!p.empty);
     for expected in [
         "parser work",
         "1 commit (abc1234)",
         "changed 1 file: a.rs",
-        "checks 0 passed, 1 failed",
         "claimed pl-1, still open",
         "last answer: \"Finished the parser fix; one test still fails.\"",
         "Beads claimed here this week and still open:\n- pl-1",
-        "Verifications that failed here since their last pass:\n- `proj check` failed",
-        "in /home/op/proj, job proj-check: clippy failed; `xtask history failures 1`\n- `cargo test` exit 101",
         "formatting",
     ] {
         assert!(t.contains(expected), "missing {expected:?} in:\n{t}");
     }
-    // `cargo fmt` passed after it failed.
-    assert!(!t.contains("`cargo fmt`"), "{t}");
+    // A session's own failing commands are not reported.
+    assert!(!t.contains("`cargo test`"), "{t}");
     assert!(t.len() <= DEFAULT_BUDGET as usize * 4);
     assert!(p.refs.contains(&"session:claude-code:s1".to_owned()));
 }
@@ -323,7 +318,12 @@ fn a_brief_fits_its_budget_and_names_what_it_left_out() {
                 })
                 .collect()
         };
-        fit.section("Notes:", items(40, 90), "notes", "polylogue note list");
+        fit.section(
+            "Notes:",
+            items(40, 90),
+            "notes",
+            "polylogue query assertions",
+        );
         fit.section(
             "Sessions:",
             items(40, 300),
@@ -387,7 +387,17 @@ fn recall_pages_continue_by_cursor() {
             for_session: None,
             cursor: cursor.clone(),
         };
-        let p = prepare(&reader, &ask, "d", now, None).unwrap();
+        let p = prepare(
+            &reader,
+            &SharedScopeIndex::default(),
+            None,
+            &ask,
+            "d",
+            &fixture_context(now),
+            None,
+            None,
+        )
+        .unwrap();
         seen.extend(p.refs.iter().filter(|r| r.starts_with("message:")).cloned());
         match p.next {
             Some(next) => {
@@ -409,5 +419,199 @@ fn recall_pages_continue_by_cursor() {
         for_session: None,
         cursor: first_next,
     };
-    assert!(prepare(&reader, &ask, "d", now, None).is_err());
+    assert!(
+        prepare(
+            &reader,
+            &SharedScopeIndex::default(),
+            None,
+            &ask,
+            "d",
+            &fixture_context(now),
+            None,
+            None,
+        )
+        .is_err()
+    );
+}
+
+/// The scope index over everything `reader` sees.
+fn scope_of(reader: &Reader<'_>) -> SharedScopeIndex {
+    let scope = SharedScopeIndex::default();
+    scope.refresh(reader).unwrap();
+    scope
+}
+
+/// law: brief-reads-bounded-by-result
+/// A brief's archive reads depend on what it reports, not on how much work
+/// happened under its directory: at `/`, under a prefix holding 30,000
+/// sessions and over a million messages, in one of its subdirectories and in
+/// a directory nobody worked in, a brief reads at most 100 pages through a
+/// reader whose page cache starts empty.
+#[test]
+fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
+    use polylogue_store::fixture::{Fixture, ManySessions};
+    const SESSIONS: usize = 30_000;
+    const MESSAGES: usize = 34;
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    let pks = f
+        .many_sessions(ManySessions {
+            prefix: "/work/dense",
+            sessions: SESSIONS,
+            messages: MESSAGES,
+            answered: 20,
+            last: T0 - 60_000,
+        })
+        .unwrap();
+    const { assert!(SESSIONS * MESSAGES >= 1_000_000) };
+    // Three of the newest are working there now.
+    for &pk in &pks[SESSIONS - 3..] {
+        f.live(pk, "hook_pre_tool_use", T0 - 30_000, None, None)
+            .unwrap();
+    }
+    let scope = scope_of(&f.reads().unwrap().reader().unwrap());
+    let now = Timestamp::from_unix_ms(T0).unwrap();
+    for cwd in ["/", "/work/dense", "/work/dense/d5", "/unvisited/place"] {
+        // A new pool: its connections' page caches start empty.
+        let pool = f.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        reader.take_page_reads().unwrap();
+        let p = prepare(
+            &reader,
+            &scope,
+            None,
+            &Ask::SessionStart {
+                cwd: cwd.into(),
+                session: None,
+                source: StartSource::Startup,
+            },
+            "d1",
+            &fixture_context(now),
+            None,
+            None,
+        )
+        .unwrap();
+        let pages = reader.take_page_reads().unwrap();
+        assert!(pages <= 100, "{cwd}: {pages} pages read\n{}", p.text);
+        if cwd == "/unvisited/place" {
+            assert!(p.empty, "{}", p.text);
+            continue;
+        }
+        let newest = if cwd == "/work/dense/d5" {
+            // The newest session in d5 is the highest n with n % 97 == 5.
+            (0..SESSIONS).rev().find(|n| n % 97 == 5).unwrap()
+        } else {
+            SESSIONS - 1
+        };
+        for expected in [
+            "Recent sessions here, and what they did:".to_owned(),
+            format!("test:many-{newest}"),
+            format!("({MESSAGES} messages)"),
+            "older sessions here".to_owned(),
+        ] {
+            assert!(
+                p.text.contains(&expected),
+                "{cwd}: missing {expected:?} in\n{}",
+                p.text
+            );
+        }
+        if cwd != "/work/dense/d5" {
+            for expected in [
+                "Other agents working here now:".to_owned(),
+                format!("test:many-{}  untitled: working", SESSIONS - 1),
+                format!(
+                    "last answer: \"Answer {}: the synthetic work is finished.\"",
+                    SESSIONS - 1
+                ),
+            ] {
+                assert!(
+                    p.text.contains(&expected),
+                    "{cwd}: missing {expected:?} in\n{}",
+                    p.text
+                );
+            }
+        }
+    }
+}
+
+/// law: brief-partial-at-deadline
+/// A brief that meets its deadline answers with the sections it has, names
+/// each section it left out with reason `deadline`, and says how to get the
+/// whole brief; it is not empty while a section produced items.
+#[test]
+fn a_brief_past_its_deadline_answers_with_the_sections_it_has() {
+    use polylogue_store::read::limit::ReadLimit;
+    let (_dir, f) = worked_directory();
+    let pool = f.reads().unwrap();
+    let scope = scope_of(&pool.reader().unwrap());
+    let limit = ReadLimit::new(std::time::Duration::from_millis(200), Default::default());
+    let p = limit.scope(|| {
+        let reader = pool.reader().unwrap();
+        while limit.check().is_ok() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        prepare(
+            &reader,
+            &scope,
+            None,
+            &Ask::SessionStart {
+                cwd: "/home/op/proj".into(),
+                session: None,
+                source: StartSource::Startup,
+            },
+            "d1",
+            &fixture_context(Timestamp::from_unix_ms(T0 + 3_600_000).unwrap()),
+            None,
+            None,
+        )
+        .unwrap()
+    });
+    assert!(!p.empty, "{}", p.text);
+    // Open Beads come from the scope index and need no read.
+    assert!(
+        p.text
+            .contains("Beads claimed here this week and still open:\n- pl-1"),
+        "{}",
+        p.text
+    );
+    let late: Vec<&str> = p
+        .left_out
+        .iter()
+        .filter(|l| l.reason == "deadline")
+        .map(|l| l.what.as_str())
+        .collect();
+    assert_eq!(
+        late,
+        [
+            "operator notes",
+            "recent sessions",
+            "notices",
+            "assertions by other authors"
+        ]
+    );
+    assert!(
+        p.text.contains("Not available before the deadline: operator notes, recent sessions, notices, assertions by other authors; the whole brief: `polylogue brief --cwd /home/op/proj --deadline none`"),
+        "{}",
+        p.text
+    );
+    assert!(!p.text.contains("Recent sessions here"), "{}", p.text);
+}
+
+fn fixture_context(now: Timestamp) -> std::sync::Arc<crate::operation::Context> {
+    let day = query_language::time::DaySetting::new(
+        jiff::tz::TimeZone::UTC,
+        jiff::civil::Time::constant(4, 0, 0, 0),
+    )
+    .unwrap();
+    std::sync::Arc::new(crate::operation::Context::standalone(
+        crate::operation::Invocation::new(
+            now,
+            "synthetic-briefing".into(),
+            polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            },
+        ),
+        day,
+    ))
 }

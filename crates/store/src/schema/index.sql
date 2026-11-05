@@ -1,6 +1,6 @@
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 -- INDEX_VERSION, generation, cursor_key (the generation's secret that seals read
--- cursors), the write counter, unsynced, facts_version,
+-- cursors), the write counter, building, facts_version,
 -- preamble_set, boot_id (the boot of this generation). A changed boot
 -- always starts a new generation, including after a clean shutdown.
 -- No cursors for derived products: a product's work is the sessions whose
@@ -10,8 +10,7 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 CREATE TABLE input_ref (
   pk                INTEGER PRIMARY KEY,
   id                TEXT NOT NULL UNIQUE,   -- archive.db input.id
-  format            TEXT NOT NULL DEFAULT '', -- parser declaration used for this input
-  excised           INTEGER NOT NULL DEFAULT 0  -- 1 once an input excision removed the input; the row stays (above)
+  format            TEXT NOT NULL DEFAULT '' -- parser declaration used for this input
 ) STRICT;
 
 CREATE TABLE session (
@@ -27,6 +26,7 @@ CREATE TABLE session (
   derived_title     TEXT,                   -- derived (title): first line of the first typed prompt; shown when
                                             --   title is NULL, never exported as recorded
   cwd_json          TEXT,                   -- every working directory in order (model Session.cwd); `cwd` is the last
+  started_time      BLOB NOT NULL DEFAULT X'5b6e756c6c2c7b227175616c697479223a22756e6b6e6f776e227d5d',
   started_at        INTEGER,                -- from the messages and events the session counts as its own
   last_activity_at  INTEGER,
   cwd               TEXT,
@@ -36,6 +36,9 @@ CREATE TABLE session (
   record_repo       TEXT,                   -- the repository the session's own records name
   repo_root         TEXT,                   -- the repository's identity, its root commit hash, from repo_lookup (derived)
   branch            TEXT,
+  git_commit        TEXT,
+  model_provider    TEXT,
+  instructions      TEXT,
   harness           TEXT,
   harness_version   TEXT,
   message_count INTEGER,
@@ -48,27 +51,22 @@ CREATE TABLE session (
   compaction_count INTEGER,
   tool_call_count INTEGER,
   error_count INTEGER,
-  -- Live facts: updated in the session's write transaction
-  -- when a hook line for it is written, so they follow data, not
-  -- the clock; the live state itself is computed at read time from these and now.
-  live_last_event   TEXT,                   -- type of the latest hook event
-  live_last_event_at INTEGER,
-  live_open_tool_pk INTEGER,                -- tool_call with a pre-tool event and no post-tool event yet
-  live_waiting_on   TEXT,                   -- permission | question | notification | NULL
-  live_waiting_since INTEGER,
-  live_todo         TEXT,                   -- the harness's in-progress todo item, as text (Claude Code: the last TodoWrite)
-  live_task         TEXT,                   -- job ID or Bead ID
-  live_task_evidence TEXT,                  -- job_env | claim_command
   changed           INTEGER NOT NULL,       -- write counter of the last change to its rows or derived values
                                             --   or derived products (not its live columns)
-  live_changed      INTEGER                 -- write counter value of the last change to its live columns
+  live_reparse      INTEGER NOT NULL DEFAULT 0,
+  live_changed      INTEGER,                -- write counter value of the last change to its live columns
+  -- Live facts: the fold of the session's live evidence (hook, process and
+  -- registry lines), written in the transaction that stores each line; the
+  -- live state is computed at read time from these and now (`pl_live`).
+  live_facts TEXT,                          -- polylogue_model::live::LiveFacts as JSON
+  live_last_at INTEGER                      -- time of the latest folded evidence
 ) STRICT;
 CREATE INDEX session_activity ON session(last_activity_at);   -- default order, since:
 CREATE INDEX session_started  ON session(started_at);         -- started between, until:
 CREATE INDEX session_changed  ON session(changed);            -- change feed; derive step
 CREATE INDEX session_cwd      ON session(cwd);                -- cwd: prefix as a range; briefings; resume
 CREATE INDEX session_repo     ON session(repo) WHERE repo IS NOT NULL;
-CREATE INDEX session_live ON session(live_last_event_at) WHERE live_last_event_at IS NOT NULL;   -- running:, waiting:, the overview
+CREATE INDEX session_live ON session(live_last_at) WHERE live_last_at IS NOT NULL;   -- running:, waiting:, the overview
 CREATE INDEX session_repo_root ON session(repo_root) WHERE repo_root IS NOT NULL;   -- repo: by identity
 
 CREATE TABLE message (
@@ -84,6 +82,7 @@ CREATE TABLE message (
   written_by        TEXT NOT NULL,          -- human | model | harness | unknown
   prompt_kind       TEXT,                   -- written_by human: prose | command
   model             TEXT,
+  at_time           BLOB NOT NULL DEFAULT X'5b6e756c6c2c7b227175616c697479223a22756e6b6e6f776e227d5d',
   at                INTEGER,                -- provider time
   parent_id         TEXT,                   -- natural message id of the tree parent (may arrive later)
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- input the stored (shown) version came from
@@ -114,10 +113,6 @@ CREATE TABLE message (
   stop_reason       TEXT,
   duration_ms       INTEGER,
   words             INTEGER NOT NULL DEFAULT 0, -- words in its text blocks
-  pem               INTEGER NOT NULL DEFAULT 0, -- 1: a block holds a PEM header or END line; 2: masked from a
-                                            --   fresh start, one of its blocks leaves a private key block open.
-                                            --   An open key is the only masking state that crosses a block
-                                            --   boundary, and only these messages change it
   UNIQUE (pk, session_pk)                   -- lets children state their owner once
 ) STRICT;
 -- A first build drops the three unique indexes on natural keys and builds
@@ -126,7 +121,6 @@ CREATE UNIQUE INDEX message_id ON message(id);
 CREATE INDEX message_session ON message(session_pk, order_input_id, seq, record_position, id);   -- reading in order; [last:N]
 CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
-CREATE INDEX message_pem     ON message(session_pk) WHERE pem <> 0;   -- the masking state a read starts with
 
 -- Every stored version that contributed to a message: one row per input chain
 -- whose records hold a version of it (the shown version's row repeats the
@@ -140,11 +134,16 @@ CREATE TABLE message_source (
   source_start      INTEGER NOT NULL,
   source_end        INTEGER NOT NULL,       -- equal to source_start until parsers report record ends
   shown         INTEGER NOT NULL,       -- 1 for the version the message shows
+  session_pk        INTEGER NOT NULL REFERENCES session(pk),
+  main              INTEGER NOT NULL DEFAULT 1,
+  arrival_rank      INTEGER NOT NULL DEFAULT 0,
+  seq               INTEGER NOT NULL DEFAULT 0,
+  record_position   INTEGER NOT NULL DEFAULT 0,
   complete          INTEGER NOT NULL DEFAULT 1, -- 0 while the source marks it in progress (no stop reason yet)
-  version_hash      BLOB,                   -- BLAKE3 of the version's sorted-key JSON: the last tie-break
+  version_hash      BLOB NOT NULL REFERENCES message_version(version_hash), -- BLAKE3 of the version's sorted-key JSON: the last tie-break
   PRIMARY KEY (message_pk, input_pk, chain)
 ) STRICT;
-CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- foreign-key check; excision scope
+CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- foreign-key check
 
 -- Text is stored once per distinct content; `id` is the rowid of its search entries.
 CREATE TABLE text (
@@ -162,7 +161,7 @@ CREATE TABLE block (
   pk                INTEGER PRIMARY KEY,
   message_pk        INTEGER NOT NULL,
   session_pk        INTEGER NOT NULL,       -- the message's session, enforced by the composite key below
-  idx               INTEGER,                -- position in the message's content list; id = message id:idx
+  idx               INTEGER,                -- compact position among the stored blocks, used for ordering
   kind              TEXT NOT NULL,          -- text | thinking | tool_call | tool_result | image | file | other
   text_id           INTEGER REFERENCES text(id),
   body              BLOB NOT NULL,          -- the model Block as zstd-compressed JSON, with its prose or output
@@ -178,7 +177,8 @@ CREATE TABLE block (
   encrypted         INTEGER NOT NULL DEFAULT 0,  -- thinking kept encrypted
   other_type        TEXT,                   -- other: the provider's content type name; export `type`
   data              BLOB,                   -- tool_result: its structured data as zstd-compressed JSON, kept
-                                            --   out of body and last, so a text read never reads or decodes it
+                                            --   out of body, so a text read never reads or decodes it
+  ordinal           TEXT,                   -- original u64 source position; NULL means native dense idx
   FOREIGN KEY (message_pk, session_pk) REFERENCES message(pk, session_pk),
   UNIQUE (pk, session_pk)
 ) STRICT;
@@ -225,6 +225,8 @@ CREATE TABLE tool_call (
   session_pk        INTEGER NOT NULL,       -- kept for index speed; the composite keys make it agree with its blocks
   call_block_pk     INTEGER NOT NULL UNIQUE,
   call_id           TEXT,                   -- the provider's call id: how a later result finds its call
+  result_at         INTEGER,
+  reported_duration_ms INTEGER,
   result_block_pk   INTEGER,                -- NULL until the result is seen
   at                INTEGER,
   tool              TEXT NOT NULL,
@@ -273,6 +275,7 @@ CREATE TABLE link (
   branch_point      TEXT,                   -- natural message id where the child branches off
   spawning_call     TEXT,                   -- the spawning call's ID as the evidence names it (a tool-use ID)
   evidence          TEXT NOT NULL,          -- which input field established the parent
+  source_chain      INTEGER NOT NULL DEFAULT 0,
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- the input holding that field
   UNIQUE (parent_id, child_id, kind, how)
 ) STRICT;
@@ -287,6 +290,8 @@ CREATE TABLE event (
                                             --   event that names no session is keyed by its input record instead
   session_pk        INTEGER REFERENCES session(pk),  -- NULL for an event about its input, not a session
   seq               INTEGER NOT NULL,       -- display position (shares numbering with message.seq); not a key
+  after_message_id  TEXT,
+  seq_from_message  INTEGER NOT NULL DEFAULT 0,
   after_message_pk  INTEGER REFERENCES message(pk),  -- the message it follows; export `after_message`
   kind              TEXT NOT NULL,          -- open set; each provider's kinds are listed in sources/
   at                INTEGER,
@@ -294,12 +299,14 @@ CREATE TABLE event (
   source_chain      INTEGER,                -- revision chain of the byte range (as message.source_chain)
   source_start      INTEGER,
   source_end        INTEGER,
+  fields            BLOB NOT NULL,          -- canonical Event without its shared data payload
   data              BLOB NOT NULL           -- the provider's payload as given, zstd-compressed JSON; export `data`
 ) STRICT;
 CREATE UNIQUE INDEX event_id ON event(id);
 CREATE INDEX event_session ON event(session_pk, seq);
 CREATE INDEX event_input   ON event(input_pk, source_chain);
 CREATE INDEX event_after   ON event(after_message_pk) WHERE after_message_pk IS NOT NULL;
+CREATE INDEX event_after_id ON event(after_message_id) WHERE after_message_id IS NOT NULL;
 CREATE INDEX event_kind    ON event(kind, at);
 
 
@@ -320,15 +327,22 @@ CREATE INDEX parsed_session ON parsed(session_pk);             -- rebuild a sess
 CREATE TABLE parse_state (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
-  status            TEXT NOT NULL,          -- parsing: more stored bytes need parsing; waiting: incomplete record at
+  reading_version   TEXT NOT NULL DEFAULT '',
+  status            TEXT NOT NULL CHECK(status IN ('parsing','waiting','done','no_parser_yet','partial','refused','failed')),
+                                            -- parsing: more stored bytes need parsing; waiting: incomplete record at
                                             --   observed EOF; done: at the stored length
   parsed_upto       INTEGER NOT NULL,       -- byte offset in the chain after the last complete record parsed
-  detail            TEXT,                   -- waiting: the stored length it waits at
+  at_length        INTEGER CHECK(at_length >= 0),  -- waiting, refused, failed: the stored length it was decided at
   records           INTEGER NOT NULL DEFAULT 0,  -- every record of this chain read so far:
   used              INTEGER NOT NULL DEFAULT 0,  --   records = used + skipped + unreadable; an append adds
   skipped           INTEGER NOT NULL DEFAULT 0,  --   to the counts, a whole parse replaces them; written in the
   unreadable        INTEGER NOT NULL DEFAULT 0,  --   same transaction as the chain's last session
-  PRIMARY KEY (input_pk, chain)
+  commit_seq INTEGER CHECK(commit_seq > 0), -- actual committed parse checkpoint, never a read position
+  checkpoint BLOB,                        -- versioned opaque parser state at this exact cursor
+  reason            TEXT,                   -- refused: the reason; failed: the error
+  PRIMARY KEY (input_pk, chain),
+  CHECK((status IN ('waiting','refused','failed')) = (at_length IS NOT NULL)),
+  CHECK((status IN ('refused','failed')) = (reason IS NOT NULL))
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX parse_state_status ON parse_state(status) WHERE status <> 'done';   -- status, waiting work
 
@@ -348,7 +362,7 @@ CREATE TABLE unused (
 ) STRICT, WITHOUT ROWID;
 
 
--- Sessions removed without a surviving row (rebuild or excision), for the change
+-- Sessions removed without a surviving row (reading replacement), for the change
 -- feed. Emptied only when a new generation starts.
 CREATE TABLE removed_session (
   session_id        TEXT PRIMARY KEY,
@@ -398,46 +412,6 @@ CREATE TABLE repo_lookup (
 
 
 
--- The work graph, derived from structure
--- only: goals are what a session declared it
--- would do (a Bead claimed by a `bd` command, a todo or plan item), attempts
--- are a session pursuing a goal, verifications are check commands with their
--- outcomes, artifacts are commits and pull requests. A claim, an observed
--- effect and an evaluation stay apart: a closed Bead is a claim; the checks
--- and commits beside it are the effects. Rebuilt per session by the derive
--- step; a Bead claimed by several sessions is one goal node.
-CREATE TABLE work_node (
-  pk                INTEGER PRIMARY KEY,
-  key               TEXT NOT NULL UNIQUE,   -- bead:<id> | todo:<session>:<item> | attempt:<session>:<goal key>
-                                            --   | check:<tool_call pk> | commit:<session>:<hash> | pr:<session>:<repo>#<n>
-  kind              TEXT NOT NULL CHECK (kind IN ('goal','attempt','verification','artifact')),
-  title             TEXT NOT NULL,
-  session_pk        INTEGER REFERENCES session(pk),  -- the session that made it; NULL for a shared goal
-  at                INTEGER,
-  state             TEXT,                   -- attempt: open | closed | released | completed | pending;
-                                            --   verification: the call's outcome
-  tool_call_pk      INTEGER REFERENCES tool_call(pk) ON DELETE CASCADE,  -- the call that is its
-                                            --   evidence; a rewrite of the call removes the node until the
-                                            --   derive step makes it again, so derived rows never block a write
-  attrs_json        TEXT                    -- attempt: checks passed and failed and commits while it was open
-) STRICT;
-CREATE INDEX work_node_session ON work_node(session_pk);
-CREATE INDEX work_node_kind ON work_node(kind, at);
-CREATE INDEX work_node_verification ON work_node(kind, title, at);   -- one verification's runs, for advice before a command runs
-CREATE INDEX work_node_call ON work_node(tool_call_pk) WHERE tool_call_pk IS NOT NULL;   -- foreign-key check
-
-CREATE TABLE work_edge (
-  -- An edge goes with either node, so an excision deleting a session's nodes
-  -- by `session_pk` needs no rule of its own for edges.
-  from_pk           INTEGER NOT NULL REFERENCES work_node(pk) ON DELETE CASCADE,
-  to_pk             INTEGER NOT NULL REFERENCES work_node(pk) ON DELETE CASCADE,
-  kind              TEXT NOT NULL CHECK (kind IN ('pursues','checks','produces')),
-  PRIMARY KEY (from_pk, to_pk, kind)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX work_edge_to ON work_edge(to_pk);
-
--- Which session state each session's work rows were derived from: the derive
--- step's work is the sessions whose version or `changed` differs.
 -- What each input states about a session (model Session, as JSON), merged
 -- within the input in file order. The session's own columns are derived
 -- from all of them (derive/session.rs), never from arrival order.
@@ -446,9 +420,10 @@ CREATE TABLE session_record (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
   facts             TEXT NOT NULL,
+  admitted INTEGER CHECK(admitted > 0),
   PRIMARY KEY (session_pk, input_pk, chain)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX session_record_input ON session_record(input_pk);   -- excision scope, foreign-key check
+CREATE INDEX session_record_input ON session_record(input_pk);   -- foreign-key check
 
 -- Which derivation (derive.rs) made a session's derived rows, at which
 -- version and from which state of the session; a session is derived again
@@ -526,8 +501,10 @@ CREATE TABLE document_source (
   source_end INTEGER NOT NULL,
   arrival_rank INTEGER NOT NULL,
   source_time INTEGER,
-  version_hash BLOB NOT NULL,
+  time BLOB NOT NULL DEFAULT X'5b6e756c6c2c7b227175616c697479223a22756e6b6e6f776e227d5d',
+  version_hash BLOB NOT NULL REFERENCES document_version(version_hash),
   shown INTEGER NOT NULL DEFAULT 0,
+  admitted INTEGER CHECK(admitted > 0),
   PRIMARY KEY(document_pk,input_pk,chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX document_source_input ON document_source(input_pk,chain);
@@ -544,6 +521,12 @@ CREATE TABLE document_block (
 CREATE INDEX document_block_text ON document_block(text_id) WHERE text_id IS NOT NULL;
 CREATE INDEX document_block_blob ON document_block(blob_hash) WHERE blob_hash IS NOT NULL;
 
+-- One counter per import that moves whenever its members, asset metadata or
+-- sidecars change; a read binds it instead of re-reading the members.
+CREATE TABLE import_change (
+  import_id TEXT PRIMARY KEY,
+  changed INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
 -- Import membership is projected from the engine-authored observation details.
 CREATE TABLE import_member (
   observation TEXT PRIMARY KEY,
@@ -591,3 +574,211 @@ CREATE TRIGGER document_added AFTER INSERT ON document BEGIN UPDATE row_count SE
 CREATE TRIGGER document_removed AFTER DELETE ON document BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'document'; END;
 CREATE TRIGGER tool_call_added AFTER INSERT ON tool_call BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'tool_call'; END;
 CREATE TRIGGER tool_call_removed AFTER DELETE ON tool_call BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'tool_call'; END;
+
+-- Packed readings are shared across input chains. Text stays interned separately.
+CREATE TABLE message_version (
+  version_hash BLOB PRIMARY KEY,
+  body BLOB NOT NULL
+) STRICT, WITHOUT ROWID;
+CREATE TABLE message_projection (
+  version_hash BLOB PRIMARY KEY REFERENCES message_version(version_hash) ON DELETE CASCADE,
+  layout BLOB NOT NULL, -- original u64 block count and aligned original ordinals
+  admitted INTEGER CHECK(admitted > 0) -- latest immutable admission contributing these facts
+) STRICT, WITHOUT ROWID;
+CREATE TABLE message_version_text (
+  version_hash BLOB NOT NULL REFERENCES message_version(version_hash) ON DELETE CASCADE,
+  idx INTEGER NOT NULL,
+  text_id INTEGER NOT NULL REFERENCES text(id),
+  PRIMARY KEY(version_hash, idx)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX message_version_text_id ON message_version_text(text_id);
+CREATE TABLE document_version (
+  version_hash BLOB PRIMARY KEY,
+  body BLOB NOT NULL
+) STRICT, WITHOUT ROWID;
+CREATE TABLE document_version_text (
+  version_hash BLOB NOT NULL REFERENCES document_version(version_hash) ON DELETE CASCADE,
+  idx INTEGER NOT NULL,
+  text_id INTEGER NOT NULL REFERENCES text(id),
+  PRIMARY KEY(version_hash, idx)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX document_version_text_id ON document_version_text(text_id);
+
+-- Membership rows use small value keys, independently of assertion payload size.
+CREATE TABLE event_value (
+  pk INTEGER PRIMARY KEY,
+  hash BLOB NOT NULL UNIQUE,
+  body BLOB NOT NULL
+) STRICT;
+CREATE TABLE event_source (
+  event_pk INTEGER NOT NULL REFERENCES event(pk) ON DELETE CASCADE,
+  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain INTEGER NOT NULL,
+  value_pk INTEGER NOT NULL REFERENCES event_value(pk),
+  arrival_rank INTEGER NOT NULL,
+  session_pk INTEGER REFERENCES session(pk),
+  seq INTEGER,
+  source_start INTEGER,
+  source_end INTEGER,
+  after_message_id TEXT,
+  at INTEGER,
+  fields BLOB NOT NULL,
+  imported_provenance TEXT NOT NULL CHECK(json_valid(imported_provenance)),
+  admitted INTEGER CHECK(admitted > 0),
+  PRIMARY KEY(event_pk, input_pk, chain)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX event_source_input ON event_source(input_pk, chain);
+CREATE TABLE link_value (
+  pk INTEGER PRIMARY KEY,
+  hash BLOB NOT NULL UNIQUE,
+  body BLOB NOT NULL
+) STRICT;
+CREATE TABLE link_source (
+  link_pk INTEGER NOT NULL REFERENCES link(pk) ON DELETE CASCADE,
+  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain INTEGER NOT NULL,
+  value_pk INTEGER NOT NULL REFERENCES link_value(pk),
+  arrival_rank INTEGER NOT NULL,
+  admitted INTEGER CHECK(admitted > 0),
+  PRIMARY KEY(link_pk, input_pk, chain)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX link_source_input ON link_source(input_pk, chain);
+
+CREATE INDEX message_source_version ON message_source(version_hash);
+CREATE INDEX document_source_version ON document_source(version_hash);
+CREATE INDEX event_source_value ON event_source(value_pk);
+CREATE INDEX link_source_value ON link_source(value_pk);
+CREATE TABLE message_version_blob (
+  version_hash BLOB NOT NULL REFERENCES message_version(version_hash) ON DELETE CASCADE,
+  blob_hash BLOB NOT NULL,
+  PRIMARY KEY(version_hash,blob_hash)
+) STRICT, WITHOUT ROWID;
+CREATE TABLE document_version_blob (
+  version_hash BLOB NOT NULL REFERENCES document_version(version_hash) ON DELETE CASCADE,
+  blob_hash BLOB NOT NULL,
+  PRIMARY KEY(version_hash,blob_hash)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX message_version_blob_hash ON message_version_blob(blob_hash);
+CREATE INDEX document_version_blob_hash ON document_version_blob(blob_hash);
+
+-- Reference changes wait for the round's cleanup, including after a restart.
+CREATE TABLE changed_version (
+  kind TEXT NOT NULL,
+  version_hash BLOB NOT NULL,
+  PRIMARY KEY(kind,version_hash)
+) STRICT, WITHOUT ROWID;
+CREATE TABLE changed_value (
+  kind TEXT NOT NULL,
+  value_pk INTEGER NOT NULL,
+  PRIMARY KEY(kind,value_pk)
+) STRICT, WITHOUT ROWID;
+CREATE TABLE changed_text (
+  text_id INTEGER PRIMARY KEY
+) STRICT;
+CREATE TRIGGER message_source_removed AFTER DELETE ON message_source BEGIN
+  INSERT OR IGNORE INTO changed_version VALUES ('message',OLD.version_hash);
+END;
+CREATE TRIGGER message_source_changed AFTER UPDATE OF version_hash ON message_source
+WHEN OLD.version_hash <> NEW.version_hash BEGIN
+  INSERT OR IGNORE INTO changed_version VALUES ('message',OLD.version_hash);
+END;
+CREATE TRIGGER document_source_removed AFTER DELETE ON document_source BEGIN
+  INSERT OR IGNORE INTO changed_version VALUES ('document',OLD.version_hash);
+END;
+CREATE TRIGGER document_source_changed AFTER UPDATE OF version_hash ON document_source
+WHEN OLD.version_hash <> NEW.version_hash BEGIN
+  INSERT OR IGNORE INTO changed_version VALUES ('document',OLD.version_hash);
+END;
+CREATE TRIGGER event_source_removed AFTER DELETE ON event_source BEGIN
+  INSERT OR IGNORE INTO changed_value VALUES ('event',OLD.value_pk);
+END;
+CREATE TRIGGER event_source_changed AFTER UPDATE OF value_pk ON event_source
+WHEN OLD.value_pk <> NEW.value_pk BEGIN
+  INSERT OR IGNORE INTO changed_value VALUES ('event',OLD.value_pk);
+END;
+CREATE TRIGGER link_source_removed AFTER DELETE ON link_source BEGIN
+  INSERT OR IGNORE INTO changed_value VALUES ('link',OLD.value_pk);
+END;
+CREATE TRIGGER link_source_changed AFTER UPDATE OF value_pk ON link_source
+WHEN OLD.value_pk <> NEW.value_pk BEGIN
+  INSERT OR IGNORE INTO changed_value VALUES ('link',OLD.value_pk);
+END;
+CREATE TRIGGER block_removed AFTER DELETE ON block
+WHEN OLD.text_id IS NOT NULL BEGIN
+  INSERT OR IGNORE INTO changed_text VALUES (OLD.text_id);
+END;
+CREATE TRIGGER block_changed AFTER UPDATE OF text_id ON block
+WHEN OLD.text_id IS NOT NULL AND OLD.text_id IS NOT NEW.text_id BEGIN
+  INSERT OR IGNORE INTO changed_text VALUES (OLD.text_id);
+END;
+CREATE TRIGGER document_block_removed AFTER DELETE ON document_block
+WHEN OLD.text_id IS NOT NULL BEGIN
+  INSERT OR IGNORE INTO changed_text VALUES (OLD.text_id);
+END;
+CREATE TRIGGER document_block_changed AFTER UPDATE OF text_id ON document_block
+WHEN OLD.text_id IS NOT NULL AND OLD.text_id IS NOT NEW.text_id BEGIN
+  INSERT OR IGNORE INTO changed_text VALUES (OLD.text_id);
+END;
+CREATE TRIGGER message_version_text_removed AFTER DELETE ON message_version_text
+WHEN OLD.text_id IS NOT NULL BEGIN
+  INSERT OR IGNORE INTO changed_text VALUES (OLD.text_id);
+END;
+CREATE TRIGGER message_version_text_changed AFTER UPDATE OF text_id ON message_version_text
+WHEN OLD.text_id IS NOT NULL AND OLD.text_id IS NOT NEW.text_id BEGIN
+  INSERT OR IGNORE INTO changed_text VALUES (OLD.text_id);
+END;
+CREATE TRIGGER document_version_text_removed AFTER DELETE ON document_version_text
+WHEN OLD.text_id IS NOT NULL BEGIN
+  INSERT OR IGNORE INTO changed_text VALUES (OLD.text_id);
+END;
+CREATE TRIGGER document_version_text_changed AFTER UPDATE OF text_id ON document_version_text
+WHEN OLD.text_id IS NOT NULL AND OLD.text_id IS NOT NEW.text_id BEGIN
+  INSERT OR IGNORE INTO changed_text VALUES (OLD.text_id);
+END;
+
+CREATE INDEX message_source_session ON message_source(session_pk);
+CREATE INDEX event_source_session ON event_source(session_pk);
+-- Recomputed comparison state for ordinary tool-database inputs.
+CREATE TABLE tool_row (
+    input_pk INTEGER NOT NULL REFERENCES input_ref(pk) ON DELETE CASCADE,
+    tbl TEXT NOT NULL,
+    key TEXT NOT NULL,
+    hash BLOB NOT NULL,
+    PRIMARY KEY(input_pk,tbl,key)
+) WITHOUT ROWID;
+CREATE TABLE tool_database (
+    input_pk INTEGER PRIMARY KEY REFERENCES input_ref(pk) ON DELETE CASCADE,
+    length INTEGER NOT NULL,
+    schema TEXT NOT NULL
+);
+
+-- Closed intervals of a session's activity, wait or stall, folded from its
+-- live evidence; an interval stays open (in the session's live facts) until
+-- evidence closes it.
+CREATE TABLE live_interval (
+  session_pk INTEGER NOT NULL REFERENCES session(pk),
+  aspect     TEXT NOT NULL,                 -- activity | waiting_on | stall
+  value      TEXT NOT NULL,
+  start_at   INTEGER NOT NULL,
+  end_at     INTEGER NOT NULL,
+  closed_by  TEXT NOT NULL,                 -- the kind of the evidence that closed it
+  PRIMARY KEY (session_pk, aspect, start_at)
+) STRICT;
+CREATE INDEX live_interval_end ON live_interval(end_at);
+
+-- Processes of live sessions from the process watcher's lines: the harness
+-- root and its descendants, one row per process identity.
+CREATE TABLE process (
+  session_pk INTEGER NOT NULL REFERENCES session(pk),
+  boot_id    TEXT NOT NULL,
+  pid        INTEGER NOT NULL,
+  start      INTEGER NOT NULL,              -- clock ticks after boot (field 22 of /proc/<pid>/stat)
+  parent_pid INTEGER,
+  comm       TEXT,
+  argv       TEXT,                          -- JSON array
+  cwd        TEXT,
+  started_at INTEGER,
+  ended_at   INTEGER,
+  role       TEXT NOT NULL,                 -- harness | child
+  PRIMARY KEY (session_pk, boot_id, pid, start)
+) STRICT;

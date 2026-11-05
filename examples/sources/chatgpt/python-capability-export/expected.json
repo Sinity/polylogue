@@ -7,7 +7,9 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "node.children": 1
+    }
   },
   "output": {
     "background": [],
@@ -26,7 +28,8 @@
           3,
           543
         ],
-        "session": "chatgpt:origin-matrix-chatgpt"
+        "session": "chatgpt:origin-matrix-chatgpt",
+        "at_quality": "unknown"
       },
       {
         "after": "chatgpt:matrix-message",
@@ -36,7 +39,8 @@
           3,
           543
         ],
-        "session": "chatgpt:origin-matrix-chatgpt"
+        "session": "chatgpt:origin-matrix-chatgpt",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -54,7 +58,9 @@
           "id": "chatgpt:matrix-message",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "chatgpt:origin-matrix-chatgpt"
+          "session": "chatgpt:origin-matrix-chatgpt",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3
       }
@@ -67,7 +73,9 @@
         "title": {
           "source": "generated",
           "text": "Origin capability matrix"
-        }
+        },
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

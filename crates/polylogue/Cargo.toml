@@ -12,6 +12,12 @@ publish.workspace = true
 sinex = ["dep:polylogue-sinex"]
 
 [dependencies]
+command-surface.workspace = true
+schemars = "1"
+
+web-shell.workspace = true
+maud = "0.27"
+
 rustix = { workspace = true, features = ["event"] }
 mimalloc.workspace = true
 polylogue-sinex = { workspace = true, optional = true }
@@ -20,6 +26,13 @@ polylogue-sources.workspace = true
 polylogue-store.workspace = true
 polylogue-engine.workspace = true
 polylogue-query.workspace = true
+query-language.workspace = true
+hashed-blobs.workspace = true
+shared-signals.workspace = true
+signal-delivery.workspace = true
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+toml = "0.9"
+
 jiff.workspace = true
 libc.workspace = true
 polylogue-render.workspace = true
@@ -27,13 +40,14 @@ clap.workspace = true
 clap_complete.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "time", "sync", "macros", "fs", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "time", "signal", "sync", "macros", "fs", "io-util"] }
 axum.workspace = true
 tokio-util = { version = "0.7", features = ["io", "rt"] }
-uuid.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 tower.workspace = true
 base64.workspace = true
 blake3.workspace = true
+zstd.workspace = true
 thiserror.workspace = true
 tempfile.workspace = true
 unicode-normalization.workspace = true

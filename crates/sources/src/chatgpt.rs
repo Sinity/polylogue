@@ -15,6 +15,10 @@
 //! ancestors (the Python rule). Images and files the export stores
 //! separately are referred to by their asset pointer and file ID.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+use crate::fields::ExpectedType as T;
 pub mod assets;
 
 use crate::RecordOutcome;
@@ -60,7 +64,9 @@ pub(crate) fn first_byte(head: &[u8]) -> Option<u8> {
 }
 
 pub fn open(path: &Path) -> Option<Parse> {
-    recognize_name(path).then(|| Parse::Export(Box::new(Export)))
+    path.extension()
+        .is_some_and(|ext| ext == "json")
+        .then(|| Parse::Export(Box::new(Export)))
 }
 
 fn recognize_name(path: &Path) -> bool {
@@ -73,6 +79,17 @@ fn recognize_name(path: &Path) -> bool {
 pub struct Export;
 
 impl crate::export::ExportParser for Export {
+    fn scan(
+        &mut self,
+        _: &str,
+        reader: &mut dyn crate::export::Input,
+        item: &mut dyn crate::export::ItemSink,
+    ) -> Result<crate::export::ScanStats, crate::export::ScanError> {
+        crate::export::scan_array_or_object(reader, |range, raw| {
+            item.push(range, self.order_key(raw), None, raw.get().as_bytes())
+        })
+    }
+
     fn order_key(&self, raw: &serde_json::value::RawValue) -> Vec<u8> {
         #[derive(serde::Deserialize)]
         struct Header {
@@ -99,47 +116,90 @@ impl crate::export::ExportParser for Export {
 
 /// A mapping node's own fields.
 static NODE_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read),
-    ("message", Rule::Read),
-    ("parent", Rule::Read),
+    ("id", Rule::Read(T::String)),
+    ("message", Rule::Read(T::Object)),
+    ("parent", Rule::Read(T::String)),
     (
         "children",
         Rule::Excluded("the parent links carry the same tree"),
     ),
-]);
+])
+.for_kind("node");
 
 /// A message's fields. `metadata` holds dozens of provider keys (search
 /// results, citations, task state); it is kept whole in the stored export
 /// and read where it says something about the message (model, finish,
 /// attachments, hidden prompts).
 static MESSAGE_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read),
-    ("author", Rule::Read),
-    ("author.role", Rule::Read),
-    ("author.name", Rule::Read),
+    ("id", Rule::Read(T::String)),
+    ("author", Rule::Read(T::Object)),
+    ("author.role", Rule::Read(T::String)),
+    ("author.name", Rule::Read(T::String)),
     ("author.metadata", Rule::Kept("tool display details")),
-    ("create_time", Rule::Read),
+    ("create_time", Rule::Read(T::StringOrNumber)),
     (
         "update_time",
         Rule::Excluded("edit time; the creation time orders messages"),
     ),
-    ("content", Rule::Read),
-    ("status", Rule::Read),
+    ("content", Rule::Read(T::Object)),
+    ("content.content_type", Rule::Read(T::String)),
+    ("content.parts[]", Rule::Read(T::StringOrObject)),
+    ("content.parts[].content_type", Rule::Read(T::String)),
+    ("content.parts[].asset_pointer", Rule::Read(T::String)),
+    ("content.parts[].mime_type", Rule::Read(T::String)),
+    ("content.parts[].size_bytes", Rule::Read(T::Number)),
+    ("content.parts[].text", Rule::Read(T::String)),
+    ("content.text", Rule::Read(T::String)),
+    ("content.language", Rule::Read(T::String)),
+    ("content.thoughts", Rule::Read(T::Array)),
+    ("content.thoughts[].summary", Rule::Read(T::String)),
+    ("content.thoughts[].content", Rule::Read(T::String)),
+    ("content.model_set_context", Rule::Read(T::String)),
+    ("content.user_profile", Rule::Read(T::String)),
+    ("content.user_instructions", Rule::Read(T::String)),
+    ("status", Rule::Read(T::String)),
     (
         "end_turn",
         Rule::Excluded("turn boundaries follow from the roles"),
     ),
-    (
-        "weight",
-        Rule::Kept("0 marks a message hidden from the visible thread"),
-    ),
-    (
-        "metadata",
-        Rule::Kept("dozens of provider keys; the ones about the message are read"),
-    ),
-    ("recipient", Rule::Read),
-    ("channel", Rule::Kept("reasoning-model output channel")),
-]);
+    ("weight", Rule::Kept("message attrs weight")),
+    ("metadata", Rule::Kept("provider metadata in message attrs")),
+    ("recipient", Rule::Read(T::String)),
+    ("channel", Rule::Kept("message attrs channel")),
+])
+.shape(
+    &[],
+    &[
+        crate::fields::KnownKinds {
+            path: "author.role",
+            values: &["user", "assistant", "system", "tool"],
+        },
+        crate::fields::KnownKinds {
+            path: "content.content_type",
+            values: &[
+                "text",
+                "multimodal_text",
+                "thoughts",
+                "reasoning_recap",
+                "user_editable_context",
+                "code",
+                "execution_output",
+            ],
+        },
+    ],
+)
+.for_kind("message");
+
+static CONVERSATION_FIELDS: Fields = Fields::new(&[
+    ("", Rule::Kept("conversation settings event")),
+    ("id", Rule::Read(T::String)),
+    ("conversation_id", Rule::Read(T::String)),
+    ("title", Rule::Read(T::String)),
+    ("create_time", Rule::Read(T::StringOrNumber)),
+    ("update_time", Rule::Read(T::StringOrNumber)),
+    ("mapping", Rule::Read(T::Object)),
+])
+.for_kind("conversation");
 
 /// One conversation object: its session, messages and events. Shared by
 /// the export and by browser captures of the same conversation, so both
@@ -190,7 +250,9 @@ fn conversation_with_owners(
         session.offer_title(title, TitleSource::Generated);
     }
     if let Some(at) = conv.get("create_time").and_then(time_of) {
-        session.offer_start(at);
+        session
+            .offer_start(at.timestamp(), at.evidence())
+            .expect("decoded source time is valid");
     }
     sink.out.sessions.push(session);
     sink.records.record("conversation", &RecordOutcome::Used);
@@ -199,18 +261,29 @@ fn conversation_with_owners(
     // memory scope) are kept whole as one event.
     let settings: serde_json::Map<String, Json> = obj
         .iter()
-        .filter(|(k, v)| k.as_str() != "mapping" && !v.is_null())
+        .filter(|(k, _)| k.as_str() != "mapping")
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    sink.out.events.push(Event {
-        session: Some(sid.clone()),
-        kind: "conversation_settings".into(),
-        at: conv.get("update_time").and_then(time_of),
-        after: None,
-        range: None,
-        data: Json::Object(settings),
+    sink.out.events.push({
+        let (at, time_evidence) = crate::time::parts(conv.get("update_time").and_then(time_of));
+        Event {
+            session: Some(sid.clone()),
+            kind: "conversation_settings".into(),
+            at,
+            at_quality: time_evidence.quality,
+            at_precision: time_evidence.precision,
+            at_until: time_evidence.until,
+            after: None,
+            range: None,
+            data: Json::Object(settings),
+        }
     });
 
+    sink.records.fields(
+        "conversation",
+        &crate::fields::header(conv, &["mapping"]),
+        &CONVERSATION_FIELDS,
+    );
     let tree = Tree::new(mapping);
     let places = tree.places();
     let default_model = string_of(conv, "default_model_slug");
@@ -218,7 +291,11 @@ fn conversation_with_owners(
     let mut nodes: Vec<(&String, &Json)> = mapping.iter().collect();
     nodes.sort_by_key(|(id, _)| places.get(id.as_str()).copied());
     for (index, (node_id, node)) in nodes.into_iter().enumerate() {
-        sink.records.fields("node", node, &NODE_FIELDS);
+        sink.records.fields(
+            "node",
+            &crate::fields::header(node, &["message"]),
+            &NODE_FIELDS,
+        );
         let Some(msg) = node.get("message").filter(|m| !m.is_null()) else {
             continue; // The root and other empty nodes hold no record.
         };
@@ -285,13 +362,19 @@ fn conversation_with_owners(
     if let Some(leaf) = str_of(conv, "current_node").and_then(|n| tree.nearest_message(n))
         && let Some(id) = message_id(ORIGIN, &leaf)
     {
-        sink.out.events.push(Event {
-            session: Some(sid),
-            kind: "active_leaf".into(),
-            at: None,
-            after: Some(id),
-            range: None,
-            data: Json::Null,
+        sink.out.events.push({
+            let (at, time_evidence) = crate::time::parts(None);
+            Event {
+                session: Some(sid),
+                kind: "active_leaf".into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: Some(id),
+                range: None,
+                data: Json::Null,
+            }
         });
     }
     Ok(())
@@ -481,6 +564,29 @@ fn message(
         }
     }
 
+    for key in [
+        "citations",
+        "content_references",
+        "search_result_groups",
+        "canvas",
+        "search_queries",
+        "selected_sources",
+        "image_results",
+        "async_tasks",
+        "_cite_metadata",
+    ] {
+        if let Some(data) = meta.get(key).filter(|value| {
+            !value.is_null()
+                && !value.as_array().is_some_and(Vec::is_empty)
+                && !value.as_object().is_some_and(serde_json::Map::is_empty)
+        }) {
+            blocks.push(Block::Other {
+                type_name: key.into(),
+                data: data.clone(),
+            });
+        }
+    }
+
     // The model that answered, else the message's default, else the
     // conversation's.
     let model = string_of(meta, "model_slug").or_else(|| {
@@ -488,33 +594,52 @@ fn message(
             .then(|| string_of(meta, "default_model_slug").or(default_model.map(str::to_owned)))
             .flatten()
     });
-    Ok(Message {
-        id,
-        session: sid.clone(),
-        parent: tree
-            .parent_message(node_id)
-            .and_then(|p| message_id(ORIGIN, &p)),
-        role,
-        at: msg.get("create_time").and_then(time_of),
-        model,
-        prompt_kind,
-        blocks,
-        usage: Default::default(),
-        stop_reason: meta
-            .pointer("/finish_details/type")
-            .and_then(Json::as_str)
-            .map(str::to_owned),
-        reported_cost_usd: None,
-        duration_ms: meta
-            .get("finished_duration_sec")
-            .and_then(Json::as_f64)
-            .filter(|s| s.is_finite() && *s >= 0.0)
-            .map(|s| (s * 1000.0).round())
-            // u64::MAX rounds to 2^64 as f64, so that boundary is exclusive.
-            .filter(|ms| ms.is_finite() && *ms < u64::MAX as f64)
-            .map(|ms| ms as u64),
-        production: production(meta),
+    Ok({
+        let (at, time_evidence) = crate::time::parts(msg.get("create_time").and_then(time_of));
+        Message {
+            id,
+            session: sid.clone(),
+            parent: tree
+                .parent_message(node_id)
+                .and_then(|p| message_id(ORIGIN, &p)),
+            role,
+            at,
+            at_quality: time_evidence.quality,
+            at_precision: time_evidence.precision,
+            at_until: time_evidence.until,
+            model,
+            prompt_kind,
+            blocks,
+            usage: Default::default(),
+            stop_reason: meta
+                .pointer("/finish_details/type")
+                .and_then(Json::as_str)
+                .map(str::to_owned),
+            reported_cost_usd: None,
+            duration_ms: meta
+                .get("finished_duration_sec")
+                .and_then(Json::as_f64)
+                .filter(|s| s.is_finite() && *s >= 0.0)
+                .map(|s| (s * 1000.0).round())
+                // u64::MAX rounds to 2^64 as f64, so that boundary is exclusive.
+                .filter(|ms| ms.is_finite() && *ms < u64::MAX as f64)
+                .map(|ms| ms as u64),
+            attrs: message_attrs(msg),
+            production: production(meta),
+        }
     })
+}
+
+/// Provider metadata keeps the original nested references, groups and canvas
+/// data, including fields added by the provider after this parser was written.
+fn message_attrs(msg: &Json) -> serde_json::Map<String, Json> {
+    let mut attrs = crate::fields::attributes(msg, &MESSAGE_FIELDS);
+    for key in ["metadata", "channel", "weight"] {
+        if let Some(value) = msg.get(key) {
+            attrs.insert(key.into(), value.clone());
+        }
+    }
+    attrs
 }
 
 /// The request settings ChatGPT recorded beside a response.
@@ -545,30 +670,6 @@ fn content_text(content: &Json) -> Option<String> {
     None
 }
 
-/// Text without ChatGPT's inline citation marks: private-use characters
-/// around a reference (`\u{e200}cite\u{e202}turn0search1\u{e201}`). The
-/// references themselves stay in the message metadata.
-fn without_cite_marks(text: &str) -> String {
-    if !text.contains('\u{e200}') {
-        return text.to_owned();
-    }
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find('\u{e200}') {
-        out.push_str(&rest[..start]);
-        match rest[start..].find('\u{e201}') {
-            Some(end) => rest = &rest[start + end + '\u{e201}'.len_utf8()..],
-            None => {
-                // An opener never closed is kept as written.
-                out.push_str(&rest[start..]);
-                rest = "";
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
 fn content_type(content: &Json) -> &str {
     content
         .get("content_type")
@@ -582,9 +683,7 @@ fn content_blocks(content: &Json, direction: AttachmentDirection) -> Vec<Block> 
     match content_type(content) {
         "text" => {
             if let Some(text) = content_text(content) {
-                blocks.push(Block::Text {
-                    text: without_cite_marks(&text),
-                });
+                blocks.push(Block::Text { text });
             }
         }
         "multimodal_text" => {
@@ -597,7 +696,7 @@ fn content_blocks(content: &Json, direction: AttachmentDirection) -> Vec<Block> 
                 if let Some(text) = part.as_str() {
                     if !text.is_empty() {
                         blocks.push(Block::Text {
-                            text: without_cite_marks(text),
+                            text: text.to_owned(),
                         });
                     }
                     continue;
@@ -827,6 +926,7 @@ fn tool_result(
         _ => Some(content.clone()),
     };
     Block::ToolResult {
+        reported_duration_ms: None,
         call_id,
         outcome: outcome(kind, msg, meta),
         output,

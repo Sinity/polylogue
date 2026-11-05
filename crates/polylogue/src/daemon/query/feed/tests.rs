@@ -1,17 +1,15 @@
 use super::*;
 use polylogue_store::fixture::{Fixture, SessionFacts};
-use serde_json::json;
-use std::io::{BufRead, BufReader};
 
-fn lines(file: File) -> Vec<Value> {
-    BufReader::new(file)
-        .lines()
-        .map(
-            |s| match serde_json::from_str::<Response>(&s.unwrap()).unwrap() {
-                Response::Ok { data, .. } => data,
-                other => panic!("{other:?}"),
-            },
-        )
+fn lines(mut file: File) -> Vec<Value> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).unwrap();
+    command_surface::SseDecoder::new()
+        .push(&bytes)
+        .unwrap()
+        .into_iter()
+        .map(|frame| serde_json::from_str(&frame.data).unwrap())
         .collect()
 }
 
@@ -45,25 +43,14 @@ fn replacement_delivers_every_reference_and_policy_before_its_only_new_checkpoin
     fixture
         .note("note", None, Some("synthetic note"), "session:test:000")
         .unwrap();
-    fixture
-        .excision(
-            "remove-a",
-            "session:test:gone",
-            &["test:gone"],
-            &["test:gone1"],
-        )
-        .unwrap();
-    fixture
-        .excision("remove-b", "input:synthetic", &[], &[])
-        .unwrap();
     fixture_counters(&fixture, 1, 3);
     let result = batch(&fixture, Some("old-generation:8:9"));
     assert_eq!(result[0]["type"], "begin");
     assert_eq!(result[0]["generation_changed"], true);
     assert_eq!(result[0]["replacement"], true);
     assert_eq!(result.last().unwrap()["type"], "complete");
-    assert_eq!(result.last().unwrap()["count"], 303);
-    assert_eq!(result.len(), 305);
+    assert_eq!(result.last().unwrap()["count"], 301);
+    assert_eq!(result.len(), 303);
     let events = &result[1..result.len() - 1];
     assert!(
         events
@@ -86,12 +73,8 @@ fn replacement_delivers_every_reference_and_policy_before_its_only_new_checkpoin
             .iter()
             .map(|line| line["change"]["seq"].as_u64().unwrap())
             .collect::<Vec<_>>(),
-        vec![1, 2, 3]
+        vec![1]
     );
-    assert_eq!(archive[1]["change"]["sessions"], json!(["test:gone"]));
-    assert_eq!(archive[1]["change"]["messages"], json!(["test:gone1"]));
-    assert_eq!(archive[2]["change"]["sessions"], json!([]));
-    assert_eq!(archive[2]["change"]["messages"], json!([]));
 }
 
 #[test]
@@ -105,7 +88,7 @@ fn an_output_failure_never_returns_a_deliverable_file() {
     assert_eq!(
         prepare(&pool.reader().unwrap(), None, 0, File::open(path).unwrap())
             .unwrap_err()
-            .kind,
+            .code(),
         "io"
     );
 }
@@ -167,7 +150,7 @@ fn delta_uses_both_counters_keeps_peers_and_repeats_a_completed_checkpoint_idemp
     assert_eq!(
         prepare(&reader, Some(&future), 0, tempfile::tempfile().unwrap())
             .unwrap_err()
-            .kind,
+            .code(),
         "bad_request"
     );
     assert_eq!(
@@ -178,7 +161,7 @@ fn delta_uses_both_counters_keeps_peers_and_repeats_a_completed_checkpoint_idemp
             tempfile::tempfile().unwrap()
         )
         .unwrap_err()
-        .kind,
+        .code(),
         "bad_request"
     );
 }
@@ -191,11 +174,11 @@ fn archive_counter_peers_arrive_in_local_order_without_cross_component_clock_cla
         .as_str()
         .unwrap()
         .to_owned();
-    // A synthetic archive transaction with two notes sharing one counter.
+    // A synthetic archive transaction with two assertions sharing one counter.
     let mut db = rusqlite::Connection::open(fixture.archive.archive_db()).unwrap();
     let tx = db.transaction().unwrap();
     for id in ["a", "b"] {
-        tx.execute("INSERT INTO note(id, first_note,kind,value,author,machine,created_at,commit_seq) VALUES (?1,?1,'note','synthetic','operator','test',0,1)",[id]).unwrap();
+        tx.execute("INSERT INTO assertion(id,root,kind,value,author,via,machine,created_at,commit_seq) VALUES (?1,?1,'note',json_quote('synthetic'),'operator','cli','test',0,1)",[id]).unwrap();
     }
     tx.execute(
         "INSERT INTO meta VALUES ('write_counter','1') ON CONFLICT(key) DO UPDATE SET value='1'",
@@ -222,5 +205,17 @@ fn prepare(
     now: i64,
     file: File,
 ) -> Result<File, Failure> {
-    prepare_with(reader, since, now, file, |response| response)
+    prepare_with(
+        reader,
+        since,
+        &query_language::time::Clock::new(
+            jiff::Timestamp::from_millisecond(now).unwrap(),
+            query_language::time::DaySetting::new(
+                jiff::tz::TimeZone::get("Etc/UTC").unwrap(),
+                jiff::civil::Time::midnight(),
+            )
+            .unwrap(),
+        ),
+        file,
+    )
 }

@@ -17,12 +17,23 @@
 //! an export provides it, its events wait on a placeholder that reads do
 //! not show, and a transcript a payload carries is not read.
 //!
+//! The daemon's process watcher, harness registry readers and commit
+//! watcher write lines of the same shape under `process/`, `registry/` and
+//! `git/`, with `route` naming them; their events are `process_<event>`,
+//! `registry_<event>` and `git_<event>` instead of `hook_<event>`, and
+//! together with hook events they are a session's live evidence
+//! (`polylogue_model::live`).
+//!
 //! An event is one hook invocation. The producer gives each invocation its
 //! own `event_id`, so equal payloads and timestamps still name two events.
 //! That ID, the line's time and its process stay in its data; storing the
 //! same file again adds none.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 2;
+
 use crate::document::{first_key, session_id, str_of};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::lines::Record;
 use crate::parse::{Output, Parse, Parser};
@@ -33,10 +44,57 @@ use std::path::Path;
 
 pub const ORIGIN: &str = "hook-spool";
 
+/// Written only after the native hook output was successfully handed over.
+pub const CONTEXT_EMITTED: &str = "HookContextEmitted";
+
+// These native envelope fields are copied alongside, rather than inside, the
+// payload in Event.data. Keep decoding and event retention on the same list.
+const ENVELOPE_FIELDS: &[&str] = &[
+    "event_id",
+    "at_ns",
+    "harness_pid",
+    "harness_start",
+    "git_identity",
+    "terminal_identity",
+    "repository",
+    "boot_id",
+    "native_unavailable",
+];
+
+/// Decode an emission claim retained by this parser. This is not native
+/// admission and confers no authority on imported bytes. The receipt proves no
+/// transcript-message attribution without an exact native message link.
+pub fn context_emission(event: &Event) -> Option<polylogue_model::HookContextEmission> {
+    if event.kind != event_kind(CONTEXT_EMITTED) {
+        return None;
+    }
+    let mut payload = event.data.as_object()?.clone();
+    let receipt = payload.get("event_id")?.as_str()?.to_owned();
+    for key in ENVELOPE_FIELDS {
+        payload.remove(*key);
+    }
+    let claim: polylogue_model::HookContextEmission =
+        serde_json::from_value(Json::Object(payload)).ok()?;
+    if receipt.is_empty() || claim.invocation.is_empty() || receipt == claim.invocation
+        || claim.hook_event.is_empty() || event.session.as_ref() != Some(&claim.session)
+        || claim.deliveries.is_empty()
+        || !claim.deliveries.iter().all(|reference| {
+            matches!(polylogue_model::Reference::parse(reference),
+                Ok(parsed @ polylogue_model::Reference::Delivery(_)) if parsed.to_string() == *reference)
+        })
+    {
+        return None;
+    }
+    Some(claim)
+}
+
 pub const LOCATIONS: &[&str] = &[
     "polylogue/hooks/*.jsonl",
     "polylogue/hooks/carriers/*/*/*.ndjson",
     "polylogue/hooks/*.ndjson",
+    "polylogue/hooks/process/*.ndjson",
+    "polylogue/hooks/registry/*.ndjson",
+    "polylogue/hooks/git/*.ndjson",
 ];
 
 fn is_spool_file(path: &Path) -> bool {
@@ -61,23 +119,55 @@ pub struct HookSpool;
 pub struct ParserState {}
 
 static FIELDS: Fields = Fields::new(&[
-    ("event_id", Rule::Read),
-    ("event_type", Rule::Read),
-    ("event", Rule::Read),
-    ("at_ns", Rule::Read),
-    ("harness_pid", Rule::Read),
-    ("observed_at_ms", Rule::Read),
-    ("timestamp", Rule::Read),
-    ("provider", Rule::Read),
-    ("session_id", Rule::Read),
+    ("event_id", Rule::Read(T::String)),
+    ("event_type", Rule::Read(T::String)),
+    ("event", Rule::Read(T::String)),
+    ("at_ns", Rule::Read(T::Number)),
+    ("harness_pid", Rule::Read(T::Number)),
+    ("harness_start", Rule::Read(T::Number)),
+    ("route", Rule::Read(T::String)),
+    ("observed_at_ms", Rule::Read(T::Number)),
+    ("timestamp", Rule::Read(T::StringOrNumber)),
+    ("provider", Rule::Read(T::String)),
+    ("session_id", Rule::Read(T::String)),
+    ("git_identity", Rule::Kept("native Git snapshot")),
+    (
+        "terminal_identity",
+        Rule::Kept("native terminal adapter identity"),
+    ),
+    (
+        "repository",
+        Rule::Kept("repository named by native Git configuration"),
+    ),
+    ("boot_id", Rule::Kept("the source boot identity")),
+    (
+        "native_unavailable",
+        Rule::Kept("unavailable optional native observations"),
+    ),
     (
         "payload",
         Rule::Kept("the hook's input, kept whole as the event's data"),
     ),
-]);
+])
+.for_kind("record");
 
 /// `PreToolUse` → `hook_pre_tool_use`.
 fn event_kind(event_type: &str) -> String {
+    routed_kind(polylogue_model::live::HOOK_PREFIX, event_type)
+}
+
+/// The event kind of a line of `route`, or `None` for an unknown route.
+fn route_prefix(route: Option<&str>) -> Option<&'static str> {
+    match route {
+        None | Some("hook") => Some(polylogue_model::live::HOOK_PREFIX),
+        Some("process") => Some(polylogue_model::live::PROCESS_PREFIX),
+        Some("registry") => Some(polylogue_model::live::REGISTRY_PREFIX),
+        Some("git") => Some(polylogue_model::live::GIT_PREFIX),
+        Some(_) => None,
+    }
+}
+
+fn routed_kind(prefix: &str, event_type: &str) -> String {
     let mut snake = String::new();
     for c in event_type.chars() {
         if c.is_ascii_uppercase() {
@@ -91,7 +181,7 @@ fn event_kind(event_type: &str) -> String {
             snake.push(c);
         }
     }
-    format!("hook_{snake}")
+    format!("{prefix}{snake}")
 }
 
 impl Parser for HookSpool {
@@ -120,6 +210,9 @@ impl Parser for HookSpool {
         };
         // The hook command's lines from before it named the harness are
         // Claude Code's.
+        let Some(prefix) = route_prefix(str_of(value, "route")) else {
+            return RecordOutcome::unreadable("unknown route");
+        };
         let provider = match str_of(value, "provider") {
             Some(p) => p,
             None if value.get("at_ns").is_some() => "claude-code",
@@ -142,33 +235,33 @@ impl Parser for HookSpool {
                     .get("observed_at_ms")
                     .and_then(crate::time::epoch_millis)
             })
-            .or_else(|| {
-                let ns = value.get("at_ns")?;
-                let ns = ns
-                    .as_str()
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .or_else(|| ns.as_u64())?;
-                polylogue_model::Timestamp::from_unix_ms((ns / 1_000_000) as i64)
-            });
+            .or_else(|| value.get("at_ns").and_then(crate::time::epoch_nanos))
+            .map(crate::time::SourceTime::captured);
         let mut data = match value.get("payload") {
             Some(Json::Object(map)) => Json::Object(map.clone()),
             Some(Json::Null) | None => Json::Object(Default::default()),
             Some(other) => serde_json::json!({ "payload": other }),
         };
         if let Json::Object(map) = &mut data {
-            for key in ["event_id", "at_ns", "harness_pid"] {
-                if let Some(v) = value.get(key) {
-                    map.insert(key.into(), v.clone());
+            for key in ENVELOPE_FIELDS {
+                if let Some(v) = value.get(*key) {
+                    map.insert((*key).into(), v.clone());
                 }
             }
         }
-        out.events.push(Event {
-            session: Some(sid),
-            kind: event_kind(event_type),
-            at,
-            after: None,
-            range: Some((record.offset, record.offset + record.bytes.len() as u64)),
-            data,
+        out.events.push({
+            let (at, time_evidence) = crate::time::parts(at);
+            Event {
+                session: Some(sid),
+                kind: routed_kind(prefix, event_type),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: None,
+                range: Some((record.offset, record.offset + record.bytes.len() as u64)),
+                data,
+            }
         });
         RecordOutcome::Used
     }

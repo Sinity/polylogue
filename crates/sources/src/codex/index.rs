@@ -13,6 +13,22 @@ use polylogue_model::{Event, Json, Session, SessionKind, TitleSource};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+static NAME_FIELDS: crate::fields::Fields = crate::fields::Fields::new(&[
+    (
+        "id",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "thread_name",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "updated_at",
+        crate::fields::Rule::Excluded("native index edit time; receipt order chooses the name"),
+    ),
+])
+.for_kind("name");
+
 pub struct History;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -39,13 +55,19 @@ impl Parser for History {
         if v.get("text").and_then(Json::as_str).is_none() {
             return RecordOutcome::skipped("prompt without text");
         }
-        out.events.push(Event {
-            session: Some(session),
-            kind: "prompt".into(),
-            at: v.get("ts").and_then(time::epoch_seconds),
-            after: None,
-            range: Some((record.offset, record.offset + record.bytes.len() as u64)),
-            data: v.clone(),
+        out.events.push({
+            let (at, time_evidence) = crate::time::parts(v.get("ts").and_then(time::epoch_seconds));
+            Event {
+                session: Some(session),
+                kind: "prompt".into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: None,
+                range: Some((record.offset, record.offset + record.bytes.len() as u64)),
+                data: v.clone(),
+            }
         });
         RecordOutcome::Used
     }
@@ -75,7 +97,7 @@ impl Parser for SessionIndex {
         _: Record<'_>,
         v: &Json,
         _: &mut Output,
-        _: &mut Records,
+        records: &mut Records,
     ) -> RecordOutcome {
         let (Some(id), Some(name)) = (str_field(v, "id"), str_field(v, "thread_name")) else {
             return RecordOutcome::skipped("index line without a thread ID or name");
@@ -83,6 +105,7 @@ impl Parser for SessionIndex {
         if session_id(id).is_none() {
             return RecordOutcome::unreadable("thread ID is empty");
         }
+        records.fields("thread_name", v, &NAME_FIELDS);
         parser_state.names.insert(id.to_owned(), name.to_owned());
         RecordOutcome::Used
     }

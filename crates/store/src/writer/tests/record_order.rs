@@ -27,7 +27,7 @@ fn messages_one_record_holds_read_in_record_order() {
     let mut first = batch("lines", 0, 0, rows, &["s"]);
     first.length = 200;
     first.parse[0].parsed_upto = 200;
-    w.writer.send(first).unwrap();
+    w.store_reading(first, Some(&[b'r'; 200])).unwrap();
     let report = w.writer.flush().unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(texts(&w, "s"), ["first", "second", "third", "fourth"]);
@@ -43,7 +43,7 @@ fn messages_one_record_holds_read_in_record_order() {
         ),
         &["s"],
     );
-    w.writer.send(later).unwrap();
+    w.store_reading(later, Some(&SOURCE_RECORD)).unwrap();
     let report = w.writer.flush().unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(

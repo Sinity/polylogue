@@ -9,12 +9,16 @@ fn public_morrow_tour_matches_current_query_examples() {
     std::os::unix::fs::symlink(&actual, &alias).unwrap();
     let directory = alias.join("t\u{9b}\x7f\u{202e}");
     let operator_archive = temp.path().join("operator-archive");
-    let output = crate::command(temp.path())
-        .args(["--json", "demo", "tour"])
-        .arg(&directory)
-        .env("POLYLOGUE_ARCHIVE", &operator_archive)
-        .output()
-        .unwrap();
+    let output = crate::Fixture::new(
+        &operator_archive,
+        &temp.path().join("home"),
+        &temp.path().join("config"),
+    )
+    .command()
+    .args(["--json", "demo", "tour"])
+    .arg(&directory)
+    .output()
+    .unwrap();
     assert!(!operator_archive.exists());
     assert!(output.status.success(), "{output:?}");
     let text = std::str::from_utf8(&output.stdout).unwrap();
@@ -93,10 +97,16 @@ fn public_morrow_tour_matches_current_query_examples() {
         .collect();
     assert_eq!(unknown, expected_unknown);
     assert_eq!(steps[8]["result"]["rows"].as_array().unwrap().len(), 1);
+    // A takeover names an assertion by another author that the operator has
+    // not accepted, without quoting it (docs/agents.md, Brief).
+    let takeover = steps[9]["result"].to_string();
     assert!(
-        steps[9]["result"]
-            .to_string()
-            .contains("Use chrono for date parsing.")
+        takeover.contains("Assertions by other authors, not yet accepted: 1;"),
+        "{takeover}"
+    );
+    assert!(
+        !takeover.contains("Use chrono for date parsing."),
+        "{takeover}"
     );
     assert!(
         steps
@@ -135,11 +145,7 @@ fn public_morrow_tour_matches_current_query_examples() {
     // The README daemon uses this machine's identity and the same absolute paths.
     let archive = directory.join("archive");
     let config = directory.join("config");
-    let env = [
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let before = {
         let pool =
             polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive)).unwrap();
@@ -154,8 +160,11 @@ fn public_morrow_tour_matches_current_query_examples() {
     assert_eq!(status["store"]["stored_bytes"], before.stored_bytes);
     let output = super::cli::cli(&env, &["--json", "tool_calls where outcome:error"]);
     assert!(output.status.success(), "{output:?}");
-    let restarted: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(restarted["rows"], steps[2]["result"]["rows"]);
+    let restarted: command_surface::Answer<Value> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        restarted.value().expect("query succeeded")["rows"],
+        steps[2]["result"]["rows"]
+    );
     drop(daemon);
     let marker = directory.join("keep.txt");
     std::fs::write(&marker, "keep this file").unwrap();

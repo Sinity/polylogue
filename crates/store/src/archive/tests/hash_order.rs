@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_model::{BlobHash, Target};
+use polylogue_model::{BlobHash, Reference};
 use rusqlite::{Connection, params, types::Value};
 
 fn rows(conn: &Connection, sql: &str) -> Vec<Vec<Value>> {
@@ -13,60 +13,51 @@ fn rows(conn: &Connection, sql: &str) -> Vec<Vec<Value>> {
 }
 
 #[test]
-fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
+fn a_deliberate_index_rebuild_keeps_authored_rows_and_vectors() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let archive_conn = open_archive_writer(&archive).unwrap();
     let stored = BlobHash::of(b"synthetic stored embedded text");
     let removed = BlobHash::of(b"synthetic removed text");
-    let removed_blob = BlobHash::of(b"synthetic removed attachment");
-    archive_conn.execute("INSERT INTO note(id, first_note,kind,value,author,machine,created_at,commit_seq) VALUES ('authored','authored','note','exact authored value','operator','synthetic',1,1)", []).unwrap();
-    archive_conn
-        .execute(
-            "INSERT INTO note_target(note_id,ref) VALUES ('authored','message:claude-code:stable')",
-            [],
-        )
-        .unwrap();
-    archive_conn.execute("INSERT INTO excision(id, target,created_at,commit_seq) VALUES ('session-removal','session:claude-code:blocked',3,2)", []).unwrap();
-    for (kind, value) in [
-        ("session", "claude-code:blocked".to_owned()),
-        ("message", "claude-code:blocked-message".to_owned()),
-        (
-            "location",
-            r#"["synthetic","/synthetic/removed"]"#.to_owned(),
-        ),
-        ("blob", removed_blob.to_string()),
-    ] {
-        archive_conn
-            .execute(
-                "INSERT INTO excised(excision_id,kind,value) VALUES ('session-removal',?1,?2)",
-                [kind, &value],
-            )
-            .unwrap();
-    }
-    archive_conn
-        .execute(
-            "INSERT INTO excision(id, target,created_at,commit_seq) VALUES ('text-removal',?1,4,3)",
-            [format!("text:{removed}")],
-        )
-        .unwrap();
+    use polylogue_model::assertion::{AssertionFact, AssertionKind, AssertionLink, LinkRole};
+    crate::assertions::apply(
+        &archive_conn,
+        &[AssertionFact {
+            id: "authored".into(),
+            root: "authored".into(),
+            kind: AssertionKind::Note,
+            key: None,
+            value: Some(serde_json::json!("exact authored value")),
+            author: polylogue_model::Author::Operator,
+            via: polylogue_model::authorship::Channel::Import,
+            machine: "synthetic".into(),
+            created_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
+            valid_until: None,
+            links: vec![AssertionLink {
+                role: LinkRole::About,
+                reference: Reference::parse("message:claude-code:stable").unwrap(),
+                seen_hash: None,
+                quote: None,
+            }],
+        }],
+        1,
+    )
+    .unwrap();
     let vectors = open_write(&archive.embeddings_db(), cache::SETUP).unwrap();
     for (hash, value) in [(stored, 1.25f32), (removed, 2.5f32)] {
         vectors.execute("INSERT INTO embedded(text_hash,model,chunk,dims,vector,embedded_at) VALUES (?1,'synthetic/model/1/document/unit',0,1,?2,5)", params![&hash.0[..], value.to_le_bytes().as_slice()]).unwrap();
     }
     drop(vectors);
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    crate::excise::mark_applied(&archive_conn, &index).unwrap();
     index.pragma_update(None, "user_version", 29).unwrap();
     index
         .execute("INSERT INTO meta VALUES ('old-index-marker','old')", [])
         .unwrap();
     drop(index);
     let queries = [
-        "SELECT * FROM note ORDER BY id",
-        "SELECT * FROM note_target ORDER BY note_id,ref",
-        "SELECT * FROM excision ORDER BY id",
-        "SELECT * FROM excised ORDER BY kind, value",
+        "SELECT * FROM assertion ORDER BY id",
+        "SELECT * FROM link ORDER BY record,role,ref",
+        "SELECT * FROM revision_state ORDER BY id",
     ];
     let before: Vec<_> = queries.iter().map(|sql| rows(&archive_conn, sql)).collect();
     let vectors = open_read(&archive.embeddings_db()).unwrap();
@@ -76,6 +67,13 @@ fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
     drop(archive_conn);
     drop(lock);
 
+    // The test explicitly requests a fresh derived index.
+    for suffix in ["", "-wal", "-shm"] {
+        let path = archive.root.join(format!("index.db{suffix}"));
+        if path.exists() {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_read(&archive.index_db()).unwrap();
     assert_eq!(schema::version(&index).unwrap(), schema::INDEX_VERSION);
@@ -91,25 +89,7 @@ fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
     );
     let archive_conn = open_read(&archive.archive_db()).unwrap();
     let after: Vec<_> = queries.iter().map(|sql| rows(&archive_conn, sql)).collect();
-    assert_eq!(after, before, "authored values and excisions stay verbatim");
-    let matches = crate::excise::matching(
-        &archive_conn,
-        &["claude-code:blocked".into(), "claude-code:allowed".into()],
-        &[
-            "claude-code:blocked-message".into(),
-            "claude-code:allowed-message".into(),
-        ],
-        &[],
-    )
-    .unwrap();
-    assert_eq!(
-        matches.sessions.into_iter().collect::<Vec<_>>(),
-        ["claude-code:blocked"]
-    );
-    assert_eq!(
-        matches.messages.into_iter().collect::<Vec<_>>(),
-        ["claude-code:blocked-message"]
-    );
+    assert_eq!(after, before, "authored values stay verbatim");
     let vectors = open_read(&archive.embeddings_db()).unwrap();
     assert_eq!(
         rows(&vectors, "SELECT * FROM embedded ORDER BY id"),
@@ -118,16 +98,18 @@ fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
     );
     let pool = crate::ReadPool::open(&archive).unwrap();
     let reader = pool.reader().unwrap();
-    let note = reader.note("authored").unwrap().unwrap();
+    let assertion = reader
+        .assertion(&polylogue_model::RevisionReference::exact(
+            "authored".into(),
+            "authored".into(),
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(assertion.fact.links.len(), 1);
+    assert_eq!(assertion.fact.links[0].role, LinkRole::About);
     assert_eq!(
-        note.targets,
-        [Target::Message(
-            polylogue_model::MessageId::parse("claude-code:stable").unwrap()
-        )]
+        assertion.fact.links[0].reference,
+        Reference::Message(polylogue_model::MessageId::parse("claude-code:stable").unwrap())
     );
-    assert_eq!(note.value.as_deref(), Some("exact authored value"));
-    assert_eq!(
-        reader.refused_paths().unwrap(),
-        [("synthetic".into(), "/synthetic/removed".into())]
-    );
+    assert_eq!(assertion.fact.text(), Some("exact authored value"));
 }

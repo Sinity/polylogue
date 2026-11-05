@@ -4,12 +4,12 @@ import { readFile } from "node:fs/promises";
 const source = await readFile(new URL("../live.js", import.meta.url), "utf8");
 let serial = 0;
 const flush = async () => { for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve)); };
-const envelope = data => JSON.stringify({ result: "ok", data }) + "\n";
+const envelope = data => "event: " + (data.type === "change" ? "record" : data.type) + "\ndata: " + JSON.stringify(data) + "\n\n";
 const begin = { type: "begin", replacement: false, generation_changed: false };
 const change = { type: "change", component: "index", change: { ref: "session:synthetic" } };
 const complete = position => ({ type: "complete", position, count: 1 });
 const batch = position => new Response(envelope(begin) + envelope(change) + envelope(complete(position)));
-const currentPage = (next = null) => Response.json({ rows: [{ ref: "session:current" }], read_at: { cursor: "synthetic:0:0", generation: "synthetic" }, next });
+const currentPage = (next = null) => Response.json({ outcome: "ok", value: { rows: [{ ref: "session:current" }], read_at: { cursor: "synthetic:0:0", generation: "synthetic" }, next }, notes: [], next: [] });
 async function environment(t, fetch) {
   const saved = new Map(["document", "window", "fetch", "setTimeout", "clearTimeout", "setInterval", "clearInterval"].map(key => [key, globalThis[key]]));
   const timers = new Map(), intervals = new Map(), events = new Map();
@@ -73,7 +73,7 @@ test("one active change request serves the tab and hidden tabs abort it", async 
   document.hidden = false; env.events.get("visibilitychange")(); assert.equal(calls, 2);
   stopA(); stopB(); await flush();
 });
-test("expired authentication stops requests and clock refreshes", async t => {
+test("expired authentication stops requests", async t => {
   let calls = 0; const errors = [];
   const env = await environment(t, async url => {
     if (url.startsWith("/api/v1/query")) return currentPage();
@@ -144,7 +144,7 @@ test("a view joining an active batch receives its changes before the position ad
     return batch("synthetic:6:0");
   });
   const stopA=env.watchChanges({query:"changes where kind:session"});await flush();
-  const stopB=env.watchChanges({query:"changes where kind:note",apply:line=>joined.push(line.change.ref)});await flush();
+  const stopB=env.watchChanges({query:"changes where kind:assertion",apply:line=>joined.push(line.change.ref)});await flush();
   finish();await flush();await env.tick();
   assert.equal(requests[1],"/api/v1/changes?since=synthetic%3A0%3A0");
   assert.ok(joined.includes("session:synthetic"));stopA();stopB();

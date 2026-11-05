@@ -5,14 +5,14 @@
 
 use super::BrowserHost;
 use super::actions::Update;
-use crate::daemon::{Request, Response};
+use crate::daemon::Request;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Json, Response as HttpResponse};
 use axum::routing::{get, post};
-use polylogue_store::backfill_jobs::BackfillReport;
+use polylogue_model::user::BackfillReport;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -44,6 +44,21 @@ fn refuse(status: StatusCode, error: &str, message: &str) -> HttpResponse {
     (status, Json(json!({ "error": error, "message": message }))).into_response()
 }
 
+/// A daemon failure with its shared HTTP status; a failure with no HTTP
+/// status (the daemon not running) is 503.
+fn refuse_with(failure: &command_surface::Failure) -> HttpResponse {
+    let status = failure
+        .kind
+        .http_status()
+        .and_then(|status| StatusCode::from_u16(status).ok())
+        .unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
+    refuse(
+        status,
+        failure.code.as_deref().unwrap_or_default(),
+        &failure.message,
+    )
+}
+
 /// Runs blocking work (files, the socket) off the async thread.
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
     tokio::task::spawn_blocking(f).await.ok()
@@ -53,23 +68,8 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
 /// code; 503 `daemon_required` when it does not answer (stopped, or too busy).
 async fn ask(host: Arc<BrowserHost>, request: Request) -> Result<Value, Box<HttpResponse>> {
     match blocking(move || host.ask(&request)).await.flatten() {
-        Some(Response::Ok { data, .. }) => Ok(data),
-        Some(Response::Error {
-            kind,
-            message,
-            detail,
-        }) => {
-            let status = detail
-                .as_ref()
-                .and_then(|d| d["http_status"].as_u64())
-                .and_then(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok())
-                .unwrap_or(match kind.as_str() {
-                    "bad_request" | "invalid_query" => StatusCode::BAD_REQUEST,
-                    "conflict" => StatusCode::CONFLICT,
-                    "not_found" => StatusCode::NOT_FOUND,
-                    _ => StatusCode::INTERNAL_SERVER_ERROR,
-                });
-            Err(Box::new(refuse(status, &kind, &message)))
+        Some(answer) => {
+            crate::protocol::into_value(answer).map_err(|failure| Box::new(refuse_with(&failure)))
         }
         None => Err(Box::new(refuse(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -283,17 +283,12 @@ async fn selection_note(
     State(host): State<Arc<BrowserHost>>,
     Json(input): Json<super::notes::SelectionNote>,
 ) -> HttpResponse {
-    match blocking(move || super::notes::save(&host, input)).await {
-        Some(Response::Ok { data, .. }) => Json(json!({ "note": data })).into_response(),
-        Some(Response::Error { kind, message, .. }) => {
-            let status = match kind.as_str() {
-                "bad_request" | "invalid_query" => StatusCode::BAD_REQUEST,
-                "conflict" => StatusCode::CONFLICT,
-                "daemon_required" => StatusCode::SERVICE_UNAVAILABLE,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            refuse(status, &kind, &message)
-        }
+    match blocking(move || super::notes::save(&host, input))
+        .await
+        .map(crate::protocol::into_value)
+    {
+        Some(Ok(data)) => Json(json!({ "note": data })).into_response(),
+        Some(Err(failure)) => refuse_with(&failure),
         None => refuse(
             StatusCode::SERVICE_UNAVAILABLE,
             "save_outcome_unknown",

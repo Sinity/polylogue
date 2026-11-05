@@ -252,6 +252,8 @@ Only view state in progress: focus, open disclosures within a page view, follow 
 
 `/`, `/running` (`/live` redirects), `/search`, `/s/SESSION` (and `/report`, `/share`), `/d/DOCUMENT`, `/m/MESSAGE` (redirects to the reader anchor), `/n/NOTE`, `/notes`, `/claims`, `/judge`, `/triage`, `/pages`, `/p/PAGE`, `/w/MODE`, `/compare`, `/timeline`, `/day/DATE`, `/firehose`, `/cost`, `/analysis`, `/r/RESULT`, `/pastes`, `/attachments`, `/topic`, `/status`, `/settings`, `/stream`, and `/api/v1/…`, one route per command-table row. Each route is a view of one or more rows, and the JSON API takes the same request as the daemon socket.
 
+Session, document and message URLs pass their target and read options to the read route of the command table; a browser asks that route for HTML and a program for JSON. The reader renders the typed read answer, with no message selection, parent walk or cursor handling of its own, and its next and previous links are that answer's ready calls. Changing the view starts a new read. Pages use the common `web-shell` frame, styles and browser script; sign-in removes the token fragment from the browser history before exchanging it.
+
 ## Views
 
 ### Home `/`
@@ -342,7 +344,7 @@ The most important surface. Message rendering and read views are [reading.md](re
 
 **Read views.** The views and their names are [reading.md](reading.md#views)'s; on the web, *summary* is a definition list, *context* shows what the model had at a selected message (parents → boundaries → tail), *links* is the tree of linked sessions with own and tree cost, *changes* lists files edited (graded known, possible, unknown), commands with outcomes, commits and pull requests, *live* is this session's Running row with follow and controls, and *raw* is the stored input records, inert. The **flow panel** renders the `delegations` and `deliveries` units as the work tree of [Running](#running-running), and the **report** composes summary, changes, the session's tool calls and its claims; neither is a read view, because both are compositions of query units.
 
-**Reading pages.** The reader reads a session in pages through the `read` row with a budget ([reading.md](reading.md#budgets)); the web default is 8,192 tokens. Paging links are First · Previous · Next · Latest; anchors are `/s/ID?message=MID`; changing the view starts a new read at the page's message anchor. The content cursor, the outline cursor and the links cursor are independent URL parameters, and the failure of an optional panel is shown beside the content. A stale cursor offers "Read changed · refresh from this message"; pages are never joined across a stale cursor. Long sessions keep a window of the DOM and fetch by anchor when scrolling past it.
+**Reading pages.** The reader reads a session in pages through the `read` row with a budget ([reading.md](reading.md#budgets)); the web default is 8,192 tokens. Paging links are First · Previous · Next · Latest; anchors are `/s/ID?message=MID`; changing the view starts a new read at the page's message anchor. The content cursor and the links cursor are independent URL parameters; the outline is the `turns` reading of the session, and the failure of an optional panel is shown beside the content. A stale cursor offers "Read changed · refresh from this message"; pages are never joined across a stale cursor. Long sessions keep a window of the DOM and fetch by anchor when scrolling past it.
 
 **Interactions.**
 - **Action rail** per message on hover and focus: **Copy**, **Annotate**, **Decision**, **Tag**, **Star**, **Add to page or bundle**, **Compare from here**, **Continue from here**, **Raw**, **Provenance**, **Permalink**.
@@ -366,7 +368,7 @@ The most important surface. Message rendering and read views are [reading.md](re
 
 **Related sessions.** An inspector panel lists sessions ranked by `related:REF`; while that product is unavailable (no recall figure, or model calls off), the panel shows `unavailable: <reason>`.
 
-Rows: `read` with budget, slices, anchors, cursors and views; `outline`; `attachment` (descriptors, bytes, show in file manager); `assert`; `trace`; `pack`; `open-editor`; the live-session control rows.
+Rows: `read` with budget, slices, anchors, cursors and views (the outline is `turns where session:REF` read); `attachment` (descriptors, bytes, show in file manager); `assert`; `trace`; `pack`; `open-editor`; the live-session control rows.
 
 ### Live-session control panel
 
@@ -398,7 +400,7 @@ A message list with a checkbox per message and note. **Before saving** lists wha
 
 - **`/notes`:** filters by kind, author (operator, agents, a session, `unattributed`, `via`), target, judged state (unjudged by the operator, accepted, rejected), conflict, stale (target text changed since its `seen_hash`) and withdrawn. Rows: kind badge, body, target, author, time, judgments, check badge. **Needs review** lists current, unwithdrawn notes by other authors without an operator judgment. Bulk actions: judge, withdraw, tag. Any author's judgment is shown as that author's opinion; acceptance means an operator judgment ([assertions.md](assertions.md#judgment)).
 - **`/claims`:** claims are `claim` assertions. Each shows its **check** badge (`holds`, `fails`, `unknown` with the reason, `unchecked`) with the check query, `expects rows · got N` and the failing rows linked; the verification it rests on is shown as the check command and exit status the transcript records (`cargo test · exit 101`, or a declared wrapper's `job 1234 · cargo test · exit 101`), never as the agent's words. The header reads `checks evaluated now, at read time · never stored · never a verdict`. An accepted claim that the archive now contradicts says so. "Claimed done, last check failed" is a shipped saved query and one filter here.
-- **`/judge`:** the command line (`polylogue judge --blind --sample 5 'notes where rubric:outcomes@r2'`); the rubric card; the item card (`item 4 of 5 · order shuffled · author hidden until the verdict`) with its target and last messages, `a` accept · `r` reject · `d` defer; **This pass so far** (agreement with the operator's judgments on the same rubric revision, deferred, left); **withdraw the whole pass**; **revise the rubric and re-run**. Calibration figures of agent passes against operator-judged samples are shown here.
+- **`/judge`:** the command line (`polylogue judge --blind --sample 5 'assertions where rubric:outcomes@r2'`); the rubric card; the item card (`item 4 of 5 · order shuffled · author hidden until the verdict`) with its target and last messages, `a` accept · `r` reject · `d` defer; **This pass so far** (agreement with the operator's judgments on the same rubric revision, deferred, left); **withdraw the whole pass**; **revise the rubric and re-run**. Calibration figures of agent passes against operator-judged samples are shown here.
 - **`/triage`:** sessions ordered by the sum of named facts, each with its contribution; the tag `triaged` empties a row.
 - **Marks:** star and pin are tags (`tag star`, `tag pin`), shown as toggles on every session and message. "Pin" keeps an item on top of lists; a page slot that holds an exact revision is "fixed".
 
@@ -498,7 +500,7 @@ Saved queries are names on query hashes, listed in the facet rail and at `/notes
 
 Settings are archive records with history and author. This page edits those a person sets through the web:
 - **View preferences:** density; fold defaults (tool output and pastes over N lines); single-key shortcuts on or off; theme (system, light, dark) and the palette source; rail and panel state per view; default reader toggles.
-- **The operator's facts and open choices** ([operations.md](operations.md#configuration)): logical day (read from Sinex in primary mode), subscription plan and price table, enabled variants, quiet hours and interrupt budget (Sinex's in primary mode), listen address and authentication, the optional notification route command.
+- **The operator's facts and open choices** ([operations.md](operations.md#configuration)): logical day (read from Sinex in primary mode), subscription plan and price table, enabled variants, quiet hours and interrupt budget (Sinex's in primary mode), listen address and authentication, the optional away command.
 
 Every change shows who made it and when.
 

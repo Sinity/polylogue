@@ -1,11 +1,90 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub use query_language::time::{Precision, TimeQuality};
+
+/// Evidence accompanying a source time. The timestamp stays in its domain
+/// field; this value validates its quality, precision and optional upper bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TimeEvidence {
+    pub quality: TimeQuality,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub precision: Option<Precision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<Timestamp>,
+}
+
+impl Default for TimeEvidence {
+    fn default() -> Self {
+        Self::UNKNOWN
+    }
+}
+
+impl TimeEvidence {
+    pub const UNKNOWN: Self = Self {
+        quality: TimeQuality::Unknown,
+        precision: None,
+        until: None,
+    };
+
+    pub const fn intrinsic(precision: Precision) -> Self {
+        Self {
+            quality: TimeQuality::Intrinsic,
+            precision: Some(precision),
+            until: None,
+        }
+    }
+
+    pub fn validate(self, at: Option<Timestamp>) -> Result<(), TimeEvidenceError> {
+        let Some(at) = at else {
+            return if self == Self::UNKNOWN {
+                Ok(())
+            } else {
+                Err(TimeEvidenceError::MissingTime)
+            };
+        };
+        if self.quality == TimeQuality::Unknown {
+            return Err(TimeEvidenceError::UnknownQuality);
+        }
+        let precision = self.precision.ok_or(TimeEvidenceError::MissingPrecision)?;
+        if self.until.is_some_and(|until| until <= at) {
+            return Err(TimeEvidenceError::InvalidBounds);
+        }
+        match precision {
+            Precision::Instant if self.until.is_some() => Err(TimeEvidenceError::InstantHasBounds),
+            Precision::Bounded if self.until.is_none() => Err(TimeEvidenceError::MissingBounds),
+            _ => Ok(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum TimeEvidenceError {
+    #[error("time evidence requires a timestamp")]
+    MissingTime,
+    #[error("a known timestamp requires known quality")]
+    UnknownQuality,
+    #[error("a known timestamp requires precision")]
+    MissingPrecision,
+    #[error("a time upper bound must follow its timestamp")]
+    InvalidBounds,
+    #[error("an instant cannot carry a time upper bound")]
+    InstantHasBounds,
+    #[error("bounded precision requires a time upper bound")]
+    MissingBounds,
+}
+
+pub(crate) const fn unknown_quality() -> TimeQuality {
+    TimeQuality::Unknown
+}
+
 /// A point in time as a source stated it. Unknown times are `None` at the
 /// use site, never a zero or a guess.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(transparent)]
-pub struct Timestamp(jiff::Timestamp);
+pub struct Timestamp(#[schemars(with = "String")] jiff::Timestamp);
 
 impl Timestamp {
     pub fn from_unix_ms(ms: i64) -> Option<Self> {
@@ -38,6 +117,17 @@ impl Timestamp {
     }
 }
 
+impl From<jiff::Timestamp> for Timestamp {
+    fn from(value: jiff::Timestamp) -> Self {
+        Self(value)
+    }
+}
+impl From<Timestamp> for jiff::Timestamp {
+    fn from(value: Timestamp) -> Self {
+        value.0
+    }
+}
+
 impl fmt::Display for Timestamp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)
@@ -49,126 +139,6 @@ impl fmt::Debug for Timestamp {
         write!(f, "Timestamp({})", self.0)
     }
 }
-
-/// The operator's day as a person reads it (joint decision 15): date D runs
-/// from D at `start` to D+1 at the same wall-clock time, in `zone`, so work
-/// at 01:30 belongs to the day before. A DST day is 23 or 25 hours long. A
-/// start time in a DST gap means the first instant after the gap; in a fold,
-/// the earlier instant.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LogicalDay {
-    pub zone: jiff::tz::TimeZone,
-    /// Minutes after midnight; 240 is 04:00.
-    pub start_minutes: u16,
-}
-
-impl LogicalDay {
-    pub const DEFAULT_START_MINUTES: u16 = 4 * 60;
-
-    /// The machine's zone and the default 04:00 start.
-    pub fn system() -> Self {
-        Self {
-            zone: jiff::tz::TimeZone::system(),
-            start_minutes: Self::DEFAULT_START_MINUTES,
-        }
-    }
-
-    /// A named IANA zone, or `None` when the name is unknown.
-    pub fn named(zone: &str, start_minutes: u16) -> Option<Self> {
-        Some(Self {
-            zone: jiff::tz::TimeZone::get(zone).ok()?,
-            start_minutes,
-        })
-    }
-
-    /// The zone's IANA name, when it has one.
-    pub fn zone_name(&self) -> Option<&str> {
-        self.zone.iana_name()
-    }
-
-    fn start_time(&self) -> jiff::civil::Time {
-        jiff::civil::Time::new(
-            (self.start_minutes / 60).min(23) as i8,
-            (self.start_minutes % 60) as i8,
-            0,
-            0,
-        )
-        .unwrap_or(jiff::civil::Time::midnight())
-    }
-
-    /// The instant logical date `date` starts.
-    pub fn start_of(&self, date: jiff::civil::Date) -> i64 {
-        // `compatible`: a gap resolves to the instant after it, a fold to
-        // the earlier instant.
-        self.zone
-            .to_ambiguous_zoned(date.to_datetime(self.start_time()))
-            .compatible()
-            .map_or(0, |z| z.timestamp().as_millisecond())
-    }
-
-    /// The logical date an instant belongs to.
-    /// The local hour (0-23) of an instant.
-    pub fn local_hour(&self, ms: i64) -> u8 {
-        let ts = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-        ts.to_zoned(self.zone.clone()).hour() as u8
-    }
-
-    pub fn date_of(&self, ms: i64) -> jiff::civil::Date {
-        let ts = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-        let local = ts.to_zoned(self.zone.clone()).date();
-        if ms < self.start_of(local) {
-            local.yesterday().unwrap_or(local)
-        } else {
-            local
-        }
-    }
-
-    /// `[start, end)` of logical date `date`, in Unix ms.
-    pub fn day(&self, date: jiff::civil::Date) -> (i64, i64) {
-        let next = date.tomorrow().unwrap_or(date);
-        (self.start_of(date), self.start_of(next))
-    }
-
-    /// `[start, end)` of the logical ISO week (Monday first) holding `date`.
-    pub fn week(&self, date: jiff::civil::Date) -> (i64, i64) {
-        let back = i64::from(date.weekday().to_monday_zero_offset());
-        let monday = date
-            .checked_sub(jiff::Span::new().days(back))
-            .unwrap_or(date);
-        let next = monday
-            .checked_add(jiff::Span::new().days(7))
-            .unwrap_or(monday);
-        (self.start_of(monday), self.start_of(next))
-    }
-
-    /// `[start, end)` of the logical month holding `date`.
-    pub fn month(&self, date: jiff::civil::Date) -> (i64, i64) {
-        let first = date.first_of_month();
-        let next = first
-            .checked_add(jiff::Span::new().months(1))
-            .unwrap_or(first);
-        (self.start_of(first), self.start_of(next))
-    }
-
-    /// Group labels: the logical date `2026-10-05`, the ISO week
-    /// `2026-W41`, the month `2026-10`.
-    pub fn day_label(&self, ms: i64) -> String {
-        self.date_of(ms).to_string()
-    }
-
-    pub fn week_label(&self, ms: i64) -> String {
-        let d = self.date_of(ms).iso_week_date();
-        format!("{:04}-W{:02}", d.year(), d.week())
-    }
-
-    pub fn month_label(&self, ms: i64) -> String {
-        let d = self.date_of(ms);
-        format!("{:04}-{:02}", d.year(), d.month())
-    }
-}
-
-#[cfg(test)]
-mod logical_day;
 
 #[cfg(test)]
 mod tests;

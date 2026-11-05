@@ -13,8 +13,12 @@
 //! attachment; a file whose bytes an earlier capture already stored is named
 //! by its blob hash instead.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, ExtractedBlob, MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
@@ -52,8 +56,8 @@ pub fn open(path: &Path) -> Option<Parse> {
 }
 
 static CAPTURE_FIELDS: Fields = Fields::new(&[
-    (KIND_KEY, Rule::Read),
-    ("schema_version", Rule::Read),
+    (KIND_KEY, Rule::Read(T::String)),
+    ("schema_version", Rule::Read(T::Number)),
     (
         "capture_id",
         Rule::Excluded("the extension's own key; the provider IDs identify the conversation"),
@@ -62,24 +66,56 @@ static CAPTURE_FIELDS: Fields = Fields::new(&[
         "source",
         Rule::Excluded("names the capturing program, always the extension"),
     ),
-    ("provenance", Rule::Read),
-    ("provider_meta", Rule::Read),
-    ("raw_provider_payload", Rule::Read),
-    ("session", Rule::Read),
+    (
+        "provenance",
+        Rule::Kept("complete browser capture provenance event"),
+    ),
+    ("provenance.captured_at", Rule::Read(T::String)),
+    (
+        "provider_meta",
+        Rule::Kept("complete browser capture provider metadata"),
+    ),
+    ("raw_provider_payload", Rule::Read(T::Object)),
+    ("session", Rule::Read(T::Object)),
+])
+.for_kind("capture");
+
+static NATIVE_SESSION_FIELDS: Fields = Fields::new(&[
+    ("provider", Rule::Read(T::String)),
+    ("attachments", Rule::Read(T::Array)),
+]);
+static TURN_SESSION_FIELDS: Fields = Fields::new(&[
+    ("provider", Rule::Read(T::String)),
+    ("provider_session_id", Rule::Read(T::String)),
+    ("title", Rule::Read(T::String)),
+    ("turns", Rule::Read(T::Array)),
+    ("attachments", Rule::Read(T::Array)),
+]);
+static ATTACHMENT_FIELDS: Fields = Fields::new(&[
+    ("content_base64", Rule::Read(T::String)),
+    ("blob", Rule::Read(T::String)),
+    ("size_bytes", Rule::Read(T::Number)),
+    ("provider_attachment_id", Rule::Read(T::String)),
+    ("message_provider_id", Rule::Read(T::String)),
+    ("name", Rule::Read(T::String)),
+    ("mime_type", Rule::Read(T::String)),
+    ("url", Rule::Read(T::String)),
+    ("extracted_content", Rule::Read(T::String)),
+    ("not_fetched", Rule::Read(T::Any)),
 ]);
 
 /// Fields of the extension's normalized turns. Only read when the page
 /// exposed no provider JSON.
 static TURN_FIELDS: Fields = Fields::new(&[
-    ("provider_turn_id", Rule::Read),
-    ("role", Rule::Read),
-    ("text", Rule::Read),
-    ("timestamp", Rule::Read),
-    ("ordinal", Rule::Read),
-    ("parent_turn_id", Rule::Read),
-    ("model", Rule::Read),
-    ("blocks", Rule::Read),
-    ("attachments", Rule::Read),
+    ("provider_turn_id", Rule::Read(T::String)),
+    ("role", Rule::Read(T::String)),
+    ("text", Rule::Read(T::String)),
+    ("timestamp", Rule::Read(T::StringOrNumber)),
+    ("ordinal", Rule::Read(T::Number)),
+    ("parent_turn_id", Rule::Read(T::String)),
+    ("model", Rule::Read(T::String)),
+    ("blocks", Rule::Read(T::Array)),
+    ("attachments", Rule::Read(T::Array)),
     (
         "provider_meta",
         Rule::Kept("the adapter's page observations for the turn; no reader yet"),
@@ -88,7 +124,22 @@ static TURN_FIELDS: Fields = Fields::new(&[
         "identity_observation",
         Rule::Kept("how the adapter matched the turn to the page; no reader yet"),
     ),
-]);
+])
+.for_kind("turn");
+
+static TURN_BLOCK_FIELDS: Fields = Fields::new(&[
+    ("type", Rule::Read(T::String)),
+    ("text", Rule::Read(T::String)),
+    ("name", Rule::Read(T::String)),
+    ("mime_type", Rule::Read(T::String)),
+    ("url", Rule::Read(T::String)),
+])
+.for_kind("block");
+static OTHER_BLOCK_FIELDS: Fields = Fields::new(&[(
+    "",
+    Rule::Kept("the normalized block is retained whole as Other data"),
+)])
+.for_kind("block");
 
 /// The origin a capture's `session.provider` names: the provider's export
 /// origin, so a capture and an export of one conversation unite.
@@ -127,7 +178,6 @@ impl DocumentParser for Capture {
                 );
             }
         };
-        sink.records.fields("capture", &capture, &CAPTURE_FIELDS);
         // `source` names the capturing program (`browser-extension`); the
         // provider whose conversation it is sits in the session.
         let Some(provider) = capture
@@ -151,8 +201,59 @@ impl DocumentParser for Capture {
         let raw = capture
             .get("raw_provider_payload")
             .filter(|r| r.as_object().is_some_and(|o| !o.is_empty()));
+        let native_dispatch = match (origin, raw) {
+            ("chatgpt", Some(raw)) => raw.get("mapping").is_some(),
+            ("claude-ai", Some(raw)) => raw.get("chat_messages").is_some(),
+            ("grok", Some(raw)) => raw.get("responses").is_some(),
+            ("codex-cloud", Some(raw)) => crate::codex_cloud::task_shape(raw),
+            _ => false,
+        };
+        let header = crate::fields::header(
+            &capture,
+            if native_dispatch {
+                &["session", "raw_provider_payload"]
+            } else {
+                &["session"]
+            },
+        );
+        sink.records.fields("capture", &header, &CAPTURE_FIELDS);
+        if let Some(session) = capture.get("session") {
+            let header = crate::fields::header(
+                session,
+                if native_dispatch {
+                    &["attachments"]
+                } else {
+                    &["turns", "attachments"]
+                },
+            );
+            sink.records.fields(
+                "session",
+                &header,
+                if native_dispatch {
+                    &NATIVE_SESSION_FIELDS
+                } else {
+                    &TURN_SESSION_FIELDS
+                },
+            );
+        }
         let first_message = sink.out.messages.len();
         match (origin, raw) {
+            ("codex-cloud", Some(raw)) if crate::codex_cloud::task_shape(raw) => {
+                let result = serde_json::to_vec(raw)
+                    .map_err(|error| error.to_string())
+                    .and_then(|bytes| {
+                        crate::export::ExportParser::item(
+                            &mut crate::codex_cloud::Cloud,
+                            &bytes,
+                            &mut sink,
+                            &mut crate::export::MemoryState::default(),
+                        )
+                    });
+                if let Err(error) = result {
+                    sink.records
+                        .record("task", &RecordOutcome::unreadable(error));
+                }
+            }
             ("chatgpt", Some(raw)) if raw.get("mapping").is_some() => {
                 crate::chatgpt::conversation(raw, &mut sink, &mut Default::default());
             }
@@ -180,10 +281,10 @@ impl DocumentParser for Capture {
         });
         if let Some(session) = session {
             let provenance = capture.get("provenance").cloned().unwrap_or(Json::Null);
-            sink.out.events.push(Event {
+            sink.out.events.push({ let (at,time_evidence)=crate::time::parts(provenance.get("captured_at").and_then(time_of).map(crate::time::SourceTime::captured)); Event {
                 session: Some(session),
                 kind: "browser_capture".into(),
-                at: provenance.get("captured_at").and_then(time_of),
+ at, at_quality:time_evidence.quality, at_precision:time_evidence.precision, at_until:time_evidence.until,
                 after: None,
                 range: None,
                 data: serde_json::json!({
@@ -195,7 +296,7 @@ impl DocumentParser for Capture {
                             "id": a.get("provider_attachment_id"), "not_fetched": a.get("not_fetched")
                         })).collect::<Vec<_>>(),
                 }),
-            });
+            } });
         }
         attach_files(&capture, origin, first_message, &mut sink);
     }
@@ -221,7 +322,9 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
         facts.offer_title(title, TitleSource::Generated);
     }
     if let Some(at) = session.get("created_at").and_then(time_of) {
-        facts.offer_start(at);
+        facts
+            .offer_start(at.timestamp(), at.evidence())
+            .expect("decoded source time is valid");
     }
     sink.out.sessions.push(facts);
     sink.records.record("session", &RecordOutcome::Used);
@@ -234,7 +337,27 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
     list.sort_by_key(|t| t.get("ordinal").and_then(Json::as_i64).unwrap_or(i64::MAX));
     for (i, turn) in list.into_iter().enumerate() {
         let role_name = str_of(turn, "role").unwrap_or("?").to_owned();
-        sink.records.fields("turn", turn, &TURN_FIELDS);
+        let header = crate::fields::header(turn, &["attachments", "blocks"]);
+        sink.records.fields("turn", &header, &TURN_FIELDS);
+        for block in turn
+            .get("blocks")
+            .and_then(Json::as_array)
+            .into_iter()
+            .flatten()
+        {
+            sink.records.fields(
+                "block",
+                block,
+                if matches!(
+                    str_of(block, "type"),
+                    Some("text" | "markdown" | "thinking" | "reasoning" | "image")
+                ) {
+                    &TURN_BLOCK_FIELDS
+                } else {
+                    &OTHER_BLOCK_FIELDS
+                },
+            );
+        }
         let (role, prompt_kind, direction) = match role_name.as_str() {
             "user" | "human" => (
                 Role::User,
@@ -281,22 +404,31 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
             .into_iter()
             .flatten()
         {
-            blocks.extend(attachment(a, direction, None));
+            sink.records.fields("attachment", a, &ATTACHMENT_FIELDS);
+            let stored = attachment_bytes(a, sink);
+            blocks.extend(attachment(a, direction, stored));
         }
-        let message = Message {
-            id,
-            session: sid.clone(),
-            parent: str_of(turn, "parent_turn_id").and_then(|p| message_id(origin, p)),
-            role,
-            at: turn.get("timestamp").and_then(time_of),
-            model: string_of(turn, "model"),
-            prompt_kind,
-            blocks,
-            usage: Default::default(),
-            stop_reason: None,
-            reported_cost_usd: None,
-            duration_ms: None,
-            production: Default::default(),
+        let message = {
+            let (at, time_evidence) = crate::time::parts(turn.get("timestamp").and_then(time_of));
+            Message {
+                id,
+                session: sid.clone(),
+                parent: str_of(turn, "parent_turn_id").and_then(|p| message_id(origin, p)),
+                role,
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                model: string_of(turn, "model"),
+                prompt_kind,
+                blocks,
+                usage: Default::default(),
+                stop_reason: None,
+                reported_cost_usd: None,
+                duration_ms: None,
+                attrs: crate::fields::attributes(turn, &TURN_FIELDS),
+                production: Default::default(),
+            }
         };
         let offset = sink.position();
         sink.out.messages.push(MessageRow {
@@ -371,6 +503,22 @@ fn attachment(
     out
 }
 
+fn attachment_bytes(a: &Json, sink: &mut Sink<'_>) -> Option<(BlobHash, Option<u64>)> {
+    a.get("content_base64")
+        .and_then(Json::as_str)
+        .and_then(|data| base64::engine::general_purpose::STANDARD.decode(data).ok())
+        .map(|bytes| {
+            let hash = BlobHash::of(&bytes);
+            let size = bytes.len() as u64;
+            sink.out.blobs.push(ExtractedBlob { hash, size, bytes });
+            (hash, Some(size))
+        })
+        .or_else(|| {
+            let hash = BlobHash::parse(str_of(a, "blob")?).ok()?;
+            Some((hash, a.get("size_bytes").and_then(Json::as_u64)))
+        })
+}
+
 /// Links the session's attachment list to its messages: stores the bytes
 /// the extension inlined (`content_base64`), or takes the hash of bytes an
 /// earlier capture stored (`blob`), and points the matching attachment at
@@ -384,20 +532,8 @@ fn attach_files(capture: &Json, origin: &str, first_message: usize, sink: &mut S
         .into_iter()
         .flatten()
     {
-        let stored = a
-            .get("content_base64")
-            .and_then(Json::as_str)
-            .and_then(|data| base64::engine::general_purpose::STANDARD.decode(data).ok())
-            .map(|bytes| {
-                let hash = BlobHash::of(&bytes);
-                let size = bytes.len() as u64;
-                sink.out.blobs.push(ExtractedBlob { hash, size, bytes });
-                (hash, Some(size))
-            })
-            .or_else(|| {
-                let hash = BlobHash::parse(str_of(a, "blob")?).ok()?;
-                Some((hash, a.get("size_bytes").and_then(Json::as_u64)))
-            });
+        sink.records.fields("attachment", a, &ATTACHMENT_FIELDS);
+        let stored = attachment_bytes(a, sink);
         let file_id = str_of(a, "provider_attachment_id");
         let name = str_of(a, "name");
         let Some(msg_id) = str_of(a, "message_provider_id").and_then(|m| message_id(origin, m))

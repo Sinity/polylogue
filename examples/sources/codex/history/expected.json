@@ -24,7 +24,9 @@
           0,
           103
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "at": "2025-08-11T16:59:28Z",
@@ -38,7 +40,9 @@
           104,
           197
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000002"
+        "session": "codex:019a0000-0000-7000-8000-000000000002",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       }
     ],
     "links": [],

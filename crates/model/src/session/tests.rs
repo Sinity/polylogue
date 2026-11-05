@@ -21,12 +21,20 @@ fn a_recorded_title_beats_a_file_name_in_either_arrival_order() {
 fn merge_is_idempotent_and_keeps_the_earliest_start() {
     let mut a = session();
     a.offer_cwd("/a");
-    a.offer_start(Timestamp::from_unix_ms(50).unwrap());
+    a.offer_start(
+        Timestamp::from_unix_ms(50).unwrap(),
+        crate::TimeEvidence::intrinsic(crate::Precision::Instant),
+    )
+    .unwrap();
     let mut b = session();
     b.offer_cwd("/a");
     b.offer_cwd("/b");
     b.offer_title("t", TitleSource::Generated);
-    b.offer_start(Timestamp::from_unix_ms(10).unwrap());
+    b.offer_start(
+        Timestamp::from_unix_ms(10).unwrap(),
+        crate::TimeEvidence::intrinsic(crate::Precision::Instant),
+    )
+    .unwrap();
     a.merge(&b);
     let once = a.clone();
     a.merge(&b);
@@ -78,4 +86,43 @@ fn cwd_keeps_order_without_repeats_in_a_row() {
         s.offer_cwd(d);
     }
     assert_eq!(s.cwd, ["/a", "/b", "/a"]);
+}
+
+#[test]
+fn merging_session_start_preserves_selected_time_evidence_and_first_equal_claim() {
+    let at = crate::Timestamp::from_unix_ms(10).unwrap();
+    let until = crate::Timestamp::from_unix_ms(20).unwrap();
+    let mut earlier = session();
+    earlier
+        .set_time(
+            Some(at),
+            crate::TimeEvidence {
+                quality: crate::TimeQuality::Operator,
+                precision: Some(crate::Precision::Bounded),
+                until: Some(until),
+            },
+        )
+        .unwrap();
+    let mut later = session();
+    later
+        .offer_start(
+            crate::Timestamp::from_unix_ms(30).unwrap(),
+            crate::TimeEvidence::intrinsic(crate::Precision::Instant),
+        )
+        .unwrap();
+    later.merge(&earlier);
+    assert_eq!(later.started, Some(at));
+    assert_eq!(later.time_evidence(), earlier.time_evidence());
+    let selected = later.clone();
+    let mut equal = earlier;
+    equal
+        .set_time(
+            Some(at),
+            crate::TimeEvidence::intrinsic(crate::Precision::Instant),
+        )
+        .unwrap();
+    later.merge(&equal);
+    assert_eq!(later.time_evidence(), selected.time_evidence());
+    later.merge(&selected);
+    assert_eq!(later.time_evidence(), selected.time_evidence());
 }

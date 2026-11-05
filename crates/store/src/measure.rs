@@ -6,6 +6,13 @@
 //! Hidden sessions stay in every figure: hiding changes what is listed, not
 //! what was used.
 
+/// The row grain transferred by a paged measure.
+#[derive(Clone, Copy)]
+pub enum Paging {
+    Sessions,
+    Facets,
+}
+
 pub mod comparison;
 pub mod daily;
 pub mod drift;
@@ -134,10 +141,10 @@ pub(crate) fn hidden_sessions(reader: &Reader<'_>, selection: &Selection) -> Res
     let sql = format!(
         "SELECT count(DISTINCT s.pk) FROM message m JOIN session s ON s.pk = m.session_pk
          WHERE {cond} AND EXISTS (
-           SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id = hn.id
+           SELECT 1 FROM source_assertion hn JOIN source_link ht ON ht.record = hn.id AND ht.role = 'about'
            WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || s.id
              AND {} )",
-        polylogue_model::note_sql::live_note("hn")
+        crate::assertions::sql::live_assertion("hn")
     );
     let n: i64 = reader
         .conn()?

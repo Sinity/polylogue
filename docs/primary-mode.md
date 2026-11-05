@@ -20,10 +20,14 @@ Capture is identical in both modes ([capture.md](capture.md)); parsing, the pars
 
 Before writing frame bytes, Polylogue checks Sinex's producer welcome with an
 empty hello. This checks the protocol and sealing configuration before its
-producer-owned kinds exist. It then registers its ten `polylogue.*` declarations
+producer-owned kinds exist. It then registers its `polylogue.*` declarations
 and requires the acknowledgment to name their exact definition hashes before
 sending materials or events. Each event selects its declaration by name and
 version. A refused hello returns Sinex's reason.
+
+Confirmed payloads are checked against their current immutable kind declaration
+and payload digest. The saved native context carries that digest and the
+owner-provided source and producer origin.
 
 Message and tool-call declarations request no Sinex text index. Their field
 hints describe defaults for operator-configured output rules; they impose no

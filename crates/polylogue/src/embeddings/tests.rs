@@ -11,3 +11,79 @@ fn long_texts_are_chunked_and_normalized() {
 }
 
 mod cancellation;
+
+#[test]
+fn provider_consumes_typed_settings_and_captured_credentials() {
+    use polylogue_model::settings::{self, Current, Owner, Snapshot};
+    let snapshot = |provider: &str| {
+        Snapshot::new(
+            settings::CATALOG
+                .iter()
+                .filter(|spec| !spec.key.ends_with('*'))
+                .map(|spec| Current {
+                    key: spec.key.into(),
+                    kind: spec.kind,
+                    default: None,
+                    scope: spec.scope,
+                    owner: "polylogue".into(),
+                    value: settings::current(
+                        spec.key,
+                        if spec.key == "embed.provider" {
+                            Some(provider)
+                        } else {
+                            None
+                        },
+                        Owner::Standalone,
+                    )
+                    .unwrap(),
+                    authored: None,
+                    conflicts: Vec::new(),
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+    let credentials = Credentials::new(Some("synthetic-secret".into()));
+    assert!(!format!("{credentials:?}").contains("synthetic-secret"));
+    assert!(
+        Provider::from_settings(&snapshot("off"), &credentials)
+            .unwrap()
+            .is_none()
+    );
+    let local = Provider::from_settings(&snapshot("local"), &credentials)
+        .unwrap()
+        .unwrap();
+    assert_eq!(local.endpoint, "http://127.0.0.1:11434/v1");
+    assert_eq!(local.price_per_mtok, Some(0.0));
+    let voyage = Provider::from_settings(&snapshot("voyage"), &credentials)
+        .unwrap()
+        .unwrap();
+    assert_eq!(voyage.model, "voyage-4");
+    assert!(!format!("{voyage:?}").contains("synthetic-secret"));
+    assert!(Provider::from_settings(&Snapshot::new(Vec::new()), &credentials).is_err());
+}
+
+#[test]
+fn embedding_selection_refuses_aggregate_and_incomplete_session_results() {
+    use polylogue_model::authorship::{Author, Authorship, Channel};
+    let daemon = crate::test_daemon::start("synthetic selected text");
+    let operation = daemon
+        .daemon
+        .operation_context(&Authorship {
+            author: Author::Operator,
+            via: Channel::Cli,
+        })
+        .unwrap();
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let selected = query_sessions(&reader, "sessions", &operation).unwrap();
+    assert_eq!(selected, ["claude-code:s1"]);
+    for (query, expected) in [
+        ("sessions | group by origin | count", "bad_request"),
+        (
+            "sessions where similar:\"synthetic selected text\"",
+            "not_yet_available",
+        ),
+    ] {
+        let response = query_sessions(&reader, query, &operation).unwrap_err();
+        assert!(response.code() == expected, "{query}: {response:?}");
+    }
+}

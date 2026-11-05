@@ -68,14 +68,17 @@ fn install_agent_chrome_writes_and_removes_the_host_manifest() {
 #[test]
 fn started_as_chrome_starts_it_the_binary_is_the_host() {
     let dir = tempfile::tempdir().unwrap();
-    let mut child = crate::command(dir.path())
-        .arg("chrome-extension://abcdefghijklmnop/")
-        .env("POLYLOGUE_ARCHIVE", dir.path().join("archive"))
-        .env("POLYLOGUE_HOME", dir.path().join("home"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = crate::Fixture::new(
+        &dir.path().join("archive"),
+        &dir.path().join("home"),
+        &dir.path().join("config"),
+    )
+    .native_command()
+    .arg("chrome-extension://abcdefghijklmnop/")
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .spawn()
+    .unwrap();
     let mut input = Vec::new();
     input.extend(frame(&serde_json::json!({
         "type": "request", "version": 1, "method": "GET", "path": "/v1/status", "headers": {}
@@ -118,15 +121,10 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
         }
     }
     let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("home");
-    let archive = dir.path().join("archive");
     let state = dir.path().join("state");
     let command = || {
         let mut command = crate::command(dir.path());
-        command
-            .env("POLYLOGUE_HOME", &home)
-            .env("POLYLOGUE_ARCHIVE", &archive)
-            .env("XDG_STATE_HOME", &state);
+        command.env("XDG_STATE_HOME", &state);
         command
     };
     let start = || {
@@ -180,16 +178,27 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
         "provenance":{"captured_at":"2026-10-24T00:00:00Z","source_url":"https://chatgpt.com/c/passage"},
         "session":{"provider":"chatgpt","provider_session_id":"passage","turns":[{"provider_turn_id":"native-message","role":"assistant","text":"Exact  selected\nquote"}]}});
     assert_eq!(native("/v1/captures", &capture).0, 200);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         let status = command().args(["status", "--json"]).output().unwrap();
         assert!(status.status.success(), "{status:?}");
         let status: Value = serde_json::from_slice(&status.stdout).unwrap();
-        if status["store"]["messages"] == 1 {
+        if status["value"]["store"]["messages"] == 1 && status["value"]["busy"] == false {
             break;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the capture was not stored: {status}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
     let note = json!({"request_id":"019c6e27-e55b-73d1-87d8-4e01f1f75043","body":"My edited annotation","quote":"Exact  selected\nquote",
         "source":{"provider":"chatgpt","conversation_id":"passage","message_id":"native-message","page_url":"https://chatgpt.com/c/passage","selected_at":"2026-10-24T00:00:00Z"}});
+    let mut missing = note.clone();
+    missing["request_id"] = json!("019c6e27-e55b-73d1-87d8-4e01f1f75044");
+    missing["source"]["message_id"] = json!("not-captured");
+    let (status, refused) = native("/v1/notes", &missing);
+    assert_eq!(status, 409, "{refused}");
     let (status, saved) = native("/v1/notes", &note);
     assert_eq!(status, 200, "{saved}");
     assert_eq!(saved["note"]["repeat"], false);
@@ -199,17 +208,27 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
     assert_eq!(status, 200, "{retried}");
     assert_eq!(retried["note"]["repeat"], true);
     let output = command()
-        .args(["note", "list", "session:chatgpt:passage", "--json"])
+        .args([
+            "--json",
+            r#"assertions where about:"session:chatgpt:passage""#,
+        ])
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let notes = &answer["rows"];
+    let notes = &answer["value"]["rows"];
     assert_eq!(notes.as_array().unwrap().len(), 1);
     assert_eq!(notes[0]["id"], note["request_id"]);
     assert_eq!(notes[0]["author"], "operator");
-    let value: Value = serde_json::from_str(notes[0]["value"].as_str().unwrap()).unwrap();
-    assert_eq!(value["body"], note["body"]);
-    assert_eq!(value["quote"], note["quote"]);
-    assert_eq!(value["source"], note["source"]);
+    let value = &notes[0]["value"];
+    assert_eq!(
+        value,
+        &json!(
+            "My edited annotation\n\nQuoted selection:\nExact  selected\nquote\n\nSource: https://chatgpt.com/c/passage\nSelected at: 2026-10-24T00:00:00Z"
+        )
+    );
+    let mut changed = note.clone();
+    changed["body"] = json!("a different annotation under the same draft ID");
+    let (status, refused) = native("/v1/notes", &changed);
+    assert_eq!(status, 409, "{refused}");
 }

@@ -16,12 +16,14 @@ pub mod actions;
 pub mod backfill;
 mod captures;
 pub mod native;
-mod notes;
+pub(crate) mod notes;
 pub mod routes;
 
-use crate::daemon::{Request, Response};
+use crate::daemon::Request;
+use command_surface::Answer;
 use polylogue_engine::Config;
 use polylogue_store::Archive;
+use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 
@@ -52,15 +54,9 @@ impl BrowserHost {
         })
     }
 
-    /// The running user's: the default archive and the state root its
-    /// daemon's loop reads.
-    pub fn for_user() -> std::io::Result<Self> {
-        Self::at(&Config::from_env(), &Archive::at(&Archive::default_root()))
-    }
-
     /// Asks the daemon. `None` when it does not answer: callers report what
     /// they cannot know as unknown, never as absent.
-    pub fn ask(&self, request: &Request) -> Option<Response> {
+    pub fn ask(&self, request: &Request) -> Option<Answer<Value>> {
         crate::client::send(&self.socket, request).ok()
     }
 
@@ -70,12 +66,14 @@ impl BrowserHost {
     pub fn actions_setting(&self) -> Option<bool> {
         let request = Request::Setting {
             request_id: None,
-            key: "browser.actions".into(),
+            key: Some("browser.actions".into()),
             value: None,
-            machine: false,
+            machine: None,
         };
-        match self.ask(&request) {
-            Some(Response::Ok { data, .. }) => Some(data["value"] == "on"),
+        let data = crate::protocol::into_value(self.ask(&request)?).ok()?;
+        let current: polylogue_model::settings::Current = serde_json::from_value(data).ok()?;
+        match current.value {
+            Some(polylogue_model::settings::Value::Boolean(enabled)) => Some(enabled),
             _ => None,
         }
     }

@@ -1,20 +1,16 @@
 //! Remove a session's derived rows.
 use crate::Result;
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Transaction, params};
 
-mod references;
-use references::References;
-
-/// Visit the session's text and blob references after its rows are deleted.
-/// Staged references belong to this operation and transaction; errors require
-/// its rollback, just as errors from the row deletion itself do.
-pub(crate) fn remove_with_references(
-    i: &Transaction<'_>,
-    pk: i64,
-    id: &str,
-    consume: impl FnOnce(&References<'_>) -> Result<()>,
-) -> Result<()> {
-    let references = References::capture(i, pk)?;
+/// Removes a session's derived rows within its reading-replacement transaction.
+pub(crate) fn remove(i: &Transaction<'_>, pk: i64, id: &str, counter: i64) -> Result<()> {
+    // The completion/change feed shares this replacement transaction's index
+    // counter. It is derived index metadata, separate from source admissions.
+    i.execute(
+        "INSERT INTO removed_session(session_id,changed) VALUES (?1,?2)
+         ON CONFLICT(session_id) DO UPDATE SET changed=excluded.changed",
+        params![id, counter],
+    )?;
     i.execute(
         "DELETE FROM message_source WHERE message_pk IN (SELECT pk FROM message WHERE session_pk=?1)",
         [pk],
@@ -82,8 +78,8 @@ pub(crate) fn remove_with_references(
     )?;
     i.execute("DELETE FROM message WHERE session_pk = ?1", [pk])?;
     i.execute("DELETE FROM session WHERE pk = ?1", [pk])?;
-    consume(&references)?;
-    references.finish()
+    crate::versions::remove_readings(i)?;
+    Ok(())
 }
 
 #[cfg(test)]

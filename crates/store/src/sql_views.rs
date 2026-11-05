@@ -39,12 +39,11 @@ pub const VIEWS: &[(&str, &str)] = &[
          FROM main.link l",
     ),
     (
-        "v1_notes",
-        "SELECT n.id, n.first_note, n.kind, n.key, n.value, n.author, n.created_at, \
-         (SELECT group_concat(nt.ref, ' ') FROM (SELECT ref FROM a.note_target WHERE note_id = n.id ORDER BY ref) nt) AS targets, \
-         NOT EXISTS (SELECT 1 FROM a.note later WHERE later.first_note = n.first_note AND later.commit_seq > n.commit_seq) AS current, \
-         EXISTS (SELECT 1 FROM a.note_relation w WHERE w.kind = 'withdraws' AND w.other = 'note:' || n.first_note) AS withdrawn \
-         FROM a.note n WHERE n.kind <> 'withdrawal'",
+        "v1_assertions",
+        "SELECT a.id,a.root,a.kind,a.key,a.value,a.author,a.via,a.machine,a.created_at,a.valid_until, \
+         (SELECT group_concat(ref,' ') FROM (SELECT ref FROM source_link WHERE record=a.id AND role='about' ORDER BY ref)) AS about, \
+         rs.current,rs.withdrawn,(SELECT count(*) FROM source_revision_state c WHERE c.root=a.root AND c.current=1)>1 AS conflict \
+         FROM source_assertion a JOIN source_revision_state rs ON rs.id=a.id",
     ),
 ];
 

@@ -11,6 +11,8 @@ pub enum IdError {
     NoOrigin(String),
     #[error("blob hash {0:?} is not 64 hex digits")]
     BadHash(String),
+    #[error("run id {0:?} must be a lowercase hyphenated UUID")]
+    BadRun(String),
 }
 
 /// The format family a session came from: `claude-code`, `codex`,
@@ -44,7 +46,9 @@ impl fmt::Display for Origin {
 }
 
 /// An identifier as the source wrote it. Opaque; may contain colons.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(transparent)]
 pub struct NativeId(String);
 
@@ -65,6 +69,58 @@ impl NativeId {
 impl fmt::Display for NativeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+/// An internally minted run identity in canonical UUID spelling. This is not
+/// a provider ID or a caller's retry key; the stored run establishes existence.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RunId(String);
+
+impl RunId {
+    pub fn parse(id: &str) -> Result<Self, IdError> {
+        if id.len() == 36
+            && id.bytes().enumerate().all(|(i, byte)| {
+                if matches!(i, 8 | 13 | 18 | 23) {
+                    byte == b'-'
+                } else {
+                    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+                }
+            })
+        {
+            Ok(Self(id.to_owned()))
+        } else {
+            Err(IdError::BadRun(id.to_owned()))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for RunId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for RunId {
+    type Err = IdError;
+    fn from_str(id: &str) -> Result<Self, Self::Err> {
+        Self::parse(id)
+    }
+}
+
+impl Serialize for RunId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for RunId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::parse(&String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
 

@@ -1,0 +1,495 @@
+use super::*;
+use crate::{
+    Block, Message, MessageId, PromptKind, Role, TimeEvidence, Usage,
+    bundle::{MessageRecord, Record},
+};
+
+fn message(role: Role, prompt_kind: Option<PromptKind>) -> Message {
+    Message {
+        id: MessageId::parse("test:session:message").unwrap(),
+        session: crate::SessionId::parse("test:session").unwrap(),
+        parent: None,
+        role,
+        at: None,
+        at_quality: crate::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
+        model: None,
+        prompt_kind,
+        blocks: vec![
+            Block::Text {
+                text: "visible λ".into(),
+            },
+            Block::Thinking {
+                text: Some("private thought".into()),
+                signature: None,
+                redacted: false,
+            },
+            Block::Text {
+                text: "later".into(),
+            },
+        ],
+        usage: Usage::default(),
+        stop_reason: None,
+        reported_cost_usd: None,
+        duration_ms: None,
+        production: Default::default(),
+        attrs: serde_json::Map::from_iter([(
+            "provider_field".into(),
+            serde_json::json!({"keep":"exact"}),
+        )]),
+    }
+}
+fn record(message: Message) -> Record {
+    let source_version = message.content_hash().unwrap();
+    Record::Message(Box::new(MessageRecord {
+        reference: format!("message:{}", message.id),
+        commit: 3,
+        order: 7,
+        source_version,
+        block_count: message.blocks.len() as u64,
+        block_ordinals: (0..message.blocks.len() as u64).collect(),
+        injections: Vec::new(),
+        bindings: Vec::new(),
+        message,
+    }))
+}
+#[test]
+fn dialogue_is_dialogue_and_original_positions_survive() {
+    let original = record(message(Role::Assistant, None));
+    let Record::Message(before) = original.clone() else {
+        unreachable!()
+    };
+    let options = ReadOptions {
+        view: View::Dialogue,
+        ..Default::default()
+    };
+    let evidence = ProjectionEvidence {
+        branch: BranchState::Active,
+        ..Default::default()
+    };
+    let Record::Message(after) = project_record(original, &options, &evidence)
+        .unwrap()
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    assert_eq!(after.block_ordinals, vec![0, 2]);
+    assert_eq!(after.block_count, 3);
+    assert_eq!(after.source_version, before.source_version);
+    assert_eq!(after.message.attrs, before.message.attrs);
+    assert_eq!(after.message.production, before.message.production);
+    assert_eq!(after.message.time_evidence(), TimeEvidence::UNKNOWN);
+    assert!(
+        project_record(
+            record(message(Role::User, Some(PromptKind::Harness))),
+            &options,
+            &evidence
+        )
+        .unwrap()
+        .is_none()
+    );
+}
+#[test]
+fn context_requires_prepared_membership_and_does_not_inherit_current_branch_filter() {
+    let options = ReadOptions {
+        view: View::Context,
+        ..Default::default()
+    };
+    assert!(matches!(
+        project_record(
+            record(message(Role::Assistant, None)),
+            &options,
+            &ProjectionEvidence::default()
+        ),
+        Err(ReadError::MissingEvidence { .. })
+    ));
+    let evidence = ProjectionEvidence {
+        inherited: true,
+        branch: BranchState::Abandoned {
+            n: Some(1),
+            total: Some(2),
+        },
+        context: Some(ContextEvidence {
+            selected: true,
+            complete: false,
+            reason: Some("latest summary absent".into()),
+            evicted: vec![],
+            not_recorded: vec![],
+        }),
+        ..Default::default()
+    };
+    assert!(
+        project_record(record(message(Role::Assistant, None)), &options, &evidence)
+            .unwrap()
+            .is_some()
+    );
+}
+#[test]
+fn view_names_have_no_predecessor_aliases_and_options_name_the_supported_views() {
+    for name in ["full", "prompts", "actions", "unknown"] {
+        assert!(View::parse(name).is_none());
+    }
+    assert_eq!(View::ALL.len(), View::NAMES.len());
+    let invalid = ReadOptions {
+        view: View::Dialogue,
+        thinking: Some(Expansion::Full),
+        ..Default::default()
+    };
+    let error = invalid.validate().unwrap_err().to_string();
+    assert!(error.contains("thinking"));
+    assert!(error.contains("transcript, context"));
+}
+#[test]
+fn value_states_never_serialize_unknown_as_zero() {
+    let unknown = serde_json::to_value(ValueState::<u64>::Unknown {
+        reason: Some("not measured".into()),
+    })
+    .unwrap();
+    assert_eq!(unknown["state"], "unknown");
+    assert!(unknown.get("value").is_none());
+    let zero = serde_json::to_value(ValueState::known(0)).unwrap();
+    assert_eq!(zero["value"], 0);
+    assert!(
+        serde_json::from_value::<ValueState<u64>>(serde_json::json!({"state":"unknown","value":0}))
+            .is_err()
+    );
+}
+#[test]
+fn estimator_uses_utf8_and_long_runs_consistently() {
+    assert_eq!(estimate_tokens(""), 0);
+    assert_eq!(estimate_tokens("a b c"), 4);
+    assert_eq!(estimate_tokens("λ"), 2);
+    assert_eq!(estimate_tokens(&"x".repeat(80)), 20);
+    assert_eq!(TOKEN_ESTIMATOR, "utf8-words-v1");
+}
+
+#[test]
+fn encrypted_only_thinking_is_omitted_without_rewriting_its_source_identity() {
+    let mut source = message(Role::Assistant, None);
+    source.blocks.push(Block::Thinking {
+        text: None,
+        signature: Some("opaque-provider-reasoning".into()),
+        redacted: false,
+    });
+    let source = record(source);
+    let Record::Message(before) = source.clone() else {
+        unreachable!()
+    };
+    let after = project_record(
+        source,
+        &ReadOptions::default(),
+        &ProjectionEvidence {
+            branch: BranchState::Active,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .unwrap();
+    let Record::Message(after) = after else {
+        unreachable!()
+    };
+    assert_eq!(after.block_ordinals, vec![0, 1, 2]);
+    assert_eq!(after.block_count, 4);
+    assert_eq!(after.source_version, before.source_version);
+    assert!(
+        after
+            .message
+            .blocks
+            .iter()
+            .any(|block| matches!(block, Block::Thinking { text: Some(_), .. }))
+    );
+}
+
+#[test]
+fn document_dialogue_refuses_by_target_without_projecting_its_positions() {
+    let document = crate::Document::new(
+        crate::DocumentId::parse("test:document").unwrap(),
+        crate::DocumentPurpose::Context,
+    );
+    let row = crate::bundle::DocumentRecord {
+        reference: format!("document:{}", document.id),
+        commit: 1,
+        document,
+    };
+    let error = project_record(
+        Record::Document(row),
+        &ReadOptions {
+            view: View::Dialogue,
+            ..Default::default()
+        },
+        &ProjectionEvidence::default(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error,ReadError::UnsupportedTarget{accepted_views,..} if accepted_views==vec![View::Transcript,View::Raw])
+    );
+}
+
+#[test]
+fn expansion_headers_is_the_only_public_collapsed_spelling() {
+    assert_eq!(
+        serde_json::to_string(&Expansion::Collapsed).unwrap(),
+        "\"headers\""
+    );
+    assert_eq!(
+        serde_json::from_str::<Expansion>("\"headers\"").unwrap(),
+        Expansion::Collapsed
+    );
+    assert!(serde_json::from_str::<Expansion>("\"collapsed\"").is_err());
+}
+
+#[test]
+fn projection_keeps_only_selected_injection_evidence_without_promoting_claims() {
+    use crate::injection::{InjectionEvidence, NativeHookField};
+    let mut original = record(message(Role::Assistant, None));
+    let Record::Message(row) = &mut original else {
+        unreachable!()
+    };
+    let claim = |n: u64| NativeHookField {
+        input: format!("synthetic-input-{n}"),
+        chain: 1,
+        start: n + 1,
+        end: n + 2,
+        pointer: format!("/message/content/{n}"),
+    };
+    row.injections = (0..3)
+        .map(|block| InjectionEvidence {
+            message: row.message.id.clone(),
+            source_version: row.source_version,
+            block,
+            observed: Some(claim(block)),
+            declared: vec![claim(block + 4)],
+        })
+        .collect();
+    let before = row.clone();
+    let projected = project_record(
+        original,
+        &ReadOptions {
+            view: View::Dialogue,
+            ..Default::default()
+        },
+        &ProjectionEvidence::default(),
+    )
+    .unwrap()
+    .unwrap();
+    let Record::Message(after) = projected else {
+        unreachable!()
+    };
+    assert_eq!(after.block_ordinals, [0, 2]);
+    assert_eq!(
+        after.injections,
+        [before.injections[0].clone(), before.injections[2].clone()]
+    );
+    assert_eq!(after.source_version, before.source_version);
+    assert_eq!(after.block_count, before.block_count);
+    assert_eq!(after.message.attrs, before.message.attrs);
+    assert_eq!(
+        after.message.blocks,
+        [
+            before.message.blocks[0].clone(),
+            before.message.blocks[2].clone()
+        ]
+    );
+    after.validate().unwrap();
+}
+
+#[test]
+fn projection_preserves_exact_attachment_slots_and_ambiguous_same_hash_claims() {
+    use crate::attachment_binding::{
+        AttachmentBinding, AttachmentCandidate, AttachmentSourceClaim,
+    };
+    let attachment = |source: &str| crate::Attachment {
+        source_id: Some(source.into()),
+        ..Default::default()
+    };
+    let mut source = message(Role::Assistant, None);
+    source.blocks = vec![
+        Block::File(attachment("file:source")),
+        Block::ToolResult {
+            call_id: None,
+            reported_duration_ms: None,
+            outcome: crate::ToolOutcome::Ok,
+            output: Some("result".into()),
+            data: None,
+            attachments: vec![attachment("result:first"), attachment("result:second")],
+        },
+        Block::Text {
+            text: "kept".into(),
+        },
+    ];
+    let mut original = record(source);
+    let Record::Message(row) = &mut original else {
+        unreachable!()
+    };
+    let candidate = |name: &str| AttachmentCandidate {
+        hash: crate::BlobHash::of(b"same"),
+        size: 4,
+        sources: vec![AttachmentSourceClaim {
+            namespace: None,
+            input: name.into(),
+            chain: 1,
+            source_version: format!("historical:{name}"),
+            members: vec![format!("members/{name}")],
+            names: vec![name.into()],
+            media_types: vec!["application/octet-stream".into()],
+            declared_sizes: vec![9],
+        }],
+    };
+    row.bindings = [
+        (0, 0, "file:source"),
+        (1, 0, "result:first"),
+        (1, 1, "result:second"),
+    ]
+    .into_iter()
+    .map(|(block, attachment, source_id)| AttachmentBinding {
+        source_version: row.source_version,
+        namespace: crate::attachment_binding::AttachmentNamespace {
+            input: "synthetic-import".into(),
+            chain: 1,
+            import_id: "original".into(),
+        },
+        exported_from: crate::attachment_binding::AttachmentNamespace {
+            input: "synthetic-export".into(),
+            chain: 2,
+            import_id: "current".into(),
+        },
+        prior_exports: vec![],
+        block,
+        attachment,
+        source_id: source_id.into(),
+        candidates: vec![candidate("first"), candidate("second")],
+    })
+    .collect();
+    let before = row.clone();
+    original.validate().unwrap();
+    let projected = project_record(
+        original.clone(),
+        &ReadOptions {
+            tools: Some(Expansion::None),
+            ..Default::default()
+        },
+        &ProjectionEvidence::default(),
+    )
+    .unwrap()
+    .unwrap();
+    let Record::Message(after) = projected else {
+        unreachable!()
+    };
+    assert_eq!(after.block_ordinals, [0, 2]);
+    assert_eq!(after.bindings, [before.bindings[0].clone()]);
+    assert_eq!(after.bindings[0].candidates.len(), 2);
+    assert_eq!(
+        after.bindings[0].candidates[0].hash,
+        after.bindings[0].candidates[1].hash
+    );
+    assert_ne!(
+        after.bindings[0].candidates[0].sources,
+        after.bindings[0].candidates[1].sources
+    );
+    assert_eq!(after.source_version, before.source_version);
+    after.validate().unwrap();
+    let dialogue = project_record(
+        original,
+        &ReadOptions {
+            view: View::Dialogue,
+            ..Default::default()
+        },
+        &ProjectionEvidence::default(),
+    )
+    .unwrap()
+    .unwrap();
+    let Record::Message(dialogue) = dialogue else {
+        unreachable!()
+    };
+    assert_eq!(dialogue.block_ordinals, [2]);
+    assert!(dialogue.bindings.is_empty());
+    dialogue.validate().unwrap();
+}
+
+/// law: pl.read.surf-fold-kinds
+#[test]
+fn fold_words_and_options_round_trip_through_one_table() {
+    let mut options = ReadOptions::default();
+    options
+        .apply_fold(
+            &[
+                "tools:full".into(),
+                "thinking".into(),
+                "inherited".into(),
+                "turns".into(),
+                "context".into(),
+            ],
+            &["assertions".into(), "spawns".into()],
+        )
+        .unwrap();
+    assert_eq!(options.tools, Some(Expansion::Full));
+    assert_eq!(options.thinking, Some(Expansion::Full));
+    assert!(options.inherited && options.turns && options.context_meter);
+    assert!(!options.assertions && options.spawns == SpawnFold::Hidden);
+    let (show, hide) = options.fold_words();
+    let mut again = ReadOptions::default();
+    again.apply_fold(&show, &hide).unwrap();
+    assert_eq!(again, options);
+    for kind in FoldKind::ALL {
+        assert_eq!(FoldKind::parse(kind.name()), Some(kind));
+    }
+    assert!(matches!(
+        ReadOptions::default().apply_fold(&["tools:loud".into()], &[]),
+        Err(ReadError::UnknownFold { .. })
+    ));
+    assert!(matches!(
+        ReadOptions::default().apply_fold(&[], &["nothing".into()]),
+        Err(ReadError::UnknownFold { .. })
+    ));
+}
+
+/// law: pl.read.surf-fold-kinds
+#[test]
+fn spawn_levels_and_the_help_come_from_the_fold_table() {
+    for (word, expected) in [
+        ("spawns", SpawnFold::Inline { depth: None }),
+        ("spawns:full", SpawnFold::Inline { depth: None }),
+        ("spawns:card", SpawnFold::Card),
+        ("spawns:2", SpawnFold::Inline { depth: Some(2) }),
+    ] {
+        let mut options = ReadOptions::default();
+        options.apply_fold(&[word.into()], &[]).unwrap();
+        assert_eq!(options.spawns, expected, "{word}");
+        let (show, hide) = options.fold_words();
+        let mut again = ReadOptions::default();
+        again.apply_fold(&show, &hide).unwrap();
+        assert_eq!(again, options, "{word}");
+    }
+    for refused in ["spawns:N", "spawns:0", "spawns:deep", "tools:2"] {
+        assert!(
+            matches!(
+                ReadOptions::default().apply_fold(&[refused.into()], &[]),
+                Err(ReadError::UnknownFold { .. })
+            ),
+            "{refused}"
+        );
+    }
+    for kind in FoldKind::ALL {
+        let entry = format!(
+            "{}[:{}{}]",
+            kind.name(),
+            kind.levels().join("|"),
+            if kind.takes_depth() { "|N" } else { "" }
+        );
+        assert!(
+            FoldKind::HELP.contains(&entry),
+            "{entry} in {}",
+            FoldKind::HELP
+        );
+    }
+    let inline_context = ReadOptions {
+        view: View::Context,
+        spawns: SpawnFold::Inline { depth: None },
+        ..ReadOptions::default()
+    };
+    assert!(matches!(
+        inline_context.validate(),
+        Err(ReadError::UnsupportedOption { .. })
+    ));
+}

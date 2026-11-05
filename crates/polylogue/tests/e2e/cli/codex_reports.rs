@@ -1,9 +1,10 @@
+use super::claude_account_text::{messages, reading};
 use super::*;
 
 const THREAD: &str = "019a0000-0000-7000-8000-000000000001";
 
 #[test]
-fn native_codex_counts_usage_and_selected_items_keep_their_own_scope_and_masking_context() {
+fn native_codex_counts_usage_and_selected_items_preserve_exact_recorded_text() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let archive = dir.path().join("archive");
@@ -13,11 +14,7 @@ fn native_codex_counts_usage_and_selected_items_keep_their_own_scope_and_masking
     let source = sessions.join(format!("rollout-synthetic-{THREAD}.jsonl"));
     let original = polylogue_testkit::codex::observations(THREAD);
     std::fs::write(&source, &original).unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     let answer = loop {
         let out = cli(&env, &["--json", "measure", "usage"]);
@@ -81,25 +78,25 @@ fn native_codex_counts_usage_and_selected_items_keep_their_own_scope_and_masking
     let query = json(&query);
     assert_eq!(query["count"], 1);
     assert_eq!(query["rows"][0]["id"], "codex:c1");
-    assert!(
-        !query.to_string().contains("synthetic-private-tail"),
-        "{query}"
-    );
     let id = format!("codex:{THREAD}");
-    let read = cli(
-        &env,
-        &[
-            "--json", "read", &id, "--view", "dialogue", "--format", "json",
-        ],
-    );
-    assert!(read.status.success(), "{read:?}");
-    assert!(!json(&read).to_string().contains("synthetic-private-tail"));
+    let read = reading(&env, &id, &["--view", "dialogue"]);
+    assert!(!read.document.items.is_empty());
+    let canonical = messages(&env, &id);
+    assert_eq!(canonical.len(), 5);
+    let selected = canonical
+        .iter()
+        .find(|message| message["id"] == "codex:c1")
+        .unwrap();
+    assert!(selected.to_string().contains("synthetic-private-tail"));
     let pool = polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive)).unwrap();
     let reader = pool.reader().unwrap();
     let raw = reader
         .messages(&polylogue_model::SessionId::parse(&id).unwrap(), false)
         .unwrap();
     assert_eq!(raw.len(), 5);
+    for (stored, canonical) in raw.iter().zip(&canonical) {
+        assert_eq!(serde_json::to_value(stored).unwrap(), *canonical);
+    }
     assert!(raw.iter().any(|m| {
         m.id.to_string() == "codex:c1"
             && serde_json::to_string(m)

@@ -1,5 +1,5 @@
 //! Checks that a text is gone, by plain searches that share no code with
-//! excision: every stored chain, and every column of `index.db`.
+//! retained bytes: every stored chain, and every column of `index.db`.
 
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;

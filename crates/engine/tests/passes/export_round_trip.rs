@@ -1,25 +1,33 @@
 //! An export imported into a fresh archive gives the same sessions and IDs,
 //! and the same user state: notes with their revisions, withdrawals and
 //! judgments, settings, kept results, deliveries, chat actions, backfill
-//! jobs and excisions, which keep refusing what they removed.
+//! jobs, restored as frozen historical effects through the canonical bundle.
 use super::*;
-use polylogue_model::{Author, DeliveryOutcome, NewNote, NoteKind, Target, Timestamp};
-use polylogue_store::backfill_jobs::{BackfillCounts, BackfillReport, NewBackfillJob};
-use polylogue_store::chat_actions::NewChatAction;
-use polylogue_store::{Delivery, UserRequest, UserWrite};
+use polylogue_model::assertion::{
+    AssertionKind, AssertionPatch, Change, LinkRole, NewAssertion, NewAssertionLink,
+};
+use polylogue_model::bundle::{
+    AuthoredRecord, Counts, Flags, Format, LinkRecord, Manifest, MessageRecord, ReadSnapshot,
+    Record, SessionRecord,
+};
+use polylogue_model::user::NewChatAction;
+use polylogue_model::user::{BackfillCounts, BackfillReport, NewBackfillJob};
+use polylogue_model::user::{Delivery, UserRequest, UserWrite};
+use polylogue_model::{Author, DeliveryOutcome, Reference, Timestamp};
+use std::io::Write;
 
 /// The user-state tables, row by row, without the write counter, which
-/// counts this archive's own transactions.
+/// counts this archive's own transactions. Execution eligibility is checked
+/// separately: imported chat and backfill histories are historical.
 const USER_STATE: &[(&str, &str)] = &[
     ("client_request", "id, content_hash, created_at, request"),
     (
-        "note",
-        "id, first_note, kind, key, value, author, machine, created_at, valid_until",
+        "assertion",
+        "id,root,kind,key,value,author,via,machine,created_at,valid_until",
     ),
-    ("note_target", "note_id, ref"),
-    ("note_relation", "note_id, kind, other"),
+    ("link", "record,role,ref,seen_hash,quote"),
+    ("revision_state", "*"),
     ("kept_result", "*"),
-    ("setting", "id, machine, key, value, author, set_at"),
     (
         "delivery",
         "id, recipient_kind, recipient_id, sender, event, cwd, at, content_hash, bytes, body, refs_json, left_out_json",
@@ -39,8 +47,6 @@ const USER_STATE: &[(&str, &str)] = &[
         "backfill_job_event",
         "job, n, at, kind, by, position, listed, captured, unchanged, failed, detail",
     ),
-    ("excision", "id, target, reason, created_at"),
-    ("excised", "*"),
 ];
 
 fn user_state(w: &ClaudeHome) -> Vec<(String, serde_json::Value)> {
@@ -61,8 +67,12 @@ fn user_state(w: &ClaudeHome) -> Vec<(String, serde_json::Value)> {
         .collect()
 }
 
-fn request(n: u32, write: UserWrite) -> UserRequest {
+fn request(n: u32, write: UserWrite, author: Author) -> UserRequest {
     UserRequest {
+        authorship: polylogue_model::authorship::Authorship {
+            author,
+            via: polylogue_model::authorship::Channel::Cli,
+        },
         id: format!("0199d8a0-0000-7000-8000-{n:012}"),
         machine: "synthetic-machine".into(),
         at: Timestamp::from_unix_ms(1_790_000_000_000 + i64::from(n) * 1000).unwrap(),
@@ -70,37 +80,148 @@ fn request(n: u32, write: UserWrite) -> UserRequest {
     }
 }
 
-fn note(kind: NoteKind, author: Author, target: &str, revises: Option<String>) -> UserWrite {
-    UserWrite::AddNote {
-        note: NewNote {
-            kind,
-            key: None,
-            value: Some(format!("synthetic {}", kind.as_str())),
-            author,
-            targets: vec![Target::parse(target).unwrap()],
-            relations: vec![],
-            revises,
-            valid_until: None,
-        },
+fn note(kind: AssertionKind, target: &str, revises: Option<String>) -> UserWrite {
+    let value = serde_json::json!(format!("synthetic {}", kind.as_str()));
+    if let Some(base) = revises {
+        return UserWrite::ReviseAssertions {
+            bases: vec![polylogue_model::RevisionReference::exact(
+                base.clone(),
+                base,
+            )],
+            patch: AssertionPatch {
+                value: Change::Set(value),
+                ..Default::default()
+            },
+        };
     }
+    UserWrite::Assert {
+        assertions: vec![NewAssertion {
+            kind,
+            key: if kind == AssertionKind::Judgment {
+                Some("accepted".into())
+            } else {
+                None
+            },
+            value: Some(value),
+            valid_until: None,
+            links: vec![NewAssertionLink {
+                role: LinkRole::About,
+                reference: Reference::parse(target).unwrap(),
+            }],
+        }],
+    }
+}
+
+fn frozen_authored(w: &ClaudeHome) -> Vec<polylogue_model::authored::PreparedRequest> {
+    let mut records = Vec::new();
+    w.reads()
+        .reader()
+        .unwrap()
+        .visit_authored(&mut |prepared| {
+            records.push(prepared.clone());
+            Ok(())
+        })
+        .unwrap();
+    records
 }
 
 fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
     let pool = w.reads();
-    let entries = pool
-        .reader()
+    let reader = pool.reader().unwrap();
+    let mut records = Vec::new();
+    let mut counts = Counts::default();
+    for id in sessions {
+        let id = SessionId::parse(id).unwrap();
+        let session = reader.session(&id).unwrap().unwrap();
+        records.push(Record::Session(SessionRecord {
+            reference: format!("session:{id}"),
+            commit: reader.session_commit(&id).unwrap().unwrap(),
+            session,
+        }));
+        counts.sessions += 1;
+        for message in reader.messages(&id, false).unwrap() {
+            let (message, projection) = reader
+                .message_with_projection(&message.id)
+                .unwrap()
+                .unwrap();
+            records.push(Record::Message(Box::new(MessageRecord {
+                reference: format!("message:{}", message.id),
+                commit: reader.message_admission(&message.id).unwrap().unwrap(),
+                order: reader.message_order(&message.id).unwrap().unwrap(),
+                source_version: projection.source_version,
+                block_count: projection.block_count,
+                block_ordinals: projection.block_ordinals,
+                injections: Vec::new(),
+                bindings: Vec::new(),
+                message,
+            })));
+            counts.messages += 1;
+        }
+        for event in reader.event_records(&id).unwrap() {
+            records.push(Record::Event(event));
+            counts.events += 1;
+        }
+        for link in reader.session_export(&id).unwrap().unwrap().links {
+            records.push(Record::Link(LinkRecord {
+                reference: LinkRecord::reference(&link),
+                commit: reader.link_commit(&link).unwrap().unwrap(),
+                link,
+            }));
+            counts.links += 1;
+        }
+    }
+    let commits: std::collections::BTreeMap<_, _> = reader
+        .query("SELECT id,commit_seq FROM source_client_request", &[])
         .unwrap()
-        .user_state()
-        .unwrap()
-        .iter()
-        .map(|entry| serde_json::to_value(entry).unwrap())
+        .into_iter()
+        .map(|row| {
+            (
+                row["id"].as_str().unwrap().to_owned(),
+                row["commit_seq"].as_u64().unwrap(),
+            )
+        })
         .collect();
-    let doc =
-        polylogue_model::export::Document::new(sessions.iter().map(|id| w.export(id)).collect())
-            .with_user_state(entries);
-    let file = w.dir.path().join("export.json");
-    fs::write(&file, doc.to_json().unwrap()).unwrap();
-    file
+    reader
+        .visit_authored(&mut |prepared| {
+            records.push(Record::Authored(Box::new(AuthoredRecord {
+                reference: format!("request:{}", prepared.request.id),
+                commit: commits[&prepared.request.id],
+                prepared: prepared.clone(),
+            })));
+            counts.authored += 1;
+            Ok(())
+        })
+        .unwrap();
+    records.sort_by(|a, b| (a.commit(), a.reference()).cmp(&(b.commit(), b.reference())));
+    let manifest = Manifest::from_snapshot(
+        ReadSnapshot {
+            query: format!("query:{}", "0".repeat(64)),
+            query_text: "synthetic session and authored state".into(),
+            ran_at: Timestamp::from_unix_ms(1_790_000_000_000).unwrap(),
+            read_at: reader.change_position().unwrap(),
+            caught_up: true,
+            currency: polylogue_model::currency::IndexCurrency::Standalone,
+            enabled_variants: Vec::new(),
+            author: Author::Operator,
+            notes: Vec::new(),
+            incomplete: Vec::new(),
+        },
+        counts,
+        Flags {
+            format: Format::Jsonl,
+            with_blobs: false,
+            read: polylogue_model::read::ReadOptions::default(),
+        },
+        None,
+    );
+    let path = w.dir.path().join("records.jsonl");
+    let mut file = fs::File::create(&path).unwrap();
+    for record in std::iter::once(Record::Manifest(Box::new(manifest))).chain(records) {
+        record.validate().unwrap();
+        serde_json::to_writer(&mut file, &record).unwrap();
+        file.write_all(b"\n").unwrap();
+    }
+    path
 }
 
 #[test]
@@ -110,64 +231,66 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         "s1.jsonl",
         &(user("u1", "s1", "hello") + &assistant("a1", "s1", "hi") + &user("u2", "s1", "more")),
     );
-    let dropped = user("d1", "s2", "drop pelican77");
-    w.append("s2.jsonl", &dropped);
     let (mut e, _lock) = w.engine(64 << 20);
     assert!(e.run_pass().unwrap().errors.is_empty());
     let writes = e.writer().unwrap();
     let agent = Author::Agent(Some(SessionId::parse("claude-code:s1").unwrap()));
-    let mut n = 0;
-    let mut write = |w: UserWrite| {
-        n += 1;
-        writes.user(request(n, w)).unwrap().id
+    let n = std::cell::Cell::new(0);
+    let write_as = |w: UserWrite, author: Author| {
+        n.set(n.get() + 1);
+        writes.user(request(n.get(), w, author)).unwrap().id
     };
-    let first = write(note(
-        NoteKind::Note,
+    let write = |w| write_as(w, Author::Operator);
+    let write_note =
+        |kind, author, target: &str, revises| write_as(note(kind, target, revises), author);
+    let first = write_note(
+        AssertionKind::Note,
         Author::Operator,
         "session:claude-code:s1",
         None,
-    ));
-    write(note(
-        NoteKind::Note,
+    );
+    write_note(
+        AssertionKind::Note,
         Author::Operator,
         "session:claude-code:s1",
         Some(first),
-    ));
-    let finding = write(note(
-        NoteKind::Finding,
+    );
+    let finding = write_note(
+        AssertionKind::Finding,
         agent.clone(),
         "session:claude-code:s1",
         None,
-    ));
-    write(note(
-        NoteKind::Judgment,
+    );
+    write_note(
+        AssertionKind::Judgment,
         Author::Operator,
-        &format!("note:{finding}"),
+        &format!("assertion:{finding}@{finding}"),
         None,
-    ));
-    let withdrawn = write(note(NoteKind::Lesson, agent, "repo:synthetic", None));
-    write(UserWrite::Withdraw {
-        note: withdrawn,
-        author: Author::Operator,
+    );
+    let withdrawn = write_note(AssertionKind::Lesson, agent, "repo:synthetic", None);
+    write(UserWrite::WithdrawAssertions {
+        targets: vec![Reference::Assertion(polylogue_model::RevisionReference {
+            root: withdrawn,
+            revision: None,
+        })],
         reason: Some("superseded".into()),
     });
-    // Notes about the session excised below go with it.
-    write(note(
-        NoteKind::Note,
+    // Authored notes retain their explicit session targets.
+    write_note(
+        AssertionKind::Note,
         Author::Operator,
         "session:claude-code:s2",
         None,
-    ));
+    );
     write(UserWrite::SetSetting {
-        key: "day.zone".into(),
-        value: "UTC".into(),
-        author: Author::Operator,
+        key: "browser.actions".into(),
+        value: "on".into(),
         machine: None,
     });
     write(UserWrite::KeepResult {
         name: Some("kept".into()),
         query: "sessions".into(),
-        rows_json: "[]".into(),
+        rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
         read_at: "{}".into(),
     });
     let delivery = write(UserWrite::Deliver(Delivery {
@@ -229,22 +352,15 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
             detail: None,
         },
     });
-    e.excise(ExciseRequest {
-        id: "0199d8a0-0000-7000-8000-00000000e001".into(),
-        target: ExciseTarget::parse("session:claude-code:s2").unwrap(),
-        reason: Some("synthetic".into()),
-        dry_run: false,
-    })
-    .unwrap();
-    // A note after the excision replays after it.
-    write(note(
-        NoteKind::Note,
+    write_note(
+        AssertionKind::Note,
         Author::Operator,
         "session:claude-code:s1",
         None,
-    ));
+    );
     let original = w.export("claude-code:s1");
     let source_state = user_state(&w);
+    let source_authored = frozen_authored(&w);
     let file = export_file(&w, &["claude-code:s1"]);
 
     let fresh = ClaudeHome::new();
@@ -259,157 +375,20 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     assert_eq!(back.events, original.events);
     assert_eq!(back.links, original.links);
     assert_eq!(user_state(&fresh), source_state);
+    assert_eq!(frozen_authored(&fresh), source_authored);
+    assert_eq!(
+        fresh.count("SELECT count(*) AS n FROM a.chat_action WHERE execution='historical'"),
+        1
+    );
+    assert_eq!(
+        fresh.count("SELECT count(*) AS n FROM a.backfill_job WHERE execution='historical'"),
+        1
+    );
 
     // Importing it again changes nothing.
     let again = e2.import(std::slice::from_ref(&file)).unwrap();
     assert_eq!(again.user_state.applied, 0, "{again:?}");
     assert_eq!(again.user_state.present, report.user_state.applied);
+    assert_eq!(frozen_authored(&fresh), source_authored);
     assert_eq!(user_state(&fresh), source_state);
-
-    // The imported excision refuses the excised session when its file
-    // arrives again.
-    fresh.append("s2.jsonl", &dropped);
-    assert!(e2.run_pass().unwrap().errors.is_empty());
-    assert_eq!(
-        fresh.count("SELECT count(*) AS n FROM session WHERE id = 'claude-code:s2'"),
-        0
-    );
-}
-
-#[test]
-fn an_imported_excision_refuses_when_the_archive_already_holds_what_it_removed() {
-    let w = ClaudeHome::new();
-    let dropped = user("d1", "s2", "drop pelican77");
-    w.append("s2.jsonl", &dropped);
-    let (mut e, _lock) = w.engine(64 << 20);
-    assert!(e.run_pass().unwrap().errors.is_empty());
-    e.excise(ExciseRequest {
-        id: "0199d8a0-0000-7000-8000-00000000e002".into(),
-        target: ExciseTarget::parse("session:claude-code:s2").unwrap(),
-        reason: None,
-        dry_run: false,
-    })
-    .unwrap();
-    let file = export_file(&w, &[]);
-
-    let fresh = ClaudeHome::new();
-    fresh.append("s2.jsonl", &dropped);
-    let (mut e2, _lock2) = fresh.engine(64 << 20);
-    assert!(e2.run_pass().unwrap().errors.is_empty());
-    let report = e2.import(std::slice::from_ref(&file)).unwrap();
-    assert_eq!(report.user_state.applied, 0, "{report:?}");
-    assert!(
-        report
-            .pass
-            .errors
-            .iter()
-            .any(|e| e.contains("excise it here, then import again")),
-        "{report:?}"
-    );
-    assert_eq!(fresh.count("SELECT count(*) AS n FROM a.excision"), 0);
-}
-
-fn excise_s2(e: &mut Engine) -> Result<Excised, polylogue_engine::EngineError> {
-    e.excise(ExciseRequest {
-        id: "0199d8a0-0000-7000-8000-00000000e003".into(),
-        target: ExciseTarget::parse("session:claude-code:s2").unwrap(),
-        reason: None,
-        dry_run: false,
-    })
-}
-
-fn two_sessions() -> (ClaudeHome, Engine, polylogue_store::ArchiveLock) {
-    let w = ClaudeHome::new();
-    w.append("s1.jsonl", &user("u1", "s1", "keep"));
-    w.append("s2.jsonl", &user("d1", "s2", "drop"));
-    let (mut e, lock) = w.engine(64 << 20);
-    assert!(e.run_pass().unwrap().errors.is_empty());
-    (w, e, lock)
-}
-
-/// A withdrawal is about the note it withdraws only, so it goes with that
-/// note, request and all, and what is left replays.
-#[test]
-fn an_excision_takes_the_withdrawals_of_the_notes_it_removes() {
-    let (w, mut e, _lock) = two_sessions();
-    let writes = e.writer().unwrap();
-    let withdrawn = writes
-        .user(request(
-            1,
-            note(
-                NoteKind::Note,
-                Author::Operator,
-                "session:claude-code:s2",
-                None,
-            ),
-        ))
-        .unwrap()
-        .id;
-    writes
-        .user(request(
-            2,
-            UserWrite::Withdraw {
-                note: withdrawn,
-                author: Author::Operator,
-                reason: None,
-            },
-        ))
-        .unwrap();
-    writes
-        .user(request(
-            3,
-            note(
-                NoteKind::Note,
-                Author::Operator,
-                "session:claude-code:s1",
-                None,
-            ),
-        ))
-        .unwrap();
-    assert_eq!(excise_s2(&mut e).unwrap().notes_removed, 2);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.note"), 1);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 1);
-
-    let file = export_file(&w, &[]);
-    let fresh = ClaudeHome::new();
-    let (mut e2, _lock2) = fresh.engine(64 << 20);
-    let report = e2.import(std::slice::from_ref(&file)).unwrap();
-    assert!(report.pass.errors.is_empty(), "{report:?}");
-    assert_eq!(report.user_state.applied, 2, "{report:?}");
-    assert_eq!(user_state(&fresh), user_state(&w));
-}
-
-/// A revision that would stay without the note it revises could not be
-/// replayed, so the excision refuses and changes nothing.
-#[test]
-fn an_excision_refuses_to_leave_a_revision_without_its_note() {
-    let (w, mut e, _lock) = two_sessions();
-    let writes = e.writer().unwrap();
-    let revised = writes
-        .user(request(
-            1,
-            note(
-                NoteKind::Note,
-                Author::Operator,
-                "session:claude-code:s2",
-                None,
-            ),
-        ))
-        .unwrap()
-        .id;
-    writes
-        .user(request(
-            2,
-            note(
-                NoteKind::Note,
-                Author::Operator,
-                "session:claude-code:s1",
-                Some(revised),
-            ),
-        ))
-        .unwrap();
-    let before = user_state(&w);
-    let refused = excise_s2(&mut e).unwrap_err().to_string();
-    assert!(refused.contains("its revision"), "{refused}");
-    assert_eq!(user_state(&w), before);
 }
