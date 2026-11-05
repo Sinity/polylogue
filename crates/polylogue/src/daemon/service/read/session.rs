@@ -14,6 +14,9 @@ use std::collections::HashSet;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
+mod entries;
+use entries::ShownEntries;
+
 /// What a session read covers.
 pub(super) struct Scope {
     pub session: SessionId,
@@ -907,25 +910,7 @@ pub(super) fn page(
         ));
     }
     let runs = runs(&composed, options)?;
-    let segments: Vec<Segment<'_>> = runs
-        .spans
-        .iter()
-        .map(|(part, start, end)| Segment {
-            entries: &composed.entries(*part)[*start..*end],
-            inherited: composed.parts[*part].inherited,
-        })
-        .collect();
-    let profile = FoldProfile::of(options);
-    let sums = visible_entries(&segments, &profile);
-    // Shown entries as (part, entry) in composed order.
-    let shown: Vec<(usize, usize)> = sums
-        .shown
-        .iter()
-        .map(|shown| {
-            let (part, start, _) = runs.spans[shown.segment];
-            (part, start + shown.entry)
-        })
-        .collect();
+    let shown = ShownEntries::new(d, &composed, &runs, FoldProfile::of(options));
     // The first shown entry at or after a key, and whether it is the key.
     let locate = |key: &EntryKey| -> Option<(usize, bool)> {
         let (part, entry) = composed
@@ -940,13 +925,13 @@ pub(super) fn page(
                     .filter(|entry| (part.start..part.end).contains(*entry))
                     .map(|entry| (at, *entry))
             })?;
-        let at = shown.partition_point(|place| *place < (part, entry));
-        Some((at, shown.get(at) == Some(&(part, entry))))
+        let at = shown.partition_point(|place| place < (part, entry));
+        Some((at, shown.get(at) == Some((part, entry))))
     };
     let tokens = limits.tokens.get();
     let items = limits.items.get();
     let (start, end) = match &opened {
-        None if options.latest => (sums.page_before(shown.len(), tokens, items), shown.len()),
+        None if options.latest => (shown.page_before(shown.len(), tokens, items), shown.len()),
         // The first page's lead lines spend its budget first; when they
         // use all of it, the page is those lines alone.
         None => {
@@ -962,7 +947,7 @@ pub(super) fn page(
             } else {
                 (
                     0,
-                    sums.page_after(0, tokens - lead_tokens, items - lead.len()),
+                    shown.page_after(0, tokens - lead_tokens, items - lead.len()),
                 )
             }
         }
@@ -991,11 +976,11 @@ pub(super) fn page(
                     }
                     (at, at + 1)
                 }
-                ReadDirection::After => (at, sums.page_after(at, tokens, items)),
-                ReadDirection::Before => (sums.page_before(at, tokens, items), at),
+                ReadDirection::After => (at, shown.page_after(at, tokens, items)),
+                ReadDirection::Before => (shown.page_before(at, tokens, items), at),
                 ReadDirection::Past => {
                     let at = at + usize::from(exact);
-                    (at, sums.page_after(at, tokens, items))
+                    (at, shown.page_after(at, tokens, items))
                 }
             }
         }
@@ -1018,7 +1003,8 @@ pub(super) fn page(
     if start == 0 && !continues_forward {
         items_out.extend(lead_items(&composed, &runs, options, target, &read_session));
     }
-    let mut laid = lay_out(reader, d, &composed, &runs, &shown[start..end], options)?;
+    let selected = shown.range(start..end);
+    let mut laid = lay_out(reader, d, &composed, &runs, &selected, options)?;
     decorate(reader, &composed, &shown, start, &mut laid, options)?;
     // Whole entries up to the transfer size; an entry too large to travel
     // alone is replaced by the ready call that reads its block in pages.
@@ -1079,7 +1065,9 @@ pub(super) fn page(
             continue;
         }
         if inside.is_some() || (keep.len() == 1 && sizes[offset] > room) {
-            let (part, entry) = shown[start - keep.start + offset];
+            let (part, entry) = shown
+                .get(start - keep.start + offset)
+                .expect("selected entry");
             let kind = match composed.entries(part)[entry].key {
                 EntryKey::Message { .. } => ReadRecordKind::Message,
                 EntryKey::Event { .. } => ReadRecordKind::Event,
@@ -1101,7 +1089,7 @@ pub(super) fn page(
         }
     }
     let call = |position: usize, direction: ReadDirection| -> Result<ReadyCall, Failure> {
-        let (part, entry) = shown[position];
+        let (part, entry) = shown.get(position).expect("cursor entry");
         let next = PageCursor {
             target: target.clone(),
             options: digest.clone(),
@@ -1607,7 +1595,7 @@ fn lay_out(
 fn decorate(
     reader: &Reader<'_>,
     composed: &Composed,
-    shown: &[(usize, usize)],
+    shown: &ShownEntries,
     start: usize,
     laid: &mut [Vec<ReadItem>],
     options: &ReadOptions,
@@ -1619,7 +1607,7 @@ fn decorate(
     };
     let mut placed = place_cards(composed, shown, start, laid.len(), options);
     for (offset, items) in laid.iter_mut().enumerate() {
-        let (part, at) = shown[start + offset];
+        let (part, at) = shown.get(start + offset).expect("decorated entry");
         let entries = composed.entries(part);
         let entry = &entries[at];
         let mut before: Vec<ReadItem> =
@@ -1744,7 +1732,7 @@ fn decorate(
 /// (a spawning call in the dialogue view), so a card is never lost.
 fn place_cards(
     composed: &Composed,
-    shown: &[(usize, usize)],
+    shown: &ShownEntries,
     start: usize,
     slots: usize,
     options: &ReadOptions,
@@ -1766,7 +1754,7 @@ fn place_cards(
         else {
             continue;
         };
-        let at = shown.partition_point(|shown| *shown < place);
+        let at = shown.partition_point(|shown| shown < place);
         if at < start || at >= start + slots {
             continue;
         }
@@ -1775,7 +1763,7 @@ fn place_cards(
                 || !matches!(&item.kind, ItemKind::Card { card } if matches!(**card, Card::Delegation { .. }))
         });
         let slot = placed.entry(at - start).or_default();
-        if shown.get(at) == Some(&place) {
+        if shown.get(at) == Some(place) {
             slot.1.extend(cards.cloned());
         } else {
             slot.0.extend(cards.cloned());
