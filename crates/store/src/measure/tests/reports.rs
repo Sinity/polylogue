@@ -327,7 +327,7 @@ fn ordinary_complete_request_usage_keeps_its_daily_values_and_baseline() {
         model_message(
             &mut f,
             s,
-            &format!("m{n}"),
+            &format!("claude-code:m{n}"),
             "gpt-6.1-sol",
             T0 + n * DAY,
             &usage,
