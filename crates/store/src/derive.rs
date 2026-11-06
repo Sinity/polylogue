@@ -114,7 +114,7 @@ pub fn run(
 }
 
 #[cfg(test)]
-fn run_with_catalog(index: &mut Connection, catalog: &Catalog) -> Result<u64> {
+pub(crate) fn run_with_catalog(index: &mut Connection, catalog: &Catalog) -> Result<u64> {
     run_all(index, catalog, ALL, None)
 }
 

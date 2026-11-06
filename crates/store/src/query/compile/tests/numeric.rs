@@ -5,11 +5,11 @@ use serde_json::{Value, json};
 fn fixture() -> (tempfile::TempDir, Fixture) {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
-    for (id, input, output, cost, repo) in [
-        ("a", Some(1), Some(4), Some(1_000_000_000), "east"),
-        ("b", Some(3), Some(6), Some(3_000_000_000), "east"),
-        ("c", Some(5), Some(5), Some(5_000_000_000), "west"),
-        ("u", None, None, None, "west"),
+    for (id, input, output, repo) in [
+        ("a", Some(1), Some(4), "east"),
+        ("b", Some(3), Some(6), "east"),
+        ("c", Some(5), Some(5), "west"),
+        ("u", None, None, "west"),
     ] {
         let session = fixture
             .session(SessionFacts {
@@ -27,7 +27,7 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
                     role: "assistant",
                     written_by: "model",
                     at: Some(3000),
-                    cost_nusd: cost,
+                    model: Some("numeric-test"),
                     ..Default::default()
                 },
             )
@@ -44,7 +44,14 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
             )
             .unwrap();
     }
-    fixture.derive().unwrap();
+    // One dollar per input token, no output charge: costs are independently
+    // 1, 3 and 5 USD. Missing usage remains unknown under the same derivation.
+    let catalog = serde_json::from_value(json!({
+        "version":"numeric-test-prices-v1",
+        "models":{"numeric-test":{"input":1_000_000,"output":0}}
+    }))
+    .unwrap();
+    fixture.derive_with_catalog(&catalog).unwrap();
     (dir, fixture)
 }
 fn rows(fixture: &Fixture, text: &str) -> Vec<Value> {

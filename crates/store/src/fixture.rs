@@ -125,6 +125,12 @@ impl Fixture {
         crate::derive::run(&mut self.index, None)
     }
 
+    /// Runs the ordinary derivations with a test's declared model prices.
+    #[cfg(test)]
+    pub fn derive_with_catalog(&mut self, catalog: &polylogue_model::Catalog) -> Result<u64> {
+        crate::derive::run_with_catalog(&mut self.index, catalog)
+    }
+
     /// The writer indexes each session's items as it commits; fixture rows
     /// are written directly, so sessions they changed are indexed before
     /// reads open.

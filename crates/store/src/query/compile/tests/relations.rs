@@ -72,7 +72,7 @@ fn selected_groups_aggregate_their_original_rows_after_projection() {
             &fixture,
             "sessions | fields repo as region, input_tokens as n | group by region | agg sum(n) as total | where count > 1"
         ),
-        [json!({"region":"east", "count":2, "total":4.0, "unknown_n":0})]
+        [json!({"region":"east", "count":2, "total":4, "unknown_n":0})]
     );
 }
 
