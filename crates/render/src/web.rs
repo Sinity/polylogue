@@ -26,17 +26,6 @@ pub fn read(
         table,
         request,
     )?;
-    // JSON Unicode escapes preserve the invocation when displayed controls
-    // become visible in HTML; the operation table still owns its spelling.
-    let raw = command_surface::quote_argument(&request.arguments.to_string());
-    let safe = command_surface::quote_argument(&crate::terminal::json(&request.arguments, false));
-    if raw != safe {
-        frame.command = std::borrow::Cow::Owned(frame.command.replacen(
-            &format!("--request {raw}"),
-            &format!("--request {safe}"),
-            1,
-        ));
-    }
     let query = request
         .arguments
         .get("target")

@@ -268,4 +268,36 @@ fn copied_current_invocation_preserves_controls_as_valid_json_escapes() {
     assert!(output.contains("\\u009b"));
     assert!(output.contains("\\u202e"));
     assert!(!output.contains("\\x9b"));
+    let copied: Value = output
+        .split("data-copy=\"")
+        .skip(1)
+        .filter_map(|attribute| {
+            let encoded = attribute.split_once('"')?.0;
+            let decoded = encoded
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&amp;", "&");
+            let target: Value = serde_json::from_str(&decoded).ok()?;
+            (target["label"] == "page").then_some(target)
+        })
+        .next()
+        .expect("page command copy target");
+    let command = copied["forms"][0]["text"].as_str().unwrap();
+    let shell = std::process::Command::new("sh")
+        .args(["-c", &format!("printf '%s\\0' {command}")])
+        .output()
+        .unwrap();
+    assert!(shell.status.success());
+    let words = shell
+        .stdout
+        .strip_suffix(&[0])
+        .unwrap()
+        .split(|byte| *byte == 0)
+        .map(|word| String::from_utf8(word.to_vec()).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(words[0], "polylogue");
+    let parsed = table.parse_cli(&words[1..], "unused").unwrap();
+    assert_eq!(parsed.request, request);
 }
