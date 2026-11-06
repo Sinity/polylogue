@@ -75,13 +75,17 @@ impl laws::Compiler for Product {
             .map(|info| info.field.name.clone())
             .collect();
         options.fields.extend(
-            fields
-                .iter()
-                .filter(|name| {
-                    name.starts_with("match.")
-                        || matches!(name.as_str(), "change" | "old_rank" | "new_rank")
-                })
-                .cloned(),
+            [
+                "match.message",
+                "match.exit_code",
+                "match.distance",
+                "change",
+                "old_rank",
+                "new_rank",
+            ]
+            .into_iter()
+            .filter(|name| fields.contains(*name))
+            .map(str::to_owned),
         );
         let program = polylogue_store::query::lower(&prepared, &options).map_err(error)?;
         fields.extend(
@@ -430,7 +434,7 @@ impl Loaded {
                 .get(&("tool_calls".into(), matched.clone()))
                 .ok_or_else(|| error("query returned an uninstalled match"))?;
             row.fields
-                .insert("match.message".into(), Scalar::Text(matched.clone()));
+                .insert("match.id".into(), Scalar::Text(matched.clone()));
             for field in &other.fields {
                 let name = format!("match.{field}");
                 let value = value
@@ -449,7 +453,7 @@ impl Loaded {
                     .get(name)
                     .ok_or_else(|| error(format!("query omitted {name}")))?;
                 // A negated order relation has no exposed match.
-                if name != "match.distance" || row.fields.contains_key("match.message") {
+                if name != "match.distance" || row.fields.contains_key("match.id") {
                     row.fields.insert(name.into(), scalar(value));
                 }
             }
@@ -557,7 +561,6 @@ fn shared_language_laws_run_through_product_compilation_and_keyset_pages() {
         children: "tool_calls".into(),
         number: "input_tokens".into(),
         child_number: "exit_code".into(),
-        child_identity: "message".into(),
         category: "repo".into(),
         text: "title".into(),
         end: "output_tokens".into(),
