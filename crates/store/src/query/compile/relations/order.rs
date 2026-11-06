@@ -71,10 +71,17 @@ impl Compiler<'_> {
                                 "match.coarse" => Ok((pair.coarse.clone(), ColKind::Bool)),
                                 "match.id" => {
                                     inner.field_on(compiler, "id", at, "i").or_else(|_| {
-                                        Ok((
-                                            format!("json_array({})", identity_sql(&inner, "i")),
-                                            ColKind::Text,
-                                        ))
+                                        let columns = identity_columns(&inner);
+                                        let identity = if matches!(
+                                            inner.program.row_basis,
+                                            RowBasis::Native { .. }
+                                        ) && columns.len() == 1
+                                        {
+                                            format!("i.{}", column_sql(&columns[0]))
+                                        } else {
+                                            format!("json_array({})", identity_sql(&inner, "i"))
+                                        };
+                                        Ok((identity, ColKind::Text))
                                     })
                                 }
                                 _ => inner.field_on(compiler, name, at, "i"),

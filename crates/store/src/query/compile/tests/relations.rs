@@ -286,6 +286,13 @@ fn explicit_witness_choice_keeps_the_outer_row_and_uses_only_its_requested_order
             [json!({"match.id":"claude-code:early"})]
         );
     }
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions where id = claude-code:outer AND after(messages where role:user | fields at as moment) within 20s pick first by match.id desc | where match.moment = 1970-01-01T00:00:09Z | fields id"
+        ),
+        [json!({"id":"claude-code:outer"})]
+    );
 }
 
 #[test]
