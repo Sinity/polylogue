@@ -148,6 +148,11 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
         let at = point(&at).map_err(Error::UserFunctionError)?;
         Ok(periods(ctx)?.map(|(a, b)| relates(a, b, relation, within, at)))
     })?;
+    conn.create_scalar_function("pl_time_distance_key", 5, flags, |ctx| {
+        let at: String = ctx.get(4)?;
+        let at = point(&at).map_err(Error::UserFunctionError)?;
+        Ok(periods(ctx)?.map(|(a, b)| format!("{:039}", (b.start - a.point(at)).unsigned_abs())))
+    })?;
     conn.create_scalar_function("pl_time_distance", 5, flags, |ctx| {
         let at: String = ctx.get(4)?;
         let at = point(&at).map_err(Error::UserFunctionError)?;

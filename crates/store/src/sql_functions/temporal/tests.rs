@@ -340,3 +340,44 @@ fn session_last_activity_field_reads_real_message_evidence() {
         "the possible last activity extends beyond the inner point"
     );
 }
+
+#[test]
+fn nearest_distance_keys_preserve_nanoseconds_across_large_distances() {
+    let conn = conn();
+    let origin = native("1970-01-01T00:00:00Z", TimeQuality::Intrinsic, None);
+    let first = native(
+        "9999-12-30T00:00:00.000000001Z",
+        TimeQuality::Intrinsic,
+        None,
+    );
+    let second = native(
+        "9999-12-30T00:00:00.000000002Z",
+        TimeQuality::Intrinsic,
+        None,
+    );
+    let key = |outer: &[u8], inner: &[u8]| -> String {
+        conn.query_row(
+            "SELECT pl_time_distance_key(?1,'tuple',?2,'tuple','when')",
+            params![outer, inner],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    let first_key = key(&origin, &first);
+    let second_key = key(&origin, &second);
+    assert_eq!(first_key.len(), 39);
+    assert!(first_key < second_key);
+    assert_eq!(
+        second_key.parse::<u128>().unwrap() - first_key.parse::<u128>().unwrap(),
+        1
+    );
+    assert_eq!(first_key, key(&first, &origin));
+    let unknown: Option<String> = conn
+        .query_row(
+            "SELECT pl_time_distance_key(NULL,'tuple',?1,'tuple','when')",
+            [&first],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(unknown, None);
+}
