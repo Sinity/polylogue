@@ -303,7 +303,7 @@ fn unproven_old_kept_policy_preserves_values_and_requires_an_explicit_text_cast(
         "result:unproven | group by cwd | where cwd:/work/module",
         "result:unproven | agg min(cwd) as path | where path:/work/module",
         "result:unproven | where cwd ^ /work/module",
-        "result:unproven | where case_eq(1, 1, cwd, cwd) ^ /work/module",
+        "result:unproven | where case_eq(1, 1, cwd) ^ /work/module",
     ] {
         let error = reader
             .prepare_selection(text, &options())
