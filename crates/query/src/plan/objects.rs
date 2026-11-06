@@ -325,6 +325,7 @@ fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, Q
                 denominator: None,
                 conflicts: vec![],
                 body: crate::SavedQueryBody::Frozen {
+                    object: None,
                     syntax: text.clone(),
                 },
             }],
