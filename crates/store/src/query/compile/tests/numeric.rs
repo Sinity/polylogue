@@ -106,10 +106,8 @@ fn computed_conditions_keep_unknowns_and_native_money_and_duration_units() {
         "input_tokens / denominator > 0",
         "NOT (input_tokens / denominator > 0)",
     ] {
-        assert!(
-            ids(&format!("{zero_denominator} | where {condition}")).is_empty(),
-            "{condition}"
-        );
+        let query = format!("{zero_denominator} | where {condition}");
+        assert!(ids(&query).is_empty(), "{condition}");
     }
     assert_eq!(
         ids("sessions | sort by input_tokens / output_tokens desc"),
