@@ -147,7 +147,35 @@ fn edge_key(edge: &QueryEdge) -> String {
         QueryEdge::In { query } => format!("in:{query}"),
     }
 }
-fn edges(query: &Query, native: &Catalog) -> Result<Vec<QueryEdge>, QueryError> {
+fn inline_identity(
+    query: &Query,
+    native: &Catalog,
+    captured: &[FrozenQueryDefinition],
+) -> Result<QuestionId, QueryError> {
+    let form = identity::normal_form(query, native).map_err(language)?;
+    let mut original = None;
+    for node in captured {
+        if node.parameters.is_empty()
+            && identity::normal_form(&node.identity_ast, native).map_err(language)? == form
+        {
+            if original.is_some_and(|old| old != node.question) {
+                return Err(invalid(
+                    "one evolved inline query has conflicting original identities",
+                ));
+            }
+            original = Some(node.question);
+        }
+    }
+    original.map_or_else(
+        || identity::question_id_from_normal_form(&form, &BTreeMap::new()).map_err(language),
+        Ok,
+    )
+}
+fn edges(
+    query: &Query,
+    native: &Catalog,
+    captured: &[FrozenQueryDefinition],
+) -> Result<Vec<QueryEdge>, QueryError> {
     let output = std::cell::RefCell::new(Vec::new());
     let mut query = query.clone();
     walk(
@@ -168,8 +196,7 @@ fn edges(query: &Query, native: &Catalog) -> Result<Vec<QueryEdge>, QueryError> 
                 | TransformKind::Diff { query } = &stage.kind
                 {
                     output.borrow_mut().push(QueryEdge::Combine {
-                        query: identity::question_id(query, native, &BTreeMap::new())
-                            .map_err(language)?,
+                        query: inline_identity(query, native, captured)?,
                     });
                 }
             }
@@ -181,8 +208,7 @@ fn edges(query: &Query, native: &Catalog) -> Result<Vec<QueryEdge>, QueryError> 
                     query: parse_id(name)?,
                 }),
                 ConditionKind::In { query, .. } => output.borrow_mut().push(QueryEdge::In {
-                    query: identity::question_id(query, native, &BTreeMap::new())
-                        .map_err(language)?,
+                    query: inline_identity(query, native, captured)?,
                 }),
                 _ => {}
             }
@@ -241,7 +267,7 @@ pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
     )?;
     frozen.sort_by_key(|node| node.question.to_string());
     frozen.dedup_by_key(|node| node.question);
-    let edges = edges(&plan.identity, native)?;
+    let edges = edges(&plan.identity, native, &[])?;
     let object = QueryObject {
         historical_source: None,
         id: plan.question_id,
@@ -351,7 +377,15 @@ pub(super) fn retained_definition(
             .ok_or_else(|| invalid("saved definition is absent from its retained object"))?
     };
     let native = runtime_catalog(object)?;
-    let mut queue = VecDeque::from(dependencies(&edges(&node.identity_ast, &native)?));
+    let mut queue = VecDeque::from(dependencies(&edges(
+        &node.identity_ast,
+        &native,
+        if node.historical_source.is_some() {
+            &object.definitions
+        } else {
+            &[]
+        },
+    )?));
     let mut seen = BTreeSet::new();
     let mut closure = Vec::new();
     while let Some(id) = queue.pop_front() {
@@ -363,7 +397,15 @@ pub(super) fn retained_definition(
             .iter()
             .find(|node| node.question == id)
             .ok_or_else(|| invalid(format!("missing retained query:{id}")))?;
-        queue.extend(dependencies(&edges(&dependency.identity_ast, &native)?));
+        queue.extend(dependencies(&edges(
+            &dependency.identity_ast,
+            &native,
+            if dependency.historical_source.is_some() {
+                &object.definitions
+            } else {
+                &[]
+            },
+        )?));
         closure.push(dependency.clone());
     }
     Ok((node, closure))
@@ -546,7 +588,15 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
         &object.source_outputs,
         object.historical_source.is_some(),
     )?;
-    let actual_edges = edges(&object.identity_ast, &native)?;
+    let actual_edges = edges(
+        &object.identity_ast,
+        &native,
+        if object.historical_source.is_some() {
+            &object.definitions
+        } else {
+            &[]
+        },
+    )?;
     if actual_edges != object.edges || dependencies(&actual_edges) != object.dependencies {
         return Err(invalid(
             "question composition edges do not match its syntax",
@@ -576,7 +626,15 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
         let node = by_id
             .get(&key)
             .ok_or_else(|| invalid(format!("missing frozen question {id}")))?;
-        queue.extend(dependencies(&edges(&node.identity_ast, &native)?));
+        queue.extend(dependencies(&edges(
+            &node.identity_ast,
+            &native,
+            if node.historical_source.is_some() {
+                &object.definitions
+            } else {
+                &[]
+            },
+        )?));
     }
     if seen.len() != by_id.len() {
         return Err(invalid("question contains an unrelated frozen definition"));

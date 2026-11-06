@@ -421,3 +421,32 @@ fn captured_dependency_reuses_proven_original_identity_after_representation_chan
     forged.definitions[0].identity_ast.transforms.clear();
     assert!(saved_query_bindings(&forged).is_err());
 }
+
+#[test]
+fn historical_inline_edges_keep_the_proven_original_subquery_id() {
+    use polylogue_model::query_objects::QueryObject;
+    use serde_json::json;
+    let span = json!({"start":0,"end":1});
+    let child = json!({"source":{"kind":"unit","unit":"sessions","implicit":false,"condition":null},"attach":[],"stages":[{"span":span,"kind":{"kind":"fields","fields":["id"]}},{"span":span,"kind":{"kind":"limit","count":1}}]});
+    let native = crate::catalog::catalog(&[]);
+    let child_form =
+        polylogue_model::query_objects::evolution::legacy_normal_form(&child, &native).unwrap();
+    let child_id = identity::question_id_from_normal_form(&child_form, &BTreeMap::new()).unwrap();
+    let root = json!({"source":{"kind":"unit","unit":"sessions","implicit":false,"condition":{"span":span,"kind":{"kind":"in","operand":{"kind":"field","name":"id"},"query":child}}},"attach":[],"stages":[]});
+    let root_form =
+        polylogue_model::query_objects::evolution::legacy_normal_form(&root, &native).unwrap();
+    let root_id = identity::question_id_from_normal_form(&root_form, &BTreeMap::new()).unwrap();
+    let object = QueryObject::from_structured_v1(json!({"id":root_id,"normal_form":root_form,"parameters":{},"identity_ast":root,"source_outputs":[],"definitions":[{"question":child_id,"normal_form":child_form,"parameters":{},"identity_ast":child,"source_outputs":[]}],"dependencies":[child_id],"edges":[{"how":"in","query":child_id}]})).unwrap();
+    assert_ne!(
+        identity::question_id(
+            &object.definitions[0].identity_ast,
+            &native,
+            &BTreeMap::new()
+        )
+        .unwrap(),
+        child_id
+    );
+    let plan = replay(&object, catalog_fingerprint()).unwrap();
+    assert_eq!(plan.question_id(), root_id);
+    assert_eq!(plan.query_object().unwrap().edges, object.edges);
+}
