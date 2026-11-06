@@ -1,5 +1,5 @@
 //! MCP over stdio, as a proxy to the daemon. The commands the table offers
-//! over MCP are grouped into four tools; a call names the operation (the
+//! over MCP are grouped into five tools; a call names the operation (the
 //! command) and carries its arguments, which are checked against the table
 //! and sent as the same request the CLI sends. Answers are the daemon's
 //! JSON; context (briefs, takeovers, recalls) is answered with its text and
