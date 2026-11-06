@@ -153,6 +153,27 @@ impl Relation {
     }
 }
 
+struct RelationOutput {
+    columns: Vec<Column>,
+    slots: std::collections::BTreeMap<String, String>,
+    sources: Vec<NativeSource>,
+}
+
+impl RelationOutput {
+    fn capture(relation: &Relation) -> Self {
+        Self {
+            columns: relation.program.columns.clone(),
+            slots: relation.program.column_slots.clone(),
+            sources: relation.sources.clone(),
+        }
+    }
+    fn install(self, relation: &mut Relation) {
+        relation.program.columns = self.columns;
+        relation.program.column_slots = self.slots;
+        relation.sources = self.sources;
+    }
+}
+
 #[derive(Clone)]
 struct GroupInput {
     input: Box<Relation>,
@@ -231,8 +252,7 @@ impl<'a> Compiler<'a> {
             relation.patterns = match_patterns(condition);
         }
         if let Some(condition) = source_order {
-            let predicate = compiler.relation_condition(&mut relation, condition)?;
-            compiler.relation_filter(&mut relation, &predicate);
+            compiler.relation_where(&mut relation, condition)?;
         }
         for stage in &query.transforms[first..] {
             compiler.relation_stage(&mut relation, stage, query)?;
@@ -326,8 +346,7 @@ impl<'a> Compiler<'a> {
                 relation.open_fields = false;
             }
             TransformKind::Where { condition } => {
-                let predicate = self.relation_condition(relation, condition)?;
-                self.relation_filter(relation, &predicate);
+                self.relation_where(relation, condition)?;
                 relation.patterns.extend(match_patterns(condition));
             }
             TransformKind::Sort { keys } => {
@@ -421,17 +440,41 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn relation_condition(
+    fn relation_where(
         &mut self,
         relation: &mut Relation,
         condition: &Condition,
+    ) -> Result<(), QueryError> {
+        let input = relation.clone();
+        let mut exposed = None;
+        let predicate = self.relation_condition(
+            relation,
+            &input,
+            condition,
+            condition.exposed_order(),
+            &mut exposed,
+        )?;
+        self.relation_filter(relation, &predicate);
+        exposed
+            .unwrap_or_else(|| RelationOutput::capture(&input))
+            .install(relation);
+        Ok(())
+    }
+
+    fn relation_condition(
+        &mut self,
+        relation: &mut Relation,
+        input: &Relation,
+        condition: &Condition,
+        selected: Option<&Condition>,
+        exposed: &mut Option<RelationOutput>,
     ) -> Result<String, QueryError> {
-        if relation.open_fields
+        if input.open_fields
             && !contains_order(condition)
-            && !materialized_condition(condition, &relation.program.column_slots)
-            && relation.sources.len() == 1
+            && !materialized_condition(condition, &input.program.column_slots)
+            && input.sources.len() == 1
         {
-            let source = &relation.sources[0];
+            let source = &input.sources[0];
             if source.prefix.is_empty() {
                 let context = RowContext {
                     unit: source.unit,
@@ -457,10 +500,10 @@ impl<'a> Compiler<'a> {
             } => {
                 let inner = Relation::new(self.other_query(
                     query,
-                    relation.program.unit,
+                    input.program.unit,
                     condition.span.start,
                 )?);
-                self.rel_order_pair(
+                let predicate = self.rel_order_pair(
                     relation,
                     inner,
                     *order,
@@ -469,7 +512,12 @@ impl<'a> Compiler<'a> {
                     scope.as_deref(),
                     pick,
                     condition.span.start,
-                )?
+                )?;
+                if selected.is_some_and(|selected| std::ptr::eq(selected, condition)) {
+                    *exposed = Some(RelationOutput::capture(relation));
+                }
+                RelationOutput::capture(input).install(relation);
+                predicate
             }
             ConditionKind::And { conditions } | ConditionKind::Or { conditions } => {
                 let op = if matches!(condition.kind, ConditionKind::And { .. }) {
@@ -479,19 +527,22 @@ impl<'a> Compiler<'a> {
                 };
                 let values = conditions
                     .iter()
-                    .map(|c| self.relation_condition(relation, c))
+                    .map(|c| self.relation_condition(relation, input, c, selected, exposed))
                     .collect::<Result<Vec<_>, _>>()?;
                 format!("({})", values.join(op))
             }
             ConditionKind::Not { condition } => {
-                format!("NOT ({})", self.relation_condition(relation, condition)?)
+                format!(
+                    "NOT ({})",
+                    self.relation_condition(relation, input, condition, selected, exposed)?
+                )
             }
             ConditionKind::Compare { left, op, right } => self.expression_comparison(
                 left,
                 *op,
                 right,
                 condition.span.start,
-                &mut |compiler, name, at| relation.field(compiler, name, at),
+                &mut |compiler, name, at| input.field(compiler, name, at),
             )?,
             ConditionKind::Between { left, from, to } => {
                 let lo = self.expression_comparison(
@@ -499,14 +550,14 @@ impl<'a> Compiler<'a> {
                     Op::Ge,
                     &Expression::value(from.clone()),
                     condition.span.start,
-                    &mut |compiler, name, at| relation.field(compiler, name, at),
+                    &mut |compiler, name, at| input.field(compiler, name, at),
                 )?;
                 let hi = self.expression_comparison(
                     left,
                     Op::Le,
                     &Expression::value(to.clone()),
                     condition.span.start,
-                    &mut |compiler, name, at| relation.field(compiler, name, at),
+                    &mut |compiler, name, at| input.field(compiler, name, at),
                 )?;
                 format!("({lo}) AND ({hi})")
             }
@@ -514,7 +565,7 @@ impl<'a> Compiler<'a> {
                 field,
                 value: Value::Unknown | Value::Known,
             } => {
-                let (sql, _) = relation.field(self, field, condition.span.start)?;
+                let (sql, _) = input.field(self, field, condition.span.start)?;
                 format!(
                     "({sql}) IS {}NULL",
                     if matches!(
@@ -535,7 +586,7 @@ impl<'a> Compiler<'a> {
                 Op::Eq,
                 &Expression::value(value.clone()),
                 condition.span.start,
-                &mut |compiler, name, at| relation.field(compiler, name, at),
+                &mut |compiler, name, at| input.field(compiler, name, at),
             )?,
             _ => return Err(not_built("this condition on a derived relation")),
         })

@@ -363,3 +363,64 @@ fn filters_read_a_grouped_join_column_from_its_materialized_slot() {
         [json!({"id":"claude-code:a"}), json!({"id":"claude-code:b"})]
     );
 }
+
+#[test]
+fn order_conditions_read_the_input_witness_and_publish_only_the_shared_exposure() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(directory.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "claude-code:outer",
+            ..Default::default()
+        })
+        .unwrap();
+    for (id, role, at) in [
+        ("claude-code:prior", "user", 9000),
+        ("claude-code:a", "user", 8000),
+        ("claude-code:b", "user", 7000),
+        ("claude-code:outer-message", "assistant", 10000),
+    ] {
+        fixture
+            .message(
+                session,
+                MessageFacts {
+                    id,
+                    role,
+                    written_by: "model",
+                    at: Some(at),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    fixture.derive().unwrap();
+    let initial = "sessions where id = claude-code:outer AND after(messages where id = claude-code:prior) within 20s";
+    let a = "after(messages where id = claude-code:a) within 20s";
+    let b = "after(messages where id = claude-code:b) within 20s";
+    let absent = "after(messages where id = claude-code:missing) within 20s";
+    let selected = |condition: &str| {
+        rows(
+            &fixture,
+            &format!("{initial} | where {condition} | fields id, match.id"),
+        )
+    };
+    let prior = [json!({"id":"claude-code:outer", "match.id":"claude-code:prior"})];
+    for condition in [
+        format!("{a} AND {b}"),
+        format!("{b} AND {a}"),
+        format!("{a} OR {b}"),
+        format!("{b} OR {a}"),
+        format!("NOT {absent}"),
+    ] {
+        assert_eq!(selected(&condition), prior, "{condition}");
+    }
+    let next = [json!({"id":"claude-code:outer", "match.id":"claude-code:a"})];
+    for condition in [
+        format!("{a} AND match.id = claude-code:prior"),
+        format!("match.id = claude-code:prior AND {a}"),
+        format!("{a} AND ({b} OR NOT {absent})"),
+    ] {
+        assert_eq!(selected(&condition), next, "{condition}");
+    }
+    assert!(selected(&format!("{a} AND match.id = claude-code:a")).is_empty());
+}
