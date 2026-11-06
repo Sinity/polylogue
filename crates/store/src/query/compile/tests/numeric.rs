@@ -197,3 +197,17 @@ fn conditional_expression_is_lazy_and_keeps_the_selected_native_kind() {
         .unwrap();
     assert_eq!(rows[0]["guarded"], Value::Null);
 }
+
+#[test]
+fn expression_calendar_values_use_the_programs_logical_day_and_zone() {
+    let (_dir, fixture) = fixture();
+    let answer = &rows(
+        &fixture,
+        "sessions | group by year(started),hour(started),weekday(started),month_day(started) | count",
+    )[0];
+    assert_eq!(answer["year"], 1969);
+    assert_eq!(answer["hour"], 1);
+    assert_eq!(answer["weekday"], "wed");
+    assert_eq!(answer["month_day"], "12-31");
+    assert_eq!(answer["count"], 4);
+}
