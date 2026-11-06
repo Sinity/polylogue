@@ -72,7 +72,7 @@ fn rows(fixture: &Fixture, text: &str) -> Vec<Value> {
 #[test]
 fn computed_conditions_keep_unknowns_and_native_money_and_duration_units() {
     let (_dir, fixture) = fixture();
-    let ids = |text| {
+    let ids = |text: &str| {
         rows(&fixture, text)
             .into_iter()
             .map(|row| row["id"].as_str().unwrap().to_owned())
