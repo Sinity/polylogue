@@ -354,6 +354,7 @@ fn kept_rows_preserve_only_recorded_reference_metadata() {
     options.kept.insert(
         "docs".into(),
         Kept {
+            output_metadata: Default::default(),
             shape: None,
             native_identity: false,
             unit: "documents".into(),
@@ -384,6 +385,7 @@ fn kept_rows_preserve_only_recorded_reference_metadata() {
     options.kept.insert(
         "plain".into(),
         Kept {
+            output_metadata: Default::default(),
             shape: None,
             native_identity: false,
             unit: "sessions".into(),
@@ -398,6 +400,7 @@ fn kept_rows_preserve_only_recorded_reference_metadata() {
     options.kept.insert(
         "group".into(),
         Kept {
+            output_metadata: Default::default(),
             shape: None,
             native_identity: false,
             unit: "sessions".into(),
@@ -481,6 +484,7 @@ fn kept_references_use_query_literals_without_splitting_their_ids() {
     options.kept.insert(
         id.into(),
         Kept {
+            output_metadata: Default::default(),
             shape: None,
             native_identity: false,
             unit: "sessions".into(),
@@ -505,6 +509,7 @@ fn kept_references_use_query_literals_without_splitting_their_ids() {
     options.kept.insert(
         "simple".into(),
         Kept {
+            output_metadata: Default::default(),
             shape: None,
             native_identity: false,
             unit: "sessions".into(),
@@ -545,6 +550,7 @@ fn saved_kept_source_records_its_resolved_definition() {
     options.kept.insert(
         "example".into(),
         Kept {
+            output_metadata: Default::default(),
             shape: None,
             native_identity: false,
             unit: "sessions".into(),

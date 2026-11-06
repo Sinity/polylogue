@@ -50,10 +50,16 @@ pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 /// The steps that bring `archive.db` forward from the baseline: the first
 /// takes version 1 to version 2, and so on. A change to the archive tables
 /// appends one step, which must leave exactly the tables [`ARCHIVE`] creates.
-pub(crate) const ARCHIVE_MIGRATIONS: &[Migration] = &[Migration::Data {
-    name: "structured query representation v2",
-    apply: crate::query_objects::evolution::archive_v2,
-}];
+pub(crate) const ARCHIVE_MIGRATIONS: &[Migration] = &[
+    Migration::Data {
+        name: "structured query representation v2",
+        apply: crate::query_objects::evolution::archive_v2,
+    },
+    Migration::Data {
+        name: "kept output declarations v2",
+        apply: crate::kept::archive_v3,
+    },
+];
 
 /// A numbered upgrade has one transaction, including its data conversion.
 pub(crate) enum Migration {
@@ -80,7 +86,7 @@ impl Migration {
 pub const ARCHIVE_VERSION: u32 = 1 + ARCHIVE_MIGRATIONS.len() as u32;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 2;
+pub const INDEX_VERSION: u32 = 3;
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
 /// after the baseline ("PLG1"). A non-empty file without it was written by an
@@ -178,9 +184,12 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         tx.execute_batch(READ_INDEXES)?;
         if found == 1 {
             crate::query_objects::evolution::index_v2(&tx, primary)?;
+        }
+        if found == 1 || found == 2 {
+            crate::kept::index_v3(&tx, primary)?;
             set_version(&tx, INDEX_VERSION)?;
         }
-        let matches = (found == 1 || found == INDEX_VERSION)
+        let matches = (found == 1 || found == 2 || found == INDEX_VERSION)
             && if building(&tx)? {
                 same_build_schema_in(&tx, primary)?
             } else {

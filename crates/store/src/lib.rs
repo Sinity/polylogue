@@ -31,6 +31,7 @@ pub mod fixture;
 mod fragment;
 pub mod input_rows;
 pub mod items;
+mod kept;
 pub mod legacy_import;
 mod live;
 pub use live::{

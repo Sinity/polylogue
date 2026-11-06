@@ -352,6 +352,7 @@ pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Progr
         .map_err(|e| QueryError::language(e, ""))?;
     let mut compiler = Compiler::new(&rendered, opts);
     compiler.query_scope = bound.typing().query(&Default::default()).cloned();
+    compiler.typing = Some(std::sync::Arc::new(bound.typing().clone()));
     compiler.catalog = Some(std::sync::Arc::new(catalog.clone()));
     let mut program = compiler.program(bound.query())?;
     for definition in plan.definitions() {
@@ -402,6 +403,7 @@ pub(crate) struct Compiler<'a> {
     ctes: Vec<String>,
     input_rows: Option<String>,
     query_scope: Option<query_language::scope::QueryScope>,
+    typing: Option<std::sync::Arc<query_language::scope::Typing>>,
     catalog: Option<std::sync::Arc<query_language::catalog::Catalog>>,
     notes: Vec<String>,
     incomplete: Vec<String>,
@@ -455,6 +457,7 @@ impl<'a> Compiler<'a> {
             ctes: vec![],
             input_rows: None,
             query_scope: None,
+            typing: None,
             catalog: None,
             notes: vec![],
             incomplete: vec![],

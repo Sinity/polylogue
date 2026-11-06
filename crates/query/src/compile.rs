@@ -2,6 +2,8 @@
 use crate::{QueryError, ast::*};
 use query_language::time::Clock;
 use serde::{Deserialize, Serialize};
+mod kept;
+pub use kept::unproven_match_policy;
 pub(crate) mod saved;
 pub(crate) mod schema;
 pub(crate) mod source;
@@ -102,6 +104,8 @@ pub struct ChatPage {
 /// stored them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Kept {
+    #[serde(default)]
+    pub output_metadata: polylogue_model::kept::OutputMetadata,
     pub unit: String,
     pub columns: Vec<Column>,
     #[serde(default)]
@@ -188,12 +192,8 @@ pub fn definition_parameters(
     let mut query = crate::parse::with_catalog(text, catalog)?;
     Parameters::names(&mut query)
 }
-pub fn columns_schema(
-    catalog: &query_language::catalog::Catalog,
-    unit: &str,
-    columns: &[Column],
-) -> query_language::catalog::OutputSchema {
-    source::schema(catalog, unit, columns)
+pub fn columns_schema(unit: &str, columns: &[Column]) -> query_language::catalog::OutputSchema {
+    kept::physical_schema(unit, columns)
 }
 impl Options {
     pub fn definition_parameters(&self, text: &str) -> Result<Vec<String>, QueryError> {
@@ -261,6 +261,9 @@ impl Bindings {
         ),
         QueryError,
     > {
+        for kept in self.kept.values() {
+            kept.validate_output_metadata()?;
+        }
         let (query, _) = source::expand(text, self)?;
         schema::output_metadata(&query, &self.catalog())
     }

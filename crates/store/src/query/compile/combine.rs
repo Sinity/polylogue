@@ -44,6 +44,7 @@ impl<'a> Compiler<'a> {
         let text = query_language::format::format_query(bound.query(), &catalog)
             .map_err(|error| QueryError::language(error, self.text))?;
         let query_scope = bound.typing().query(&Default::default()).cloned();
+        let typing = std::sync::Arc::new(bound.typing().clone());
         let query = bound.into_query();
         if let Some(child) = query.attach.first() {
             return Err(QueryError::Invalid {
@@ -53,6 +54,7 @@ impl<'a> Compiler<'a> {
         }
         let mut inner = Compiler::new(&text, self.opts);
         inner.query_scope = query_scope;
+        inner.typing = Some(typing);
         inner.catalog = Some(catalog);
         inner.params = std::mem::take(&mut self.params);
         inner.saved_stack = self.saved_stack.clone();

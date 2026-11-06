@@ -20,6 +20,11 @@ pub(super) struct Relation {
     patterns: Vec<Condition>,
 }
 
+struct ConditionScope<'a> {
+    fields: Option<&'a query_language::scope::Scope>,
+    path: query_language::scope::NodePath,
+}
+
 impl Relation {
     pub fn new(program: Program) -> Self {
         let sources = program.native_sources.clone().unwrap_or_else(|| {
@@ -284,6 +289,7 @@ impl<'a> Compiler<'a> {
         let mut compiler = Compiler::new(self.text, self.opts);
         compiler.saved_stack = self.saved_stack.clone();
         compiler.query_scope = self.query_scope.clone();
+        compiler.typing = self.typing.clone();
         compiler.source_near_allowed = self.source_near_allowed;
         compiler.catalog = self.catalog.clone();
         self.near_needed = source_order_needed(query);
@@ -310,7 +316,14 @@ impl<'a> Compiler<'a> {
         }
         if let Some(condition) = source_order {
             let scope = self.query_scope.as_ref().map(|query| query.source.clone());
-            self.relation_where(&mut relation, condition, scope.as_ref())?;
+            self.relation_where(
+                &mut relation,
+                condition,
+                scope.as_ref(),
+                query_language::scope::NodePath::default()
+                    .field("source")
+                    .field("condition"),
+            )?;
         }
         for (index, stage) in query.transforms.iter().enumerate().skip(first) {
             if relation.program.measure.is_some() {
@@ -419,7 +432,16 @@ impl<'a> Compiler<'a> {
                     .as_ref()
                     .and_then(|query| query.transforms.get(index))
                     .map(|transform| transform.before.clone());
-                self.relation_where(relation, condition, scope.as_ref())?;
+                self.relation_where(
+                    relation,
+                    condition,
+                    scope.as_ref(),
+                    query_language::scope::NodePath::default()
+                        .field("transforms")
+                        .index(index)
+                        .field("kind")
+                        .field("condition"),
+                )?;
                 relation.patterns.extend(match_patterns(condition));
             }
             TransformKind::Sort { keys } => {
@@ -518,6 +540,7 @@ impl<'a> Compiler<'a> {
         relation: &mut Relation,
         condition: &Condition,
         scope: Option<&query_language::scope::Scope>,
+        path: query_language::scope::NodePath,
     ) -> Result<(), QueryError> {
         let input = relation.clone();
         let mut exposed = None;
@@ -525,7 +548,10 @@ impl<'a> Compiler<'a> {
             relation,
             &input,
             condition,
-            scope,
+            &ConditionScope {
+                fields: scope,
+                path,
+            },
             condition.exposed_order(),
             &mut exposed,
         )?;
@@ -541,7 +567,7 @@ impl<'a> Compiler<'a> {
         relation: &mut Relation,
         input: &Relation,
         condition: &Condition,
-        scope: Option<&query_language::scope::Scope>,
+        scope: &ConditionScope<'_>,
         selected: Option<&Condition>,
         exposed: &mut Option<RelationOutput>,
     ) -> Result<String, QueryError> {
@@ -607,21 +633,54 @@ impl<'a> Compiler<'a> {
                 };
                 let values = conditions
                     .iter()
-                    .map(|c| self.relation_condition(relation, input, c, scope, selected, exposed))
+                    .enumerate()
+                    .map(|(index, c)| {
+                        self.relation_condition(
+                            relation,
+                            input,
+                            c,
+                            &ConditionScope {
+                                fields: scope.fields,
+                                path: scope.path.field("kind").field("conditions").index(index),
+                            },
+                            selected,
+                            exposed,
+                        )
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 format!("({})", values.join(op))
             }
             ConditionKind::Not { condition } => {
                 format!(
                     "NOT ({})",
-                    self.relation_condition(relation, input, condition, scope, selected, exposed)?
+                    self.relation_condition(
+                        relation,
+                        input,
+                        condition,
+                        &ConditionScope {
+                            fields: scope.fields,
+                            path: scope.path.field("kind").field("condition")
+                        },
+                        selected,
+                        exposed
+                    )?
                 )
             }
             ConditionKind::Compare { left, op, right } => {
+                let info = self
+                    .typing
+                    .as_ref()
+                    .and_then(|typing| typing.operand(&scope.path.field("kind").field("left")))
+                    .map(|operand| operand.result.clone());
+                if *op == Op::Prefix
+                    && let Some(info) = &info
+                {
+                    self.require_match_policy(info)?;
+                }
                 let path = *op == Op::Prefix
-                    && matches!(left, Expression::Field { name }
-                    if scope.and_then(|scope| scope.field(name)).is_some_and(|info|
-                        info.field.natural_match() == query_language::catalog::NaturalMatch::Subtree));
+                    && info.as_ref().is_some_and(|info| {
+                        info.field.natural_match() == query_language::catalog::NaturalMatch::Subtree
+                    });
                 if path {
                     self.natural_comparison(
                         left,
@@ -678,7 +737,12 @@ impl<'a> Compiler<'a> {
                 )
             }
             ConditionKind::Match { field, value } => {
-                let info = scope.and_then(|scope| scope.field(field));
+                let info = scope.fields.and_then(|scope| scope.field(field));
+                if !matches!(value, Value::Any)
+                    && let Some(info) = info
+                {
+                    self.require_match_policy(info)?;
+                }
                 if !matches!(value, Value::Any)
                     && info.is_some_and(|info| {
                         matches!(info.field.kind, query_language::catalog::FieldKind::List(_))
@@ -1221,6 +1285,25 @@ impl Compiler<'_> {
         relation.sources.clear();
         relation.open_fields = false;
         relation.group = None;
+        Ok(())
+    }
+}
+
+impl Compiler<'_> {
+    fn require_match_policy(
+        &self,
+        info: &query_language::scope::FieldInfo,
+    ) -> Result<(), QueryError> {
+        if let Some((reference, field)) =
+            polylogue_query::compile::unproven_match_policy(info, &self.opts.kept)
+        {
+            return Err(QueryError::Unavailable {
+                what: format!(
+                    "{reference} did not retain logical matching policy for {field:?}; use an explicit text({}) cast to establish text matching",
+                    info.field.name
+                ),
+            });
+        }
         Ok(())
     }
 }

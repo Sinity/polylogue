@@ -38,7 +38,97 @@ pub struct Plan {
 impl Plan {
     /// Clock-free output metadata from this plan's already resolved relation.
     pub fn output_schema(&self) -> Result<query_language::catalog::OutputSchema, QueryError> {
-        crate::compile::schema::infer(self.expanded.query(), &self.catalog)
+        crate::compile::schema::bound_output_metadata(&self.expanded, &self.catalog)
+            .map(|(produced, _)| produced)
+    }
+    /// Declarations of the physical columns this producer actually emits.
+    pub fn output_schema_for_columns(
+        &self,
+        columns: &[crate::Column],
+    ) -> Result<query_language::catalog::OutputSchema, QueryError> {
+        use query_language::catalog::{Field, FieldKind};
+        let (mut produced, scope) =
+            crate::compile::schema::bound_output_metadata(&self.expanded, &self.catalog)?;
+        let mut fields = Vec::with_capacity(columns.len());
+        for column in columns {
+            let mut field = produced
+                .fields
+                .iter()
+                .find(|field| field.name == column.name)
+                .or_else(|| scope.fields.iter().find(|field| field.name == column.name))
+                .or_else(|| {
+                    let mut candidates = scope
+                        .fields
+                        .iter()
+                        .filter(|field| field.name.replace(['.', '-'], "_") == column.name);
+                    let field = candidates.next()?;
+                    candidates.next().is_none().then_some(field)
+                })
+                .cloned();
+            if field.is_none() && column.kind != crate::ColKind::Text {
+                field = Some(Field {
+                    kind: crate::compile::source::column_kind(column.kind),
+                    ..Field::default()
+                });
+            }
+            let mut field = field.ok_or_else(|| QueryError::Unavailable {
+                what: format!(
+                    "producer has no logical declaration for column {:?}",
+                    column.name
+                ),
+            })?;
+            field.name = column.name.clone();
+            if column.reference.is_some() && field.kind != FieldKind::Reference {
+                return Err(QueryError::Invalid {
+                    message: format!(
+                        "producer reference disagrees with logical column {:?}",
+                        column.name
+                    ),
+                    position: 0,
+                });
+            }
+            fields.push(field);
+        }
+        produced.fields = fields;
+        produced.main_time = produced
+            .main_time
+            .filter(|name| produced.fields.iter().any(|field| &field.name == name));
+        Ok(produced)
+    }
+    /// A re-kept field inherits uncertainty from its actual input; fixed
+    /// expressions such as text(E) establish a new declaration.
+    pub fn output_proof_for_columns(
+        &self,
+        columns: &[crate::Column],
+        actual: &BTreeMap<String, crate::Kept>,
+    ) -> Result<polylogue_model::kept::SchemaProof, QueryError> {
+        let schema = self.output_schema_for_columns(columns)?;
+        let query = self
+            .expanded
+            .typing()
+            .query(&Default::default())
+            .expect("bound root query");
+        let scope = query
+            .transforms
+            .last()
+            .map_or(&query.source, |stage| &stage.after);
+        let unproven_fields = columns
+            .iter()
+            .filter_map(|column| {
+                let info = scope.field(&column.name).or_else(|| {
+                    scope
+                        .fields
+                        .iter()
+                        .find(|info| info.field.name.replace(['.', '-'], "_") == column.name)
+                });
+                info.and_then(|info| crate::compile::unproven_match_policy(info, actual))
+                    .map(|_| column.name.clone())
+            })
+            .collect();
+        Ok(polylogue_model::kept::SchemaProof::Captured {
+            schema,
+            unproven_fields,
+        })
     }
     /// Queryable fields of this exact resolved relation, separate from columns.
     pub fn relation_scope(&self) -> Result<query_language::catalog::OutputSchema, QueryError> {
@@ -96,6 +186,9 @@ fn prepare_inner(
     resolve: &mut impl FnMut(&mut ConditionKind) -> Result<(), QueryError>,
     stack: &mut Vec<String>,
 ) -> Result<Plan, QueryError> {
+    for kept in options.kept.values() {
+        kept.validate_output_metadata()?;
+    }
     let mut catalog = options.catalog();
     let mut query = crate::parse::with_catalog(text, &catalog)?;
     let mut definitions = Vec::new();

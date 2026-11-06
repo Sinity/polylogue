@@ -17,9 +17,9 @@ fn every_schema_applies_to_an_empty_database() {
 /// law: one-baseline
 #[test]
 fn every_database_starts_at_its_current_version() {
-    assert_eq!(ARCHIVE_VERSION, 2);
-    assert_eq!(INDEX_VERSION, 2);
-    assert_eq!(ARCHIVE_MIGRATIONS.len(), 1);
+    assert_eq!(ARCHIVE_VERSION, 3);
+    assert_eq!(INDEX_VERSION, 3);
+    assert_eq!(ARCHIVE_MIGRATIONS.len(), 2);
     for create in [
         ensure_archive as fn(&Connection) -> Result<()>,
         ensure_index,
@@ -391,4 +391,66 @@ fn parse_standings_require_their_length_and_reason() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn old_kept_output_upgrade_marks_missing_policy_without_changing_stored_values() {
+    let conn = Connection::open_in_memory().unwrap();
+    ensure_archive(&conn).unwrap();
+    let original = serde_json::json!({"unit":"sessions","shape":"rows","columns":[{"name":"cwd","kind":"text"}],"rows":[{"cwd":"/work/module"}],"identities":[["test:one"]]});
+    conn.execute("INSERT INTO kept_result(id,query,ran_at,read_at,rows_json) VALUES ('old','sessions',0,'{}',?1)", [original.to_string()]).unwrap();
+    set_version(&conn, 2).unwrap();
+    ensure_archive(&conn).unwrap();
+    let stored: String = conn
+        .query_row(
+            "SELECT rows_json FROM kept_result WHERE id='old'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut upgraded: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    let metadata = upgraded
+        .as_object_mut()
+        .unwrap()
+        .remove("output_metadata")
+        .unwrap();
+    assert_eq!(metadata["version"], 2);
+    assert_eq!(metadata["rows"]["kind"], "unproven");
+    assert_eq!(upgraded, original);
+    ensure_archive(&conn).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT rows_json FROM kept_result WHERE id='old'",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        stored
+    );
+}
+
+#[test]
+fn primary_kept_output_upgrade_preserves_stored_values() {
+    let conn = Connection::open_in_memory().unwrap();
+    ensure_primary_index(&conn).unwrap();
+    let original = serde_json::json!({"unit":"sessions","columns":[{"name":"cwd","kind":"text"}],"rows":[{"cwd":"/work/module"}]});
+    conn.execute("INSERT INTO source_kept_result(id,query,ran_at,read_at,rows_json) VALUES ('old','sessions',0,'{}',?1)", [original.to_string()]).unwrap();
+    set_version(&conn, 2).unwrap();
+    ensure_primary_index(&conn).unwrap();
+    assert_eq!(version(&conn).unwrap(), 3);
+    let body: String = conn
+        .query_row(
+            "SELECT rows_json FROM source_kept_result WHERE id='old'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut body: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let metadata = body
+        .as_object_mut()
+        .unwrap()
+        .remove("output_metadata")
+        .unwrap();
+    assert_eq!(metadata["rows"]["kind"], "unproven");
+    assert_eq!(body, original);
 }

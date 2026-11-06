@@ -622,6 +622,7 @@ impl Fixture {
 
     /// A kept result, as the writer stores one.
     pub fn kept_result(&mut self, id: &str, query: &str, rows_json: &str) -> Result<()> {
+        let rows_json = crate::kept::evolve_body(id, rows_json)?;
         self.notes.execute(
             "INSERT INTO kept_result(id, query, ran_at, read_at, rows_json) VALUES (?1, ?2, 0, '{}', ?3)",
             params![id, query, rows_json],

@@ -87,7 +87,7 @@ fn numbered_upgrade_preserves_question_run_completion_and_hash_custody() {
     )
     .unwrap();
     schema::ensure_archive(&conn).unwrap();
-    assert_eq!(schema::version(&conn).unwrap(), 2);
+    assert_eq!(schema::version(&conn).unwrap(), 3);
     let (bytes, first): (Vec<u8>, String) = conn
         .query_row("SELECT object,first_run FROM query", [], |row| {
             Ok((row.get(0)?, row.get(1)?))
@@ -202,7 +202,7 @@ fn unavailable_legacy_question_does_not_block_archive_open_or_unrelated_executio
     )
     .unwrap();
     schema::ensure_archive(&conn).unwrap();
-    assert_eq!(schema::version(&conn).unwrap(), 2);
+    assert_eq!(schema::version(&conn).unwrap(), 3);
     let bytes: Vec<u8> = conn
         .query_row(
             "SELECT object FROM query WHERE hash=?1",

@@ -1,27 +1,12 @@
 //! Product definitions become shared syntax before the shared binder validates it.
 use super::*;
-use query_language::catalog::{
-    Catalog, Field, FieldKind, OutputSchema, OutputSource, SourceOutput,
-};
+use query_language::catalog::{Catalog, FieldKind, OutputSource, SourceOutput};
 
 pub(crate) fn catalog(options: &Bindings) -> Catalog {
     let mut catalog = crate::catalog::catalog(&options.origins);
     for (id, kept) in &options.kept {
-        for (part, columns) in [
-            (ResultPart::Rows, &kept.columns),
-            (ResultPart::Matches, &kept.match_columns),
-        ] {
-            let mut schema = schema(&catalog, &kept.unit, columns);
-            if part == ResultPart::Matches
-                || matches!(
-                    kept.shape,
-                    Some(Shape::Groups | Shape::Summary | Shape::Matches)
-                )
-            {
-                schema.unit = None;
-            }
-            // Kept public timestamps do not retain the native period evidence.
-            schema.main_time = None;
+        for part in [ResultPart::Rows, ResultPart::Matches] {
+            let schema = kept.output_schema(part);
             catalog.source_outputs.push(SourceOutput {
                 source: OutputSource::Result {
                     reference: format!("result:{id}"),
@@ -32,71 +17,6 @@ pub(crate) fn catalog(options: &Bindings) -> Catalog {
         }
     }
     catalog
-}
-
-pub(crate) fn schema(catalog: &Catalog, unit_name: &str, columns: &[Column]) -> OutputSchema {
-    let unit = catalog.unit(unit_name);
-    let fields: Vec<Field> = columns
-        .iter()
-        .map(|column| {
-            let kind = match column.kind {
-                ColKind::Text => FieldKind::Text,
-                ColKind::Number => FieldKind::Number,
-                ColKind::Time => FieldKind::Time,
-                ColKind::Money => FieldKind::Money,
-                ColKind::Duration | ColKind::DurationSeconds => FieldKind::Duration,
-                ColKind::Bool => FieldKind::Bool,
-                ColKind::Ids => FieldKind::List(Box::new(FieldKind::Reference)),
-                ColKind::Json => FieldKind::Json,
-            };
-            let mut field = unit
-                .and_then(|unit| {
-                    unit.fields.iter().find(|field| {
-                        (field.name == column.name
-                            || field.name.replace(['.', '-'], "_") == column.name)
-                            && (field.kind == kind
-                                || column.kind == ColKind::Text
-                                    && matches!(
-                                        field.kind,
-                                        FieldKind::Exact
-                                            | FieldKind::Text
-                                            | FieldKind::Substring
-                                            | FieldKind::Subtree
-                                            | FieldKind::Reference
-                                    ))
-                    })
-                })
-                .cloned()
-                .unwrap_or_default();
-            field.name = column.name.clone();
-            field.kind = if column.reference.is_some() && column.kind == ColKind::Text {
-                FieldKind::Reference
-            } else if column.kind == ColKind::Text
-                && matches!(
-                    field.kind,
-                    FieldKind::Exact
-                        | FieldKind::Text
-                        | FieldKind::Substring
-                        | FieldKind::Subtree
-                        | FieldKind::Reference
-                )
-            {
-                field.kind.clone()
-            } else {
-                kind
-            };
-            field
-        })
-        .collect();
-    let main_time = unit
-        .and_then(|unit| unit.main_time.clone())
-        .filter(|name| fields.iter().any(|field| &field.name == name));
-    OutputSchema {
-        match_units: None,
-        unit: (!unit_name.is_empty()).then(|| unit_name.to_owned()),
-        fields,
-        main_time,
-    }
 }
 
 pub(crate) fn expand(

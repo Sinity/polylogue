@@ -23,6 +23,7 @@ pub struct NativeSaved {
 }
 #[derive(Debug)]
 pub struct NativeKept {
+    pub output_metadata: polylogue_model::kept::OutputMetadata,
     pub shape: Option<polylogue_query::Shape>,
     pub native_identity: bool,
     pub id: String,
@@ -199,7 +200,7 @@ impl Reader<'_> {
         mut visit: impl FnMut(NativeKept) -> Result<()>,
     ) -> Result<()> {
         let conn = self.conn()?;
-        let fields = "k.id,k.name,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.unit')='text' THEN json_extract(k.rows_json,'$.unit') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.columns')='array' THEN json_extract(k.rows_json,'$.columns') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.match_columns')='array' THEN json_extract(k.rows_json,'$.match_columns') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.rows')='array' THEN json_array_length(k.rows_json,'$.rows') END END,CASE WHEN json_valid(k.rows_json) THEN json_extract(k.rows_json,'$.shape') END,CASE WHEN json_valid(k.rows_json) THEN json_type(k.rows_json,'$.identities')='array' ELSE 0 END";
+        let fields = "k.id,k.name,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.unit')='text' THEN json_extract(k.rows_json,'$.unit') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.columns')='array' THEN json_extract(k.rows_json,'$.columns') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.match_columns')='array' THEN json_extract(k.rows_json,'$.match_columns') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.rows')='array' THEN json_array_length(k.rows_json,'$.rows') END END,CASE WHEN json_valid(k.rows_json) THEN json_extract(k.rows_json,'$.shape') END,CASE WHEN json_valid(k.rows_json) THEN json_type(k.rows_json,'$.identities')='array' ELSE 0 END,CASE WHEN json_valid(k.rows_json) THEN json_extract(k.rows_json,'$.output_metadata') END";
         let sql = if after.is_some() {
             format!(
                 "SELECT {fields} FROM source_kept_result k JOIN source_client_request r ON r.id=k.id WHERE r.commit_seq>?1 ORDER BY r.commit_seq,k.id"
@@ -219,7 +220,9 @@ impl Reader<'_> {
                 .get::<_, Option<String>>(6)?
                 .map(|value| serde_json::from_value(serde_json::Value::String(value)))
                 .transpose()?;
+            let output_metadata = row.get::<_, String>(8)?;
             visit(NativeKept {
+                output_metadata: serde_json::from_str(&output_metadata)?,
                 shape,
                 native_identity: shape == Some(polylogue_query::Shape::Rows)
                     && row.get::<_, Option<bool>>(7)?.unwrap_or(false),

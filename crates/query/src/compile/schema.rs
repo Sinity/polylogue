@@ -47,6 +47,12 @@ pub(crate) fn output_metadata(
 ) -> Result<(OutputSchema, OutputSchema), QueryError> {
     let bound = query_language::bind::bind(query, catalog)
         .map_err(|error| QueryError::language(error, ""))?;
+    bound_output_metadata(&bound, catalog)
+}
+pub(crate) fn bound_output_metadata(
+    bound: &query_language::bind::BoundQuery,
+    catalog: &Catalog,
+) -> Result<(OutputSchema, OutputSchema), QueryError> {
     let query = bound.query();
     let mut schema = match &query.source {
         Source::Unit { unit, .. } => unit_schema(unit, catalog)?,
@@ -226,7 +232,7 @@ pub(crate) fn output_metadata(
             group_input = None;
         }
     }
-    let scope = relation_scope(&bound, &schema)?;
+    let scope = relation_scope(bound, &schema)?;
     Ok((schema, scope))
 }
 

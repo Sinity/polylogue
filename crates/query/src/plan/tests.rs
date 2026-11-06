@@ -168,6 +168,7 @@ fn canonical_kept_replay_retains_its_immutable_typed_columns() {
     bindings.kept.insert(
         "kept-one".into(),
         crate::Kept {
+            output_metadata: Default::default(),
             shape: None,
             native_identity: false,
             unit: "sessions".into(),

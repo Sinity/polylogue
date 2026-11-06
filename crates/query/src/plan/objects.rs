@@ -496,7 +496,10 @@ fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, Q
                         FieldKind::Duration => crate::ColKind::Duration,
                         FieldKind::Bool => crate::ColKind::Bool,
                         FieldKind::Json => crate::ColKind::Json,
-                        FieldKind::List(_) => crate::ColKind::Ids,
+                        FieldKind::List(ref inner) if **inner == FieldKind::Reference => {
+                            crate::ColKind::Ids
+                        }
+                        FieldKind::List(_) => crate::ColKind::Json,
                         _ => crate::ColKind::Text,
                     };
                     crate::Column {
@@ -510,18 +513,34 @@ fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, Q
                 .kept
                 .entry(id.to_owned())
                 .or_insert_with(|| crate::Kept {
+                    output_metadata: Default::default(),
                     shape: None,
                     native_identity: false,
                     unit: unit.clone(),
                     columns: vec![],
                     match_columns: vec![],
                 });
-            if kept.unit != unit {
+            if !kept.unit.is_empty() && !unit.is_empty() && kept.unit != unit {
                 return Err(invalid("kept output parts disagree about their row domain"));
             }
+            if kept.unit.is_empty() {
+                kept.unit = unit;
+            }
             match part {
-                ResultPart::Rows => kept.columns = columns,
-                ResultPart::Matches => kept.match_columns = columns,
+                ResultPart::Rows => {
+                    kept.columns = columns;
+                    kept.output_metadata.rows = polylogue_model::kept::SchemaProof::Captured {
+                        schema: output.schema.clone(),
+                        unproven_fields: vec![],
+                    };
+                }
+                ResultPart::Matches => {
+                    kept.match_columns = columns;
+                    kept.output_metadata.matches = polylogue_model::kept::SchemaProof::Captured {
+                        schema: output.schema.clone(),
+                        unproven_fields: vec![],
+                    };
+                }
             }
         }
     }

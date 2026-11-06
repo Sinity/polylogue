@@ -256,39 +256,30 @@ impl State {
             let matches: Option<Vec<polylogue_query::Column>> = kept
                 .match_columns
                 .and_then(|columns| serde_json::from_value(columns).ok());
-            let schema = kept
+            let typed = kept
                 .unit
                 .as_ref()
                 .zip(columns.as_ref())
-                .map(|(unit, columns)| {
-                    let mut schema =
-                        polylogue_query::compile::columns_schema(&self.catalog, unit, columns);
-                    if self.catalog.unit(unit).is_none()
-                        || matches!(
-                            kept.shape,
-                            Some(
-                                polylogue_query::Shape::Groups
-                                    | polylogue_query::Shape::Summary
-                                    | polylogue_query::Shape::Matches
-                            )
-                        )
-                    {
-                        schema.unit = None;
-                    }
-                    schema.main_time = None;
-                    schema
+                .map(|(unit, columns)| polylogue_query::Kept {
+                    output_metadata: kept.output_metadata.clone(),
+                    shape: kept.shape,
+                    native_identity: kept.native_identity,
+                    unit: unit.clone(),
+                    columns: columns.clone(),
+                    match_columns: matches.clone().unwrap_or_default(),
                 });
-            let match_schema = kept
-                .unit
+            if let Some(typed) = &typed {
+                typed
+                    .validate_output_metadata()
+                    .map_err(|error| polylogue_store::StoreError::Invalid(error.to_string()))?;
+            }
+            let schema = typed
                 .as_ref()
-                .zip(matches.as_ref())
-                .map(|(unit, columns)| {
-                    let mut schema =
-                        polylogue_query::compile::columns_schema(&self.catalog, unit, columns);
-                    schema.unit = None;
-                    schema.main_time = None;
-                    schema
-                });
+                .map(|typed| typed.output_schema(query_language::ast::ResultPart::Rows));
+            let match_schema = typed
+                .as_ref()
+                .filter(|_| matches.is_some())
+                .map(|typed| typed.output_schema(query_language::ast::ResultPart::Matches));
             writer.put_kept(&completion::Kept {
                 id: kept.id.clone(),
                 name: kept.name,
@@ -298,17 +289,8 @@ impl State {
                 matches: match_schema,
             })?;
             self.kept.remove(&kept.id);
-            if let (Some(unit), Some(columns)) = (kept.unit, columns) {
-                self.kept.insert(
-                    kept.id,
-                    polylogue_query::Kept {
-                        shape: kept.shape,
-                        native_identity: kept.native_identity,
-                        unit,
-                        columns,
-                        match_columns: matches.unwrap_or_default(),
-                    },
-                );
+            if let Some(typed) = typed {
+                self.kept.insert(kept.id, typed);
             }
             Ok(())
         })?;

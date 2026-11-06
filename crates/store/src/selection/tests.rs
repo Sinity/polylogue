@@ -208,7 +208,6 @@ fn pure_bindings_preserve_closed_group_values_without_a_clock() {
     assert_eq!(outcome.kind, query_language::catalog::FieldKind::Exact);
     assert!(outcome.values.iter().any(|value| value == "error"));
     let kept = polylogue_query::compile::columns_schema(
-        &bindings.catalog(),
         "tool_calls",
         &[polylogue_query::Column {
             name: "outcome".into(),
@@ -216,7 +215,11 @@ fn pure_bindings_preserve_closed_group_values_without_a_clock() {
             reference: None,
         }],
     );
-    assert_eq!(kept.fields[0].values, outcome.values);
+    assert_eq!(
+        kept.fields[0].kind,
+        query_language::catalog::FieldKind::Text
+    );
+    assert!(kept.fields[0].values.is_empty());
 }
 
 #[test]

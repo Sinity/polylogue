@@ -205,3 +205,215 @@ fn kept_join_and_aggregate_use_captured_numeric_slots() {
         [json!({"total":9,"unknown_match_input_tokens":0})]
     );
 }
+
+#[test]
+fn kept_same_name_text_casts_retain_their_bound_matching_policy() {
+    use query_language::catalog::FieldKind;
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(directory.path()).unwrap();
+    for (id, cwd) in [
+        ("test:one", "/work/module/src"),
+        ("test:two", "/work/module-other"),
+    ] {
+        fixture
+            .session(SessionFacts {
+                id,
+                cwd: Some(cwd),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    let mut physical_paths = vec![];
+    for (id, text, id_kind, path_kind) in [
+        (
+            "native-policy",
+            "sessions | fields id, cwd",
+            FieldKind::Reference,
+            FieldKind::Subtree,
+        ),
+        (
+            "cast-policy",
+            "sessions | fields text(id) as id, text(cwd) as cwd",
+            FieldKind::Text,
+            FieldKind::Text,
+        ),
+    ] {
+        let body = {
+            let pool = fixture.reads().unwrap();
+            let reader = pool.reader().unwrap();
+            let prepared = reader.prepare_selection(text, &options()).unwrap();
+            let schema = prepared.plan().output_schema().unwrap();
+            assert_eq!(schema.fields[0].kind, id_kind);
+            assert_eq!(schema.fields[1].kind, path_kind);
+            let program = prepared.program();
+            physical_paths.push(program.columns[1].clone());
+            let mut rows = reader.query_rows(program).unwrap();
+            for row in &mut rows {
+                crate::query::execute::present(program, row).unwrap();
+            }
+            json!({"unit":"sessions", "shape":"rows", "columns":program.columns, "rows":rows,
+                "output_metadata":polylogue_model::kept::OutputMetadata::captured(schema, None)})
+        };
+        fixture.kept_result(id, text, &body.to_string()).unwrap();
+    }
+    // These physically identical columns need the producer's logical declaration.
+    assert_eq!(physical_paths[0], physical_paths[1]);
+    assert!(answer(&fixture, "result:native-policy | where id:one").is_empty());
+    assert_eq!(
+        answer(&fixture, "result:cast-policy | where id:one | fields id"),
+        [json!({"id":"test:one"})]
+    );
+    assert_eq!(
+        answer(
+            &fixture,
+            "result:native-policy | where cwd:/work/module | fields id"
+        ),
+        [json!({"id":"test:one"})]
+    );
+    assert_eq!(
+        answer(
+            &fixture,
+            "result:cast-policy | where cwd:/work/module | fields id | sort by id"
+        ),
+        [json!({"id":"test:one"}), json!({"id":"test:two"})]
+    );
+}
+
+#[test]
+fn unproven_old_kept_policy_preserves_values_and_requires_an_explicit_text_cast() {
+    let (_directory, mut fixture) = fixture();
+    let body = json!({"unit":"sessions", "shape":"rows", "columns":[{"name":"cwd","kind":"text"}],
+        "rows":[{"cwd":"/work/module/src"},{"cwd":"/work/module-other"}]});
+    fixture
+        .kept_result("unproven", "sessions | fields cwd", &body.to_string())
+        .unwrap();
+    assert_eq!(
+        answer(&fixture, "result:unproven"),
+        body["rows"].as_array().unwrap().clone()
+    );
+    assert_eq!(
+        answer(&fixture, "result:unproven | sort by cwd | group by cwd").len(),
+        2
+    );
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    for text in [
+        "result:unproven | where cwd:/work/module",
+        "result:unproven | fields cwd as path | where path:/work/module",
+        "result:unproven | group by cwd | where cwd:/work/module",
+        "result:unproven | agg min(cwd) as path | where path:/work/module",
+        "result:unproven | where cwd ^ /work/module",
+        "result:unproven | where case_eq(1, 1, cwd, cwd) ^ /work/module",
+    ] {
+        let error = reader
+            .prepare_selection(text, &options())
+            .err()
+            .expect("missing policy is unavailable");
+        assert!(
+            error.to_string().contains("logical matching policy"),
+            "{text}: {error}"
+        );
+    }
+    drop(reader);
+    assert_eq!(
+        answer(
+            &fixture,
+            "result:unproven | fields text(cwd) as cwd | where cwd:/work/module"
+        )
+        .len(),
+        2
+    );
+    assert_eq!(
+        answer(&fixture, "result:unproven | where text(cwd) ^ /work/mod").len(),
+        2
+    );
+}
+
+#[test]
+fn captured_logical_declarations_must_agree_with_physical_columns_and_reference_hints() {
+    use query_language::catalog::{Field, FieldKind, OutputSchema};
+    let mut kept = polylogue_query::Kept {
+        output_metadata: polylogue_model::kept::OutputMetadata::captured(
+            OutputSchema {
+                fields: vec![Field {
+                    name: "id".into(),
+                    kind: FieldKind::Text,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            None,
+        ),
+        shape: Some(polylogue_query::Shape::Rows),
+        native_identity: false,
+        unit: "sessions".into(),
+        columns: vec![polylogue_query::Column {
+            name: "id".into(),
+            kind: polylogue_query::ColKind::Text,
+            reference: Some(polylogue_query::ColumnReference::Session),
+        }],
+        match_columns: vec![],
+    };
+    assert!(kept.validate_output_metadata().is_err());
+    kept.columns[0].reference = None;
+    kept.output_metadata.version = 3;
+    assert!(kept.validate_output_metadata().is_err());
+    kept.output_metadata.version = 2;
+    assert!(kept.validate_output_metadata().is_ok());
+    kept.columns[0].kind = polylogue_query::ColKind::Money;
+    assert!(kept.validate_output_metadata().is_err());
+    kept.columns[0].kind = polylogue_query::ColKind::Text;
+    kept.columns[0].name = "other".into();
+    assert!(kept.validate_output_metadata().is_err());
+}
+
+#[test]
+fn a_captured_join_preserves_known_path_policy_beside_an_unproven_text_field() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(directory.path()).unwrap();
+    fixture
+        .session(SessionFacts {
+            id: "test:one",
+            cwd: Some("/work/module/src"),
+            ..Default::default()
+        })
+        .unwrap();
+    fixture.kept_result("old-label", "historical capture", &json!({"unit":"sessions","shape":"rows","columns":[{"name":"id","kind":"text"},{"name":"label","kind":"text"}],"rows":[{"id":"test:one","label":"same"}]}).to_string()).unwrap();
+    let body = {
+        let pool = fixture.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        let text =
+            "sessions | join (result:old-label) on id = id | fields cwd, match.label as label";
+        let prepared = reader.prepare_selection(text, &options()).unwrap();
+        let program = prepared.program();
+        let proof = prepared
+            .plan()
+            .output_proof_for_columns(&program.columns, &reader.selection_kept_results().unwrap())
+            .unwrap();
+        assert!(!proof.unproven_field("cwd"));
+        assert!(proof.unproven_field("label"));
+        let mut rows = reader.query_rows(program).unwrap();
+        for row in &mut rows {
+            crate::query::execute::present(program, row).unwrap();
+        }
+        json!({"unit":"sessions","shape":"rows","columns":program.columns,"rows":rows,"output_metadata":polylogue_model::kept::OutputMetadata {version:2,rows:proof,matches:Default::default()}})
+    };
+    fixture
+        .kept_result("mixed-policy", "joined capture", &body.to_string())
+        .unwrap();
+    assert_eq!(
+        answer(&fixture, "result:mixed-policy | where cwd:/work/module").len(),
+        1
+    );
+    assert!(answer(&fixture, "result:mixed-policy | where cwd:/work/mod").is_empty());
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    assert!(
+        reader
+            .prepare_selection("result:mixed-policy | where label:sam", &options())
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("logical matching policy")
+    );
+}

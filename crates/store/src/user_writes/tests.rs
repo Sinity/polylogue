@@ -61,11 +61,14 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
     for request in [kept, saved] {
         assert_eq!(reader.user_request(&request.id).unwrap(), Some(request));
     }
+    let stored = reader
+        .query("SELECT rows_json FROM a.kept_result WHERE id='kept'", &[])
+        .unwrap();
+    let body: serde_json::Value =
+        serde_json::from_str(stored[0]["rows_json"].as_str().unwrap()).unwrap();
     assert_eq!(
-        reader
-            .query("SELECT rows_json FROM a.kept_result WHERE id='kept'", &[])
-            .unwrap()[0]["rows_json"],
-        "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}"
+        body,
+        serde_json::json!({"unit":"sessions","columns":[],"rows":[],"output_metadata":{"version":2,"rows":{"kind":"unproven"},"matches":{"kind":"unproven"}}})
     );
     assert_eq!(
         reader
@@ -88,7 +91,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
 fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_request() {
     let w = crate::fixture::writer::WriterArchive::new();
     for (id, rows_json, field) in [
-        ("rows-array", "[]", "unit"),
+        ("rows-array", "[]", "rows_json"),
         ("not-json", "not JSON", "rows_json"),
         (
             "bad-columns",

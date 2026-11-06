@@ -121,7 +121,11 @@ fn chat_pages() -> Vec<polylogue_query::ChatPage> {
 pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     let mut opts = options(reader, &ask, uuid::Uuid::now_v7().as_u128() as u64)?;
     opts.page_size = None;
-    let program = polylogue_store::query::compile(ask.text, &opts)?;
+    let plan = polylogue_query::compile(ask.text, &opts)?;
+    let program = polylogue_store::query::lower(&plan, &opts)?;
+    let schema = plan.output_proof_for_columns(&program.columns, &opts.kept)?;
+    let mut match_schema = polylogue_model::kept::SchemaProof::Unproven;
+    let mut match_columns = vec![];
     validate(reader, &program)?;
     let mut rows = with_similarity(reader, &program, ask.near, || {
         Ok(reader.query_rows(&program)?)
@@ -152,16 +156,36 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         kept["identities"] = json!(identities);
     }
     if polylogue_query::parse(ask.text)?.transforms.is_empty()
-        && let Ok(m) = polylogue_store::query::compile(&format!("{} | matches", ask.text), &opts)
+        && let Ok(match_plan) = polylogue_query::compile(&format!("{} | matches", ask.text), &opts)
     {
+        let m = polylogue_store::query::lower(&match_plan, &opts)?;
+        match_schema = match_plan.output_proof_for_columns(&m.columns, &opts.kept)?;
         validate(reader, &m)?;
         let mut matches = with_similarity(reader, &m, ask.near, || Ok(reader.query_rows(&m)?))?;
         for row in &mut matches {
             present(&m, row)?;
         }
+        match_columns = m.columns.clone();
         kept["match_columns"] = json!(m.columns);
         kept["matches"] = json!(matches);
     }
+    let output_metadata = polylogue_model::kept::OutputMetadata {
+        version: polylogue_model::kept::FORMAT_VERSION,
+        rows: schema,
+        matches: match_schema,
+    };
+    polylogue_query::Kept {
+        output_metadata: output_metadata.clone(),
+        shape: Some(program.shape),
+        native_identity: program.shape == Shape::Rows
+            && matches!(&program.row_basis, RowBasis::Native { .. }),
+        unit: kept["unit"].as_str().expect("producer unit").into(),
+        columns: program.columns.clone(),
+        match_columns,
+    }
+    .validate_output_metadata()?;
+    kept["output_metadata"] =
+        serde_json::to_value(output_metadata).expect("kept metadata serializes");
     Ok(kept)
 }
 

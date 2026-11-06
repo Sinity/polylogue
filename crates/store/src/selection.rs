@@ -842,7 +842,7 @@ pub(crate) fn check_kept_body(
 /// The kept-column query over `stored`, which yields `id` and `rows_json`.
 fn kept_sql(stored: &str) -> String {
     format!(
-        "WITH stored AS ({stored}), kept AS (SELECT id,json_valid(rows_json) AS valid,CASE WHEN json_valid(rows_json) THEN rows_json ELSE '{{}}' END AS body FROM stored) SELECT id,json_extract(body,'$.unit'),json_extract(body,'$.columns'),json_extract(body,'$.match_columns'),json_type(body,'$.match_columns'),valid,json_extract(body,'$.shape'),json_type(body,'$.identities') FROM kept"
+        "WITH stored AS ({stored}), kept AS (SELECT id,json_valid(rows_json) AS valid,CASE WHEN json_valid(rows_json) THEN rows_json ELSE '{{}}' END AS body FROM stored) SELECT id,json_extract(body,'$.unit'),json_extract(body,'$.columns'),json_extract(body,'$.match_columns'),json_type(body,'$.match_columns'),valid,json_extract(body,'$.shape'),json_type(body,'$.identities'),json_extract(body,'$.output_metadata') FROM kept"
     )
 }
 
@@ -883,16 +883,22 @@ fn decode_kept(
             row.get(7).map_err(|error| damaged("identities", &error))?;
         let native_identity = matches!(shape, Some(polylogue_query::Shape::Rows))
             && identity_kind.as_deref() == Some("array");
-        values.insert(
-            id,
-            polylogue_query::Kept {
-                shape,
-                native_identity,
-                unit,
-                columns,
-                match_columns,
-            },
-        );
+        let metadata: String = row
+            .get(8)
+            .map_err(|error| damaged("output_metadata", &error))?;
+        let output_metadata =
+            serde_json::from_str(&metadata).map_err(|error| damaged("output_metadata", &error))?;
+        let kept = polylogue_query::Kept {
+            output_metadata,
+            shape,
+            native_identity,
+            unit,
+            columns,
+            match_columns,
+        };
+        kept.validate_output_metadata()
+            .map_err(|error| damaged("output_metadata", &error))?;
+        values.insert(id, kept);
     }
     Ok(values)
 }

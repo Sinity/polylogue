@@ -260,15 +260,31 @@ fn every_class_of_row_round_trips_with_its_identity_and_bytes() {
         rows(&target, "SELECT id FROM client_request ORDER BY id"),
         [["d1"], ["d2"], ["e1"], ["e2"], ["k1"]].map(|row| row.map(str::to_owned).to_vec())
     );
+    let imported = rows(
+        &target,
+        "SELECT id,name,query,ran_at,read_at,rows_json FROM kept_result",
+    );
+    let original = rows(
+        &source,
+        "SELECT id,name,query,ran_at,read_at,rows_json FROM kept_result",
+    );
+    assert_eq!(imported.len(), original.len());
+    for (imported, original) in imported.iter().zip(&original) {
+        assert_eq!(&imported[..5], &original[..5]);
+        let mut body: serde_json::Value = serde_json::from_str(&imported[5]).unwrap();
+        body.as_object_mut().unwrap().remove("output_metadata");
+        assert_eq!(
+            body,
+            serde_json::from_str::<serde_json::Value>(&original[5]).unwrap()
+        );
+    }
+
     assert_eq!(
         rows(
             &target,
-            "SELECT id, name, query, ran_at, read_at, rows_json FROM kept_result"
+            "SELECT json_extract(rows_json,'$.output_metadata.version'),json_extract(rows_json,'$.output_metadata.rows.kind') FROM kept_result"
         ),
-        rows(
-            &source,
-            "SELECT id, name, query, ran_at, read_at, rows_json FROM kept_result"
-        )
+        [vec!["2".to_owned(), "unproven".to_owned()]]
     );
 
     // Vectors and the permanent failure, with their values and times.
