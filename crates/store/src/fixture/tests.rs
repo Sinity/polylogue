@@ -1,5 +1,9 @@
 use super::*;
-use polylogue_model::{Precision, SessionId, TimeEvidence, TimeQuality, Timestamp};
+use crate::StoreError;
+use polylogue_model::bundle::BundleError;
+use polylogue_model::{
+    Precision, SessionId, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp,
+};
 
 #[test]
 fn source_time_evidence_and_order_survive_native_fixture_storage() {
@@ -19,6 +23,12 @@ fn source_time_evidence_and_order_survive_native_fixture_storage() {
         until: Timestamp::from_unix_ms(10_000),
     };
     fixture.session_time(session, Some(start), bounded).unwrap();
+    assert!(matches!(
+        fixture.session_time(session, bounded.until, bounded),
+        Err(StoreError::Projection(BundleError::Time(
+            TimeEvidenceError::InvalidBounds
+        )))
+    ));
     let message = fixture
         .message(
             session,
@@ -65,7 +75,12 @@ fn source_time_evidence_and_order_survive_native_fixture_storage() {
         until: Some(at),
         ..evidence
     };
-    assert!(fixture.message_time(message, Some(at), invalid).is_err());
+    assert!(matches!(
+        fixture.message_time(message, Some(at), invalid),
+        Err(StoreError::Projection(BundleError::Time(
+            TimeEvidenceError::InvalidBounds
+        )))
+    ));
     let reads = fixture.reads().unwrap();
     assert_eq!(
         reads

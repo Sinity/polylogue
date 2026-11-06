@@ -174,6 +174,9 @@ impl Fixture {
         at: Option<polylogue_model::Timestamp>,
         evidence: polylogue_model::TimeEvidence,
     ) -> Result<()> {
+        evidence
+            .validate(at)
+            .map_err(polylogue_model::bundle::BundleError::Time)?;
         let bytes = crate::encoding::time_bytes(at, evidence)?;
         self.index.execute(
             "UPDATE session SET started_at=?2, started_time=?3, changed=changed+1 WHERE pk=?1",
@@ -189,6 +192,9 @@ impl Fixture {
         at: Option<polylogue_model::Timestamp>,
         evidence: polylogue_model::TimeEvidence,
     ) -> Result<()> {
+        evidence
+            .validate(at)
+            .map_err(polylogue_model::bundle::BundleError::Time)?;
         let bytes = crate::encoding::time_bytes(at, evidence)?;
         self.index.execute(
             "UPDATE message SET at=?2, at_time=?3 WHERE pk=?1",
