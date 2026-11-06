@@ -1,6 +1,6 @@
 //! Canonical object admission and replay use the product's native declarations.
 use super::*;
-use polylogue_model::query_objects::{FrozenQueryDefinition, QueryEdge, QueryObject};
+use polylogue_model::query_objects::{FrozenQueryDefinition, QueryEdge, QueryObject, QuestionBody};
 use query_language::identity;
 use std::collections::{BTreeSet, VecDeque};
 
@@ -8,6 +8,11 @@ fn invalid(message: impl Into<String>) -> QueryError {
     QueryError::Invalid {
         message: message.into(),
         position: 0,
+    }
+}
+fn unavailable(reason: polylogue_model::query_objects::QueryUnavailable) -> QueryError {
+    QueryError::Unavailable {
+        what: reason.to_string(),
     }
 }
 fn language(error: query_language::Error) -> QueryError {
@@ -155,8 +160,11 @@ fn inline_identity(
     let form = identity::normal_form(query, native).map_err(language)?;
     let mut original = None;
     for node in captured {
+        let Ok(query) = node.executable_ast() else {
+            continue;
+        };
         if node.parameters.is_empty()
-            && identity::normal_form(&node.identity_ast, native).map_err(language)? == form
+            && identity::normal_form(query, native).map_err(language)? == form
         {
             if original.is_some_and(|old| old != node.question) {
                 return Err(invalid(
@@ -257,7 +265,9 @@ pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
                     normal_form: identity::normal_form(query, &plan.identity_catalog)
                         .map_err(language)?,
                     parameters: BTreeMap::new(),
-                    identity_ast: query.clone(),
+                    body: QuestionBody::Executable {
+                        query: query.clone(),
+                    },
                     source_outputs: used_outputs(query, &plan.identity_catalog)?,
                 });
             }
@@ -273,7 +283,9 @@ pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
         id: plan.question_id,
         normal_form: identity::normal_form(&plan.identity, native).map_err(language)?,
         parameters: BTreeMap::new(),
-        identity_ast: plan.identity.clone(),
+        body: QuestionBody::Executable {
+            query: plan.identity.clone(),
+        },
         source_outputs: outputs,
         definitions: frozen,
         dependencies: dependencies(&edges),
@@ -311,21 +323,34 @@ pub fn saved_query_bindings(
     let native = runtime_catalog(object)?;
     let mut saved = replay_bindings(object, &native)?.saved;
     let id = object.id.to_string();
+    let (text, body) = match &object.body {
+        QuestionBody::Executable { query } => {
+            let syntax = query_language::format::format_query(query, &native).map_err(language)?;
+            (
+                syntax.clone(),
+                crate::SavedQueryBody::Frozen {
+                    object: Some(std::sync::Arc::new(object.clone())),
+                    syntax,
+                },
+            )
+        }
+        QuestionBody::Unavailable { reason } => (
+            format!("query:{id}"),
+            crate::SavedQueryBody::Unavailable {
+                reason: reason.to_string(),
+            },
+        ),
+    };
     saved.insert(
         id.clone(),
         vec![crate::SavedQuery {
-            text: query_language::format::format_query(&object.identity_ast, &native)
-                .map_err(language)?,
+            text,
             revision: id.clone(),
             root: id,
             hash: object.id,
             denominator: None,
             conflicts: vec![],
-            body: crate::SavedQueryBody::Frozen {
-                object: Some(std::sync::Arc::new(object.clone())),
-                syntax: query_language::format::format_query(&object.identity_ast, &native)
-                    .map_err(language)?,
-            },
+            body,
         }],
     );
     Ok(saved)
@@ -354,7 +379,7 @@ pub(super) fn frozen_root(object: &QueryObject) -> FrozenQueryDefinition {
         question: object.id,
         normal_form: object.normal_form.clone(),
         parameters: object.parameters.clone(),
-        identity_ast: object.identity_ast.clone(),
+        body: object.body.clone(),
         source_outputs: object.source_outputs.clone(),
     }
 }
@@ -378,7 +403,7 @@ pub(super) fn retained_definition(
     };
     let native = runtime_catalog(object)?;
     let mut queue = VecDeque::from(dependencies(&edges(
-        &node.identity_ast,
+        node.executable_ast().map_err(unavailable)?,
         &native,
         if node.historical_source.is_some() {
             &object.definitions
@@ -398,7 +423,7 @@ pub(super) fn retained_definition(
             .find(|node| node.question == id)
             .ok_or_else(|| invalid(format!("missing retained query:{id}")))?;
         queue.extend(dependencies(&edges(
-            &dependency.identity_ast,
+            dependency.executable_ast().map_err(unavailable)?,
             &native,
             if dependency.historical_source.is_some() {
                 &object.definitions
@@ -419,22 +444,36 @@ fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, Q
     let mut bindings = Bindings::default();
     let captured = std::sync::Arc::new(object.clone());
     for node in &object.definitions {
-        let text =
-            query_language::format::format_query(&node.identity_ast, native).map_err(language)?;
         let id = node.question.to_string();
+        let (text, body) = match &node.body {
+            QuestionBody::Executable { query } => {
+                let syntax =
+                    query_language::format::format_query(query, native).map_err(language)?;
+                (
+                    syntax.clone(),
+                    crate::SavedQueryBody::Frozen {
+                        object: Some(captured.clone()),
+                        syntax,
+                    },
+                )
+            }
+            QuestionBody::Unavailable { reason } => (
+                format!("query:{id}"),
+                crate::SavedQueryBody::Unavailable {
+                    reason: reason.to_string(),
+                },
+            ),
+        };
         bindings.saved.insert(
             id.clone(),
             vec![crate::SavedQuery {
-                text: text.clone(),
+                text,
                 revision: id.clone(),
                 root: id,
                 hash: node.question,
                 denominator: None,
                 conflicts: vec![],
-                body: crate::SavedQueryBody::Frozen {
-                    object: Some(captured.clone()),
-                    syntax: text.clone(),
-                },
+                body,
             }],
         );
     }
@@ -579,17 +618,46 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
             }
         }
     }
+    let actual = identity::question_id_from_normal_form(&object.normal_form, &object.parameters)
+        .map_err(language)?;
+    if actual != object.id {
+        return Err(invalid(
+            "retained question hash differs from its normal form",
+        ));
+    }
+    for node in &object.definitions {
+        if identity::question_id_from_normal_form(&node.normal_form, &node.parameters)
+            .map_err(language)?
+            != node.question
+        {
+            return Err(invalid(
+                "retained dependency hash differs from its normal form",
+            ));
+        }
+    }
+    if matches!(object.body, QuestionBody::Unavailable { .. }) {
+        return Ok(());
+    }
+    if object
+        .definitions
+        .iter()
+        .any(|node| matches!(node.body, QuestionBody::Unavailable { .. }))
+    {
+        return Err(invalid(
+            "an executable question cannot depend on an unavailable definition",
+        ));
+    }
     let native = runtime_catalog(object)?;
     check_node(
         object.id,
         &object.normal_form,
         &object.parameters,
-        &object.identity_ast,
+        object.executable_ast().map_err(unavailable)?,
         &object.source_outputs,
         object.historical_source.is_some(),
     )?;
     let actual_edges = edges(
-        &object.identity_ast,
+        object.executable_ast().map_err(unavailable)?,
         &native,
         if object.historical_source.is_some() {
             &object.definitions
@@ -608,7 +676,7 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
             node.question,
             &node.normal_form,
             &node.parameters,
-            &node.identity_ast,
+            node.executable_ast().map_err(unavailable)?,
             &node.source_outputs,
             object.historical_source.is_some() || node.historical_source.is_some(),
         )?;
@@ -627,7 +695,7 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
             .get(&key)
             .ok_or_else(|| invalid(format!("missing frozen question {id}")))?;
         queue.extend(dependencies(&edges(
-            &node.identity_ast,
+            node.executable_ast().map_err(unavailable)?,
             &native,
             if node.historical_source.is_some() {
                 &object.definitions
@@ -663,7 +731,11 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
             }
         }
     }
-    let _ = expand(&object.identity_ast, &native, &bindings)?;
+    let _ = expand(
+        object.executable_ast().map_err(unavailable)?,
+        &native,
+        &bindings,
+    )?;
     Ok(())
 }
 /// Reconstruct a pure plan without resolving current aliases or reading data.
@@ -676,7 +748,9 @@ pub fn replay(object: &QueryObject, expected_catalog: &str) -> Result<Plan, Quer
     }
     validate_object(object)?;
     let native = runtime_catalog(object)?;
-    let original = query_language::bind::bind(&object.identity_ast, &native).map_err(language)?;
+    let original =
+        query_language::bind::bind(object.executable_ast().map_err(unavailable)?, &native)
+            .map_err(language)?;
     let expanded = expand(
         original.query(),
         &native,
@@ -691,7 +765,7 @@ pub fn replay(object: &QueryObject, expected_catalog: &str) -> Result<Plan, Quer
         original,
         expanded,
         text,
-        identity: object.identity_ast.clone(),
+        identity: object.executable_ast().map_err(unavailable)?.clone(),
         bindings,
         catalog: native.clone(),
         definitions: vec![],

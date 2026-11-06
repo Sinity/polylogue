@@ -453,23 +453,279 @@ fn field_kind(v: &mut Value) -> Result<()> {
     }
     Ok(())
 }
+fn unavailable_condition(
+    condition: &Value,
+    outputs: &[Value],
+    definitions: &[Value],
+    depth: usize,
+) -> Result<Option<super::QueryUnavailable>> {
+    use super::QueryUnavailable as U;
+    let kind = condition
+        .get("kind")
+        .ok_or("missing original condition kind")?;
+    Ok(
+        match kind["kind"]
+            .as_str()
+            .ok_or("missing original condition tag")?
+        {
+            "since" | "until" if kind["operand"]["kind"] != "field" => Some(U::ComputedTimeBound),
+            "field_exists" if kind["operand"]["kind"] != "field" => Some(U::ComputedExistence),
+            "overlaps" => Some(U::SpanOverlap),
+            "and" | "or" => {
+                let mut reason = None;
+                for condition in kind["conditions"]
+                    .as_array()
+                    .ok_or("invalid original conditions")?
+                {
+                    if let Some(found) =
+                        unavailable_condition(condition, outputs, definitions, depth)?
+                    {
+                        reason = Some(found);
+                        break;
+                    }
+                }
+                reason
+            }
+            "not" => unavailable_condition(&kind["condition"], outputs, definitions, depth)?,
+            "exists" | "count" => {
+                if kind["condition"].is_null() {
+                    None
+                } else {
+                    unavailable_condition(&kind["condition"], outputs, definitions, depth)?
+                }
+            }
+            "sequence" => {
+                let mut reason = None;
+                for step in kind["steps"]
+                    .as_array()
+                    .ok_or("invalid original sequence")?
+                {
+                    if let Some(found) = unavailable_condition(step, outputs, definitions, depth)? {
+                        reason = Some(found);
+                        break;
+                    }
+                }
+                reason
+            }
+            "in" => unavailability(&kind["query"], outputs, definitions, depth)?,
+            "saved" => {
+                if let Some(definition) = find_definition(kind, definitions) {
+                    let ast = definition
+                        .get("identity_ast")
+                        .or_else(|| definition.get("ast"))
+                        .ok_or("missing captured saved condition AST")?;
+                    let nested = definition["source_outputs"]
+                        .as_array()
+                        .map_or(outputs, Vec::as_slice);
+                    if unavailability(ast, nested, definitions, depth + 1)?.is_some() {
+                        Some(U::Dependency {
+                            question: serde_json::from_value(definition["question"].clone())
+                                .map_err(|error| {
+                                    format!("unavailable condition identity: {error}")
+                                })?,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            "extension" => unavailable_arguments(
+                kind["arguments"]
+                    .as_array()
+                    .ok_or("invalid original arguments")?,
+                outputs,
+                definitions,
+                depth,
+            )?,
+            _ => None,
+        },
+    )
+}
+fn unavailable_arguments(
+    arguments: &[Value],
+    outputs: &[Value],
+    definitions: &[Value],
+    depth: usize,
+) -> Result<Option<super::QueryUnavailable>> {
+    for argument in arguments {
+        let reason = if let Some(condition) = argument.get("condition") {
+            unavailable_condition(condition, outputs, definitions, depth)?
+        } else if let Some(query) = argument.get("query") {
+            unavailability(query, outputs, definitions, depth)?
+        } else if let Some(optional) = argument.get("optional") {
+            unavailable_arguments(
+                optional
+                    .as_array()
+                    .ok_or("invalid original optional arguments")?,
+                outputs,
+                definitions,
+                depth,
+            )?
+        } else {
+            None
+        };
+        if reason.is_some() {
+            return Ok(reason);
+        }
+    }
+    Ok(None)
+}
+/// These cases are selected from the frozen producer representation and the
+/// original backend's refusal paths, never from failures of the current compiler.
+fn unavailability(
+    query: &Value,
+    outputs: &[Value],
+    definitions: &[Value],
+    depth: usize,
+) -> Result<Option<super::QueryUnavailable>> {
+    use super::{HistoricalNativeSource as S, QueryUnavailable as U};
+    if depth > definitions.len() + 1 {
+        return Err("cyclic original query closure".into());
+    }
+    serde_json::from_value::<historical_query_format_v1::ast::Query>(query.clone())
+        .map_err(|error| format!("format-1 AST: {error}"))?;
+    let source = &query["source"];
+    let source_kind = match source["kind"].as_str() {
+        Some("walk") => Some(S::Walk),
+        Some("recall") => Some(S::Recall),
+        Some("recall_last") => Some(S::RecallLast),
+        Some("recall_mark") => Some(S::RecallMark),
+        _ => None,
+    };
+    if let Some(source_kind) = source_kind {
+        return Ok(Some(U::NativeSource { source_kind }));
+    }
+    if source["kind"] == "saved" {
+        if let Some(definition) = find_definition(source, definitions) {
+            let ast = definition
+                .get("identity_ast")
+                .or_else(|| definition.get("ast"))
+                .ok_or("missing captured definition AST")?;
+            let nested = definition["source_outputs"]
+                .as_array()
+                .map_or(outputs, Vec::as_slice);
+            if unavailability(ast, nested, definitions, depth + 1)?.is_some() {
+                let question = serde_json::from_value(definition["question"].clone())
+                    .map_err(|error| format!("unavailable dependency identity: {error}"))?;
+                return Ok(Some(U::Dependency { question }));
+            }
+        }
+    }
+    if !source["condition"].is_null() {
+        if let Some(reason) =
+            unavailable_condition(&source["condition"], outputs, definitions, depth)?
+        {
+            return Ok(Some(reason));
+        }
+    }
+    for attachment in query["attach"]
+        .as_array()
+        .ok_or("missing original attachments")?
+    {
+        for window in attachment["windows"]
+            .as_array()
+            .ok_or("missing original attachment windows")?
+        {
+            if let Some(condition) = window.get("where") {
+                if let Some(reason) = unavailable_condition(condition, outputs, definitions, depth)?
+                {
+                    return Ok(Some(reason));
+                }
+            }
+        }
+    }
+    let (mut parent, mut patterns_here) = query_pattern(query, outputs, definitions, 0)?;
+    for stage in query["stages"]
+        .as_array()
+        .ok_or("missing original stages")?
+    {
+        let kind = &stage["kind"];
+        match kind["kind"].as_str() {
+            Some("temporal") => return Ok(Some(U::TemporalStage)),
+            Some("where") => {
+                if let Some(reason) =
+                    unavailable_condition(&kind["condition"], outputs, definitions, depth)?
+                {
+                    return Ok(Some(reason));
+                }
+            }
+            Some("scope") => {
+                parent = string(kind, "unit")?.into();
+                patterns_here.clear();
+                patterns(&kind["condition"], &mut patterns_here);
+                if !kind["condition"].is_null() {
+                    if let Some(reason) =
+                        unavailable_condition(&kind["condition"], outputs, definitions, depth)?
+                    {
+                        return Ok(Some(reason));
+                    }
+                }
+            }
+            Some("group" | "aggregate" | "fields") => patterns_here.clear(),
+            Some("combine") => {
+                if let Some(reason) = unavailability(&kind["query"], outputs, definitions, depth)? {
+                    return Ok(Some(reason));
+                }
+            }
+            Some("extension") => {
+                if let Some(reason) = unavailable_arguments(
+                    kind["arguments"]
+                        .as_array()
+                        .ok_or("invalid original extension arguments")?,
+                    outputs,
+                    definitions,
+                    depth,
+                )? {
+                    return Ok(Some(reason));
+                }
+            }
+            Some("matches") => {
+                if let [pattern] = patterns_here.as_slice() {
+                    match pattern {
+                        Pattern::Exists(unit)
+                            if parent != "sessions"
+                                || !native_columns(unit)?.contains(&"session") =>
+                        {
+                            if !native_columns(&parent)?.contains(&"id") {
+                                return Ok(Some(U::RetiredStorageKey { unit: parent }));
+                            }
+                        }
+                        Pattern::Sequence(unit, _) if unit != "tool_calls" => {
+                            return Ok(Some(U::MatchUnit { unit: unit.clone() }));
+                        }
+                        _ => (),
+                    }
+                }
+                patterns_here.clear();
+            }
+            _ => (),
+        }
+    }
+    Ok(None)
+}
+
 fn definition(v: &mut Value, definitions: &[Value]) -> Result<()> {
     let captured = v["source_outputs"]
         .as_array()
         .ok_or("missing definition source_outputs")?
         .clone();
-    query(
-        v.get_mut("identity_ast")
-            .ok_or("missing definition identity_ast")?,
-        &captured,
-        &definitions,
-    )?;
+    let original = take(v, "identity_ast")?;
+    v["body"] = if let Some(reason) = unavailability(&original, &captured, definitions, 0)? {
+        json!({"kind":"unavailable","reason":reason})
+    } else {
+        let mut current = original;
+        query(&mut current, &captured, definitions)?;
+        json!({"kind":"executable","query":current})
+    };
     outputs(
         v.get_mut("source_outputs")
             .ok_or("missing definition source_outputs")?,
         definitions,
     )
 }
+
 /// Upgrade one captured semantic node using the complete retained format-1
 /// closure to recover transparent saved-query match provenance.
 pub fn frozen_definition(source: &Value, closure: &[Value]) -> Result<Value> {
@@ -505,6 +761,10 @@ pub fn query_run(source: &Value, current_catalog: &str) -> Result<Value> {
                 .as_array()
                 .ok_or("missing replay source_outputs")?
                 .clone();
+            if let Some(reason) = unavailability(&r["bound_ast"], &captured, &definitions, 0)? {
+                v["binding"] = json!({"kind":"unavailable","reason":reason});
+                return current::<super::QueryRun>(v);
+            }
             query(
                 r.get_mut("bound_ast").ok_or("missing replay bound_ast")?,
                 &captured,
@@ -768,9 +1028,10 @@ fn matches_projection(parent: &str, available: &[Pattern], span: &Value) -> Resu
             let names = native_columns(unit)?;
             let mut columns = Vec::new();
             if parent != "sessions" || !names.contains(&"session") {
-                return Err(format!(
-                    "format-1 exists parent_id on {parent} requires raw native identity projection"
-                ));
+                if !native_columns(parent)?.contains(&"id") {
+                    return Err("retired private parent storage key".into());
+                }
+                columns.push(column(field("parent.id"), "parent_id".into()));
             }
             columns.push(column(field("match"), "match".into()));
             columns.extend(

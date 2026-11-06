@@ -131,10 +131,10 @@ pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
         return Err(invalid("a query run has an invalid read position"));
     }
     match &run.binding {
-        RunBinding::RetiredRead { .. } => {
+        RunBinding::RetiredRead { .. } | RunBinding::Unavailable { .. } => {
             if run.question.is_none() {
                 return Err(invalid(
-                    "a retired Run2 invocation requires its original question",
+                    "a retained unavailable invocation requires its original question",
                 ));
             }
             Ok(())

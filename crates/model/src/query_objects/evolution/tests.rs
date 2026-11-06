@@ -66,7 +66,7 @@ fn conversion_preserves_identity_graph_and_nested_query_syntax() {
     for k in ["id", "normal_form", "parameters", "dependencies", "edges"] {
         assert_eq!(after[k], before[k]);
     }
-    let q = &after["identity_ast"];
+    let q = &after["body"]["query"];
     assert!(q.get("stages").is_none());
     assert_eq!(
         q["transforms"][0]["kind"]["keys"][0],
@@ -178,7 +178,7 @@ fn exists_matches_preserves_predecessor_child_columns() {
     let mut input = object(ast(source, vec![stage(json!({"kind":"matches"}))]));
     input["identity_ast"]["source"]["unit"] = json!("sessions");
     let result = query_object(&input).unwrap();
-    let ts = result["identity_ast"]["transforms"].as_array().unwrap();
+    let ts = result["body"]["query"]["transforms"].as_array().unwrap();
     assert_eq!(ts.len(), 2);
     let cs = ts[1]["kind"]["columns"].as_array().unwrap();
     assert_eq!(cs[0], column(field("match"), "match".into()));
@@ -195,7 +195,7 @@ fn sequence_matches_reconstructs_tuple_and_timeline_gaps() {
     );
     let result =
         query_object(&object(ast(source, vec![stage(json!({"kind":"matches"}))]))).unwrap();
-    let ts = result["identity_ast"]["transforms"].as_array().unwrap();
+    let ts = result["body"]["query"]["transforms"].as_array().unwrap();
     assert_eq!(ts.len(), 5);
     let aggs = ts[2]["kind"]["aggregates"].as_array().unwrap();
     assert_eq!(aggs.len(), 10);
@@ -339,9 +339,9 @@ fn notes_source_and_nested_scope_use_exact_imported_rows() {
     );
     original["source"]["unit"] = json!("notes");
     let after = query_object(&object(original)).unwrap();
-    assert_eq!(after["identity_ast"]["source"]["unit"], "imported_notes");
+    assert_eq!(after["body"]["query"]["source"]["unit"], "imported_notes");
     assert_eq!(
-        after["identity_ast"]["transforms"][0]["kind"]["unit"],
+        after["body"]["query"]["transforms"][0]["kind"]["unit"],
         "imported_notes"
     );
 }
@@ -355,7 +355,7 @@ fn note_reference_rewrite_preserves_root_currency_revision_prefix_and_default_ov
         );
         syntax["source"]["unit"] = json!("notes");
         let after = query_object(&object(syntax)).unwrap();
-        let conditions = after["identity_ast"]["source"]["condition"]["kind"]["conditions"]
+        let conditions = after["body"]["query"]["source"]["condition"]["kind"]["conditions"]
             .as_array()
             .unwrap();
         assert_eq!(conditions[0]["kind"]["left"], field("first_note"));
@@ -380,4 +380,129 @@ fn note_reference_rewrite_preserves_root_currency_revision_prefix_and_default_ov
         vec![],
     );
     assert!(query_object(&object(invalid)).is_err());
+}
+
+#[test]
+fn never_executable_and_retired_key_questions_keep_explicit_source_only_bodies() {
+    use crate::query_objects::{QueryObject, QueryUnavailable, QuestionBody};
+    for (unit, condition, expected) in [
+        (
+            "rows",
+            cond(
+                json!({"kind":"overlaps","from":scalar_value("2026-01-01"),"to":scalar_value("2026-01-02")}),
+            ),
+            QueryUnavailable::SpanOverlap,
+        ),
+        (
+            "rows",
+            cond(
+                json!({"kind":"field_exists","operand":{"kind":"function","name":"day","arguments":[field("elapsed")]}}),
+            ),
+            QueryUnavailable::ComputedExistence,
+        ),
+    ] {
+        let mut syntax = ast(condition, vec![]);
+        syntax["source"]["unit"] = json!(unit);
+        let mut source = object(syntax);
+        source["dependencies"] = json!([]);
+        source["edges"] = json!([]);
+        source["parameters"] = json!({});
+        let form = legacy_definition_normal_form(&source, &catalog(), &[]).unwrap();
+        source["id"] = serde_json::to_value(
+            query_language::identity::question_id_from_normal_form(&form, &Default::default())
+                .unwrap(),
+        )
+        .unwrap();
+        source["normal_form"] = form;
+        let question = QueryObject::from_structured_v1(source.clone()).unwrap();
+        assert!(matches!(&question.body,QuestionBody::Unavailable {reason} if reason==&expected));
+        assert_eq!(question.executable_ast().unwrap_err(), expected);
+        assert_eq!(question.historical_source.as_ref().unwrap().record, source);
+        let mut forged = question.clone();
+        forged.historical_source = None;
+        assert!(forged.validate_evolution().is_err());
+        let mut fictional = question;
+        fictional.body = QuestionBody::Executable {
+            query: query_language::ast::Query {
+                source: query_language::ast::Source::Unit {
+                    unit: "rows".into(),
+                    implicit: false,
+                    condition: None,
+                },
+                attach: vec![],
+                transforms: vec![],
+            },
+        };
+        assert!(fictional.validate_evolution().is_err());
+    }
+    let mut retired = ast(
+        cond(json!({"kind":"exists","unit":"tool_calls","condition":null})),
+        vec![stage(json!({"kind":"matches"}))],
+    );
+    retired["source"]["unit"] = json!("blocks");
+    let result = query_object(&object(retired)).unwrap();
+    assert_eq!(result["body"]["kind"], "unavailable");
+    assert_eq!(result["body"]["reason"]["kind"], "retired_storage_key");
+}
+
+#[test]
+fn original_refusal_classes_and_dependency_unavailability_are_explicit() {
+    let nested = ast(Value::Null, vec![]);
+    let computed = json!({"kind":"function","name":"day","arguments":[field("elapsed")]});
+    for kind in ["since", "until"] {
+        let syntax = ast(
+            cond(json!({"kind":kind,"operand":computed,"value":scalar_value("2026-01-01")})),
+            vec![],
+        );
+        let upgraded = query_object(&object(syntax)).unwrap();
+        assert_eq!(upgraded["body"]["reason"]["kind"], "computed_time_bound");
+    }
+    let temporal = ast(
+        Value::Null,
+        vec![stage(
+            json!({"kind":"temporal","relation":"near","query":nested,"at":"when","within":null,"all":false}),
+        )],
+    );
+    assert_eq!(
+        query_object(&object(temporal)).unwrap()["body"]["reason"]["kind"],
+        "temporal_stage"
+    );
+    for (source, tag) in [
+        (
+            json!({"kind":"walk","direction":"trace","reference":"session:synthetic"}),
+            "walk",
+        ),
+        (json!({"kind":"recall","time":null,"window":null}), "recall"),
+        (
+            json!({"kind":"recall_last","unit":"sessions","condition":null}),
+            "recall_last",
+        ),
+        (
+            json!({"kind":"recall_mark","number":1,"window":null}),
+            "recall_mark",
+        ),
+    ] {
+        let mut syntax = ast(Value::Null, vec![]);
+        syntax["source"] = source;
+        let upgraded = query_object(&object(syntax)).unwrap();
+        assert_eq!(upgraded["body"]["reason"]["kind"], "native_source");
+        assert_eq!(upgraded["body"]["reason"]["source_kind"], tag);
+    }
+    let child_id = json!(vec![8; 32]);
+    let child_ast = ast(
+        cond(json!({"kind":"overlaps","from":scalar_value("2026-01-01"),"to":null})),
+        vec![],
+    );
+    let child = json!({"question":child_id,"normal_form":{},"parameters":{},"identity_ast":child_ast,"source_outputs":[]});
+    let mut syntax = ast(Value::Null, vec![]);
+    syntax["source"] = json!({"kind":"saved","name":question_key(&child_id).unwrap(),"arguments":[],"condition":null,"output":"known"});
+    let mut original = object(syntax);
+    original["definitions"] = json!([child]);
+    let upgraded = query_object(&original).unwrap();
+    assert_eq!(upgraded["body"]["reason"]["kind"], "dependency");
+    assert_eq!(upgraded["body"]["reason"]["question"], child_id);
+    assert_eq!(
+        upgraded["definitions"][0]["body"]["reason"]["kind"],
+        "span_overlap"
+    );
 }

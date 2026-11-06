@@ -26,7 +26,9 @@ pub(crate) fn phases() -> Vec<(String, Product)> {
         id,
         normal_form,
         parameters,
-        identity_ast: serde_json::from_value(syntax).unwrap(),
+        body: polylogue_model::query_objects::QuestionBody::Executable {
+            query: serde_json::from_value(syntax).unwrap(),
+        },
         source_outputs: vec![],
         definitions: vec![],
         dependencies: vec![],
@@ -58,7 +60,7 @@ pub(crate) fn phases() -> Vec<(String, Product)> {
         binding: RunBinding::Original {
             execution: Box::new(ExecutionBinding {
                 replay: ReplayBinding {
-                    bound_ast: object.identity_ast.clone(),
+                    bound_ast: object.executable_ast().unwrap().clone(),
                     source_outputs: vec![],
                     definitions: vec![],
                     context: CursorContext {

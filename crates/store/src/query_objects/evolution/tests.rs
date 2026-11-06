@@ -151,3 +151,95 @@ fn malformed_second_record_rolls_back_first_conversion_and_version() {
         2
     );
 }
+
+#[test]
+fn unavailable_legacy_question_does_not_block_archive_open_or_unrelated_execution() {
+    use polylogue_model::query_objects::{QueryUnavailable, QuestionBody, RunBinding};
+    let conn = baseline();
+    let ordinary = old_object();
+    insert(&conn, &ordinary);
+    let mut source = old_object();
+    source["identity_ast"]["source"]["condition"] = json!({"span":{"start":0,"end":1},"kind":{"kind":"overlaps","from":{"kind":"scalar","text":"2026-01-01","quoted":false},"to":{"kind":"scalar","text":"2026-01-02","quoted":false}}});
+    let form = polylogue_model::query_objects::evolution::legacy_definition_normal_form(
+        &source,
+        &polylogue_query::Bindings::default().catalog(),
+        &[],
+    )
+    .unwrap();
+    let id = identity::question_id_from_normal_form(&form, &BTreeMap::new()).unwrap();
+    source["id"] = serde_json::to_value(id).unwrap();
+    source["normal_form"] = form;
+    insert(&conn, &source);
+    let current = query_objects::tests::question("sessions");
+    let run = query_objects::tests::run(
+        &current,
+        "old-unbuilt-attempt",
+        1000,
+        ChangePosition {
+            generation: "synthetic-generation".into(),
+            index: 4,
+            archive: 2,
+        },
+    );
+    let mut original_run = serde_json::to_value(run).unwrap();
+    original_run["question"] = source["id"].clone();
+    original_run["binding"]["execution"]["replay"]["bound_ast"] = source["identity_ast"].clone();
+    original_run["binding"]["execution"]["replay"]["context"]["question"] = source["id"].clone();
+    let binding = independent_hash(
+        b"polylogue-execution-binding-v1\0",
+        &original_run["binding"]["execution"],
+    );
+    let record = independent_hash(b"polylogue-query-run-begin-v1\0", &original_run);
+    conn.execute(
+        "INSERT INTO query_run(id,binding_hash,run_hash,query,run) VALUES (?1,?2,?3,?4,?5)",
+        params![
+            original_run["id"].as_str().unwrap(),
+            binding.to_string(),
+            record.to_string(),
+            id.to_string(),
+            encoding::pack_json(&original_run).unwrap()
+        ],
+    )
+    .unwrap();
+    schema::ensure_archive(&conn).unwrap();
+    assert_eq!(schema::version(&conn).unwrap(), 2);
+    let bytes: Vec<u8> = conn
+        .query_row(
+            "SELECT object FROM query WHERE hash=?1",
+            [id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let question: QueryObject = encoding::unpack_json(&bytes).unwrap();
+    assert!(matches!(
+        question.body,
+        QuestionBody::Unavailable {
+            reason: QueryUnavailable::SpanOverlap
+        }
+    ));
+    assert_eq!(question.historical_source.as_ref().unwrap().record, source);
+    let saved = polylogue_query::plan::saved_query_bindings(&question).unwrap();
+    let bindings = polylogue_query::Bindings {
+        saved,
+        ..Default::default()
+    };
+    assert!(matches!(
+        polylogue_query::plan::prepare(&format!("query:{id}"), &bindings, |_| Ok(())),
+        Err(polylogue_query::QueryError::Unavailable { .. })
+    ));
+    polylogue_query::plan::prepare("sessions", &bindings, |_| Ok(())).unwrap();
+    let bytes: Vec<u8> = conn
+        .query_row("SELECT run FROM query_run", [], |row| row.get(0))
+        .unwrap();
+    let run: QueryRun = encoding::unpack_json(&bytes).unwrap();
+    assert!(matches!(
+        run.binding,
+        RunBinding::Unavailable {
+            reason: QueryUnavailable::SpanOverlap
+        }
+    ));
+    assert!(run.binding.original().is_none());
+    assert_eq!(run.binding_hash().unwrap(), binding);
+    assert_eq!(run.record_hash().unwrap(), record);
+    assert_eq!(run.historical_source.as_ref().unwrap().record, original_run);
+}

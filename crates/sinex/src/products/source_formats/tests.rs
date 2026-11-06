@@ -54,7 +54,7 @@ fn exact_historical_source_evolves_without_reidentifying_the_question() {
         source["record"]["object"]
     );
     assert_eq!(
-        serde_json::to_value(&object.identity_ast).unwrap()["transforms"],
+        serde_json::to_value(object.executable_ast().unwrap()).unwrap()["transforms"],
         json!([])
     );
     assert!(decode("polylogue.query", source).is_err());

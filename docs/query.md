@@ -312,6 +312,16 @@ evidence. These records supply no current execution binding, and their positions
 are never interpreted as current page cursors. Current executions cannot create a
 retired binding without its exact versioned source proof.
 
+A stored question body is either executable current syntax or an explicit
+unavailable state backed by its original source. The upgrade retains definitions
+whose original backend never implemented their construct, together with queries
+that depended on the retired private SQL row key. Their question identity, normal
+form, closure, output declarations and original JSON remain inspectable. Running
+one returns its specific unavailable reason; opening the archive and running other
+questions continue normally. Current writes require executable bodies. Retained
+invocations of an unavailable definition keep their original binding and invocation
+hashes without supplying a current replay binding.
+
 ### Original notes from imported archives
 
 `imported_notes` reads the original Notes corpus kept by `import --from-archive`.

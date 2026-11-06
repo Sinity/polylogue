@@ -86,10 +86,15 @@ fn object_validation_refuses_forged_ast_schema_and_missing_closure() {
         .query_object()
         .unwrap();
     let mut changed = object.clone();
-    changed.identity_ast.transforms.push(Transform {
-        span: Span::default(),
-        kind: TransformKind::Limit { count: 1 },
-    });
+    changed
+        .body
+        .query_mut()
+        .unwrap()
+        .transforms
+        .push(Transform {
+            span: Span::default(),
+            kind: TransformKind::Limit { count: 1 },
+        });
     assert!(validate_object(&changed).is_err());
     let mut changed = object.clone();
     changed.definitions.clear();
@@ -107,17 +112,23 @@ fn object_validation_refuses_forged_ast_schema_and_missing_closure() {
         .unwrap()
         .query_object()
         .unwrap();
-    changed.identity_ast.transforms.push(Transform {
-        span: Span::default(),
-        kind: TransformKind::Sort {
-            keys: vec![SortKey {
-                expression: Expression::field("invented"),
-                descending: false,
-            }],
-        },
-    });
+    changed
+        .body
+        .query_mut()
+        .unwrap()
+        .transforms
+        .push(Transform {
+            span: Span::default(),
+            kind: TransformKind::Sort {
+                keys: vec![SortKey {
+                    expression: Expression::field("invented"),
+                    descending: false,
+                }],
+            },
+        });
     let native = crate::catalog::catalog(&[]);
-    changed.normal_form = identity::normal_form(&changed.identity_ast, &native).unwrap();
+    changed.normal_form =
+        identity::normal_form(changed.executable_ast().unwrap(), &native).unwrap();
     changed.id =
         identity::question_id_from_normal_form(&changed.normal_form, &changed.parameters).unwrap();
     assert!(validate_object(&changed).is_err());
@@ -378,7 +389,7 @@ fn captured_dependency_reuses_proven_original_identity_after_representation_chan
     let id = identity::question_id_from_normal_form(&form, &BTreeMap::new()).unwrap();
     let migrated = QueryObject::from_structured_v1(json!({"id":id,"normal_form":form,"parameters":{},"identity_ast":ast,"source_outputs":[],"definitions":[],"dependencies":[],"edges":[]})).unwrap();
     assert_ne!(
-        identity::normal_form(&migrated.identity_ast, &native).unwrap(),
+        identity::normal_form(migrated.executable_ast().unwrap(), &native).unwrap(),
         migrated.normal_form
     );
     let captured = replay(&migrated, catalog_fingerprint()).unwrap();
@@ -398,7 +409,7 @@ fn captured_dependency_reuses_proven_original_identity_after_representation_chan
         .iter()
         .find(|node| node.question == id)
         .unwrap();
-    assert_eq!(dependency.identity_ast, migrated.identity_ast);
+    assert_eq!(dependency.body, migrated.body);
     assert_eq!(dependency.normal_form, migrated.normal_form);
     assert!(dependency.historical_source.is_some());
     // The hash-keyed dependency is backed by the parent's validated closure,
@@ -418,7 +429,12 @@ fn captured_dependency_reuses_proven_original_identity_after_representation_chan
             .any(|node| node.question == id && node.historical_source.is_some())
     );
     let mut forged = wrapper;
-    forged.definitions[0].identity_ast.transforms.clear();
+    forged.definitions[0]
+        .body
+        .query_mut()
+        .unwrap()
+        .transforms
+        .clear();
     assert!(saved_query_bindings(&forged).is_err());
 }
 
@@ -439,7 +455,7 @@ fn historical_inline_edges_keep_the_proven_original_subquery_id() {
     let object = QueryObject::from_structured_v1(json!({"id":root_id,"normal_form":root_form,"parameters":{},"identity_ast":root,"source_outputs":[],"definitions":[{"question":child_id,"normal_form":child_form,"parameters":{},"identity_ast":child,"source_outputs":[]}],"dependencies":[child_id],"edges":[{"how":"in","query":child_id}]})).unwrap();
     assert_ne!(
         identity::question_id(
-            &object.definitions[0].identity_ast,
+            object.definitions[0].executable_ast().unwrap(),
             &native,
             &BTreeMap::new()
         )

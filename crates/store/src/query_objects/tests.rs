@@ -75,7 +75,7 @@ pub(super) fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosit
                     serde_json::json!({"id":"actual-accepted-id","operation":"query","arguments":{"target":"sessions"}}),
                 ),
                 replay: ReplayBinding {
-                    bound_ast: object.identity_ast.clone(),
+                    bound_ast: object.executable_ast().unwrap().clone(),
                     source_outputs: object.source_outputs.clone(),
                     definitions: vec![],
                     context: CursorContext {

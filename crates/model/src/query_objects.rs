@@ -39,7 +39,7 @@ pub struct QueryObject {
     pub id: QuestionId,
     pub normal_form: serde_json::Value,
     pub parameters: BTreeMap<String, String>,
-    pub identity_ast: Query,
+    pub body: QuestionBody,
     pub source_outputs: Vec<SourceOutput>,
     pub definitions: Vec<FrozenQueryDefinition>,
     pub dependencies: Vec<QuestionId>,
@@ -55,8 +55,101 @@ pub struct FrozenQueryDefinition {
     pub question: QuestionId,
     pub normal_form: serde_json::Value,
     pub parameters: BTreeMap<String, String>,
-    pub identity_ast: Query,
+    pub body: QuestionBody,
     pub source_outputs: Vec<SourceOutput>,
+}
+
+/// A retained definition has either executable current syntax or a proved
+/// historical reason why it cannot execute. Original syntax stays in its source.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum QuestionBody {
+    Executable { query: Query },
+    Unavailable { reason: QueryUnavailable },
+}
+impl QuestionBody {
+    pub fn query(&self) -> Result<&Query, QueryUnavailable> {
+        match self {
+            Self::Executable { query } => Ok(query),
+            Self::Unavailable { reason } => Err(reason.clone()),
+        }
+    }
+    pub fn query_mut(&mut self) -> Result<&mut Query, QueryUnavailable> {
+        match self {
+            Self::Executable { query } => Ok(query),
+            Self::Unavailable { reason } => Err(reason.clone()),
+        }
+    }
+    pub fn into_query(self) -> Result<Query, QueryUnavailable> {
+        match self {
+            Self::Executable { query } => Ok(query),
+            Self::Unavailable { reason } => Err(reason),
+        }
+    }
+}
+#[derive(
+    Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, thiserror::Error,
+)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum QueryUnavailable {
+    #[error(
+        "the retained definition uses a computed time bound that its original Polylogue backend did not execute"
+    )]
+    ComputedTimeBound,
+    #[error(
+        "the retained definition tests whether a computed value exists, which its original Polylogue backend did not execute"
+    )]
+    ComputedExistence,
+    #[error(
+        "the retained definition uses span overlap, which its original Polylogue backend did not execute"
+    )]
+    SpanOverlap,
+    #[error(
+        "the retained definition uses a temporal stage that its original Polylogue backend did not execute"
+    )]
+    TemporalStage,
+    #[error(
+        "the retained definition uses the original {source_kind} source, which Polylogue did not execute"
+    )]
+    NativeSource { source_kind: HistoricalNativeSource },
+    #[error("the retained definition depends on unavailable query:{question}")]
+    Dependency { question: QuestionId },
+    #[error(
+        "the retained definition projects the retired private storage key of {unit}; current queries use stable object identities"
+    )]
+    RetiredStorageKey { unit: String },
+    #[error(
+        "the retained definition projects matches of {unit}, which its original Polylogue backend did not execute"
+    )]
+    MatchUnit { unit: String },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoricalNativeSource {
+    Walk,
+    Recall,
+    RecallLast,
+    RecallMark,
+}
+impl std::fmt::Display for HistoricalNativeSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Walk => "walk",
+            Self::Recall => "recall",
+            Self::RecallLast => "recall last",
+            Self::RecallMark => "recall mark",
+        })
+    }
+}
+impl QueryObject {
+    pub fn executable_ast(&self) -> Result<&Query, QueryUnavailable> {
+        self.body.query()
+    }
+}
+impl FrozenQueryDefinition {
+    pub fn executable_ast(&self) -> Result<&Query, QueryUnavailable> {
+        self.body.query()
+    }
 }
 
 /// A saved definition as it was bound, including its actual syntax.
@@ -304,6 +397,10 @@ pub struct QueryRun {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RunBinding {
+    /// An invocation whose original query has no current executable representation.
+    Unavailable {
+        reason: QueryUnavailable,
+    },
     /// A source-versioned invocation of the retired content-position reader.
     /// It remains inspectable evidence and grants no current replay authority.
     RetiredRead {
@@ -333,13 +430,17 @@ impl RunBinding {
     pub fn original(&self) -> Option<&ExecutionBinding> {
         match self {
             Self::Original { execution } => Some(execution),
-            Self::OriginalObject { .. } | Self::RetiredRead { .. } => None,
+            Self::OriginalObject { .. } | Self::RetiredRead { .. } | Self::Unavailable { .. } => {
+                None
+            }
         }
     }
     pub fn original_mut(&mut self) -> Option<&mut ExecutionBinding> {
         match self {
             Self::Original { execution } => Some(execution),
-            Self::OriginalObject { .. } | Self::RetiredRead { .. } => None,
+            Self::OriginalObject { .. } | Self::RetiredRead { .. } | Self::Unavailable { .. } => {
+                None
+            }
         }
     }
     /// Stable action identity belongs to the original execution, not the page.
@@ -347,6 +448,9 @@ impl RunBinding {
         match self {
             Self::Original { execution } => execution.hash(),
             Self::OriginalObject { execution } => execution.hash(),
+            Self::Unavailable { .. } => Err(evolution_error(
+                "unavailable invocations require original binding custody",
+            )),
             Self::RetiredRead { invocation } => Ok(match invocation {
                 RetiredReadInvocation::Original { binding_hash }
                 | RetiredReadInvocation::Continuation { binding_hash, .. } => *binding_hash,
@@ -385,6 +489,19 @@ impl QueryRun {
             .and_then(|execution| execution.replay.context.versions.get("catalog"))
             .map(String::as_str)
             .unwrap_or("");
+        if matches!(self.binding, RunBinding::Unavailable { .. })
+            && !matches!(
+                self.historical_source.as_deref(),
+                Some(HistoricalQuerySource {
+                    format: QuerySourceFormat::StructuredQueryV1,
+                    ..
+                })
+            )
+        {
+            return Err(
+                "unavailable invocations require their exact structured source evidence".into(),
+            );
+        }
         if matches!(self.binding, RunBinding::RetiredRead { .. })
             && !matches!(
                 self.historical_source.as_deref(),
@@ -459,6 +576,20 @@ impl QueryObject {
     }
     /// A migrated object must be exactly the named conversion of its source.
     pub fn validate_evolution(&self) -> Result<(), String> {
+        if matches!(self.body, QuestionBody::Unavailable { .. }) && self.historical_source.is_none()
+        {
+            return Err(
+                "unavailable questions require their exact historical source evidence".into(),
+            );
+        }
+        if self.definitions.iter().any(|node| {
+            matches!(node.body, QuestionBody::Unavailable { .. })
+                && node.historical_source.is_none()
+        }) {
+            return Err(
+                "unavailable dependencies require their exact historical source evidence".into(),
+            );
+        }
         if self
             .historical_source
             .as_ref()
