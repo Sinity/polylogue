@@ -271,7 +271,7 @@ fn copied_current_invocation_preserves_controls_as_valid_json_escapes() {
     let copied: Value = output
         .split("data-copy=\"")
         .skip(1)
-        .filter_map(|attribute| {
+        .find_map(|attribute| {
             let encoded = attribute.split_once('"')?.0;
             let decoded = encoded
                 .replace("&quot;", "\"")
@@ -282,7 +282,6 @@ fn copied_current_invocation_preserves_controls_as_valid_json_escapes() {
             let target: Value = serde_json::from_str(&decoded).ok()?;
             (target["label"] == "page").then_some(target)
         })
-        .next()
         .expect("page command copy target");
     let command = copied["forms"][0]["text"].as_str().unwrap();
     let shell = std::process::Command::new("sh")
