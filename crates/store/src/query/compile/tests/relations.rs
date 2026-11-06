@@ -1,5 +1,5 @@
 use super::*;
-use crate::fixture::{Fixture, MessageFacts, SessionFacts};
+use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 use serde_json::{Value, json};
 
 fn fixture() -> (tempfile::TempDir, Fixture) {
@@ -104,5 +104,95 @@ fn grouped_first_returns_the_selected_input_rows() {
             "sessions | sort by id | fields id, repo | group by repo | first 1 | fields id | sort by id"
         ),
         [json!({"id":"claude-code:a"}), json!({"id":"claude-code:c"})]
+    );
+}
+
+#[test]
+fn step_order_counts_every_call_before_filtering_and_ignores_message_sequence_gaps() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(directory.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "claude-code:steps",
+            ..Default::default()
+        })
+        .unwrap();
+    for (message_id, seq, commands) in [
+        ("claude-code:first", 1, vec!["first", "middle"]),
+        ("claude-code:last", 1000, vec!["last"]),
+    ] {
+        let message = fixture
+            .message(
+                session,
+                MessageFacts {
+                    id: message_id,
+                    role: "assistant",
+                    written_by: "model",
+                    seq: Some(seq),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        for command in commands {
+            fixture
+                .tool_call(
+                    session,
+                    message,
+                    CallFacts {
+                        tool: "Bash",
+                        action: "shell",
+                        command: Some(command),
+                        outcome: "ok",
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+    }
+    fixture.derive().unwrap();
+    assert!(rows(&fixture, "tool_calls where command = first AND before(tool_calls where command = last) within 1 step").is_empty());
+    assert_eq!(
+        rows(
+            &fixture,
+            "tool_calls where command = first AND before(tool_calls where command = last) within 2 steps | fields command, match.distance"
+        ),
+        [json!({"command":"first", "match.distance":2})]
+    );
+    assert_eq!(
+        rows(
+            &fixture,
+            "tool_calls where command = first AND before(tool_calls where command = middle) within 1 step | fields command, match.distance"
+        ),
+        [json!({"command":"first", "match.distance":1})]
+    );
+}
+
+#[test]
+fn distinct_uses_declared_row_identity_after_projection() {
+    let (_directory, fixture) = fixture();
+    assert_eq!(
+        rows(&fixture, "sessions | sort by id | fields repo | distinct"),
+        [
+            json!({"repo":"east"}),
+            json!({"repo":"east"}),
+            json!({"repo":"west"})
+        ]
+    );
+}
+
+#[test]
+fn diff_aligns_logical_values_when_the_two_queries_use_different_sql_slots() {
+    let (_directory, fixture) = fixture();
+    let answer = rows(
+        &fixture,
+        "sessions | sort by id | limit 2 | fields id as label, input_tokens as n | diff (sessions | sort by id | offset 1 | fields input_tokens as n, id as label) | fields label, n, change, old_rank, new_rank",
+    );
+    assert_eq!(
+        answer,
+        [
+            json!({"label":"claude-code:a", "n":1, "change":"joined", "old_rank":null, "new_rank":1}),
+            json!({"label":"claude-code:b", "n":3, "change":"moved", "old_rank":1, "new_rank":2}),
+            json!({"label":"claude-code:c", "n":5, "change":"left", "old_rank":2, "new_rank":null}),
+        ]
     );
 }

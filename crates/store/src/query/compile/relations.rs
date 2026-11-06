@@ -784,32 +784,25 @@ impl Compiler<'_> {
     }
 
     fn relation_distinct(&mut self, relation: &mut Relation) {
-        let values = relation
-            .program
-            .columns
+        let identity = relation.identity_order();
+        let values = identity
             .iter()
-            .map(|c| column_sql(relation.program.column_slot(&c.name)))
+            .map(|key| column_sql(&key.column))
             .collect::<Vec<_>>();
         let ordinal = relation.slot();
         relation.program.sql = format!(
             "SELECT * FROM (SELECT r.*, row_number() OVER (PARTITION BY {} ORDER BY {}) AS {} FROM ({}) r) WHERE {} = 1 ORDER BY {}",
-            values.join(", "),
+            if values.is_empty() {
+                "_pk".into()
+            } else {
+                values.join(", ")
+            },
             relation_order(&relation.program.order),
             column_sql(&ordinal),
             relation.program.sql,
             column_sql(&ordinal),
             relation_order(&relation.program.order)
         );
-        relation.program.row_basis = RowBasis::Distinct {
-            columns: relation
-                .program
-                .columns
-                .iter()
-                .map(|c| relation.program.column_slot(&c.name).to_owned())
-                .collect(),
-        };
-        relation.sources.clear();
-        relation.open_fields = false;
         relation.group = None;
     }
 }
@@ -976,10 +969,14 @@ impl Compiler<'_> {
                 None => format!("a.{left} AS {left}"),
             });
         }
-        for name in relation.private_columns() {
-            let name = name.trim_start_matches("r.");
+        values.push(format!(
+            "CASE WHEN a.{ordinal} IS NULL THEN b._pk ELSE a._pk END AS _pk"
+        ));
+        for (left, right) in left_keys.iter().zip(&right_keys) {
+            let left = column_sql(&left.column);
+            let right = column_sql(&right.column);
             values.push(format!(
-                "CASE WHEN a.{ordinal} IS NULL THEN b.{name} ELSE a.{name} END AS {name}"
+                "CASE WHEN a.{ordinal} IS NULL THEN b.{right} ELSE a.{left} END AS {left}"
             ));
         }
         values.push(format!("CASE WHEN a.{ordinal} IS NULL THEN 'left' WHEN b.{previous} IS NULL THEN 'joined' ELSE 'moved' END AS {change}"));
@@ -1012,6 +1009,7 @@ impl Compiler<'_> {
         relation.program.counts_near = false;
         relation.sources.clear();
         relation.open_fields = false;
+        relation.group = None;
         Ok(())
     }
 }
