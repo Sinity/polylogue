@@ -100,7 +100,17 @@ fn computed_conditions_keep_unknowns_and_native_money_and_duration_units() {
         4
     );
     assert!(ids("sessions where NOT (input_tokens / output_tokens > 0)").is_empty());
-    assert!(ids("sessions where input_tokens / (output_tokens - output_tokens) > 0").is_empty());
+    let zero_denominator =
+        "sessions | fields id, input_tokens, output_tokens - output_tokens as denominator";
+    for condition in [
+        "input_tokens / denominator > 0",
+        "NOT (input_tokens / denominator > 0)",
+    ] {
+        assert!(
+            ids(&format!("{zero_denominator} | where {condition}")).is_empty(),
+            "{condition}"
+        );
+    }
     assert_eq!(
         ids("sessions | sort by input_tokens / output_tokens desc"),
         [
