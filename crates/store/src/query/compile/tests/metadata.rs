@@ -35,6 +35,8 @@ fn matches_declarations_follow_actual_producer_columns_and_replay_frozen_saved_b
     for text in [
         "sessions where exists tool_call() | matches",
         "sessions where seq(action:shell -> outcome:error) | matches",
+        "sessions where exists tool_call() | limit 1 | matches",
+        "sessions where exists tool_call() | distinct | matches",
     ] {
         let options = opts(&[]);
         let schema = options.output_schema(text).unwrap();
@@ -91,13 +93,69 @@ fn matches_declarations_follow_actual_producer_columns_and_replay_frozen_saved_b
             ["ok", "error", "pending", "unknown"]
         );
     }
-    for text in [
-        "sessions where seq all(action:shell -> action:shell) | matches",
-        "sessions where exists tool_call() | limit 1 | matches",
-        "sessions where exists tool_call() | distinct | matches",
+    let text = "sessions where seq all(action:shell -> action:shell) | matches";
+    let error = compile(text, &opts(&[])).unwrap_err();
+    assert_eq!(error.kind(), "not_built", "{text}: {error}");
+
+    use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(directory.path()).unwrap();
+    for (id, commands) in [("a", vec!["a-first", "a-second"]), ("b", vec!["b-only"])] {
+        let session = fixture
+            .session(SessionFacts {
+                id: &format!("claude-code:{id}"),
+                ..Default::default()
+            })
+            .unwrap();
+        let message = fixture
+            .message(
+                session,
+                MessageFacts {
+                    id: &format!("claude-code:m-{id}"),
+                    role: "assistant",
+                    written_by: "model",
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        for command in commands {
+            fixture
+                .tool_call(
+                    session,
+                    message,
+                    CallFacts {
+                        tool: "Bash",
+                        action: "shell",
+                        command: Some(command),
+                        outcome: "ok",
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+    }
+    fixture.derive().unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    for (selection, expected) in [
+        ("sort by id | limit 1", vec!["a-first", "a-second"]),
+        ("distinct", vec!["a-first", "a-second", "b-only"]),
     ] {
-        let error = compile(text, &opts(&[])).unwrap_err();
-        assert_eq!(error.kind(), "not_built", "{text}: {error}");
+        let text = format!(
+            "sessions where exists tool_call() | {selection} | matches | fields step.command as command | sort by command"
+        );
+        let program = compile(&text, &opts(&[])).unwrap();
+        let mut rows = reader.query_rows(&program).unwrap();
+        for row in &mut rows {
+            crate::query::execute::present(&program, row).unwrap();
+        }
+        assert_eq!(
+            rows.iter()
+                .map(|row| row["command"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            expected,
+            "{text}"
+        );
     }
 }
 

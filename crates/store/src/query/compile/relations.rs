@@ -354,6 +354,7 @@ impl<'a> Compiler<'a> {
             .program
             .resolved_times
             .extend(self.resolved_times.into_inner());
+        relation.program.near = self.near.or(relation.program.near);
         relation.program.native_sources = Some(relation.sources.clone());
         Ok(relation.program)
     }
@@ -1068,7 +1069,9 @@ impl Compiler<'_> {
         compiler.catalog = self.catalog.clone();
         compiler.params = std::mem::take(&mut self.params);
         compiler.input_rows = Some(relation.program.sql.clone());
+        compiler.near = self.near.clone().or(relation.program.near.clone());
         let mut result = compiler.native_program_with(&native, None)?;
+        self.near = result.near.clone();
         self.params = std::mem::take(&mut result.params);
         join(&mut result.notes, &mut relation.program.notes);
         join(&mut result.incomplete, &mut relation.program.incomplete);
@@ -1339,7 +1342,9 @@ impl Compiler<'_> {
         compiler.params = std::mem::take(&mut self.params);
         compiler.input_rows = Some(keys);
         compiler.source_near_allowed = false;
+        compiler.near = self.near.clone().or(relation.program.near.clone());
         let mut program = compiler.program(&query)?;
+        self.near = program.near.clone();
         self.params = std::mem::take(&mut program.params);
         join(&mut program.notes, &mut relation.program.notes);
         join(&mut program.incomplete, &mut relation.program.incomplete);

@@ -433,6 +433,7 @@ fn near_builds_only_when_an_answer_needs_ranking() {
             "similar:dates",
             "similar:dates | limit 1 | count",
             "similar:dates | limit 1 | measure sessions",
+            "similar:dates | limit 1 | messages",
             "similar:dates | union (origin:codex)",
             "similar:dates | group by origin | first 1 | count",
         ] {
