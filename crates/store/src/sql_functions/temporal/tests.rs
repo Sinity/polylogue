@@ -192,8 +192,29 @@ fn temporal_order_uses_whole_half_open_periods_and_the_outer_anchor() {
     assert_eq!(distance(&conn, &day, &late, "start"), 15.0);
     assert_eq!(distance(&conn, &day, &late, "end"), 5.0);
     assert_eq!(distance(&conn, &late, &day, "end"), -15.0);
+    let start = native("1970-01-01T00:00:00Z", TimeQuality::Intrinsic, None);
+    assert_eq!(
+        relates(&conn, &day, &start, "containing", None, "when"),
+        Some(true)
+    );
+    assert_eq!(
+        relates(&conn, &day, &day, "containing", None, "when"),
+        Some(true)
+    );
+    assert_eq!(
+        relates(&conn, &point, &point, "containing", None, "when"),
+        Some(true)
+    );
+    assert_eq!(
+        relates(&conn, &point, &day, "containing", None, "when"),
+        Some(false)
+    );
     // The span's end is excluded from membership.
     let end = native("1970-01-01T00:00:10Z", TimeQuality::Intrinsic, None);
+    assert_eq!(
+        relates(&conn, &day, &end, "containing", None, "when"),
+        Some(false)
+    );
     assert_eq!(
         relates(&conn, &end, &day, "during", None, "when"),
         Some(false)

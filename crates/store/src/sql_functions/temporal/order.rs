@@ -118,7 +118,15 @@ fn relates(
                 point >= b.start && point < b.end
             }
         }
-        OrderRelation::Containing => b.start >= a.start && b.end <= a.end,
+        OrderRelation::Containing => {
+            if b.coarse {
+                a.coarse && b.start >= a.start && b.end <= a.end
+            } else if a.coarse {
+                b.start >= a.start && b.start < a.end
+            } else {
+                b.start == a.start
+            }
+        }
     }
 }
 
