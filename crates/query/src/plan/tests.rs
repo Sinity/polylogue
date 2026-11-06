@@ -365,3 +365,59 @@ fn the_catalog_fingerprint_is_computed_once_per_process() {
     let bytes = serde_json::to_vec(&crate::catalog::catalog(&[])).unwrap();
     assert_eq!(first, blake3::hash(&bytes).to_hex().as_str());
 }
+
+#[test]
+fn captured_dependency_reuses_proven_original_identity_after_representation_change() {
+    use polylogue_model::query_objects::QueryObject;
+    use serde_json::json;
+    let span = json!({"start":0,"end":1});
+    let ast = json!({"source":{"kind":"unit","unit":"sessions","implicit":false,"condition":{"span":span,"kind":{"kind":"exists","unit":"messages","condition":null}}},"attach":[],"stages":[{"span":span,"kind":{"kind":"matches"}}]});
+    let native = crate::catalog::catalog(&[]);
+    let form =
+        polylogue_model::query_objects::evolution::legacy_normal_form(&ast, &native).unwrap();
+    let id = identity::question_id_from_normal_form(&form, &BTreeMap::new()).unwrap();
+    let migrated = QueryObject::from_structured_v1(json!({"id":id,"normal_form":form,"parameters":{},"identity_ast":ast,"source_outputs":[],"definitions":[],"dependencies":[],"edges":[]})).unwrap();
+    assert_ne!(
+        identity::normal_form(&migrated.identity_ast, &native).unwrap(),
+        migrated.normal_form
+    );
+    let captured = replay(&migrated, catalog_fingerprint()).unwrap();
+    let mut bindings = Bindings::default();
+    bindings
+        .add_saved(
+            "retained",
+            &captured,
+            "synthetic-revision",
+            "synthetic-root",
+        )
+        .unwrap();
+    let wrapper = prepare("query:retained | limit 1", &bindings, |_| Ok(())).unwrap();
+    let wrapper = wrapper.query_object().unwrap();
+    let dependency = wrapper
+        .definitions
+        .iter()
+        .find(|node| node.question == id)
+        .unwrap();
+    assert_eq!(dependency.identity_ast, migrated.identity_ast);
+    assert_eq!(dependency.normal_form, migrated.normal_form);
+    assert!(dependency.historical_source.is_some());
+    // The hash-keyed dependency is backed by the parent's validated closure,
+    // even when its current serialization no longer hashes to the original ID.
+    let selected = Bindings {
+        saved: saved_query_bindings(&wrapper).unwrap(),
+        ..Default::default()
+    };
+    let selected = prepare(&format!("query:{id}"), &selected, |_| Ok(())).unwrap();
+    assert_eq!(selected.definitions()[0].question_id, id);
+    let selected = selected.query_object().unwrap();
+    validate_object(&selected).unwrap();
+    assert!(
+        selected
+            .definitions
+            .iter()
+            .any(|node| node.question == id && node.historical_source.is_some())
+    );
+    let mut forged = wrapper;
+    forged.definitions[0].identity_ast.transforms.clear();
+    assert!(saved_query_bindings(&forged).is_err());
+}

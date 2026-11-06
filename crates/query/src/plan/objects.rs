@@ -296,7 +296,7 @@ pub fn saved_query_bindings(
             denominator: None,
             conflicts: vec![],
             body: crate::SavedQueryBody::Frozen {
-                object: Some(Box::new(object.clone())),
+                object: Some(std::sync::Arc::new(object.clone())),
                 syntax: query_language::format::format_query(&object.identity_ast, &native)
                     .map_err(language)?,
             },
@@ -305,12 +305,77 @@ pub fn saved_query_bindings(
     Ok(saved)
 }
 
+pub(super) fn frozen_root(object: &QueryObject) -> FrozenQueryDefinition {
+    FrozenQueryDefinition {
+        historical_source: object.historical_source.as_ref().map(|source| {
+            let mut record = source.record.clone();
+            record
+                .as_object_mut()
+                .expect("validated historical object")
+                .retain(|key, _| {
+                    matches!(
+                        key.as_str(),
+                        "normal_form" | "parameters" | "identity_ast" | "source_outputs"
+                    )
+                });
+            record["question"] =
+                serde_json::to_value(object.id).expect("question identity serialization");
+            Box::new(polylogue_model::query_objects::HistoricalQuerySource {
+                format: source.format,
+                record,
+            })
+        }),
+        question: object.id,
+        normal_form: object.normal_form.clone(),
+        parameters: object.parameters.clone(),
+        identity_ast: object.identity_ast.clone(),
+        source_outputs: object.source_outputs.clone(),
+    }
+}
+
+/// Select a proven node and exactly its retained dependency closure. Reusing a
+/// captured node never derives its original identity from its upgraded text.
+pub(super) fn retained_definition(
+    object: &QueryObject,
+    question: QuestionId,
+) -> Result<(FrozenQueryDefinition, Vec<FrozenQueryDefinition>), QueryError> {
+    validate_object(object)?;
+    let node = if question == object.id {
+        frozen_root(object)
+    } else {
+        object
+            .definitions
+            .iter()
+            .find(|node| node.question == question)
+            .cloned()
+            .ok_or_else(|| invalid("saved definition is absent from its retained object"))?
+    };
+    let native = runtime_catalog(object)?;
+    let mut queue = VecDeque::from(dependencies(&edges(&node.identity_ast, &native)?));
+    let mut seen = BTreeSet::new();
+    let mut closure = Vec::new();
+    while let Some(id) = queue.pop_front() {
+        if !seen.insert(id.to_string()) {
+            continue;
+        }
+        let dependency = object
+            .definitions
+            .iter()
+            .find(|node| node.question == id)
+            .ok_or_else(|| invalid(format!("missing retained query:{id}")))?;
+        queue.extend(dependencies(&edges(&dependency.identity_ast, &native)?));
+        closure.push(dependency.clone());
+    }
+    Ok((node, closure))
+}
+
 /// Bind only the declarations retained with this immutable definition closure.
 fn runtime_catalog(object: &QueryObject) -> Result<Catalog, QueryError> {
     Ok(catalog(&all_outputs(object)?))
 }
 fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, QueryError> {
     let mut bindings = Bindings::default();
+    let captured = std::sync::Arc::new(object.clone());
     for node in &object.definitions {
         let text =
             query_language::format::format_query(&node.identity_ast, native).map_err(language)?;
@@ -325,7 +390,7 @@ fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, Q
                 denominator: None,
                 conflicts: vec![],
                 body: crate::SavedQueryBody::Frozen {
-                    object: None,
+                    object: Some(captured.clone()),
                     syntax: text.clone(),
                 },
             }],

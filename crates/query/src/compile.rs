@@ -54,12 +54,21 @@ pub struct SavedQuery {
 pub enum SavedQueryBody {
     Frozen {
         syntax: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        object: Option<Box<polylogue_model::query_objects::QueryObject>>,
+        #[serde(
+            skip_serializing_if = "Option::is_none",
+            serialize_with = "serialize_retained_object"
+        )]
+        object: Option<std::sync::Arc<polylogue_model::query_objects::QueryObject>>,
     },
     Unavailable {
         reason: String,
     },
+}
+fn serialize_retained_object<S: serde::Serializer>(
+    object: &Option<std::sync::Arc<polylogue_model::query_objects::QueryObject>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    object.as_deref().serialize(serializer)
 }
 impl SavedQuery {
     pub fn executable_text(&self) -> Result<&str, QueryError> {

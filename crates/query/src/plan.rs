@@ -99,7 +99,7 @@ fn prepare_inner(
     let mut catalog = options.catalog();
     let mut query = crate::parse::with_catalog(text, &catalog)?;
     let mut definitions = Vec::new();
-    let mut frozen = Vec::new();
+    let mut frozen: Vec<polylogue_model::query_objects::FrozenQueryDefinition> = Vec::new();
     let mut identities = BTreeMap::<String, QuestionId>::new();
     walk(
         &mut query,
@@ -169,14 +169,38 @@ fn prepare_inner(
             });
         }
         let definition = crate::compile::saved_definition(text, 0, &name, options)?;
+        if let crate::SavedQueryBody::Frozen {
+            object: Some(object),
+            ..
+        } = &definition.body
+        {
+            let (node, closure) = objects::retained_definition(object, definition.hash)?;
+            for node in std::iter::once(node).chain(closure) {
+                if let Some(existing) = frozen
+                    .iter()
+                    .find(|existing| existing.question == node.question)
+                {
+                    if *existing != node {
+                        return Err(QueryError::Invalid {
+                            message: "one retained question has conflicting captured bodies".into(),
+                            position: 0,
+                        });
+                    }
+                } else {
+                    frozen.push(node);
+                }
+            }
+            definitions.push(ResolvedDefinition {
+                name: name.clone(),
+                revision: definition.revision.clone(),
+                root: definition.root.clone(),
+                question_id: definition.hash,
+            });
+            identities.insert(name, definition.hash);
+            continue;
+        }
         stack.push(name.clone());
-        let nested = match &definition.body {
-            crate::SavedQueryBody::Frozen {
-                object: Some(object),
-                ..
-            } => objects::replay(object, catalog_fingerprint())?,
-            _ => prepare_inner(definition.executable_text()?, options, resolve, stack)?,
-        };
+        let nested = prepare_inner(definition.executable_text()?, options, resolve, stack)?;
         stack.pop();
         if nested.question_id != definition.hash {
             return Err(QueryError::Invalid {
@@ -185,31 +209,7 @@ fn prepare_inner(
             });
         }
         let object = nested.query_object()?;
-        frozen.push(polylogue_model::query_objects::FrozenQueryDefinition {
-            historical_source: object.historical_source.as_ref().map(|source| {
-                let mut record = source.record.clone();
-                record
-                    .as_object_mut()
-                    .expect("validated historical object")
-                    .retain(|key, _| {
-                        matches!(
-                            key.as_str(),
-                            "normal_form" | "parameters" | "identity_ast" | "source_outputs"
-                        )
-                    });
-                record["question"] =
-                    serde_json::to_value(object.id).expect("question id serialization");
-                Box::new(polylogue_model::query_objects::HistoricalQuerySource {
-                    format: source.format,
-                    record,
-                })
-            }),
-            question: object.id,
-            normal_form: object.normal_form,
-            parameters: object.parameters,
-            identity_ast: object.identity_ast,
-            source_outputs: object.source_outputs,
-        });
+        frozen.push(objects::frozen_root(&object));
         for dependency in object.definitions {
             if !frozen
                 .iter()
