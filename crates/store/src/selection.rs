@@ -156,14 +156,32 @@ impl RowIdentity {
             RowBasis::Group { columns } => Self::Group {
                 keys: columns
                     .iter()
-                    .map(|column| (column.clone(), row[column].clone()))
+                    .map(|column| {
+                        (
+                            program
+                                .column_slots
+                                .iter()
+                                .find_map(|(name, slot)| (slot == column).then(|| name.clone()))
+                                .unwrap_or_else(|| column.clone()),
+                            row[column].clone(),
+                        )
+                    })
                     .collect(),
             },
             RowBasis::Summary => Self::Summary,
             RowBasis::Distinct { columns } if !program.ranked => Self::Distinct {
                 values: columns
                     .iter()
-                    .map(|column| (column.clone(), row[column].clone()))
+                    .map(|column| {
+                        (
+                            program
+                                .column_slots
+                                .iter()
+                                .find_map(|(name, slot)| (slot == column).then(|| name.clone()))
+                                .unwrap_or_else(|| column.clone()),
+                            row[column].clone(),
+                        )
+                    })
                     .collect(),
             },
             _ => return None,
@@ -1029,9 +1047,16 @@ fn aggregate_values(program: &Program, row: &Value) -> BTreeMap<String, Option<f
                 polylogue_query::ColKind::Number
                     | polylogue_query::ColKind::Money
                     | polylogue_query::ColKind::Duration
-            ) && !keys.contains(&column.name)
+            ) && !keys
+                .iter()
+                .any(|key| key == program.column_slot(&column.name))
         })
-        .map(|column| (column.name.clone(), row[&column.name].as_f64()))
+        .map(|column| {
+            (
+                column.name.clone(),
+                row[program.column_slot(&column.name)].as_f64(),
+            )
+        })
         .collect()
 }
 

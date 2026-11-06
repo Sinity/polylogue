@@ -4,43 +4,6 @@
 use super::*;
 
 impl<'a> Compiler<'a> {
-    pub(super) fn sort(
-        &mut self,
-        key: &Expression,
-        desc: bool,
-        scope: &RowContext,
-        at: usize,
-    ) -> Result<Vec<String>, QueryError> {
-        let identity: Vec<String> = units::spec(scope.unit)
-            .identity
-            .iter()
-            .map(|term| scope.a.expand(term))
-            .collect();
-        if matches!(key, Expression::Function { name, .. } if name == "random") {
-            return Ok(match parse_random_seed(key)?.or(self.opts.random_seed) {
-                Some(seed) => {
-                    let name = match identity.as_slice() {
-                        [one] => format!("CAST({one} AS TEXT)"),
-                        terms => format!("json_array({})", terms.join(", ")),
-                    };
-                    let mut order = vec![format!("pl_random({name}, '{seed}')")];
-                    order.extend(identity);
-                    order
-                }
-                None => vec!["random()".into()],
-            });
-        }
-        let (expr, kind) = self.sql_expression(key, scope, at)?;
-        scalar(kind, &key.column(), at)?;
-        if let Expression::Field { name } = key {
-            self.show(name, &expr, kind, Self::field_reference(name, scope));
-        }
-        let dir = if desc { " DESC" } else { "" };
-        let mut order = vec![format!("({expr}) IS NULL"), format!("({expr}){dir}")];
-        order.extend(identity);
-        Ok(order)
-    }
-
     /// Finds the unit a field belongs to before its name becomes an alias.
     pub(super) fn field_reference(field: &str, scope: &RowContext) -> Option<ColumnReference> {
         let lower = field.to_ascii_lowercase();
@@ -83,17 +46,6 @@ impl<'a> Compiler<'a> {
             at,
             &mut self.aliases,
         )
-    }
-
-    pub(super) fn group_key(
-        &mut self,
-        key: &Expression,
-        scope: &RowContext,
-        at: usize,
-    ) -> Result<(String, String, ColKind), QueryError> {
-        let (expr, kind) = self.sql_expression(key, scope, at)?;
-        scalar(kind, &key.column(), at)?;
-        Ok((key.column(), Self::display_value(&expr, kind), kind))
     }
 
     pub(super) fn agg(
@@ -285,113 +237,6 @@ impl<'a> Compiler<'a> {
             }
         }
         Ok(out)
-    }
-
-    /// `| where …` after grouping: conditions on the group's columns.
-    pub(super) fn group_cond(
-        &mut self,
-        c: &Condition,
-        keys: Option<&[(String, String, ColKind)]>,
-        aggs: Option<&[(String, String, ColKind)]>,
-    ) -> Result<String, QueryError> {
-        let cols: Vec<&(String, String, ColKind)> = keys
-            .unwrap_or(&[])
-            .iter()
-            .chain(aggs.unwrap_or(&[]).iter())
-            .collect();
-        let find = |field: &str| {
-            cols.iter()
-                .find(|(n, _, _)| n == field || *n == flat(field))
-                .map(|(n, _, k)| (column_sql(n), *k))
-        };
-        let missing = |field: &str, at: usize| QueryError::Invalid {
-            message: format!(
-                "after grouping, conditions name the group's columns ({}); {field:?} is not one",
-                cols.iter()
-                    .map(|(n, _, _)| n.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            position: at,
-        };
-        Ok(match &c.kind {
-            ConditionKind::And { conditions: all } => format!(
-                "({})",
-                all.iter()
-                    .map(|x| self.group_cond(x, keys, aggs))
-                    .collect::<Result<Vec<_>, _>>()?
-                    .join(" AND ")
-            ),
-            ConditionKind::Or { conditions: any } => format!(
-                "({})",
-                any.iter()
-                    .map(|x| self.group_cond(x, keys, aggs))
-                    .collect::<Result<Vec<_>, _>>()?
-                    .join(" OR ")
-            ),
-            ConditionKind::Not { condition: cond } => {
-                format!("NOT ({})", self.group_cond(cond, keys, aggs)?)
-            }
-            ConditionKind::Compare { left, op, right } => {
-                self.expression_comparison(left, *op, right, c.span.start, &mut |_, field, at| {
-                    let (name, kind) = find(field).ok_or_else(|| missing(field, at))?;
-                    let sql = format!("g.{name}");
-                    Ok((
-                        if kind == ColKind::Money {
-                            format!("({sql}) * 1e9")
-                        } else {
-                            sql
-                        },
-                        kind,
-                    ))
-                })?
-            }
-            ConditionKind::Between { left, from, to } => {
-                let mut resolve = |_: &mut Self, field: &str, at| {
-                    let (name, kind) = find(field).ok_or_else(|| missing(field, at))?;
-                    let sql = format!("g.{name}");
-                    Ok((
-                        if kind == ColKind::Money {
-                            format!("({sql}) * 1e9")
-                        } else {
-                            sql
-                        },
-                        kind,
-                    ))
-                };
-                let lower = self.expression_comparison(
-                    left,
-                    Op::Ge,
-                    &Expression::value(from.clone()),
-                    c.span.start,
-                    &mut resolve,
-                )?;
-                let upper = self.expression_comparison(
-                    left,
-                    Op::Le,
-                    &Expression::value(to.clone()),
-                    c.span.start,
-                    &mut resolve,
-                )?;
-                format!("({lower}) AND ({upper})")
-            }
-            ConditionKind::Match {
-                field,
-                value: Value::Scalar { text, .. },
-            } => {
-                let (n, _) = find(field).ok_or_else(|| missing(field, c.span.start))?;
-                let p = self.text_param(&text.to_lowercase());
-                format!("lower(g.{n}) = {p}")
-            }
-            _ => {
-                return Err(QueryError::Invalid {
-                    message:
-                        "after grouping, `| where` compares the group's columns, such as count >= 3"
-                            .into(),
-                    position: c.span.start,
-                });
-            }
-        })
     }
 
     pub(super) fn attach(

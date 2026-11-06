@@ -25,12 +25,22 @@ impl<'a> Compiler<'a> {
         };
         let mut where_sql: Vec<String> = self.defaults(&scope, &top)?;
         let defaults_only = where_sql.clone();
+        if let Some(input) = &self.input_rows {
+            let key = scope.a.expand(units::spec(scope.unit).key);
+            where_sql.push(format!("{key} IN (SELECT _pk FROM ({input}))"));
+        }
         let mut why = vec![];
         for c in &wheres {
+            if relations::contains_order(c) {
+                continue;
+            }
             let sql = self.cond(c, &scope, true)?;
             where_sql.push(sql);
         }
         for c in &top {
+            if relations::contains_order(c) {
+                continue;
+            }
             // `similar:` ranks rather than filters: it keeps every row.
             let ranking = matches!(&c.kind, ConditionKind::Rank { .. });
             if ranking {
@@ -42,15 +52,7 @@ impl<'a> Compiler<'a> {
             why.push((self.text[c.span.start..c.span.end].to_owned(), alone));
         }
         let mut order: Option<Vec<String>> = None;
-        let mut group: Option<Vec<(String, String, ColKind)>> = None;
-        let mut aggs: Option<Vec<(String, String, ColKind)>> = None;
-        let mut aggregated = false;
-        let mut having: Vec<String> = vec![];
-        let mut group_order: Option<Vec<String>> = None;
-        let mut selection: Option<(Option<u64>, Option<u64>)> = None;
-        let mut distinct = false;
-
-        let mut matched: Option<MatchRel> = preset;
+        let mut matched = preset;
         let mut measure: Option<Measure> = None;
         let mut pending = combine::PendingFusion::default();
         for stage in &q.transforms {
@@ -75,86 +77,16 @@ impl<'a> Compiler<'a> {
                     &mut order,
                 )?;
             }
-            let grouped = group.is_some() || aggs.is_some();
-            if let Some(rel) = &matched {
-                match &stage.kind {
-                    TransformKind::Limit { count: n } => {
-                        let (_, off) = selection.unwrap_or((None, None));
-                        selection = Some((Some(*n), off));
-                    }
-                    TransformKind::Offset { count: n } => {
-                        let (lim, _) = selection.unwrap_or((None, None));
-                        selection = Some((lim, Some(*n)));
-                    }
-                    TransformKind::Aggregate { .. } if aggregated => {
-                        return Err(QueryError::Invalid {
-                            message: "a query aggregates once".into(),
-                            position: stage.span.start,
-                        });
-                    }
-                    TransformKind::Aggregate { aggregates: fns } => {
-                        aggregated = true;
-                        let mut cols = vec![];
-                        if group.is_some()
-                            && !fns.iter().any(|aggregate| {
-                                matches!(aggregate.function, AggregateFunction::Count)
-                            })
-                        {
-                            cols.push(("count".into(), "count(*)".into(), ColKind::Number));
-                        }
-                        for f in fns {
-                            cols.extend(match_agg(f, rel, stage.span.start)?);
-                        }
-                        aggs = Some(cols);
-                    }
-                    TransformKind::Group { keys } if !grouped => {
-                        let mut cols = vec![];
-                        for k in keys {
-                            let (field, bucket) = group_operand(&k.expression)?;
-                            let (name, kind) = match_column(rel, field, stage.span.start)?;
-                            if bucket.is_some() {
-                                return Err(not_built("time buckets after `| matches`"));
-                            }
-                            cols.push((k.column(), column_sql(&name), kind));
-                        }
-                        group = Some(cols);
-                        aggs = Some(vec![("count".into(), "count(*)".into(), ColKind::Number)]);
-                    }
-                    TransformKind::Sort { keys } if !grouped && keys.len() == 1 => {
-                        let key = &keys[0];
-                        let field = field_operand(&key.expression)?;
-                        let (name, _) = match_column(rel, field, stage.span.start)?;
-                        let dir = if key.descending { " DESC" } else { "" };
-                        let name = column_sql(&name);
-                        let mut sorted = vec![format!("{name} IS NULL"), format!("{name}{dir}")];
-                        for identity in ["parent", "match", "position"] {
-                            if rel.columns.iter().any(|(name, _)| name == identity) {
-                                sorted.push(format!("\"{identity}\"{dir}"));
-                            }
-                        }
-                        order = Some(sorted);
-                    }
-                    _ => {
-                        return Err(not_built(
-                            "this stage after `| matches` (limit, offset, sort by, group by, count and agg are built)",
-                        ));
-                    }
-                }
-                continue;
-            }
             match &stage.kind {
                 TransformKind::Scope {
                     unit,
                     condition: cond,
                 } => {
-                    if grouped || scope.unit != Unit::Sessions {
+                    if scope.unit != Unit::Sessions {
                         return Err(QueryError::Invalid {
                             message: "a `| UNIT where …` stage follows a session query".into(),
                             position: stage.span.start,
                         });
-                    }
-                    if selection.is_some() {
-                        self.apply_selection(&scope, &mut where_sql, &order, selection.take());
                     }
                     let sessions = format!(
                         "SELECT s.pk FROM {} WHERE {}",
@@ -186,22 +118,12 @@ impl<'a> Compiler<'a> {
                     where_sql = w;
                     why.clear();
                     order = None;
-                    selection = None;
                     // A fused rank and the lists it names belong to the
                     // sessions.
                     self.fusion = None;
                     self.shown.retain(|(name, ..)| name != "found_in");
                 }
                 TransformKind::Combine { how, query } => {
-                    if grouped {
-                        return Err(QueryError::Invalid {
-                            message: "rows combine before they are grouped or counted".into(),
-                            position: stage.span.start,
-                        });
-                    }
-                    if selection.is_some() {
-                        self.apply_selection(&scope, &mut where_sql, &order, selection.take());
-                    }
                     let at = stage.span.start;
                     match how {
                         Combination::Union => pending
@@ -216,112 +138,6 @@ impl<'a> Compiler<'a> {
                     }
                     why.clear();
                 }
-                TransformKind::Where { condition: cond } if !grouped => {
-                    if selection.is_some() {
-                        self.apply_selection(&scope, &mut where_sql, &order, selection.take());
-                    }
-                    // A later filter is one more condition on the same rows:
-                    // its words rank them as they would in the `where`,
-                    // unless a sort already ordered them.
-                    let sql = self.cond(cond, &scope, order.is_none());
-                    where_sql.push(sql?);
-                    top.extend(top_level(cond));
-                }
-                TransformKind::Where { condition: cond } => {
-                    having.push(self.group_cond(cond, group.as_deref(), aggs.as_deref())?);
-                }
-                TransformKind::Sort { keys } if !grouped => {
-                    if selection.is_some() {
-                        self.apply_selection(&scope, &mut where_sql, &order, selection.take());
-                    }
-                    let mut sorted = vec![];
-                    for key in keys {
-                        let mut terms =
-                            self.sort(&key.expression, key.descending, &scope, stage.span.start)?;
-                        // Identity is appended once, after every explicit sort operand.
-                        let identity = units::spec(scope.unit).identity.len();
-                        if keys.len() > 1 && terms.len() >= identity {
-                            terms.truncate(terms.len() - identity);
-                        }
-                        sorted.extend(terms);
-                    }
-                    if keys.len() > 1 {
-                        sorted.extend(
-                            units::spec(scope.unit)
-                                .identity
-                                .iter()
-                                .map(|term| scope.a.expand(term)),
-                        );
-                    }
-                    order = Some(sorted);
-                }
-                TransformKind::Sort { keys } if keys.len() != 1 => {
-                    return Err(not_built(
-                        "a grouped or matched sort with more than one key",
-                    ));
-                }
-                TransformKind::Sort { keys } => {
-                    let key = &keys[0];
-                    group_order = Some(group_sort(
-                        &key.expression,
-                        key.descending,
-                        group.as_deref(),
-                        aggs.as_deref(),
-                        self.opts.random_seed,
-                    )?);
-                }
-                TransformKind::Group { keys } => {
-                    if grouped {
-                        return Err(QueryError::Invalid {
-                            message: "a query groups once".into(),
-                            position: stage.span.start,
-                        });
-                    }
-                    if selection.is_some() {
-                        self.apply_selection(&scope, &mut where_sql, &order, selection.take());
-                    }
-                    let mut cols = vec![];
-                    for k in keys {
-                        let (_, expression, kind) =
-                            self.group_key(&k.expression, &scope, stage.span.start)?;
-                        cols.push((k.column(), expression, kind));
-                    }
-                    group = Some(cols);
-                    aggs = Some(vec![("count".into(), "count(*)".into(), ColKind::Number)]);
-                }
-                TransformKind::Aggregate { aggregates: fns } => {
-                    if aggregated {
-                        return Err(QueryError::Invalid {
-                            message: "a query aggregates once".into(),
-                            position: stage.span.start,
-                        });
-                    }
-                    aggregated = true;
-                    if selection.is_some() && group.is_none() {
-                        self.apply_selection(&scope, &mut where_sql, &order, selection.take());
-                    }
-                    let mut cols = vec![];
-                    if group.is_some()
-                        && !fns
-                            .iter()
-                            .any(|aggregate| matches!(aggregate.function, AggregateFunction::Count))
-                    {
-                        cols.push(("count".into(), "count(*)".into(), ColKind::Number));
-                    }
-                    for f in fns {
-                        cols.extend(self.agg(f, &scope, stage.span.start)?);
-                    }
-                    aggs = Some(cols);
-                }
-                TransformKind::Limit { count: n } => {
-                    let (_, off) = selection.unwrap_or((None, None));
-                    selection = Some((Some(*n), off));
-                }
-                TransformKind::Offset { count: n } => {
-                    let (lim, _) = selection.unwrap_or((None, None));
-                    selection = Some((lim, Some(*n)));
-                }
-                TransformKind::Distinct => distinct = true,
                 TransformKind::Extension { name, arguments }
                     if name == polylogue_query::catalog::MEASURE =>
                 {
@@ -331,14 +147,11 @@ impl<'a> Compiler<'a> {
                     if rest.iter().any(|argument| !matches!(argument, ExtensionArgument::Optional(values) if values.is_empty())) {
                         return Err(not_built("measure by"));
                     }
-                    if grouped || scope.unit != Unit::Sessions || measure.is_some() {
+                    if scope.unit != Unit::Sessions || measure.is_some() {
                         return Err(QueryError::Invalid {
                             message: "`| measure WHAT` follows a session query and ends it".into(),
                             position: stage.span.start,
                         });
-                    }
-                    if selection.is_some() {
-                        self.apply_selection(&scope, &mut where_sql, &order, selection.take());
                     }
                     measure = Some(Measure {
                         what: value_text(what)?.into(),
@@ -348,15 +161,6 @@ impl<'a> Compiler<'a> {
                     });
                 }
                 TransformKind::Matches => {
-                    if selection.is_some() || distinct {
-                        return Err(not_built("Matches after row selection or distinct"));
-                    }
-                    if grouped {
-                        return Err(QueryError::Invalid {
-                            message: "`| matches` requires an ungrouped relation".into(),
-                            position: stage.span.start,
-                        });
-                    }
                     let found: Vec<&Condition> = top
                         .iter()
                         .filter(|c| {
@@ -409,16 +213,11 @@ impl<'a> Compiler<'a> {
             }
         }
 
-        let rows_answer =
-            matched.is_none() && group.is_none() && aggs.is_none() && measure.is_none();
+        let rows_answer = matched.is_none() && measure.is_none();
         if rows_answer {
             self.setup_near(true);
         }
-
-        // Final ranking cannot change membership. Keep this relation before
-        // constructing fusion's window functions; earlier ordered selections
-        // remain in its predicates. A pending selection still needs ranking.
-        let count_relation = if rows_answer && !distinct && selection.is_none() {
+        let count_relation = if rows_answer {
             let from = self.from(&scope)?;
             let wh = and_all(&where_sql);
             if pending.is_empty() {
@@ -439,7 +238,6 @@ impl<'a> Compiler<'a> {
         } else {
             None
         };
-
         self.fuse_pending(
             std::mem::take(&mut pending),
             &scope,
@@ -450,195 +248,67 @@ impl<'a> Compiler<'a> {
         let recursive = matched.as_ref().is_some_and(|m| m.recursive);
         let ctes = if self.ctes.is_empty() {
             String::new()
-        } else if recursive {
-            format!("WITH RECURSIVE {} ", self.ctes.join(", "))
         } else {
-            format!("WITH {} ", self.ctes.join(", "))
+            format!(
+                "WITH {}{} ",
+                if recursive { "RECURSIVE " } else { "" },
+                self.ctes.join(", ")
+            )
         };
         let from = self.from(&scope)?;
         let wh = and_all(&where_sql);
         let unit = scope.unit;
-
         let mut row_count = None;
         let mut row_membership = None;
         let (sql, shape, columns, order) = if let Some(rel) = matched {
-            let limit = |sql: String| match selection {
-                Some((lim, off)) => format!(
-                    "SELECT * FROM ({sql}) LIMIT {} OFFSET {}",
-                    lim.map_or(-1, |n| n.min(i64::MAX as u64) as i64),
-                    off.unwrap_or(0)
-                ),
-                None => sql,
-            };
-            if group.is_some() || aggs.is_some() {
-                let keys = group.clone().unwrap_or_default();
-                let aggs = aggs
-                    .unwrap_or_else(|| vec![("count".into(), "count(*)".into(), ColKind::Number)]);
-                let mut select: Vec<String> = keys
-                    .iter()
-                    .map(|(n, e, _)| format!("{e} AS {}", column_sql(n)))
-                    .collect();
-                select.extend(
-                    aggs.iter()
-                        .map(|(n, e, _)| format!("{e} AS {}", column_sql(n))),
-                );
-                let columns: Vec<Column> = keys
-                    .iter()
-                    .chain(aggs.iter())
-                    .map(|(n, _, k)| Column {
-                        name: n.clone(),
-                        kind: *k,
-                        reference: None,
-                    })
-                    .collect();
-                if keys.is_empty() {
-                    let sql = format!("{ctes}SELECT {} FROM ({}) mr", select.join(", "), rel.sql);
-                    (sql, Shape::Summary, columns, vec![])
-                } else {
-                    let group_by = keys
-                        .iter()
-                        .map(|(n, _, _)| column_sql(n))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let order = order.unwrap_or_else(|| {
-                        let mut o = vec!["count DESC".to_owned()];
-                        o.extend(group_key_order(&keys, ""));
-                        o.retain(|x| {
-                            x != "count DESC" || aggs.iter().any(|(n, _, _)| n == "count")
-                        });
-                        o
-                    });
-                    let (hidden, keys) = hidden_order(&order, "_o");
-                    let sql = format!(
-                        "{ctes}SELECT *, {} FROM (SELECT {} FROM ({}) mr GROUP BY {group_by}) g ORDER BY {}",
-                        hidden.join(", "),
-                        select.join(", "),
-                        rel.sql,
-                        order_by(&keys)
-                    );
-                    (limit(sql), Shape::Groups, columns, keys)
-                }
-            } else {
-                let columns: Vec<Column> = rel
-                    .columns
-                    .iter()
-                    .map(|(n, k)| Column {
-                        name: n.clone(),
-                        kind: *k,
-                        reference: None,
-                    })
-                    .collect();
-                let (sql, keys) = match order {
-                    Some(o) => {
-                        let (hidden, mut keys) = hidden_order(&o, "_o");
-                        keys.extend(rel.order.iter().cloned());
-                        let sql = format!(
-                            "{ctes}SELECT *, {} FROM ({}) mr ORDER BY {}",
-                            hidden.join(", "),
-                            rel.sql,
-                            order_by(&keys)
-                        );
-                        (sql, keys)
-                    }
-                    None => (format!("{ctes}{}", rel.sql), rel.order.clone()),
-                };
-                (limit(sql), Shape::Matches, columns, keys)
-            }
-        } else if group.is_some() || aggs.is_some() {
-            let keys = group.clone().unwrap_or_default();
-            let aggs =
-                aggs.unwrap_or_else(|| vec![("count".into(), "count(*)".into(), ColKind::Number)]);
-            let mut select: Vec<String> = keys
+            let columns = rel
+                .columns
                 .iter()
-                .map(|(n, e, _)| format!("{e} AS {}", column_sql(n)))
-                .collect();
-            select.extend(
-                aggs.iter()
-                    .map(|(n, e, _)| format!("{e} AS {}", column_sql(n))),
-            );
-            let mut columns: Vec<Column> = keys
-                .iter()
-                .chain(aggs.iter())
-                .map(|(n, _, k)| Column {
-                    name: n.clone(),
-                    kind: *k,
+                .map(|(name, kind)| Column {
+                    name: name.clone(),
+                    kind: *kind,
                     reference: None,
                 })
                 .collect();
-            if keys.is_empty() {
-                let sql = format!("{ctes}SELECT {} FROM {from} WHERE {wh}", select.join(", "));
-                (sql, Shape::Summary, std::mem::take(&mut columns), vec![])
-            } else {
-                let group_by = keys
-                    .iter()
-                    .map(|(n, _, _)| column_sql(n))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let inner = format!(
-                    "SELECT {} FROM {from} WHERE {wh} GROUP BY {group_by}",
-                    select.join(", ")
-                );
-                let order = group_order.unwrap_or_else(|| {
-                    let mut o = vec![];
-                    if aggs.iter().any(|(n, _, _)| n == "count") {
-                        o.push("count DESC".to_owned());
-                    }
-                    o.extend(group_key_order(&keys, ""));
-                    o
-                });
-                let (hidden, keys) = hidden_order(&order, "_o");
-                let mut sql = format!(
-                    "{ctes}SELECT *, {} FROM ({inner}) g WHERE {} ORDER BY {}",
-                    hidden.join(", "),
-                    and_all(&having),
-                    order_by(&keys)
-                );
-                if let Some((lim, off)) = selection {
-                    sql = format!(
-                        "SELECT * FROM ({sql} LIMIT {} OFFSET {})",
-                        lim.map_or(-1, |n| n.min(i64::MAX as u64) as i64),
-                        off.unwrap_or(0)
-                    );
-                }
-                (sql, Shape::Groups, columns, keys)
-            }
+            (
+                format!("{ctes}{}", rel.sql),
+                Shape::Matches,
+                columns,
+                rel.order,
+            )
         } else {
-            if selection.is_some() {
-                self.apply_selection(&scope, &mut where_sql, &order, selection.take());
-            }
-            let wh = and_all(&where_sql);
             let order = order.unwrap_or_else(|| self.default_order(&scope));
             let (pk, mut cols) = row_columns(unit, &scope.a, self.opts.clock.now.as_millisecond());
             if !self.opts.fields.is_empty() {
                 cols.clear();
                 let fields = self.opts.fields.clone();
-                for f in &fields {
-                    let (e, k) = self.expr(f, &scope, 0)?;
+                for field in &fields {
+                    let (expression, kind) = self.expr(field, &scope, 0)?;
                     cols.push((
-                        flat(f),
-                        Self::display_value(&e, k),
-                        k,
-                        Self::field_reference(f, &scope),
+                        flat(field),
+                        Self::display_value(&expression, kind),
+                        kind,
+                        Self::field_reference(field, &scope),
                     ));
                 }
                 self.shown.clear();
             }
             let mut columns: Vec<Column> = cols
                 .iter()
-                .map(|(n, _, k, reference)| Column {
-                    name: n.clone(),
-                    kind: *k,
+                .map(|(name, _, kind, reference)| Column {
+                    name: name.clone(),
+                    kind: *kind,
                     reference: *reference,
                 })
                 .collect();
-            for (n, e, k, reference) in std::mem::take(&mut self.shown) {
-                if !columns.iter().any(|c| c.name == n) {
+            for (name, expression, kind, reference) in std::mem::take(&mut self.shown) {
+                if !columns.iter().any(|c| c.name == name) {
                     columns.push(Column {
-                        name: n.clone(),
-                        kind: k,
+                        name: name.clone(),
+                        kind,
                         reference,
                     });
-                    cols.push((n, e, k, reference));
+                    cols.push((name, expression, kind, reference));
                 }
             }
             if let Some(rank) = self.ranking() {
@@ -649,78 +319,53 @@ impl<'a> Compiler<'a> {
                     reference: None,
                 });
             }
-            let mut select: Vec<String> = vec![format!("{pk} AS _pk")];
+            let mut select = vec![format!("{pk} AS _pk")];
             select.extend(
-                cols.iter()
-                    .map(|(n, e, _, _)| format!("{e} AS {}", column_sql(n))),
+                cols.iter().map(|(name, expression, _, _)| {
+                    format!("{expression} AS {}", column_sql(name))
+                }),
             );
             select.push(format!(
                 "{} AS _near",
                 self.near_rank.as_deref().unwrap_or("1")
             ));
-            if !distinct {
-                for (index, expression) in units::spec(unit).identity.iter().enumerate() {
-                    select.push(format!(
-                        "{} AS _identity{index}",
-                        scope.a.expand(expression)
-                    ));
-                }
-                if let Some(first_seen) = fields::sql(
-                    unit,
-                    "first_seen",
-                    &scope.a,
-                    self.opts.clock.now.as_millisecond(),
-                ) {
-                    select.push(format!("{first_seen} AS _first_seen"));
-                }
+            for (index, expression) in units::spec(unit).identity.iter().enumerate() {
+                select.push(format!(
+                    "{} AS _identity{index}",
+                    scope.a.expand(expression)
+                ));
             }
-            let (sql, keys) = if distinct {
-                // Distinct rows are identified by their values alone.
-                let keys: Vec<OrderKey> = columns
-                    .iter()
-                    .map(|c| OrderKey::ascending(&c.name))
-                    .collect();
-                let names = columns
-                    .iter()
-                    .map(|c| c.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let sql = format!(
-                    "{ctes}SELECT min(_pk) AS _pk, {names}, max(_near) AS _near FROM (SELECT {} FROM {from} WHERE {wh}) GROUP BY {names} ORDER BY {}",
-                    select.join(", "),
-                    order_by(&keys)
-                );
-                (sql, keys)
-            } else {
-                // Selections already live in `wh`, including any ordering a
-                // limit or offset needs. The final presentation order and
-                // projected fields do not affect this relation's cardinality.
-                let without = self.near_rank.as_ref().map_or_else(
-                    || "0".to_owned(),
-                    |near| format!("count(*) FILTER (WHERE ({near}) IS NULL)"),
-                );
-                let (count_from, count_where) = count_relation
-                    .as_ref()
-                    .map(|(from, wh)| (from.as_str(), wh.as_str()))
-                    .unwrap_or((&from, &wh));
-                row_count = Some(format!(
-                    "{ctes}SELECT count(*), {without} FROM {count_from} WHERE {count_where}"
-                ));
-                row_membership = Some(format!(
-                    "{ctes}SELECT {pk} AS _pk FROM {count_from} WHERE {count_where}"
-                ));
-                let (hidden, keys) = hidden_order(&order, "_o");
-                select.extend(hidden);
-                let sql = format!(
-                    "{ctes}SELECT {} FROM {from} WHERE {wh} ORDER BY {}",
-                    select.join(", "),
-                    order_by(&keys)
-                );
-                (sql, keys)
-            };
+            if let Some(first_seen) = fields::sql(
+                unit,
+                "first_seen",
+                &scope.a,
+                self.opts.clock.now.as_millisecond(),
+            ) {
+                select.push(format!("{first_seen} AS _first_seen"));
+            }
+            let without = self.near_rank.as_ref().map_or_else(
+                || "0".to_owned(),
+                |near| format!("count(*) FILTER (WHERE ({near}) IS NULL)"),
+            );
+            let (count_from, count_where) = count_relation
+                .as_ref()
+                .map(|(from, wh)| (from.as_str(), wh.as_str()))
+                .unwrap_or((&from, &wh));
+            row_count = Some(format!(
+                "{ctes}SELECT count(*), {without} FROM {count_from} WHERE {count_where}"
+            ));
+            row_membership = Some(format!(
+                "{ctes}SELECT {pk} AS _pk FROM {count_from} WHERE {count_where}"
+            ));
+            let (hidden, keys) = hidden_order(&order, "_o");
+            select.extend(hidden);
+            let sql = format!(
+                "{ctes}SELECT {} FROM {from} WHERE {wh} ORDER BY {}",
+                select.join(", "),
+                order_by(&keys)
+            );
             (sql, Shape::Rows, columns, keys)
         };
-
         let mut attach = vec![];
         if !q.attach.is_empty() {
             if shape != Shape::Rows {
@@ -783,11 +428,12 @@ impl<'a> Compiler<'a> {
                 polylogue_model::derived::CLUSTER_GAP_MS / 60_000
             ));
         }
-        let row_basis = match shape {
-            Shape::Rows if distinct => RowBasis::Distinct {
-                columns: columns.iter().map(|c| c.name.clone()).collect(),
-            },
-            Shape::Rows => RowBasis::Native {
+        let row_basis = if shape == Shape::Matches {
+            RowBasis::Group {
+                columns: vec!["parent".into(), "match".into(), "position".into()],
+            }
+        } else {
+            RowBasis::Native {
                 unit,
                 columns: units::spec(unit)
                     .identity
@@ -795,19 +441,7 @@ impl<'a> Compiler<'a> {
                     .enumerate()
                     .map(|(i, _)| format!("_identity{i}"))
                     .collect(),
-            },
-            Shape::Groups => RowBasis::Group {
-                columns: group
-                    .as_ref()
-                    .into_iter()
-                    .flatten()
-                    .map(|(name, _, _)| name.clone())
-                    .collect(),
-            },
-            Shape::Summary => RowBasis::Summary,
-            Shape::Matches => RowBasis::Unknown {
-                reason: "match tuple identity is not projected".into(),
-            },
+            }
         };
         Ok(Program {
             row_basis,
@@ -877,34 +511,6 @@ impl<'a> Compiler<'a> {
         });
         where_sql.clear();
         Ok(())
-    }
-
-    /// A selection (`| limit`, `| offset`) turned into a membership test,
-    /// so later stages filter, group or count only the selected rows.
-    pub(super) fn apply_selection(
-        &mut self,
-        scope: &RowContext,
-        where_sql: &mut Vec<String>,
-        order: &Option<Vec<String>>,
-        selection: Option<(Option<u64>, Option<u64>)>,
-    ) {
-        let Some((lim, off)) = selection else {
-            return;
-        };
-        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now.as_millisecond());
-        if order.is_none() {
-            self.setup_near(true);
-        }
-        let order = order.clone().unwrap_or_else(|| self.default_order(scope));
-        let from = self.from(scope).unwrap_or_default();
-        let inner = format!(
-            "SELECT {pk} FROM {from} WHERE {} ORDER BY {} LIMIT {} OFFSET {}",
-            and_all(where_sql),
-            order.join(", "),
-            lim.map_or(-1, |n| n.min(i64::MAX as u64) as i64),
-            off.unwrap_or(0)
-        );
-        where_sql.push(format!("{pk} IN ({inner})"));
     }
 
     /// The FROM clause of a unit, joining the rows its fields read.

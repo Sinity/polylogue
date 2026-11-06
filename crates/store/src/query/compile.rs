@@ -485,121 +485,6 @@ pub(crate) enum FieldOp<'q> {
 fn column_sql(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
-fn match_column(rel: &MatchRel, name: &str, at: usize) -> Result<(String, ColKind), QueryError> {
-    let column = rel
-        .columns
-        .iter()
-        .find(|(n, _)| n == name)
-        .cloned()
-        .ok_or_else(|| QueryError::Invalid {
-            message: format!(
-                "match rows have no field {name:?}; they have {}",
-                rel.columns
-                    .iter()
-                    .map(|(n, _)| n.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            position: at,
-        })?;
-    scalar(column.1, name, at)?;
-    Ok(column)
-}
-
-/// An aggregate over `| matches` rows: computed over the pairs or tuples.
-fn match_agg(
-    f: &Aggregate,
-    rel: &MatchRel,
-    at: usize,
-) -> Result<Vec<(String, String, ColKind)>, QueryError> {
-    let col = f.column();
-    let Some(field) = f.field()? else {
-        return Ok(vec![(col, "count(*)".into(), ColKind::Number)]);
-    };
-    let (name, kind) = match_column(rel, field, at)?;
-    let expression = column_sql(&name);
-    let unknown = (
-        format!("unknown_{}", flat(&name)),
-        format!("count(*) - count({expression})"),
-        ColKind::Number,
-    );
-    Ok(match &f.function {
-        AggregateFunction::Count => vec![(col, format!("count({expression})"), ColKind::Number)],
-        AggregateFunction::Sum => vec![(col, format!("sum({expression})"), kind), unknown],
-        AggregateFunction::Avg => vec![(col, format!("avg({expression})"), kind), unknown],
-        AggregateFunction::Min => vec![(col, format!("min({expression})"), kind), unknown],
-        AggregateFunction::Max => vec![(col, format!("max({expression})"), kind), unknown],
-        AggregateFunction::Percentile(p) => {
-            vec![
-                (col, format!("pl_percentile({expression}, {p})"), kind),
-                unknown,
-            ]
-        }
-        AggregateFunction::CountDistinct => {
-            vec![(
-                col,
-                format!("count(DISTINCT {expression})"),
-                ColKind::Number,
-            )]
-        }
-        _ => return Err(not_built("this aggregate")),
-    })
-}
-
-fn not_built(what: &str) -> QueryError {
-    QueryError::NotBuilt {
-        what: what.to_owned(),
-    }
-}
-
-fn and_all(parts: &[String]) -> String {
-    if parts.is_empty() {
-        "1".into()
-    } else {
-        parts.join(" AND ")
-    }
-}
-
-/// The conditions joined to the rest of the `where` by AND, with
-/// parenthesized ANDs flattened.
-fn top_level(c: &Condition) -> Vec<Condition> {
-    match &c.kind {
-        ConditionKind::And { conditions: all } => all.iter().flat_map(top_level).collect(),
-        _ => vec![c.clone()],
-    }
-}
-
-/// Field names the top-level conditions name, `session.` prefixes removed
-/// for row units.
-fn named_fields(top: &[Condition], unit: Unit) -> HashSet<String> {
-    let mut out = HashSet::new();
-    for c in top {
-        let f = match &c.kind {
-            ConditionKind::Match { field, .. } => field.as_str(),
-            ConditionKind::Reference { reference } => match reference.split_once(':') {
-                Some((field, _)) => field,
-                None => continue,
-            },
-            ConditionKind::Since { field, .. } | ConditionKind::Until { field, .. } => field,
-            ConditionKind::Compare { left, .. } | ConditionKind::Between { left, .. } => match left
-            {
-                Expression::Field { name } => name,
-                _ => continue,
-            },
-            _ => continue,
-        };
-        let f = f.to_ascii_lowercase();
-        let f = if unit != Unit::Sessions {
-            f.strip_prefix("session.").map(str::to_owned).unwrap_or(f)
-        } else {
-            f
-        };
-        out.insert(f);
-    }
-    out
-}
-
-/// Plain words search this unit.
 fn text_unit(unit: Unit) -> bool {
     match units::spec(unit).search {
         Search::Hits { words, .. } => words,
@@ -651,14 +536,6 @@ fn kind_name(k: Kind) -> &'static str {
     }
 }
 
-fn bucket_name(b: Bucket) -> &'static str {
-    match b {
-        Bucket::Day => "day",
-        Bucket::Week => "week",
-        Bucket::Month => "month",
-    }
-}
-
 /// The message refused for a value outside a closed set: the set, and the
 /// units where the value does exist (`"error" is an outcome of tool_calls`).
 fn closed_set_message(def: &fields::Field, value: &str) -> String {
@@ -682,73 +559,6 @@ fn closed_set_message(def: &fields::Field, value: &str) -> String {
         m.push_str(&format!("; \"{value}\" is {article} {} of {u}", def.name));
     }
     m
-}
-
-/// Each nullable group key contributes separate null-flag and value terms to
-/// SQL projection, ordering and cursor comparisons.
-fn group_key_order(keys: &[(String, String, ColKind)], prefix: &str) -> Vec<String> {
-    keys.iter()
-        .flat_map(|(name, _, _)| {
-            [
-                format!("{prefix}{} IS NULL", column_sql(name)),
-                format!("{prefix}{}", column_sql(name)),
-            ]
-        })
-        .collect()
-}
-
-fn group_sort(
-    key: &Expression,
-    desc: bool,
-    keys: Option<&[(String, String, ColKind)]>,
-    aggs: Option<&[(String, String, ColKind)]>,
-    random_seed: Option<u64>,
-) -> Result<Vec<String>, QueryError> {
-    let keys = keys.unwrap_or(&[]);
-    let mut order = match key {
-        Expression::Function { .. } => {
-            let seed = parse_random_seed(key)?;
-            if let Some(seed) = seed.or(random_seed) {
-                let identity = format!(
-                    "json_array({})",
-                    keys.iter()
-                        .map(|(n, _, _)| format!("g.{}", column_sql(n)))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                );
-                vec![format!("pl_random({identity}, '{seed}')")]
-            } else {
-                vec!["random()".into()]
-            }
-        }
-        Expression::Field { name: field } => {
-            let name = keys
-                .iter()
-                .chain(aggs.unwrap_or(&[]).iter())
-                .find(|(name, _, _)| name == field || *name == flat(field))
-                .map(|(name, _, _)| name.clone())
-                .unwrap_or_else(|| flat(field));
-            if !keys
-                .iter()
-                .chain(aggs.unwrap_or(&[]).iter())
-                .any(|(n, _, _)| *n == name)
-            {
-                return Err(QueryError::Invalid {
-                    message: format!(
-                        "after grouping, sort by one of the group's columns; {field:?} is not one"
-                    ),
-                    position: 0,
-                });
-            }
-            let dir = if desc { " DESC" } else { "" };
-            let name = column_sql(&name);
-            vec![format!("g.{name} IS NULL"), format!("g.{name}{dir}")]
-        }
-        _ => return Err(not_built("this computed sort expression")),
-    };
-    // A group's complete key is its stable identity, even when counts tie.
-    order.extend(group_key_order(keys, "g."));
-    Ok(order)
 }
 
 /// The FROM clause of a unit over the given aliases.
@@ -864,39 +674,6 @@ fn value_text(value: &Value) -> Result<&str, QueryError> {
         Value::Unknown => Ok("unknown"),
         Value::Parameter { name } => Ok(name),
         _ => Err(not_built("a set in this scalar position")),
-    }
-}
-trait AggregateField {
-    fn field(&self) -> Result<Option<&str>, QueryError>;
-}
-impl AggregateField for Aggregate {
-    fn field(&self) -> Result<Option<&str>, QueryError> {
-        match self.arguments.as_slice() {
-            [] if self.function == AggregateFunction::Count => Ok(None),
-            [Expression::Field { name }] => Ok(Some(name)),
-            _ => Err(not_built("this aggregate expression")),
-        }
-    }
-}
-#[derive(Clone, Copy)]
-enum Bucket {
-    Day,
-    Week,
-    Month,
-}
-fn group_operand(operand: &Expression) -> Result<(&str, Option<Bucket>), QueryError> {
-    match operand {
-        Expression::Field { name } => Ok((name, None)),
-        Expression::Function { name, arguments } if arguments.len() == 1 => {
-            let bucket = match name.as_str() {
-                "day" => Bucket::Day,
-                "week" => Bucket::Week,
-                "month" => Bucket::Month,
-                _ => return Err(not_built(&format!("group key {name}"))),
-            };
-            Ok((field_operand(&arguments[0])?, Some(bucket)))
-        }
-        _ => Err(not_built("this group key")),
     }
 }
 fn parse_random_seed(operand: &Expression) -> Result<Option<u64>, QueryError> {

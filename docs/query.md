@@ -108,11 +108,12 @@ Stages apply in the order written:
 - `sort by F [asc|desc], …`: unknowns last in either direction; row identity is the final tie-break. `sort by random[(seed)]` keeps its seed in the cursor.
 - `group by K1, K2 | count` or `| agg …`: keys are fields and `day()`, `week()`, `month()`.
 - `agg count(), sum(E), avg(E), min(E), max(E), pNN(E), count_distinct(E), histogram(E), corr(E, F), covered(start, end)`: expressions are evaluated at the input row's grain; unknown and partial values are reported as `unknown_F` and `partial_F`; percentiles are nearest-rank. `covered` measures the union of intervals, so overlap is counted once. `histogram` returns ordered JSON bins with `value` and `count`; `corr` is Pearson correlation over complete known pairs and stays unknown for fewer than two pairs or constant input. Arithmetic preserves dimensions; division by zero and operations on unknown inputs stay unknown.
-- `| where C` after grouping filters groups.
+- `| where C` after grouping filters groups. Projection, filtering, sorting, row selection, grouping and aggregation execute at their written relation boundaries. An output alias may use any accepted name, including `_pk`; physical row keys and ordering slots occupy a separate namespace.
+- `| group by K | first N` returns the first N input rows of each retained group, in the input order. A key join returns every matching pair, with the right-hand columns under `match.`. An order condition keeps an outer row once and exposes its nearest satisfying witness under `match.`; a later order condition replaces that namespace.
 - `limit N`, `offset N` are selections and change the question; there is no maximum.
 - `distinct`; `matches`; `| UNIT [where C]` (rows of another unit within the matched sessions); `fields a,b` (projection; `--fields` on the command line).
 - `| measure WHAT` hands the selection to a measure ([measures.md](measures.md)).
-- Further stages are part of the language and answer `not_built` until built: a per-group limit (`| group by origin | first 5`), derived keys (`program(command)`, `fingerprint(text)`), `| series`, `| extract number before "MB/s" as rate`, `| cluster by similar [k:20]`, and `let` names within one query.
+- Further stages are part of the language and answer `not_built` until built: derived keys (`program(command)`, `fingerprint(text)`), `| series`, `| extract number before "MB/s" as rate`, `| cluster by similar [k:20]`, and `let` names within one query.
 
 ### Attached rows
 

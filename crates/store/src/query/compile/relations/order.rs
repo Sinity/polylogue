@@ -21,6 +21,7 @@ impl Compiler<'_> {
         scope: Option<&str>,
         at: usize,
     ) -> Result<String, QueryError> {
+        outer.reserve(&inner);
         let pair = self.pair_order(outer, &inner, relation, within, point, scope, at)?;
         let index = outer.slot();
         let chosen = outer.slot();
@@ -44,7 +45,7 @@ impl Compiler<'_> {
             outer,
             &inner,
             &mut projections,
-            within.map(|_| pair.distance.as_str()),
+            Some(pair.distance.as_str()),
         );
         projections.push(format!(
             "CASE WHEN i.{} IS NOT NULL THEN 1 WHEN r.{} THEN NULL ELSE 0 END AS {}",
@@ -85,6 +86,7 @@ impl Compiler<'_> {
         on: &JoinOn,
         at: usize,
     ) -> Result<(), QueryError> {
+        outer.reserve(&inner);
         let pair = match on {
             JoinOn::Order {
                 relation,
@@ -164,6 +166,14 @@ impl Compiler<'_> {
         projections: &mut Vec<String>,
         distance: Option<&str>,
     ) {
+        outer
+            .program
+            .columns
+            .retain(|column| !column.name.starts_with("match."));
+        outer
+            .program
+            .column_slots
+            .retain(|name, _| !name.starts_with("match."));
         for column in &inner.program.columns {
             let slot = outer.slot();
             projections.push(format!(
@@ -267,6 +277,16 @@ impl Compiler<'_> {
             TimePoint::When => "when",
             TimePoint::Start => "start",
             TimePoint::End => "end",
+            TimePoint::MatchWhen
+                if !matches!(relation, OrderRelation::During | OrderRelation::Containing) =>
+            {
+                "match.when"
+            }
+            TimePoint::MatchWhen | TimePoint::MatchStart | TimePoint::MatchEnd => {
+                return Err(not_built(
+                    "matched span endpoints require a source with a declared actual span; Polylogue rows expose occurrence evidence",
+                ));
+            }
         };
         Ok(PairOrder {
             ctes: vec![],

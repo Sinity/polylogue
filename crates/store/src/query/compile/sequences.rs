@@ -177,6 +177,7 @@ impl<'a> Compiler<'a> {
         let parent_order = self.default_order(parent);
         let mut select = vec![
             format!("{child_pk} AS _pk"),
+            format!("{parent_pk} AS _match_parent_pk"),
             format!("{parent_ref} AS parent"),
             format!(
                 "row_number() OVER (PARTITION BY {parent_pk} ORDER BY {}) AS match",
@@ -345,6 +346,10 @@ impl<'a> Compiler<'a> {
         let catalog = self.opts.catalog();
         let mut select = vec![
             "q.pk AS _pk".into(),
+            format!(
+                "{} AS _match_parent_pk",
+                parent.a.expand(units::spec(parent.unit).key)
+            ),
             format!("{} AS parent", row_reference(parent)?),
             "q.mt AS match".into(),
             "q.step + 1 AS position".into(),

@@ -10,11 +10,14 @@ pub(super) struct NativeSource {
     pub key: String,
 }
 
+#[derive(Clone)]
 pub(super) struct Relation {
     pub program: Program,
     pub sources: Vec<NativeSource>,
     pub open_fields: bool,
     next_slot: usize,
+    group: Option<GroupInput>,
+    patterns: Vec<Condition>,
 }
 
 impl Relation {
@@ -28,12 +31,30 @@ impl Relation {
         } else {
             vec![]
         };
+        let next_slot = program
+            .sql
+            .split("_rel_value")
+            .skip(1)
+            .filter_map(|part| {
+                let digits = part
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>();
+                digits.parse::<usize>().ok()
+            })
+            .max()
+            .unwrap_or(0);
         Self {
             program,
             sources,
             open_fields: true,
-            next_slot: 0,
+            next_slot,
+            group: None,
+            patterns: vec![],
         }
+    }
+    pub fn reserve(&mut self, other: &Relation) {
+        self.next_slot = self.next_slot.max(other.next_slot);
     }
     pub fn slot(&mut self) -> String {
         self.next_slot += 1;
@@ -65,8 +86,13 @@ impl Relation {
                 column.kind,
             ));
         }
-        if self.open_fields {
-            for source in self.sources.iter().rev() {
+        {
+            for source in self
+                .sources
+                .iter()
+                .rev()
+                .filter(|source| self.open_fields || source.prefix.starts_with("match."))
+            {
                 if let Some(field) = name.strip_prefix(&source.prefix) {
                     let context = RowContext {
                         unit: source.unit,
@@ -100,13 +126,22 @@ impl Relation {
                 .find(|c| &c.name == name)
                 .and_then(|c| c.reference)
                 .or_else(|| {
-                    self.open_fields
+                    (!self.sources.is_empty())
                         .then(|| {
-                            self.sources.iter().rev().find_map(|source| {
-                                name.strip_prefix(&source.prefix).and_then(|name| {
-                                    Compiler::field_reference(name, &RowContext::plain(source.unit))
+                            self.sources
+                                .iter()
+                                .rev()
+                                .filter(|source| {
+                                    self.open_fields || source.prefix.starts_with("match.")
                                 })
-                            })
+                                .find_map(|source| {
+                                    name.strip_prefix(&source.prefix).and_then(|name| {
+                                        Compiler::field_reference(
+                                            name,
+                                            &RowContext::plain(source.unit),
+                                        )
+                                    })
+                                })
                         })
                         .flatten()
                 }),
@@ -118,12 +153,1017 @@ impl Relation {
     }
 }
 
+#[derive(Clone)]
+struct GroupInput {
+    input: Box<Relation>,
+    keys: Vec<(Column, String, String)>,
+}
+
+pub(super) fn contains_order(condition: &Condition) -> bool {
+    match &condition.kind {
+        ConditionKind::Order { .. } => true,
+        ConditionKind::And { conditions } | ConditionKind::Or { conditions } => {
+            conditions.iter().any(contains_order)
+        }
+        ConditionKind::Not { condition } => contains_order(condition),
+        _ => false,
+    }
+}
+
+fn relational(kind: &TransformKind) -> bool {
+    matches!(
+        kind,
+        TransformKind::Where { .. }
+            | TransformKind::Sort { .. }
+            | TransformKind::Fields { .. }
+            | TransformKind::Group { .. }
+            | TransformKind::Aggregate { .. }
+            | TransformKind::First { .. }
+            | TransformKind::Limit { .. }
+            | TransformKind::Offset { .. }
+            | TransformKind::Distinct
+            | TransformKind::Join { .. }
+            | TransformKind::Diff { .. }
+            | TransformKind::Scope { .. }
+            | TransformKind::Matches
+    )
+}
+
 impl<'a> Compiler<'a> {
     pub(super) fn program_with(
         self,
         query: &Query,
         preset: Option<MatchRel>,
     ) -> Result<Program, QueryError> {
-        self.native_program_with(query, preset)
+        let source_order = match &query.source {
+            Source::Unit {
+                condition: Some(c), ..
+            } if contains_order(c) => Some(c),
+            _ => None,
+        };
+        let first = if source_order.is_some() {
+            Some(0)
+        } else {
+            query.transforms.iter().position(|s| relational(&s.kind))
+        };
+        let Some(first) = first else {
+            return self.native_program_with(query, preset);
+        };
+        let mut prefix = query.clone();
+        prefix.transforms.truncate(first);
+        let mut compiler = Compiler::new(self.text, self.opts);
+        compiler.saved_stack = self.saved_stack.clone();
+        let mut program = self.native_program_with(&prefix, preset)?;
+        compiler.params = std::mem::take(&mut program.params);
+        compiler.near = program.near.clone();
+        let mut relation = Relation::new(program);
+        if let Source::Unit {
+            condition: Some(condition),
+            ..
+        } = &query.source
+        {
+            relation.patterns = match_patterns(condition);
+        }
+        if let Some(condition) = source_order {
+            let predicate = compiler.relation_condition(&mut relation, condition)?;
+            compiler.relation_filter(&mut relation, &predicate);
+        }
+        for stage in &query.transforms[first..] {
+            compiler.relation_stage(&mut relation, stage, query)?;
+        }
+        if !compiler.ctes.is_empty() {
+            relation.program.sql = format!(
+                "WITH RECURSIVE {} SELECT * FROM ({})",
+                compiler.ctes.join(", "),
+                relation.program.sql
+            );
+        }
+        if !relation.program.attach.is_empty() && relation.program.shape != Shape::Rows {
+            return Err(QueryError::Invalid {
+                message: "attached rows apply to rows, not to groups or summaries".into(),
+                position: query
+                    .attach
+                    .first()
+                    .map_or(0, |attachment| attachment.span.start),
+            });
+        }
+        relation.program.params = compiler.params;
+        join(&mut relation.program.notes, &mut compiler.notes);
+        join(&mut relation.program.incomplete, &mut compiler.incomplete);
+        join(&mut relation.program.id_checks, &mut compiler.id_checks);
+        join(&mut relation.program.definitions, &mut compiler.definitions);
+        join(
+            &mut relation.program.change_generations,
+            &mut compiler.change_generations,
+        );
+        join(
+            &mut relation.program.assertion_cutoffs,
+            &mut compiler.assertion_cutoffs,
+        );
+        relation
+            .program
+            .resolved_times
+            .extend(compiler.resolved_times.into_inner());
+        Ok(relation.program)
     }
+
+    fn relation_filter(&mut self, relation: &mut Relation, predicate: &str) {
+        relation.program.sql = format!(
+            "SELECT * FROM ({}) r WHERE ({predicate}) ORDER BY {}",
+            relation.program.sql,
+            relation_order(&relation.program.order)
+        );
+        relation.program.row_count_sql = None;
+        relation.program.row_membership_sql = None;
+    }
+
+    fn relation_stage(
+        &mut self,
+        relation: &mut Relation,
+        stage: &Transform,
+        query: &Query,
+    ) -> Result<(), QueryError> {
+        let at = stage.span.start;
+        match &stage.kind {
+            TransformKind::Fields { columns } => {
+                let mut select = relation.private_columns();
+                let mut output = vec![];
+                let mut slots = std::collections::BTreeMap::new();
+                for column in columns {
+                    let (sql, kind) = self.sql_expression_with(
+                        &column.expression,
+                        at,
+                        &mut |compiler, name, at| relation.field(compiler, name, at),
+                    )?;
+                    let slot = relation.slot();
+                    select.push(format!(
+                        "{} AS {}",
+                        Self::display_value(&sql, kind),
+                        column_sql(&slot)
+                    ));
+                    output.push(Column {
+                        name: column.column(),
+                        kind,
+                        reference: relation.reference(&column.expression),
+                    });
+                    slots.insert(column.column(), slot);
+                }
+                relation.program.sql = format!(
+                    "SELECT {} FROM ({}) r ORDER BY {}",
+                    select.join(", "),
+                    relation.program.sql,
+                    relation_order(&relation.program.order)
+                );
+                relation.program.columns = output;
+                relation.program.column_slots = slots;
+                relation.open_fields = false;
+            }
+            TransformKind::Where { condition } => {
+                let predicate = self.relation_condition(relation, condition)?;
+                self.relation_filter(relation, &predicate);
+                relation.patterns.extend(match_patterns(condition));
+            }
+            TransformKind::Sort { keys } => {
+                let mut select = vec!["r.*".into()];
+                let mut order = vec![];
+                for key in keys {
+                    let (sql, kind) = if matches!(&key.expression, Expression::Function { name, .. } if name == "random")
+                    {
+                        let sql =
+                            match parse_random_seed(&key.expression)?.or(self.opts.random_seed) {
+                                Some(seed) => format!(
+                                    "pl_random(json_array({}), '{seed}')",
+                                    relation
+                                        .identity_order()
+                                        .iter()
+                                        .map(|key| format!("r.{}", column_sql(&key.column)))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ),
+                                None => "random()".into(),
+                            };
+                        (sql, ColKind::Number)
+                    } else {
+                        self.sql_expression_with(&key.expression, at, &mut |compiler, name, at| {
+                            relation.field(compiler, name, at)
+                        })?
+                    };
+                    scalar(kind, &key.expression.column(), at)?;
+                    let null = relation.slot();
+                    let value = relation.slot();
+                    select.push(format!("({sql}) IS NULL AS {}", column_sql(&null)));
+                    select.push(format!("{sql} AS {}", column_sql(&value)));
+                    order.push(OrderKey::ascending(&null));
+                    order.push(OrderKey {
+                        column: value,
+                        descending: key.descending,
+                    });
+                }
+                // An explicit sort is tied by semantic identity, never by an earlier time order.
+                order.extend(relation.identity_order());
+                relation.program.sql = format!(
+                    "SELECT {} FROM ({}) r ORDER BY {}",
+                    select.join(", "),
+                    relation.program.sql,
+                    relation_order(&order)
+                );
+                relation.program.order = order;
+            }
+            TransformKind::First { count } if relation.group.is_some() => {
+                self.relation_first(relation, *count)?
+            }
+            TransformKind::Limit { count } | TransformKind::First { count } => {
+                relation.program.sql = format!(
+                    "SELECT * FROM ({}) r ORDER BY {} LIMIT {}",
+                    relation.program.sql,
+                    relation_order(&relation.program.order),
+                    count
+                );
+            }
+            TransformKind::Offset { count } => {
+                relation.program.sql = format!(
+                    "SELECT * FROM ({}) r ORDER BY {} LIMIT -1 OFFSET {}",
+                    relation.program.sql,
+                    relation_order(&relation.program.order),
+                    count
+                );
+            }
+            TransformKind::Distinct => self.relation_distinct(relation),
+            TransformKind::Group { keys } => self.relation_group(relation, keys, at)?,
+            TransformKind::Aggregate { aggregates } => {
+                self.relation_aggregate(relation, aggregates, at)?
+            }
+            TransformKind::Join { query, on } => {
+                let inner = Relation::new(self.other_query(query, relation.program.unit, at)?);
+                self.rel_join_pair(relation, inner, on, at)?;
+            }
+            TransformKind::Diff { query } => self.relation_diff(relation, query, at)?,
+            TransformKind::Scope { unit, condition } => {
+                self.relation_scope(relation, unit, condition.as_ref(), at)?
+            }
+            _ => self.relation_native_stage(relation, stage, query)?,
+        }
+        relation.program.row_count_sql = None;
+        relation.program.row_membership_sql = None;
+        Ok(())
+    }
+
+    fn relation_condition(
+        &mut self,
+        relation: &mut Relation,
+        condition: &Condition,
+    ) -> Result<String, QueryError> {
+        if relation.open_fields && !contains_order(condition) && relation.sources.len() == 1 {
+            let source = &relation.sources[0];
+            if source.prefix.is_empty() {
+                let context = RowContext {
+                    unit: source.unit,
+                    a: self.fresh(),
+                };
+                let predicate = self.cond(condition, &context, false)?;
+                let key = context.a.expand(units::spec(context.unit).key);
+                return Ok(format!(
+                    "(SELECT ({predicate}) FROM {} WHERE {key} = r.{})",
+                    base_from(context.unit, &context.a),
+                    column_sql(&source.key)
+                ));
+            }
+        }
+        Ok(match &condition.kind {
+            ConditionKind::Order {
+                relation: order,
+                query,
+                within,
+                at,
+                scope,
+            } => {
+                let inner = Relation::new(self.other_query(
+                    query,
+                    relation.program.unit,
+                    condition.span.start,
+                )?);
+                self.rel_order_pair(
+                    relation,
+                    inner,
+                    *order,
+                    within.as_ref(),
+                    *at,
+                    scope.as_deref(),
+                    condition.span.start,
+                )?
+            }
+            ConditionKind::And { conditions } | ConditionKind::Or { conditions } => {
+                let op = if matches!(condition.kind, ConditionKind::And { .. }) {
+                    " AND "
+                } else {
+                    " OR "
+                };
+                let values = conditions
+                    .iter()
+                    .map(|c| self.relation_condition(relation, c))
+                    .collect::<Result<Vec<_>, _>>()?;
+                format!("({})", values.join(op))
+            }
+            ConditionKind::Not { condition } => {
+                format!("NOT ({})", self.relation_condition(relation, condition)?)
+            }
+            ConditionKind::Compare { left, op, right } => self.expression_comparison(
+                left,
+                *op,
+                right,
+                condition.span.start,
+                &mut |compiler, name, at| relation.field(compiler, name, at),
+            )?,
+            ConditionKind::Between { left, from, to } => {
+                let lo = self.expression_comparison(
+                    left,
+                    Op::Ge,
+                    &Expression::value(from.clone()),
+                    condition.span.start,
+                    &mut |compiler, name, at| relation.field(compiler, name, at),
+                )?;
+                let hi = self.expression_comparison(
+                    left,
+                    Op::Le,
+                    &Expression::value(to.clone()),
+                    condition.span.start,
+                    &mut |compiler, name, at| relation.field(compiler, name, at),
+                )?;
+                format!("({lo}) AND ({hi})")
+            }
+            ConditionKind::Match {
+                field,
+                value: Value::Unknown | Value::Known,
+            } => {
+                let (sql, _) = relation.field(self, field, condition.span.start)?;
+                format!(
+                    "({sql}) IS {}NULL",
+                    if matches!(
+                        condition.kind,
+                        ConditionKind::Match {
+                            value: Value::Known,
+                            ..
+                        }
+                    ) {
+                        "NOT "
+                    } else {
+                        ""
+                    }
+                )
+            }
+            ConditionKind::Match { field, value } => self.expression_comparison(
+                &Expression::field(field),
+                Op::Eq,
+                &Expression::value(value.clone()),
+                condition.span.start,
+                &mut |compiler, name, at| relation.field(compiler, name, at),
+            )?,
+            _ => return Err(not_built("this condition on a derived relation")),
+        })
+    }
+}
+
+impl Relation {
+    fn private_columns(&self) -> Vec<String> {
+        let mut names = std::collections::BTreeSet::new();
+        names.insert("_pk".to_owned());
+        if matches!(self.program.row_basis, RowBasis::Native { .. }) {
+            names.insert("_near".into());
+            if fields::lookup(self.program.unit, "first_seen").is_some_and(|f| f.sql.is_some()) {
+                names.insert("_first_seen".into());
+            }
+        }
+        names.extend(self.program.order.iter().map(|k| k.column.clone()));
+        names.extend(self.sources.iter().map(|s| s.key.clone()));
+        match &self.program.row_basis {
+            RowBasis::Native { columns, .. }
+            | RowBasis::Group { columns }
+            | RowBasis::Distinct { columns } => names.extend(columns.iter().cloned()),
+            _ => {}
+        }
+        names
+            .into_iter()
+            .map(|name| format!("r.{}", column_sql(&name)))
+            .collect()
+    }
+    fn identity_order(&self) -> Vec<OrderKey> {
+        match &self.program.row_basis {
+            RowBasis::Native { columns, .. }
+            | RowBasis::Group { columns }
+            | RowBasis::Distinct { columns } => columns
+                .iter()
+                .map(|name| OrderKey::ascending(name))
+                .collect(),
+            _ => self.program.order.clone(),
+        }
+    }
+}
+
+fn relation_order(order: &[OrderKey]) -> String {
+    if order.is_empty() {
+        "1".into()
+    } else {
+        order_by(order)
+    }
+}
+
+impl Compiler<'_> {
+    fn relation_group(
+        &mut self,
+        relation: &mut Relation,
+        keys: &[query_language::ast::Column],
+        at: usize,
+    ) -> Result<(), QueryError> {
+        let input = Box::new(relation.clone());
+        let mut columns = vec![];
+        let mut select = vec![];
+        let mut group_keys = vec![];
+        let mut slots = std::collections::BTreeMap::new();
+        for key in keys {
+            let (expression, kind) =
+                self.sql_expression_with(&key.expression, at, &mut |compiler, name, at| {
+                    input.field(compiler, name, at)
+                })?;
+            scalar(kind, &key.column(), at)?;
+            let expression = Self::display_value(&expression, kind);
+            let slot = relation.slot();
+            let column = Column {
+                name: key.column(),
+                kind,
+                reference: input.reference(&key.expression),
+            };
+            select.push(format!("{expression} AS {}", column_sql(&slot)));
+            slots.insert(column.name.clone(), slot.clone());
+            columns.push(column.clone());
+            group_keys.push((column, slot, expression));
+        }
+        let count_slot = relation.slot();
+        select.push(format!("count(*) AS {}", column_sql(&count_slot)));
+        columns.push(Column {
+            name: "count".into(),
+            kind: ColKind::Number,
+            reference: None,
+        });
+        slots.insert("count".into(), count_slot.clone());
+        let expressions = group_keys
+            .iter()
+            .map(|(_, _, expression)| expression.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        select.push(format!("json_array({expressions}) AS _pk"));
+        let key_slots = group_keys
+            .iter()
+            .map(|(_, slot, _)| slot.clone())
+            .collect::<Vec<_>>();
+        let mut order = vec![OrderKey {
+            column: count_slot,
+            descending: true,
+        }];
+        order.extend(key_slots.iter().map(|slot| OrderKey::ascending(slot)));
+        relation.program.sql = format!(
+            "SELECT {} FROM ({}) r GROUP BY {expressions} ORDER BY {}",
+            select.join(", "),
+            relation.program.sql,
+            relation_order(&order)
+        );
+        relation.program.columns = columns;
+        relation.program.column_slots = slots;
+        relation.program.order = order;
+        relation.program.row_basis = RowBasis::Group { columns: key_slots };
+        relation.program.shape = Shape::Groups;
+        relation.program.counts_near = false;
+        relation.program.ranked = false;
+        relation.sources.clear();
+        relation.open_fields = false;
+        relation.group = Some(GroupInput {
+            input,
+            keys: group_keys,
+        });
+        Ok(())
+    }
+
+    fn relation_aggregate(
+        &mut self,
+        relation: &mut Relation,
+        aggregates: &[Aggregate],
+        at: usize,
+    ) -> Result<(), QueryError> {
+        let grouped = relation.group.clone();
+        let input = grouped
+            .as_ref()
+            .map_or_else(|| relation.clone(), |g| (*g.input).clone());
+        let native = if input.open_fields
+            && input.sources.len() == 1
+            && input.sources[0].prefix.is_empty()
+        {
+            Some(RowContext {
+                unit: input.sources[0].unit,
+                a: self.fresh(),
+            })
+        } else {
+            None
+        };
+        let input_from = if let Some(context) = &native {
+            let key = context.a.expand(units::spec(context.unit).key);
+            format!(
+                "({}) r JOIN {} ON {key}=r.{}",
+                input.program.sql,
+                base_from(context.unit, &context.a),
+                column_sql(&input.sources[0].key)
+            )
+        } else {
+            format!("({}) r", input.program.sql)
+        };
+        let mut columns = vec![];
+        let mut slots = std::collections::BTreeMap::new();
+        let mut select = vec![];
+        let mut keys = vec![];
+        let mut expressions = vec![];
+        let mut membership = String::new();
+        if let Some(group) = &grouped {
+            let mut tests = vec![];
+            for (column, slot, expression) in &group.keys {
+                select.push(format!("{expression} AS {}", column_sql(slot)));
+                columns.push(column.clone());
+                slots.insert(column.name.clone(), slot.clone());
+                keys.push(slot.clone());
+                expressions.push(expression.clone());
+                tests.push(format!("({expression}) IS g.{}", column_sql(slot)));
+            }
+            membership = format!(
+                " WHERE EXISTS (SELECT 1 FROM ({}) g WHERE {})",
+                relation.program.sql,
+                tests.join(" AND ")
+            );
+        }
+        let mut values = vec![];
+        if grouped.is_some()
+            && !aggregates
+                .iter()
+                .any(|a| matches!(a.function, AggregateFunction::Count))
+        {
+            values.push(("count".into(), "count(*)".into(), ColKind::Number, None));
+        }
+        for aggregate in aggregates {
+            let lineage = if matches!(
+                aggregate.function,
+                AggregateFunction::Min | AggregateFunction::Max
+            ) {
+                aggregate
+                    .arguments
+                    .first()
+                    .and_then(|arg| input.reference(arg))
+            } else {
+                None
+            };
+            let values_for_aggregate = if let Some(context) = &native {
+                self.agg(aggregate, context, at)?
+            } else {
+                self.agg_with(aggregate, at, &mut |compiler, name, at| {
+                    input.field(compiler, name, at)
+                })?
+            };
+            for (name, expression, kind) in values_for_aggregate {
+                values.push((name, expression, kind, lineage));
+            }
+        }
+        for (name, expression, kind, reference) in values {
+            let slot = relation.slot();
+            select.push(format!("{expression} AS {}", column_sql(&slot)));
+            slots.insert(name.clone(), slot);
+            columns.push(Column {
+                name,
+                kind,
+                reference,
+            });
+        }
+        let group_by = if expressions.is_empty() {
+            String::new()
+        } else {
+            format!(" GROUP BY {}", expressions.join(", "))
+        };
+        select.push(if expressions.is_empty() {
+            "1 AS _pk".into()
+        } else {
+            format!("json_array({}) AS _pk", expressions.join(", "))
+        });
+        let mut order = vec![];
+        if !keys.is_empty() {
+            if let Some(count) = slots.get("count") {
+                order.push(OrderKey {
+                    column: count.clone(),
+                    descending: true,
+                });
+            }
+            order.extend(keys.iter().map(|key| OrderKey::ascending(key)));
+        }
+        relation.program.sql = format!(
+            "SELECT {} FROM {input_from}{membership}{group_by} ORDER BY {}",
+            select.join(", "),
+            relation_order(&order)
+        );
+        relation.program.columns = columns;
+        relation.program.column_slots = slots;
+        relation.program.order = order;
+        relation.program.shape = if grouped.is_some() {
+            Shape::Groups
+        } else {
+            Shape::Summary
+        };
+        relation.program.row_basis = if grouped.is_some() {
+            RowBasis::Group { columns: keys }
+        } else {
+            RowBasis::Summary
+        };
+        relation.program.counts_near = false;
+        relation.program.ranked = false;
+        relation.sources.clear();
+        relation.open_fields = false;
+        relation.group = None;
+        Ok(())
+    }
+
+    fn relation_distinct(&mut self, relation: &mut Relation) {
+        let values = relation
+            .program
+            .columns
+            .iter()
+            .map(|c| column_sql(relation.program.column_slot(&c.name)))
+            .collect::<Vec<_>>();
+        let ordinal = relation.slot();
+        relation.program.sql = format!(
+            "SELECT * FROM (SELECT r.*, row_number() OVER (PARTITION BY {} ORDER BY {}) AS {} FROM ({}) r) WHERE {} = 1 ORDER BY {}",
+            values.join(", "),
+            relation_order(&relation.program.order),
+            column_sql(&ordinal),
+            relation.program.sql,
+            column_sql(&ordinal),
+            relation_order(&relation.program.order)
+        );
+        relation.program.row_basis = RowBasis::Distinct {
+            columns: relation
+                .program
+                .columns
+                .iter()
+                .map(|c| relation.program.column_slot(&c.name).to_owned())
+                .collect(),
+        };
+        relation.sources.clear();
+        relation.open_fields = false;
+        relation.group = None;
+    }
+}
+
+impl Compiler<'_> {
+    fn relation_native_stage(
+        &mut self,
+        relation: &mut Relation,
+        stage: &Transform,
+        _original: &Query,
+    ) -> Result<(), QueryError> {
+        if !matches!(relation.program.row_basis, RowBasis::Native { .. }) {
+            return Err(not_built("this native stage after a change of row grain"));
+        }
+        if let TransformKind::Combine {
+            how: Combination::Intersect | Combination::Except,
+            query,
+        } = &stage.kind
+        {
+            let other = self.other_query(query, relation.program.unit, stage.span.start)?;
+            let yes = matches!(
+                stage.kind,
+                TransformKind::Combine {
+                    how: Combination::Intersect,
+                    ..
+                }
+            );
+            let predicate = format!(
+                "r._pk {} IN (SELECT _pk FROM ({}))",
+                if yes { "" } else { "NOT" },
+                other.sql
+            );
+            self.relation_filter(relation, &predicate);
+            return Ok(());
+        }
+        let condition =
+            if matches!(stage.kind, TransformKind::Matches) && !relation.patterns.is_empty() {
+                Some(Condition {
+                    kind: ConditionKind::And {
+                        conditions: relation.patterns.clone(),
+                    },
+                    span: stage.span,
+                })
+            } else {
+                None
+            };
+        let pattern_unit = relation
+            .patterns
+            .iter()
+            .find_map(|condition| match &condition.kind {
+                ConditionKind::Exists { unit, .. } | ConditionKind::Sequence { unit, .. } => {
+                    bind_unit(unit).ok()
+                }
+                _ => None,
+            });
+        let parent_unit = relation.program.unit;
+        let native = Query {
+            source: Source::Unit {
+                unit: relation.program.unit.name().into(),
+                implicit: false,
+                condition,
+            },
+            transforms: vec![stage.clone()],
+            attach: vec![],
+        };
+        let mut compiler = Compiler::new(self.text, self.opts);
+        compiler.params = std::mem::take(&mut self.params);
+        compiler.input_rows = Some(relation.program.sql.clone());
+        let mut result = compiler.native_program_with(&native, None)?;
+        self.params = std::mem::take(&mut result.params);
+        join(&mut result.notes, &mut relation.program.notes);
+        join(&mut result.incomplete, &mut relation.program.incomplete);
+        join(&mut result.id_checks, &mut relation.program.id_checks);
+        join(&mut result.definitions, &mut relation.program.definitions);
+        join(
+            &mut result.change_generations,
+            &mut relation.program.change_generations,
+        );
+        join(
+            &mut result.assertion_cutoffs,
+            &mut relation.program.assertion_cutoffs,
+        );
+        result
+            .resolved_times
+            .extend(relation.program.resolved_times.iter().cloned());
+        let next_slot = relation.next_slot;
+        *relation = Relation::new(result);
+        relation.next_slot = next_slot;
+        if matches!(stage.kind, TransformKind::Matches) {
+            if let Some(unit) = pattern_unit {
+                relation.sources.push(NativeSource {
+                    prefix: "step.".into(),
+                    unit,
+                    key: "_pk".into(),
+                });
+                relation.sources.push(NativeSource {
+                    prefix: "parent.".into(),
+                    unit: parent_unit,
+                    key: "_match_parent_pk".into(),
+                });
+            }
+            relation.program.row_basis = RowBasis::Group {
+                columns: vec!["parent".into(), "match".into(), "position".into()],
+            };
+            relation.open_fields = true;
+        }
+        Ok(())
+    }
+
+    fn relation_diff(
+        &mut self,
+        relation: &mut Relation,
+        query: &Query,
+        at: usize,
+    ) -> Result<(), QueryError> {
+        let before = Relation::new(self.other_query(query, relation.program.unit, at)?);
+        let left_keys = relation.identity_order();
+        let right_keys = before.identity_order();
+        if left_keys.len() != right_keys.len() || left_keys.is_empty() {
+            return Err(QueryError::Invalid {
+                message: "diff requires the same semantic row identity on both sides".into(),
+                position: at,
+            });
+        }
+        let join = left_keys
+            .iter()
+            .zip(&right_keys)
+            .map(|(left, right)| {
+                format!(
+                    "a.{} IS b.{}",
+                    column_sql(&left.column),
+                    column_sql(&right.column)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let ordinal = relation.slot();
+        let previous = relation.slot();
+        let change = relation.slot();
+        let after_rows = format!(
+            "SELECT r.*, row_number() OVER (ORDER BY {}) AS {ordinal} FROM ({}) r",
+            relation_order(&relation.program.order),
+            relation.program.sql
+        );
+        let before_rows = format!(
+            "SELECT r.*, row_number() OVER (ORDER BY {}) AS {previous} FROM ({}) r",
+            relation_order(&before.program.order),
+            before.program.sql
+        );
+        // The public relation carries rows that entered, left, or changed rank.
+        let mut values = vec![];
+        for column in &relation.program.columns {
+            let left = column_sql(relation.program.column_slot(&column.name));
+            let right = before
+                .program
+                .columns
+                .iter()
+                .find(|c| c.name == column.name)
+                .map(|_| column_sql(before.program.column_slot(&column.name)));
+            values.push(match right {
+                Some(right) => format!(
+                    "CASE WHEN a.{ordinal} IS NULL THEN b.{right} ELSE a.{left} END AS {left}"
+                ),
+                None => format!("a.{left} AS {left}"),
+            });
+        }
+        for name in relation.private_columns() {
+            let name = name.trim_start_matches("r.");
+            values.push(format!(
+                "CASE WHEN a.{ordinal} IS NULL THEN b.{name} ELSE a.{name} END AS {name}"
+            ));
+        }
+        values.push(format!("CASE WHEN a.{ordinal} IS NULL THEN 'left' WHEN b.{previous} IS NULL THEN 'joined' ELSE 'moved' END AS {change}"));
+        values.push(format!("a.{ordinal} AS {ordinal}"));
+        values.push(format!("b.{previous} AS {previous}"));
+        relation.program.sql = format!(
+            "WITH after_rows AS ({after_rows}), before_rows AS ({before_rows}) SELECT {} FROM after_rows a FULL OUTER JOIN before_rows b ON {join} WHERE a.{ordinal} IS NULL OR b.{previous} IS NULL OR a.{ordinal} != b.{previous} ORDER BY coalesce(a.{ordinal}, b.{previous})",
+            values.join(", ")
+        );
+        for (name, slot, kind) in [
+            ("change", change, ColKind::Text),
+            ("new_rank", ordinal.clone(), ColKind::Number),
+            ("old_rank", previous, ColKind::Number),
+        ] {
+            relation.program.columns.push(Column {
+                name: name.into(),
+                kind,
+                reference: None,
+            });
+            relation.program.column_slots.insert(name.into(), slot);
+        }
+        let final_order = relation.slot();
+        relation.program.sql = format!(
+            "SELECT d.*, row_number() OVER (ORDER BY {ordinal} IS NULL, coalesce({ordinal}, {})) AS {final_order} FROM ({}) d",
+            relation.program.column_slot("old_rank"),
+            relation.program.sql
+        );
+        relation.program.order = vec![OrderKey::ascending(&final_order)];
+        relation.program.ranked = false;
+        relation.program.counts_near = false;
+        relation.sources.clear();
+        relation.open_fields = false;
+        Ok(())
+    }
+}
+
+impl Compiler<'_> {
+    fn relation_first(&mut self, relation: &mut Relation, count: u64) -> Result<(), QueryError> {
+        let group = relation.group.clone().expect("grouped first");
+        let ordinal = relation.slot();
+        let tests = group
+            .keys
+            .iter()
+            .map(|(_, slot, expression)| format!("({expression}) IS g.{}", column_sql(slot)))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let partitions = group
+            .keys
+            .iter()
+            .map(|(_, _, expression)| expression.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT * FROM (SELECT r.*, row_number() OVER (PARTITION BY {partitions} ORDER BY {}) AS {ordinal} FROM ({}) r WHERE EXISTS (SELECT 1 FROM ({}) g WHERE {tests})) WHERE {ordinal} <= {count} ORDER BY {}",
+            relation_order(&group.input.program.order),
+            group.input.program.sql,
+            relation.program.sql,
+            relation_order(&group.input.program.order)
+        );
+        let next = relation.next_slot;
+        *relation = *group.input;
+        relation.program.sql = sql;
+        relation.next_slot = next;
+        Ok(())
+    }
+}
+
+impl Compiler<'_> {
+    fn relation_scope(
+        &mut self,
+        relation: &mut Relation,
+        unit: &str,
+        condition: Option<&Condition>,
+        at: usize,
+    ) -> Result<(), QueryError> {
+        let target = bind_unit(unit)?;
+        let Some(source) = relation.sources.iter().find(|s| s.prefix.is_empty()) else {
+            return Err(QueryError::Invalid {
+                message: "a related unit requires native source row identity".into(),
+                position: at,
+            });
+        };
+        let source_context = RowContext {
+            unit: source.unit,
+            a: self.fresh(),
+        };
+        let target_context = RowContext {
+            unit: target,
+            a: self.fresh(),
+        };
+        let source_key = source_context.a.expand(units::spec(source.unit).key);
+        let target_key = target_context.a.expand(units::spec(target).key);
+        let link = if source.unit == target {
+            format!("{source_key}={target_key}")
+        } else if target == Unit::Sessions && fields::has_session(source.unit) {
+            format!(
+                "{}={target_key}",
+                child_session_column(source.unit, &source_context.a)
+            )
+        } else if source.unit == Unit::Sessions && fields::has_session(target) {
+            format!(
+                "{}={source_key}",
+                child_session_column(target, &target_context.a)
+            )
+        } else if let Some((_, parent)) = units::spec(target)
+            .parents
+            .iter()
+            .find(|(parent, _)| *parent == source.unit)
+        {
+            format!("{}={source_key}", target_context.a.expand(parent))
+        } else if let Some((_, parent)) = units::spec(source.unit)
+            .parents
+            .iter()
+            .find(|(parent, _)| *parent == target)
+        {
+            format!("{}={target_key}", source_context.a.expand(parent))
+        } else if fields::has_session(source.unit) && fields::has_session(target) {
+            format!(
+                "{}={}",
+                child_session_column(source.unit, &source_context.a),
+                child_session_column(target, &target_context.a)
+            )
+        } else {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "{} has no native relation to {}",
+                    source.unit.name(),
+                    target.name()
+                ),
+                position: at,
+            });
+        };
+        let keys = format!(
+            "SELECT DISTINCT {target_key} AS _pk FROM {}, {} WHERE {link} AND {source_key} IN (SELECT {} FROM ({}))",
+            base_from(source.unit, &source_context.a),
+            base_from(target, &target_context.a),
+            column_sql(&source.key),
+            relation.program.sql
+        );
+        let query = Query {
+            source: Source::Unit {
+                unit: target.name().into(),
+                implicit: false,
+                condition: condition.cloned(),
+            },
+            transforms: vec![],
+            attach: vec![],
+        };
+        let mut compiler = Compiler::new(self.text, self.opts);
+        compiler.params = std::mem::take(&mut self.params);
+        compiler.input_rows = Some(keys);
+        let mut program = compiler.program(&query)?;
+        self.params = std::mem::take(&mut program.params);
+        join(&mut program.notes, &mut relation.program.notes);
+        join(&mut program.incomplete, &mut relation.program.incomplete);
+        join(&mut program.id_checks, &mut relation.program.id_checks);
+        join(&mut program.definitions, &mut relation.program.definitions);
+        join(
+            &mut program.change_generations,
+            &mut relation.program.change_generations,
+        );
+        join(
+            &mut program.assertion_cutoffs,
+            &mut relation.program.assertion_cutoffs,
+        );
+        program
+            .resolved_times
+            .extend(relation.program.resolved_times.iter().cloned());
+        *relation = Relation::new(program);
+        if let Some(condition) = condition {
+            relation.patterns = match_patterns(condition);
+        }
+        Ok(())
+    }
+}
+
+fn match_patterns(condition: &Condition) -> Vec<Condition> {
+    top_level(condition)
+        .into_iter()
+        .filter(|condition| {
+            matches!(
+                condition.kind,
+                ConditionKind::Exists { .. } | ConditionKind::Sequence { .. }
+            )
+        })
+        .collect()
 }
