@@ -1031,7 +1031,10 @@ fn matches_projection(parent: &str, available: &[Pattern], span: &Value) -> Resu
                 if !native_columns(parent)?.contains(&"id") {
                     return Err("retired private parent storage key".into());
                 }
-                columns.push(column(field("parent.id"), "parent_id".into()));
+                columns.push(column(
+                    json!({"kind":"function","name":"text","arguments":[field("parent.id")]}),
+                    "parent_id".into(),
+                ));
             }
             columns.push(column(field("match"), "match".into()));
             columns.extend(

@@ -506,3 +506,20 @@ fn original_refusal_classes_and_dependency_unavailability_are_explicit() {
         "span_overlap"
     );
 }
+
+#[test]
+fn real_parent_identity_projection_preserves_original_text_semantics() {
+    let mut original = ast(
+        cond(json!({"kind":"exists","unit":"tool_calls","condition":null})),
+        vec![stage(json!({"kind":"matches"}))],
+    );
+    original["source"]["unit"] = json!("messages");
+    let upgraded = query_object(&object(original)).unwrap();
+    assert_eq!(
+        upgraded["body"]["query"]["transforms"][1]["kind"]["columns"][0],
+        column(
+            json!({"kind":"function","name":"text","arguments":[field("parent.id")]}),
+            "parent_id".into()
+        ),
+    );
+}
