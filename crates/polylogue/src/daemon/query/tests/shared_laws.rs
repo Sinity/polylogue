@@ -160,17 +160,20 @@ fn string(value: Option<&Scalar>) -> Option<&str> {
         _ => None,
     }
 }
-fn scalar(value: &Value) -> Scalar {
+fn scalar(value: &Value) -> Result<Scalar, Error> {
     if let Some(value) = value.as_f64() {
-        Scalar::Number(value)
+        Ok(Scalar::Number(value))
     } else if let Some(value) = value.as_str() {
-        Scalar::Text(value.into())
+        Ok(Scalar::Text(value.into()))
     } else if let Some(value) = value.as_bool() {
-        Scalar::Bool(value)
+        Ok(Scalar::Bool(value))
+    } else if value.is_null() {
+        Ok(Scalar::Unknown)
     } else {
-        Scalar::Unknown
+        Err(error("native fixture column is not a scalar"))
     }
 }
+
 fn native_id(value: &Value) -> Result<String, Error> {
     let text = value
         .as_str()
@@ -408,12 +411,12 @@ impl Loaded {
             .fields
             .iter()
             .map(|name| {
-                value
+                let value = value
                     .get(name)
-                    .map(|value| (name.clone(), scalar(value)))
-                    .ok_or_else(|| error(format!("query omitted fixture field {name}")))
+                    .ok_or_else(|| error(format!("query omitted fixture field {name}")))?;
+                Ok((name.clone(), scalar(value)?))
             })
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<_, Error>>()?;
         row.order = metadata.order;
         row.time = metadata.time;
         if plan.unit == "tool_calls" {
@@ -433,7 +436,7 @@ impl Loaded {
                 let value = value
                     .get(&name)
                     .ok_or_else(|| error(format!("query omitted {name}")))?;
-                row.fields.insert(name, scalar(value));
+                row.fields.insert(name, scalar(value)?);
             }
             if plan.paired {
                 row.id = format!("{source}:{matched}");
@@ -447,7 +450,7 @@ impl Loaded {
                     .ok_or_else(|| error(format!("query omitted {name}")))?;
                 // A negated order relation has no exposed match.
                 if name != "match.distance" || row.fields.contains_key("match.id") {
-                    row.fields.insert(name.into(), scalar(value));
+                    row.fields.insert(name.into(), scalar(value)?);
                 }
             }
         }
@@ -510,14 +513,12 @@ impl laws::Executor<Plan> for Execution {
                         .fields
                         .iter()
                         .map(|field| {
-                            value
-                                .get(field)
-                                .map(|value| (field.clone(), scalar(value)))
-                                .ok_or_else(|| {
-                                    error(format!("query omitted semantic column {field}"))
-                                })
+                            let value = value.get(field).ok_or_else(|| {
+                                error(format!("query omitted semantic column {field}"))
+                            })?;
+                            Ok((field.clone(), scalar(value)?))
                         })
-                        .collect::<Result<_, _>>()?;
+                        .collect::<Result<_, Error>>()?;
                     Ok(row)
                 }
                 Shape::Matches => {
@@ -535,7 +536,7 @@ impl laws::Executor<Plan> for Execution {
                         .with("position", position as f64)
                         .with("step", step.as_str());
                     if let Some(number) = value.get("step.exit_code") {
-                        row = row.with("step.exit_code", scalar(number));
+                        row = row.with("step.exit_code", scalar(number)?);
                     }
                     row.parent = Some(parent);
                     row.matches = vec![step];
