@@ -117,3 +117,33 @@ fn plain_text_cast_distinguishes_stored_json_strings_from_encoded_objects() {
             .is_err()
     );
 }
+
+#[test]
+fn typed_natural_word_and_path_matches_preserve_their_boundaries() {
+    let conn = Connection::open_in_memory().unwrap();
+    register(&conn).unwrap();
+    let word = |text: &str, needle: &str| {
+        conn.query_row("SELECT pl_query_word(?1,?2)", [text, needle], |row| {
+            row.get::<_, bool>(0)
+        })
+        .unwrap()
+    };
+    assert!(word("École_read", "école"));
+    assert!(word("École_read", "READ"));
+    assert!(!word("École_read", "ecole"));
+    assert!(!word("École_read", "écol"));
+    let under = |path: &str, root: &str| {
+        conn.query_row("SELECT pl_query_under(?1,?2)", [path, root], |row| {
+            row.get::<_, bool>(0)
+        })
+        .unwrap()
+    };
+    assert!(under("/work", "/work/"));
+    assert!(under("/work/src", "/work"));
+    assert!(!under("/work2/src", "/work"));
+    assert!(!under("/Work/src", "/work"));
+    let absent: Option<bool> = conn
+        .query_row("SELECT pl_query_under(NULL,'/work')", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(absent, None);
+}

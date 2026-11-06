@@ -327,10 +327,17 @@ pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Progr
     let catalog = plan.catalog();
     let rendered = query_language::format::format_query(bound.query(), catalog)
         .map_err(|e| QueryError::language(e, ""))?;
-    let mut program = if let Some(program) = compile_kept(&rendered, bound.query(), opts)? {
+    let mut program = if let Some(program) = compile_kept(
+        &rendered,
+        bound.query(),
+        opts,
+        bound.typing().query(&Default::default()),
+    )? {
         program
     } else {
-        Compiler::new(&rendered, opts).program(bound.query())?
+        let mut compiler = Compiler::new(&rendered, opts);
+        compiler.query_scope = bound.typing().query(&Default::default()).cloned();
+        compiler.program(bound.query())?
     };
     for definition in plan.definitions() {
         let used = Definition {
@@ -379,6 +386,7 @@ pub(crate) struct Compiler<'a> {
     params: Vec<Param>,
     ctes: Vec<String>,
     input_rows: Option<String>,
+    query_scope: Option<query_language::scope::QueryScope>,
     notes: Vec<String>,
     incomplete: Vec<String>,
     text_terms: Vec<String>,
@@ -428,6 +436,7 @@ impl<'a> Compiler<'a> {
             params: vec![],
             ctes: vec![],
             input_rows: None,
+            query_scope: None,
             notes: vec![],
             incomplete: vec![],
             text_terms: vec![],

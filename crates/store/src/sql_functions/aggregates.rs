@@ -1,4 +1,4 @@
-//! Numeric expressions and aggregates preserve unknowns and reject non-finite results.
+//! Scalar query values and numeric aggregates preserve unknowns and validate physical values.
 use super::{Connection, Context, FLAGS};
 use rusqlite::{
     functions::Aggregate,
@@ -50,6 +50,26 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
             serde_json::Value::Null => Ok(None),
             _ => Err(invalid("text takes a string value")),
         }
+    })?;
+    conn.create_scalar_function("pl_query_word", 2, FLAGS, |ctx| {
+        let text: Option<String> = ctx.get(0)?;
+        let needle: Option<String> = ctx.get(1)?;
+        Ok(text.zip(needle).map(|(text, needle)| {
+            let needle = needle.to_lowercase();
+            text.split(|c: char| !c.is_alphanumeric())
+                .any(|word| word.to_lowercase() == needle)
+        }))
+    })?;
+    conn.create_scalar_function("pl_query_under", 2, FLAGS, |ctx| {
+        let path: Option<String> = ctx.get(0)?;
+        let root: Option<String> = ctx.get(1)?;
+        Ok(path.zip(root).map(|(path, root)| {
+            let root = root.trim_end_matches('/');
+            path == root
+                || path
+                    .strip_prefix(root)
+                    .is_some_and(|rest| rest.starts_with('/') || root.is_empty())
+        }))
     })?;
     conn.create_scalar_function("pl_lower", 1, FLAGS, |ctx| {
         Ok(ctx

@@ -240,6 +240,7 @@ impl<'a> Compiler<'a> {
         prefix.transforms.truncate(first);
         let mut compiler = Compiler::new(self.text, self.opts);
         compiler.saved_stack = self.saved_stack.clone();
+        compiler.query_scope = self.query_scope.clone();
         let mut program = self.native_program_with(&prefix, preset)?;
         compiler.params = std::mem::take(&mut program.params);
         compiler.near = program.near.clone();
@@ -252,10 +253,14 @@ impl<'a> Compiler<'a> {
             relation.patterns = match_patterns(condition);
         }
         if let Some(condition) = source_order {
-            compiler.relation_where(&mut relation, condition)?;
+            let scope = compiler
+                .query_scope
+                .as_ref()
+                .map(|query| query.source.clone());
+            compiler.relation_where(&mut relation, condition, scope.as_ref())?;
         }
-        for stage in &query.transforms[first..] {
-            compiler.relation_stage(&mut relation, stage, query)?;
+        for (index, stage) in query.transforms.iter().enumerate().skip(first) {
+            compiler.relation_stage(&mut relation, stage, query, index)?;
         }
         if !compiler.ctes.is_empty() {
             relation.program.sql = format!(
@@ -308,6 +313,7 @@ impl<'a> Compiler<'a> {
         relation: &mut Relation,
         stage: &Transform,
         query: &Query,
+        index: usize,
     ) -> Result<(), QueryError> {
         let at = stage.span.start;
         match &stage.kind {
@@ -346,7 +352,12 @@ impl<'a> Compiler<'a> {
                 relation.open_fields = false;
             }
             TransformKind::Where { condition } => {
-                self.relation_where(relation, condition)?;
+                let scope = self
+                    .query_scope
+                    .as_ref()
+                    .and_then(|query| query.transforms.get(index))
+                    .map(|transform| transform.before.clone());
+                self.relation_where(relation, condition, scope.as_ref())?;
                 relation.patterns.extend(match_patterns(condition));
             }
             TransformKind::Sort { keys } => {
@@ -444,6 +455,7 @@ impl<'a> Compiler<'a> {
         &mut self,
         relation: &mut Relation,
         condition: &Condition,
+        scope: Option<&query_language::scope::Scope>,
     ) -> Result<(), QueryError> {
         let input = relation.clone();
         let mut exposed = None;
@@ -451,6 +463,7 @@ impl<'a> Compiler<'a> {
             relation,
             &input,
             condition,
+            scope,
             condition.exposed_order(),
             &mut exposed,
         )?;
@@ -466,16 +479,21 @@ impl<'a> Compiler<'a> {
         relation: &mut Relation,
         input: &Relation,
         condition: &Condition,
+        scope: Option<&query_language::scope::Scope>,
         selected: Option<&Condition>,
         exposed: &mut Option<RelationOutput>,
     ) -> Result<String, QueryError> {
         if input.open_fields
             && !contains_order(condition)
             && !materialized_condition(condition, &input.program.column_slots)
-            && input.sources.len() == 1
+            && input
+                .sources
+                .iter()
+                .filter(|source| source.prefix.is_empty())
+                .count()
+                == 1
         {
-            let source = &input.sources[0];
-            if source.prefix.is_empty() {
+            if let Some(source) = input.sources.iter().find(|source| source.prefix.is_empty()) {
                 let context = RowContext {
                     unit: source.unit,
                     a: self.fresh(),
@@ -527,23 +545,39 @@ impl<'a> Compiler<'a> {
                 };
                 let values = conditions
                     .iter()
-                    .map(|c| self.relation_condition(relation, input, c, selected, exposed))
+                    .map(|c| self.relation_condition(relation, input, c, scope, selected, exposed))
                     .collect::<Result<Vec<_>, _>>()?;
                 format!("({})", values.join(op))
             }
             ConditionKind::Not { condition } => {
                 format!(
                     "NOT ({})",
-                    self.relation_condition(relation, input, condition, selected, exposed)?
+                    self.relation_condition(relation, input, condition, scope, selected, exposed)?
                 )
             }
-            ConditionKind::Compare { left, op, right } => self.expression_comparison(
-                left,
-                *op,
-                right,
-                condition.span.start,
-                &mut |compiler, name, at| input.field(compiler, name, at),
-            )?,
+            ConditionKind::Compare { left, op, right } => {
+                let path = *op == Op::Prefix
+                    && matches!(left, Expression::Field { name }
+                    if scope.and_then(|scope| scope.field(name)).is_some_and(|info|
+                        info.field.natural_match() == query_language::catalog::NaturalMatch::Subtree));
+                if path {
+                    self.natural_comparison(
+                        left,
+                        right,
+                        query_language::catalog::NaturalMatch::Subtree,
+                        condition.span.start,
+                        &mut |compiler, name, at| input.field(compiler, name, at),
+                    )?
+                } else {
+                    self.expression_comparison(
+                        left,
+                        *op,
+                        right,
+                        condition.span.start,
+                        &mut |compiler, name, at| input.field(compiler, name, at),
+                    )?
+                }
+            }
             ConditionKind::Between { left, from, to } => {
                 let lo = self.expression_comparison(
                     left,
@@ -581,13 +615,30 @@ impl<'a> Compiler<'a> {
                     }
                 )
             }
-            ConditionKind::Match { field, value } => self.expression_comparison(
-                &Expression::field(field),
-                Op::Eq,
-                &Expression::value(value.clone()),
-                condition.span.start,
-                &mut |compiler, name, at| input.field(compiler, name, at),
-            )?,
+            ConditionKind::Match { field, value } => {
+                let info = scope.and_then(|scope| scope.field(field));
+                if !matches!(value, Value::Any)
+                    && info.is_some_and(|info| {
+                        matches!(info.field.kind, query_language::catalog::FieldKind::List(_))
+                    })
+                {
+                    return Err(not_built("natural matching on list-valued derived columns"));
+                }
+                let natural = info
+                    .map(|info| info.field.natural_match())
+                    .unwrap_or(query_language::catalog::NaturalMatch::Equal);
+                if matches!(value, Value::Any) {
+                    "1".into()
+                } else {
+                    self.natural_comparison(
+                        &Expression::field(field),
+                        &Expression::value(value.clone()),
+                        natural,
+                        condition.span.start,
+                        &mut |compiler, name, at| input.field(compiler, name, at),
+                    )?
+                }
+            }
             _ => return Err(not_built("this condition on a derived relation")),
         })
     }

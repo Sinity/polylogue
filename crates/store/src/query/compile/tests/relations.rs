@@ -424,3 +424,173 @@ fn order_conditions_read_the_input_witness_and_publish_only_the_shared_exposure(
     }
     assert!(selected(&format!("{a} AND match.id = claude-code:a")).is_empty());
 }
+
+#[test]
+fn projected_natural_matches_follow_the_bound_field_kind_and_unicode_case_rules() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(directory.path()).unwrap();
+    for (id, cwd) in [
+        ("claude-code:École-A", "/work/src"),
+        ("claude-code:ecole-B", "/work2/src"),
+        ("claude-code:third", "/work"),
+    ] {
+        let session = fixture
+            .session(SessionFacts {
+                id,
+                cwd: Some(cwd),
+                ..Default::default()
+            })
+            .unwrap();
+        let message = fixture
+            .message(
+                session,
+                MessageFacts {
+                    id: &format!("{id}-message"),
+                    role: "assistant",
+                    written_by: "model",
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        fixture
+            .tool_call(
+                session,
+                message,
+                CallFacts {
+                    tool: "Bash",
+                    action: "shell",
+                    command: Some("cat"),
+                    outcome: "ok",
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    fixture.derive().unwrap();
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions | fields text(id) as label | where label:éCOLE"
+        ),
+        [json!({"label":"claude-code:École-A"})]
+    );
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions | fields text(id) as label | where label:ecole"
+        ),
+        [json!({"label":"claude-code:ecole-B"})]
+    );
+    assert!(
+        rows(
+            &fixture,
+            r#"sessions | fields id as refid | where refid:"claude-code:école-A""#
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        rows(
+            &fixture,
+            r#"sessions | fields id as refid | where refid:"claude-code:École-A""#
+        ),
+        [json!({"refid":"claude-code:École-A"})]
+    );
+    assert!(
+        rows(
+            &fixture,
+            "tool_calls | fields tool as exact | where exact:bash"
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        rows(
+            &fixture,
+            "tool_calls | fields tool as exact | where exact:Bash"
+        )
+        .len(),
+        3
+    );
+    assert_eq!(
+        rows(
+            &fixture,
+            "tool_calls | fields text(tool) as plain | where plain:ASH"
+        )
+        .len(),
+        3
+    );
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions | fields text(id) as outer_id | join (sessions | fields text(id) as label | where label:éCOLE) on outer_id = label | fields outer_id, match.label"
+        ),
+        [json!({"outer_id":"claude-code:École-A", "match.label":"claude-code:École-A"})]
+    );
+    let paths = [json!({"p":"/work"}), json!({"p":"/work/src"})];
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions | fields cwd as p | where p ^ /work | sort by p"
+        ),
+        paths
+    );
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions | fields cwd as p | where p:/work | sort by p"
+        ),
+        paths
+    );
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions | fields text(cwd) as p | where p ^ /work"
+        )
+        .len(),
+        3
+    );
+}
+
+#[test]
+fn natural_text_matches_read_the_input_alias_beside_a_new_order_witness() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(directory.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "claude-code:outer",
+            ..Default::default()
+        })
+        .unwrap();
+    for (id, role, at) in [
+        ("claude-code:prior", "user", 9000),
+        ("claude-code:next", "user", 8000),
+        ("claude-code:outer-message", "assistant", 10000),
+    ] {
+        fixture
+            .message(
+                session,
+                MessageFacts {
+                    id,
+                    role,
+                    written_by: "model",
+                    at: Some(at),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    fixture.derive().unwrap();
+    let initial = "sessions where id = claude-code:outer AND after(messages where id = claude-code:prior) within 20s | fields id, text(match.id) as prior";
+    let order = "after(messages where id = claude-code:next) within 20s";
+    for predicate in [
+        format!("{order} AND prior:PRIOR"),
+        format!("prior:PRIOR AND {order}"),
+    ] {
+        assert_eq!(
+            rows(
+                &fixture,
+                &format!("{initial} | where {predicate} | fields prior, match.id")
+            ),
+            [json!({"prior":"claude-code:prior", "match.id":"claude-code:next"})]
+        );
+    }
+}

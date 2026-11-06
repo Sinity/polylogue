@@ -10,6 +10,8 @@ fn field(value: &fields::Field, name: String) -> Field {
         name,
         kind: if value.value_kind == Some(crate::ColKind::Ids) {
             FieldKind::List(Box::new(FieldKind::Reference))
+        } else if value.unit == Unit::Sessions && value.name == "cwd" {
+            FieldKind::Subtree
         } else {
             match value.kind {
                 Kind::Match | Kind::Special => FieldKind::Exact,

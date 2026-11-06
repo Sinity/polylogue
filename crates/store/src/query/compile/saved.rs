@@ -161,6 +161,7 @@ pub(super) fn compile_kept(
     text: &str,
     query: &Query,
     opts: &Options,
+    query_scope: Option<&query_language::scope::QueryScope>,
 ) -> Result<Option<Program>, QueryError> {
     let Source::Result {
         reference,
@@ -215,6 +216,7 @@ pub(super) fn compile_kept(
         })
         .unwrap_or_default();
     let mut c = Compiler::new(text, opts);
+    c.query_scope = query_scope.cloned();
     let id_param = c.text_param(id);
     let mut select: Vec<String> = columns
         .iter()

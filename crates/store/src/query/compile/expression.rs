@@ -437,6 +437,69 @@ impl Compiler<'_> {
         })
     }
 
+    pub(super) fn natural_comparison<F>(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+        natural: query_language::catalog::NaturalMatch,
+        at: usize,
+        field: &mut F,
+    ) -> Result<String, QueryError>
+    where
+        F: FnMut(&mut Self, &str, usize) -> Result<(String, ColKind), QueryError>,
+    {
+        use query_language::catalog::NaturalMatch;
+        match natural {
+            NaturalMatch::Equal | NaturalMatch::Same => {
+                return self.expression_comparison(left, Op::Eq, right, at, field);
+            }
+            NaturalMatch::Contains => {
+                return self.expression_comparison(left, Op::Contains, right, at, field);
+            }
+            NaturalMatch::Period => {
+                return Err(not_built(
+                    "period matching on derived time values without native period evidence",
+                ));
+            }
+            _ => {}
+        }
+        if let Expression::Value {
+            value: Value::Set { values },
+        } = right
+        {
+            let parts = values
+                .iter()
+                .map(|value| {
+                    self.natural_comparison(
+                        left,
+                        &Expression::value(value.clone()),
+                        natural,
+                        at,
+                        field,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(if parts.is_empty() {
+                "0".into()
+            } else {
+                format!("({})", parts.join(" OR "))
+            });
+        }
+        let (left, left_kind, right, right_kind) =
+            self.expression_pair(left, right, None, at, field)?;
+        if left_kind != ColKind::Text || right_kind != ColKind::Text {
+            return Err(QueryError::Invalid {
+                message: "this natural match requires string values".into(),
+                position: at,
+            });
+        }
+        let function = if natural == NaturalMatch::Words {
+            "pl_query_word"
+        } else {
+            "pl_query_under"
+        };
+        Ok(format!("{function}({left}, {right})"))
+    }
 
 }
 fn expression_arity(name: &str, count: usize, at: usize) -> QueryError {
