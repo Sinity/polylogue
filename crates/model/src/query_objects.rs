@@ -11,10 +11,29 @@ use query_language::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub mod evolution;
+
+/// Immutable format-1 input retained by the numbered representation upgrade.
+/// This is evidence for original identity and custody, never an operation input.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HistoricalQuerySource {
+    pub format: QuerySourceFormat,
+    pub record: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub enum QuerySourceFormat {
+    #[serde(rename = "structured_query_v1")]
+    StructuredQueryV1,
+}
+
 /// Semantic identity excludes display names and the clock of an execution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QueryObject {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub historical_source: Option<Box<HistoricalQuerySource>>,
     pub id: QuestionId,
     pub normal_form: serde_json::Value,
     pub parameters: BTreeMap<String, String>,
@@ -29,6 +48,8 @@ pub struct QueryObject {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenQueryDefinition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub historical_source: Option<Box<HistoricalQuerySource>>,
     pub question: QuestionId,
     pub normal_form: serde_json::Value,
     pub parameters: BTreeMap<String, String>,
@@ -266,6 +287,8 @@ pub enum RunOutcome {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QueryRun {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub historical_source: Option<Box<HistoricalQuerySource>>,
     pub id: crate::RunId,
     pub question: Option<QuestionId>,
     pub at: Timestamp,
@@ -308,13 +331,126 @@ impl RunBinding {
     }
 }
 impl QueryRun {
+    /// The numbered format-1 upgrade retains the exact JSON used by hash custody.
+    pub fn from_structured_v1(source: serde_json::Value, catalog: &str) -> Result<Self, String> {
+        let current = evolution::query_run(&source, catalog)?;
+        let mut run: Self = serde_json::from_value(current).map_err(|error| error.to_string())?;
+        run.historical_source = Some(Box::new(HistoricalQuerySource {
+            format: QuerySourceFormat::StructuredQueryV1,
+            record: source,
+        }));
+        run.validate_evolution()?;
+        Ok(run)
+    }
+    /// Check the executable representation before consulting original evidence.
+    pub fn validate_evolution(&self) -> Result<(), String> {
+        let catalog = self
+            .binding
+            .original()
+            .and_then(|execution| execution.replay.context.versions.get("catalog"))
+            .map(String::as_str)
+            .unwrap_or("");
+        validate_evolution(self, self.historical_source.as_deref(), |source| {
+            evolution::query_run(source, catalog)
+        })
+    }
     pub fn binding_hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
+        if let Some(source) = &self.historical_source {
+            self.validate_evolution().map_err(evolution_error)?;
+            let binding = &source.record["binding"];
+            let domain: &[u8] = match binding["kind"].as_str() {
+                Some("original") => b"polylogue-execution-binding-v1\0",
+                Some("original_object") => b"polylogue-object-execution-binding-v1\0",
+                _ => return Err(evolution_error("invalid historical binding kind")),
+            };
+            return metadata_hash(domain, &binding["execution"]);
+        }
         self.binding.binding_hash()
     }
     /// Integrity of this exact invocation, including its position and envelope.
     pub fn record_hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
-        metadata_hash(b"polylogue-query-run-begin-v1\0", self)
+        if let Some(source) = &self.historical_source {
+            self.validate_evolution().map_err(evolution_error)?;
+            metadata_hash(b"polylogue-query-run-begin-v1\0", &source.record)
+        } else {
+            metadata_hash(b"polylogue-query-run-begin-v1\0", self)
+        }
     }
+}
+
+impl QueryObject {
+    /// Upgrade an explicit immutable structured format-1 input.
+    pub fn from_structured_v1(source: serde_json::Value) -> Result<Self, String> {
+        let current = evolution::query_object(&source)?;
+        let mut object: Self =
+            serde_json::from_value(current).map_err(|error| error.to_string())?;
+        for (node, old) in object.definitions.iter_mut().zip(
+            source["definitions"]
+                .as_array()
+                .ok_or("historical definitions are not an array")?,
+        ) {
+            node.historical_source = Some(Box::new(HistoricalQuerySource {
+                format: QuerySourceFormat::StructuredQueryV1,
+                record: old.clone(),
+            }));
+        }
+        object.historical_source = Some(Box::new(HistoricalQuerySource {
+            format: QuerySourceFormat::StructuredQueryV1,
+            record: source,
+        }));
+        object.validate_evolution()?;
+        Ok(object)
+    }
+    /// A migrated object must be exactly the named conversion of its source.
+    pub fn validate_evolution(&self) -> Result<(), String> {
+        let closure: Vec<_> = self
+            .definitions
+            .iter()
+            .filter_map(|node| {
+                node.historical_source
+                    .as_ref()
+                    .map(|source| source.record.clone())
+            })
+            .collect();
+        for node in &self.definitions {
+            if let Some(source) = &node.historical_source {
+                validate_evolution(node, Some(source), |old| {
+                    evolution::frozen_definition(old, &closure)
+                })?;
+            }
+        }
+        let mut executable = self.clone();
+        for node in &mut executable.definitions {
+            node.historical_source = None;
+        }
+        validate_evolution(
+            &executable,
+            self.historical_source.as_deref(),
+            evolution::query_object,
+        )
+    }
+}
+fn evolution_error(message: impl std::fmt::Display) -> serde_json::Error {
+    <serde_json::Error as serde::ser::Error>::custom(message)
+}
+fn validate_evolution(
+    current: &impl Serialize,
+    source: Option<&HistoricalQuerySource>,
+    convert: impl FnOnce(&serde_json::Value) -> Result<serde_json::Value, String>,
+) -> Result<(), String> {
+    let Some(source) = source else { return Ok(()) };
+    if source.record.get("historical_source").is_some() {
+        return Err("historical evidence cannot contain nested evidence".into());
+    }
+    let mut executable = serde_json::to_value(current).map_err(|error| error.to_string())?;
+    executable
+        .as_object_mut()
+        .ok_or("expected query record")?
+        .remove("historical_source");
+    if convert(&source.record)? != executable {
+        return Err("query representation differs from its numbered source conversion".into());
+    }
+    Ok(())
 }
 
 /// Completion never replaces the immutable execution inputs.

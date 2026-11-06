@@ -16,10 +16,10 @@ fn every_schema_applies_to_an_empty_database() {
 
 /// law: one-baseline
 #[test]
-fn every_database_starts_at_its_one_baseline() {
-    assert_eq!(ARCHIVE_VERSION, 1);
-    assert_eq!(INDEX_VERSION, 1);
-    assert!(ARCHIVE_MIGRATIONS.is_empty());
+fn every_database_starts_at_its_current_version() {
+    assert_eq!(ARCHIVE_VERSION, 2);
+    assert_eq!(INDEX_VERSION, 2);
+    assert_eq!(ARCHIVE_MIGRATIONS.len(), 1);
     for create in [
         ensure_archive as fn(&Connection) -> Result<()>,
         ensure_index,
@@ -28,7 +28,13 @@ fn every_database_starts_at_its_one_baseline() {
     ] {
         let conn = Connection::open_in_memory().unwrap();
         create(&conn).unwrap();
-        assert_eq!(version(&conn).unwrap(), 1);
+        let expected =
+            if std::ptr::fn_addr_eq(create, ensure_embeddings as fn(&Connection) -> Result<()>) {
+                1
+            } else {
+                2
+            };
+        assert_eq!(version(&conn).unwrap(), expected);
     }
 }
 
@@ -45,7 +51,7 @@ fn an_index_at_another_version_is_refused_without_removing_rows() {
         ensure_index(&conn),
         Err(StoreError::IndexVersion {
             found: 17,
-            wanted: 1
+            wanted: 2
         })
     ));
     let conn = Connection::open_in_memory().unwrap();
@@ -98,7 +104,9 @@ fn rows(conn: &Connection) -> Vec<String> {
 #[test]
 fn migrations_bring_an_older_database_forward_and_keep_its_rows() {
     let conn = version_1_with_rows();
-    let steps = ["CREATE TABLE added(value TEXT NOT NULL) STRICT;"];
+    let steps = [Migration::Sql(
+        "CREATE TABLE added(value TEXT NOT NULL) STRICT;",
+    )];
     ensure(&conn, "archive", &[TWO_TABLES], &steps).unwrap();
     assert_eq!(version(&conn).unwrap(), 2);
     assert_eq!(rows(&conn), ["one", "two"]);
@@ -106,11 +114,13 @@ fn migrations_bring_an_older_database_forward_and_keep_its_rows() {
     // A table rebuilt under a new name compares as declared: SQLite quotes
     // the renamed table's name in its declaration.
     let conn = version_1_with_rows();
-    let steps = ["CREATE TABLE added(value TEXT NOT NULL) STRICT;
+    let steps = [Migration::Sql(
+        "CREATE TABLE added(value TEXT NOT NULL) STRICT;
         CREATE TABLE kept_new(value TEXT NOT NULL) STRICT;
         INSERT INTO kept_new SELECT value FROM kept;
         DROP TABLE kept;
-        ALTER TABLE kept_new RENAME TO kept;"];
+        ALTER TABLE kept_new RENAME TO kept;",
+    )];
     ensure(&conn, "archive", &[TWO_TABLES], &steps).unwrap();
     assert_eq!(rows(&conn), ["one", "two"]);
 }
@@ -128,7 +138,7 @@ fn a_failed_or_wrong_migration_changes_nothing() {
         ),
     ] {
         let conn = version_1_with_rows();
-        let result = ensure(&conn, "archive", &[TWO_TABLES], &[step]);
+        let result = ensure(&conn, "archive", &[TWO_TABLES], &[Migration::Sql(step)]);
         if wrong_tables {
             assert!(matches!(
                 result,

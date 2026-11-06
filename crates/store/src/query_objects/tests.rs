@@ -15,7 +15,7 @@ use query_language::{
     time::{Clock, DaySetting},
 };
 
-fn question(text: &str) -> QueryObject {
+pub(super) fn question(text: &str) -> QueryObject {
     polylogue_query::plan::prepare(text, &polylogue_query::Bindings::default(), |_| Ok(()))
         .unwrap()
         .query_object()
@@ -35,7 +35,7 @@ fn run_id(label: &str) -> polylogue_model::RunId {
     .unwrap()
 }
 
-fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosition) -> QueryRun {
+pub(super) fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosition) -> QueryRun {
     let clock = Clock::new(
         jiff::Timestamp::from_millisecond(at).unwrap(),
         DaySetting::new(
@@ -53,6 +53,7 @@ fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosition) -> Que
         None,
     );
     QueryRun {
+        historical_source: None,
         id: run_id(id),
         question: Some(object.id),
         at: Timestamp::from_unix_ms(at).unwrap(),

@@ -77,16 +77,12 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 | "polylogue.background"
                 | "polylogue.repository"
                 | "polylogue.parse_progress" => 5,
-                "polylogue.input_observation" => 4,
-                "polylogue.query_run"
-                | "polylogue.blob"
-                | "polylogue.coverage"
-                | "polylogue.fragment" => 3,
-                "polylogue.assertion" => 2,
+                "polylogue.input_observation" | "polylogue.query_run" => 4,
+                "polylogue.blob" | "polylogue.coverage" | "polylogue.fragment" => 3,
+                "polylogue.assertion" | "polylogue.query" => 2,
                 "polylogue.assertion_restore"
                 | "polylogue.historical_restore"
                 | "polylogue.attachment_binding"
-                | "polylogue.query"
                 | "polylogue.query_run_outcome" => 1,
                 other => panic!("undeclared successor kind/version expectation: {other}"),
             }

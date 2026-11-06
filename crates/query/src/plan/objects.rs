@@ -206,6 +206,9 @@ fn dependencies(edges: &[QueryEdge]) -> Vec<QuestionId> {
     ids.into_values().collect()
 }
 pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
+    if let Some(object) = &plan.retained_object {
+        return Ok(object.clone());
+    }
     let outputs = used_outputs(&plan.identity, &plan.identity_catalog)?;
     let native = &plan.identity_catalog;
     let mut frozen = plan.frozen.clone();
@@ -223,6 +226,7 @@ pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
                 .map_err(language)?;
             if !frozen.iter().any(|node| node.question == question) {
                 frozen.push(FrozenQueryDefinition {
+                    historical_source: None,
                     question,
                     normal_form: identity::normal_form(query, &plan.identity_catalog)
                         .map_err(language)?,
@@ -239,6 +243,7 @@ pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
     frozen.dedup_by_key(|node| node.question);
     let edges = edges(&plan.identity, native)?;
     let object = QueryObject {
+        historical_source: None,
         id: plan.question_id,
         normal_form: identity::normal_form(&plan.identity, native).map_err(language)?,
         parameters: BTreeMap::new(),
@@ -291,6 +296,7 @@ pub fn saved_query_bindings(
             denominator: None,
             conflicts: vec![],
             body: crate::SavedQueryBody::Frozen {
+                object: Some(Box::new(object.clone())),
                 syntax: query_language::format::format_query(&object.identity_ast, &native)
                     .map_err(language)?,
             },
@@ -389,16 +395,19 @@ fn check_node(
     parameters: &BTreeMap<String, String>,
     query: &Query,
     outputs: &[SourceOutput],
+    historical: bool,
 ) -> Result<(), QueryError> {
     let native = catalog(outputs);
     let actual = identity::question_id_from_normal_form(form, parameters).map_err(language)?;
-    if actual != id || identity::normal_form(query, &native).map_err(language)? != *form {
+    if actual != id
+        || (!historical && identity::normal_form(query, &native).map_err(language)? != *form)
+    {
         return Err(invalid(
             "question identity, normal form and typed syntax disagree",
         ));
     }
     let bound = query_language::bind::bind(query, &native).map_err(language)?;
-    if identity::normal_form(bound.query(), &native).map_err(language)? != *form {
+    if !historical && identity::normal_form(bound.query(), &native).map_err(language)? != *form {
         return Err(invalid(
             "canonical question changes when bound to native declarations",
         ));
@@ -414,6 +423,54 @@ fn check_node(
 /// Validate current executable semantics using owned native declarations and
 /// the complete immutable definition closure. This function performs no reads.
 pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
+    object.validate_evolution().map_err(invalid)?;
+    let historical_closure: Vec<_> = object
+        .definitions
+        .iter()
+        .filter_map(|node| {
+            node.historical_source
+                .as_ref()
+                .map(|source| source.record.clone())
+        })
+        .collect();
+    if let Some(source) = &object.historical_source {
+        let nodes = std::iter::once((&source.record, &object.source_outputs)).chain(
+            source.record["definitions"]
+                .as_array()
+                .ok_or_else(|| invalid("historical definition closure is not an array"))?
+                .iter()
+                .zip(object.definitions.iter())
+                .map(|(old, current)| (old, &current.source_outputs)),
+        );
+        for (old, outputs) in nodes {
+            let form = polylogue_model::query_objects::evolution::legacy_normal_form_with_closure(
+                &old["identity_ast"],
+                &catalog(outputs),
+                &historical_closure,
+            )
+            .map_err(invalid)?;
+            if form != old["normal_form"] {
+                return Err(invalid(
+                    "historical question normal form does not identify its original syntax",
+                ));
+            }
+        }
+    }
+    for node in &object.definitions {
+        if let Some(source) = &node.historical_source {
+            let form = polylogue_model::query_objects::evolution::legacy_normal_form_with_closure(
+                &source.record["identity_ast"],
+                &catalog(&node.source_outputs),
+                &historical_closure,
+            )
+            .map_err(invalid)?;
+            if form != source.record["normal_form"] {
+                return Err(invalid(
+                    "historical dependency normal form does not identify its original syntax",
+                ));
+            }
+        }
+    }
     let native = runtime_catalog(object)?;
     check_node(
         object.id,
@@ -421,6 +478,7 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
         &object.parameters,
         &object.identity_ast,
         &object.source_outputs,
+        object.historical_source.is_some(),
     )?;
     let actual_edges = edges(&object.identity_ast, &native)?;
     if actual_edges != object.edges || dependencies(&actual_edges) != object.dependencies {
@@ -436,6 +494,7 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
             &node.parameters,
             &node.identity_ast,
             &node.source_outputs,
+            object.historical_source.is_some() || node.historical_source.is_some(),
         )?;
         if by_id.insert(node.question.to_string(), node).is_some() {
             return Err(invalid("duplicate frozen question body"));
@@ -504,6 +563,7 @@ pub fn replay(object: &QueryObject, expected_catalog: &str) -> Result<Plan, Quer
     let text = query_language::format::format_query(original.query(), &native).map_err(language)?;
     let bindings = replay_bindings(object, &native)?;
     Ok(Plan {
+        retained_object: Some(object.clone()),
         original,
         expanded,
         text,

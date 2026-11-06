@@ -13,6 +13,20 @@ pub(crate) use rebuild::AssembledReading;
 mod export;
 pub use export::ExportReadingKey;
 
+/// Convert an explicitly identified immutable format-1 query-run source.
+/// Original evidence remains attached; native custody is held by the caller.
+pub fn query_run_from_structured_v1(
+    source: serde_json::Value,
+) -> crate::Result<polylogue_model::query_objects::QueryRun> {
+    let run = polylogue_model::query_objects::QueryRun::from_structured_v1(
+        source,
+        polylogue_query::plan::catalog_fingerprint(),
+    )
+    .map_err(crate::StoreError::Invalid)?;
+    crate::query_objects::validate_run(&run)?;
+    Ok(run)
+}
+
 /// The parser reading and exact source chain that produced a fact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Reading {

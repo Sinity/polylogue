@@ -1506,6 +1506,7 @@ fn query_targets_in(
                 .versions
                 .extend(operation.cursor_versions());
             let run = QueryRun {
+                historical_source: None,
                 id: crate::operation::new_run_id(),
                 question: Some(selection.question_id()),
                 at: operation.ran_at,

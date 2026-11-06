@@ -16,12 +16,13 @@ use query_language::{
 use std::{collections::BTreeMap, io::Read};
 
 pub(crate) fn phases() -> Vec<(String, Product)> {
-    let normal_form = json!({"source":{"kind":"unit","unit":"sessions","condition":null},"attach":[],"stages":[]});
+    let normal_form = json!({"source":{"kind":"unit","unit":"sessions","condition":null},"attach":[],"transforms":[]});
     let parameters = BTreeMap::new();
     let id = identity::question_id_from_normal_form(&normal_form, &parameters).unwrap();
     let mut syntax = normal_form.clone();
     syntax["source"]["implicit"] = false.into();
     let object = QueryObject {
+        historical_source: None,
         id,
         normal_form,
         parameters,
@@ -36,6 +37,7 @@ pub(crate) fn phases() -> Vec<(String, Product)> {
         DaySetting::new(jiff::tz::TimeZone::UTC, jiff::civil::time(4, 0, 0, 0)).unwrap(),
     );
     let run = QueryRun {
+        historical_source: None,
         id: RunId::parse("00000000-0000-7000-8000-000000000001").unwrap(),
         question: Some(id),
         at: Timestamp::from_unix_ms(1000).unwrap(),

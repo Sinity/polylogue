@@ -50,13 +50,37 @@ pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 /// The steps that bring `archive.db` forward from the baseline: the first
 /// takes version 1 to version 2, and so on. A change to the archive tables
 /// appends one step, which must leave exactly the tables [`ARCHIVE`] creates.
-pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[];
+pub(crate) const ARCHIVE_MIGRATIONS: &[Migration] = &[Migration::Data {
+    name: "structured query representation v2",
+    apply: crate::query_objects::evolution::archive_v2,
+}];
+
+/// A numbered upgrade has one transaction, including its data conversion.
+pub(crate) enum Migration {
+    #[cfg(test)]
+    Sql(&'static str),
+    Data {
+        name: &'static str,
+        apply: fn(&Connection) -> Result<()>,
+    },
+}
+impl Migration {
+    fn apply(&self, conn: &Connection) -> Result<()> {
+        match self {
+            #[cfg(test)]
+            Self::Sql(sql) => conn.execute_batch(sql).map_err(Into::into),
+            Self::Data { name, apply } => {
+                apply(conn).map_err(|error| StoreError::Invalid(format!("{name}: {error}")))
+            }
+        }
+    }
+}
 
 /// The version [`ARCHIVE`] creates.
 pub const ARCHIVE_VERSION: u32 = 1 + ARCHIVE_MIGRATIONS.len() as u32;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 1;
+pub const INDEX_VERSION: u32 = 2;
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
 /// after the baseline ("PLG1"). A non-empty file without it was written by an
@@ -152,7 +176,11 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         // Read indexes are added before the shape check, so an index missing
         // only those is completed rather than refused.
         tx.execute_batch(READ_INDEXES)?;
-        let matches = found == INDEX_VERSION
+        if found == 1 {
+            crate::query_objects::evolution::index_v2(&tx, primary)?;
+            set_version(&tx, INDEX_VERSION)?;
+        }
+        let matches = (found == 1 || found == INDEX_VERSION)
             && if building(&tx)? {
                 same_build_schema_in(&tx, primary)?
             } else {
@@ -202,7 +230,7 @@ pub(crate) fn ensure(
     conn: &Connection,
     database: &'static str,
     sql: &[&str],
-    migrations: &[&str],
+    migrations: &[Migration],
 ) -> Result<()> {
     let current = 1 + migrations.len() as u32;
     let found = version(conn)?;
@@ -220,7 +248,7 @@ pub(crate) fn ensure(
         }
     } else {
         for step in &migrations[found as usize - 1..] {
-            tx.execute_batch(step)?;
+            step.apply(&tx)?;
         }
         if !same_schema(&tx, sql)? {
             return Err(StoreError::NoMigration { database, found });

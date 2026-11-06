@@ -52,7 +52,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub fn source_reference() -> sinex_protocol::SourceRef {
     sinex_protocol::SourceRef {
         name: "polylogue".into(),
-        version: 4,
+        version: 5,
     }
 }
 

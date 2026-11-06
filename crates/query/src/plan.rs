@@ -23,6 +23,7 @@ pub struct ResolvedDefinition {
 }
 #[derive(Clone, Debug)]
 pub struct Plan {
+    retained_object: Option<polylogue_model::query_objects::QueryObject>,
     original: BoundQuery,
     expanded: BoundQuery,
     text: String,
@@ -169,7 +170,13 @@ fn prepare_inner(
         }
         let definition = crate::compile::saved_definition(text, 0, &name, options)?;
         stack.push(name.clone());
-        let nested = prepare_inner(definition.executable_text()?, options, resolve, stack)?;
+        let nested = match &definition.body {
+            crate::SavedQueryBody::Frozen {
+                object: Some(object),
+                ..
+            } => objects::replay(object, catalog_fingerprint())?,
+            _ => prepare_inner(definition.executable_text()?, options, resolve, stack)?,
+        };
         stack.pop();
         if nested.question_id != definition.hash {
             return Err(QueryError::Invalid {
@@ -179,6 +186,24 @@ fn prepare_inner(
         }
         let object = nested.query_object()?;
         frozen.push(polylogue_model::query_objects::FrozenQueryDefinition {
+            historical_source: object.historical_source.as_ref().map(|source| {
+                let mut record = source.record.clone();
+                record
+                    .as_object_mut()
+                    .expect("validated historical object")
+                    .retain(|key, _| {
+                        matches!(
+                            key.as_str(),
+                            "normal_form" | "parameters" | "identity_ast" | "source_outputs"
+                        )
+                    });
+                record["question"] =
+                    serde_json::to_value(object.id).expect("question id serialization");
+                Box::new(polylogue_model::query_objects::HistoricalQuerySource {
+                    format: source.format,
+                    record,
+                })
+            }),
             question: object.id,
             normal_form: object.normal_form,
             parameters: object.parameters,
@@ -244,6 +269,7 @@ fn prepare_inner(
     let expanded = query_language::bind::bind(&expanded, &catalog)
         .map_err(|e| QueryError::language(e, text))?;
     Ok(Plan {
+        retained_object: None,
         expanded,
         text: text.to_owned(),
         original,

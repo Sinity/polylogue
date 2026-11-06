@@ -34,7 +34,7 @@ pub struct Options {
 }
 
 /// One canonical saved-query assertion and its retained executable body.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SavedQuery {
     pub text: String,
     /// Exact assertion revision supplying this name.
@@ -49,16 +49,22 @@ pub struct SavedQuery {
     pub body: SavedQueryBody,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum SavedQueryBody {
-    Frozen { syntax: String },
-    Unavailable { reason: String },
+    Frozen {
+        syntax: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        object: Option<Box<polylogue_model::query_objects::QueryObject>>,
+    },
+    Unavailable {
+        reason: String,
+    },
 }
 impl SavedQuery {
     pub fn executable_text(&self) -> Result<&str, QueryError> {
         match &self.body {
-            SavedQueryBody::Frozen { syntax } => Ok(syntax),
+            SavedQueryBody::Frozen { syntax, .. } => Ok(syntax),
             SavedQueryBody::Unavailable { reason } => Err(QueryError::Unavailable {
                 what: reason.clone(),
             }),

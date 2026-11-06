@@ -8,6 +8,7 @@ use polylogue_model::query_objects::{
 use query_language::identity::{QuestionId, question_id_from_normal_form};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeMap;
+pub(crate) mod evolution;
 
 fn invalid(message: impl Into<String>) -> StoreError {
     StoreError::Invalid(message.into())
@@ -120,6 +121,7 @@ pub(crate) fn validate_result_bindings(
 }
 
 pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
+    run.validate_evolution().map_err(invalid)?;
     if run.machine.trim().is_empty() {
         return Err(invalid("a query run requires its accepting machine"));
     }
@@ -141,6 +143,19 @@ pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
     }
 }
 fn validate_execution(run: &QueryRun, execution: &ExecutionBinding) -> Result<()> {
+    if run.historical_source.is_some()
+        && execution
+            .replay
+            .context
+            .versions
+            .get("catalog")
+            .map(String::as_str)
+            != Some(polylogue_query::plan::catalog_fingerprint())
+    {
+        return Err(invalid(
+            "migrated execution requires current native declarations",
+        ));
+    }
     if Some(execution.replay.context.question) != run.question {
         return Err(invalid(
             "a query run's replay context names another question",

@@ -5,6 +5,10 @@ use polylogue_model::user::UserWrite;
 use polylogue_model::{Block, WrittenBy};
 use polylogue_store::primary::products::Product;
 use serde_json::{Value, json};
+mod source_formats;
+pub(crate) use source_formats::decode_source;
+#[cfg(test)]
+pub(crate) use source_formats::historical_source_declarations;
 
 pub(crate) fn require_source(product: &Product) -> Result<()> {
     if product
@@ -408,9 +412,10 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                             | "repository" | "parse_progress" => 5,
                             "input" => 4,
                             "fragment" => 3,
-                            "query_run" => 3,
+                            "query_run" => 4,
                             "restored_history" | "restored_assertion" | "attachment_binding"
-                            | "query" | "query_run_outcome" => 1,
+                            | "query_run_outcome" => 1,
+                            "query" => 2,
                             _ => 3,
                         }
                     },

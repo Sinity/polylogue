@@ -39,22 +39,14 @@ pub(crate) fn readable(
 }
 
 fn decode_event(event: &sinex_protocol::ConfirmedEvent) -> Result<Confirmed> {
-    let declared = crate::kinds::declared_definition(&sinex_model::KindRef {
-        name: event.event_type.clone(),
-        version: event.kind_version,
-    })
-    .ok_or_else(|| {
-        Error::Invalid(format!(
-            "unsupported Polylogue kind {}@{}",
-            event.event_type, event.kind_version
-        ))
-    })?;
-    if declared != event.kind_definition_hash {
-        return Err(Error::Invalid(
-            "a confirmed event's kind definition differs from Polylogue's".into(),
-        ));
-    }
-    let product = crate::products::decode(&event.event_type, event.payload.clone())?;
+    let product = crate::products::decode_source(
+        &sinex_model::KindRef {
+            name: event.event_type.clone(),
+            version: event.kind_version,
+        },
+        &event.kind_definition_hash,
+        event.payload.clone(),
+    )?;
     Ok(Confirmed {
         position: event.commit_seq,
         event: event.id.to_string(),

@@ -45,6 +45,7 @@ fn saved_bindings(
                 denominator: None,
                 conflicts: vec![],
                 body: polylogue_query::SavedQueryBody::Frozen {
+                    object: None,
                     syntax: (*text).into(),
                 },
             }],
