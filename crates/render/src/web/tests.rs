@@ -1,7 +1,6 @@
 use super::*;
 use command_surface::{
-    Answer, Deadline, JsonSchema, LatencyClass, Operation, OperationFuture, OperationSpec,
-    RequestContext,
+    Answer, Deadline, JsonSchema, Operation, OperationFuture, OperationSpec, RequestContext,
 };
 use polylogue_model::{ChangePosition, Timestamp, read::*};
 use serde::{Deserialize, Serialize};
@@ -16,16 +15,16 @@ impl Operation for Read {
     type Request = Arguments;
     type Response = Value;
     fn spec(&self) -> OperationSpec {
-        OperationSpec {
-            name: "read".into(),
-            command: vec!["read".into()],
-            summary: "Read a synthetic record".into(),
-            reason: "Test shared frame integration".into(),
-            http_route: "/api/v1/read".into(),
-            latency: LatencyClass::Read,
-            failures: vec![FailureKind::BadRequest],
-            write: false,
-        }
+        let mut spec = OperationSpec::request(
+            "read",
+            &["read"],
+            "read",
+            "Read a synthetic record",
+            "Test shared frame integration",
+        );
+        spec.http_route = Some("/api/v1/read".into());
+        spec.failures = vec![FailureKind::BadRequest];
+        spec
     }
     fn render_text(&self, answer: &Value) -> String {
         answer.to_string()
@@ -73,12 +72,11 @@ fn page() -> ReadPage {
 fn typed_page_uses_one_common_frame_and_keeps_read_currency_visible() {
     let mut table = OperationTable::new("polylogue", Default::default());
     table.register(Read).unwrap();
-    let request = RunnableRequest {
-        operation: "read".into(),
-        arguments: json!({"target":"session:test:session","view":"transcript","cursor":"old"}),
-        request_id: "synthetic".into(),
-        deadline: Deadline::Default,
-    };
+    let request = RunnableRequest::new(
+        "read",
+        json!({"target":"session:test:session","view":"transcript","cursor":"old"}),
+        "synthetic",
+    );
     let output = read(&page(), &table, &request).unwrap();
     assert!(output.contains("/assets/shell.js"));
     assert!(output.contains("/assets/tokens.css"));
@@ -217,10 +215,12 @@ fn url_parameters(url: &str) -> std::collections::BTreeMap<String, String> {
 #[test]
 fn view_switches_use_model_option_acceptance_and_preserve_request_metadata() {
     let request = RunnableRequest {
-        operation: "read".into(),
-        arguments: json!({"target":"session:test:session","view":"transcript","tools":"headers","harness":"headers","thinking":"full","inherited":true,"branches":true,"cursor":"sealed-old"}),
-        request_id: "synthetic".into(),
         deadline: Deadline::Milliseconds(1234),
+        ..RunnableRequest::new(
+            "read",
+            json!({"target":"session:test:session","view":"transcript","tools":"headers","harness":"headers","thinking":"full","inherited":true,"branches":true,"cursor":"sealed-old"}),
+            "synthetic",
+        )
     };
     let fields = url_parameters(&view_url(&request, "/api/v1/read", View::Dialogue).unwrap());
     let args: Value = serde_json::from_str(&fields["arguments"]).unwrap();
@@ -245,12 +245,11 @@ fn view_switches_use_model_option_acceptance_and_preserve_request_metadata() {
 fn copied_current_invocation_preserves_controls_as_valid_json_escapes() {
     let mut table = OperationTable::new("polylogue", Default::default());
     table.register(Read).unwrap();
-    let request = RunnableRequest {
-        operation: "read".into(),
-        arguments: json!({"target":"messages where text:'\u{9b}\u{202e}'","view":"transcript"}),
-        request_id: "synthetic".into(),
-        deadline: Deadline::Default,
-    };
+    let request = RunnableRequest::new(
+        "read",
+        json!({"target":"messages where text:'\u{9b}\u{202e}'","view":"transcript"}),
+        "synthetic",
+    );
     let output = read(&page(), &table, &request).unwrap();
     assert!(!output.contains('\u{9b}'));
     assert!(!output.contains('\u{202e}'));
