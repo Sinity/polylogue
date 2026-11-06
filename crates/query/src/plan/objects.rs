@@ -509,8 +509,8 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
                 .map(|(old, current)| (old, &current.source_outputs)),
         );
         for (old, outputs) in nodes {
-            let form = polylogue_model::query_objects::evolution::legacy_normal_form_with_closure(
-                &old["identity_ast"],
+            let form = polylogue_model::query_objects::evolution::legacy_definition_normal_form(
+                old,
                 &catalog(outputs),
                 &historical_closure,
             )
@@ -524,8 +524,8 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
     }
     for node in &object.definitions {
         if let Some(source) = &node.historical_source {
-            let form = polylogue_model::query_objects::evolution::legacy_normal_form_with_closure(
-                &source.record["identity_ast"],
+            let form = polylogue_model::query_objects::evolution::legacy_definition_normal_form(
+                &source.record,
                 &catalog(&node.source_outputs),
                 &historical_closure,
             )

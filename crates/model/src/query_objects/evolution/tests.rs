@@ -303,3 +303,81 @@ fn retired_continuation_rejects_self_root_and_other_binding_shapes() {
         .is_err()
     );
 }
+
+#[test]
+fn grouped_saved_outputs_evolve_row_domain_without_changing_original_declarations() {
+    let question = vec![2u8; 32];
+    let name = "02".repeat(32);
+    let saved = json!({"question":question,"normal_form":{},"parameters":{},"identity_ast":ast(Value::Null,vec![stage(json!({"kind":"group","keys":[field("n")]}))]),"source_outputs":[]});
+    let field_json = |name: &str, kind: &str| json!({"name":name,"kind":kind,"values":[],"unknown":"unknown","help":"","read_as":"","unit":null});
+    let output = json!({"source":{"kind":"saved","name":name,"arguments":[]},"schema":{"unit":"rows","fields":[field_json("n","number"),field_json("count","integer")],"main_time":null}});
+    let mut before = object(
+        json!({"source":{"kind":"saved","name":name,"arguments":[],"condition":null,"output":"known"},"attach":[],"stages":[]}),
+    );
+    before["definitions"] = json!([saved]);
+    before["source_outputs"] = json!([output]);
+    let after = query_object(&before).unwrap();
+    assert!(after["source_outputs"][0]["schema"]["unit"].is_null());
+    assert_eq!(before["source_outputs"][0]["schema"]["unit"], "rows");
+    assert_eq!(
+        after["source_outputs"][0]["schema"]["fields"],
+        before["source_outputs"][0]["schema"]["fields"]
+    );
+    // Original proof uses its own captured schema, independently of the new
+    // grouped output's absent native row domain.
+    let original = legacy_definition_normal_form(&before, &catalog(), &[]).unwrap();
+    assert_eq!(original["source"]["name"], name);
+}
+
+#[test]
+fn notes_source_and_nested_scope_use_exact_imported_rows() {
+    let mut original = ast(
+        Value::Null,
+        vec![stage(
+            json!({"kind":"scope","unit":"notes","condition":null}),
+        )],
+    );
+    original["source"]["unit"] = json!("notes");
+    let after = query_object(&object(original)).unwrap();
+    assert_eq!(after["identity_ast"]["source"]["unit"], "imported_notes");
+    assert_eq!(
+        after["identity_ast"]["transforms"][0]["kind"]["unit"],
+        "imported_notes"
+    );
+}
+
+#[test]
+fn note_reference_rewrite_preserves_root_currency_revision_prefix_and_default_overrides() {
+    for reference in ["note:synthetic-root", "note:synthetic-root@REV%_\\suffix"] {
+        let mut syntax = ast(
+            cond(json!({"kind":"reference","reference":reference})),
+            vec![],
+        );
+        syntax["source"]["unit"] = json!("notes");
+        let after = query_object(&object(syntax)).unwrap();
+        let conditions = after["identity_ast"]["source"]["condition"]["kind"]["conditions"]
+            .as_array()
+            .unwrap();
+        assert_eq!(conditions[0]["kind"]["left"], field("first_note"));
+        assert_eq!(
+            conditions[0]["kind"]["right"]["value"]["text"],
+            "synthetic-root"
+        );
+        if reference.contains('@') {
+            assert_eq!(conditions[1]["kind"]["field"], "id");
+            assert_eq!(conditions[1]["kind"]["value"]["text"], "REV%_\\suffix");
+        } else {
+            assert_eq!(conditions[1]["kind"]["field"], "current");
+            assert_eq!(conditions[1]["kind"]["value"]["text"], "true");
+        }
+        for (condition, name) in conditions[2..].iter().zip(["kind", "current", "withdrawn"]) {
+            assert_eq!(condition["kind"]["field"], name);
+            assert_eq!(condition["kind"]["value"]["kind"], "any");
+        }
+    }
+    let invalid = ast(
+        cond(json!({"kind":"reference","reference":"note:synthetic-root"})),
+        vec![],
+    );
+    assert!(query_object(&object(invalid)).is_err());
+}

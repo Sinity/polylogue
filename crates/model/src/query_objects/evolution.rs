@@ -26,6 +26,13 @@ fn take(v: &mut Value, key: &str) -> Result<Value> {
         .and_then(|v| v.remove(key))
         .ok_or_else(|| format!("format-1 missing {key}"))
 }
+fn current_unit(unit: &str) -> &str {
+    match unit {
+        "notes" | "note" | "pl.notes" | "pl.note" => "imported_notes",
+        unit => unit,
+    }
+}
+
 fn field(name: &str) -> Value {
     json!({"kind":"field","name":name})
 }
@@ -72,6 +79,88 @@ fn extension(v: &mut Value, outputs: &[Value], definitions: &[Value]) -> Result<
     }
     Ok(())
 }
+fn notes_condition(v: &mut Value, unit: &str) -> Result<()> {
+    let span = v["span"].clone();
+    let kind = v.get_mut("kind").ok_or("format-1 condition missing kind")?;
+    match kind["kind"]
+        .as_str()
+        .ok_or("format-1 condition missing tag")?
+    {
+        "reference" => {
+            let reference = string(kind, "reference")?;
+            let Some(value) = reference.strip_prefix("note:") else {
+                return Ok(());
+            };
+            if current_unit(unit) != "imported_notes" {
+                return Err("format-1 note references require the notes row domain".into());
+            }
+            let (root, revision) = value
+                .rsplit_once('@')
+                .map_or((value, None), |(root, revision)| (root, Some(revision)));
+            if root.is_empty() || revision.is_some_and(str::is_empty) {
+                return Err("invalid format-1 note reference".into());
+            }
+            let scalar = |value: &str| json!({"kind":"scalar","text":value,"quoted":true});
+            let atom = |kind: Value| json!({"span":span,"kind":kind});
+            let mut conditions = vec![atom(
+                json!({"kind":"compare","operand":field("first_note"),"op":"eq","value":scalar(root)}),
+            )];
+            conditions.push(if let Some(revision) = revision {
+                atom(json!({"kind":"match","field":"id","value":scalar(revision)}))
+            } else {
+                atom(json!({"kind":"match","field":"current","value":scalar("true")}))
+            });
+            for field in ["kind", "current", "withdrawn"] {
+                conditions.push(atom(
+                    json!({"kind":"match","field":field,"value":{"kind":"any"}}),
+                ));
+            }
+            *kind = json!({"kind":"and","conditions":conditions});
+        }
+        "and" | "or" => {
+            for condition in array_mut(kind, "conditions")? {
+                notes_condition(condition, unit)?;
+            }
+        }
+        "not" => notes_condition(
+            kind.get_mut("condition")
+                .ok_or("missing format-1 negation")?,
+            unit,
+        )?,
+        "exists" | "count" => {
+            let nested = string(kind, "unit")?.to_owned();
+            if let Some(condition) = kind.get_mut("condition").filter(|value| !value.is_null()) {
+                notes_condition(condition, &nested)?;
+            }
+        }
+        "sequence" => {
+            let nested = string(kind, "unit")?.to_owned();
+            for step in array_mut(kind, "steps")? {
+                notes_condition(step, &nested)?;
+            }
+        }
+        "extension" => notes_arguments(array_mut(kind, "arguments")?, unit)?,
+        _ => (),
+    }
+    Ok(())
+}
+fn notes_arguments(arguments: &mut [Value], unit: &str) -> Result<()> {
+    for argument in arguments {
+        if let Some(condition) = argument.get_mut("condition") {
+            notes_condition(condition, unit)?;
+        }
+        if let Some(optional) = argument.get_mut("optional") {
+            notes_arguments(
+                optional
+                    .as_array_mut()
+                    .ok_or("invalid historical optional arguments")?,
+                unit,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn condition(v: &mut Value, outputs: &[Value], definitions: &[Value]) -> Result<()> {
     let k = v.get_mut("kind").ok_or("format-1 condition missing kind")?;
     match string(k, "kind")?.to_owned().as_str() {
@@ -112,6 +201,7 @@ fn condition(v: &mut Value, outputs: &[Value], definitions: &[Value]) -> Result<
             k["list"] = json!("similar");
         }
         "exists" | "count" => {
+            k["unit"] = json!(current_unit(string(k, "unit")?));
             if let Some(c) = k.get_mut("condition").filter(|v| !v.is_null()) {
                 condition(c, outputs, definitions)?;
             }
@@ -137,6 +227,7 @@ fn condition(v: &mut Value, outputs: &[Value], definitions: &[Value]) -> Result<
             k["right"] = literal(value);
         }
         "sequence" => {
+            k["unit"] = json!(current_unit(string(k, "unit")?));
             for c in array_mut(k, "steps")? {
                 condition(c, outputs, definitions)?;
             }
@@ -187,7 +278,7 @@ fn query(v: &mut Value, outputs: &[Value], definitions: &[Value]) -> Result<()> 
     let (mut parent, mut available) = query_pattern(v, outputs, definitions, 0)?;
     let source = v.get_mut("source").ok_or("format-1 query missing source")?;
     match string(source, "kind")? {
-        "unit" => (),
+        "unit" => source["unit"] = json!(current_unit(string(source, "unit")?)),
         "saved" | "result" => {
             if source["output"] == "deferred" {
                 source["output"] = json!("unknown");
@@ -200,11 +291,15 @@ fn query(v: &mut Value, outputs: &[Value], definitions: &[Value]) -> Result<()> 
         }
     }
     if let Some(c) = source.get_mut("condition").filter(|v| !v.is_null()) {
+        notes_condition(c, &parent)?;
         condition(c, outputs, definitions)?;
     }
     for a in array_mut(v, "attach")? {
+        let unit = string(a, "unit")?.to_owned();
+        a["unit"] = json!(current_unit(&unit));
         for w in array_mut(a, "windows")? {
             if let Some(c) = w.get_mut("where") {
+                notes_condition(c, &unit)?;
                 condition(c, outputs, definitions)?;
             }
         }
@@ -214,16 +309,18 @@ fn query(v: &mut Value, outputs: &[Value], definitions: &[Value]) -> Result<()> 
     for s in stages.as_array_mut().ok_or("invalid format-1 stages")? {
         let k = s.get_mut("kind").ok_or("missing stage kind")?;
         match string(k, "kind")?.to_owned().as_str() {
-            "where" => condition(
-                k.get_mut("condition").ok_or("missing condition")?,
-                outputs,
-                definitions,
-            )?,
+            "where" => {
+                let c = k.get_mut("condition").ok_or("missing condition")?;
+                notes_condition(c, &parent)?;
+                condition(c, outputs, definitions)?;
+            }
             "scope" => {
                 parent = string(k, "unit")?.to_owned();
+                k["unit"] = json!(current_unit(&parent));
                 available.clear();
                 patterns(&k["condition"], &mut available);
                 if let Some(c) = k.get_mut("condition").filter(|v| !v.is_null()) {
+                    notes_condition(c, &parent)?;
                     condition(c, outputs, definitions)?;
                 }
             }
@@ -314,10 +411,36 @@ fn query(v: &mut Value, outputs: &[Value], definitions: &[Value]) -> Result<()> 
         .map_err(|e| format!("upgraded query syntax: {e}"))?;
     Ok(())
 }
-fn outputs(v: &mut Value) -> Result<()> {
+fn outputs(v: &mut Value, definitions: &[Value]) -> Result<()> {
+    let captured = v
+        .as_array()
+        .ok_or("invalid format-1 source outputs")?
+        .clone();
     for output in v.as_array_mut().ok_or("invalid format-1 source outputs")? {
+        if output["source"]["kind"] == "saved" {
+            if let Some(definition) = find_definition(&output["source"], definitions) {
+                let ast = definition
+                    .get("identity_ast")
+                    .or_else(|| definition.get("ast"))
+                    .ok_or("missing captured saved AST")?;
+                let nested = definition["source_outputs"]
+                    .as_array()
+                    .map_or(captured.as_slice(), Vec::as_slice);
+                let domain = output_domain(ast, nested, definitions, 0)?;
+                if domain.is_none() {
+                    output["schema"]["main_time"] = Value::Null;
+                }
+                output["schema"]["unit"] = json!(domain);
+            }
+        }
+        if let Some(unit) = output["schema"]["unit"].as_str() {
+            output["schema"]["unit"] = json!(current_unit(unit));
+        }
         for f in array_mut(&mut output["schema"], "fields")? {
             field_kind(&mut f["kind"])?;
+            if let Some(unit) = f["unit"].as_str() {
+                f["unit"] = json!(current_unit(unit));
+            }
         }
     }
     Ok(())
@@ -344,6 +467,7 @@ fn definition(v: &mut Value, definitions: &[Value]) -> Result<()> {
     outputs(
         v.get_mut("source_outputs")
             .ok_or("missing definition source_outputs")?,
+        definitions,
     )
 }
 /// Upgrade one captured semantic node using the complete retained format-1
@@ -389,6 +513,7 @@ pub fn query_run(source: &Value, current_catalog: &str) -> Result<Value> {
             outputs(
                 r.get_mut("source_outputs")
                     .ok_or("missing replay source_outputs")?,
+                &definitions,
             )?;
             for d in array_mut(r, "definitions")? {
                 query(
@@ -510,6 +635,73 @@ fn source_output<'a>(source: &Value, outputs: &'a [Value]) -> Option<&'a Value> 
         })
         .map(|o| &o["schema"])
 }
+fn find_definition<'a>(source: &Value, definitions: &'a [Value]) -> Option<&'a Value> {
+    let name = source["name"].as_str()?;
+    definitions.iter().find(|definition| {
+        definition["name"].as_str() == Some(name)
+            || question_key(&definition["question"]).as_deref() == Some(name)
+    })
+}
+fn output_domain(
+    query: &Value,
+    outputs: &[Value],
+    definitions: &[Value],
+    depth: usize,
+) -> Result<Option<String>> {
+    if depth > definitions.len() + 1 {
+        return Err("cyclic format-1 saved output closure".into());
+    }
+    let source = &query["source"];
+    let mut domain = if source["kind"] == "unit" {
+        Some(current_unit(string(source, "unit")?).to_owned())
+    } else if source["kind"] == "saved" {
+        if let Some(definition) = find_definition(source, definitions) {
+            let ast = definition
+                .get("identity_ast")
+                .or_else(|| definition.get("ast"))
+                .ok_or("missing captured saved AST")?;
+            let nested = definition["source_outputs"]
+                .as_array()
+                .map_or(outputs, Vec::as_slice);
+            output_domain(ast, nested, definitions, depth + 1)?
+        } else {
+            source_output(source, outputs)
+                .and_then(|schema| schema["unit"].as_str())
+                .map(str::to_owned)
+        }
+    } else {
+        source_output(source, outputs)
+            .and_then(|schema| schema["unit"].as_str())
+            .map(str::to_owned)
+    };
+    let mut grouped = None;
+    for stage in query["stages"]
+        .as_array()
+        .ok_or("invalid captured stages")?
+    {
+        let kind = stage["kind"]["kind"]
+            .as_str()
+            .ok_or("invalid captured stage kind")?;
+        match kind {
+            "scope" => domain = Some(current_unit(string(&stage["kind"], "unit")?).to_owned()),
+            "group" => {
+                grouped = Some(domain.take());
+            }
+            "aggregate" | "matches" => domain = None,
+            "first" => {
+                if let Some(input) = grouped.take() {
+                    domain = input;
+                }
+            }
+            _ => (),
+        }
+        if !matches!(kind, "group") {
+            grouped = None;
+        }
+    }
+    Ok(domain)
+}
+
 fn query_pattern(
     v: &Value,
     outputs: &[Value],
@@ -692,6 +884,16 @@ fn native_columns(unit: &str) -> Result<&'static [&'static str]> {
             "session", "path", "reads", "writes", "edits", "first_at", "last_at",
         ],
         "events" | "event" => &["id", "session", "input", "source", "kind", "at", "data"],
+        "notes" | "note" => &[
+            "id",
+            "kind",
+            "key",
+            "value",
+            "author",
+            "created_at",
+            "first_note",
+            "target",
+        ],
         "assertions" | "assertion" => &[
             "reference",
             "id",
@@ -824,6 +1026,42 @@ fn historical_catalog(catalog: &Catalog) -> Result<historical_query_format_v1::c
             main_time: unit.main_time.clone(),
             help: String::new(),
         });
+    }
+    if let Some(imported) = units
+        .iter()
+        .find(|unit| unit.name == "imported_notes")
+        .cloned()
+    {
+        let mut notes = imported;
+        notes.name = "notes".into();
+        notes.aliases = vec!["note".into(), "pl.notes".into(), "pl.note".into()];
+        notes.fields.retain(|field| {
+            [
+                "id",
+                "kind",
+                "key",
+                "value",
+                "author",
+                "agent",
+                "judged",
+                "target",
+                "write_counter",
+                "created_at",
+                "first_note",
+                "current",
+                "withdrawn",
+                "since",
+                "evidence_until",
+                "until",
+            ]
+            .contains(&field.name.as_str())
+        });
+        for field in &mut notes.fields {
+            if field.unit.as_deref() == Some("imported_notes") {
+                field.unit = Some("notes".into());
+            }
+        }
+        units.push(notes);
     }
     let mut source_outputs = Vec::new();
     for output in &catalog.source_outputs {
@@ -1010,6 +1248,27 @@ pub fn legacy_normal_form_with_closure(
         closure,
     )?;
     historical_query_format_v1::identity::normal_form(&query, &catalog).map_err(|e| e.to_string())
+}
+
+/// Verify original identity using its original captured output declarations,
+/// independently of the executable relation's evolved row domain.
+pub fn legacy_definition_normal_form(
+    source: &Value,
+    catalog: &Catalog,
+    closure: &[Value],
+) -> Result<Value> {
+    let ast = &source["identity_ast"];
+    let query = serde_json::from_value::<historical_query_format_v1::ast::Query>(ast.clone())
+        .map_err(|error| format!("format-1 AST: {error}"))?;
+    let outputs = source["source_outputs"]
+        .as_array()
+        .ok_or("missing original captured source outputs")?;
+    let mut catalog = historical_catalog(catalog)?;
+    catalog.source_outputs = serde_json::from_value(json!(outputs))
+        .map_err(|error| format!("format-1 output declarations: {error}"))?;
+    historical_matches(ast, &mut catalog, outputs, closure)?;
+    historical_query_format_v1::identity::normal_form(&query, &catalog)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
