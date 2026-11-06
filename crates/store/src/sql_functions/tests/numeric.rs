@@ -181,6 +181,16 @@ fn kept_time_and_native_identity_require_actual_captured_scalar_evidence() {
         })
         .unwrap();
     assert_eq!(opaque, "001");
+    for (index, count) in [(-1, 1), (0, -1), (1, 1)] {
+        assert!(
+            conn.query_row(
+                "SELECT pl_kept_identity('[1]',?1,?2)",
+                [index, count],
+                |row| row.get::<_, i64>(0)
+            )
+            .is_err()
+        );
+    }
     for value in ["null", "[]", "[null]", "[{}]", "[9223372036854775808]"] {
         assert!(
             conn.query_row("SELECT pl_kept_identity(?1,0,1)", [value], |row| row

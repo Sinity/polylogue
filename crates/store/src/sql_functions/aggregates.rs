@@ -101,8 +101,10 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
         let keys = keys.ok_or_else(|| invalid("the kept row has no captured native identity"))?;
         let keys: Vec<serde_json::Value> = serde_json::from_str(&keys)
             .map_err(|_| invalid("a kept native identity must be a scalar tuple"))?;
-        let index: usize = ctx.get(1)?;
-        let count: usize = ctx.get(2)?;
+        let index = usize::try_from(ctx.get::<i64>(1)?)
+            .map_err(|_| invalid("a kept native identity index must be nonnegative"))?;
+        let count = usize::try_from(ctx.get::<i64>(2)?)
+            .map_err(|_| invalid("a kept native identity size must be nonnegative"))?;
         if keys.len() != count {
             return Err(invalid("the kept native identity has the wrong tuple size"));
         }
