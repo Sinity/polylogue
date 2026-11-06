@@ -495,11 +495,6 @@ fn a_tool_call_names_one_of_its_operations() {
         json!({"operation": "assert", "arguments": {}, "request_id": "foreign"}),
     );
     assert!(foreign.contains("no operation `assert`"), "{foreign}");
-    let removed = run(
-        "polylogue_read",
-        json!({"operation": "list", "arguments": {}, "request_id": "removed"}),
-    );
-    assert!(removed.contains("no operation `list`"), "{removed}");
     let inside = run(
         "polylogue_note",
         json!({"operation": "save", "arguments": {"name": "x", "query": "sessions", "request_id": "inner"}, "request_id": "outer"}),
@@ -509,8 +504,11 @@ fn a_tool_call_names_one_of_its_operations() {
         "polylogue_context",
         json!({"operation": "brief", "arguments": {"cwd": "/synthetic", "detail": "full"}, "request_id": "unknown-argument"}),
     );
-    assert!(unknown.contains("unknown field `detail`"), "{unknown}");
+    assert!(unknown.contains("has no argument `detail`"), "{unknown}");
     let live = crate::test_daemon::start("lifted context deadline");
+    let rows = call(&live.daemon.archive, "list", args(json!({}))).unwrap();
+    let rows: Value = serde_json::from_str(&rows).unwrap();
+    assert_eq!(rows["count"], 1, "{rows}");
     let (_, answer, failed) = call_with_limit(
         &live.daemon.archive, "polylogue_context",
         json!({"operation":"brief", "arguments":{"cwd":"/synthetic"}, "request_id":"lifted", "deadline":null}).as_object().unwrap().clone(),
