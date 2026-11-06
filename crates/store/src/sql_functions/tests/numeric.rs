@@ -81,3 +81,39 @@ fn absolute_values_preserve_unknowns_and_handle_the_minimum_integer() {
         .unwrap();
     assert_eq!(values, (None, 7, 1.25, 9223372036854775808.0));
 }
+
+#[test]
+fn plain_text_cast_distinguishes_stored_json_strings_from_encoded_objects() {
+    let conn = Connection::open_in_memory().unwrap();
+    register(&conn).unwrap();
+    for value in ["42", "true", "{\"key\":1}", "\"quoted\"", "a\0é😀"] {
+        let actual: String = conn
+            .query_row("SELECT pl_query_text(?1, 0)", [value], |row| row.get(0))
+            .unwrap();
+        assert_eq!(actual, value);
+        let encoded = serde_json::to_string(value).unwrap();
+        let actual: String = conn
+            .query_row("SELECT pl_query_text(?1, 1)", [encoded], |row| row.get(0))
+            .unwrap();
+        assert_eq!(actual, value);
+    }
+    for json in ["42", "true", "[]", "{\"key\":1}", "not valid JSON"] {
+        assert!(
+            conn.query_row("SELECT pl_query_text(?1, 1)", [json], |row| row
+                .get::<_, String>(0))
+                .is_err(),
+            "{json}"
+        );
+    }
+    for json in [0, 1] {
+        let unknown: Option<String> = conn
+            .query_row("SELECT pl_query_text(NULL, ?1)", [json], |row| row.get(0))
+            .unwrap();
+        assert_eq!(unknown, None);
+    }
+    assert!(
+        conn.query_row("SELECT pl_query_text(42, 0)", [], |row| row
+            .get::<_, String>(0))
+            .is_err()
+    );
+}

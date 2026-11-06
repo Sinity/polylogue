@@ -242,3 +242,46 @@ fn absolute_expressions_preserve_money_and_duration_dimensions() {
         [json!({"tokens":3, "money":1.0, "elapsed":2000})]
     );
 }
+
+#[test]
+fn text_cast_returns_plain_strings_without_reference_lineage() {
+    let (_dir, fixture) = fixture();
+    let text =
+        "sessions where id = claude-code:b | fields text(id) as parent_id, text(unknown) as absent";
+    let options = opts(&[]);
+    let program = compile(text, &options).unwrap();
+    assert_eq!(program.columns[0].kind, ColKind::Text);
+    assert_eq!(program.columns[0].reference, None);
+    let schema = options.output_schema(text).unwrap();
+    assert_eq!(
+        schema.fields[0].kind,
+        query_language::catalog::FieldKind::Text
+    );
+    assert_eq!(schema.fields[0].unit, None);
+    assert_eq!(
+        rows(&fixture, text),
+        [json!({"parent_id":"claude-code:b", "absent":null})]
+    );
+    assert!(compile("sessions | fields text(input_tokens)", &options).is_err());
+}
+
+#[test]
+fn text_cast_refuses_a_native_json_object_at_the_reader_boundary() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(directory.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "claude-code:json",
+            ..Default::default()
+        })
+        .unwrap();
+    fixture.event(session, "fixture", Some(1000)).unwrap();
+    let program = compile("events | fields text(data) as value", &opts(&[])).unwrap();
+    let reads = fixture.reads().unwrap();
+    let reader = reads.reader().unwrap();
+    let error = reader.query_rows(&program).unwrap_err();
+    assert!(
+        error.to_string().contains("text takes a string value"),
+        "{error}"
+    );
+}

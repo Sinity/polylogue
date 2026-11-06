@@ -194,6 +194,31 @@ impl Compiler<'_> {
                     kind,
                 ))
             }
+            Expression::Function { name, arguments } if name == "text" => {
+                let [argument] = arguments.as_slice() else {
+                    return Err(expression_arity(name, 1, at));
+                };
+                if matches!(
+                    argument,
+                    Expression::Value {
+                        value: Value::Unknown
+                    }
+                ) {
+                    return Ok(("NULL".into(), ColKind::Text));
+                }
+                let (sql, kind) = self.sql_expression_with(argument, at, field)?;
+                let json = match kind {
+                    ColKind::Text => 0,
+                    ColKind::Json => 1,
+                    _ => {
+                        return Err(QueryError::Invalid {
+                            message: "text takes a string value".into(),
+                            position: at,
+                        });
+                    }
+                };
+                Ok((format!("pl_query_text({sql}, {json})"), ColKind::Text))
+            }
             Expression::Function { name, arguments } => {
                 let [argument] = arguments.as_slice() else {
                     return Err(expression_arity(name, 1, at));

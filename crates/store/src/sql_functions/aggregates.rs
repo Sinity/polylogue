@@ -36,6 +36,21 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
             _ => return Err(invalid("abs requires a number")),
         })
     })?;
+    conn.create_scalar_function("pl_query_text", 2, FLAGS, |ctx| {
+        let Some(text) = ctx.get::<Option<String>>(0)? else {
+            return Ok(None);
+        };
+        if !ctx.get::<bool>(1)? {
+            return Ok(Some(text));
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(&text).map_err(|_| invalid("text requires valid stored JSON"))?;
+        match value {
+            serde_json::Value::String(text) => Ok(Some(text)),
+            serde_json::Value::Null => Ok(None),
+            _ => Err(invalid("text takes a string value")),
+        }
+    })?;
     conn.create_scalar_function("pl_lower", 1, FLAGS, |ctx| {
         Ok(ctx
             .get::<Option<String>>(0)?
