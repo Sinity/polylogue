@@ -105,18 +105,21 @@ impl Field {
 pub(crate) enum NativeTimeStorage {
     Tuple,
     Event,
+    Latest,
 }
 impl NativeTimeStorage {
     pub(crate) fn code(self) -> &'static str {
         match self {
             Self::Tuple => "tuple",
             Self::Event => "event",
+            Self::Latest => "latest",
         }
     }
     pub(crate) fn from_code(code: &str) -> Option<Self> {
         match code {
             "tuple" => Some(Self::Tuple),
             "event" => Some(Self::Event),
+            "latest" => Some(Self::Latest),
             _ => None,
         }
     }
@@ -164,6 +167,11 @@ pub(crate) fn native_time(unit: Unit, field: &str, a: &Aliases) -> Option<Native
             "{s}.started_at",
             "{s}.started_time",
             NativeTimeStorage::Tuple,
+        ),
+        (Sessions, "last_active") => (
+            "{s}.last_activity_at",
+            "(SELECT pl_time_latest({s}_activity.at_time) FROM message {s}_activity WHERE {s}_activity.session_pk={s}.pk AND {s}_activity.at IS NOT NULL)",
+            NativeTimeStorage::Latest,
         ),
         (Events, "at") => ("{r}.at", "{r}.fields", NativeTimeStorage::Event),
         (Documents, "source_time") => (

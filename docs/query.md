@@ -89,6 +89,8 @@ Time expressions (relative, calendar, natural-language dates, bounds, daylight-s
 - A tool call's `result_at` is the time of its result or completion notice. `reported_duration` is the harness's own duration in milliseconds, unknown when absent; it is separate from the elapsed `duration` of [measures](measures.md), which needs both times on one clock.
 - **Coarse times.** A coarse or bounded time satisfies a time condition only when its whole period does, fails when none of its period does, and is otherwise `unknown`. A row whose time is unknown never matches a time condition, is counted in `notes`, and `group by day` puts it in an `unknown` group.
 - Period groups (`day()`, `week()`, `month()`) follow the logical day, and each says `period: complete|partial`.
+- `last_active` is the latest of the messages’ known native times. Its possible period is the maximum of their whole periods: a recorded period `[0,10)` and a point at 5 give `[5,10)`. Its source quality is known only when every possible latest message has that quality; a combination of different source qualities leaves the derived quality unknown. Calendar bounds are never inferred from the reader’s zone.
+- An order relation’s `at when` and `at start` anchor the outer row at its start; `at end` anchors it at its end. The inner row retains its native period and start. `match.distance` is the signed time from that outer anchor to the inner start, in seconds. Coarse periods still have to satisfy the whole-period relation and window.
 
 ## Related rows, stages, attached rows, combining
 
