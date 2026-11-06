@@ -143,3 +143,5 @@ fn functions_read_compressed_text_and_percentiles() {
 }
 
 mod calendar;
+
+mod numeric;

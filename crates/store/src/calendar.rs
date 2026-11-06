@@ -60,6 +60,22 @@ pub fn month_label(day: &DaySetting, ms: i64) -> Result<String> {
     Ok(format!("{}-{:02}", year_label(date.year()), date.month()))
 }
 
+pub(crate) fn weekday_label(day: &DaySetting, ms: i64) -> Result<String> {
+    Ok(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+        [date(day, ms)?.weekday().to_monday_zero_offset() as usize]
+        .into())
+}
+pub(crate) fn month_day_label(day: &DaySetting, ms: i64) -> Result<String> {
+    let date = date(day, ms)?;
+    Ok(format!("{:02}-{:02}", date.month(), date.day()))
+}
+pub(crate) fn hour_number(day: &DaySetting, ms: i64) -> Result<i64> {
+    Ok(i64::from(instant(ms)?.to_zoned(day.zone().clone()).hour()))
+}
+pub(crate) fn year_number(day: &DaySetting, ms: i64) -> Result<i64> {
+    Ok(i64::from(date(day, ms)?.year()))
+}
+
 fn year_label(year: i16) -> String {
     if year < 0 {
         format!("-{:04}", year.unsigned_abs())

@@ -593,3 +593,5 @@ fn definition_metadata_uses_binding_visitor_and_preserves_quoted_dollars() {
 }
 
 mod metadata;
+
+mod numeric;

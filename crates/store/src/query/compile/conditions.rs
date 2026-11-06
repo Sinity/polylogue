@@ -205,22 +205,45 @@ impl<'a> Compiler<'a> {
             ConditionKind::Match { field, value } => {
                 self.field_cond(field, FieldOp::Match(value), scope, c.span, top)?
             }
-            ConditionKind::Compare {
-                left: operand,
-                op,
-                right,
-            } => {
-                let value = literal_expression(right)?;
-                if matches!(op, Op::Contains | Op::Prefix) {
-                    return Err(not_built("this string comparison operator"));
+            ConditionKind::Compare { left, op, right } => {
+                if let (
+                    Expression::Field { name },
+                    Expression::Value {
+                        value: Value::Scalar { text, .. },
+                    },
+                ) = (left, right)
+                    && !matches!(op, Op::Contains | Op::Prefix)
+                    && (fields::lookup(scope.unit, name)
+                        .or_else(|| {
+                            fields::has_session(scope.unit)
+                                .then(|| fields::lookup(Unit::Sessions, name))
+                                .flatten()
+                        })
+                        .is_some_and(|field| {
+                            field.compile.is_some()
+                                || matches!(
+                                    field.kind,
+                                    Kind::Number
+                                        | Kind::Money
+                                        | Kind::Duration
+                                        | Kind::Time
+                                        | Kind::Special
+                                )
+                        })
+                        || self
+                            .expr(name, scope, c.span.start)
+                            .is_ok_and(|(_, kind)| kind == ColKind::Time))
+                {
+                    self.field_cond(name, FieldOp::Compare(*op, text), scope, c.span, top)?
+                } else {
+                    self.expression_comparison(
+                        left,
+                        *op,
+                        right,
+                        c.span.start,
+                        &mut |compiler, name, at| compiler.expr(name, scope, at),
+                    )?
                 }
-                self.field_cond(
-                    field_operand(operand)?,
-                    FieldOp::Compare(*op, value_text(value)?),
-                    scope,
-                    c.span,
-                    top,
-                )?
             }
             ConditionKind::Since { value, .. } | ConditionKind::Until { value, .. } => {
                 let field = if matches!(&c.kind, ConditionKind::Since { .. }) {
@@ -230,17 +253,33 @@ impl<'a> Compiler<'a> {
                 };
                 self.field_cond(field, FieldOp::Match(value), scope, c.span, top)?
             }
-            ConditionKind::Between {
-                left: operand,
-                from,
-                to,
-            } => self.field_cond(
-                field_operand(operand)?,
-                FieldOp::Between(value_text(from)?, value_text(to)?),
-                scope,
-                c.span,
-                top,
-            )?,
+            ConditionKind::Between { left, from, to } => {
+                if let Expression::Field { name } = left {
+                    self.field_cond(
+                        name,
+                        FieldOp::Between(value_text(from)?, value_text(to)?),
+                        scope,
+                        c.span,
+                        top,
+                    )?
+                } else {
+                    let lower = self.expression_comparison(
+                        left,
+                        Op::Ge,
+                        &Expression::value(from.clone()),
+                        c.span.start,
+                        &mut |compiler, name, at| compiler.expr(name, scope, at),
+                    )?;
+                    let upper = self.expression_comparison(
+                        left,
+                        Op::Le,
+                        &Expression::value(to.clone()),
+                        c.span.start,
+                        &mut |compiler, name, at| compiler.expr(name, scope, at),
+                    )?;
+                    format!("({lower}) AND ({upper})")
+                }
+            }
             ConditionKind::Rank {
                 list: RankList::Similar,
                 value,

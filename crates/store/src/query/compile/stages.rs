@@ -16,32 +16,29 @@ impl<'a> Compiler<'a> {
             .iter()
             .map(|term| scope.a.expand(term))
             .collect();
-        Ok(match key {
-            Expression::Function { .. } => {
-                match parse_random_seed(key)?.or(self.opts.random_seed) {
-                    Some(seed) => {
-                        let name = match identity.as_slice() {
-                            [one] => format!("CAST({one} AS TEXT)"),
-                            terms => format!("json_array({})", terms.join(", ")),
-                        };
-                        let mut order = vec![format!("pl_random({name}, '{seed}')")];
-                        order.extend(identity);
-                        order
-                    }
-                    None => vec!["random()".into()],
+        if matches!(key, Expression::Function { name, .. } if name == "random") {
+            return Ok(match parse_random_seed(key)?.or(self.opts.random_seed) {
+                Some(seed) => {
+                    let name = match identity.as_slice() {
+                        [one] => format!("CAST({one} AS TEXT)"),
+                        terms => format!("json_array({})", terms.join(", ")),
+                    };
+                    let mut order = vec![format!("pl_random({name}, '{seed}')")];
+                    order.extend(identity);
+                    order
                 }
-            }
-            Expression::Field { name: field } => {
-                let (expr, kind) = self.expr(field, scope, at)?;
-                scalar(kind, field, at)?;
-                self.show(field, &expr, kind, Self::field_reference(field, scope));
-                let dir = if desc { " DESC" } else { "" };
-                let mut order = vec![format!("({expr}) IS NULL"), format!("({expr}){dir}")];
-                order.extend(identity.iter().map(|term| format!("{term}{dir}")));
-                order
-            }
-            _ => return Err(not_built("this computed sort expression")),
-        })
+                None => vec!["random()".into()],
+            });
+        }
+        let (expr, kind) = self.sql_expression(key, scope, at)?;
+        scalar(kind, &key.column(), at)?;
+        if let Expression::Field { name } = key {
+            self.show(name, &expr, kind, Self::field_reference(name, scope));
+        }
+        let dir = if desc { " DESC" } else { "" };
+        let mut order = vec![format!("({expr}) IS NULL"), format!("({expr}){dir}")];
+        order.extend(identity);
+        Ok(order)
     }
 
     /// Finds the unit a field belongs to before its name becomes an alias.
@@ -94,29 +91,9 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         at: usize,
     ) -> Result<(String, String, ColKind), QueryError> {
-        let (field, bucket) = group_operand(key)?;
-        let (expr, kind) = self.expr(field, scope, at)?;
-        scalar(kind, field, at)?;
-        let name = flat(field);
-        Ok(match bucket {
-            None => {
-                let e = Self::display_value(&expr, kind);
-                (name, e, kind)
-            }
-            Some(b) => {
-                if kind != ColKind::Time {
-                    return Err(QueryError::Invalid {
-                        message: format!("{}({}) needs a time field", bucket_name(b), field),
-                        position: at,
-                    });
-                }
-                (
-                    key.column(),
-                    format!("pl_{}({expr})", bucket_name(b)),
-                    ColKind::Text,
-                )
-            }
-        })
+        let (expr, kind) = self.sql_expression(key, scope, at)?;
+        scalar(kind, &key.column(), at)?;
+        Ok((key.column(), Self::display_value(&expr, kind), kind))
     }
 
     pub(super) fn agg(
@@ -126,113 +103,169 @@ impl<'a> Compiler<'a> {
         at: usize,
     ) -> Result<Vec<(String, String, ColKind)>, QueryError> {
         let col = f.column();
-        let Some(field) = f.field()? else {
+        if !f.function.arguments().contains(&f.arguments.len()) {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "{} received the wrong number of arguments",
+                    f.function.name()
+                ),
+                position: at,
+            });
+        }
+        if f.arguments.is_empty() {
             return Ok(vec![(col, "count(*)".into(), ColKind::Number)]);
-        };
-        let (expr, kind) = self.expr(field, scope, at)?;
-        scalar(kind, field, at)?;
-        let value = |e: String| match kind {
-            ColKind::Money => format!("{e} / 1e9"),
-            _ => e,
-        };
-        let flat_field = flat(field);
-        let unknown = (
-            format!("unknown_{flat_field}"),
-            format!("count(*) - count({expr})"),
-            ColKind::Number,
-        );
-        let mut out = match &f.function {
-            AggregateFunction::Count => vec![(col, format!("count({expr})"), ColKind::Number)],
-            AggregateFunction::Sum => vec![(col, value(format!("sum({expr})")), kind), unknown],
-            AggregateFunction::Avg => vec![(col, value(format!("avg({expr})")), kind), unknown],
-            AggregateFunction::Min => vec![(col, value(format!("min({expr})")), kind), unknown],
-            AggregateFunction::Max => vec![(col, value(format!("max({expr})")), kind), unknown],
-            AggregateFunction::Percentile(p) => {
-                vec![
-                    (col, value(format!("pl_percentile({expr}, {p})")), kind),
-                    unknown,
-                ]
+        }
+        let inputs = f
+            .arguments
+            .iter()
+            .map(|argument| self.sql_expression(argument, scope, at))
+            .collect::<Result<Vec<_>, _>>()?;
+        let (expr, kind) = &inputs[0];
+        let kind = *kind;
+        if !matches!(
+            f.function,
+            AggregateFunction::Count
+                | AggregateFunction::CountDistinct
+                | AggregateFunction::Histogram
+        ) {
+            for ((_, kind), argument) in inputs.iter().zip(&f.arguments) {
+                scalar(*kind, &argument.column(), at)?;
             }
-            AggregateFunction::CountDistinct => {
-                vec![(col, format!("count(DISTINCT {expr})"), ColKind::Number)]
-            }
-            _ => return Err(not_built("this aggregate")),
-        };
-        if scope.unit == Unit::Sessions {
-            let derivation = if crate::session_sql::COUNT_FIELDS
-                .iter()
-                .any(|(name, _)| *name == field)
-            {
-                Some("counts")
-            } else if matches!(
-                field,
-                "wall_span"
-                    | "clustered_time"
-                    | "tool_time"
-                    | "tool_time_union"
-                    | "tool_untimed"
-                    | "ends_with"
-                    | "last_stop_reason"
-                    | "waiting_model"
-                    | "waiting_human"
-            ) {
-                Some("session_span")
+        }
+        let value = |sql: String, kind| {
+            if kind == ColKind::Money {
+                format!("({sql}) / 1e9")
             } else {
-                None
-            };
-            if let Some(name) = derivation {
+                sql
+            }
+        };
+        let (sql, result_kind) = match &f.function {
+            AggregateFunction::Count => (format!("count({expr})"), ColKind::Number),
+            AggregateFunction::CountDistinct => {
+                (format!("count(DISTINCT {expr})"), ColKind::Number)
+            }
+            AggregateFunction::Sum => (value(format!("sum({expr})"), kind), kind),
+            AggregateFunction::Avg => (value(format!("avg({expr})"), kind), kind),
+            AggregateFunction::Min => (value(format!("min({expr})"), kind), kind),
+            AggregateFunction::Max => (value(format!("max({expr})"), kind), kind),
+            AggregateFunction::Percentile(p) => {
+                (value(format!("pl_percentile({expr}, {p})"), kind), kind)
+            }
+            AggregateFunction::Covered => {
+                let (end, end_kind) = &inputs[1];
+                if *end_kind != kind {
+                    return Err(QueryError::Invalid {
+                        message: "covered endpoints require the same dimension".into(),
+                        position: at,
+                    });
+                }
+                let result_kind = if kind == ColKind::Time {
+                    ColKind::Duration
+                } else {
+                    kind
+                };
+                (
+                    value(format!("pl_covered({expr}, {end})"), result_kind),
+                    result_kind,
+                )
+            }
+            AggregateFunction::Correlation => (
+                format!("pl_correlation({expr}, {})", inputs[1].0),
+                ColKind::Number,
+            ),
+            AggregateFunction::Histogram => (
+                format!("pl_histogram({expr}, '{}')", column_kind_name(kind)),
+                ColKind::Json,
+            ),
+        };
+        let mut out = vec![(col, sql, result_kind)];
+        for (argument, (sql, _)) in f.arguments.iter().zip(&inputs) {
+            if let Expression::Field { .. } = argument {
+                let name = format!("unknown_{}", argument.column());
+                if !out.iter().any(|(prior, _, _)| prior == &name) {
+                    out.push((name, format!("count(*) - count({sql})"), ColKind::Number));
+                }
+            }
+        }
+        if let Expression::Field { name: field } = &f.arguments[0] {
+            let field = field.as_str();
+            let flat_field = flat(field);
+            if scope.unit == Unit::Sessions {
+                let derivation = if crate::session_sql::COUNT_FIELDS
+                    .iter()
+                    .any(|(name, _)| *name == field)
+                {
+                    Some("counts")
+                } else if matches!(
+                    field,
+                    "wall_span"
+                        | "clustered_time"
+                        | "tool_time"
+                        | "tool_time_union"
+                        | "tool_untimed"
+                        | "ends_with"
+                        | "last_stop_reason"
+                        | "waiting_model"
+                        | "waiting_human"
+                ) {
+                    Some("session_span")
+                } else {
+                    None
+                };
+                if let Some(name) = derivation {
+                    out.push((
+                        format!("pending_{flat_field}"),
+                        format!(
+                            "coalesce(sum(NOT ({})),0)",
+                            crate::session_sql::current(&scope.a.s, name)
+                        ),
+                        ColKind::Number,
+                    ));
+                }
+            }
+            if scope.unit == Unit::Sessions && matches!(field, "tool_time" | "tool_time_union") {
                 out.push((
-                    format!("pending_{flat_field}"),
+                    format!("unmeasured_calls_{flat_field}"),
                     format!(
-                        "coalesce(sum(NOT ({})),0)",
-                        crate::session_sql::current(&scope.a.s, name)
+                        "CASE WHEN count(*)=0 THEN 0 ELSE sum({}) END",
+                        crate::session_sql::span(&scope.a.s, "tool_untimed")
                     ),
                     ColKind::Number,
                 ));
             }
-        }
-        if scope.unit == Unit::Sessions && matches!(field, "tool_time" | "tool_time_union") {
-            out.push((
-                format!("unmeasured_calls_{flat_field}"),
-                format!(
-                    "CASE WHEN count(*)=0 THEN 0 ELSE sum({}) END",
-                    crate::session_sql::span(&scope.a.s, "tool_untimed")
-                ),
-                ColKind::Number,
-            ));
-        }
-        // A session cost known only in part (some request-bearing messages
-        // unpriced) is a lower bound, and the total says how many. A tree
-        // cost is one too when a session in the tree is, or when a
-        // subagent the tree spawned is not in the archive.
-        if scope.unit == Unit::Sessions
-            && matches!(f.function, AggregateFunction::Sum | AggregateFunction::Avg)
-        {
-            let s = &scope.a.s;
-            let unpriced = |sessions: &str| {
-                format!(
-                    "EXISTS (SELECT 1 FROM message xp WHERE {} AND xp.role = 'assistant' AND xp.cost_nusd IS NULL)",
-                    fields::own_messages("xp", Some(&format!("IN ({sessions})")))
-                )
-            };
-            let partial = match field {
-                "cost" => Some(unpriced(&format!("SELECT {s}.pk"))),
-                "tree_cost" => {
-                    let tree = fields::subtree(s);
-                    Some(format!(
-                        "({} OR EXISTS (SELECT 1 FROM link xl JOIN session xs ON xs.id = xl.parent_id \
+            // A session cost known only in part (some request-bearing messages
+            // unpriced) is a lower bound, and the total says how many. A tree
+            // cost is one too when a session in the tree is, or when a
+            // subagent the tree spawned is not in the archive.
+            if scope.unit == Unit::Sessions
+                && matches!(f.function, AggregateFunction::Sum | AggregateFunction::Avg)
+            {
+                let s = &scope.a.s;
+                let unpriced = |sessions: &str| {
+                    format!(
+                        "EXISTS (SELECT 1 FROM message xp WHERE {} AND xp.role = 'assistant' AND xp.cost_nusd IS NULL)",
+                        fields::own_messages("xp", Some(&format!("IN ({sessions})")))
+                    )
+                };
+                let partial = match field {
+                    "cost" => Some(unpriced(&format!("SELECT {s}.pk"))),
+                    "tree_cost" => {
+                        let tree = fields::subtree(s);
+                        Some(format!(
+                            "({} OR EXISTS (SELECT 1 FROM link xl JOIN session xs ON xs.id = xl.parent_id \
                          WHERE xl.kind = 'subagent' AND xl.child_pk IS NULL AND xs.pk IN ({tree})))",
-                        unpriced(&tree)
-                    ))
+                            unpriced(&tree)
+                        ))
+                    }
+                    _ => None,
+                };
+                if let Some(partial) = partial {
+                    out.push((
+                        format!("partial_{flat_field}"),
+                        format!("count(CASE WHEN ({expr}) IS NOT NULL AND {partial} THEN 1 END)"),
+                        ColKind::Number,
+                    ));
                 }
-                _ => None,
-            };
-            if let Some(partial) = partial {
-                out.push((
-                    format!("partial_{flat_field}"),
-                    format!("count(CASE WHEN ({expr}) IS NOT NULL AND {partial} THEN 1 END)"),
-                    ColKind::Number,
-                ));
             }
         }
         Ok(out)
@@ -284,14 +317,47 @@ impl<'a> Compiler<'a> {
                 format!("NOT ({})", self.group_cond(cond, keys, aggs)?)
             }
             ConditionKind::Compare { left, op, right } => {
-                let field = field_operand(left)?;
-                let value = value_text(literal_expression(right)?)?;
-                let (n, _) = find(field).ok_or_else(|| missing(field, c.span.start))?;
-                let v = match value.parse::<f64>() {
-                    Ok(x) if x.is_finite() => format!("{x}"),
-                    _ => self.text_param(value),
+                self.expression_comparison(left, *op, right, c.span.start, &mut |_, field, at| {
+                    let (name, kind) = find(field).ok_or_else(|| missing(field, at))?;
+                    let sql = format!("g.{name}");
+                    Ok((
+                        if kind == ColKind::Money {
+                            format!("({sql}) * 1e9")
+                        } else {
+                            sql
+                        },
+                        kind,
+                    ))
+                })?
+            }
+            ConditionKind::Between { left, from, to } => {
+                let mut resolve = |_: &mut Self, field: &str, at| {
+                    let (name, kind) = find(field).ok_or_else(|| missing(field, at))?;
+                    let sql = format!("g.{name}");
+                    Ok((
+                        if kind == ColKind::Money {
+                            format!("({sql}) * 1e9")
+                        } else {
+                            sql
+                        },
+                        kind,
+                    ))
                 };
-                format!("g.{n} {} {v}", op.sql())
+                let lower = self.expression_comparison(
+                    left,
+                    Op::Ge,
+                    &Expression::value(from.clone()),
+                    c.span.start,
+                    &mut resolve,
+                )?;
+                let upper = self.expression_comparison(
+                    left,
+                    Op::Le,
+                    &Expression::value(to.clone()),
+                    c.span.start,
+                    &mut resolve,
+                )?;
+                format!("({lower}) AND ({upper})")
             }
             ConditionKind::Match {
                 field,
@@ -418,5 +484,17 @@ impl<'a> Compiler<'a> {
             first,
             last,
         })
+    }
+}
+
+fn column_kind_name(kind: ColKind) -> &'static str {
+    match kind {
+        ColKind::Text => "text",
+        ColKind::Ids | ColKind::Json => "json",
+        ColKind::Number => "number",
+        ColKind::Money => "money",
+        ColKind::Time => "time",
+        ColKind::Duration => "duration",
+        ColKind::Bool => "bool",
     }
 }

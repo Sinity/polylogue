@@ -31,6 +31,7 @@ const FLAGS: FunctionFlags = FunctionFlags::SQLITE_UTF8.union(FunctionFlags::SQL
 
 pub fn register(conn: &Connection) -> rusqlite::Result<()> {
     temporal::register(conn)?;
+    aggregates::register(conn)?;
     conn.create_scalar_function("pl_live", 4, FLAGS, |ctx| {
         use polylogue_model::live::{LiveFacts, view};
         use rusqlite::types::Value;
@@ -232,6 +233,8 @@ pub(crate) fn register_calendar(
         ),
         ("pl_week", crate::calendar::week_label),
         ("pl_month", crate::calendar::month_label),
+        ("pl_weekday", crate::calendar::weekday_label),
+        ("pl_month_day", crate::calendar::month_day_label),
     ] {
         let context = context.clone();
         conn.create_scalar_function(name, 1, FunctionFlags::SQLITE_UTF8, move |ctx| {
@@ -254,10 +257,40 @@ pub(crate) fn register_calendar(
                 .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))
         })?;
     }
+    for (name, number) in [
+        (
+            "pl_hour",
+            crate::calendar::hour_number as fn(&DaySetting, i64) -> crate::Result<i64>,
+        ),
+        ("pl_year", crate::calendar::year_number),
+    ] {
+        let context = context.clone();
+        conn.create_scalar_function(name, 1, FunctionFlags::SQLITE_UTF8, move |ctx| {
+            let Some(ms) = ctx.get::<Option<i64>>(0)? else {
+                return Ok(None);
+            };
+            let day = context
+                .0
+                .lock()
+                .expect("calendar scope lock")
+                .last()
+                .cloned()
+                .ok_or_else(|| {
+                    rusqlite::Error::UserFunctionError(
+                        "calendar values require an explicit owner clock".into(),
+                    )
+                })?;
+            number(&day, ms)
+                .map(Some)
+                .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))
+        })?;
+    }
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests;
 
+mod aggregates;
 mod temporal;

@@ -105,7 +105,7 @@ Stages apply in the order written:
 
 - `sort by F [asc|desc], …`: unknowns last in either direction; row identity is the final tie-break. `sort by random[(seed)]` keeps its seed in the cursor.
 - `group by K1, K2 | count` or `| agg …`: keys are fields and `day()`, `week()`, `month()`.
-- `agg count, sum:F, avg:F, min:F, max:F, pNN:F, count_distinct:F, histogram:F, corr:F,G`: each value is summed at its owner's grain; unknown and partial values are reported as `unknown_F` and `partial_F`; percentiles are nearest-rank.
+- `agg count(), sum(E), avg(E), min(E), max(E), pNN(E), count_distinct(E), histogram(E), corr(E, F), covered(start, end)`: expressions are evaluated at the input row's grain; unknown and partial values are reported as `unknown_F` and `partial_F`; percentiles are nearest-rank. `covered` measures the union of intervals, so overlap is counted once. `histogram` returns ordered JSON bins with `value` and `count`; `corr` is Pearson correlation over complete known pairs and stays unknown for fewer than two pairs or constant input. Arithmetic preserves dimensions; division by zero and operations on unknown inputs stay unknown.
 - `| where C` after grouping filters groups.
 - `limit N`, `offset N` are selections and change the question; there is no maximum.
 - `distinct`; `matches`; `| UNIT [where C]` (rows of another unit within the matched sessions); `fields a,b` (projection; `--fields` on the command line).
