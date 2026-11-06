@@ -426,7 +426,11 @@ impl<'a> Compiler<'a> {
         relation: &mut Relation,
         condition: &Condition,
     ) -> Result<String, QueryError> {
-        if relation.open_fields && !contains_order(condition) && relation.sources.len() == 1 {
+        if relation.open_fields
+            && !contains_order(condition)
+            && !materialized_condition(condition, &relation.program.column_slots)
+            && relation.sources.len() == 1
+        {
             let source = &relation.sources[0];
             if source.prefix.is_empty() {
                 let context = RowContext {
@@ -1179,4 +1183,41 @@ fn match_patterns(condition: &Condition) -> Vec<Condition> {
             )
         })
         .collect()
+}
+
+fn materialized_condition(
+    condition: &Condition,
+    columns: &std::collections::BTreeMap<String, String>,
+) -> bool {
+    fn expression(
+        value: &Expression,
+        columns: &std::collections::BTreeMap<String, String>,
+    ) -> bool {
+        match value {
+            Expression::Field { name } => columns.contains_key(name),
+            Expression::Function { arguments, .. } => {
+                arguments.iter().any(|value| expression(value, columns))
+            }
+            Expression::Arithmetic { left, right, .. } => {
+                expression(left, columns) || expression(right, columns)
+            }
+            Expression::Value { .. } => false,
+        }
+    }
+    match &condition.kind {
+        ConditionKind::And { conditions } | ConditionKind::Or { conditions } => conditions
+            .iter()
+            .any(|condition| materialized_condition(condition, columns)),
+        ConditionKind::Not { condition } => materialized_condition(condition, columns),
+        ConditionKind::Match { field, .. }
+        | ConditionKind::Since { field, .. }
+        | ConditionKind::Until { field, .. } => columns.contains_key(field),
+        ConditionKind::Compare { left, right, .. } => {
+            expression(left, columns) || expression(right, columns)
+        }
+        ConditionKind::Between { left, .. }
+        | ConditionKind::TimeRange { left, .. }
+        | ConditionKind::In { left, .. } => expression(left, columns),
+        _ => false,
+    }
 }

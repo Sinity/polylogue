@@ -344,3 +344,15 @@ fn explicit_absolute_distance_choice_keeps_exact_nanosecond_ties() {
         [json!({"match.id":"claude-code:z-near"})]
     );
 }
+
+#[test]
+fn filters_read_a_grouped_join_column_from_its_materialized_slot() {
+    let (_directory, fixture) = fixture();
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions | join (sessions | group by repo) on repo = repo | where match.count > 1 | fields id | sort by id"
+        ),
+        [json!({"id":"claude-code:a"}), json!({"id":"claude-code:b"})]
+    );
+}
