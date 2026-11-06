@@ -1,6 +1,5 @@
 //! Properties that need a failure injected at a chosen point (the `faults`
-//! feature): run with `cargo nextest run -p polylogue-engine --features
-//! faults --test faults`.
+//! feature): run with `cargo xtask test -p polylogue-engine -E 'test(/^faults::/)'`.
 
 #![cfg(feature = "faults")]
 

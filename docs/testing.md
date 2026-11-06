@@ -23,7 +23,7 @@ A golden is the expected parse of an input, written by hand from knowledge of th
 ## Test layout
 
 - A module's unit tests are in `name/tests.rs` (more files in `name/tests/`), declared last with `#[cfg(test)] mod tests;`.
-- Integration tests are one binary per area: `crates/<crate>/tests/<area>/main.rs`, with the area's other files beside it. For example the engine's `passes` (the loop over files a test writes), `properties` (properties every archive keeps, as property tests over generated archives and Morrow) and `faults`; the sources' `formats`; the daemon's `e2e`.
+- Integration tests share one binary per crate, with areas as modules so the dependency graph links once. The engine's `tests/engine/main.rs` contains `passes`, `properties` and `faults`; the application's `tests/e2e/main.rs` contains CLI, browser-host, onboarding, deadline and completion cases. Each area's other files stay beside its module; the sources use `tests/formats/main.rs`.
 - Examples with unit tests set `test = true` in their Cargo manifest. Native test commands select runnable test targets by default; examples without tests are compiled by Clippy.
 - Helpers that need a crate's private items stay in that crate behind its test feature. CLI and MCP behaviour is tested through the public commands.
 
@@ -34,7 +34,7 @@ A golden is the expected parse of an input, written by hand from knowledge of th
 Every area page ends with its laws. Each law has a stable key unique in its page, and its full name is `<page>/<key>`, for example `operations/open-never-deletes`.
 
 - **A test that checks a law carries the key in its name,** in snake case: `open_never_deletes`, with a suffix when several tests check one law. Finding a law's tests is a name search; no table maps them by hand.
-- Integration test binaries are already one per area, so a law's tests sit in the binary of the area that owns it.
+- A law's tests sit in the module of the area that owns it.
 - **Shared laws live with the shared code:** the query-language law suite is in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md) and runs against Polylogue's catalog; the signal evaluator's conformance cases are in common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) and run against Polylogue's occurrence keys.
 - **Coverage is a report:** `cargo xtask laws` (devkit) lists each law key with the tests whose names carry it, and the laws that have none. It fails nothing; a law without a test is a gap for the area's owner.
 - Cross-cutting laws (crash states, parity across CLI, socket, HTTP and MCP) are in [architecture.md](architecture.md) and [interfaces.md](interfaces.md).

@@ -26,7 +26,8 @@ The package, Clippy and nextest outputs share one Crane dependency build.
 Clippy checks the primary and standalone configurations separately. The
 nextest check runs the standalone workspace with the same engine and store
 fault features as `cargo xtask test`, without the real-process
-`polylogue::e2e` binary, which needs the operating system's machine identity;
+`polylogue::e2e` cases that need the operating system's machine identity. Its
+offline shell-completion cases remain included;
 `cargo xtask check` still runs every e2e and Sinex client test. The behavior VM
 runs the packaged daemon, CLI status, MCP initialization and a native-messaging
 exchange in a guest with private XDG and archive paths. Formatting, crate

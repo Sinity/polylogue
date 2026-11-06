@@ -1,6 +1,5 @@
 //! Real shell callbacks over an offline synthetic catalog.
-#[path = "support/process.rs"]
-mod process;
+use crate::{BIN, process};
 
 use polylogue_model::ChangePosition;
 use polylogue_store::completion::{CatalogWriter, Kept, Metadata, Saved, Session, Setting};
@@ -10,7 +9,6 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
-const BIN: &str = env!("CARGO_BIN_EXE_polylogue");
 fn seed(root: &Path, cache: &Path, model: &str) {
     let key = blake3::hash(root.canonicalize().unwrap().as_os_str().as_encoded_bytes()).to_hex()
         [..12]

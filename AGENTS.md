@@ -311,9 +311,8 @@ and cleanup before raising timeouts or cutting coverage.
 
 - Rust, four-space indent, `rustfmt`.
 - A module is `name.rs` with its children in `name/`; no `mod.rs`.
-- Tests live in their own files, never inline; the layout (unit tests in
-  `name/tests.rs`, one integration binary per area) and how tests are named
-  after the laws they check are in `docs/testing.md`. Use synthetic inputs,
+- Tests live in their own files, never inline; `docs/testing.md` owns their
+  layout and law names. Use synthetic inputs,
   temporary directories and `polylogue-testkit`.
 - Comments state constraints and reasons, briefly. History, status, Bead IDs
   and section numbers belong in Git and Beads.
