@@ -125,32 +125,25 @@ impl Relation {
     }
     pub fn reference(&self, value: &Expression) -> Option<ColumnReference> {
         match value {
-            Expression::Field { name } => self
-                .program
-                .columns
-                .iter()
-                .find(|c| &c.name == name)
-                .and_then(|c| c.reference)
-                .or_else(|| {
-                    (!self.sources.is_empty())
-                        .then(|| {
-                            self.sources
-                                .iter()
-                                .rev()
-                                .filter(|source| {
-                                    self.open_fields || source.prefix.starts_with("match.")
-                                })
-                                .find_map(|source| {
-                                    name.strip_prefix(&source.prefix).and_then(|name| {
-                                        Compiler::field_reference(
-                                            name,
-                                            &RowContext::plain(source.unit),
-                                        )
-                                    })
-                                })
+            Expression::Field { name } => {
+                if let Some(column) = self
+                    .program
+                    .columns
+                    .iter()
+                    .find(|column| &column.name == name)
+                {
+                    return column.reference;
+                }
+                self.sources
+                    .iter()
+                    .rev()
+                    .filter(|source| self.open_fields || source.prefix.starts_with("match."))
+                    .find_map(|source| {
+                        name.strip_prefix(&source.prefix).and_then(|name| {
+                            Compiler::field_reference(name, &RowContext::plain(source.unit))
                         })
-                        .flatten()
-                }),
+                    })
+            }
             Expression::Function { name, arguments } if name == "case_eq" => {
                 arguments.get(2).and_then(|arg| self.reference(arg))
             }

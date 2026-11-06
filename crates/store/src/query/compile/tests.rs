@@ -610,3 +610,19 @@ mod metadata;
 mod numeric;
 
 mod relations;
+
+#[test]
+fn explicit_projection_reference_metadata_shadows_native_match_sources() {
+    for query in [
+        "sessions | join (sessions | fields text(id) as id) on id = id | fields match.id",
+        "sessions | join (sessions | fields text(id) as id) on id = id | fields match.id as id | fields id",
+        "sessions | fields text(id) as id | fields id",
+    ] {
+        let program = c(query);
+        assert_eq!(program.columns.len(), 1, "{query}");
+        assert_eq!(program.columns[0].kind, ColKind::Text, "{query}");
+        assert_eq!(program.columns[0].reference, None, "{query}");
+    }
+    let native = c("sessions | join (sessions | fields id) on id = id | fields match.id");
+    assert_eq!(native.columns[0].reference, Some(ColumnReference::Session));
+}
