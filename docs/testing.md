@@ -24,6 +24,7 @@ A golden is the expected parse of an input, written by hand from knowledge of th
 
 - A module's unit tests are in `name/tests.rs` (more files in `name/tests/`), declared last with `#[cfg(test)] mod tests;`.
 - Integration tests are one binary per area: `crates/<crate>/tests/<area>/main.rs`, with the area's other files beside it. For example the engine's `passes` (the loop over files a test writes), `properties` (properties every archive keeps, as property tests over generated archives and Morrow) and `faults`; the sources' `formats`; the daemon's `e2e`.
+- Examples with unit tests set `test = true` in their Cargo manifest. Native test commands select runnable test targets by default; examples without tests are compiled by Clippy.
 - Helpers that need a crate's private items stay in that crate behind its test feature. CLI and MCP behaviour is tested through the public commands.
 
 **Waiting, never timing.** No test asserts elapsed time. A test of a deadline makes the peer stay silent until the client gives up, so only the deadline can end the wait; other tests wait for an event (a reply, a file, a closed connection). A test that waits for the daemon to read a change waits until `status` shows it up to date. nextest's slow timeout ends a hung test.

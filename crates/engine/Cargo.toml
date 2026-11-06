@@ -41,3 +41,7 @@ rusqlite.workspace = true
 
 [lints]
 workspace = true
+
+[[example]]
+name = "first_build"
+test = true

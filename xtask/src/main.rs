@@ -259,6 +259,7 @@ fn sinex_client_arguments() -> Vec<String> {
         "polylogue",
         "--features",
         "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture",
+        "--tests",
     ]
     .map(String::from)
     .to_vec()
@@ -291,6 +292,20 @@ fn nextest(args: Vec<String>) -> Nextest {
     }
 }
 
+fn selects_test_targets(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--lib" | "--bins" | "--tests" | "--examples" | "--benches" | "--all-targets" | "--doc"
+    ) || ["--bin", "--test", "--example", "--bench"]
+        .iter()
+        .any(|flag| {
+            arg == *flag
+                || arg
+                    .strip_prefix(*flag)
+                    .is_some_and(|rest| rest.starts_with('='))
+        })
+}
+
 /// Native Cargo package selection with nextest filters intersected with
 /// `required` (a changed-package selection, or the scenarios' own).
 /// Feature flags are refused so each mode keeps its fault-enabled build.
@@ -300,6 +315,10 @@ fn test_arguments(
     required: Option<String>,
     mut sinex: bool,
 ) -> Result<Vec<String>, String> {
+    let explicit_targets = args
+        .iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .any(|arg| selects_test_targets(arg));
     let mut packages = Vec::new();
     let mut workspace = false;
     let mut filtersets = Vec::new();
@@ -416,6 +435,9 @@ fn test_arguments(
                 .collect::<Vec<_>>()
                 .join(" & "),
         );
+    }
+    if !explicit_targets {
+        arguments.push("--tests".into());
     }
     arguments.extend(rest);
     Ok(arguments)
