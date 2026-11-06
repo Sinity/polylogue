@@ -397,6 +397,13 @@ fn parse_standings_require_their_length_and_reason() {
 fn old_kept_output_upgrade_marks_missing_policy_without_changing_stored_values() {
     let conn = Connection::open_in_memory().unwrap();
     ensure_archive(&conn).unwrap();
+    let raw = r#"{ "unit":"sessions", "columns":[], "rows":[{"text":"\u03bb","value":1.00}] }"#;
+    let evolved = polylogue_model::kept::evolve_body(raw).unwrap();
+    assert!(evolved.contains(r#""rows":[{"text":"\u03bb","value":1.00}]"#));
+    assert_eq!(
+        polylogue_model::kept::evolve_body(&evolved).unwrap(),
+        evolved
+    );
     let original = serde_json::json!({"unit":"sessions","shape":"rows","columns":[{"name":"cwd","kind":"text"}],"rows":[{"cwd":"/work/module"}],"identities":[["test:one"]]});
     conn.execute("INSERT INTO kept_result(id,query,ran_at,read_at,rows_json) VALUES ('old','sessions',0,'{}',?1)", [original.to_string()]).unwrap();
     set_version(&conn, 2).unwrap();

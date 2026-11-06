@@ -73,21 +73,42 @@ impl OutputMetadata {
 
 /// Version 1 did not retain a logical declaration. Its query text cannot
 /// establish the catalog or saved definitions used by the original producer.
+#[derive(Deserialize)]
+struct BodyMetadata<'a> {
+    #[serde(borrow, default, deserialize_with = "raw_metadata")]
+    output_metadata: Option<&'a serde_json::value::RawValue>,
+}
+fn raw_metadata<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<&'de serde_json::value::RawValue>, D::Error> {
+    <&serde_json::value::RawValue>::deserialize(deserializer).map(Some)
+}
+
 pub fn evolve_body(text: &str) -> Result<String, String> {
-    let mut body: serde_json::Value =
-        serde_json::from_str(text).map_err(|error| error.to_string())?;
-    let object = body
-        .as_object_mut()
-        .ok_or_else(|| "a kept body must be an object".to_owned())?;
-    if let Some(metadata) = object.get("output_metadata") {
+    if !text.trim_start().starts_with('{') {
+        return Err("a kept body must be an object".into());
+    }
+    let mut parser = serde_json::Deserializer::from_str(text);
+    parser.disable_recursion_limit();
+    let body = BodyMetadata::deserialize(&mut parser).map_err(|error| error.to_string())?;
+    parser.end().map_err(|error| error.to_string())?;
+    if let Some(metadata) = body.output_metadata {
         let metadata: OutputMetadata =
-            serde_json::from_value(metadata.clone()).map_err(|error| error.to_string())?;
+            serde_json::from_str(metadata.get()).map_err(|error| error.to_string())?;
         metadata.validate()?;
         return Ok(text.to_owned());
     }
-    object.insert(
-        "output_metadata".into(),
-        serde_json::to_value(OutputMetadata::default()).expect("kept metadata serializes"),
-    );
-    serde_json::to_string(&body).map_err(|error| error.to_string())
+    let end = text.rfind('}').expect("validated object");
+    let start = text.find('{').expect("validated object");
+    let metadata =
+        serde_json::to_string(&OutputMetadata::default()).expect("kept metadata serializes");
+    let mut evolved = String::with_capacity(text.len() + metadata.len() + 20);
+    evolved.push_str(&text[..end]);
+    if !text[start + 1..end].trim().is_empty() {
+        evolved.push(',');
+    }
+    evolved.push_str("\"output_metadata\":");
+    evolved.push_str(&metadata);
+    evolved.push_str(&text[end..]);
+    Ok(evolved)
 }
