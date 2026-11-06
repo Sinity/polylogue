@@ -348,9 +348,11 @@ impl<'a> Compiler<'a> {
             format!("{} AS parent", row_reference(parent)?),
             "q.mt AS match".into(),
             "q.step + 1 AS position".into(),
+            "q.n AS \"step.position\"".into(),
             format!("{} AS step", row_reference(&child)?),
         ];
         let mut columns = match_columns();
+        columns.push(("step.position".into(), ColKind::Number));
         for (name, expression, kind, _) in child_cols {
             if catalog.field(child.unit.name(), &name).is_some() {
                 let name = format!("step.{name}");

@@ -377,6 +377,7 @@ pub(crate) struct Compiler<'a> {
     opts: &'a Options,
     params: Vec<Param>,
     ctes: Vec<String>,
+    input_rows: Option<String>,
     notes: Vec<String>,
     incomplete: Vec<String>,
     text_terms: Vec<String>,
@@ -425,6 +426,7 @@ impl<'a> Compiler<'a> {
             opts,
             params: vec![],
             ctes: vec![],
+            input_rows: None,
             notes: vec![],
             incomplete: vec![],
             text_terms: vec![],
@@ -776,7 +778,8 @@ fn row_columns(unit: Unit, a: &Aliases, now: i64) -> (String, Vec<RowColumn>) {
 /// with the target's FROM clause and the condition `cond` on it.
 fn relation_sql(template: &str, a: &Aliases, n: &Aliases, target: Unit, cond: &str) -> String {
     units::expand_pair(template, a, n)
-        .replace("{next}", &a.expand(units::NEXT_CALL))
+        .replace("{next}", &units::adjacent_call(a, false))
+        .replace("{previous}", &units::adjacent_call(a, true))
         .replace("{from}", &base_from(target, n))
         .replace("{cond}", cond)
 }

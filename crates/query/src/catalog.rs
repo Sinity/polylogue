@@ -91,6 +91,7 @@ pub fn catalog(origins: &[String]) -> Catalog {
                 name: spec.name.into(),
                 singular: Some(spec.singular.into()),
                 sequence_unit: Some("tool_calls".into()),
+                order_scope: (unit == Unit::ToolCalls).then(|| "session_tool_calls".into()),
                 fields: declarations,
                 identity: spec
                     .identity

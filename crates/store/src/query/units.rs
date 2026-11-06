@@ -331,11 +331,53 @@ const MESSAGE_DEFAULTS: &[Default] = &[
     d(Expr::Fn(not_hidden), &["hidden"], true),
 ];
 
-/// The session's next counted tool call after `{t}`, in session order.
-pub const NEXT_CALL: &str = "SELECT tq.pk FROM tool_call tq JOIN block qb ON qb.pk = tq.call_block_pk \
-     JOIN message qm ON qm.pk = qb.message_pk WHERE tq.session_pk = {t}.session_pk \
-     AND (qm.order_input_id, qm.seq, qm.record_position, qm.id, qb.idx) > ({m}.order_input_id, {m}.seq, {m}.record_position, {m}.id, {cb}.idx) \
-     ORDER BY qm.order_input_id, qm.seq, qm.record_position, qm.id, qb.idx LIMIT 1";
+/// Adjacent counted calls use the same complete session order as `seq`.
+pub fn adjacent_call(a: &Aliases, previous: bool) -> String {
+    let cmp = if previous { "<" } else { ">" };
+    let dir = if previous { " DESC" } else { "" };
+    let order = [
+        "qm.order_input_id",
+        "qm.seq",
+        "qm.record_position",
+        "qm.id",
+        "qb.idx",
+    ];
+    format!(
+        "SELECT tq.pk FROM tool_call tq JOIN block qb ON qb.pk = tq.call_block_pk JOIN message qm ON qm.pk = qb.message_pk WHERE tq.session_pk = {}.session_pk AND {} AND {} AND ({}) {cmp} ({}) ORDER BY {} LIMIT 1",
+        a.t,
+        fields::own_messages("qm", None),
+        fields::counts_as_action("tq"),
+        order.join(", "),
+        [
+            format!("{}.order_input_id", a.m),
+            format!("{}.seq", a.m),
+            format!("{}.record_position", a.m),
+            format!("{}.id", a.m),
+            format!("{}.idx", a.cb)
+        ]
+        .join(", "),
+        order
+            .iter()
+            .map(|term| format!("{term}{dir}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+/// Position in the complete counted-call scope, before query filtering.
+pub fn call_position(a: &Aliases) -> String {
+    format!(
+        "(SELECT count(*) FROM tool_call pt JOIN block pb ON pb.pk=pt.call_block_pk JOIN message pm ON pm.pk=pb.message_pk WHERE pt.session_pk={}.session_pk AND {} AND {} AND (pm.order_input_id,pm.seq,pm.record_position,pm.id,pb.idx) <= ({}.order_input_id,{}.seq,{}.record_position,{}.id,{}.idx))",
+        a.t,
+        fields::own_messages("pm", None),
+        fields::counts_as_action("pt"),
+        a.m,
+        a.m,
+        a.m,
+        a.m,
+        a.cb
+    )
+}
 
 const MESSAGE_RELATIONS: &[Relation] = &[rel("session", Unit::Sessions, Via::Same)];
 
@@ -576,6 +618,14 @@ pub static UNITS: &[UnitSpec] = &[
                 Via::Exists {
                     cond: "EXISTS (SELECT 1 FROM {from} WHERE {nt}.pk = ({next}) AND {cond})",
                     value: Some("(SELECT {e} FROM {from} WHERE {nt}.pk = ({next}))"),
+                },
+            ),
+            rel(
+                "previous",
+                Unit::ToolCalls,
+                Via::Exists {
+                    cond: "EXISTS (SELECT 1 FROM {from} WHERE {nt}.pk = ({previous}) AND {cond})",
+                    value: Some("(SELECT {e} FROM {from} WHERE {nt}.pk = ({previous}))"),
                 },
             ),
         ],

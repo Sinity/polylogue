@@ -236,7 +236,7 @@ pub static UNITS: &[UnitSpec] = &[
         name: "tool_calls",
         singular: "tool_call",
         in_session: true,
-        identity: &["message"],
+        identity: &["message", "idx"],
         main_time: Some("at"),
         columns: &[
             ColumnSpec {
@@ -291,6 +291,10 @@ pub static UNITS: &[UnitSpec] = &[
             },
             Relation {
                 prefix: "next",
+                target: Unit::ToolCalls,
+            },
+            Relation {
+                prefix: "previous",
                 target: Unit::ToolCalls,
             },
         ],

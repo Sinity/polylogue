@@ -834,6 +834,18 @@ pub static FIELDS: &[Field] = &[
         "ok, error, pending or unknown",
     )
     .stored_unknown("unknown"),
+    f(
+        ToolCalls,
+        "idx",
+        Number,
+        "the call block position in its message",
+    ),
+    f(
+        ToolCalls,
+        "position",
+        Number,
+        "the call position in the complete session call order",
+    ),
     f(ToolCalls, "exit_code", Number, ""),
     f(ToolCalls, "at", Time, ""),
     f(
@@ -871,6 +883,7 @@ pub static FIELDS: &[Field] = &[
     ),
     sp(ToolCalls, "child", "for subagent calls: the child session"),
     sp(ToolCalls, "next", "the session's next tool call"),
+    sp(ToolCalls, "previous", "the session's previous tool call"),
     f(Files, "path", Substring, "the file path"),
     f(Files, "reads", Number, ""),
     f(Files, "writes", Number, ""),

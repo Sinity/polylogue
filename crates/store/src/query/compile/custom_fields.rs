@@ -644,9 +644,9 @@ pub(crate) fn spawned_child(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<St
     ))
 }
 
-pub(crate) fn next_call(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn adjacent_call(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     Err(QueryError::Invalid {
-        message: "next names a relation; filter on next.<field>, such as next.action:shell".into(),
+        message: format!("{0} names a relation; filter on {0}.<field>, such as {0}.action:shell", x.name),
         position: x.span.start,
     })
 }
