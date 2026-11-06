@@ -45,7 +45,7 @@ fn producer_backup_cut_keeps_original_frames_after_live_retirement() {
             .join("frame.zst"),
     )
     .unwrap();
-    let pinned = spool.pin_backup().unwrap();
+    let pinned = spool.pin_backup(&AtomicBool::new(false)).unwrap();
 
     // Ordinary capture and retirement continue after pinning. Neither can
     // change the bounded producer artifact or its original retry identities.
@@ -89,7 +89,7 @@ fn producer_backup_keeps_group_material_encoding_after_confirmed_retirement() {
         .unwrap();
     spool.acknowledge(ack("group", false, Some(10))).unwrap();
     let encoded = fs::read(spool.operation("raw").unwrap().join("body.zst")).unwrap();
-    let pinned = spool.pin_backup().unwrap();
+    let pinned = spool.pin_backup(&AtomicBool::new(false)).unwrap();
     spool.retire(10).unwrap();
     assert!(spool.get("raw").unwrap().is_none());
     assert!(spool.get("group").unwrap().is_none());
@@ -109,6 +109,23 @@ fn producer_backup_keeps_group_material_encoding_after_confirmed_retirement() {
         restored.capture_group("raw").unwrap().unwrap().identity,
         "group"
     );
+}
+
+#[test]
+fn producer_backup_cancelled_before_pin_keeps_live_queue() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    spool.prepare(events("original", "retained")).unwrap();
+    assert!(spool.pin_backup(&AtomicBool::new(true)).is_err());
+    assert!(spool.get("original").unwrap().is_some());
+    let parent = spool.root.parent().unwrap();
+    assert!(!fs::read_dir(parent).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(".backup-cut-"))
+    }));
 }
 
 #[test]

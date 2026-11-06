@@ -10,6 +10,7 @@ use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 mod exports;
 mod names;
 mod raw_ranges;
@@ -334,7 +335,15 @@ impl PinnedCapture {
     }
 }
 
-fn pin_backup_tree(source: &Path, destination: &Path) -> Result<()> {
+fn check_backup_cancelled(cancelled: &AtomicBool) -> Result<()> {
+    if cancelled.load(Ordering::Acquire) {
+        return invalid("producer backup acquisition cancelled");
+    }
+    Ok(())
+}
+
+fn pin_backup_tree(source: &Path, destination: &Path, cancelled: &AtomicBool) -> Result<()> {
+    check_backup_cancelled(cancelled)?;
     let metadata = fs::symlink_metadata(source)?;
     if metadata.is_file() {
         fs::hard_link(source, destination)?;
@@ -351,7 +360,11 @@ fn pin_backup_tree(source: &Path, destination: &Path) -> Result<()> {
             {
                 continue;
             }
-            pin_backup_tree(&entry.path(), &destination.join(entry.file_name()))?;
+            pin_backup_tree(
+                &entry.path(),
+                &destination.join(entry.file_name()),
+                cancelled,
+            )?;
         }
         sync(destination)?;
     } else {
@@ -367,7 +380,8 @@ impl Spool {
     /// published after this cut are absent; partially staged acquisitions are
     /// never included. The caller hashes/copies the pinned files outside the
     /// queue mutex, allowing acquisition to continue.
-    pub(crate) fn pin_backup(&self) -> Result<tempfile::TempDir> {
+    pub(crate) fn pin_backup(&self, cancelled: &AtomicBool) -> Result<tempfile::TempDir> {
+        check_backup_cancelled(cancelled)?;
         let pinned = tempfile::Builder::new()
             .prefix(".backup-cut-")
             .tempdir_in(self.root.parent().expect("producer spool parent"))?;
@@ -384,6 +398,7 @@ impl Spool {
             pin_backup_tree(
                 &entry.path(),
                 &target.join("operations").join(entry.file_name()),
+                cancelled,
             )?;
         }
         sync(&target.join("operations"))?;

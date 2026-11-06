@@ -105,17 +105,21 @@ impl Client {
             subjects.clone(),
             config.producer.clone(),
             publication.clone(),
-            std::sync::Arc::new(move || {
+            std::sync::Arc::new(move |cancelled| {
                 let pinned = backup_spool
                     .lock()
                     .map_err(|_| "producer spool panicked".to_string())?
-                    .pin_backup()
+                    .pin_backup(&cancelled)
                     .map_err(|error| error.to_string())?;
                 let directory = tempfile::Builder::new()
                     .prefix(".backup-acquired-")
                     .tempdir_in(pinned.path().parent().expect("snapshot parent"))
                     .map_err(|error| error.to_string())?;
-                let files = sinex_transport::backup::capture_tree(pinned.path(), directory.path())?;
+                let files = sinex_transport::backup::capture_tree(
+                    pinned.path(),
+                    directory.path(),
+                    &cancelled,
+                )?;
                 Ok(sinex_transport::backup::Captured { directory, files })
             }),
         )

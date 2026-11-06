@@ -53,9 +53,10 @@ and freezes confirmed-stream spool retirement. Capture continues preparing new
 operations. After the core cut, Polylogue pins the accepted spool operations
 under the queue mutex, including acquisition groups, original encoded frame and
 body bytes, immutable identities and receipts. It copies and hashes those pinned
-files outside the mutex into the acquired producer artifact, then releases the
-freeze through Sinex's participant protocol. Rebuildable indexes and unpublished
-temporary operations are excluded.
+files outside the mutex into an immutable producer artifact. The coordinator
+acquires those bytes before releasing the freeze through Sinex's participant
+protocol. A cancelled request stops pinning and copying and discards its partial
+artifact. Rebuildable indexes and unpublished temporary operations are excluded.
 
 The producer artifact restores under the same producer identity alongside its
 paired core cut. Receipts in that artifact precede the core cut; operations
