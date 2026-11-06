@@ -159,6 +159,30 @@ impl Compiler<'_> {
                 };
                 Ok((format!("pl_finite({sql})"), kind))
             }
+            Expression::Function { name, arguments } if name == "glob" => {
+                let [text, pattern] = arguments.as_slice() else {
+                    return Err(expression_arity(name, 2, at));
+                };
+                let mut arguments = Vec::with_capacity(2);
+                for argument in [text, pattern] {
+                    let (sql, kind) = if let Expression::Value { value } = argument {
+                        self.expression_literal(value, Some(ColKind::Text), at)?
+                    } else {
+                        self.sql_expression_with(argument, at, field)?
+                    };
+                    if kind != ColKind::Text {
+                        return Err(QueryError::Invalid {
+                            message: "glob takes text and a text pattern".into(),
+                            position: at,
+                        });
+                    }
+                    arguments.push(sql);
+                }
+                Ok((
+                    format!("pl_glob({}, {})", arguments[0], arguments[1]),
+                    ColKind::Bool,
+                ))
+            }
             Expression::Function { name, arguments } if name == "case_eq" => {
                 let [left, right, result] = arguments.as_slice() else {
                     return Err(expression_arity(name, 3, at));

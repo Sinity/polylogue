@@ -145,3 +145,36 @@ fn functions_read_compressed_text_and_percentiles() {
 mod calendar;
 
 mod numeric;
+
+#[test]
+fn glob_patterns_keep_case_unicode_and_sql_pattern_characters_literal() {
+    let conn = Connection::open_in_memory().unwrap();
+    register(&conn).unwrap();
+    for (text, pattern, expected) in [
+        ("terminal.start", "terminal.*", true),
+        ("Terminal.start", "terminal.*", false),
+        ("Żółć/😀/end", "Ż*😀*end", true),
+        ("żółć/😀/end", "Ż*😀*end", false),
+        ("a%b_c\\d", "*%*_c\\d", true),
+        ("axbyc\\d", "*%*_c\\d", false),
+        ("abc", "a**c", true),
+        ("abc", "a*b*c*d", false),
+        ("", "*", true),
+        ("", "", true),
+    ] {
+        let actual: bool = conn
+            .query_row("SELECT pl_glob(?1,?2)", [text, pattern], |row| row.get(0))
+            .unwrap();
+        assert_eq!(actual, expected, "{text:?} {pattern:?}");
+    }
+    for (text, pattern) in [(None, Some("*")), (Some("text"), None), (None, None)] {
+        let value: Option<bool> = conn
+            .query_row(
+                "SELECT pl_glob(?1,?2)",
+                rusqlite::params![text, pattern],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(value, None);
+    }
+}

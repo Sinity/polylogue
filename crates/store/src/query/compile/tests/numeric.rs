@@ -211,3 +211,22 @@ fn expression_calendar_values_use_the_programs_logical_day_and_zone() {
     assert_eq!(answer["month_day"], "12-31");
     assert_eq!(answer["count"], 4);
 }
+
+#[test]
+fn typed_glob_expressions_project_booleans_and_preserve_unknowns_in_filters() {
+    let (_dir, fixture) = fixture();
+    let selected = rows(
+        &fixture,
+        "sessions where glob(repo, \"e*\") = true | sort by id | fields id, glob(repo, \"e*\") as eastern",
+    );
+    assert_eq!(
+        selected
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["claude-code:a", "claude-code:b"]
+    );
+    assert!(selected.iter().all(|row| row["eastern"] == json!(true)));
+    assert!(rows(&fixture, "sessions where glob(repo, \"E*\") = true").is_empty());
+    assert!(rows(&fixture, "sessions where NOT (glob(cwd, \"*\") = true)").is_empty());
+}

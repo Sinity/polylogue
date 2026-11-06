@@ -31,6 +31,13 @@ const FLAGS: FunctionFlags = FunctionFlags::SQLITE_UTF8.union(FunctionFlags::SQL
 
 pub fn register(conn: &Connection) -> rusqlite::Result<()> {
     temporal::register(conn)?;
+    conn.create_scalar_function("pl_glob", 2, FLAGS, |ctx| {
+        let text: Option<String> = ctx.get(0)?;
+        let pattern: Option<String> = ctx.get(1)?;
+        Ok(text
+            .zip(pattern)
+            .map(|(text, pattern)| query_language::glob::matches(&text, &pattern)))
+    })?;
     aggregates::register(conn)?;
     conn.create_scalar_function("pl_live", 4, FLAGS, |ctx| {
         use polylogue_model::live::{LiveFacts, view};
