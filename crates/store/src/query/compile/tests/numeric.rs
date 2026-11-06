@@ -88,7 +88,7 @@ fn computed_conditions_keep_unknowns_and_native_money_and_duration_units() {
         ["claude-code:a", "claude-code:b"]
     );
     assert_eq!(
-        ids("sessions where input_tokens >= output_tokens"),
+        ids("sessions where input_tokens - output_tokens >= 0"),
         ["claude-code:c"]
     );
     assert_eq!(
