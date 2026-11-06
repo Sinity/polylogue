@@ -243,15 +243,21 @@ pub fn attach(
     })
 }
 
-/// Times as RFC 3339, booleans as booleans. Columns starting with `_`
-/// (the row key and order keys) are the reader's own.
+/// Project declared output columns and shape their public values.
 pub fn present(program: &Program, row: &mut Value) -> Result<(), SelectionError> {
-    if let Some(obj) = row.as_object_mut() {
-        obj.retain(|name, _| !name.starts_with('_'));
-    }
+    let mut output = serde_json::Map::new();
     for col in &program.columns {
-        shape_value(col.kind, &mut row[col.name.as_str()])?;
+        let mut value = row[program.column_slot(&col.name)].clone();
+        shape_value(col.kind, &mut value)?;
+        output.insert(col.name.clone(), value);
     }
+    for attachment in &program.attach {
+        output.insert(
+            attachment.name.clone(),
+            row[attachment.name.as_str()].clone(),
+        );
+    }
+    *row = Value::Object(output);
     Ok(())
 }
 

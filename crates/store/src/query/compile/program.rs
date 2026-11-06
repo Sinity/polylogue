@@ -4,7 +4,7 @@
 use super::*;
 
 impl<'a> Compiler<'a> {
-    pub(super) fn program_with(
+    pub(super) fn native_program_with(
         mut self,
         q: &Query,
         preset: Option<MatchRel>,
@@ -819,6 +819,7 @@ impl<'a> Compiler<'a> {
             row_membership_sql: row_membership,
             params: self.params,
             columns,
+            column_slots: Default::default(),
             ranked,
             text_terms: self.text_terms,
             id_checks: self.id_checks,

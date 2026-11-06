@@ -21,6 +21,7 @@ mod conditions;
 pub(crate) mod custom_fields;
 mod expression;
 mod program;
+mod relations;
 mod saved;
 mod sequences;
 mod stages;
@@ -106,6 +107,9 @@ pub struct Program {
     pub params: Vec<Param>,
     /// Every output column but `_pk` (each row unit's key).
     pub columns: Vec<Column>,
+    /// Physical SQL slots for logical output names. Private identity and order
+    /// slots never share the namespace of a user alias.
+    pub column_slots: std::collections::BTreeMap<String, String>,
     /// Ordered by relevance to text terms.
     pub ranked: bool,
     /// The full-text terms, for marking matches in snippets.
@@ -212,6 +216,10 @@ pub struct Measure {
 }
 
 impl Program {
+    pub fn column_slot<'a>(&'a self, name: &'a str) -> &'a str {
+        self.column_slots.get(name).map_or(name, String::as_str)
+    }
+
     /// One page of the answer. With `after`, it holds the rows that sort
     /// after a row whose order-key values are bound after `params`, one per
     /// key; the page size is bound last.
