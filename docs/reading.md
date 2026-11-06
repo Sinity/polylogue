@@ -229,7 +229,7 @@ A view chooses content. A view exists only where its output is not a list of row
 
 ### The context view
 
-What the model had been given at a message, in the order it received it:
+The context view reconstructs the context at a message from the captured harness evidence, in its recorded order:
 
 1. the composed parent prefix for `fork`, `resume` and copied `spawn` children;
 2. the newest compaction boundary before the message, applied: its summary message, then what the boundary records as kept (Codex `replacement_history`), then the messages after it;
@@ -275,7 +275,11 @@ What the model had been given at a message, in the order it received it:
 
 **One token estimator** in `model`, used by pages, briefs, packs and `list --page-tokens`: `max(ceil(utf8_bytes / 4), ceil(words × 1.3))`, a run over 16 characters counting `len/8` words. It over-estimates on purpose, and its name is recorded in every budgeted response.
 
-**MCP transport limit:** a response's encoded size stays under the harnesses' MCP output limit (25,000 bytes of content, with 4 KiB of headroom for the envelope); a response that would pass it is returned as a shorter page with `next`, never truncated and never an error.
+**Product and harness bounds.** A read's presentation budget controls the page
+Polylogue returns, and `next` continues what that page leaves out. A harness's
+inline output cap and its handling of tool results are separate from that page
+budget. What a hand-over establishes is defined with
+[deliveries](agents.md#deliveries).
 
 **Streaming:** an unbudgeted read to the pager, a file or a directory is produced item by item from the selection. No whole session or selection is built in memory.
 

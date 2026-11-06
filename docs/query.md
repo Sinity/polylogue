@@ -67,6 +67,17 @@ Field rules:
 - **Variant fields:** `variant:true` admits variant text into text search; `lang:<code>` matches variant parts in that language and messages by their derived `lang`.
 - **Names shared with Sinex** keep their meaning per product: `evidence_until:` is Polylogue's as-of field, and Sinex's "as of" is a different concept. Polylogue does not retain historical query membership at earlier read positions: `| as of POSITION|TIME` answers `not_yet_available`. `evidence_until:` selects evidence received by then, read with current parsers and prices.
 
+### Original notes from imported archives
+
+`imported_notes` reads the original Notes corpus kept by `import --from-archive`.
+It retains raw text values (including JSON spelling), original IDs, targets,
+writer times and write-counter currency. It includes original kinds that have
+no current assertion counterpart. Current assertion writes belong to
+`assertions`; they do not add rows to this historical source.
+
+Its parser and source-byte provenance are defined with the
+[older archive input format](capture.md#an-archive-from-before-the-baseline).
+
 ## Defaults
 
 Each unit binds its default filters once, when its source is bound (a unit, `query:…` or `result:<id>`). A default is dropped only by a top-level AND condition on its field, or by `F:*`; a condition under OR, NOT, `exists`, `seq` or a saved query never drops one. After binding, everything further only narrows.
@@ -134,7 +145,7 @@ Queries, their runs, kept results, figures and findings are stored objects with 
 
 ### Identity
 
-- **`query:<hash>`** is the BLAKE3 hash of the query's normal form: the parsed AST after resolving surface references to their stored forms and saved-query names to the hashes they resolved to, with operands sorted where order carries no meaning and spelling variants removed. Two texts with one normal form have one hash. The normal form and the hash function belong to the shared language, so Sinex hashes its queries the same way.
+- **`query:<hash>`** is the BLAKE3 hash of the query's semantic normal form and declared parameter types. The form resolves surface references to their stored forms and saved-query names to the hashes they resolved to, sorts operands where order carries no meaning, and removes spelling variants. Its explicit encoding is independent of the Rust AST's serialization layout. Equal normal forms and parameter declarations have equal hashes. The normal form and the hash function belong to the shared language, so Sinex hashes its queries the same way.
 - `query:<hash>` accepts the full 64-hex hash or a unique prefix of at least 12 hex characters. A saved-query name is what `query:NAME` can say: ASCII letters, digits, `_`, `-` and `.`; a save under any other name is refused. Saved-query names cannot be all hex.
 - Relative times stay as expressions in the normal form (`since:7d`, not an instant); each run records what they resolved to.
 
@@ -154,9 +165,41 @@ Queries, their runs, kept results, figures and findings are stored objects with 
 
 - **Shapes.** A saved query whose text is a relation (a unit and conditions, no stages) can stand where a condition can, over the same unit: at the top level it is the source, bound with its own defaults and times; under OR or NOT it means membership. A saved query with stages or `similar:` is a shaped result, which can be read and followed by stages only.
 - **Parameters:** `$word` in the text is a parameter, given as `query:NAME(word=VALUE)`. Values substitute in the parsed tree, never as text; a missing or unused parameter is an error naming it.
+- **A saved definition retains its executable object and frozen dependency closure.** Running a retained hash loads that object, its typed source-output schemas and the exact definitions it captured. It does not resolve its old dependency names against their current revisions. Execution requires custody of the object and every frozen definition.
 - **Recorded definitions:** every answer and kept result names each name it used, with the hash and saved-query revision it resolved to (`definitions`). Revising a saved query never changes what an earlier kept result says it ran.
 - **Shipped saved queries** are data in the code, listed beside the operator's own and without an author: `running`, `live`, `notices`, `changes`, `triage`, `needs-review` (non-operator assertions not yet judged by the counted judges), `open-questions`, `unjudged-agent-notes`, `resume_candidates`. A saved query of one's own with the same name takes precedence; withdrawing it brings the shipped one back. Shortcuts are shipped saved queries, never text builders.
 - **`query:triage`** orders sessions across all repositories by a visible sum of named facts, each shown with its contribution: a failed command never followed by a success of the same command; three or more consecutive failures of one normalized command; cost or duration at least three times the repository's 30-day median; three or more operator corrections; open questions and problems. Tagging a session `triaged` removes it; later activity brings it back.
+
+### Stored representations
+
+Current writes use the current grammar and executable body. Stored-data evolution
+is a numbered representation upgrade. It retains each original JSON value under
+its named source format, validates the original normal form and identity, and
+checks that the named conversion yields the stored current representation.
+Historical decoding belongs to the owning source boundary, while current command
+admission accepts the current grammar. Immutable producer records keep their
+original representation; their adapter supplies the validated current product.
+
+A stored question body is either executable current syntax or an explicit
+unavailable state backed by its original source. The upgrade retains definitions
+whose original backend never implemented their construct, together with queries
+that depended on the retired private SQL row key. Their question identity, normal
+form, closure, output declarations and original JSON remain inspectable. Running
+one returns its specific unavailable reason; opening the archive and running other
+questions continue normally. Current writes require executable bodies. Retained
+invocations of an unavailable definition keep their original binding and invocation
+hashes without supplying a current replay binding.
+
+#### Retired content-position invocations
+
+The numbered query representation upgrade preserves Run2 invocations of the
+retired content-position reader as `retired_read` bindings. Original invocations
+and continuations remain distinct. A continuation retains its original root run,
+binding hash and position; the complete original record, including its accepted
+request, supplies the unchanged invocation hash. Raw run reads expose that
+evidence. These records supply no current execution binding, and their positions
+are never interpreted as current page cursors. Current executions cannot create a
+retired binding without its exact versioned source proof.
 
 ### Kept results
 
@@ -173,7 +216,7 @@ Rules:
 
 - **Ranking is kept, or the keep is refused.** Keeping a ranked answer whose ranking is incomplete is `refused` with the missing list named; the caller can keep the unranked membership by removing the ranking term.
 - **Reading back** `result:<id>` (or `#<row>`, `.matches`) reads the stored rows, never a re-run; only stages may follow (`result:<id> | group by origin | count`). Re-running is running `query:<hash>`. Where a derivation version changed since, the read says so ("computed under prices `<hash>`, now `<hash>`").
-- Stages over a kept result use its captured shape, columns and values. Missing fields and native time or position evidence are not fetched from current rows. Captured native identity is retained when present; otherwise each stored item has an identity from the result, part and stored ordinal, so equal values remain distinct when paged.
+- Stages over a kept result use its captured shape, columns and values, including a shaped result with no native row unit. Missing fields and native time or position evidence are not fetched from current rows. Captured native identity is retained when present; otherwise each stored item has an identity from the result, part and stored ordinal, so equal values remain distinct when paged.
 - **Membership:** `in:result:<id>` restricts any query of the result's unit to its rows; a bulk write over an exact reviewed population uses it.
 - **One kept result, many uses:** assertions, page slots, briefs, watch baselines and written-out bundles cite the same `result:<id>`; nothing copies rows.
 - **Every row is stored,** in `kept_row(result, position, values_json, refs_json)`, so paging a large result reads by key. Keeping an answer that cannot be read within one deadline keeps it in steps, each its own read transaction, recording every position read.
@@ -302,40 +345,3 @@ The language's own laws (filter composition, three-valued filters, grouped rows,
 - **cwd-reads-directory-key-range**: `cwd:` at a deep directory and at `/` finds sessions through a key range over every directory sessions recorded, never by reading every session row, and matches whole path components.
 - **watch-change-kinds**: a watched `similar:` query reports rows joining and the top five changing as separate changes; a reading during catch-up reports nothing; a re-parse of the same input never fires again.
 - **bulk-write-membership**: a bulk write over a query writes exactly one assertion per row of the query's membership at write time.
-
-### Retired content-position invocations
-
-The numbered query representation upgrade preserves Run2 invocations of the
-retired content-position reader as `retired_read` bindings. Original invocations
-and continuations remain distinct. A continuation retains its original root run,
-binding hash and position; the complete original record, including its accepted
-request, supplies the unchanged invocation hash. Raw run reads expose that
-evidence. These records supply no current execution binding, and their positions
-are never interpreted as current page cursors. Current executions cannot create a
-retired binding without its exact versioned source proof.
-
-A stored question body is either executable current syntax or an explicit
-unavailable state backed by its original source. The upgrade retains definitions
-whose original backend never implemented their construct, together with queries
-that depended on the retired private SQL row key. Their question identity, normal
-form, closure, output declarations and original JSON remain inspectable. Running
-one returns its specific unavailable reason; opening the archive and running other
-questions continue normally. Current writes require executable bodies. Retained
-invocations of an unavailable definition keep their original binding and invocation
-hashes without supplying a current replay binding.
-
-### Original notes from imported archives
-
-`imported_notes` reads the original Notes corpus kept by `import --from-archive`.
-It retains raw text values (including JSON spelling), original IDs, targets,
-writer times and write-counter currency. It includes original kinds that have
-no current assertion counterpart. Current assertion writes belong to
-`assertions`; they do not add rows to this historical source.
-
-The rows parser reads the immutable `archive.db!/rows.jsonl` input and emits
-ordinary source events. Their input, chain and record byte ranges retain the
-provenance. The read projection rebuilds from those facts without the older
-archive folder. Older imports recorded as kept files acquire this reading on
-an ordinary parse pass; their bytes and acquisition metadata remain unchanged.
-An imported note's semantic identity includes its input and original note ID,
-so two imported archives cannot merge different rows that reused an ID.

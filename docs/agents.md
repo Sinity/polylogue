@@ -160,6 +160,13 @@ Every hand-over of prepared content to a model or a person is a **delivery**: br
 | `not_sent:<reason>` | `timeout`, `empty`, `failed(<first stderr line>)`, `unsupported`, `session_missing` |
 | `unknown` | a send was attempted and its acknowledgement was lost |
 
+**A delivery acknowledges a hand-over.** A harness may persist a tool result outside
+its inline output, apply its own output cap, or later compact the context. The
+`delivered` outcome alone does not establish that the complete result remains in
+the model's current context. The [context view](reading.md#the-context-view)
+reconstructs what the captured harness evidence records. A caller can read any
+passage again.
+
 - The delivery reference appears in the delivered text.
 - **Uncertain sends are reconciled, never resent.** For `unknown`, the daemon looks for the delivery's reference line in the recipient's transcript and records `delivered` when it finds it.
 - High-frequency deliveries (advisories) are recorded once per session, advisory and target.
@@ -196,7 +203,7 @@ Ruling, 2026-10-18: "CLAUDE/AGENTS/skills -- yes … almost defintely we do want
 
 | Tool | Access | Operations |
 |---|---|---|
-| `polylogue_read` | read | `query`, `read`, `outline`, `attachment`, `status`, `explain`, `schema infer`, `schema unread`, `timeline`, `cost`, `chat list`, `backfill list` |
+| `polylogue_read` | read | `query`, `list`, `read`, `outline`, `attachment`, `status`, `explain`, `schema infer`, `schema unread`, `timeline`, `cost`, `chat list`, `backfill list`, `sql` |
 | `polylogue_context` | read | `brief`, `recall`, `takeover`, `continue` |
 | `polylogue_note` | write | `assert`, `assert-query`, `revise`, `withdraw`, `save`, `watch`, `keep`, `setting`, `import` |
 | `polylogue_chat` | write, open world | `chat send`, `backfill start`, `backfill cancel` |
@@ -204,7 +211,7 @@ Ruling, 2026-10-18: "CLAUDE/AGENTS/skills -- yes … almost defintely we do want
 
 - **A call** is `{operation, arguments, request_id, deadline}`. `operation` is the row's command name; `arguments` is the row's argument object, checked by that row; `request_id` and `deadline` are the request envelope's ([interfaces.md](interfaces.md#command-table)). A row whose request is built from flat arguments takes its deadline in milliseconds only; typed rows also accept `null`.
 - **The input schema** lists, under `arguments`, the arguments of the tool's rows merged by name, each with its bare type; an argument two rows type differently is a choice naming the rows. Options agents rarely need (read's expansions and format, cost's month and model, attachment ranges, watch timing and others) are left out of the schema but accepted; `explain capabilities` lists every row's complete argument schema, its unlisted arguments and its answer schema, and `polylogue manual` names every argument.
-- **Query forms instead of tools.** `list` is `sessions where …` through `query`; measurements are `| measure` stages; `live` and `notices` are declared query aliases; read-only `sql` is also available through the read tool. `changes` streams through its declared stream interface. Completion is the protocol's `completion/complete`, not an operation. `timeline` and `cost` stay operations: their logical-day, calendar and per-model response pages are not query results.
+- **Query forms instead of tools.** `list` uses the same query path, with `sessions` as its default selection; `query` accepts the explicit unit and conditions. Measurements are `| measure` stages; `live` and `notices` are declared query aliases; read-only `sql` is also available through the read tool. `changes` streams through its declared stream interface. Completion is the protocol's `completion/complete`, not an operation. `timeline` and `cost` stay operations: their logical-day, calendar and per-model response pages are not query results.
 - **Results** return `structuredContent`, the answer envelope, plus a short text rendering; context tools return the prepared pack as the text. Tools carry no `outputSchema`: the envelope's schema and each row's answer schema are published once, by `explain capabilities`. A cut result carries `next`, the ready follow-up call, already in the tool's call form (null for an operation MCP does not offer). An error carries its failure kind ([interfaces.md#exit-codes](interfaces.md#exit-codes)) and, where the daemon formed one, the corrected query.
 - **Annotations** come from the tool's access: `readOnlyHint` for read tools, `destructiveHint` never (Polylogue has no deletion), `idempotentHint` except for `polylogue_chat` and `polylogue_act` (elsewhere a retried `request_id` is applied once; a chat or backfill request starts a new browser action, and an act reaches a running harness or starts one), `openWorldHint` for those two, which reach a web chat or a harness. Clients filter on these; the server has no read-only mode.
 - **Descriptions** are a few words per tool; the card and `explain` carry the guidance.
