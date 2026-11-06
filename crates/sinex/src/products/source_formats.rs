@@ -75,12 +75,37 @@ pub(crate) fn decode_source(
         "polylogue.query" => serde_json::to_value(
             QueryObject::from_structured_v1(source.clone()).map_err(Error::Invalid)?,
         )?,
+        "polylogue.query_run"
+            if kind.version == 2
+                && (source["binding"]["kind"] == "continuation"
+                    || source["binding"]["execution"]["presentation"]["kind"] == "read") =>
+        {
+            serde_json::to_value(
+                polylogue_model::query_objects::QueryRun::from_retired_read_v2(source.clone())
+                    .map_err(Error::Invalid)?,
+            )?
+        }
         "polylogue.query_run" => serde_json::to_value(
             polylogue_store::primary::products::query_run_from_structured_v1(source.clone())?,
         )?,
         _ => unreachable!("historical declaration selected above"),
     };
-    decode(&kind.name, payload)
+    let product = decode(&kind.name, payload.clone())?;
+    if let Product::QueryRun { run } = &product {
+        for (key, actual) in [
+            ("binding_hash", run.binding_hash()?),
+            ("run_hash", run.record_hash()?),
+        ] {
+            if let Some(expected) = payload.get(key).filter(|value| !value.is_null()) {
+                if *expected != serde_json::to_value(actual)? {
+                    return Err(Error::Invalid(format!(
+                        "historical query run {key} differs from its exact source custody"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(product)
 }
 
 #[cfg(test)]

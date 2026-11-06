@@ -26,7 +26,13 @@ fn object(value: Value) -> Result<QueryObject> {
     Ok(object)
 }
 fn run(value: Value) -> Result<QueryRun> {
-    let run = if historical_run(&value) {
+    let run = if value["binding"]["kind"] == "continuation"
+        || value["binding"]["execution"]["presentation"]["options"]
+            .get("output_lines")
+            .is_some()
+    {
+        QueryRun::from_retired_read_v2(value).map_err(invalid)?
+    } else if historical_run(&value) {
         crate::primary::products::query_run_from_structured_v1(value)?
     } else {
         serde_json::from_value(value)?

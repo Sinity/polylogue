@@ -26,6 +26,8 @@ pub struct HistoricalQuerySource {
 pub enum QuerySourceFormat {
     #[serde(rename = "structured_query_v1")]
     StructuredQueryV1,
+    #[serde(rename = "retired_read_v2")]
+    RetiredReadV2,
 }
 
 /// Semantic identity excludes display names and the clock of an execution.
@@ -302,6 +304,11 @@ pub struct QueryRun {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RunBinding {
+    /// A source-versioned invocation of the retired content-position reader.
+    /// It remains inspectable evidence and grants no current replay authority.
+    RetiredRead {
+        invocation: RetiredReadInvocation,
+    },
     OriginalObject {
         execution: Box<ObjectExecutionBinding>,
     },
@@ -309,17 +316,30 @@ pub enum RunBinding {
         execution: Box<ExecutionBinding>,
     },
 }
+/// Actual invocation shape retained from the retired source, never a current cursor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RetiredReadInvocation {
+    Original {
+        binding_hash: crate::BlobHash,
+    },
+    Continuation {
+        root: crate::RunId,
+        binding_hash: crate::BlobHash,
+        seek: serde_json::Value,
+    },
+}
 impl RunBinding {
     pub fn original(&self) -> Option<&ExecutionBinding> {
         match self {
             Self::Original { execution } => Some(execution),
-            Self::OriginalObject { .. } => None,
+            Self::OriginalObject { .. } | Self::RetiredRead { .. } => None,
         }
     }
     pub fn original_mut(&mut self) -> Option<&mut ExecutionBinding> {
         match self {
             Self::Original { execution } => Some(execution),
-            Self::OriginalObject { .. } => None,
+            Self::OriginalObject { .. } | Self::RetiredRead { .. } => None,
         }
     }
     /// Stable action identity belongs to the original execution, not the page.
@@ -327,10 +347,25 @@ impl RunBinding {
         match self {
             Self::Original { execution } => execution.hash(),
             Self::OriginalObject { execution } => execution.hash(),
+            Self::RetiredRead { invocation } => Ok(match invocation {
+                RetiredReadInvocation::Original { binding_hash }
+                | RetiredReadInvocation::Continuation { binding_hash, .. } => *binding_hash,
+            }),
         }
     }
 }
 impl QueryRun {
+    /// Preserve an invocation whose content-position reader was explicitly retired.
+    pub fn from_retired_read_v2(source: serde_json::Value) -> Result<Self, String> {
+        let current = evolution::retired_read_run(&source)?;
+        let mut run: Self = serde_json::from_value(current).map_err(|error| error.to_string())?;
+        run.historical_source = Some(Box::new(HistoricalQuerySource {
+            format: QuerySourceFormat::RetiredReadV2,
+            record: source,
+        }));
+        run.validate_evolution()?;
+        Ok(run)
+    }
     /// The numbered format-1 upgrade retains the exact JSON used by hash custody.
     pub fn from_structured_v1(source: serde_json::Value, catalog: &str) -> Result<Self, String> {
         let current = evolution::query_run(&source, catalog)?;
@@ -350,14 +385,35 @@ impl QueryRun {
             .and_then(|execution| execution.replay.context.versions.get("catalog"))
             .map(String::as_str)
             .unwrap_or("");
-        validate_evolution(self, self.historical_source.as_deref(), |source| {
-            evolution::query_run(source, catalog)
+        if matches!(self.binding, RunBinding::RetiredRead { .. })
+            && !matches!(
+                self.historical_source.as_deref(),
+                Some(HistoricalQuerySource {
+                    format: QuerySourceFormat::RetiredReadV2,
+                    ..
+                })
+            )
+        {
+            return Err(
+                "retired read invocations require their exact versioned source evidence".into(),
+            );
+        }
+        validate_evolution(self, self.historical_source.as_deref(), |source| match self
+            .historical_source
+            .as_deref()
+            .map(|source| source.format)
+        {
+            Some(QuerySourceFormat::RetiredReadV2) => evolution::retired_read_run(source),
+            _ => evolution::query_run(source, catalog),
         })
     }
     pub fn binding_hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
         if let Some(source) = &self.historical_source {
             self.validate_evolution().map_err(evolution_error)?;
             let binding = &source.record["binding"];
+            if binding["kind"] == "continuation" {
+                return serde_json::from_value(binding["binding_hash"].clone());
+            }
             let domain: &[u8] = match binding["kind"].as_str() {
                 Some("original") => b"polylogue-execution-binding-v1\0",
                 Some("original_object") => b"polylogue-object-execution-binding-v1\0",
@@ -403,6 +459,18 @@ impl QueryObject {
     }
     /// A migrated object must be exactly the named conversion of its source.
     pub fn validate_evolution(&self) -> Result<(), String> {
+        if self
+            .historical_source
+            .as_ref()
+            .is_some_and(|source| source.format != QuerySourceFormat::StructuredQueryV1)
+            || self.definitions.iter().any(|node| {
+                node.historical_source
+                    .as_ref()
+                    .is_some_and(|source| source.format != QuerySourceFormat::StructuredQueryV1)
+            })
+        {
+            return Err("query objects require structured-query source evidence".into());
+        }
         let closure: Vec<_> = self
             .definitions
             .iter()

@@ -167,3 +167,52 @@ fn original_hash(domain: &[u8], source: &Value) -> polylogue_model::BlobHash {
     hasher.update(&serde_json::to_vec(&value).unwrap());
     polylogue_model::BlobHash::parse(&hasher.finalize().to_hex()).unwrap()
 }
+
+#[test]
+fn source_three_retired_continuation_preserves_source_position_without_current_replay() {
+    use polylogue_model::query_objects::{RetiredReadInvocation, RunBinding};
+    let mut source = crate::tests::named::phases()
+        .into_iter()
+        .find_map(|(_, product)| match product {
+            Product::QueryRun { run } => Some(serde_json::to_value(run).unwrap()),
+            _ => None,
+        })
+        .unwrap();
+    let root = "00000000-0000-0000-0000-000000000001";
+    source["binding"] = json!({
+        "kind":"continuation", "root":root, "binding_hash":"a".repeat(64),
+        "seek":{"direction":"after","anchor":{"selection":{"row":3,"record":{"kind":"message","ordinal":2}},"item":1,"character":7,"item_hash":"b".repeat(64)}},
+        "accepted_request":null,
+    });
+    let record_hash = original_hash(b"polylogue-query-run-begin-v1\0", &source);
+    let payload = json!({"record_key":"synthetic-retired-continuation","record":{"product":"query_run","run":source},"binding_hash":"a".repeat(64),"run_hash":record_hash});
+    let declaration = historical_declarations()
+        .iter()
+        .find(|d| d.kind.name == "polylogue.query_run" && d.kind.version == 2)
+        .unwrap();
+    jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap())
+        .unwrap()
+        .validate(&payload)
+        .unwrap();
+    let Product::QueryRun { run } = decode_source(
+        &declaration.kind,
+        &declaration.definition_hash(),
+        payload.clone(),
+    )
+    .unwrap() else {
+        panic!("wrong product")
+    };
+    assert!(
+        matches!(&run.binding,RunBinding::RetiredRead {invocation:RetiredReadInvocation::Continuation {root:original,..}} if original.as_str()==root)
+    );
+    assert!(run.binding.original().is_none());
+    assert_eq!(run.record_hash().unwrap(), record_hash);
+    assert_eq!(
+        run.historical_source.as_ref().unwrap().record,
+        payload["record"]["run"]
+    );
+    assert!(decode("polylogue.query_run", payload.clone()).is_err());
+    let mut wrong = payload;
+    wrong["run_hash"] = json!("0".repeat(64));
+    assert!(decode_source(&declaration.kind, &declaration.definition_hash(), wrong).is_err());
+}

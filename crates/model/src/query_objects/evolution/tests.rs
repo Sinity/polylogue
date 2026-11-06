@@ -214,3 +214,92 @@ fn sequence_matches_reconstructs_tuple_and_timeline_gaps() {
     assert_eq!(cs[11]["name"], "gap_time");
     assert!(!cs.iter().any(|c| c["name"] == "count"));
 }
+
+fn retired_run_source(binding: Value) -> Value {
+    json!({
+        "id":"00000000-0000-0000-0000-000000000002", "question":vec![1;32],
+        "at":crate::Timestamp::from_unix_ms(0).unwrap(),
+        "read_at":{"generation":"synthetic","index":1,"archive":1},
+        "machine":"synthetic", "authorship":{"author":"unattributed","via":"mcp"},
+        "binding":binding,
+    })
+}
+
+#[test]
+fn retired_original_and_continuation_keep_exact_invocation_and_root_custody() {
+    use crate::query_objects::{QueryRun, RetiredReadInvocation, RunBinding};
+    let execution = json!({"retained":"original-source-execution","presentation":{"kind":"read"}});
+    let original = retired_run_source(json!({"kind":"original","execution":execution}));
+    let root = QueryRun::from_retired_read_v2(original.clone()).unwrap();
+    assert!(root.binding.original().is_none());
+    assert!(matches!(
+        root.binding,
+        RunBinding::RetiredRead {
+            invocation: RetiredReadInvocation::Original { .. }
+        }
+    ));
+    let mut child_source = retired_run_source(json!({
+        "kind":"continuation", "root":root.id,
+        "binding_hash":root.binding_hash().unwrap(),
+        "seek":{"direction":"after","anchor":{"selection":{"row":3,"record":{"kind":"message","ordinal":2}},"item":1,"character":7,"item_hash":"a".repeat(64)}},
+        "accepted_request":{"operation":"read","arguments":{"cursor":"retired-source-token"}},
+    }));
+    child_source["id"] = json!("00000000-0000-0000-0000-000000000003");
+    let child = QueryRun::from_retired_read_v2(child_source.clone()).unwrap();
+    assert_eq!(child.binding_hash().unwrap(), root.binding_hash().unwrap());
+    assert_eq!(
+        child.record_hash().unwrap(),
+        super::super::metadata_hash(b"polylogue-query-run-begin-v1\0", &child_source).unwrap()
+    );
+    assert_ne!(child.record_hash().unwrap(), root.record_hash().unwrap());
+    assert_eq!(
+        child.historical_source.as_ref().unwrap().record,
+        child_source
+    );
+    assert!(child.binding.original().is_none());
+    let RunBinding::RetiredRead {
+        invocation:
+            RetiredReadInvocation::Continuation {
+                root: root_id,
+                seek,
+                ..
+            },
+    } = &child.binding
+    else {
+        panic!("continuation became an original")
+    };
+    assert_eq!(root_id, &root.id);
+    assert_eq!(seek, &child_source["binding"]["seek"]);
+    let displayed = serde_json::to_value(&child).unwrap();
+    assert_eq!(displayed["binding"]["kind"], "retired_read");
+    assert_eq!(
+        displayed["historical_source"]["record"]["binding"]["accepted_request"],
+        child_source["binding"]["accepted_request"]
+    );
+    let mut tampered = child.clone();
+    if let RunBinding::RetiredRead {
+        invocation: RetiredReadInvocation::Continuation { seek, .. },
+    } = &mut tampered.binding
+    {
+        seek["anchor"]["character"] = json!(8);
+    }
+    assert!(tampered.validate_evolution().is_err());
+    let mut forged = child;
+    forged.historical_source = None;
+    assert!(forged.validate_evolution().is_err());
+}
+
+#[test]
+fn retired_continuation_rejects_self_root_and_other_binding_shapes() {
+    use crate::query_objects::QueryRun;
+    let source = retired_run_source(
+        json!({"kind":"continuation","root":"00000000-0000-0000-0000-000000000002","binding_hash":"a".repeat(64),"seek":{}}),
+    );
+    assert!(QueryRun::from_retired_read_v2(source).is_err());
+    assert!(
+        QueryRun::from_retired_read_v2(retired_run_source(
+            json!({"kind":"original_object","execution":{}})
+        ))
+        .is_err()
+    );
+}

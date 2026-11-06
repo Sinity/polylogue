@@ -408,6 +408,50 @@ pub fn query_run(source: &Value, current_catalog: &str) -> Result<Value> {
     current::<super::QueryRun>(v)
 }
 
+/// Retired content-position invocations retain exact source custody, with no
+/// attempt to reinterpret their old positions as current page cursors.
+pub fn retired_read_run(source: &Value) -> Result<Value> {
+    if source.get("historical_source").is_some() {
+        return Err("retired read source cannot contain nested evidence".into());
+    }
+    let mut v = source.clone();
+    let binding = &source["binding"];
+    let invocation = match binding["kind"].as_str() {
+        Some("original") => {
+            let hash =
+                super::metadata_hash(b"polylogue-execution-binding-v1\0", &binding["execution"])
+                    .map_err(|error| error.to_string())?;
+            if !binding["execution"].is_object()
+                || source["question"].is_null()
+                || binding["execution"]["presentation"]["kind"] != "read"
+            {
+                return Err(
+                    "retired Run2 original requires its execution and actual question".into(),
+                );
+            }
+            json!({"kind":"original","binding_hash":hash})
+        }
+        Some("continuation") => {
+            let root = serde_json::from_value::<crate::RunId>(binding["root"].clone())
+                .map_err(|error| format!("retired read root: {error}"))?;
+            if serde_json::to_value(&root).map_err(|e| e.to_string())? == source["id"] {
+                return Err("retired continuation cannot name itself as its root".into());
+            }
+            let hash = serde_json::from_value::<crate::BlobHash>(binding["binding_hash"].clone())
+                .map_err(|error| format!("retired root binding hash: {error}"))?;
+            if !binding["seek"].is_object() || source["question"].is_null() {
+                return Err(
+                    "retired Run2 continuation requires its original position and question".into(),
+                );
+            }
+            json!({"kind":"continuation","root":root,"binding_hash":hash,"seek":binding["seek"]})
+        }
+        _ => return Err("retired Run2 source has no original or continuation invocation".into()),
+    };
+    v["binding"] = json!({"kind":"retired_read","invocation":invocation});
+    current::<super::QueryRun>(v)
+}
+
 fn question_key(value: &Value) -> Option<String> {
     let bytes = value.as_array()?;
     if bytes.len() != 32 {

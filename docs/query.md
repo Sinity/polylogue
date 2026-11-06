@@ -298,3 +298,14 @@ The language's own laws (filter composition, three-valued filters, grouped rows,
 - **cwd-reads-directory-key-range**: `cwd:` at a deep directory and at `/` finds sessions through a key range over every directory sessions recorded, never by reading every session row, and matches whole path components.
 - **watch-change-kinds**: a watched `similar:` query reports rows joining and the top five changing as separate changes; a reading during catch-up reports nothing; a re-parse of the same input never fires again.
 - **bulk-write-membership**: a bulk write over a query writes exactly one assertion per row of the query's membership at write time.
+
+### Retired content-position invocations
+
+The numbered query representation upgrade preserves Run2 invocations of the
+retired content-position reader as `retired_read` bindings. Original invocations
+and continuations remain distinct. A continuation retains its original root run,
+binding hash and position; the complete original record, including its accepted
+request, supplies the unchanged invocation hash. Raw run reads expose that
+evidence. These records supply no current execution binding, and their positions
+are never interpreted as current page cursors. Current executions cannot create a
+retired binding without its exact versioned source proof.
