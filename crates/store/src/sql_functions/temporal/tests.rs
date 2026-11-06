@@ -381,3 +381,66 @@ fn nearest_distance_keys_preserve_nanoseconds_across_large_distances() {
         .unwrap();
     assert_eq!(unknown, None);
 }
+
+#[test]
+fn matched_occurrence_preserves_uncertainty_without_inventing_state_endpoints() {
+    let conn = conn();
+    let outer = native("1970-01-01T00:00:05Z", TimeQuality::Intrinsic, None);
+    let inner = native(
+        "1970-01-01T00:00:00Z",
+        TimeQuality::Intrinsic,
+        Some("1970-01-01T00:00:10Z"),
+    );
+    assert_eq!(
+        relates(&conn, &outer, &inner, "before", None, "match.when"),
+        Some(false)
+    );
+    assert_eq!(
+        relates(&conn, &outer, &inner, "after", None, "match.when"),
+        Some(false)
+    );
+    assert_eq!(
+        relates(
+            &conn,
+            &outer,
+            &inner,
+            "near",
+            Some("5000000000"),
+            "match.when"
+        ),
+        Some(false)
+    );
+    assert_eq!(
+        relates(
+            &conn,
+            &outer,
+            &inner,
+            "near",
+            Some("10000000000"),
+            "match.when"
+        ),
+        Some(true)
+    );
+    for selector in ["match.start", "match.end"] {
+        assert_eq!(
+            relates(&conn, &outer, &inner, "before", None, selector),
+            None
+        );
+        let distance: Option<f64> = conn
+            .query_row(
+                "SELECT pl_time_distance(?1,'tuple',?2,'tuple',?3)",
+                params![&outer, &inner, selector],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(distance, None);
+    }
+    assert_eq!(
+        relates(&conn, &outer, &inner, "during", None, "match.when"),
+        None
+    );
+    assert_eq!(
+        relates(&conn, &inner, &outer, "containing", None, "match.when"),
+        None
+    );
+}

@@ -51,6 +51,9 @@ fn point(text: &str) -> Result<TimePoint, Failure> {
         "when" => Ok(TimePoint::When),
         "start" => Ok(TimePoint::Start),
         "end" => Ok(TimePoint::End),
+        "match.when" => Ok(TimePoint::MatchWhen),
+        "match.start" => Ok(TimePoint::MatchStart),
+        "match.end" => Ok(TimePoint::MatchEnd),
         _ => Err("unknown order time point".into()),
     }
 }
@@ -146,16 +149,30 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
             .transpose()?;
         let at: String = ctx.get(6)?;
         let at = point(&at).map_err(Error::UserFunctionError)?;
+        // These sources retain occurrence evidence, but declare no state span.
+        // Its uncertainty bounds must never stand in for state endpoints.
+        if matches!(at, TimePoint::MatchStart | TimePoint::MatchEnd)
+            || (at == TimePoint::MatchWhen
+                && matches!(relation, OrderRelation::During | OrderRelation::Containing))
+        {
+            return Ok(None);
+        }
         Ok(periods(ctx)?.map(|(a, b)| relates(a, b, relation, within, at)))
     })?;
     conn.create_scalar_function("pl_time_distance_key", 5, flags, |ctx| {
         let at: String = ctx.get(4)?;
         let at = point(&at).map_err(Error::UserFunctionError)?;
+        if matches!(at, TimePoint::MatchStart | TimePoint::MatchEnd) {
+            return Ok(None);
+        }
         Ok(periods(ctx)?.map(|(a, b)| format!("{:039}", (b.start - a.point(at)).unsigned_abs())))
     })?;
     conn.create_scalar_function("pl_time_distance", 5, flags, |ctx| {
         let at: String = ctx.get(4)?;
         let at = point(&at).map_err(Error::UserFunctionError)?;
+        if matches!(at, TimePoint::MatchStart | TimePoint::MatchEnd) {
+            return Ok(None);
+        }
         Ok(periods(ctx)?.map(|(a, b)| (b.start - a.point(at)) as f64 / 1_000_000_000.0))
     })?;
     Ok(())
