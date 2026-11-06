@@ -161,6 +161,50 @@ impl Fixture {
         Ok(self.index.last_insert_rowid())
     }
 
+    /// Record source time evidence rather than treating every fixture time as exact.
+    pub fn session_time(
+        &mut self,
+        session_pk: i64,
+        at: Option<polylogue_model::Timestamp>,
+        evidence: polylogue_model::TimeEvidence,
+    ) -> Result<()> {
+        let bytes = crate::encoding::time_bytes(at, evidence)?;
+        self.index.execute(
+            "UPDATE session SET started_at=?2, started_time=?3, changed=changed+1 WHERE pk=?1",
+            params![session_pk, at.map(|time| time.unix_ms()), bytes],
+        )?;
+        Ok(())
+    }
+
+    /// Record a message's source time and precision as the writer does.
+    pub fn message_time(
+        &mut self,
+        message_pk: i64,
+        at: Option<polylogue_model::Timestamp>,
+        evidence: polylogue_model::TimeEvidence,
+    ) -> Result<()> {
+        let bytes = crate::encoding::time_bytes(at, evidence)?;
+        self.index.execute(
+            "UPDATE message SET at=?2, at_time=?3 WHERE pk=?1",
+            params![message_pk, at.map(|time| time.unix_ms()), bytes],
+        )?;
+        self.index.execute(
+            "UPDATE session SET changed=changed+1, last_activity_at=(SELECT max(at) FROM message WHERE session_pk=session.pk) WHERE pk=(SELECT session_pk FROM message WHERE pk=?1)",
+            [message_pk],
+        )?;
+        crate::items::refresh_stale(&self.index)?;
+        Ok(())
+    }
+
+    /// The actual source-order coordinate installed for a fixture message.
+    pub fn message_order(&self, message_pk: i64) -> Result<i64> {
+        Ok(self
+            .index
+            .query_row("SELECT seq FROM message WHERE pk=?1", [message_pk], |row| {
+                row.get(0)
+            })?)
+    }
+
     /// Sets a session's live facts and git identity: the facts are the fold
     /// of one live evidence line of `kind` (`hook_stop`, …) at `at`, with no
     /// process identity; `waiting_on` adds the hook line that starts that
@@ -725,3 +769,6 @@ fn fixture_time(at: Option<i64>) -> Result<Vec<u8>> {
         },
     )
 }
+
+#[cfg(test)]
+mod tests;

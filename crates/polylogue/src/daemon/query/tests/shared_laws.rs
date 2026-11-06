@@ -1,27 +1,33 @@
 //! Shared independent cases through the product compiler, fixture store and pager.
 use super::super::*;
 use super::{fixture_clock, fixture_context, run};
+use polylogue_model::{Precision, SessionId, TimeEvidence, TimeQuality, Timestamp, Usage};
 use polylogue_store::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 use query_language::cursor::{PageRequest, SealedCursor};
 use query_language::{
     Error, ErrorKind,
     ast::*,
     laws,
-    semantics::{Answer, Dataset, Row, Scalar},
+    semantics::{Answer, Dataset, Extent, Row, Scalar},
 };
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+const OUTER_FIELDS: &[&str] = &["id", "input_tokens", "output_tokens", "repo", "title"];
+const CHILD_FIELDS: &[&str] = &["message", "session", "exit_code", "at"];
 struct Product;
 struct Plan {
     text: String,
+    unit: String,
     shape: Shape,
-    fields: std::collections::BTreeSet<String>,
+    fields: BTreeSet<String>,
+    requested: Vec<String>,
+    paired: bool,
 }
 fn error(message: impl ToString) -> Error {
     Error::new(ErrorKind::InvalidQuery, message.to_string(), 0)
 }
-fn options() -> Options {
+fn options(fields: Vec<String>) -> Options {
     Options {
         clock: fixture_clock(0, "UTC", 240),
         origins: vec!["claude-code".into()],
@@ -30,92 +36,30 @@ fn options() -> Options {
         embeddings: false,
         self_session: None,
         saved: Default::default(),
-        fields: vec!["id".into(), "cost".into(), "repo".into()],
+        fields,
         kept: Default::default(),
         chat_pages: vec![],
-    }
-}
-fn operand(value: &mut Expression, child: bool) {
-    match value {
-        Expression::Field { name } if child && name == "cost" => *name = "exit_code".into(),
-        Expression::Arithmetic { left, right, .. } => {
-            operand(left, child);
-            operand(right, child);
-        }
-        Expression::Function { arguments, .. } => {
-            for argument in arguments {
-                operand(argument, child);
-            }
-        }
-        _ => {}
-    }
-}
-fn condition(value: &mut Condition, child: bool) {
-    match &mut value.kind {
-        ConditionKind::And { conditions } | ConditionKind::Or { conditions } => {
-            for value in conditions {
-                condition(value, child);
-            }
-        }
-        ConditionKind::Not { condition: value } => condition(value, child),
-        ConditionKind::Compare { left, right, .. } => {
-            operand(left, child);
-            operand(right, child);
-        }
-        ConditionKind::Between { left: value, .. } | ConditionKind::In { left: value, .. } => {
-            operand(value, child)
-        }
-        ConditionKind::Exists {
-            condition: Some(value),
-            ..
-        }
-        | ConditionKind::Count {
-            condition: Some(value),
-            ..
-        } => condition(value, true),
-        ConditionKind::Sequence { steps, .. } => {
-            for value in steps {
-                condition(value, true);
-            }
-        }
-        _ => {}
-    }
-    if let ConditionKind::In { query: value, .. } | ConditionKind::Order { query: value, .. } =
-        &mut value.kind
-    {
-        query(value);
-    }
-}
-fn query(value: &mut Query) {
-    if let Source::Unit {
-        unit,
-        condition: Some(value),
-        ..
-    } = &mut value.source
-    {
-        condition(value, unit == "tool_calls");
-    }
-    for stage in &mut value.transforms {
-        match &mut stage.kind {
-            TransformKind::Where { condition: value } => condition(value, false),
-            TransformKind::Combine { query: value, .. }
-            | TransformKind::Join { query: value, .. }
-            | TransformKind::Diff { query: value } => query(value),
-            _ => {}
-        }
     }
 }
 impl laws::Compiler for Product {
     type Plan = Plan;
     fn compile(&self, value: &Query) -> Result<Plan, Error> {
-        let mut value = value.clone();
-        query(&mut value);
-        let options = options();
+        let Source::Unit { unit, .. } = &value.source else {
+            return Err(error("law fixture has no native source unit"));
+        };
+        let mut options = options(
+            if unit == "tool_calls" {
+                CHILD_FIELDS
+            } else {
+                OUTER_FIELDS
+            }
+            .iter()
+            .map(|name| (*name).into())
+            .collect(),
+        );
         let catalog = polylogue_query::catalog::catalog(&options.origins);
-        let text = query_language::format::format_query(&value, &catalog)?;
+        let text = query_language::format::format_query(value, &catalog)?;
         let prepared = polylogue_query::compile(&text, &options).map_err(error)?;
-        let program = polylogue_store::query::lower(&prepared, &options).map_err(error)?;
-        // The producer binds Matches against its actual projection declarations.
         let bound = prepared.expanded_query();
         let typing = bound
             .typing()
@@ -125,13 +69,21 @@ impl laws::Compiler for Product {
             .transforms
             .last()
             .map_or(&typing.source, |stage| &stage.after);
-        let mut fields: std::collections::BTreeSet<_> = output
+        let mut fields: BTreeSet<_> = output
             .fields
             .iter()
             .map(|info| info.field.name.clone())
             .collect();
-        // Unknown-value counts are part of the shared aggregate answer. Native
-        // partial-cost evidence is checked separately from the shared fields.
+        options.fields.extend(
+            fields
+                .iter()
+                .filter(|name| {
+                    name.starts_with("match.")
+                        || matches!(name.as_str(), "change" | "old_rank" | "new_rank")
+                })
+                .cloned(),
+        );
+        let program = polylogue_store::query::lower(&prepared, &options).map_err(error)?;
         fields.extend(
             program
                 .columns
@@ -141,13 +93,28 @@ impl laws::Compiler for Product {
         );
         Ok(Plan {
             text,
+            unit: unit.clone(),
             shape: program.shape,
             fields,
+            requested: options.fields,
+            paired: value
+                .transforms
+                .iter()
+                .any(|stage| matches!(stage.kind, TransformKind::Join { .. })),
         })
     }
 }
+/// Presence belongs to the fixture schema. Values below always come from the
+/// real query page; clock evidence and order come back through native storage.
+struct Metadata {
+    fields: BTreeSet<String>,
+    order: i64,
+    time: Option<Extent>,
+}
 struct Loaded {
     fixture: Fixture,
+    metadata: BTreeMap<(String, String), Metadata>,
+    parents: BTreeSet<String>,
     _directory: tempfile::TempDir,
 }
 #[derive(Default)]
@@ -158,6 +125,38 @@ fn number(value: Option<&Scalar>) -> Option<f64> {
     match value {
         Some(Scalar::Number(value)) => Some(*value),
         _ => None,
+    }
+}
+fn tokens(value: Option<&Scalar>) -> Result<Option<u64>, Error> {
+    match value {
+        None | Some(Scalar::Unknown) => Ok(None),
+        Some(Scalar::Number(value))
+            if value.is_finite()
+                && *value >= 0.0
+                && value.fract() == 0.0
+                && *value < u64::MAX as f64 =>
+        {
+            Ok(Some(*value as u64))
+        }
+        _ => Err(error(
+            "fixture token counts must be representable whole nonnegative counts",
+        )),
+    }
+}
+fn exit_code(value: Option<&Scalar>) -> Result<Option<i64>, Error> {
+    match value {
+        None | Some(Scalar::Unknown) => Ok(None),
+        Some(Scalar::Number(value))
+            if value.is_finite()
+                && value.fract() == 0.0
+                && *value >= i64::MIN as f64
+                && *value < i64::MAX as f64 =>
+        {
+            Ok(Some(*value as i64))
+        }
+        _ => Err(error(
+            "fixture exit codes must be representable whole signed numbers",
+        )),
     }
 }
 fn string(value: Option<&Scalar>) -> Option<&str> {
@@ -177,58 +176,114 @@ fn scalar(value: &Value) -> Scalar {
         Scalar::Unknown
     }
 }
-fn id(value: &Value) -> String {
-    value
+fn native_id(value: &Value) -> Result<String, Error> {
+    let text = value
         .as_str()
-        .unwrap()
+        .ok_or_else(|| error("native row has no identity"))?;
+    let native = match polylogue_model::Reference::parse(text) {
+        Ok(polylogue_model::Reference::Session(session)) => session.to_string(),
+        Ok(polylogue_model::Reference::Message(message))
+        | Ok(polylogue_model::Reference::Block { message, .. }) => message.to_string(),
+        _ => text.to_owned(),
+    };
+    native
         .strip_prefix("claude-code:")
-        .unwrap()
-        .into()
+        .map(str::to_owned)
+        .ok_or_else(|| error(format!("unexpected fixture identity {text}")))
+}
+/// One reference tick is one second. The native store's clock uses milliseconds.
+fn timestamp(tick: i64) -> Result<Timestamp, Error> {
+    tick.checked_mul(1000)
+        .and_then(Timestamp::from_unix_ms)
+        .ok_or_else(|| error("fixture time is outside the native timestamp range"))
+}
+fn time(extent: Option<Extent>) -> Result<(Option<Timestamp>, TimeEvidence), Error> {
+    let Some(extent) = extent else {
+        return Ok((None, TimeEvidence::UNKNOWN));
+    };
+    Ok((
+        Some(timestamp(extent.start)?),
+        TimeEvidence {
+            quality: TimeQuality::Intrinsic,
+            precision: Some(if extent.coarse {
+                Precision::Bounded
+            } else {
+                Precision::Instant
+            }),
+            until: extent.coarse.then(|| timestamp(extent.end)).transpose()?,
+        },
+    ))
+}
+fn extent(at: Option<Timestamp>, evidence: TimeEvidence) -> Option<Extent> {
+    at.map(|at| Extent {
+        start: at.unix_ms() / 1000,
+        end: evidence.until.unwrap_or(at).unix_ms() / 1000,
+        coarse: evidence.precision != Some(Precision::Instant),
+    })
 }
 impl Execution {
     fn load(&mut self, dataset: &Dataset) -> Result<(), Error> {
         let directory = tempfile::tempdir().map_err(error)?;
         let mut fixture = Fixture::new(&directory.path().join("archive")).map_err(error)?;
         let mut sessions = BTreeMap::new();
-        let mut ordered = dataset["sessions"].iter().collect::<Vec<_>>();
-        ordered.sort_by(|a, b| a.order.cmp(&b.order).then(a.id.cmp(&b.id)));
-        let positions: BTreeMap<_, _> = ordered
-            .iter()
-            .enumerate()
-            .map(|(rank, row)| (row.id.as_str(), -(i64::try_from(rank).unwrap())))
-            .collect();
+        let mut message_keys = BTreeMap::new();
         for row in &dataset["sessions"] {
             let name = format!("claude-code:{}", row.id);
+            let (at, evidence) = time(row.time)?;
             let session = fixture
                 .session(SessionFacts {
                     id: &name,
                     repo: string(row.fields.get("repo")),
                     title: string(row.fields.get("title")),
-                    // Map the oracle's source order into the actual native
-                    // descending activity order before any page is selected.
-                    last: Some(positions[row.id.as_str()]),
+                    started: at.map(Timestamp::unix_ms),
+                    last: at.map(Timestamp::unix_ms),
                     ..Default::default()
                 })
                 .map_err(error)?;
+            fixture.session_time(session, at, evidence).map_err(error)?;
             sessions.insert(row.id.clone(), session);
-            fixture
+            let message = fixture
                 .message(
                     session,
                     MessageFacts {
-                        id: &format!("claude-code:cost-{}", row.id),
+                        id: &format!("claude-code:usage-{}", row.id),
                         role: "assistant",
                         written_by: "model",
-                        cost_nusd: number(row.fields.get("cost")).map(|n| (n * 1e9) as i64),
-                        seq: Some(0),
+                        at: at.map(Timestamp::unix_ms),
+                        seq: Some(-1),
                         ..Default::default()
                     },
                 )
                 .map_err(error)?;
+            fixture.message_time(message, at, evidence).map_err(error)?;
+            fixture
+                .usage(
+                    message,
+                    &Usage {
+                        input: tokens(row.fields.get("input_tokens"))?,
+                        output: tokens(row.fields.get("output_tokens"))?,
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .map_err(error)?;
         }
         for row in dataset.get("tool_calls").into_iter().flatten() {
-            let parent = row.parent.as_ref().expect("shared child parent");
-            let session = sessions[parent];
-            let at = row.time.map(|time| time.start);
+            let session = if let Some(parent) = &row.parent {
+                sessions[parent]
+            } else {
+                // Tool calls still have native custody when the abstract relation
+                // has no parent. Separate subagents cannot become order neighbours
+                // or extra rows of the outer main-session relation.
+                fixture
+                    .session(SessionFacts {
+                        id: &format!("claude-code:carrier-{}", row.id),
+                        kind: "subagent",
+                        ..Default::default()
+                    })
+                    .map_err(error)?
+            };
+            let (at, evidence) = time(row.time)?;
             let message = fixture
                 .message(
                     session,
@@ -236,12 +291,32 @@ impl Execution {
                         id: &format!("claude-code:{}", row.id),
                         role: "assistant",
                         written_by: "model",
-                        at,
-                        seq: Some(row.order + 1),
+                        at: at.map(Timestamp::unix_ms),
+                        seq: Some(row.order),
                         ..Default::default()
                     },
                 )
                 .map_err(error)?;
+            fixture.message_time(message, at, evidence).map_err(error)?;
+            if let Some(parent) = row
+                .parent
+                .as_ref()
+                .and_then(|parent| dataset["sessions"].iter().find(|row| &row.id == parent))
+            {
+                // Known zero child usage leaves an explicitly known parent total
+                // exact; a wholly unknown parent total remains wholly unknown.
+                fixture
+                    .usage(
+                        message,
+                        &Usage {
+                            input: number(parent.fields.get("input_tokens")).map(|_| 0),
+                            output: number(parent.fields.get("output_tokens")).map(|_| 0),
+                            ..Default::default()
+                        },
+                        None,
+                    )
+                    .map_err(error)?;
+            }
             fixture
                 .tool_call(
                     session,
@@ -251,18 +326,135 @@ impl Execution {
                         action: "shell",
                         command: Some(&row.id),
                         outcome: "error",
-                        exit_code: number(row.fields.get("cost")).map(|n| n as i64),
-                        at,
+                        exit_code: exit_code(row.fields.get("exit_code"))?,
+                        at: at.map(Timestamp::unix_ms),
                         ..Default::default()
                     },
                 )
                 .map_err(error)?;
+            message_keys.insert(row.id.clone(), message);
+        }
+        let mut metadata = BTreeMap::new();
+        {
+            let reads = fixture.reads().map_err(error)?;
+            let reader = reads.reader().map_err(error)?;
+            for (unit, rows) in dataset {
+                for row in rows {
+                    let (order, recorded_time) = if unit == "sessions" {
+                        let id =
+                            SessionId::parse(&format!("claude-code:{}", row.id)).map_err(error)?;
+                        let session = reader
+                            .session(&id)
+                            .map_err(error)?
+                            .ok_or_else(|| error("fixture session missing"))?;
+                        (0, extent(session.started, session.time_evidence()))
+                    } else {
+                        let parent = row
+                            .parent
+                            .as_ref()
+                            .map(|p| format!("claude-code:{p}"))
+                            .unwrap_or_else(|| format!("claude-code:carrier-{}", row.id));
+                        let session = SessionId::parse(&parent).map_err(error)?;
+                        let message = reader
+                            .messages(&session, false)
+                            .map_err(error)?
+                            .into_iter()
+                            .find(|message| {
+                                message.id.to_string() == format!("claude-code:{}", row.id)
+                            })
+                            .ok_or_else(|| error("fixture message missing"))?;
+                        (
+                            fixture
+                                .message_order(message_keys[&row.id])
+                                .map_err(error)?
+                                - 1,
+                            extent(message.at, message.time_evidence()),
+                        )
+                    };
+                    metadata.insert(
+                        (unit.clone(), row.id.clone()),
+                        Metadata {
+                            fields: row.fields.keys().cloned().collect(),
+                            order,
+                            // No declared clock means no clock in this fixture's
+                            // abstract projection, even if native derivations know more.
+                            time: row.time.and(recorded_time),
+                        },
+                    );
+                }
+            }
         }
         self.loaded = Some(Loaded {
             fixture,
+            metadata,
+            parents: sessions.into_keys().collect(),
             _directory: directory,
         });
         Ok(())
+    }
+}
+impl Loaded {
+    fn row(&self, plan: &Plan, value: &Value) -> Result<Row, Error> {
+        let source = native_id(
+            &value[if plan.unit == "tool_calls" {
+                "message"
+            } else {
+                "id"
+            }],
+        )?;
+        let metadata = self
+            .metadata
+            .get(&(plan.unit.clone(), source.clone()))
+            .ok_or_else(|| error(format!("query returned an uninstalled row {source}")))?;
+        let mut row = Row::new(&source);
+        row.fields = metadata
+            .fields
+            .iter()
+            .map(|name| {
+                value
+                    .get(name)
+                    .map(|value| (name.clone(), scalar(value)))
+                    .ok_or_else(|| error(format!("query omitted fixture field {name}")))
+            })
+            .collect::<Result<_, _>>()?;
+        row.order = metadata.order;
+        row.time = metadata.time;
+        if plan.unit == "tool_calls" {
+            let parent = native_id(&value["session"])?;
+            row.parent = self.parents.contains(&parent).then_some(parent);
+        }
+        if let Some(matched) = value.get("match.message").filter(|value| !value.is_null()) {
+            let matched = native_id(matched)?;
+            let other = self
+                .metadata
+                .get(&("tool_calls".into(), matched.clone()))
+                .ok_or_else(|| error("query returned an uninstalled match"))?;
+            row.fields
+                .insert("match.message".into(), Scalar::Text(matched.clone()));
+            for field in &other.fields {
+                let name = format!("match.{field}");
+                let value = value
+                    .get(&name)
+                    .ok_or_else(|| error(format!("query omitted {name}")))?;
+                row.fields.insert(name, scalar(value));
+            }
+            if plan.paired {
+                row.id = format!("{source}:{matched}");
+                row.matches = vec![matched];
+            }
+        }
+        for name in ["match.distance", "change", "old_rank", "new_rank"] {
+            if plan.fields.contains(name) {
+                let value = value
+                    .get(name)
+                    .ok_or_else(|| error(format!("query omitted {name}")))?;
+                // A negated order relation has no exposed match.
+                if name != "match.distance" || row.fields.contains_key("match.message") {
+                    row.fields.insert(name.into(), scalar(value));
+                }
+            }
+        }
+        Ok(row)
     }
 }
 impl laws::Executor<Plan> for Execution {
@@ -289,101 +481,86 @@ impl laws::Executor<Plan> for Execution {
                 embeddings: false,
                 ranking_identity: None,
                 near: None,
-                fields: &["id".into(), "cost".into(), "repo".into()],
+                fields: &plan.requested,
             },
         )
         .map_err(|failure| error(failure.message.clone()))?;
         let rows = answer["rows"]
             .as_array()
-            .expect("query rows")
+            .ok_or_else(|| error("query omitted rows"))?
             .iter()
             .map(|value| match plan.shape {
-                Shape::Rows => Row::new(id(&value["id"]))
-                    .with("cost", scalar(&value["cost"]))
-                    .with("repo", scalar(&value["repo"])),
+                Shape::Rows => loaded.row(plan, value),
                 Shape::Summary | Shape::Groups => {
                     let mut row = if plan.shape == Shape::Summary {
                         Row::new("aggregate")
                     } else {
                         Row::new(format!(
                             "group:[Text({:?})]",
-                            value["repo"].as_str().unwrap()
+                            value["repo"]
+                                .as_str()
+                                .ok_or_else(|| error("group omitted repo"))?
                         ))
                     };
-                    if let Some(partial) = value.get("partial_cost") {
-                        assert!(
-                            partial.as_u64().is_some(),
-                            "native partial-cost evidence remains present and typed"
-                        );
-                    }
                     row.fields = plan
                         .fields
                         .iter()
                         .map(|field| {
-                            let value = value
+                            value
                                 .get(field)
-                                .expect("every declared semantic field is projected");
-                            (field.clone(), scalar(value))
+                                .map(|value| (field.clone(), scalar(value)))
+                                .ok_or_else(|| {
+                                    error(format!("query omitted semantic column {field}"))
+                                })
                         })
-                        .collect();
-                    row
+                        .collect::<Result<_, _>>()?;
+                    Ok(row)
                 }
                 Shape::Matches => {
-                    let reference = |field: &str| {
-                        let parsed =
-                            polylogue_model::Reference::parse(value[field].as_str().unwrap())
-                                .unwrap();
-                        match parsed {
-                            polylogue_model::Reference::Session(session) => session
-                                .to_string()
-                                .strip_prefix("claude-code:")
-                                .unwrap()
-                                .to_owned(),
-                            polylogue_model::Reference::Block { message, .. } => message
-                                .to_string()
-                                .strip_prefix("claude-code:")
-                                .unwrap()
-                                .to_owned(),
-                            other => panic!("unexpected match reference: {other}"),
-                        }
-                    };
-                    let parent = reference("parent");
-                    let step = reference("step");
-                    let n = value["match"].as_u64().unwrap();
-                    let position = value["position"].as_u64().unwrap();
+                    let parent = native_id(&value["parent"])?;
+                    let step = native_id(&value["step"])?;
+                    let n = value["match"]
+                        .as_u64()
+                        .ok_or_else(|| error("match omitted ordinal"))?;
+                    let position = value["position"]
+                        .as_u64()
+                        .ok_or_else(|| error("match omitted position"))?;
                     let mut row = Row::new(format!("{parent}:match:{n}:{position}"))
                         .with("parent", parent.as_str())
                         .with("match", n as f64)
                         .with("position", position as f64)
                         .with("step", step.as_str());
                     if let Some(number) = value.get("step.exit_code") {
-                        row = row.with("step.cost", scalar(number));
+                        row = row.with("step.exit_code", scalar(number));
                     }
                     row.parent = Some(parent);
                     row.matches = vec![step];
-                    row
+                    Ok(row)
                 }
             })
-            .collect();
+            .collect::<Result<_, Error>>()?;
         Ok(laws::Page {
             answer: Answer {
                 rows,
-                total: answer["count"].as_u64().unwrap() as usize,
+                total: answer["count"]
+                    .as_u64()
+                    .ok_or_else(|| error("query omitted total"))? as usize,
             },
             next: answer["next"].as_str().map(SealedCursor::from_wire),
         })
     }
 }
-
 #[test]
 fn shared_language_laws_run_through_product_compilation_and_keyset_pages() {
     let cases = laws::cases(&laws::Vocabulary {
         outer: "sessions".into(),
         children: "tool_calls".into(),
-        number: "cost".into(),
+        number: "input_tokens".into(),
+        child_number: "exit_code".into(),
+        child_identity: "message".into(),
         category: "repo".into(),
         text: "title".into(),
-        end: "last_active".into(),
+        end: "output_tokens".into(),
     });
     let failures = laws::check(&Product, &mut Execution::default(), &cases);
     assert!(failures.is_empty(), "{failures:#?}");
