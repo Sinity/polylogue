@@ -8,6 +8,7 @@ use crate::query::ast::*;
 use crate::query::fields::{self, Aliases, Kind};
 use crate::query::time::{self, Milliseconds, Time};
 use crate::query::units::{self, Index, Search, Via};
+use combine::join;
 use polylogue_query::QueryError;
 use polylogue_query::compile::Parameters;
 pub use polylogue_query::{
@@ -15,7 +16,6 @@ pub use polylogue_query::{
 };
 use serde::Serialize;
 use std::collections::HashSet;
-use combine::join;
 
 mod combine;
 mod conditions;

@@ -59,8 +59,15 @@ pub(crate) fn output_metadata(
         .typing()
         .query(&query_language::scope::NodePath::default())
         .expect("binding captures the root query scope");
+    let mut group_input = None;
     for (index, stage) in query.transforms.iter().enumerate() {
+        if matches!(stage.kind, TransformKind::Group { .. }) {
+            group_input = Some(schema.clone());
+        }
         match &stage.kind {
+            TransformKind::First { .. } if group_input.is_some() => {
+                schema = group_input.take().expect("grouped first input");
+            }
             TransformKind::Scope { unit, .. } => {
                 schema = unit_schema(unit, catalog)?;
             }
@@ -211,6 +218,12 @@ pub(crate) fn output_metadata(
             | TransformKind::Fill
             | TransformKind::AsOf { .. } => {}
             TransformKind::Extension { .. } => return Err(not_built("extension output schema")),
+        }
+        if !matches!(
+            stage.kind,
+            TransformKind::Group { .. } | TransformKind::Aggregate { .. }
+        ) {
+            group_input = None;
         }
     }
     let scope = relation_scope(&bound, &schema)?;

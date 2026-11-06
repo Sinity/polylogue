@@ -64,7 +64,7 @@ Field rules:
 - **Counts and content fields** include `project`, `has:code` and `code_lang`, per-role counts (`user_words`, `assistant_words`, `tool_use_messages`, `thinking_messages`, `paste_messages`), `since_session:<ref>`, and `time_quality` and `precision` on every time.
 - **Assertion fields**, on `assertions` and as conditions on any unit through `kv:`: `kind`, `key`, `value`, `author`, `by_operator`, `agent`, `unattributed`, `via`, `about`, `evidence`, `scope`, `origin`, `current`, `conflict`, `withdrawn`, `judged`, `judged_by`, `expired`, `changed_since`, `waiting`, `pass`, `rubric`. On any unit: `tag:<name>[:<value>]`, `title:`, `kv:<kind>.<key>=<value>`, `hidden:`, `referenced_by:<ref>`. Grain is strict: an assertion about a session never matches its messages.
 - **Variant fields:** `variant:true` admits variant text into text search; `lang:<code>` matches variant parts in that language and messages by their derived `lang`.
-- **Names shared with Sinex** keep their meaning per product: `evidence_until:` is Polylogue's as-of field, and Sinex's "as of" is a different concept.
+- **Names shared with Sinex** keep their meaning per product: `evidence_until:` is Polylogue's as-of field, and Sinex's "as of" is a different concept. Polylogue does not retain historical query membership at earlier read positions: `| as of POSITION|TIME` answers `not_yet_available`. `evidence_until:` selects evidence received by then, read with current parsers and prices.
 
 ## Defaults
 

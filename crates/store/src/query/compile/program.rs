@@ -209,6 +209,7 @@ impl<'a> Compiler<'a> {
                     order = None;
                     self.notes.push("one row per step of each match".into());
                 }
+                TransformKind::AsOf { .. } => return Err(relations::as_of_unavailable()),
                 _ => return Err(not_built("this shared query stage")),
             }
         }

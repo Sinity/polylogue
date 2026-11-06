@@ -170,6 +170,12 @@ pub(super) fn contains_order(condition: &Condition) -> bool {
     }
 }
 
+pub(super) fn as_of_unavailable() -> QueryError {
+    QueryError::Unavailable {
+        what: "Polylogue does not retain historical query membership at earlier read positions; use evidence_until:TIME to select evidence received by then, read with current parsers and prices".into(),
+    }
+}
+
 fn relational(kind: &TransformKind) -> bool {
     matches!(
         kind,
@@ -285,6 +291,7 @@ impl<'a> Compiler<'a> {
     ) -> Result<(), QueryError> {
         let at = stage.span.start;
         match &stage.kind {
+            TransformKind::AsOf { .. } => return Err(as_of_unavailable()),
             TransformKind::Fields { columns } => {
                 let mut select = relation.private_columns();
                 let mut output = vec![];
@@ -402,6 +409,12 @@ impl<'a> Compiler<'a> {
                 self.relation_scope(relation, unit, condition.as_ref(), at)?
             }
             _ => self.relation_native_stage(relation, stage, query)?,
+        }
+        if !matches!(
+            stage.kind,
+            TransformKind::Group { .. } | TransformKind::Aggregate { .. }
+        ) {
+            relation.group = None;
         }
         relation.program.row_count_sql = None;
         relation.program.row_membership_sql = None;

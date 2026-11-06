@@ -70,7 +70,7 @@ fn selected_groups_aggregate_their_original_rows_after_projection() {
     assert_eq!(
         rows(
             &fixture,
-            "sessions | fields repo as region, input_tokens as n | group by region | where count > 1 | agg sum(n) as total"
+            "sessions | fields repo as region, input_tokens as n | group by region | agg sum(n) as total | where count > 1"
         ),
         [json!({"region":"east", "count":2, "total":4.0, "unknown_n":0})]
     );
@@ -195,4 +195,17 @@ fn diff_aligns_logical_values_when_the_two_queries_use_different_sql_slots() {
             json!({"label":"claude-code:c", "n":5, "change":"left", "old_rank":2, "new_rank":null}),
         ]
     );
+}
+
+#[test]
+fn historical_read_positions_refuse_without_substituting_current_membership() {
+    for text in [
+        "sessions | as of seq 42",
+        "sessions | fields id | as of 2026-10-02",
+        "sessions | group by repo | as of seq 42",
+    ] {
+        let error = compile(text, &opts(&[])).unwrap_err();
+        assert_eq!(error.kind(), "not_yet_available", "{text}: {error}");
+        assert!(error.to_string().contains("evidence_until:"), "{error}");
+    }
 }
