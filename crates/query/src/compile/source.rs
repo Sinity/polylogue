@@ -34,7 +34,7 @@ pub(crate) fn schema(catalog: &Catalog, unit_name: &str, columns: &[Column]) -> 
                 ColKind::Number => FieldKind::Number,
                 ColKind::Time => FieldKind::Time,
                 ColKind::Money => FieldKind::Money,
-                ColKind::Duration => FieldKind::Duration,
+                ColKind::Duration | ColKind::DurationSeconds => FieldKind::Duration,
                 ColKind::Bool => FieldKind::Bool,
                 ColKind::Ids => FieldKind::List(Box::new(FieldKind::Reference)),
                 ColKind::Json => FieldKind::Json,
@@ -286,7 +286,7 @@ pub(crate) fn column_kind(kind: ColKind) -> FieldKind {
         ColKind::Number => FieldKind::Number,
         ColKind::Money => FieldKind::Money,
         ColKind::Time => FieldKind::Time,
-        ColKind::Duration => FieldKind::Duration,
+        ColKind::Duration | ColKind::DurationSeconds => FieldKind::Duration,
         ColKind::Bool => FieldKind::Bool,
     }
 }

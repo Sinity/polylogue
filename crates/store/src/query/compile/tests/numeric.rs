@@ -230,3 +230,15 @@ fn typed_glob_expressions_project_booleans_and_preserve_unknowns_in_filters() {
     assert!(rows(&fixture, "sessions where glob(repo, \"E*\") = true").is_empty());
     assert!(rows(&fixture, "sessions where NOT (glob(cwd, \"*\") = true)").is_empty());
 }
+
+#[test]
+fn absolute_expressions_preserve_money_and_duration_dimensions() {
+    let (_dir, fixture) = fixture();
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions where id = claude-code:a | fields abs(input_tokens - output_tokens) as tokens, abs(cost - 2usd) as money, abs(started - last_active) as elapsed"
+        ),
+        [json!({"tokens":3, "money":1.0, "elapsed":2000})]
+    );
+}

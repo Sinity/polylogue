@@ -200,6 +200,21 @@ impl Compiler<'_> {
                 };
                 let (sql, kind) = self.sql_expression_with(argument, at, field)?;
                 match name.as_str() {
+                    "abs"
+                        if matches!(
+                            kind,
+                            ColKind::Number
+                                | ColKind::Money
+                                | ColKind::Duration
+                                | ColKind::DurationSeconds
+                        ) =>
+                    {
+                        Ok((format!("pl_abs({sql})"), kind))
+                    }
+                    "abs" => Err(QueryError::Invalid {
+                        message: "abs takes a number, money, or duration".into(),
+                        position: at,
+                    }),
                     "len" => match kind {
                         ColKind::Text => Ok((format!("pl_text_length({sql})"), ColKind::Number)),
                         ColKind::Ids | ColKind::Json => {
@@ -317,9 +332,9 @@ impl Compiler<'_> {
                 .start_ms();
             return Ok((self.bind(Param::Int(value)), ColKind::Time));
         }
-        if expected == Some(ColKind::Duration) {
+        if matches!(expected, Some(ColKind::Duration | ColKind::DurationSeconds)) {
             let number = time::duration_ms(text).ok_or_else(bad)?;
-            return Ok((self.bind(Param::Int(number)), ColKind::Duration));
+            return Ok((self.bind(Param::Int(number)), expected.unwrap()));
         }
         if expected == Some(ColKind::Bool) && matches!(text.as_str(), "true" | "false") {
             return Ok((
@@ -411,7 +426,7 @@ fn arithmetic_column(operator: Arithmetic, left: ColKind, right: ColKind) -> Opt
         ColKind::Number => K::Number,
         ColKind::Money => K::Money,
         ColKind::Time => K::Time,
-        ColKind::Duration => K::Duration,
+        ColKind::Duration | ColKind::DurationSeconds => K::Duration,
         ColKind::Json => K::Json,
         _ => K::Text,
     };
@@ -419,6 +434,12 @@ fn arithmetic_column(operator: Arithmetic, left: ColKind, right: ColKind) -> Opt
         match kind {
             K::Money => ColKind::Money,
             K::Time => ColKind::Time,
+            K::Duration
+                if matches!(left, ColKind::DurationSeconds)
+                    || matches!(right, ColKind::DurationSeconds) =>
+            {
+                ColKind::DurationSeconds
+            }
             K::Duration => ColKind::Duration,
             K::Json => ColKind::Json,
             _ => ColKind::Number,

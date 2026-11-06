@@ -137,6 +137,8 @@ pub enum ColKind {
     Time,
     /// Milliseconds.
     Duration,
+    /// Seconds at the SQL/output boundary; expressions normalize to milliseconds.
+    DurationSeconds,
     Bool,
 }
 

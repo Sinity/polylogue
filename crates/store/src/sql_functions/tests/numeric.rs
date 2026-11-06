@@ -67,3 +67,17 @@ fn finite_interval_union_does_not_overflow_an_intermediate_sum() {
     let covered: f64 = conn.query_row("WITH intervals(a,b) AS (VALUES (-1e308,0.),(9e307,1e308)) SELECT pl_covered(a,b) FROM intervals", [], |row| row.get(0)).unwrap();
     assert!((covered / 1e308 - 1.1).abs() < 1e-12);
 }
+
+#[test]
+fn absolute_values_preserve_unknowns_and_handle_the_minimum_integer() {
+    let conn = Connection::open_in_memory().unwrap();
+    register(&conn).unwrap();
+    let values: (Option<f64>, i64, f64, f64) = conn
+        .query_row(
+            "SELECT pl_abs(NULL), pl_abs(-7), pl_abs(-1.25), pl_abs(-9223372036854775808)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(values, (None, 7, 1.25, 9223372036854775808.0));
+}

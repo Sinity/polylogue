@@ -1047,6 +1047,7 @@ fn aggregate_values(program: &Program, row: &Value) -> BTreeMap<String, Option<f
                 polylogue_query::ColKind::Number
                     | polylogue_query::ColKind::Money
                     | polylogue_query::ColKind::Duration
+                    | polylogue_query::ColKind::DurationSeconds
             ) && !keys
                 .iter()
                 .any(|key| key == program.column_slot(&column.name))

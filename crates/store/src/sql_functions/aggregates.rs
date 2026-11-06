@@ -26,6 +26,16 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
             _ => return Err(invalid("arithmetic requires numbers")),
         })
     })?;
+    conn.create_scalar_function("pl_abs", 1, FLAGS, |ctx| {
+        Ok(match ctx.get_raw(0) {
+            ValueRef::Null => Value::Null,
+            ValueRef::Integer(value) => value
+                .checked_abs()
+                .map_or_else(|| Value::Real((value as f64).abs()), Value::Integer),
+            ValueRef::Real(value) => Value::Real(finite(value)?.abs()),
+            _ => return Err(invalid("abs requires a number")),
+        })
+    })?;
     conn.create_scalar_function("pl_lower", 1, FLAGS, |ctx| {
         Ok(ctx
             .get::<Option<String>>(0)?
@@ -188,8 +198,13 @@ impl Aggregate<Bins, String> for Histogram {
                     .ok_or_else(|| invalid("histogram time is out of range"))?
                     .to_string(),
             ),
-            "number" | "duration" | "money" => {
-                let value = finite(ctx.get::<f64>(0)?)? / if kind == "money" { 1e9 } else { 1. };
+            "number" | "duration" | "duration_seconds" | "money" => {
+                let scale = match kind.as_str() {
+                    "money" => 1e9,
+                    "duration_seconds" => 1000.,
+                    _ => 1.,
+                };
+                let value = finite(ctx.get::<f64>(0)?)? / scale;
                 serde_json::json!(if value == 0. { 0. } else { value })
             }
             _ => return Err(invalid("histogram requires a known column kind")),

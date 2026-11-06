@@ -181,13 +181,7 @@ impl<'a> Compiler<'a> {
                 scalar(*kind, &argument.column(), at)?;
             }
         }
-        let value = |sql: String, kind| {
-            if kind == ColKind::Money {
-                format!("({sql}) / 1e9")
-            } else {
-                sql
-            }
-        };
+        let value = |sql: String, kind| Self::display_value(&sql, kind);
         let (sql, result_kind) = match &f.function {
             AggregateFunction::Count => (format!("count({expr})"), ColKind::Number),
             AggregateFunction::CountDistinct => {
@@ -202,7 +196,8 @@ impl<'a> Compiler<'a> {
             }
             AggregateFunction::Covered => {
                 let (end, end_kind) = &inputs[1];
-                if *end_kind != kind {
+                let duration = |kind| matches!(kind, ColKind::Duration | ColKind::DurationSeconds);
+                if *end_kind != kind && !(duration(*end_kind) && duration(kind)) {
                     return Err(QueryError::Invalid {
                         message: "covered endpoints require the same dimension".into(),
                         position: at,
@@ -356,6 +351,7 @@ fn column_kind_name(kind: ColKind) -> &'static str {
         ColKind::Money => "money",
         ColKind::Time => "time",
         ColKind::Duration => "duration",
+        ColKind::DurationSeconds => "duration_seconds",
         ColKind::Bool => "bool",
     }
 }

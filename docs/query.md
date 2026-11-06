@@ -91,6 +91,7 @@ Time expressions (relative, calendar, natural-language dates, bounds, daylight-s
 - Period groups (`day()`, `week()`, `month()`) follow the logical day, and each says `period: complete|partial`.
 - `last_active` is the latest of the messages’ known native times. Its possible period is the maximum of their whole periods: a recorded period `[0,10)` and a point at 5 give `[5,10)`. Its source quality is known only when every possible latest message has that quality; a combination of different source qualities leaves the derived quality unknown. Calendar bounds are never inferred from the reader’s zone.
 - An order relation’s `at when` and `at start` anchor the outer row at its start; `at end` anchors it at its end. The inner row retains its native period and start. `match.distance` is the signed time from that outer anchor to the inner start, in seconds. Coarse periods still have to satisfy the whole-period relation and window.
+- An order condition chooses its nearest satisfying witness by default. `pick first by E [asc|desc], …` chooses by explicit inner-row sort keys instead, with unknown values last and identity as the final tie-breaker. It keeps the outer row once in its existing order. `abs(match.distance)` compares exact native nanosecond distances when choosing a time witness; the public signed distance remains seconds.
 
 ## Related rows, stages, attached rows, combining
 

@@ -19,6 +19,7 @@ impl Compiler<'_> {
         within: Option<&Distance>,
         point: TimePoint,
         scope: Option<&str>,
+        pick: &WitnessChoice,
         at: usize,
     ) -> Result<String, QueryError> {
         outer.reserve(&inner);
@@ -34,18 +35,78 @@ impl Compiler<'_> {
         } else {
             format!("{}, ", pair.ctes.join(", "))
         };
-        let nearest = format!(
-            "{}, {}, {}",
-            pair.coarse,
-            pair.distance_key,
-            identity_sql(&inner, "i")
-        );
+        let witness_order = match pick {
+            WitnessChoice::Nearest => format!(
+                "{}, {}, {}",
+                pair.coarse,
+                pair.distance_key,
+                identity_sql(&inner, "i")
+            ),
+            WitnessChoice::FirstBy { keys } => {
+                if keys.is_empty() {
+                    return Err(order_invalid("pick first by requires a sort key", at));
+                }
+                let mut terms = vec![];
+                for key in keys {
+                    let exact_distance = matches!(&key.expression,
+                        Expression::Function { name, arguments } if name == "abs"
+                            && matches!(arguments.as_slice(), [Expression::Field { name }] if name == "match.distance"));
+                    let (sql, kind) = if exact_distance
+                        && !matches!(within, Some(Distance::Steps { .. }))
+                    {
+                        (pair.distance_key.clone(), ColKind::Text)
+                    } else {
+                        self.sql_expression_with(&key.expression, at, &mut |compiler, name, at| {
+                            match name {
+                                "match.distance" => {
+                                    Ok(if matches!(within, Some(Distance::Steps { .. })) {
+                                        (pair.distance.clone(), ColKind::Number)
+                                    } else {
+                                        (
+                                            format!("({}) * 1000.0", pair.distance),
+                                            ColKind::DurationSeconds,
+                                        )
+                                    })
+                                }
+                                "match.coarse" => Ok((pair.coarse.clone(), ColKind::Bool)),
+                                "match.id" => {
+                                    inner.field_on(compiler, "id", at, "i").or_else(|_| {
+                                        Ok((
+                                            format!("json_array({})", identity_sql(&inner, "i")),
+                                            ColKind::Text,
+                                        ))
+                                    })
+                                }
+                                _ => inner.field_on(compiler, name, at, "i"),
+                            }
+                        })?
+                    };
+                    scalar(kind, &key.expression.column(), at)?;
+                    terms.push(format!("({sql}) IS NULL"));
+                    terms.push(format!(
+                        "({sql}){}",
+                        if key.descending { " DESC" } else { "" }
+                    ));
+                }
+                terms.push(identity_sql(&inner, "i"));
+                terms.join(", ")
+            }
+        };
         let mut projections = vec!["r.*".into()];
         self.project_match(
             outer,
             &inner,
             &mut projections,
-            Some(pair.distance.as_str()),
+            within.map(|_| {
+                (
+                    pair.distance.as_str(),
+                    if matches!(within, Some(Distance::Steps { .. })) {
+                        ColKind::Number
+                    } else {
+                        ColKind::DurationSeconds
+                    },
+                )
+            }),
         );
         projections.push(format!(
             "CASE WHEN i.{} IS NOT NULL THEN 1 WHEN r.{} THEN NULL ELSE 0 END AS {}",
@@ -56,7 +117,7 @@ impl Compiler<'_> {
         outer.program.sql = format!(
             "WITH {ctes}{inner_name} AS MATERIALIZED (SELECT i.*, row_number() OVER (ORDER BY {}) AS {} FROM ({}) i), \
              {outer_name} AS MATERIALIZED (SELECT r.*, \
-             (SELECT i.{} FROM {inner_name} i WHERE ({}) ORDER BY {nearest} LIMIT 1) AS {}, \
+             (SELECT i.{} FROM {inner_name} i WHERE ({}) ORDER BY {witness_order} LIMIT 1) AS {}, \
              (({}) OR EXISTS (SELECT 1 FROM {inner_name} i WHERE ({}) IS NULL)) AS {} FROM ({}) r) \
              SELECT {} FROM {outer_name} r LEFT JOIN {inner_name} i ON i.{} = r.{} ORDER BY {}",
             qualified_order(&inner.program.order, "i"),
@@ -120,7 +181,27 @@ impl Compiler<'_> {
             outer,
             &inner,
             &mut projections,
-            matches!(on, JoinOn::Order { .. }).then_some(pair.distance.as_str()),
+            matches!(
+                on,
+                JoinOn::Order {
+                    within: Some(_),
+                    ..
+                }
+            )
+            .then_some((
+                pair.distance.as_str(),
+                if matches!(
+                    on,
+                    JoinOn::Order {
+                        within: Some(Distance::Steps { .. }),
+                        ..
+                    }
+                ) {
+                    ColKind::Number
+                } else {
+                    ColKind::DurationSeconds
+                },
+            )),
         );
         let mut identity = identity_columns(outer);
         for key in identity_columns(&inner) {
@@ -164,7 +245,7 @@ impl Compiler<'_> {
         outer: &mut Relation,
         inner: &Relation,
         projections: &mut Vec<String>,
-        distance: Option<&str>,
+        distance: Option<(&str, ColKind)>,
     ) {
         outer
             .program
@@ -206,14 +287,14 @@ impl Compiler<'_> {
                 key: slot,
             });
         }
-        if let Some(distance) = distance {
+        if let Some((distance, kind)) = distance {
             let slot = outer.slot();
             projections.push(format!("{distance} AS {}", column_sql(&slot)));
             let name = "match.distance".to_owned();
             outer.program.columns.retain(|prior| prior.name != name);
             outer.program.columns.push(Column {
                 name: name.clone(),
-                kind: ColKind::Number,
+                kind,
                 reference: None,
             });
             outer.program.column_slots.insert(name, slot);

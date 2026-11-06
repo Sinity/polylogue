@@ -210,10 +210,20 @@ impl Parameters {
                 self.expression(left, used, position)?;
                 self.query(query, used, position)?;
             }
-            ConditionKind::Order { query, within, .. } => {
+            ConditionKind::Order {
+                query,
+                within,
+                pick,
+                ..
+            } => {
                 self.query(query, used, position)?;
                 if let Some(within) = within {
                     self.distance(within, used, position)?;
+                }
+                if let WitnessChoice::FirstBy { keys } = pick {
+                    for key in keys {
+                        self.expression(&mut key.expression, used, position)?;
+                    }
                 }
             }
             ConditionKind::Compare { left, right, .. } => {

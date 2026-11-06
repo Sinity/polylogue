@@ -213,6 +213,134 @@ fn historical_read_positions_refuse_without_substituting_current_membership() {
 #[test]
 fn selections_accept_the_full_unsigned_count_domain() {
     let (_directory, fixture) = fixture();
-    assert_eq!(rows(&fixture, "sessions | limit 18446744073709551615 | fields id | sort by id").len(), 3);
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions | limit 18446744073709551615 | fields id | sort by id"
+        )
+        .len(),
+        3
+    );
     assert!(rows(&fixture, "sessions | offset 18446744073709551615").is_empty());
+}
+
+#[test]
+fn explicit_witness_choice_keeps_the_outer_row_and_uses_only_its_requested_order() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(directory.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "claude-code:outer",
+            ..Default::default()
+        })
+        .unwrap();
+    for (id, role, at) in [
+        ("claude-code:early", "user", 1000),
+        ("claude-code:late", "user", 9000),
+        ("claude-code:outer-message", "assistant", 10000),
+    ] {
+        fixture
+            .message(
+                session,
+                MessageFacts {
+                    id,
+                    role,
+                    written_by: "model",
+                    at: Some(at),
+                    cost_nusd: (id == "claude-code:early").then_some(1_000_000_000),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    fixture.derive().unwrap();
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions where id = claude-code:outer AND after(messages where role:user) within 20s | fields id, match.id, match.distance"
+        ),
+        [json!({"id":"claude-code:outer", "match.id":"claude-code:late", "match.distance":-1.0})]
+    );
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions where id = claude-code:outer AND after(messages where role:user) within 20s pick first by at | fields id, match.id, match.distance"
+        ),
+        [json!({"id":"claude-code:outer", "match.id":"claude-code:early", "match.distance":-9.0})]
+    );
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions where id = claude-code:outer AND after(messages where role:user) within 20s pick first by abs(match.distance) desc | fields match.id, abs(match.distance) as elapsed | where elapsed > 5s"
+        ),
+        [json!({"match.id":"claude-code:early", "elapsed":9.0})]
+    );
+    for direction in ["asc", "desc"] {
+        assert_eq!(
+            rows(
+                &fixture,
+                &format!(
+                    "sessions where id = claude-code:outer AND after(messages where role:user) within 20s pick first by cost {direction} | fields match.id"
+                )
+            ),
+            [json!({"match.id":"claude-code:early"})]
+        );
+    }
+}
+
+#[test]
+fn explicit_absolute_distance_choice_keeps_exact_nanosecond_ties() {
+    use polylogue_model::{Precision, TimeEvidence, TimeQuality, Timestamp};
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(directory.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "claude-code:precise",
+            ..Default::default()
+        })
+        .unwrap();
+    for (id, role, at) in [
+        ("claude-code:outer", "assistant", "1970-01-01T00:00:00Z"),
+        (
+            "claude-code:z-near",
+            "user",
+            "9999-12-30T00:00:00.000000001Z",
+        ),
+        (
+            "claude-code:a-far",
+            "user",
+            "9999-12-30T00:00:00.000000002Z",
+        ),
+    ] {
+        let message = fixture
+            .message(
+                session,
+                MessageFacts {
+                    id,
+                    role,
+                    written_by: "model",
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        fixture
+            .message_time(
+                message,
+                Some(Timestamp::parse_rfc3339(at).unwrap()),
+                TimeEvidence {
+                    quality: TimeQuality::Intrinsic,
+                    precision: Some(Precision::Instant),
+                    until: None,
+                },
+            )
+            .unwrap();
+    }
+    fixture.derive().unwrap();
+    assert_eq!(
+        rows(
+            &fixture,
+            "messages where id = claude-code:outer AND before(messages where role:user) within 3000000d pick first by abs(match.distance) | fields match.id"
+        ),
+        [json!({"match.id":"claude-code:z-near"})]
+    );
 }

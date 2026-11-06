@@ -78,10 +78,10 @@ impl Relation {
         if let Some(column) = self.program.columns.iter().find(|c| c.name == name) {
             let sql = format!("{alias}.{}", column_sql(self.program.column_slot(name)));
             return Ok((
-                if column.kind == ColKind::Money {
-                    format!("({sql}) * 1e9")
-                } else {
-                    sql
+                match column.kind {
+                    ColKind::Money => format!("({sql}) * 1e9"),
+                    ColKind::DurationSeconds => format!("({sql}) * 1000.0"),
+                    _ => sql,
                 },
                 column.kind,
             ));
@@ -449,6 +449,7 @@ impl<'a> Compiler<'a> {
                 within,
                 at,
                 scope,
+                pick,
             } => {
                 let inner = Relation::new(self.other_query(
                     query,
@@ -462,6 +463,7 @@ impl<'a> Compiler<'a> {
                     within.as_ref(),
                     *at,
                     scope.as_deref(),
+                    pick,
                     condition.span.start,
                 )?
             }
