@@ -1523,7 +1523,7 @@ fn keeping_again_preserves_unproven_policy_until_an_explicit_cast_establishes_it
     .unwrap_err();
     assert!(
         error.to_string().contains("logical matching policy"),
-        "{error}"
+        "{error:?}"
     );
     let cast = capture(&archive, "result:old-policy | fields text(cwd) as cwd");
     let metadata: OutputMetadata = serde_json::from_value(cast["output_metadata"].clone()).unwrap();
