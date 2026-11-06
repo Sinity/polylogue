@@ -365,8 +365,7 @@ impl Execution {
                         (
                             fixture
                                 .message_order(message_keys[&row.id])
-                                .map_err(error)?
-                                - 1,
+                                .map_err(error)?,
                             extent(message.at, message.time_evidence()),
                         )
                     };
