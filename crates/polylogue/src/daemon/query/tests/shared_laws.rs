@@ -47,16 +47,12 @@ impl laws::Compiler for Product {
         let Source::Unit { unit, .. } = &value.source else {
             return Err(error("law fixture has no native source unit"));
         };
-        let mut options = options(
-            if unit == "tool_calls" {
-                CHILD_FIELDS
-            } else {
-                OUTER_FIELDS
-            }
-            .iter()
-            .map(|name| (*name).into())
-            .collect(),
-        );
+        let requested = if unit == "tool_calls" {
+            CHILD_FIELDS
+        } else {
+            OUTER_FIELDS
+        };
+        let mut options = options(requested.iter().map(|name| (*name).into()).collect());
         let catalog = polylogue_query::catalog::catalog(&options.origins);
         let text = query_language::format::format_query(value, &catalog)?;
         let prepared = polylogue_query::compile(&text, &options).map_err(error)?;
@@ -117,6 +113,7 @@ struct Metadata {
 }
 struct Loaded {
     fixture: Fixture,
+    dataset: Dataset,
     metadata: BTreeMap<(String, String), Metadata>,
     parents: BTreeSet<String>,
     _directory: tempfile::TempDir,
@@ -124,12 +121,6 @@ struct Loaded {
 #[derive(Default)]
 struct Execution {
     loaded: Option<Loaded>,
-}
-fn number(value: Option<&Scalar>) -> Option<f64> {
-    match value {
-        Some(Scalar::Number(value)) => Some(*value),
-        _ => None,
-    }
 }
 fn tokens(value: Option<&Scalar>) -> Result<Option<u64>, Error> {
     match value {
@@ -254,6 +245,7 @@ impl Execution {
                         role: "assistant",
                         written_by: "model",
                         at: at.map(Timestamp::unix_ms),
+                        // Usage is a parent fact, before the abstract child rows.
                         seq: Some(-1),
                         ..Default::default()
                     },
@@ -313,8 +305,8 @@ impl Execution {
                     .usage(
                         message,
                         &Usage {
-                            input: number(parent.fields.get("input_tokens")).map(|_| 0),
-                            output: number(parent.fields.get("output_tokens")).map(|_| 0),
+                            input: tokens(parent.fields.get("input_tokens"))?.map(|_| 0),
+                            output: tokens(parent.fields.get("output_tokens"))?.map(|_| 0),
                             ..Default::default()
                         },
                         None,
@@ -390,6 +382,7 @@ impl Execution {
         }
         self.loaded = Some(Loaded {
             fixture,
+            dataset: dataset.clone(),
             metadata,
             parents: sessions.into_keys().collect(),
             _directory: directory,
@@ -468,7 +461,14 @@ impl laws::Executor<Plan> for Execution {
         fixture: &Dataset,
         request: &PageRequest,
     ) -> Result<laws::Page, Error> {
-        if request.cursor.is_none() {
+        // Each changed enumeration is installed through the native fixture.
+        // The three page sizes read that same immutable installation.
+        if request.cursor.is_none()
+            && self
+                .loaded
+                .as_ref()
+                .is_none_or(|loaded| loaded.dataset != *fixture)
+        {
             self.load(fixture)?;
         }
         let loaded = self.loaded.as_ref().expect("first page loaded fixture");
