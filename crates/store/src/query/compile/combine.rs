@@ -287,7 +287,7 @@ impl<'a> Compiler<'a> {
 }
 
 /// Moves the items of `more` not already in `list` to its end.
-fn join<T: PartialEq>(list: &mut Vec<T>, more: &mut Vec<T>) {
+pub(super) fn join<T: PartialEq>(list: &mut Vec<T>, more: &mut Vec<T>) {
     for item in more.drain(..) {
         if !list.contains(&item) {
             list.push(item);

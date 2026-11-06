@@ -15,6 +15,7 @@ pub use polylogue_query::{
 };
 use serde::Serialize;
 use std::collections::HashSet;
+use combine::join;
 
 mod combine;
 mod conditions;
@@ -485,6 +486,60 @@ pub(crate) enum FieldOp<'q> {
 fn column_sql(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
+fn not_built(what: &str) -> QueryError {
+    QueryError::NotBuilt {
+        what: what.to_owned(),
+    }
+}
+
+fn and_all(parts: &[String]) -> String {
+    if parts.is_empty() {
+        "1".into()
+    } else {
+        parts.join(" AND ")
+    }
+}
+
+/// The conditions joined to the rest of the `where` by AND, with
+/// parenthesized ANDs flattened.
+fn top_level(c: &Condition) -> Vec<Condition> {
+    match &c.kind {
+        ConditionKind::And { conditions: all } => all.iter().flat_map(top_level).collect(),
+        _ => vec![c.clone()],
+    }
+}
+
+/// Field names the top-level conditions name, `session.` prefixes removed
+/// for row units.
+fn named_fields(top: &[Condition], unit: Unit) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for c in top {
+        let f = match &c.kind {
+            ConditionKind::Match { field, .. } => field.as_str(),
+            ConditionKind::Reference { reference } => match reference.split_once(':') {
+                Some((field, _)) => field,
+                None => continue,
+            },
+            ConditionKind::Since { field, .. } | ConditionKind::Until { field, .. } => field,
+            ConditionKind::Compare { left, .. } | ConditionKind::Between { left, .. } => match left
+            {
+                Expression::Field { name } => name,
+                _ => continue,
+            },
+            _ => continue,
+        };
+        let f = f.to_ascii_lowercase();
+        let f = if unit != Unit::Sessions {
+            f.strip_prefix("session.").map(str::to_owned).unwrap_or(f)
+        } else {
+            f
+        };
+        out.insert(f);
+    }
+    out
+}
+
+/// Plain words search this unit.
 fn text_unit(unit: Unit) -> bool {
     match units::spec(unit).search {
         Search::Hits { words, .. } => words,
