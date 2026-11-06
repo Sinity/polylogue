@@ -188,6 +188,11 @@ impl<'a> Compiler<'a> {
         ];
         let mut columns = match_columns();
         let catalog = self.opts.catalog();
+        if catalog.field(unit.name(), "position").is_some() {
+            let (position, kind) = self.expr("position", &child, span.start)?;
+            select.push(format!("{position} AS {}", column_sql("step.position")));
+            columns.push(("step.position".into(), kind));
+        }
         for (name, expression, kind, _) in child_cols {
             if catalog.field(unit.name(), &name).is_some() {
                 let name = format!("step.{name}");

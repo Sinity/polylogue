@@ -150,6 +150,13 @@ fn step_order_counts_every_call_before_filtering_and_ignores_message_sequence_ga
         }
     }
     fixture.derive().unwrap();
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions where exists tool_call(command:last) | matches | fields step.command as command, step.position as ordinal"
+        ),
+        [json!({"command":"last", "ordinal":3})]
+    );
     assert!(rows(&fixture, "tool_calls where command = first AND before(tool_calls where command = last) within 1 step").is_empty());
     assert_eq!(
         rows(

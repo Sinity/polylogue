@@ -79,7 +79,11 @@ fn any_of(x: &Call<'_, '_>, parts: Vec<String>) -> Result<String, QueryError> {
 }
 
 pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    if !x.top || x.span.start >= c.transforms_start || c.near_request.is_some() {
+    if !x.top
+        || !c.source_near_allowed
+        || x.span.start >= c.transforms_start
+        || c.near_request.is_some()
+    {
         return Err(QueryError::Invalid {
             message:
                 "similar: ranks the whole query, so it appears once among the top-level conditions"

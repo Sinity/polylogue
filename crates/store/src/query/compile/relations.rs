@@ -284,6 +284,7 @@ impl<'a> Compiler<'a> {
         let mut compiler = Compiler::new(self.text, self.opts);
         compiler.saved_stack = self.saved_stack.clone();
         compiler.query_scope = self.query_scope.clone();
+        compiler.source_near_allowed = self.source_near_allowed;
         compiler.catalog = self.catalog.clone();
         self.near_needed = source_order_needed(query);
         let mut program = self.native_program_with(&prefix, preset)?;
@@ -1337,6 +1338,7 @@ impl Compiler<'_> {
         compiler.catalog = self.catalog.clone();
         compiler.params = std::mem::take(&mut self.params);
         compiler.input_rows = Some(keys);
+        compiler.source_near_allowed = false;
         let mut program = compiler.program(&query)?;
         self.params = std::mem::take(&mut program.params);
         join(&mut program.notes, &mut relation.program.notes);

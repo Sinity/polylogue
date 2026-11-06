@@ -178,7 +178,7 @@ impl Compiler<'_> {
                     predicate: format!("({left}) = ({right})"),
                     distance: "NULL".into(),
                     distance_key: "NULL".into(),
-                    coarse: "0".into(),
+                    coarse: "(0 + 0)".into(),
                     outer_unknown: "0".into(),
                 }
             }
@@ -345,7 +345,7 @@ impl Compiler<'_> {
                 ),
                 distance_key: format!("abs({distance})"),
                 distance,
-                coarse: "0".into(),
+                coarse: "(0 + 0)".into(),
                 outer_unknown: format!("({}) IS NULL", left.1),
             });
         }
