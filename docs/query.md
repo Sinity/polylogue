@@ -50,6 +50,7 @@ Each unit declares, once, its rows, key and identity, default filters, default o
 | `messages`, `blocks`, `tool_calls`, `documents`, `attachments`, `events`, `links`, `turns`, `files` | as parsed ([sessions.md](sessions.md)) |
 | `pastes` | paste spans: content hash, source of the span, state, message and session; `group by hash` gives repeats |
 | `assertions` | assertions ([assertions.md](assertions.md)) |
+| `imported_notes` | original note rows from imported archives written before the version 1 baseline |
 | `variants` | variants and their parts ([assertions.md](assertions.md#variants)) |
 | `deliveries` | deliveries ([agents.md](agents.md#deliveries)) |
 | `changes` | the change feed as rows |
@@ -310,3 +311,19 @@ request, supplies the unchanged invocation hash. Raw run reads expose that
 evidence. These records supply no current execution binding, and their positions
 are never interpreted as current page cursors. Current executions cannot create a
 retired binding without its exact versioned source proof.
+
+### Original notes from imported archives
+
+`imported_notes` reads the original Notes corpus kept by `import --from-archive`.
+It retains raw text values (including JSON spelling), original IDs, targets,
+writer times and write-counter currency. It includes original kinds that have
+no current assertion counterpart. Current assertion writes belong to
+`assertions`; they do not add rows to this historical source.
+
+The rows parser reads the immutable `archive.db!/rows.jsonl` input and emits
+ordinary source events. Their input, chain and record byte ranges retain the
+provenance. The read projection rebuilds from those facts without the older
+archive folder. Older imports recorded as kept files acquire this reading on
+an ordinary parse pass; their bytes and acquisition metadata remain unchanged.
+An imported note's semantic identity includes its input and original note ID,
+so two imported archives cannot merge different rows that reused an ID.

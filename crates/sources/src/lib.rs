@@ -29,6 +29,7 @@ pub mod hermes;
 pub mod hook_spool;
 pub mod lines;
 pub mod locations;
+pub mod older_archive_rows;
 pub mod openai_chat;
 pub mod openrouter;
 pub mod origin;
