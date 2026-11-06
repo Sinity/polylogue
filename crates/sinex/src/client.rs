@@ -32,6 +32,8 @@ pub(crate) struct Client {
     consumer: Option<async_nats::jetstream::consumer::PullConsumer>,
     pending: Vec<async_nats::jetstream::Message>,
     spool: std::sync::Arc<std::sync::Mutex<crate::spool::Spool>>,
+    publication: sinex_transport::backup::Publication,
+    _backup: sinex_transport::backup::Participant,
 }
 
 impl Client {
@@ -96,6 +98,29 @@ impl Client {
             health.family = Some(family.clone());
         }
         let max_message = client.server_info().max_payload;
+        let publication = sinex_transport::backup::Publication::default();
+        let backup_spool = std::sync::Arc::clone(&spool);
+        let backup = sinex_transport::backup::Participant::start(
+            client.clone(),
+            subjects.clone(),
+            config.producer.clone(),
+            publication.clone(),
+            std::sync::Arc::new(move || {
+                let pinned = backup_spool
+                    .lock()
+                    .map_err(|_| "producer spool panicked".to_string())?
+                    .pin_backup()
+                    .map_err(|error| error.to_string())?;
+                let directory = tempfile::Builder::new()
+                    .prefix(".backup-acquired-")
+                    .tempdir_in(pinned.path().parent().expect("snapshot parent"))
+                    .map_err(|error| error.to_string())?;
+                let files = sinex_transport::backup::capture_tree(pinned.path(), directory.path())?;
+                Ok(sinex_transport::backup::Captured { directory, files })
+            }),
+        )
+        .await
+        .map_err(Error::Invalid)?;
         let mut connected = Self {
             client,
             subjects,
@@ -110,6 +135,8 @@ impl Client {
             consumer: None,
             pending: Vec::new(),
             spool,
+            publication,
+            _backup: backup,
         };
         let declarations = crate::kinds::declarations(&family);
         let hashes: Vec<_> = declarations
@@ -215,6 +242,9 @@ impl Client {
         &mut self,
         prepared: crate::spool::Prepared,
     ) -> Result<Acknowledgment> {
+        // Freeze waits for transmission and durable receipt publication as one
+        // unit. Capture may append new spool operations while this waits.
+        let _publication = self.publication.enter().await;
         let (receipt, frame, body) = {
             let spool = self
                 .spool

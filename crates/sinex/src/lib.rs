@@ -173,7 +173,10 @@ impl Sinex {
                 "a configured host identity is required".into(),
             ));
         }
-        let runtime = tokio::runtime::Builder::new_current_thread()
+        // Backup control must remain responsive while the synchronous archive
+        // loop is idle. One runtime worker also drives the NATS connection.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
             .enable_all()
             .build()?;
         let spool = Arc::new(Mutex::new(spool::Spool::open(

@@ -45,6 +45,24 @@ What a host keeps locally in primary mode:
 
 There is no local ledger of inputs, no local segment log and no send cursor. The Sinex adapter is a Cargo feature outside the default build.
 
+### Online backup
+
+Polylogue participates in Sinex's producer backup cut. Before Sinex fixes its
+core position, the producer freezes transmission through durable acknowledgment
+and freezes confirmed-stream spool retirement. Capture continues preparing new
+operations. After the core cut, Polylogue pins the accepted spool operations
+under the queue mutex, including acquisition groups, original encoded frame and
+body bytes, immutable identities and receipts. It copies and hashes those pinned
+files outside the mutex into the acquired producer artifact, then releases the
+freeze through Sinex's participant protocol. Rebuildable indexes and unpublished
+temporary operations are excluded.
+
+The producer artifact restores under the same producer identity alongside its
+paired core cut. Receipts in that artifact precede the core cut; operations
+without receipts retry their original identities. A later live spool or a
+producer label alone cannot replace this artifact. A missing participant leaves
+producer custody incomplete.
+
 **Reads see what Sinex committed.** A write becomes visible to queries once its record arrives on the confirmed stream and is applied. The stale-base check of an authored write is the one exception: it runs against the applied position plus this host's prepared writes not yet confirmed, so two quick revisions on one host (an MCP memory `create` followed by `str_replace`) see each other ([assertions.md#currency](assertions.md#currency)).
 
 ## Write identity

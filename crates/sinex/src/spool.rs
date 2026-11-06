@@ -334,7 +334,65 @@ impl PinnedCapture {
     }
 }
 
+fn pin_backup_tree(source: &Path, destination: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(source)?;
+    if metadata.is_file() {
+        fs::hard_link(source, destination)?;
+    } else if metadata.is_dir() {
+        fs::create_dir(destination)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            // Atomic publication leaves preparing directories invisible to a
+            // reopened spool; preserve that same cut in its backup.
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with('.'))
+            {
+                continue;
+            }
+            pin_backup_tree(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+        sync(destination)?;
+    } else {
+        return invalid("producer backup contains a non-regular member");
+    }
+    Ok(())
+}
+
 impl Spool {
+    /// Pin the complete accepted queue while its mutex is held. Payloads and
+    /// receipts are immutable files, so links retain their original encoded
+    /// bytes after ordinary retirement unlinks the live operations. Acquisitions
+    /// published after this cut are absent; partially staged acquisitions are
+    /// never included. The caller hashes/copies the pinned files outside the
+    /// queue mutex, allowing acquisition to continue.
+    pub(crate) fn pin_backup(&self) -> Result<tempfile::TempDir> {
+        let pinned = tempfile::Builder::new()
+            .prefix(".backup-cut-")
+            .tempdir_in(self.root.parent().expect("producer spool parent"))?;
+        let target = pinned
+            .path()
+            .join("producer-spool")
+            .join(self.root.file_name().expect("producer spool identity"));
+        fs::create_dir_all(target.join("operations"))?;
+        for entry in fs::read_dir(self.root.join("operations"))? {
+            let entry = entry?;
+            if !entry.file_name().to_str().is_some_and(hex_name) {
+                continue;
+            }
+            pin_backup_tree(
+                &entry.path(),
+                &target.join("operations").join(entry.file_name()),
+            )?;
+        }
+        sync(&target.join("operations"))?;
+        sync(&target)?;
+        sync(target.parent().expect("snapshot spool parent"))?;
+        sync(pinned.path())?;
+        Ok(pinned)
+    }
+
     pub fn open(store: &Path, producer: &str) -> Result<Self> {
         let root = store.join("producer-spool").join(hash(producer.as_bytes()));
         fs::create_dir_all(root.join("operations"))?;

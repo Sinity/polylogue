@@ -364,6 +364,9 @@ impl Client {
     }
 
     pub(crate) async fn acknowledge(&mut self, state: &ReplayState) -> Result<()> {
+        // A confirmed delivery may retire original producer bytes. Freeze must
+        // cover that retirement until its immutable queue cut is acquired.
+        let _publication = self.publication.enter().await;
         for message in &self.pending {
             let info = message
                 .info()

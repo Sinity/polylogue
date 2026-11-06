@@ -25,6 +25,93 @@ fn events(identity: &str, value: &str) -> Ingress {
 }
 
 #[test]
+fn producer_backup_cut_keeps_original_frames_after_live_retirement() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    let first = spool.prepare(events("before-core-cut", "first")).unwrap();
+    let receipt: Acknowledgment = serde_json::from_value(serde_json::json!({
+        "number":1,"frame":first.identity,"material":null,"admitted":[],
+        "outcome":{},"refusal":null,"commit_seq":10
+    }))
+    .unwrap();
+    spool.acknowledge(receipt.clone()).unwrap();
+    let pending = spool
+        .prepare(events("after-core-cut", "retained original"))
+        .unwrap();
+    let encoded = fs::read(
+        spool
+            .operation(&pending.identity)
+            .unwrap()
+            .join("frame.zst"),
+    )
+    .unwrap();
+    let pinned = spool.pin_backup().unwrap();
+
+    // Ordinary capture and retirement continue after pinning. Neither can
+    // change the bounded producer artifact or its original retry identities.
+    spool
+        .prepare(events("after-producer-cut", "later"))
+        .unwrap();
+    spool.retire(10).unwrap();
+    assert!(spool.get(&first.identity).unwrap().is_none());
+    let restored = Spool::open(pinned.path(), "host").unwrap();
+    assert_eq!(
+        restored.acknowledgment(&first.identity).unwrap(),
+        Some(receipt)
+    );
+    assert!(restored.get("after-producer-cut").unwrap().is_none());
+    let retry = restored.get(&pending.identity).unwrap().unwrap();
+    assert!(retry.phase.is_pending());
+    assert_eq!(retry.identity, pending.identity);
+    assert_eq!(
+        fs::read(
+            restored
+                .operation(&retry.identity)
+                .unwrap()
+                .join("frame.zst")
+        )
+        .unwrap(),
+        encoded
+    );
+}
+
+#[test]
+fn producer_backup_keeps_group_material_encoding_after_confirmed_retirement() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    let bytes = b"original provider bytes";
+    spool
+        .prepare_material(material("raw", bytes), bytes.as_slice())
+        .unwrap();
+    spool.acknowledge(ack("raw", true, None)).unwrap();
+    spool
+        .prepare_group(events("group", "facts"), &["raw".into()])
+        .unwrap();
+    spool.acknowledge(ack("group", false, Some(10))).unwrap();
+    let encoded = fs::read(spool.operation("raw").unwrap().join("body.zst")).unwrap();
+    let pinned = spool.pin_backup().unwrap();
+    spool.retire(10).unwrap();
+    assert!(spool.get("raw").unwrap().is_none());
+    assert!(spool.get("group").unwrap().is_none());
+    let restored = Spool::open(pinned.path(), "host").unwrap();
+    assert_eq!(
+        fs::read(restored.operation("raw").unwrap().join("body.zst")).unwrap(),
+        encoded
+    );
+    let mut decoded = Vec::new();
+    restored
+        .body("raw")
+        .unwrap()
+        .read_to_end(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, bytes);
+    assert_eq!(
+        restored.capture_group("raw").unwrap().unwrap().identity,
+        "group"
+    );
+}
+
+#[test]
 fn named_prefix_lookup_reads_only_matching_operations_and_survives_restart() {
     let directory = tempfile::tempdir().unwrap();
     let spool = Spool::open(directory.path(), "host").unwrap();

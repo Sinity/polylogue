@@ -21,7 +21,7 @@ sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "b609f3efa8e2e
 sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "b609f3efa8e2e708b564c23990494478fd6568b5" }
 sinex-model = { git = "https://github.com/Sinity/sinex", rev = "b609f3efa8e2e708b564c23990494478fd6568b5" }
 async-nats = "0.47"
-tokio = { workspace = true, features = ["rt", "time", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros"] }
 futures-util = "0.3"
 uuid.workspace = true
 serde.workspace = true
