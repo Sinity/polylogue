@@ -102,92 +102,11 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         at: usize,
     ) -> Result<Vec<(String, String, ColKind)>, QueryError> {
-        let col = f.column();
-        if !f.function.arguments().contains(&f.arguments.len()) {
-            return Err(QueryError::Invalid {
-                message: format!(
-                    "{} received the wrong number of arguments",
-                    f.function.name()
-                ),
-                position: at,
-            });
-        }
-        if f.arguments.is_empty() {
-            return Ok(vec![(col, "count(*)".into(), ColKind::Number)]);
-        }
-        let inputs = f
-            .arguments
-            .iter()
-            .map(|argument| self.sql_expression(argument, scope, at))
-            .collect::<Result<Vec<_>, _>>()?;
-        let (expr, kind) = &inputs[0];
-        let kind = *kind;
-        if !matches!(
-            f.function,
-            AggregateFunction::Count
-                | AggregateFunction::CountDistinct
-                | AggregateFunction::Histogram
-        ) {
-            for ((_, kind), argument) in inputs.iter().zip(&f.arguments) {
-                scalar(*kind, &argument.column(), at)?;
-            }
-        }
-        let value = |sql: String, kind| {
-            if kind == ColKind::Money {
-                format!("({sql}) / 1e9")
-            } else {
-                sql
-            }
-        };
-        let (sql, result_kind) = match &f.function {
-            AggregateFunction::Count => (format!("count({expr})"), ColKind::Number),
-            AggregateFunction::CountDistinct => {
-                (format!("count(DISTINCT {expr})"), ColKind::Number)
-            }
-            AggregateFunction::Sum => (value(format!("sum({expr})"), kind), kind),
-            AggregateFunction::Avg => (value(format!("avg({expr})"), kind), kind),
-            AggregateFunction::Min => (value(format!("min({expr})"), kind), kind),
-            AggregateFunction::Max => (value(format!("max({expr})"), kind), kind),
-            AggregateFunction::Percentile(p) => {
-                (value(format!("pl_percentile({expr}, {p})"), kind), kind)
-            }
-            AggregateFunction::Covered => {
-                let (end, end_kind) = &inputs[1];
-                if *end_kind != kind {
-                    return Err(QueryError::Invalid {
-                        message: "covered endpoints require the same dimension".into(),
-                        position: at,
-                    });
-                }
-                let result_kind = if kind == ColKind::Time {
-                    ColKind::Duration
-                } else {
-                    kind
-                };
-                (
-                    value(format!("pl_covered({expr}, {end})"), result_kind),
-                    result_kind,
-                )
-            }
-            AggregateFunction::Correlation => (
-                format!("pl_correlation({expr}, {})", inputs[1].0),
-                ColKind::Number,
-            ),
-            AggregateFunction::Histogram => (
-                format!("pl_histogram({expr}, '{}')", column_kind_name(kind)),
-                ColKind::Json,
-            ),
-        };
-        let mut out = vec![(col, sql, result_kind)];
-        for (argument, (sql, _)) in f.arguments.iter().zip(&inputs) {
-            if let Expression::Field { .. } = argument {
-                let name = format!("unknown_{}", argument.column());
-                if !out.iter().any(|(prior, _, _)| prior == &name) {
-                    out.push((name, format!("count(*) - count({sql})"), ColKind::Number));
-                }
-            }
-        }
-        if let Expression::Field { name: field } = &f.arguments[0] {
+        let mut out = self.agg_with(f, at, &mut |compiler, field, at| {
+            compiler.expr(field, scope, at)
+        })?;
+        if let Some(Expression::Field { name: field }) = f.arguments.first() {
+            let (expr, _) = self.sql_expression(&f.arguments[0], scope, at)?;
             let field = field.as_str();
             let flat_field = flat(field);
             if scope.unit == Unit::Sessions {
@@ -265,6 +184,103 @@ impl<'a> Compiler<'a> {
                         format!("count(CASE WHEN ({expr}) IS NOT NULL AND {partial} THEN 1 END)"),
                         ColKind::Number,
                     ));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub(super) fn agg_with<F>(
+        &mut self,
+        f: &Aggregate,
+        at: usize,
+        field: &mut F,
+    ) -> Result<Vec<(String, String, ColKind)>, QueryError>
+    where
+        F: FnMut(&mut Self, &str, usize) -> Result<(String, ColKind), QueryError>,
+    {
+        let col = f.column();
+        if !f.function.arguments().contains(&f.arguments.len()) {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "{} received the wrong number of arguments",
+                    f.function.name()
+                ),
+                position: at,
+            });
+        }
+        if f.arguments.is_empty() {
+            return Ok(vec![(col, "count(*)".into(), ColKind::Number)]);
+        }
+        let inputs = f
+            .arguments
+            .iter()
+            .map(|argument| self.sql_expression_with(argument, at, field))
+            .collect::<Result<Vec<_>, _>>()?;
+        let (expr, kind) = &inputs[0];
+        let kind = *kind;
+        if !matches!(
+            f.function,
+            AggregateFunction::Count
+                | AggregateFunction::CountDistinct
+                | AggregateFunction::Histogram
+        ) {
+            for ((_, kind), argument) in inputs.iter().zip(&f.arguments) {
+                scalar(*kind, &argument.column(), at)?;
+            }
+        }
+        let value = |sql: String, kind| {
+            if kind == ColKind::Money {
+                format!("({sql}) / 1e9")
+            } else {
+                sql
+            }
+        };
+        let (sql, result_kind) = match &f.function {
+            AggregateFunction::Count => (format!("count({expr})"), ColKind::Number),
+            AggregateFunction::CountDistinct => {
+                (format!("count(DISTINCT {expr})"), ColKind::Number)
+            }
+            AggregateFunction::Sum => (value(format!("sum({expr})"), kind), kind),
+            AggregateFunction::Avg => (value(format!("avg({expr})"), kind), kind),
+            AggregateFunction::Min => (value(format!("min({expr})"), kind), kind),
+            AggregateFunction::Max => (value(format!("max({expr})"), kind), kind),
+            AggregateFunction::Percentile(p) => {
+                (value(format!("pl_percentile({expr}, {p})"), kind), kind)
+            }
+            AggregateFunction::Covered => {
+                let (end, end_kind) = &inputs[1];
+                if *end_kind != kind {
+                    return Err(QueryError::Invalid {
+                        message: "covered endpoints require the same dimension".into(),
+                        position: at,
+                    });
+                }
+                let result_kind = if kind == ColKind::Time {
+                    ColKind::Duration
+                } else {
+                    kind
+                };
+                (
+                    value(format!("pl_covered({expr}, {end})"), result_kind),
+                    result_kind,
+                )
+            }
+            AggregateFunction::Correlation => (
+                format!("pl_correlation({expr}, {})", inputs[1].0),
+                ColKind::Number,
+            ),
+            AggregateFunction::Histogram => (
+                format!("pl_histogram({expr}, '{}')", column_kind_name(kind)),
+                ColKind::Json,
+            ),
+        };
+        let mut out = vec![(col, sql, result_kind)];
+        for (argument, (sql, _)) in f.arguments.iter().zip(&inputs) {
+            if let Expression::Field { .. } = argument {
+                let name = format!("unknown_{}", argument.column());
+                if !out.iter().any(|(prior, _, _)| prior == &name) {
+                    out.push((name, format!("count(*) - count({sql})"), ColKind::Number));
                 }
             }
         }
