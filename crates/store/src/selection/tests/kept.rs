@@ -202,6 +202,6 @@ fn kept_join_and_aggregate_use_captured_numeric_slots() {
             &f,
             "sessions | join (result:numbers) on id = id | agg sum(match.input_tokens) as total"
         ),
-        [json!({"total":9.0,"unknown_match.input_tokens":0})]
+        [json!({"total":9.0,"unknown_match_input_tokens":0})]
     );
 }
