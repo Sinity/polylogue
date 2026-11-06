@@ -594,3 +594,35 @@ fn natural_text_matches_read_the_input_alias_beside_a_new_order_witness() {
         );
     }
 }
+
+#[test]
+fn grouped_reference_values_keep_field_metadata_without_native_row_targets() {
+    use crate::selection::{RowIdentity, SelectionError};
+    use std::ops::ControlFlow;
+    let (_directory, fixture) = fixture();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    for text in ["sessions | group by id", "sessions | agg min(id)"] {
+        let prepared = reader.prepare_selection(text, &opts(&[])).unwrap();
+        assert_eq!(
+            prepared.program().columns[0].reference,
+            Some(ColumnReference::Session)
+        );
+        let mut seen = 0;
+        reader
+            .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+                assert!(row.target.is_none(), "{text}");
+                assert!(
+                    matches!(
+                        row.identity,
+                        Some(RowIdentity::Group { .. } | RowIdentity::Summary)
+                    ),
+                    "{text}"
+                );
+                seen += 1;
+                Ok(ControlFlow::Continue(()))
+            })
+            .unwrap();
+        assert!(seen > 0);
+    }
+}

@@ -151,20 +151,44 @@ fn a_saved_query_that_cannot_stand_there_is_refused() {
 
 #[test]
 fn sort_takes_tie_breaking_keys() {
-    let p = c("sessions | sort by live_rank, last_event_at desc");
-    let directions: Vec<bool> = p.order.iter().map(|k| k.descending).collect();
-    assert_eq!(directions, [false, false, false, true, false]);
-    let term = |n: usize| {
-        let end = p.sql.find(&format!(" AS _o{n},")).expect("order column");
-        &p.sql[..end]
-    };
-    assert!(term(1).ends_with("'rank'))"), "live_rank first: {}", p.sql);
-    assert!(
-        term(3).ends_with("live_last_at)"),
-        "then last_event_at: {}",
-        p.sql
+    use crate::fixture::{Fixture, SessionFacts};
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(directory.path()).unwrap();
+    let now = opts(&[]).clock.now.as_millisecond();
+    for (id, elapsed, wait) in [
+        ("claude-code:d", 3000, None),
+        ("claude-code:c", 2000, Some("permission")),
+        ("claude-code:b", 1000, None),
+        ("claude-code:a", 1000, None),
+    ] {
+        let session = fixture
+            .session(SessionFacts {
+                id,
+                ..Default::default()
+            })
+            .unwrap();
+        fixture
+            .live(session, "hook_stop", now - elapsed, wait, None)
+            .unwrap();
+    }
+    let program = c("sessions | sort by live_rank, last_event_at desc | fields id");
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut rows = reader.query_rows(&program).unwrap();
+    for row in &mut rows {
+        crate::query::execute::present(&program, row).unwrap();
+    }
+    let ids: Vec<_> = rows.iter().map(|row| row["id"].as_str().unwrap()).collect();
+    assert_eq!(
+        ids,
+        [
+            "claude-code:c",
+            "claude-code:a",
+            "claude-code:b",
+            "claude-code:d"
+        ]
     );
-    assert!(compile_err("sessions | group by repo | sort by count, repo").contains("one key"));
+    c("sessions | group by repo | sort by count, repo");
 }
 
 #[test]
@@ -307,13 +331,18 @@ fn column_references_follow_fields_and_projection_owners() {
     assert_eq!(projected["id"], Some(ColumnReference::Message));
     assert_eq!(projected["session_id"], Some(ColumnReference::Session));
     assert_eq!(projected["session_title"], None);
-    for query in [
-        "sessions | group by id",
-        "documents | group by id",
-        "sessions | agg min(id)",
+    for (query, field, reference) in [
+        ("sessions | group by id", "id", ColumnReference::Session),
+        ("documents | group by id", "id", ColumnReference::Document),
+        ("sessions | agg min(id)", "min_id", ColumnReference::Session),
     ] {
+        let program = c(query);
+        assert_eq!(kinds(program.clone())[field], Some(reference), "{query}");
         assert!(
-            c(query).columns.iter().all(|c| c.reference.is_none()),
+            matches!(
+                program.row_basis,
+                RowBasis::Group { .. } | RowBasis::Summary
+            ),
             "{query}"
         );
     }
@@ -339,13 +368,12 @@ fn kept_rows_preserve_only_recorded_reference_metadata() {
             .reference,
         Some(ColumnReference::Document)
     );
-    assert!(
-        compile("result:docs | group by id", &options)
-            .unwrap()
-            .columns
-            .iter()
-            .all(|c| c.reference.is_none())
+    let grouped = compile("result:docs | group by id", &options).unwrap();
+    assert_eq!(
+        grouped.columns[0].reference,
+        Some(ColumnReference::Document)
     );
+    assert!(matches!(grouped.row_basis, RowBasis::Group { .. }));
     let fields = [("name", "id"), ("kind", "text")].into_iter();
     let without_reference: Column =
         serde::Deserialize::deserialize(serde::de::value::MapDeserializer::<
@@ -377,12 +405,9 @@ fn kept_rows_preserve_only_recorded_reference_metadata() {
             match_columns: vec![],
         },
     );
-    assert!(
-        compile("result:group", &options)
-            .unwrap()
-            .columns
-            .iter()
-            .all(|c| c.reference.is_none())
+    assert_eq!(
+        compile("result:group", &options).unwrap().columns[0].reference,
+        Some(ColumnReference::Session)
     );
 }
 
@@ -409,6 +434,7 @@ fn near_builds_only_when_an_answer_needs_ranking() {
             "similar:dates | limit 1 | count",
             "similar:dates | limit 1 | measure sessions",
             "similar:dates | union (origin:codex)",
+            "similar:dates | group by origin | first 1 | count",
         ] {
             let program = compile(text, &options).unwrap();
             assert_eq!(program.near.is_some(), embeddings, "{text}");

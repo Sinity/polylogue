@@ -51,6 +51,9 @@ impl<'a> Compiler<'a> {
             self.rank = rank;
             why.push((self.text[c.span.start..c.span.end].to_owned(), alone));
         }
+        if !self.near_needed {
+            self.near_request = None;
+        }
         let mut order: Option<Vec<String>> = None;
         let mut matched = preset;
         let mut measure: Option<Measure> = None;

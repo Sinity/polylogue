@@ -430,6 +430,7 @@ pub(crate) struct Compiler<'a> {
     /// A semantic ranking requested by the source conditions, built only
     /// when rows must be ordered.
     near_request: Option<(Near, RowContext)>,
+    near_needed: bool,
     /// An unavailable semantic order affects the answer or an earlier selection.
     near_unavailable: bool,
     /// Conditions at or after this position belong to a stage.
@@ -472,6 +473,7 @@ impl<'a> Compiler<'a> {
             near: None,
             definitions: vec![],
             near_request: None,
+            near_needed: true,
             near_unavailable: false,
             transforms_start: usize::MAX,
         }

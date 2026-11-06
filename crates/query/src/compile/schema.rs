@@ -165,7 +165,7 @@ pub(crate) fn output_metadata(
                 };
                 let native = crate::units::Unit::from_name(unit)
                     .ok_or_else(|| error("unknown matched unit"))?;
-                let names = ["parent", "match", "position", "step"]
+                let names = ["parent", "match", "position", "step", "step.position"]
                     .into_iter()
                     .map(str::to_owned)
                     .chain(

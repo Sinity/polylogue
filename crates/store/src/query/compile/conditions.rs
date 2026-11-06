@@ -220,15 +220,10 @@ impl<'a> Compiler<'a> {
                                 .flatten()
                         })
                         .is_some_and(|field| {
-                            field.compile.is_some()
-                                || matches!(
-                                    field.kind,
-                                    Kind::Number
-                                        | Kind::Money
-                                        | Kind::Duration
-                                        | Kind::Time
-                                        | Kind::Special
-                                )
+                            matches!(
+                                field.kind,
+                                Kind::Number | Kind::Money | Kind::Duration | Kind::Time
+                            )
                         })
                         || self
                             .expr(name, scope, c.span.start)

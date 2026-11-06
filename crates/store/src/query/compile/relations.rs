@@ -104,17 +104,16 @@ impl Relation {
                         unit: source.unit,
                         a: compiler.fresh(),
                     };
-                    if let Ok((value, kind)) = compiler.expr(field, &context, at) {
-                        let key = context.a.expand(units::spec(source.unit).key);
-                        return Ok((
-                            format!(
-                                "(SELECT {value} FROM {} WHERE {key} = {alias}.{})",
-                                base_from(source.unit, &context.a),
-                                column_sql(&source.key)
-                            ),
-                            kind,
-                        ));
-                    }
+                    let (value, kind) = compiler.expr(field, &context, at)?;
+                    let key = context.a.expand(units::spec(source.unit).key);
+                    return Ok((
+                        format!(
+                            "(SELECT {value} FROM {} WHERE {key} = {alias}.{})",
+                            base_from(source.unit, &context.a),
+                            column_sql(&source.key)
+                        ),
+                        kind,
+                    ));
                 }
             }
         }
@@ -199,6 +198,48 @@ pub(super) fn as_of_unavailable() -> QueryError {
     }
 }
 
+fn source_order_needed(query: &Query) -> bool {
+    let mut inherited = true;
+    let mut group_input = None;
+    for stage in &query.transforms {
+        match &stage.kind {
+            TransformKind::Group { .. } => {
+                group_input = Some(inherited);
+                inherited = false;
+                continue;
+            }
+            TransformKind::First { .. } if group_input.is_some() => {
+                inherited = group_input.take().expect("group input order");
+                if inherited {
+                    return true;
+                }
+            }
+            TransformKind::Limit { .. }
+            | TransformKind::Offset { .. }
+            | TransformKind::First { .. } => {
+                if inherited {
+                    return true;
+                }
+            }
+            TransformKind::Sort { .. }
+            | TransformKind::Aggregate { .. }
+            | TransformKind::Scope { .. }
+            | TransformKind::Matches => inherited = false,
+            TransformKind::Extension { name, .. } if name == polylogue_query::catalog::MEASURE => {
+                inherited = false
+            }
+            TransformKind::Diff { .. } => return true,
+            TransformKind::Combine {
+                how: Combination::Union | Combination::Fuse,
+                ..
+            } => inherited = true,
+            _ => {}
+        }
+        group_input = None;
+    }
+    inherited
+}
+
 fn relational(kind: &TransformKind) -> bool {
     matches!(
         kind,
@@ -220,7 +261,7 @@ fn relational(kind: &TransformKind) -> bool {
 
 impl<'a> Compiler<'a> {
     pub(super) fn program_with(
-        self,
+        mut self,
         query: &Query,
         preset: Option<MatchRel>,
     ) -> Result<Program, QueryError> {
@@ -244,6 +285,7 @@ impl<'a> Compiler<'a> {
         compiler.saved_stack = self.saved_stack.clone();
         compiler.query_scope = self.query_scope.clone();
         compiler.catalog = self.catalog.clone();
+        self.near_needed = source_order_needed(query);
         let mut program = self.native_program_with(&prefix, preset)?;
         compiler.params = std::mem::take(&mut program.params);
         compiler.near = program.near.clone();
@@ -270,6 +312,12 @@ impl<'a> Compiler<'a> {
             self.relation_where(&mut relation, condition, scope.as_ref())?;
         }
         for (index, stage) in query.transforms.iter().enumerate().skip(first) {
+            if relation.program.measure.is_some() {
+                return Err(QueryError::Invalid {
+                    message: "`| measure WHAT` is the last stage".into(),
+                    position: stage.span.start,
+                });
+            }
             self.relation_stage(&mut relation, stage, query, index)?;
         }
         if !self.ctes.is_empty() {
@@ -1262,7 +1310,7 @@ impl Compiler<'_> {
         } else {
             return Err(QueryError::Invalid {
                 message: format!(
-                    "{} has no native relation to {}",
+                    "{} has no native relation to {}; there is no implicit session association",
                     source.unit.name(),
                     target.name()
                 ),

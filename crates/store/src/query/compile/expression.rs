@@ -500,7 +500,6 @@ impl Compiler<'_> {
         };
         Ok(format!("{function}({left}, {right})"))
     }
-
 }
 fn expression_arity(name: &str, count: usize, at: usize) -> QueryError {
     QueryError::Invalid {
