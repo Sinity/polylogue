@@ -384,7 +384,7 @@ impl<'a> Compiler<'a> {
                     "SELECT * FROM ({}) r ORDER BY {} LIMIT {}",
                     relation.program.sql,
                     relation_order(&relation.program.order),
-                    count
+                    (*count).min(i64::MAX as u64)
                 );
             }
             TransformKind::Offset { count } => {
@@ -392,7 +392,7 @@ impl<'a> Compiler<'a> {
                     "SELECT * FROM ({}) r ORDER BY {} LIMIT -1 OFFSET {}",
                     relation.program.sql,
                     relation_order(&relation.program.order),
-                    count
+                    (*count).min(i64::MAX as u64)
                 );
             }
             TransformKind::Distinct => self.relation_distinct(relation),

@@ -209,3 +209,10 @@ fn historical_read_positions_refuse_without_substituting_current_membership() {
         assert!(error.to_string().contains("evidence_until:"), "{error}");
     }
 }
+
+#[test]
+fn selections_accept_the_full_unsigned_count_domain() {
+    let (_directory, fixture) = fixture();
+    assert_eq!(rows(&fixture, "sessions | limit 18446744073709551615 | fields id | sort by id").len(), 3);
+    assert!(rows(&fixture, "sessions | offset 18446744073709551615").is_empty());
+}
