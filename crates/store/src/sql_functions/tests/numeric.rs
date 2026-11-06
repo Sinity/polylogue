@@ -59,3 +59,11 @@ fn finite_extreme_pairs_do_not_overflow_dimensionless_correlation() {
     let correlation: f64 = conn.query_row("WITH pairs(x,y) AS (VALUES (-1e308,1e308),(0.,0.),(1e308,-1e308)) SELECT pl_correlation(x,y) FROM pairs",[],|row|row.get(0)).unwrap();
     assert!((correlation + 1.).abs() < 1e-12);
 }
+
+#[test]
+fn finite_interval_union_does_not_overflow_an_intermediate_sum() {
+    let conn = Connection::open_in_memory().unwrap();
+    register(&conn).unwrap();
+    let covered: f64 = conn.query_row("WITH intervals(a,b) AS (VALUES (-1e308,0.),(9e307,1e308)) SELECT pl_covered(a,b) FROM intervals", [], |row| row.get(0)).unwrap();
+    assert!((covered / 1e308 - 1.1).abs() < 1e-12);
+}

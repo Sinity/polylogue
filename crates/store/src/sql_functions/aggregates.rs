@@ -83,14 +83,14 @@ impl Aggregate<Vec<(f64, f64)>, Option<f64>> for Covered {
                 Some((_, last)) if start <= *last => *last = last.max(end),
                 _ => {
                     if let Some((start, end)) = current {
-                        total = finite(total + end - start)?;
+                        total = finite(total + (end - start))?;
                     }
                     current = Some((start, end));
                 }
             }
         }
         if let Some((start, end)) = current {
-            total = finite(total + end - start)?;
+            total = finite(total + (end - start))?;
         }
         Ok(Some(total))
     }
