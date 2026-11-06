@@ -325,6 +325,8 @@ fn kept_rows_preserve_only_recorded_reference_metadata() {
     options.kept.insert(
         "docs".into(),
         Kept {
+            shape: None,
+            native_identity: false,
             unit: "documents".into(),
             columns: c("documents").columns,
             match_columns: vec![],
@@ -354,6 +356,8 @@ fn kept_rows_preserve_only_recorded_reference_metadata() {
     options.kept.insert(
         "plain".into(),
         Kept {
+            shape: None,
+            native_identity: false,
             unit: "sessions".into(),
             columns: vec![without_reference],
             match_columns: vec![],
@@ -366,6 +370,8 @@ fn kept_rows_preserve_only_recorded_reference_metadata() {
     options.kept.insert(
         "group".into(),
         Kept {
+            shape: None,
+            native_identity: false,
             unit: "sessions".into(),
             columns: c("sessions | group by id").columns,
             match_columns: vec![],
@@ -448,6 +454,8 @@ fn kept_references_use_query_literals_without_splitting_their_ids() {
     options.kept.insert(
         id.into(),
         Kept {
+            shape: None,
+            native_identity: false,
             unit: "sessions".into(),
             columns: columns.clone(),
             match_columns: vec![],
@@ -470,6 +478,8 @@ fn kept_references_use_query_literals_without_splitting_their_ids() {
     options.kept.insert(
         "simple".into(),
         Kept {
+            shape: None,
+            native_identity: false,
             unit: "sessions".into(),
             columns: columns.clone(),
             match_columns: columns,
@@ -508,6 +518,8 @@ fn saved_kept_source_records_its_resolved_definition() {
     options.kept.insert(
         "example".into(),
         Kept {
+            shape: None,
+            native_identity: false,
             unit: "sessions".into(),
             columns: c("sessions").columns,
             match_columns: vec![],

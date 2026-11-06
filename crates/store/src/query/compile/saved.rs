@@ -157,103 +157,137 @@ fn same_unit(name: &str, selected: Unit, expected: Unit, span: Span) -> Result<(
 /// A query whose source is a kept result (`result:<id>`, `.rows` or
 /// `.matches`): its stored values, read as they were kept, never re-run.
 /// Only stages may follow.
-pub(super) fn compile_kept(
-    text: &str,
-    query: &Query,
-    opts: &Options,
-    query_scope: Option<&query_language::scope::QueryScope>,
-) -> Result<Option<Program>, QueryError> {
-    let Source::Result {
-        reference,
-        part,
-        condition,
-        ..
-    } = &query.source
-    else {
-        return Ok(None);
-    };
-    if condition.is_some() || !query.attach.is_empty() {
-        return Err(QueryError::Invalid {
-            message: "A kept result takes stages, not conditions or attached rows".into(),
-            position: 0,
-        });
-    }
-    let mut query = query.clone();
-    let id = reference.strip_prefix("result:").unwrap_or(reference);
-    let part = match part {
-        ResultPart::Rows => "rows",
-        ResultPart::Matches => "matches",
-    };
-    let kept = opts.kept.get(id).ok_or_else(|| {
-        QueryError::syntax(text, 0, format!("no kept result has the ID {id:?}"), None)
-    })?;
-    let columns = if part == "matches" {
-        if kept.match_columns.is_empty() {
+impl Compiler<'_> {
+    pub(super) fn kept_program(mut self, query: &Query) -> Result<Program, QueryError> {
+        let Source::Result {
+            reference,
+            part,
+            condition,
+            ..
+        } = &query.source
+        else {
             return Err(QueryError::Invalid {
-                message: format!("result:{id} kept no match rows (its query has no exists or seq)"),
+                message: "a kept source is required".into(),
+                position: 0,
+            });
+        };
+        if condition.is_some() || !query.attach.is_empty() {
+            return Err(QueryError::Invalid {
+                message: "A kept result takes stages, not conditions or attached rows".into(),
                 position: 0,
             });
         }
-        &kept.match_columns
-    } else {
-        &kept.columns
-    };
-    query.source = Source::Unit {
-        unit: Unit::Sessions.name().into(),
-        implicit: false,
-        condition: None,
-    };
-    let native = Unit::all().find(|u| u.name() == kept.unit);
-    let unit = native.unwrap_or(Unit::Sessions);
-    // Kept rows of a native unit carry that unit's identity, stored beside
-    // the rows, so each row read back names the row it was.
-    let identity: Vec<String> = native
-        .filter(|_| part == "rows")
-        .map(|unit| {
-            (0..units::spec(unit).identity.len())
-                .map(|i| format!("_identity{i}"))
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut c = Compiler::new(text, opts);
-    c.query_scope = query_scope.cloned();
-    let id_param = c.text_param(id);
-    let mut select: Vec<String> = columns
-        .iter()
-        .map(|col| {
-            if matches!(col.kind, ColKind::Ids | ColKind::Json) {
-                format!("(j.value -> '$.\"{0}\"') AS \"{0}\"", col.name)
-            } else {
-                format!("json_extract(j.value, '$.\"{0}\"') AS \"{0}\"", col.name)
-            }
-        })
-        .collect();
-    select.extend(identity.iter().enumerate().map(|(i, name)| {
-        format!("json_extract(k.rows_json, '$.identities[' || j.key || '][{i}]') AS {name}")
-    }));
-    let rel = MatchRel {
-        sql: format!(
-            "SELECT j.key AS _pk, {} FROM source_kept_result k, json_each(k.rows_json, '$.{part}') j \
-             WHERE k.id = {id_param} ORDER BY j.key",
-            select.join(", ")
-        ),
-        columns: columns.iter().map(|c| (c.name.clone(), c.kind)).collect(),
-        order: vec![OrderKey::ascending("_pk")],
-        recursive: false,
-    };
-    let mut program = c.program_over(&query, rel)?;
-    if part == "rows" && program.shape == Shape::Matches {
-        program.shape = Shape::Rows;
-        program.unit = unit;
-        program.columns = columns.clone();
-        if let Some(unit) = native {
-            program.row_basis = RowBasis::Native {
-                unit,
-                columns: identity,
-            };
+        let id = reference.strip_prefix("result:").unwrap_or(reference);
+        let opts = self.opts;
+        let kept = opts.kept.get(id).ok_or_else(|| QueryError::Unavailable {
+            what: format!("kept result {id:?}"),
+        })?;
+        let matched = *part == ResultPart::Matches;
+        let part = if matched { "matches" } else { "rows" };
+        let columns = if matched {
+            &kept.match_columns
+        } else {
+            &kept.columns
+        };
+        if matched && columns.is_empty() {
+            return Err(QueryError::Invalid {
+                message: format!("result:{id} kept no match rows"),
+                position: 0,
+            });
         }
+        let native = Unit::all().find(|unit| unit.name() == kept.unit);
+        let unit = native.unwrap_or(Unit::Sessions);
+        let shape = if matched {
+            Shape::Matches
+        } else {
+            kept.shape.unwrap_or(Shape::Rows)
+        };
+        let id_param = self.text_param(id);
+        let mut select = vec![
+            "j.key AS _pk".into(),
+            format!("json_array({id_param}, '{part}') AS _kept_source"),
+        ];
+        let mut slots = std::collections::BTreeMap::new();
+        let mut time_text_columns = std::collections::BTreeSet::new();
+        for (index, column) in columns.iter().enumerate() {
+            let path = self.text_param(&format!(
+                "$.{}",
+                serde_json::to_string(&column.name).expect("column name is JSON text")
+            ));
+            let value = if matches!(column.kind, ColKind::Ids | ColKind::Json) {
+                format!("j.value -> {path}")
+            } else {
+                format!("json_extract(j.value, {path})")
+            };
+            let slot = format!("_kept_value{index}");
+            select.push(format!("{value} AS {}", column_sql(&slot)));
+            slots.insert(column.name.clone(), slot);
+            if column.kind == ColKind::Time {
+                time_text_columns.insert(column.name.clone());
+            }
+        }
+        let row_basis = if !matched && kept.native_identity && shape == Shape::Rows {
+            if let Some(unit) = native {
+                let mut identity = vec![];
+                let count = units::spec(unit).identity.len();
+                for index in 0..count {
+                    let slot = format!("_kept_identity{index}");
+                    select.push(format!("pl_kept_identity(k.rows_json -> ('$.identities[' || j.key || ']'), {index}, {count}) AS {slot}"));
+                    identity.push(slot);
+                }
+                RowBasis::Native {
+                    unit,
+                    columns: identity,
+                }
+            } else {
+                RowBasis::Distinct {
+                    columns: vec!["_kept_source".into(), "_pk".into()],
+                }
+            }
+        } else {
+            RowBasis::Distinct {
+                columns: vec!["_kept_source".into(), "_pk".into()],
+            }
+        };
+        let program = Program {
+            query: self.text.into(),
+            row_basis,
+            unit,
+            shape,
+            sql: format!(
+                "SELECT {} FROM source_kept_result k, json_each(k.rows_json, '$.{part}') j WHERE k.id={id_param} ORDER BY j.key",
+                select.join(", ")
+            ),
+            row_count_sql: None,
+            row_membership_sql: None,
+            params: std::mem::take(&mut self.params),
+            columns: columns.clone(),
+            column_slots: slots,
+            native_sources: Some(vec![]),
+            time_text_columns,
+            ranked: false,
+            text_terms: vec![],
+            id_checks: vec![],
+            change_generations: vec![],
+            assertion_cutoffs: vec![],
+            attach: vec![],
+            notes: vec![],
+            incomplete: vec![],
+            why: vec![],
+            why_of: format!(
+                "SELECT count(*) FROM source_kept_result k, json_each(k.rows_json, '$.{part}') j WHERE k.id={id_param}"
+            ),
+            page_size: opts.page_size.unwrap_or(50),
+            near: None,
+            counts_near: false,
+            definitions: vec![],
+            clock: opts.clock.clone(),
+            resolved_times: vec![],
+            measure: None,
+            order: vec![OrderKey::ascending("_pk")],
+        };
+        self.program_over(query, program)
     }
-    Ok(Some(program))
 }
 
 /// The definition a saved query's name resolves to: the current revision

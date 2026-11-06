@@ -385,6 +385,8 @@ fn result_output_schemas_require_the_canonical_kept_columns() {
     bindings.kept.insert(
         "kept".into(),
         polylogue_query::Kept {
+            shape: None,
+            native_identity: false,
             unit: "sessions".into(),
             columns: columns.clone(),
             match_columns: vec![],

@@ -262,6 +262,10 @@ impl Compiler<'_> {
             .program
             .column_slots
             .retain(|name, _| !name.starts_with("match."));
+        outer
+            .program
+            .time_text_columns
+            .retain(|name| !name.starts_with("match."));
         for column in &inner.program.columns {
             let slot = outer.slot();
             projections.push(format!(
@@ -270,6 +274,9 @@ impl Compiler<'_> {
                 column_sql(&slot)
             ));
             let name = format!("match.{}", column.name);
+            if inner.program.time_text_columns.contains(&column.name) {
+                outer.program.time_text_columns.insert(name.clone());
+            }
             outer.program.columns.retain(|prior| prior.name != name);
             outer.program.columns.push(Column {
                 name: name.clone(),
@@ -340,6 +347,11 @@ impl Compiler<'_> {
                 distance,
                 coarse: "0".into(),
                 outer_unknown: format!("({}) IS NULL", left.1),
+            });
+        }
+        if outer.sources.is_empty() || inner.sources.is_empty() {
+            return Err(QueryError::Unavailable {
+                what: "native time evidence was not retained for this relation".into(),
             });
         }
         let (left, left_storage) = self.order_time(outer, "r");
@@ -441,7 +453,9 @@ impl Compiler<'_> {
             .iter()
             .find(|source| source.prefix.is_empty())
         else {
-            return Ok(("NULL".into(), "NULL".into()));
+            return Err(QueryError::Unavailable {
+                what: "native full-scope step positions were not retained for this relation".into(),
+            });
         };
         if scope.is_some_and(|name| name != "session_tool_calls") {
             return Err(order_invalid("tool calls step in session_tool_calls", at));

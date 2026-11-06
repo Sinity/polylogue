@@ -455,6 +455,8 @@ impl<'a> Compiler<'a> {
             params: self.params,
             columns,
             column_slots: Default::default(),
+            native_sources: None,
+            time_text_columns: Default::default(),
             ranked,
             text_terms: self.text_terms,
             id_checks: self.id_checks,

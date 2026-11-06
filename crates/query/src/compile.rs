@@ -106,6 +106,10 @@ pub struct Kept {
     pub columns: Vec<Column>,
     #[serde(default)]
     pub match_columns: Vec<Column>,
+    #[serde(default)]
+    pub shape: Option<Shape>,
+    #[serde(default)]
+    pub native_identity: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

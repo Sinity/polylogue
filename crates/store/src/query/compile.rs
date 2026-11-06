@@ -28,8 +28,6 @@ mod sequences;
 mod stages;
 use conditions::unknown_field;
 
-use saved::compile_kept;
-
 /// Reciprocal rank fusion gives a row `1 / (RANK_FUSION_OFFSET + place)` in
 /// each ranked list it is in; the offset keeps one list's first places
 /// from outweighing agreement between lists.
@@ -111,6 +109,10 @@ pub struct Program {
     /// Physical SQL slots for logical output names. Private identity and order
     /// slots never share the namespace of a user alias.
     pub column_slots: std::collections::BTreeMap<String, String>,
+    #[serde(skip)]
+    native_sources: Option<Vec<relations::NativeSource>>,
+    #[serde(skip)]
+    time_text_columns: std::collections::BTreeSet<String>,
     /// Ordered by relevance to text terms.
     pub ranked: bool,
     /// The full-text terms, for marking matches in snippets.
@@ -322,23 +324,36 @@ pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Progr
     let mut captured = opts.clone();
     captured.saved = plan.bindings().saved.clone();
     captured.kept = plan.bindings().kept.clone();
+    for (id, kept) in &mut captured.kept {
+        let actual = opts.kept.get(id).ok_or_else(|| QueryError::Unavailable {
+            what: format!("kept result {id:?} is absent from this read"),
+        })?;
+        if kept
+            .columns
+            .iter()
+            .map(|column| &column.name)
+            .ne(actual.columns.iter().map(|column| &column.name))
+            || kept
+                .match_columns
+                .iter()
+                .map(|column| &column.name)
+                .ne(actual.match_columns.iter().map(|column| &column.name))
+        {
+            return Err(QueryError::Unavailable {
+                what: format!("kept result {id:?} differs from its bound columns"),
+            });
+        }
+        *kept = actual.clone();
+    }
     let opts = &captured;
     let bound = plan.expanded_query();
     let catalog = plan.catalog();
     let rendered = query_language::format::format_query(bound.query(), catalog)
         .map_err(|e| QueryError::language(e, ""))?;
-    let mut program = if let Some(program) = compile_kept(
-        &rendered,
-        bound.query(),
-        opts,
-        bound.typing().query(&Default::default()),
-    )? {
-        program
-    } else {
-        let mut compiler = Compiler::new(&rendered, opts);
-        compiler.query_scope = bound.typing().query(&Default::default()).cloned();
-        compiler.program(bound.query())?
-    };
+    let mut compiler = Compiler::new(&rendered, opts);
+    compiler.query_scope = bound.typing().query(&Default::default()).cloned();
+    compiler.catalog = Some(std::sync::Arc::new(catalog.clone()));
+    let mut program = compiler.program(bound.query())?;
     for definition in plan.definitions() {
         let used = Definition {
             name: definition.name.clone(),
@@ -387,6 +402,7 @@ pub(crate) struct Compiler<'a> {
     ctes: Vec<String>,
     input_rows: Option<String>,
     query_scope: Option<query_language::scope::QueryScope>,
+    catalog: Option<std::sync::Arc<query_language::catalog::Catalog>>,
     notes: Vec<String>,
     incomplete: Vec<String>,
     text_terms: Vec<String>,
@@ -437,6 +453,7 @@ impl<'a> Compiler<'a> {
             ctes: vec![],
             input_rows: None,
             query_scope: None,
+            catalog: None,
             notes: vec![],
             incomplete: vec![],
             text_terms: vec![],
@@ -475,12 +492,17 @@ impl<'a> Compiler<'a> {
     }
 
     fn program(self, q: &Query) -> Result<Program, QueryError> {
-        self.program_with(q, None)
+        if matches!(q.source, Source::Result { .. }) {
+            self.kept_program(q)
+        } else {
+            self.program_with(q, None)
+        }
     }
 
     /// The stages of `q` over stored rows, its source ignored.
-    fn program_over(self, q: &Query, rel: MatchRel) -> Result<Program, QueryError> {
-        self.program_with(q, Some(rel))
+    fn program_over(mut self, q: &Query, mut program: Program) -> Result<Program, QueryError> {
+        self.params = std::mem::take(&mut program.params);
+        self.finish_relations(q, 0, relations::Relation::new(program), None)
     }
 }
 

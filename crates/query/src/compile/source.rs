@@ -11,7 +11,17 @@ pub(crate) fn catalog(options: &Bindings) -> Catalog {
             (ResultPart::Rows, &kept.columns),
             (ResultPart::Matches, &kept.match_columns),
         ] {
-            let schema = schema(&catalog, &kept.unit, columns);
+            let mut schema = schema(&catalog, &kept.unit, columns);
+            if part == ResultPart::Matches
+                || matches!(
+                    kept.shape,
+                    Some(Shape::Groups | Shape::Summary | Shape::Matches)
+                )
+            {
+                schema.unit = None;
+            }
+            // Kept public timestamps do not retain the native period evidence.
+            schema.main_time = None;
             catalog.source_outputs.push(SourceOutput {
                 source: OutputSource::Result {
                     reference: format!("result:{id}"),
@@ -83,7 +93,7 @@ pub(crate) fn schema(catalog: &Catalog, unit_name: &str, columns: &[Column]) -> 
         .filter(|name| fields.iter().any(|field| &field.name == name));
     OutputSchema {
         match_units: None,
-        unit: Some(unit_name.to_owned()),
+        unit: (!unit_name.is_empty()).then(|| unit_name.to_owned()),
         fields,
         main_time,
     }

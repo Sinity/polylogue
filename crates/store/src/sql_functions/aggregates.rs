@@ -64,12 +64,66 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
         let path: Option<String> = ctx.get(0)?;
         let root: Option<String> = ctx.get(1)?;
         Ok(path.zip(root).map(|(path, root)| {
+            let absolute_root = root.starts_with('/');
             let root = root.trim_end_matches('/');
+            if root.is_empty() && absolute_root {
+                return path.starts_with('/');
+            }
             path == root
                 || path
                     .strip_prefix(root)
-                    .is_some_and(|rest| rest.starts_with('/') || root.is_empty())
+                    .is_some_and(|rest| rest.starts_with('/'))
         }))
+    })?;
+    conn.create_scalar_function("pl_kept_time", 1, FLAGS, |ctx| {
+        let value = match ctx.get_raw(0) {
+            ValueRef::Null => return Ok(None),
+            ValueRef::Integer(value) => return Ok(Some(value)),
+            ValueRef::Text(_) => ctx.get::<String>(0)?,
+            _ => {
+                return Err(invalid(
+                    "a kept time must be a timestamp or integer milliseconds",
+                ));
+            }
+        };
+        let timestamp = polylogue_model::Timestamp::parse_rfc3339(&value)
+            .ok_or_else(|| invalid("a kept time must be a valid timestamp"))?;
+        let milliseconds = timestamp.unix_ms();
+        if polylogue_model::Timestamp::from_unix_ms(milliseconds) != Some(timestamp) {
+            return Err(invalid(
+                "this kept time has finer precision than scalar milliseconds",
+            ));
+        }
+        Ok(Some(milliseconds))
+    })?;
+    conn.create_scalar_function("pl_kept_identity", 3, FLAGS, |ctx| {
+        let keys: Option<String> = ctx.get(0)?;
+        let keys = keys.ok_or_else(|| invalid("the kept row has no captured native identity"))?;
+        let keys: Vec<serde_json::Value> = serde_json::from_str(&keys)
+            .map_err(|_| invalid("a kept native identity must be a scalar tuple"))?;
+        let index: usize = ctx.get(1)?;
+        let count: usize = ctx.get(2)?;
+        if keys.len() != count {
+            return Err(invalid("the kept native identity has the wrong tuple size"));
+        }
+        match keys.get(index) {
+            Some(serde_json::Value::String(value)) => Ok(Value::Text(value.clone())),
+            Some(serde_json::Value::Bool(value)) => Ok(Value::Integer(i64::from(*value))),
+            Some(serde_json::Value::Number(value)) => {
+                if let Some(value) = value.as_i64() {
+                    Ok(Value::Integer(value))
+                } else if value.is_f64() {
+                    Ok(Value::Real(finite(value.as_f64().expect("JSON float"))?))
+                } else {
+                    Err(invalid(
+                        "the kept native identity integer is out of SQL range",
+                    ))
+                }
+            }
+            _ => Err(invalid(
+                "a kept native identity must contain known scalar keys",
+            )),
+        }
     })?;
     conn.create_scalar_function("pl_lower", 1, FLAGS, |ctx| {
         Ok(ctx

@@ -1,3 +1,5 @@
+mod kept;
+
 use super::*;
 use crate::fixture::{Fixture, MessageFacts, SessionFacts};
 pub(super) fn options() -> Options {

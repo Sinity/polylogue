@@ -139,6 +139,9 @@ fn typed_natural_word_and_path_matches_preserve_their_boundaries() {
         .unwrap()
     };
     assert!(under("/work", "/work/"));
+    assert!(under("/work", "/"));
+    assert!(!under("relative", "/"));
+    assert!(!under("", "/"));
     assert!(under("/work/src", "/work"));
     assert!(!under("/work2/src", "/work"));
     assert!(!under("/Work/src", "/work"));
@@ -146,4 +149,44 @@ fn typed_natural_word_and_path_matches_preserve_their_boundaries() {
         .query_row("SELECT pl_query_under(NULL,'/work')", [], |row| row.get(0))
         .unwrap();
     assert_eq!(absent, None);
+}
+
+#[test]
+fn kept_time_and_native_identity_require_actual_captured_scalar_evidence() {
+    let conn = Connection::open_in_memory().unwrap();
+    register(&conn).unwrap();
+    let timestamp: i64 = conn
+        .query_row(
+            "SELECT pl_kept_time('1970-01-01T00:00:01.125Z')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(timestamp, 1125);
+    let missing: Option<i64> = conn
+        .query_row("SELECT pl_kept_time(NULL)", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(missing, None);
+    assert!(
+        conn.query_row(
+            "SELECT pl_kept_time('1970-01-01T00:00:01.000000001Z')",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .is_err()
+    );
+    let opaque: String = conn
+        .query_row(r#"SELECT pl_kept_identity('["001"]',0,1)"#, [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(opaque, "001");
+    for value in ["null", "[]", "[null]", "[{}]", "[9223372036854775808]"] {
+        assert!(
+            conn.query_row("SELECT pl_kept_identity(?1,0,1)", [value], |row| row
+                .get::<_, String>(0))
+                .is_err(),
+            "{value}"
+        );
+    }
 }

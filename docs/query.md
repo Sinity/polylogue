@@ -173,6 +173,7 @@ Rules:
 
 - **Ranking is kept, or the keep is refused.** Keeping a ranked answer whose ranking is incomplete is `refused` with the missing list named; the caller can keep the unranked membership by removing the ranking term.
 - **Reading back** `result:<id>` (or `#<row>`, `.matches`) reads the stored rows, never a re-run; only stages may follow (`result:<id> | group by origin | count`). Re-running is running `query:<hash>`. Where a derivation version changed since, the read says so ("computed under prices `<hash>`, now `<hash>`").
+- Stages over a kept result use its captured shape, columns and values. Missing fields and native time or position evidence are not fetched from current rows. Captured native identity is retained when present; otherwise each stored item has an identity from the result, part and stored ordinal, so equal values remain distinct when paged.
 - **Membership:** `in:result:<id>` restricts any query of the result's unit to its rows; a bulk write over an exact reviewed population uses it.
 - **One kept result, many uses:** assertions, page slots, briefs, watch baselines and written-out bundles cite the same `result:<id>`; nothing copies rows.
 - **Every row is stored,** in `kept_row(result, position, values_json, refs_json)`, so paging a large result reads by key. Keeping an answer that cannot be read within one deadline keeps it in steps, each its own read transaction, recording every position read.

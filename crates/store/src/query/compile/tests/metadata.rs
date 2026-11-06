@@ -201,6 +201,8 @@ fn frozen_saved_semantic_scope_preserves_native_fields_and_refuses_forged_declar
     options.kept.insert(
         "artifact".into(),
         Kept {
+            shape: None,
+            native_identity: false,
             unit: "tool_calls".into(),
             columns: vec![Column {
                 name: "command".into(),

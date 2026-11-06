@@ -35,7 +35,10 @@ impl<'a> Compiler<'a> {
         if let Source::Unit { implicit, .. } = &mut query.source {
             *implicit = false;
         }
-        let catalog = self.opts.catalog();
+        let catalog = self
+            .catalog
+            .clone()
+            .unwrap_or_else(|| std::sync::Arc::new(self.opts.catalog()));
         let bound = query_language::bind::bind(&query, &catalog)
             .map_err(|error| QueryError::language(error, self.text))?;
         let text = query_language::format::format_query(bound.query(), &catalog)
@@ -50,6 +53,7 @@ impl<'a> Compiler<'a> {
         }
         let mut inner = Compiler::new(&text, self.opts);
         inner.query_scope = query_scope;
+        inner.catalog = Some(catalog);
         inner.params = std::mem::take(&mut self.params);
         inner.saved_stack = self.saved_stack.clone();
         let mut program = inner.program(&query)?;

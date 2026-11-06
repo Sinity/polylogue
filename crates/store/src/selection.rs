@@ -842,7 +842,7 @@ pub(crate) fn check_kept_body(
 /// The kept-column query over `stored`, which yields `id` and `rows_json`.
 fn kept_sql(stored: &str) -> String {
     format!(
-        "WITH stored AS ({stored}), kept AS (SELECT id,json_valid(rows_json) AS valid,CASE WHEN json_valid(rows_json) THEN rows_json ELSE '{{}}' END AS body FROM stored) SELECT id,json_extract(body,'$.unit'),json_extract(body,'$.columns'),json_extract(body,'$.match_columns'),json_type(body,'$.match_columns'),valid FROM kept"
+        "WITH stored AS ({stored}), kept AS (SELECT id,json_valid(rows_json) AS valid,CASE WHEN json_valid(rows_json) THEN rows_json ELSE '{{}}' END AS body FROM stored) SELECT id,json_extract(body,'$.unit'),json_extract(body,'$.columns'),json_extract(body,'$.match_columns'),json_type(body,'$.match_columns'),valid,json_extract(body,'$.shape'),json_type(body,'$.identities') FROM kept"
     )
 }
 
@@ -874,9 +874,20 @@ fn decode_kept(
                 .map_err(|error| damaged("match_columns", &error))?;
             serde_json::from_str(&text).map_err(|error| damaged("match_columns", &error))?
         };
+        let shape: Option<String> = row.get(6).map_err(|error| damaged("shape", &error))?;
+        let shape = shape
+            .map(|value| serde_json::from_value(serde_json::Value::String(value)))
+            .transpose()
+            .map_err(|error| damaged("shape", &error))?;
+        let identity_kind: Option<String> =
+            row.get(7).map_err(|error| damaged("identities", &error))?;
+        let native_identity = matches!(shape, Some(polylogue_query::Shape::Rows))
+            && identity_kind.as_deref() == Some("array");
         values.insert(
             id,
             polylogue_query::Kept {
+                shape,
+                native_identity,
                 unit,
                 columns,
                 match_columns,

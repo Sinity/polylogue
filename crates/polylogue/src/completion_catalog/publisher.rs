@@ -263,9 +263,19 @@ impl State {
                 .map(|(unit, columns)| {
                     let mut schema =
                         polylogue_query::compile::columns_schema(&self.catalog, unit, columns);
-                    if self.catalog.unit(unit).is_none() {
+                    if self.catalog.unit(unit).is_none()
+                        || matches!(
+                            kept.shape,
+                            Some(
+                                polylogue_query::Shape::Groups
+                                    | polylogue_query::Shape::Summary
+                                    | polylogue_query::Shape::Matches
+                            )
+                        )
+                    {
                         schema.unit = None;
                     }
+                    schema.main_time = None;
                     schema
                 });
             let match_schema = kept
@@ -275,9 +285,8 @@ impl State {
                 .map(|(unit, columns)| {
                     let mut schema =
                         polylogue_query::compile::columns_schema(&self.catalog, unit, columns);
-                    if self.catalog.unit(unit).is_none() {
-                        schema.unit = None;
-                    }
+                    schema.unit = None;
+                    schema.main_time = None;
                     schema
                 });
             writer.put_kept(&completion::Kept {
@@ -293,6 +302,8 @@ impl State {
                 self.kept.insert(
                     kept.id,
                     polylogue_query::Kept {
+                        shape: kept.shape,
+                        native_identity: kept.native_identity,
                         unit,
                         columns,
                         match_columns: matches.unwrap_or_default(),

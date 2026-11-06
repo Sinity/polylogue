@@ -3,7 +3,7 @@ use super::*;
 
 mod order;
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct NativeSource {
     pub prefix: String,
     pub unit: Unit,
@@ -22,15 +22,18 @@ pub(super) struct Relation {
 
 impl Relation {
     pub fn new(program: Program) -> Self {
-        let sources = if matches!(program.row_basis, RowBasis::Native { .. }) {
-            vec![NativeSource {
-                prefix: String::new(),
-                unit: program.unit,
-                key: "_pk".into(),
-            }]
-        } else {
-            vec![]
-        };
+        let sources = program.native_sources.clone().unwrap_or_else(|| {
+            if matches!(program.row_basis, RowBasis::Native { .. }) {
+                vec![NativeSource {
+                    prefix: String::new(),
+                    unit: program.unit,
+                    key: "_pk".into(),
+                }]
+            } else {
+                vec![]
+            }
+        });
+        let open_fields = !sources.is_empty();
         let next_slot = program
             .sql
             .split("_rel_value")
@@ -47,7 +50,7 @@ impl Relation {
         Self {
             program,
             sources,
-            open_fields: true,
+            open_fields,
             next_slot,
             group: None,
             patterns: vec![],
@@ -81,6 +84,9 @@ impl Relation {
                 match column.kind {
                     ColKind::Money => format!("({sql}) * 1e9"),
                     ColKind::DurationSeconds => format!("({sql}) * 1000.0"),
+                    ColKind::Time if self.program.time_text_columns.contains(name) => {
+                        format!("pl_kept_time({sql})")
+                    }
                     _ => sql,
                 },
                 column.kind,
@@ -157,6 +163,7 @@ struct RelationOutput {
     columns: Vec<Column>,
     slots: std::collections::BTreeMap<String, String>,
     sources: Vec<NativeSource>,
+    time_text_columns: std::collections::BTreeSet<String>,
 }
 
 impl RelationOutput {
@@ -165,12 +172,14 @@ impl RelationOutput {
             columns: relation.program.columns.clone(),
             slots: relation.program.column_slots.clone(),
             sources: relation.sources.clone(),
+            time_text_columns: relation.program.time_text_columns.clone(),
         }
     }
     fn install(self, relation: &mut Relation) {
         relation.program.columns = self.columns;
         relation.program.column_slots = self.slots;
         relation.sources = self.sources;
+        relation.program.time_text_columns = self.time_text_columns;
     }
 }
 
@@ -241,10 +250,21 @@ impl<'a> Compiler<'a> {
         let mut compiler = Compiler::new(self.text, self.opts);
         compiler.saved_stack = self.saved_stack.clone();
         compiler.query_scope = self.query_scope.clone();
+        compiler.catalog = self.catalog.clone();
         let mut program = self.native_program_with(&prefix, preset)?;
         compiler.params = std::mem::take(&mut program.params);
         compiler.near = program.near.clone();
-        let mut relation = Relation::new(program);
+        let relation = Relation::new(program);
+        compiler.finish_relations(query, first, relation, source_order)
+    }
+
+    pub(super) fn finish_relations(
+        mut self,
+        query: &Query,
+        first: usize,
+        mut relation: Relation,
+        source_order: Option<&Condition>,
+    ) -> Result<Program, QueryError> {
         if let Source::Unit {
             condition: Some(condition),
             ..
@@ -253,19 +273,16 @@ impl<'a> Compiler<'a> {
             relation.patterns = match_patterns(condition);
         }
         if let Some(condition) = source_order {
-            let scope = compiler
-                .query_scope
-                .as_ref()
-                .map(|query| query.source.clone());
-            compiler.relation_where(&mut relation, condition, scope.as_ref())?;
+            let scope = self.query_scope.as_ref().map(|query| query.source.clone());
+            self.relation_where(&mut relation, condition, scope.as_ref())?;
         }
         for (index, stage) in query.transforms.iter().enumerate().skip(first) {
-            compiler.relation_stage(&mut relation, stage, query, index)?;
+            self.relation_stage(&mut relation, stage, query, index)?;
         }
-        if !compiler.ctes.is_empty() {
+        if !self.ctes.is_empty() {
             relation.program.sql = format!(
                 "WITH RECURSIVE {} SELECT * FROM ({})",
-                compiler.ctes.join(", "),
+                self.ctes.join(", "),
                 relation.program.sql
             );
         }
@@ -278,23 +295,24 @@ impl<'a> Compiler<'a> {
                     .map_or(0, |attachment| attachment.span.start),
             });
         }
-        relation.program.params = compiler.params;
-        join(&mut relation.program.notes, &mut compiler.notes);
-        join(&mut relation.program.incomplete, &mut compiler.incomplete);
-        join(&mut relation.program.id_checks, &mut compiler.id_checks);
-        join(&mut relation.program.definitions, &mut compiler.definitions);
+        relation.program.params = self.params;
+        join(&mut relation.program.notes, &mut self.notes);
+        join(&mut relation.program.incomplete, &mut self.incomplete);
+        join(&mut relation.program.id_checks, &mut self.id_checks);
+        join(&mut relation.program.definitions, &mut self.definitions);
         join(
             &mut relation.program.change_generations,
-            &mut compiler.change_generations,
+            &mut self.change_generations,
         );
         join(
             &mut relation.program.assertion_cutoffs,
-            &mut compiler.assertion_cutoffs,
+            &mut self.assertion_cutoffs,
         );
         relation
             .program
             .resolved_times
-            .extend(compiler.resolved_times.into_inner());
+            .extend(self.resolved_times.into_inner());
+        relation.program.native_sources = Some(relation.sources.clone());
         Ok(relation.program)
     }
 
@@ -349,6 +367,7 @@ impl<'a> Compiler<'a> {
                 );
                 relation.program.columns = output;
                 relation.program.column_slots = slots;
+                relation.program.time_text_columns.clear();
                 relation.open_fields = false;
             }
             TransformKind::Where { condition } => {
@@ -648,7 +667,9 @@ impl Relation {
     fn private_columns(&self) -> Vec<String> {
         let mut names = std::collections::BTreeSet::new();
         names.insert("_pk".to_owned());
-        if matches!(self.program.row_basis, RowBasis::Native { .. }) {
+        if self.sources.iter().any(|source| source.prefix.is_empty())
+            && matches!(self.program.row_basis, RowBasis::Native { .. })
+        {
             names.insert("_near".into());
             if fields::lookup(self.program.unit, "first_seen").is_some_and(|f| f.sql.is_some()) {
                 names.insert("_first_seen".into());
@@ -749,6 +770,7 @@ impl Compiler<'_> {
         );
         relation.program.columns = columns;
         relation.program.column_slots = slots;
+        relation.program.time_text_columns.clear();
         relation.program.order = order;
         relation.program.row_basis = RowBasis::Group { columns: key_slots };
         relation.program.shape = Shape::Groups;
@@ -837,7 +859,12 @@ impl Compiler<'_> {
             } else {
                 None
             };
-            let values_for_aggregate = if let Some(context) = &native {
+            let values_for_aggregate = if let Some(context) = &native
+                && !aggregate
+                    .arguments
+                    .iter()
+                    .any(|argument| materialized_expression(argument, &input.program.column_slots))
+            {
                 self.agg(aggregate, context, at)?
             } else {
                 self.agg_with(aggregate, at, &mut |compiler, name, at| {
@@ -885,6 +912,7 @@ impl Compiler<'_> {
         );
         relation.program.columns = columns;
         relation.program.column_slots = slots;
+        relation.program.time_text_columns.clear();
         relation.program.order = order;
         relation.program.shape = if grouped.is_some() {
             Shape::Groups
@@ -935,7 +963,12 @@ impl Compiler<'_> {
         stage: &Transform,
         _original: &Query,
     ) -> Result<(), QueryError> {
-        if !matches!(relation.program.row_basis, RowBasis::Native { .. }) {
+        if !matches!(relation.program.row_basis, RowBasis::Native { .. })
+            || !relation
+                .sources
+                .iter()
+                .any(|source| source.prefix.is_empty())
+        {
             return Err(not_built("this native stage after a change of row grain"));
         }
         if let TransformKind::Combine {
@@ -990,6 +1023,7 @@ impl Compiler<'_> {
             attach: vec![],
         };
         let mut compiler = Compiler::new(self.text, self.opts);
+        compiler.catalog = self.catalog.clone();
         compiler.params = std::mem::take(&mut self.params);
         compiler.input_rows = Some(relation.program.sql.clone());
         let mut result = compiler.native_program_with(&native, None)?;
@@ -1083,11 +1117,21 @@ impl Compiler<'_> {
                 .iter()
                 .find(|c| c.name == column.name)
                 .map(|_| column_sql(before.program.column_slot(&column.name)));
+            let left_value = if relation.program.time_text_columns.contains(&column.name) {
+                format!("pl_kept_time(a.{left})")
+            } else {
+                format!("a.{left}")
+            };
             values.push(match right {
-                Some(right) => format!(
-                    "CASE WHEN a.{ordinal} IS NULL THEN b.{right} ELSE a.{left} END AS {left}"
-                ),
-                None => format!("a.{left} AS {left}"),
+                Some(right) => {
+                    let right_value = if before.program.time_text_columns.contains(&column.name) {
+                        format!("pl_kept_time(b.{right})")
+                    } else {
+                        format!("b.{right}")
+                    };
+                    format!("CASE WHEN a.{ordinal} IS NULL THEN {right_value} ELSE {left_value} END AS {left}")
+                }
+                None => format!("{left_value} AS {left}"),
             });
         }
         values.push(format!(
@@ -1128,6 +1172,7 @@ impl Compiler<'_> {
         relation.program.order = vec![OrderKey::ascending(&final_order)];
         relation.program.ranked = false;
         relation.program.counts_near = false;
+        relation.program.time_text_columns.clear();
         relation.sources.clear();
         relation.open_fields = false;
         relation.group = None;
@@ -1248,6 +1293,7 @@ impl Compiler<'_> {
             attach: vec![],
         };
         let mut compiler = Compiler::new(self.text, self.opts);
+        compiler.catalog = self.catalog.clone();
         compiler.params = std::mem::take(&mut self.params);
         compiler.input_rows = Some(keys);
         let mut program = compiler.program(&query)?;
@@ -1287,25 +1333,25 @@ fn match_patterns(condition: &Condition) -> Vec<Condition> {
         .collect()
 }
 
+fn materialized_expression(
+    value: &Expression,
+    columns: &std::collections::BTreeMap<String, String>,
+) -> bool {
+    match value {
+        Expression::Field { name } => columns.contains_key(name),
+        Expression::Function { arguments, .. } => arguments
+            .iter()
+            .any(|value| materialized_expression(value, columns)),
+        Expression::Arithmetic { left, right, .. } => {
+            materialized_expression(left, columns) || materialized_expression(right, columns)
+        }
+        Expression::Value { .. } => false,
+    }
+}
 fn materialized_condition(
     condition: &Condition,
     columns: &std::collections::BTreeMap<String, String>,
 ) -> bool {
-    fn expression(
-        value: &Expression,
-        columns: &std::collections::BTreeMap<String, String>,
-    ) -> bool {
-        match value {
-            Expression::Field { name } => columns.contains_key(name),
-            Expression::Function { arguments, .. } => {
-                arguments.iter().any(|value| expression(value, columns))
-            }
-            Expression::Arithmetic { left, right, .. } => {
-                expression(left, columns) || expression(right, columns)
-            }
-            Expression::Value { .. } => false,
-        }
-    }
     match &condition.kind {
         ConditionKind::And { conditions } | ConditionKind::Or { conditions } => conditions
             .iter()
@@ -1315,11 +1361,11 @@ fn materialized_condition(
         | ConditionKind::Since { field, .. }
         | ConditionKind::Until { field, .. } => columns.contains_key(field),
         ConditionKind::Compare { left, right, .. } => {
-            expression(left, columns) || expression(right, columns)
+            materialized_expression(left, columns) || materialized_expression(right, columns)
         }
         ConditionKind::Between { left, .. }
         | ConditionKind::TimeRange { left, .. }
-        | ConditionKind::In { left, .. } => expression(left, columns),
+        | ConditionKind::In { left, .. } => materialized_expression(left, columns),
         _ => false,
     }
 }

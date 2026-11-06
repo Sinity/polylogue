@@ -482,11 +482,7 @@ fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, Q
             let id = reference
                 .strip_prefix("result:")
                 .ok_or_else(|| invalid("kept output has no canonical result identity"))?;
-            let unit = output
-                .schema
-                .unit
-                .clone()
-                .ok_or_else(|| invalid("kept output has no row domain"))?;
+            let unit = output.schema.unit.clone().unwrap_or_default();
             let columns = output
                 .schema
                 .fields
@@ -514,6 +510,8 @@ fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, Q
                 .kept
                 .entry(id.to_owned())
                 .or_insert_with(|| crate::Kept {
+                    shape: None,
+                    native_identity: false,
                     unit: unit.clone(),
                     columns: vec![],
                     match_columns: vec![],
