@@ -169,7 +169,7 @@ fn conditional_expression_is_lazy_and_keeps_the_selected_native_kind() {
             .collect::<Vec<_>>(),
         [
             json!(1_000_000_000),
-            json!(3_000_000_000),
+            json!(3_000_000_000_u64),
             Value::Null,
             Value::Null
         ]

@@ -397,18 +397,7 @@ impl Compiler<'_> {
         })
     }
 
-    pub(super) fn expression_reference(
-        value: &Expression,
-        scope: &RowContext,
-    ) -> Option<ColumnReference> {
-        match value {
-            Expression::Field { name } => Self::field_reference(name, scope),
-            Expression::Function { name, arguments } if name == "case_eq" => arguments
-                .get(2)
-                .and_then(|value| Self::expression_reference(value, scope)),
-            _ => None,
-        }
-    }
+
 }
 fn expression_arity(name: &str, count: usize, at: usize) -> QueryError {
     QueryError::Invalid {
