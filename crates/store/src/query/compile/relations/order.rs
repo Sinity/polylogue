@@ -2,6 +2,7 @@
 use super::*;
 
 struct PairOrder {
+    ctes: Vec<String>,
     predicate: String,
     distance: String,
     distance_key: String,
@@ -27,6 +28,11 @@ impl Compiler<'_> {
         let truth = outer.slot();
         let inner_name = outer.slot();
         let outer_name = outer.slot();
+        let ctes = if pair.ctes.is_empty() {
+            String::new()
+        } else {
+            format!("{}, ", pair.ctes.join(", "))
+        };
         let nearest = format!(
             "{}, {}, {}",
             pair.coarse,
@@ -47,7 +53,7 @@ impl Compiler<'_> {
             column_sql(&truth)
         ));
         outer.program.sql = format!(
-            "WITH {inner_name} AS MATERIALIZED (SELECT i.*, row_number() OVER (ORDER BY {}) AS {} FROM ({}) i), \
+            "WITH {ctes}{inner_name} AS MATERIALIZED (SELECT i.*, row_number() OVER (ORDER BY {}) AS {} FROM ({}) i), \
              {outer_name} AS MATERIALIZED (SELECT r.*, \
              (SELECT i.{} FROM {inner_name} i WHERE ({}) ORDER BY {nearest} LIMIT 1) AS {}, \
              (({}) OR EXISTS (SELECT 1 FROM {inner_name} i WHERE ({}) IS NULL)) AS {} FROM ({}) r) \
@@ -98,6 +104,7 @@ impl Compiler<'_> {
                 let (left, _) = outer.field_on(self, left, at, "r")?;
                 let (right, _) = inner.field_on(self, right, at, "i")?;
                 PairOrder {
+                    ctes: vec![],
                     predicate: format!("({left}) = ({right})"),
                     distance: "NULL".into(),
                     distance_key: "NULL".into(),
@@ -131,8 +138,13 @@ impl Compiler<'_> {
             projections.push(format!("i.{} AS {}", column_sql(&key), column_sql(&slot)));
             outer.program.order.push(OrderKey::ascending(&slot));
         }
+        let ctes = if pair.ctes.is_empty() {
+            String::new()
+        } else {
+            format!("WITH {} ", pair.ctes.join(", "))
+        };
         outer.program.sql = format!(
-            "SELECT {} FROM ({}) r JOIN ({}) i ON ({}) ORDER BY {}",
+            "{ctes}SELECT {} FROM ({}) r JOIN ({}) i ON ({}) ORDER BY {}",
             projections.join(", "),
             outer.program.sql,
             inner.program.sql,
@@ -209,8 +221,10 @@ impl Compiler<'_> {
         at: usize,
     ) -> Result<PairOrder, QueryError> {
         if let Some(Distance::Steps { count }) = within {
-            let left = self.order_position(outer, "r", scope, at)?;
-            let right = self.order_position(inner, "i", scope, at)?;
+            let timeline = self.fresh().row;
+            let mut ctes = vec![];
+            let left = self.order_position(outer, "r", scope, at, &timeline, &mut ctes)?;
+            let right = self.order_position(inner, "i", scope, at, &timeline, &mut ctes)?;
             let distance = format!("(({}) - ({}))", right.1, left.1);
             let direction = match relation {
                 OrderRelation::Before => format!("{distance} > 0"),
@@ -219,6 +233,7 @@ impl Compiler<'_> {
             };
             let limit = self.bind(Param::Text(count.to_string()));
             return Ok(PairOrder {
+                ctes,
                 predicate: format!(
                     "CASE WHEN ({}) IS NULL THEN NULL WHEN ({}) IS NULL THEN NULL ELSE (({}) = ({}) AND ({distance}) != 0 AND abs({distance}) <= CAST({limit} AS REAL) AND ({direction})) END",
                     left.1, right.1, left.0, right.0
@@ -254,6 +269,7 @@ impl Compiler<'_> {
             TimePoint::End => "end",
         };
         Ok(PairOrder {
+            ctes: vec![],
             predicate: format!(
                 "pl_time_order({left}, '{left_storage}', {right}, '{right_storage}', '{}', {within}, '{point}')",
                 relation.name()
@@ -309,6 +325,8 @@ impl Compiler<'_> {
         alias: &str,
         scope: Option<&str>,
         at: usize,
+        timeline: &str,
+        ctes: &mut Vec<String>,
     ) -> Result<(String, String), QueryError> {
         let Some(source) = relation
             .sources
@@ -342,8 +360,11 @@ impl Compiler<'_> {
             "SELECT {key} AS native_key, {session} AS parent, row_number() OVER (PARTITION BY {session} ORDER BY {terms}) AS position FROM {} WHERE {admission}",
             base_from(source.unit, &a)
         );
+        if ctes.is_empty() {
+            ctes.push(format!("{timeline} AS MATERIALIZED ({rows})"));
+        }
         let selected = format!(
-            "FROM ({rows}) timeline WHERE timeline.native_key = {alias}.{}",
+            "FROM {timeline} timeline WHERE timeline.native_key = {alias}.{}",
             column_sql(&source.key)
         );
         Ok((
