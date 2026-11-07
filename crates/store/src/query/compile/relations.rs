@@ -83,7 +83,6 @@ impl Relation {
         at: usize,
         alias: &str,
     ) -> Result<(String, ColKind), QueryError> {
-        compiler.note_field(name);
         if let Some(column) = self.program.columns.iter().find(|c| c.name == name) {
             let sql = format!("{alias}.{}", column_sql(self.program.column_slot(name)));
             return Ok((
@@ -128,6 +127,26 @@ impl Relation {
             position: at,
         })
     }
+    pub(super) fn display_column_on(
+        &self,
+        compiler: &mut Compiler<'_>,
+        column: &Column,
+        output_kind: ColKind,
+        at: usize,
+        alias: &str,
+    ) -> Result<String, QueryError> {
+        if column.kind == output_kind && !self.program.time_text_columns.contains(&column.name) {
+            return Ok(format!(
+                "{alias}.{}",
+                column_sql(self.program.column_slot(&column.name))
+            ));
+        }
+        // The bound declarations already agree. Convert the captured physical
+        // representation through the existing expression and display units.
+        let (value, _) = self.field_on(compiler, &column.name, at, alias)?;
+        Ok(Compiler::display_value(&value, output_kind))
+    }
+
     pub fn reference(&self, value: &Expression) -> Option<ColumnReference> {
         match value {
             Expression::Field { name } => {
@@ -1360,24 +1379,19 @@ impl Compiler<'_> {
                 .program
                 .columns
                 .iter()
-                .find(|c| c.name == column.name)
-                .map(|_| column_sql(before.program.column_slot(&column.name)));
-            let left_value = if relation.program.time_text_columns.contains(&column.name) {
-                format!("pl_kept_time(a.{left})")
-            } else {
-                format!("a.{left}")
-            };
-            values.push(match right {
+                .find(|candidate| candidate.name == column.name);
+            let left_value = relation.display_column_on(self, column, column.kind, at, "a")?;
+            let value = match right {
                 Some(right) => {
-                    let right_value = if before.program.time_text_columns.contains(&column.name) {
-                        format!("pl_kept_time(b.{right})")
-                    } else {
-                        format!("b.{right}")
-                    };
-                    format!("CASE WHEN a.{ordinal} IS NULL THEN {right_value} ELSE {left_value} END AS {left}")
+                    let right_value =
+                        before.display_column_on(self, right, column.kind, at, "b")?;
+                    format!(
+                        "CASE WHEN a.{ordinal} IS NULL THEN {right_value} ELSE {left_value} END"
+                    )
                 }
-                None => format!("{left_value} AS {left}"),
-            });
+                None => left_value,
+            };
+            values.push(format!("{value} AS {left}"));
         }
         values.push(format!(
             "CASE WHEN a.{ordinal} IS NULL THEN b._pk ELSE a._pk END AS _pk"

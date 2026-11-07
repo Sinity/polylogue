@@ -367,6 +367,15 @@ fn union_members_without_an_optional_witness_keep_unknown_values_and_provenance(
     let witnessed =
         "tool_calls where command:first AND before(tool_calls where command:last) within 5s";
     let plain = "tool_calls where command:last";
+    assert_eq!(
+        read(
+            &reader,
+            &format!("{witnessed} | fields command,match.command,match.message.id")
+        ),
+        [
+            json!({"command":"first", "match.command":"last", "match.message.id":"claude-code:mixed-duration-c2"})
+        ]
+    );
     let text = format!(
         "{witnessed} | union ({plain}) | sort by command | fields command,match.command,match.message.id"
     );
@@ -402,6 +411,89 @@ fn equivalent_message_targets_bind_and_keep_their_reference_metadata() {
         [
             json!({"ref":"claude-code:mixed-duration-c1"}),
             json!({"ref":"claude-code:mixed-duration-c2"}),
+        ]
+    );
+}
+
+#[test]
+fn diff_normalizes_removed_duration_values_without_changing_identity_rank_or_time() {
+    let archive = mixed_duration_archive();
+    let reads = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = reads.reader().unwrap();
+    for alias in ["d", "clustered_time"] {
+        let reported =
+            format!("tool_calls where command:last | fields reported_duration as {alias},at");
+        let distance = format!(
+            "tool_calls where command:first AND before(tool_calls where command:last) within 5s | fields match.distance as {alias},at"
+        );
+        for (after, before, kind, joined, removed, joined_at, removed_at) in [
+            (
+                &reported,
+                &distance,
+                ColKind::Duration,
+                2_500.0,
+                3_000.0,
+                4_000,
+                1_000,
+            ),
+            (
+                &distance,
+                &reported,
+                ColKind::DurationSeconds,
+                3.0,
+                2.5,
+                1_000,
+                4_000,
+            ),
+        ] {
+            let text = format!(
+                "{after} | diff ({before}) | sort by change | fields {alias},at,change,old_rank,new_rank"
+            );
+            let program = compile(&text, &opts(&[])).unwrap();
+            assert_eq!(program.columns[0].kind, kind);
+            assert!(
+                !program
+                    .notes
+                    .iter()
+                    .any(|note| note.contains("clustered_time uses")),
+                "an alias does not establish a clustering construct"
+            );
+            let rows = read(&reader, &text);
+            assert_eq!(rows.len(), 2, "{text}: {rows:?}");
+            assert_eq!(rows[0]["change"], "joined");
+            assert_eq!(rows[0]["old_rank"], Value::Null);
+            assert_eq!(rows[0]["new_rank"], 1);
+            assert_eq!(rows[0][alias].as_f64(), Some(joined));
+            assert_eq!(rows[1]["change"], "left");
+            assert_eq!(rows[1]["old_rank"], 1);
+            assert_eq!(rows[1]["new_rank"], Value::Null);
+            assert_eq!(rows[1][alias].as_f64(), Some(removed));
+            for (row, at) in rows.iter().zip([joined_at, removed_at]) {
+                assert_eq!(
+                    row["at"]
+                        .as_str()
+                        .unwrap()
+                        .parse::<jiff::Timestamp>()
+                        .unwrap()
+                        .as_millisecond(),
+                    at
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn diff_moved_rows_keep_after_values_and_unknowns_over_before_values() {
+    let archive = mixed_duration_archive();
+    let reads = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = reads.reader().unwrap();
+    let text = "tool_calls | fields message as id,reported_duration as d | sort by id desc | diff (tool_calls where near(tool_calls where command:first) within 5s | fields message as id,match.distance as d | sort by id) | sort by id | fields id,d,change,old_rank,new_rank";
+    assert_eq!(
+        read(&reader, text),
+        [
+            json!({"id":"claude-code:mixed-duration-c1", "d":null, "change":"moved", "old_rank":1, "new_rank":2}),
+            json!({"id":"claude-code:mixed-duration-c2", "d":2_500, "change":"moved", "old_rank":2, "new_rank":1}),
         ]
     );
 }

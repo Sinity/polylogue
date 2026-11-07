@@ -211,7 +211,11 @@ impl<'a> Compiler<'a> {
         let ranked = !pending.fuses.is_empty()
             || relation.program.ranked
             || pending.unions.iter().any(|program| program.ranked);
-        let mut members = vec![relation.program.clone()];
+        let mut left = relation.program.clone();
+        // The active relation owns coordinates added by witness stages; its
+        // Program snapshot is otherwise finalized only after all stages.
+        left.native_sources = Some(relation.sources.clone());
+        let mut members = vec![left];
         members.extend(pending.unions);
         let mut fuses = pending.fuses;
         for program in members.iter_mut().chain(&mut fuses) {
@@ -471,16 +475,8 @@ fn aligned_columns(
                 position: 0,
             });
         };
-        let value = if input_column.kind == column.kind
-            && !input.time_text_columns.contains(&column.name)
-        {
-            format!("r.{}", column_sql(input.column_slot(&column.name)))
-        } else {
-            // The bound declarations already agree. Normalize a captured
-            // physical representation before displaying it in the output unit.
-            let (value, _) = input_relation.field_on(compiler, &column.name, 0, "r")?;
-            Compiler::display_value(&value, column.kind)
-        };
+        let value =
+            input_relation.display_column_on(compiler, input_column, column.kind, 0, "r")?;
         columns.insert(relation.program.column_slot(&column.name).to_owned(), value);
     }
     Ok(columns)
