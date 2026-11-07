@@ -581,12 +581,16 @@ fn semantic_and_mixed_annotation_use_the_public_query_population() {
             for reference in resolved {
                 let mut matching = Vec::new();
                 let flow = reader
-                    .visit_assertions_about(&reference, |assertion| {
-                        if assertion.fact.value == Some(json!(annotation)) {
-                            matching.push(assertion.fact.id);
-                        }
-                        Ok(std::ops::ControlFlow::Continue(()))
-                    })
+                    .visit_assertions_linked(
+                        &reference,
+                        &[polylogue_model::assertion::LinkRole::About],
+                        |assertion| {
+                            if assertion.fact.value == Some(json!(annotation)) {
+                                matching.push(assertion.fact.id);
+                            }
+                            Ok(std::ops::ControlFlow::Continue(()))
+                        },
+                    )
                     .unwrap();
                 assert!(matches!(flow, std::ops::ControlFlow::Continue(())));
                 assert_eq!(

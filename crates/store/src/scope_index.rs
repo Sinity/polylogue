@@ -364,7 +364,7 @@ impl ScopeIndex {
             b.session
                 .last_activity
                 .cmp(&a.session.last_activity)
-                .then(b.pk.cmp(&a.pk))
+                .then_with(|| a.session.id.cmp(&b.session.id))
         });
         out
     }
@@ -418,26 +418,22 @@ impl ScopeIndex {
             rank(a.state)
                 .cmp(&rank(b.state))
                 .then(b.session.live.last_at.cmp(&a.session.live.last_at))
-                .then(b.session.pk.cmp(&a.session.pk))
+                .then_with(|| a.session.session.id.cmp(&b.session.session.id))
         });
         out
     }
 
-    /// Beads still held open by a claim of a session under `dirs` that was
-    /// active since `since` (Unix ms), most recent first, each once.
-    pub fn open_beads(&self, dirs: &[String], since: i64) -> Vec<OpenBead> {
+    /// Last-observed task claims under `dirs`, with no observed close or
+    /// release, most recently active first, each once. Age or an unknown
+    /// activity time never proves that a claim ended. External state is unknown.
+    pub fn open_beads(&self, dirs: &[String]) -> Vec<OpenBead> {
         let mut out: Vec<OpenBead> = Vec::new();
+        let mut seen = BTreeSet::new();
         for s in self.sessions_under(dirs, None) {
             let Some(task) = &s.live.task else {
                 continue;
             };
-            if s.session
-                .last_activity
-                .is_none_or(|at| at.unix_ms() < since)
-            {
-                continue;
-            }
-            if !out.iter().any(|b| &b.id == task) {
+            if seen.insert(task.as_str()) {
                 out.push(OpenBead {
                     id: task.clone(),
                     session: s.session.id.to_string(),

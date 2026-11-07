@@ -93,10 +93,14 @@ fn canonical_query_and_typed_about_share_forks_withdrawal_and_snapshot_retiremen
     );
     let mut associated = Vec::new();
     let flow = pinned
-        .visit_assertions_about(&Reference::parse(about.1).unwrap(), |row| {
-            associated.push(row.fact.id);
-            Ok(std::ops::ControlFlow::Continue(()))
-        })
+        .visit_assertions_linked(
+            &Reference::parse(about.1).unwrap(),
+            &[polylogue_model::assertion::LinkRole::About],
+            |row| {
+                associated.push(row.fact.id);
+                Ok(std::ops::ControlFlow::Continue(()))
+            },
+        )
         .unwrap();
     assert!(matches!(flow, std::ops::ControlFlow::Continue(())));
     assert_eq!(associated, ["left", "right"]);

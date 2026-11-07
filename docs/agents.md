@@ -52,7 +52,7 @@ Sending a pack creates a delivery ([Deliveries](#deliveries)); preparing one wit
 
 **Fitting.**
 - Figures (counts, totals) are computed over every candidate before fitting, so they do not depend on the budget.
-- Items are added one line each, section by section, then expanded while budget remains; the last expansion is shortened, not dropped.
+- Candidate entries are fitted across all sections before expanding any passage. Each entry keeps its references and source attribution outside a losslessly JSON-quoted source prefix, on a datamarked `┃` line. Useful first-line prefixes share the remaining space before further expansion in stable order; a last expansion is shortened on a UTF-8 boundary, with its quote closed. The entry map counts whole, shortened and omitted candidates and names their expansion commands.
 - A section whose read failed or ran past its deadline renders "not available (reason)", never "none".
 - **Stable prefixes:** section order is fixed, items within a section are ordered by a stable key, and the manual comes first, so a later delivery to the same session appends a delta and earlier text keeps its prompt-cache reuse.
 - Large relevant documents are legitimate context; a table of contents is never mandatory.
@@ -66,11 +66,11 @@ A budget is a request-envelope field (`budget_tokens` on the socket, HTTP and MC
 |---|---|
 | brief at `startup` or `clear` | 10,000 tokens plus the manual |
 | brief at `resume` | 4,000 tokens |
-| brief at `compact` | 10,000 tokens plus the operator's prompts, which are never cut |
+| brief at `compact` | 10,000 tokens plus the manual and the operator's prompts, which are never cut |
 | takeover | 10,000 tokens per prompt, shared by every session the prompt names |
 | recall | 10,000 tokens |
 
-A budget smaller than the required context header is refused; compaction prompts remain outside the fitted budget.
+A budget too small for the required header, entry map and one candidate entry is refused; compaction prompts remain outside the fitted budget.
 
 Each harness's inline cap is declared with its hooks. A pack larger than the cap is injected as whole sections up to the cap, then a line naming the command that prints the whole delivery (`polylogue delivery:<id> read`); the delivery stores every byte, and text is never silently cut.
 
@@ -93,12 +93,12 @@ The session-start brief is injected by the `SessionStart` hook (and Hermes's fir
 2. The agent manual ([Agent manual](#agent-manual)), on `startup`, `clear` and `compact` only.
 3. **Assertions:** the operator's assertions and operator-accepted agent assertions (decisions, lessons, handoffs, problems, goals, questions, findings) scoped to the repository, the directory and the listed sessions. Unjudged agent, script and unattributed assertions are counted, with the query that lists them, and not inlined. Ruling, 2026-10-18: "for now, I think acutally don't inject those" (cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-18T14:13:05). The way to have them inlined is judgment: by the operator, or by a calibrated annotation pass.
 4. **Other agents working in this repository now** ([Live sessions](#live-sessions)): worktree, live state, task, last event; the caller excluded; "⚠ 2 agents in this worktree" when a peer shares the worktree.
-5. **Open tasks here:** tracker items claimed in this repository and not closed or released.
-6. **Recent sessions**, newest first, until the budget is full: title; time and harness; tool-call status; commits, pull requests and files changed; the task it still holds open; the last substantive operator prompt (at least six words, not a command or bare paste); the first lines of the last answer, datamarked.
+5. **Observed task claims here:** last-observed claims with no observed close or release, without an age cutoff. Their observation time and unknown external tracker state are labelled; Polylogue does not infer verified current activity.
+6. **Recent sessions**, newest first, until the budget is full: title; time and harness; tool-call status; commits, pull requests and files changed; the task it still holds open; the latest observed prose request with its recorded authorship and message reference, before the stored model answer; the first lines of the last answer, datamarked.
 7. **Plan and todo list** of the most recent session, as stored, with the reference of the tool call that set it.
 8. **Claims** made here since the last brief, with author, judgment state and any check result.
 9. **Open items here** ([measures.md#catalog](measures.md#catalog)): todo and plan items left open, sessions ending on an unanswered prompt, calls without results in ended sessions, with what later resolved any of them.
-10. **Notices** addressed to this session or its repository since its last brief, or within the last day ([Notices to sessions](#notices-to-sessions)).
+10. **Pending signal notices** addressed to this session or in its directory scope, without an age cutoff; any recorded outcome excludes a notice, including an uncertain or failed send. Records with unknown scope or a historical signal-effect state are counted with an inspection command; no global target or unsent state is inferred ([Notices to sessions](#notices-to-sessions)).
 11. **Pages here:** the table of contents of pages whose members include this session's role or which target this repository ([pages.md#agents-and-pages](pages.md#agents-and-pages)).
 12. **Code may have moved:** "HEAD is N commits past <anchor>" or "<anchor> is not in HEAD's history".
 13. **Machine section**, in primary mode only: read from a stored Sinex context pack under a 100 ms deadline, within a declared share of the budget. Standalone, the section is absent.
@@ -106,7 +106,7 @@ The session-start brief is injected by the `SessionStart` hook (and Hermes's fir
 
 **Latency.** The daemon answers a brief within 300 ms p95 warm and 1 s p95 cold, at any directory (`/` and a directory nobody worked in included); the hook allows 1.5 s including connection. A brief's reads are bounded by what it reports, not by how much work happened under its directory:
 - **Scope index.** The daemon keeps every main session's working directories, repository, activity, stored message count, live facts and task in memory, read once at start and brought forward from the change feed after each commit. Which sessions are under the directory, which work there now and which hold a task there costs no index read.
-- **Session summaries.** The derive step keeps what a brief says about each session (its last answer, files changed, commits, pull requests, an unanswered prompt, an unfinished tool call), so each listed session costs one row and its answer's text.
+- **Session summaries.** The derive step keeps what a brief says about each session (its last answer, files changed, commits, pull requests, an unanswered prompt, an unfinished tool call), so metadata entries need no session-body read. Only fitted expansions read the stored summary, the latest active nonduplicate prose request and eligible session assertions; direct scoped assertions and pending notices likewise select metadata before reading their fitted bodies.
 - **Deadline.** Sections run cheapest first (assertions, other agents, open tasks, recent sessions, notices) and stop a fifth of the remaining time, at most a second, before the request's deadline. A section that meets it is left out with reason `deadline`, the brief names it and the command that prints the whole brief (`polylogue brief --cwd DIR --deadline none`), and the hook injects the sections that are ready. A deadline never yields an empty brief while a section has items.
 - **Delivery off the answer path.** The answer does not wait for the writer: the delivery record is queued, the hook hands its `delivered` outcome over within 20 ms and exits, and the writer applies both in order, a repeated request ID once. A full writer queue never makes a brief wait: the record waits in the daemon, in order with its outcome event, and goes to the writer after its next commit. An outcome is recorded even when the hook has already exited. Until a delivery's record commits, the daemon remembers it as the recipient's latest brief, so a `resume` or `compact` brief right after it reports only what changed since.
 

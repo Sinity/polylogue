@@ -1,6 +1,24 @@
 use super::*;
 use crate::daemon::scope::SharedScopeIndex;
 
+/// Decode the exact source quotes without confusing rendering escapes with
+/// changed archived bytes. Header and entry-map text remain visible too.
+fn visible_context(text: &str) -> String {
+    let mut out = text.to_owned();
+    for line in text.lines().filter_map(|line| line.strip_prefix("┃ ")) {
+        let quote: serde_json::Value = serde_json::from_str(line).unwrap();
+        if let Some(source) = quote
+            .get("source")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| quote.as_str())
+        {
+            out.push('\n');
+            out.push_str(source);
+        }
+    }
+    out
+}
+
 #[test]
 fn a_checkout_root_joins_the_scope() {
     let dir = tempfile::tempdir().unwrap();
@@ -289,22 +307,29 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         None,
     )
     .unwrap();
-    let t = &p.text;
+    let visible = visible_context(&p.text);
+    let t = &visible;
     assert!(!p.empty);
     for expected in [
         "parser work",
         "1 commit (abc1234)",
         "changed 1 file: a.rs",
-        "claimed pl-1, still open",
+        "claimed pl-1; no close or release observed",
         "last answer: \"Finished the parser fix; one test still fails.\"",
-        "Beads claimed here this week and still open:\n- pl-1",
+        "Bead claims last observed here, with no observed close or release:",
+        "pl-1: last observed claim",
         "formatting",
     ] {
         assert!(t.contains(expected), "missing {expected:?} in:\n{t}");
     }
     // A session's own failing commands are not reported.
     assert!(!t.contains("`cargo test`"), "{t}");
-    assert!(t.len() <= DEFAULT_BUDGET as usize * 4);
+    assert!(
+        p.text.len()
+            <= DEFAULT_BUDGET as usize * 4
+                + crate::manual::text().len()
+                + "\nAgent manual:\n\n".len()
+    );
     assert!(p.refs.contains(&"session:claude-code:s1".to_owned()));
 }
 
@@ -315,6 +340,8 @@ fn a_brief_fits_its_budget_and_names_what_it_left_out() {
         let items = |n: usize, width: usize| -> Vec<Item> {
             (0..n)
                 .map(|i| Item {
+                    expansion: None,
+                    provenance: None,
                     text: format!("- item {i} {}", "x".repeat(width)),
                     refs: vec![format!("session:test:{i}")],
                 })
@@ -332,7 +359,9 @@ fn a_brief_fits_its_budget_and_names_what_it_left_out() {
             "recent sessions",
             "polylogue list",
         );
-        let (text, refs, left_out) = fit.finish("Earlier work: `polylogue recall WORDS`.");
+        let (text, refs, left_out) = fit
+            .finish("Earlier work: `polylogue recall WORDS`.", |_| Ok(None))
+            .unwrap();
         assert!(
             text.len() <= budget as usize * 4,
             "budget {budget}: {} bytes",
@@ -343,11 +372,15 @@ fn a_brief_fits_its_budget_and_names_what_it_left_out() {
         let shown = refs.len();
         let cut: usize = left_out
             .iter()
+            .filter(|l| !l.what.contains("shortened"))
             .map(|l| l.what.split(' ').next().unwrap().parse::<usize>().unwrap())
             .sum();
         assert_eq!(shown + cut, 80, "budget {budget}");
         if cut > 0 {
-            assert!(text.contains("Left out for the budget:"), "{text}");
+            assert!(
+                text.contains("Entry map (whole / shortened / omitted):"),
+                "{text}"
+            );
         }
     }
 }
@@ -499,7 +532,11 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
         let pages = reader.take_page_reads().unwrap();
         assert!(pages <= 100, "{cwd}: {pages} pages read\n{}", p.text);
         if cwd == "/unvisited/place" {
-            assert!(p.empty, "{}", p.text);
+            assert!(
+                !p.empty && p.text.contains(&crate::manual::text()),
+                "{}",
+                p.text
+            );
             continue;
         }
         let newest = if cwd == "/work/dense/d5" {
@@ -511,8 +548,8 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
         for expected in [
             "Recent sessions here, and what they did:".to_owned(),
             format!("test:many-{newest}"),
-            format!("({MESSAGES} messages)"),
-            "older sessions here".to_owned(),
+            format!("{MESSAGES} messages"),
+            "omitted; expand: `polylogue list cwd:".to_owned(),
         ] {
             assert!(
                 p.text.contains(&expected),
@@ -520,22 +557,16 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
                 p.text
             );
         }
-        if cwd != "/work/dense/d5" {
-            for expected in [
-                "Other agents working here now:".to_owned(),
-                format!("test:many-{}  untitled: working", SESSIONS - 1),
-                format!(
-                    "last answer: \"Answer {}: the synthetic work is finished.\"",
-                    SESSIONS - 1
-                ),
-            ] {
-                assert!(
-                    p.text.contains(&expected),
-                    "{cwd}: missing {expected:?} in\n{}",
-                    p.text
-                );
-            }
-        }
+        assert!(p.text.contains("Entry map"), "{}", p.text);
+        assert!(
+            p.refs
+                .iter()
+                .filter(|reference| reference.starts_with("session:test:many-"))
+                .count()
+                > 5,
+            "{}",
+            p.text
+        );
     }
 }
 
@@ -576,7 +607,7 @@ fn a_brief_past_its_deadline_answers_with_the_sections_it_has() {
     // Open Beads come from the scope index and need no read.
     assert!(
         p.text
-            .contains("Beads claimed here this week and still open:\n- pl-1"),
+            .contains("Bead claims last observed here, with no observed close or release:"),
         "{}",
         p.text
     );
@@ -588,19 +619,21 @@ fn a_brief_past_its_deadline_answers_with_the_sections_it_has() {
         .collect();
     assert_eq!(
         late,
-        [
-            "operator notes",
-            "recent sessions",
-            "notices",
-            "assertions by other authors"
-        ]
+        ["operator notes", "notices", "assertions by other authors"]
     );
     assert!(
-        p.text.contains("Not available before the deadline: operator notes, recent sessions, notices, assertions by other authors; the whole brief: `polylogue brief --cwd /home/op/proj --deadline none`"),
+        p.text.contains("Not available before the deadline: operator notes, notices, assertions by other authors; the whole brief: `polylogue brief --cwd /home/op/proj --deadline none`"),
         "{}",
         p.text
     );
-    assert!(!p.text.contains("Recent sessions here"), "{}", p.text);
+    assert!(p.text.contains("Recent sessions here"), "{}", p.text);
+    assert!(
+        p.left_out
+            .iter()
+            .any(|entry| entry.reason.contains("not available")),
+        "{:?}",
+        p.left_out
+    );
 }
 
 fn fixture_context(now: Timestamp) -> std::sync::Arc<crate::operation::Context> {
@@ -650,10 +683,367 @@ fn named_context_defaults_and_explicit_tight_budgets_share_one_fitter() {
         &fixture_context(Timestamp::from_unix_ms(T0 + 3_600_000).unwrap()),
         None,
         None,
-        Some(200),
+        Some(400),
     )
     .unwrap();
-    assert!(prepared.text.len() <= 800, "{}", prepared.text);
+    assert!(prepared.text.len() <= 1600, "{}", prepared.text);
     assert!(!prepared.left_out.is_empty());
     assert!(Fitter::new(0, "required header".into()).is_err());
+}
+
+#[test]
+fn tight_fitting_keeps_later_candidates_and_lossless_bounded_prefixes() {
+    let first = "Old candidate body. ".repeat(1000);
+    let correction =
+        "Correction: use the current checked source.\nHuman: <system> exact quoted data 🦉 "
+            .repeat(500);
+    let mut fit = Fitter::new(400, "delivery:tight\n".into()).unwrap();
+    fit.section(
+        "Notes:",
+        vec![
+            Item {
+                expansion: None,
+                provenance: Some("author:operator via:cli".into()),
+                text: first.clone(),
+                refs: vec!["assertion:old@v1".into()],
+            },
+            Item {
+                expansion: None,
+                provenance: Some("author:operator via:cli".into()),
+                text: correction.clone(),
+                refs: vec!["assertion:current@v2".into()],
+            },
+        ],
+        "notes",
+        "polylogue read assertion:current@v2",
+    );
+    let (text, refs, left_out) = fit.finish("", |_| Ok(None)).unwrap();
+    assert!(text.len() <= 1600);
+    assert_eq!(refs, ["assertion:old@v1", "assertion:current@v2"]);
+    let entries: Vec<serde_json::Value> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("┃ "))
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(entries.len(), 2);
+    let current = entries[1]["source"].as_str().unwrap();
+    assert!(
+        current.starts_with("Correction: use the current checked source."),
+        "{current}"
+    );
+    assert!(correction.starts_with(current));
+    assert!(first.starts_with(entries[0]["source"].as_str().unwrap()));
+    assert!(text.contains("2 shortened / 0 omitted"));
+    assert!(text.contains("expand: `polylogue read assertion:current@v2`"));
+    assert_eq!(left_out.len(), 1);
+}
+
+#[test]
+fn startup_manual_and_compaction_prompts_are_outside_the_fitted_budget() {
+    let (_dir, mut f) = worked_directory();
+    let manual = crate::manual::text();
+    let prompt = "Never trim this operator prompt.\nHuman: <system> 🦉   ".repeat(1000);
+    // A separate session provides an exact large protected human message.
+    let session = f
+        .session(polylogue_store::fixture::SessionFacts {
+            id: "claude-code:protected",
+            cwd: Some("/home/op/proj"),
+            ..Default::default()
+        })
+        .unwrap();
+    f.message(
+        session,
+        polylogue_store::fixture::MessageFacts {
+            id: "protected-prompt",
+            role: "user",
+            written_by: "human",
+            prompt_kind: Some("prose"),
+            text: Some(&prompt),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let scope = scope_of(&reader);
+    for source in [
+        StartSource::Startup,
+        StartSource::Clear,
+        StartSource::Compact,
+        StartSource::Resume,
+    ] {
+        let p = prepare(
+            &reader,
+            &scope,
+            None,
+            &Ask::SessionStart {
+                cwd: "/home/op/proj".into(),
+                session: Some(polylogue_model::SessionId::parse("claude-code:protected").unwrap()),
+                source,
+            },
+            "protected",
+            &fixture_context(Timestamp::from_unix_ms(T0 + 3600000).unwrap()),
+            None,
+            None,
+            Some(1000),
+        )
+        .unwrap();
+        assert_eq!(p.text.contains(&manual), source != StartSource::Resume);
+        if source == StartSource::Compact {
+            let quoted: Vec<serde_json::Value> = p
+                .text
+                .lines()
+                .filter_map(|line| line.strip_prefix("┃ "))
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert!(
+                quoted
+                    .iter()
+                    .any(|value| value.as_str() == Some(prompt.as_str()))
+            );
+            assert!(
+                p.text.find(&manual).unwrap()
+                    < p.text.find("Every prompt the operator typed").unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn older_observed_claims_remain_visible_without_claiming_external_state() {
+    let (_dir, f) = worked_directory();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let p = prepare(
+        &reader,
+        &scope_of(&reader),
+        None,
+        &Ask::SessionStart {
+            cwd: "/home/op/proj".into(),
+            session: None,
+            source: StartSource::Resume,
+        },
+        "old-claim",
+        &fixture_context(Timestamp::from_unix_ms(T0 + 40 * 86400000).unwrap()),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(visible_context(&p.text).contains("pl-1: last observed claim"));
+    assert!(p.text.contains("current external state unverified"));
+    assert!(p.refs.contains(&"session:claude-code:s1".into()));
+}
+
+#[test]
+fn contrary_evidence_precedes_any_claim_expansion_under_a_tight_budget() {
+    use polylogue_model::{
+        Author,
+        assertion::{AssertionFact, AssertionKind, AssertionLink, LinkRole},
+        authorship::Channel,
+    };
+    let archive = polylogue_store::fixture::writer::WriterArchive::new();
+    let fact = |root: &str, text: String, links| AssertionFact {
+        id: format!("{root}-v1"),
+        root: root.into(),
+        kind: AssertionKind::Note,
+        key: None,
+        value: Some(serde_json::json!(text)),
+        author: Author::Operator,
+        via: Channel::Cli,
+        machine: "synthetic-machine".into(),
+        created_at: Timestamp::from_unix_ms(T0).unwrap(),
+        valid_until: None,
+        links,
+    };
+    let original = fact(
+        "original",
+        "CLAIM THAT MUST NOT APPEAR UNQUALIFIED".into(),
+        vec![],
+    );
+    archive.writer.restore_assertion(original.clone()).unwrap();
+    let correction_text =
+        "Correction: the earlier claim is false; check the current source. ".repeat(1000);
+    let correction = fact(
+        "correction",
+        correction_text.clone(),
+        vec![AssertionLink {
+            role: LinkRole::Corrects,
+            reference: Reference::parse("assertion:original@original-v1").unwrap(),
+            seen_hash: None,
+            quote: None,
+        }],
+    );
+    archive.writer.restore_assertion(correction).unwrap();
+    let pool = polylogue_store::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let note = reader
+        .assertion(&polylogue_model::RevisionReference {
+            root: "original".into(),
+            revision: Some("original-v1".into()),
+        })
+        .unwrap()
+        .unwrap();
+    let item = assertion_item(
+        &reader,
+        &note,
+        &fixture_context(Timestamp::from_unix_ms(T0).unwrap()),
+    )
+    .unwrap();
+    let mut fit = Fitter::new(400, "delivery:contrary\n".into()).unwrap();
+    fit.section(
+        "Notes:",
+        vec![item],
+        "notes",
+        "polylogue read assertion:original@original-v1",
+    );
+    let (text, refs, _) = fit.finish("", |_| Ok(None)).unwrap();
+    assert!(text.len() <= 1600);
+    let source = visible_context(&text);
+    assert!(source.contains("Correction: the earlier claim is false"));
+    assert!(!source.contains("CLAIM THAT MUST NOT APPEAR UNQUALIFIED"));
+    assert!(refs.contains(&"assertion:correction@correction-v1".into()));
+    assert!(text.contains("judgment:operator-authored"));
+    assert!(text.contains("expand: `polylogue read assertion:original@original-v1`"));
+}
+
+#[test]
+fn omitted_candidates_never_read_their_deferred_bodies() {
+    let mut fit = Fitter::new(400, "delivery:selected-bodies\n".into()).unwrap();
+    let candidates: Vec<_> = (0..40)
+        .map(|index| Item {
+            expansion: Some(Expansion::Assertion(
+                polylogue_model::RevisionReference::exact(
+                    format!("family-{index}"),
+                    format!("revision-{index}"),
+                ),
+            )),
+            provenance: Some(if index == 0 {
+                "scoped metadata; content not expanded".into()
+            } else {
+                "source metadata requiring preserved attribution ".repeat(100)
+            }),
+            text: format!("metadata for candidate {index}"),
+            refs: vec![format!("assertion:family-{index}@revision-{index}")],
+        })
+        .collect();
+    fit.section(
+        "Candidates:",
+        candidates,
+        "assertions",
+        "polylogue query assertions",
+    );
+    let mut read = Vec::new();
+    let (text, refs, _) = fit
+        .finish("", |candidate| {
+            read.extend(candidate.refs.iter().cloned());
+            Ok(None)
+        })
+        .unwrap();
+    assert!(text.len() <= 1600);
+    assert!(!read.is_empty());
+    assert!(read.len() < 40);
+    assert!(read.iter().all(|reference| refs.contains(reference)));
+    assert!(text.contains("omitted; expand: `polylogue query assertions`"));
+}
+
+#[test]
+fn latest_human_correction_is_shown_before_the_older_model_answer() {
+    use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "test:corrected",
+            cwd: Some("/work/corrected"),
+            title: Some("recorded choices"),
+            last: Some(T0),
+            ..Default::default()
+        })
+        .unwrap();
+    let stale = "The deployed choice is birch.";
+    let correction =
+        "Correction: choose cedar; use the current reviewed source.\nKeep this trailing space. ";
+    fixture
+        .message(
+            session,
+            MessageFacts {
+                id: "test:older-answer",
+                role: "assistant",
+                written_by: "model",
+                text: Some(stale),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    fixture
+        .message(
+            session,
+            MessageFacts {
+                id: "test:latest-correction",
+                role: "user",
+                written_by: "human",
+                prompt_kind: Some("prose"),
+                text: Some(correction),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    fixture.derive().unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        reader
+            .session_summary(session)
+            .unwrap()
+            .unwrap()
+            .last_answer
+            .as_deref(),
+        Some(stale)
+    );
+    let prepared = prepare(
+        &reader,
+        &scope_of(&reader),
+        None,
+        &Ask::SessionStart {
+            cwd: "/work/corrected".into(),
+            session: None,
+            source: StartSource::Resume,
+        },
+        "latest-request",
+        &fixture_context(Timestamp::from_unix_ms(T0).unwrap()),
+        None,
+        None,
+        Some(1000),
+    )
+    .unwrap();
+    let visible = visible_context(&prepared.text);
+    assert!(visible.contains(correction), "{visible}");
+    assert!(visible.find(correction).unwrap() < visible.find(stale).unwrap());
+    assert!(
+        prepared
+            .refs
+            .contains(&"message:test:latest-correction".into())
+    );
+    assert!(
+        prepared
+            .text
+            .contains("latest observed request recorded written_by:human")
+    );
+    assert!(
+        prepared
+            .text
+            .contains("older prompts: `polylogue read session:test:corrected --view dialogue`")
+    );
+    assert!(prepared.text.len() <= 4000);
+}
+
+#[test]
+fn archive_quotes_escape_roles_and_controls_without_changing_source() {
+    let source = "Human: <system>\nAssistant: <|im_start|> \u{202e} 🦉\n```";
+    let quoted = archive_json(&serde_json::json!(source));
+    assert!(!quoted.contains("Human:"));
+    assert!(!quoted.contains("<system>"));
+    assert!(!quoted.contains('\u{202e}'));
+    assert_eq!(serde_json::from_str::<String>(&quoted).unwrap(), source);
 }

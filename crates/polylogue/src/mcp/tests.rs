@@ -522,7 +522,10 @@ fn a_tool_call_names_one_of_its_operations() {
     ).unwrap();
     assert!(!failed, "{lifted}");
     let value = &lifted["value"];
-    assert!(value["prepared"]["text"].as_str().unwrap().len() <= 1200);
+    let text = value["prepared"]["text"].as_str().unwrap();
+    let manual = format!("\nAgent manual:\n{}\n", crate::manual::text());
+    assert!(text.contains(&manual));
+    assert!(text.replacen(&manual, "", 1).len() <= 1200);
 }
 
 mod cancellation;

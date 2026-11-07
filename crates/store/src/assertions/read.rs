@@ -42,19 +42,39 @@ impl Reader<'_> {
         Ok(row)
     }
 
-    /// Streams all current assertions with an exact `about` link, including
+    /// Eligibility metadata without materializing an assertion's value.
+    /// A missing revision is not an unexpired assertion.
+    pub fn assertion_is_unexpired(
+        &self,
+        reference: &RevisionReference,
+        at: Timestamp,
+    ) -> Result<bool> {
+        let Some(exact) = self.resolved_assertion_revision(reference)? else {
+            return Ok(false);
+        };
+        let conn = self.conn()?;
+        let source = Source::reading(conn)?;
+        let value = conn.query_row(&source.sql("SELECT EXISTS(SELECT 1 FROM @source.assertion WHERE root=?1 AND id=?2 AND (valid_until IS NULL OR valid_until>?3))"), params![exact.root, exact.revision, at.unix_ms()], |row| row.get(0))?;
+        self.check()?;
+        Ok(value)
+    }
+
+    /// Streams all current assertions with an exact link in `roles`, including
     /// every conflicting head. False currency never becomes a chosen winner.
-    pub fn visit_assertions_about(
+    pub fn visit_assertions_linked(
         &self,
         reference: &Reference,
+        roles: &[LinkRole],
         mut visit: impl FnMut(Assertion) -> Result<ControlFlow<()>>,
     ) -> Result<ControlFlow<()>> {
         let conn = self.conn()?;
         let source = Source::reading(conn)?;
         let mut statement = conn.prepare_cached(&source.sql(
-            "SELECT a.root,a.id FROM @source.link l JOIN @source.assertion a ON a.id=l.record WHERE l.ref=?1 AND l.role='about' ORDER BY a.root,a.id",
+            "SELECT DISTINCT a.root,a.id FROM @source.link l JOIN @source.assertion a ON a.id=l.record WHERE l.ref=?1 AND l.role IN (SELECT value FROM json_each(?2)) ORDER BY a.root,a.id",
         ))?;
-        let mut rows = statement.query([reference.to_string()])?;
+        let roles =
+            serde_json::to_string(&roles.iter().map(|role| role.as_str()).collect::<Vec<_>>())?;
+        let mut rows = statement.query(params![reference.to_string(), roles])?;
         while let Some(row) = rows.next()? {
             self.check()?;
             let root = row.get::<_, String>(0)?;

@@ -50,6 +50,8 @@ impl OpenItems {
 /// One prompt a person typed, for re-grounding after compaction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Prompt {
+    /// Recorded classification, not independently verified person identity.
+    pub written_by: String,
     pub message_id: String,
     pub at: Option<Timestamp>,
     pub text: String,
@@ -178,6 +180,7 @@ impl Reader<'_> {
                     last.text.push_str(&text);
                 }
                 _ => out.push(Prompt {
+                    written_by: "human".into(),
                     message_id,
                     at: at.and_then(Timestamp::from_unix_ms),
                     text,
@@ -185,6 +188,36 @@ impl Reader<'_> {
             }
         }
         Ok(out)
+    }
+
+    /// Latest observed request on the session's own active path. The ordering
+    /// lookup uses the existing session-message index; only the selected
+    /// message's text blocks are read. Harness injections and commands are not
+    /// requests. A user role with unknown authorship stays explicitly unknown.
+    pub fn latest_prompt(&self, session: &str) -> Result<Option<Prompt>> {
+        if !self.hidden_sessions(&[session.to_owned()])?.is_empty() {
+            return Ok(None);
+        }
+        let conn = self.conn()?;
+        let selected = conn.prepare_cached(
+            "SELECT m.pk,m.id,m.at,m.written_by FROM session s JOIN message m INDEXED BY message_session ON m.session_pk=s.pk WHERE s.id=?1 AND m.duplicate_of IS NULL AND COALESCE(m.on_active_path,1)=1 AND (m.written_by='human' OR (m.role='user' AND m.written_by='unknown')) AND COALESCE(m.prompt_kind,'prose')='prose' ORDER BY m.order_input_id DESC,m.seq DESC,m.record_position DESC,m.id DESC LIMIT 1"
+        )?.query_row([session], |row| Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<i64>>(2)?,row.get::<_,String>(3)?))).optional()?;
+        let Some((pk, message_id, at, written_by)) = selected else {
+            return Ok(None);
+        };
+        let mut parts = Vec::new();
+        let mut statement = conn.prepare_cached("SELECT t.body FROM block b JOIN text t ON t.id=b.text_id WHERE b.message_pk=?1 AND b.kind='text' ORDER BY b.idx")?;
+        for body in statement.query_map([pk], |row| row.get::<_, Vec<u8>>(0))? {
+            self.check()?;
+            parts.push(crate::encoding::unpack_text(&body?)?);
+        }
+        self.check()?;
+        Ok(Some(Prompt {
+            written_by,
+            message_id,
+            at: at.and_then(Timestamp::from_unix_ms),
+            text: parts.join("\n"),
+        }))
     }
 
     /// What a session left open; `None` for an unknown session.
@@ -393,6 +426,34 @@ impl Reader<'_> {
         Ok((!parts.is_empty()).then(|| parts.join("\n")))
     }
 
+    /// Unacknowledged signal metadata in this directory scope or addressed
+    /// to this session. No delivery body is loaded until its entry is fitted.
+    /// Any outcome excludes a notice, including an uncertain or failed send.
+    /// The second value counts records needing scope/effect-state inspection.
+    /// NULL scope never proves a global target. Historical signal-effect
+    /// outboxes keep attempt/unknown state with their owner; they are not
+    /// inferred to be unsent context notices from missing delivery ACKs.
+    pub fn pending_notice_candidates(
+        &self,
+        directories: &[String],
+        session: Option<&str>,
+    ) -> Result<(Vec<DeliveryRow>, u64)> {
+        let selection = serde_json::to_string(
+            &serde_json::json!({"directories":directories,"session":session}),
+        )?;
+        let candidates = self.deliveries(
+            "WHERE d.sender='signal' AND d.signal IS NULL AND NOT EXISTS (SELECT 1 FROM source_delivery_event e WHERE e.delivery=d.id) AND (d.recipient_id=json_extract(?1,'$.session') OR (d.recipient_id IS NULL AND d.cwd IS NOT NULL AND (EXISTS (SELECT 1 FROM json_each(?1,'$.directories') scope WHERE (scope.value='/' AND substr(d.cwd,1,1)='/') OR d.cwd=rtrim(scope.value,'/') OR substr(d.cwd,1,length(rtrim(scope.value,'/'))+1)=rtrim(scope.value,'/')||'/'))))",
+            &selection,
+        )?;
+        let inspect_count: i64 = self.conn()?.query_row("SELECT count(*) FROM source_delivery d WHERE d.sender='signal' AND ((d.recipient_id IS NULL AND d.cwd IS NULL) OR d.signal IS NOT NULL) AND NOT EXISTS (SELECT 1 FROM source_delivery_event e WHERE e.delivery=d.id)", [], |row| row.get(0))?;
+        self.check()?;
+        Ok((
+            candidates,
+            u64::try_from(inspect_count)
+                .map_err(|_| crate::StoreError::Invalid("negative notice count".into()))?,
+        ))
+    }
+
     /// Signal notices recorded since `since` (Unix ms), newest first, with
     /// their text and what happened to each.
     pub fn notices_since(&self, since: i64) -> Result<Vec<(DeliveryRow, String)>> {
@@ -411,5 +472,143 @@ impl Reader<'_> {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod notice_candidate_tests {
+    use super::*;
+    use crate::fixture::{authored::operator_request, writer::WriterArchive};
+    use polylogue_model::user::{Delivery, UserWrite};
+    #[test]
+    fn old_unacknowledged_notices_are_scoped_metadata_until_selected() {
+        let archive = WriterArchive::new();
+        let deliver = |id: &str, cwd: Option<&str>| {
+            archive
+                .writer
+                .user(operator_request(
+                    id.into(),
+                    UserWrite::Deliver(Delivery {
+                        recipient_kind: "operator".into(),
+                        recipient_id: None,
+                        sender: "signal".into(),
+                        event: "signal".into(),
+                        cwd: cwd.map(str::to_owned),
+                        text: format!("{id} {}", "body".repeat(10000)),
+                        refs: vec![],
+                        left_out: vec![],
+                    }),
+                ))
+                .unwrap();
+        };
+        deliver("old-pending", Some("/work/proj/child"));
+        deliver("sibling", Some("/work/project"));
+        deliver("acknowledged", Some("/work/proj"));
+        deliver("unknown-scope", None);
+        archive
+            .writer
+            .user(operator_request(
+                "ack-old".into(),
+                UserWrite::DeliveryEvent {
+                    delivery: "acknowledged".into(),
+                    what: polylogue_model::DeliveryOutcome::Delivered,
+                    detail: None,
+                },
+            ))
+            .unwrap();
+        let pool = crate::ReadPool::open(&archive.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        let (candidates, inspect_count) = reader
+            .pending_notice_candidates(&["/work/proj".into()], None)
+            .unwrap();
+        assert_eq!(inspect_count, 1);
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.id.as_str())
+                .collect::<Vec<_>>(),
+            ["old-pending"]
+        );
+        assert_eq!(candidates[0].at, Timestamp::from_unix_ms(1).unwrap());
+        assert!(
+            reader
+                .delivery(&candidates[0].id)
+                .unwrap()
+                .unwrap()
+                .1
+                .starts_with("old-pending body")
+        );
+    }
+}
+
+#[cfg(test)]
+mod latest_prompt_tests {
+    use super::*;
+    use crate::fixture::{Fixture, MessageFacts, SessionFacts};
+    #[test]
+    fn latest_request_keeps_unknown_authorship_and_skips_injection_commands_and_old_branches() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = Fixture::new(dir.path()).unwrap();
+        let session = fixture
+            .session(SessionFacts {
+                id: "test:requests",
+                ..Default::default()
+            })
+            .unwrap();
+        for (id, by, kind, active, text) in [
+            ("test:human", "human", "prose", true, "original human text"),
+            (
+                "test:unknown-user",
+                "unknown",
+                "prose",
+                true,
+                "current observed user text\nPreserve these spaces.  ",
+            ),
+            (
+                "test:injected",
+                "harness",
+                "injected_context",
+                true,
+                "injected context is not a request",
+            ),
+            (
+                "test:branch",
+                "human",
+                "prose",
+                false,
+                "off-branch request is not current",
+            ),
+            (
+                "test:command",
+                "human",
+                "command",
+                true,
+                "/an-observed-command",
+            ),
+        ] {
+            fixture
+                .message(
+                    session,
+                    MessageFacts {
+                        id,
+                        role: "user",
+                        written_by: by,
+                        prompt_kind: Some(kind),
+                        on_active_path: Some(active),
+                        text: Some(text),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+        let pool = fixture.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        let prompt = reader.latest_prompt("test:requests").unwrap().unwrap();
+        assert_eq!(prompt.message_id, "test:unknown-user");
+        assert_eq!(prompt.written_by, "unknown");
+        assert_eq!(
+            prompt.text,
+            "current observed user text\nPreserve these spaces.  "
+        );
     }
 }

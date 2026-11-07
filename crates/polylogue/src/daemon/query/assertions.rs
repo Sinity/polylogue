@@ -50,7 +50,7 @@ fn text(conditions: &str) -> String {
     }
 }
 
-fn ids(
+pub(crate) fn ids(
     reader: &Reader<'_>,
     conditions: &str,
     context: &std::sync::Arc<crate::operation::Context>,
@@ -91,7 +91,7 @@ fn page(
             embeddings: false,
             ranking_identity: None,
             near: None,
-            fields: &[],
+            fields: &["root".to_owned(), "id".to_owned()],
         },
     )
     .and_then(|answer| answer.value.into_rows())

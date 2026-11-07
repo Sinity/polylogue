@@ -413,8 +413,5 @@ fn timeout_outcome_requires_positive_preparation_without_waiting_for_the_writer(
     let reader = d.daemon.reads.reader().unwrap();
     assert!(reader.delivery("unconfirmed-prepare").unwrap().is_none());
     let delivery = reader.delivery(&id).unwrap().unwrap();
-    assert_eq!(
-        serde_json::to_value(delivery).unwrap()["outcome"],
-        "not_sent"
-    );
+    assert!(delivery.0.events.iter().any(|event| event == "not_sent"));
 }

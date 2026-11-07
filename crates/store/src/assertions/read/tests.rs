@@ -455,3 +455,53 @@ fn a_missing_request_is_absent_and_request_content_cannot_be_removed() {
             .is_some()
     );
 }
+
+#[test]
+fn expiry_metadata_does_not_materialize_the_assertion_body() {
+    let (_dir, archive, _lock, writer, reads) = setup();
+    let mut note = statement(AssertionKind::Note, "repo:morrow", "synthetic body");
+    note.valid_until = Some(polylogue_model::Timestamp::from_unix_ms(10).unwrap());
+    let created = writer
+        .user(crate::fixture::authored::operator_request(
+            "expiry-metadata".into(),
+            UserWrite::Assert {
+                assertions: vec![note],
+            },
+        ))
+        .unwrap();
+    // A body that cannot decode discriminates metadata reads from loading the
+    // whole assertion. Expiry and identity remain valid synthetic metadata.
+    let conn = rusqlite::Connection::open(archive.archive_db()).unwrap();
+    conn.execute(
+        "UPDATE assertion SET value='malformed-json' WHERE id=?1",
+        [&created.id],
+    )
+    .unwrap();
+    let reader = reads.reader().unwrap();
+    let reference = RevisionReference::exact(created.id.clone(), created.id);
+    assert!(
+        reader
+            .assertion_is_unexpired(
+                &reference,
+                polylogue_model::Timestamp::from_unix_ms(9).unwrap()
+            )
+            .unwrap()
+    );
+    assert!(
+        !reader
+            .assertion_is_unexpired(
+                &reference,
+                polylogue_model::Timestamp::from_unix_ms(10).unwrap()
+            )
+            .unwrap()
+    );
+    assert!(reader.assertion(&reference).is_err());
+    assert!(
+        !reader
+            .assertion_is_unexpired(
+                &RevisionReference::exact("missing".into(), "missing".into()),
+                polylogue_model::Timestamp::from_unix_ms(9).unwrap()
+            )
+            .unwrap()
+    );
+}

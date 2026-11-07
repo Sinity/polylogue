@@ -111,7 +111,7 @@ fn live_sessions_and_open_beads_come_from_the_held_facts() {
         ]
     );
     assert_eq!(index.live_under(&dirs, None, NOW).len(), 3);
-    assert!(index.open_beads(&dirs, NOW - 120_000).is_empty());
+    assert!(index.open_beads(&dirs).is_empty());
 }
 
 /// law: scope-follows-change-feed
@@ -161,4 +161,18 @@ fn live_facts_are_read_from_the_session_live_columns() {
     assert_eq!(held.waiting_on(), Some("question"));
     assert!(!held.open_tool_call());
     assert_eq!((held.todo(), held.task()), (None, None));
+}
+
+#[test]
+fn equal_activity_uses_stable_session_identity_instead_of_row_admission() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    session(&mut f, "test:a", "/work/proj", None, NOW);
+    session(&mut f, "test:b", "/work/proj", None, NOW);
+    let pool = f.reads().unwrap();
+    let index = ScopeIndex::new(pool.reader().unwrap().scope_changes(None).unwrap());
+    assert_eq!(
+        ids(index.sessions_under(&["/work/proj".into()], None)),
+        ["test:a", "test:b"]
+    );
 }
