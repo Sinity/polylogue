@@ -43,7 +43,12 @@ fn query_result(
             crate::query::Param::Text(value) => crate::SqlValue::Text(value.clone()),
         })
         .collect::<Vec<_>>();
-    reader.with_clock(&program.clock, || reader.query(&program.sql, &parameters))
+    let mut rows = reader.with_clock(&program.clock, || reader.query(&program.sql, &parameters))?;
+    for row in &mut rows {
+        crate::query::execute::present(&program, row)
+            .unwrap_or_else(|error| panic!("{text}: {error}"));
+    }
+    Ok(rows)
 }
 
 #[test]

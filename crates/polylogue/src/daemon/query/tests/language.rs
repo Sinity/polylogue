@@ -42,12 +42,11 @@ fn values(params: &[Param]) -> Vec<SqlValue> {
 fn run(reader: &Reader<'_>, text: &str) -> Result<Value, QueryError> {
     let program = compile(text, &options())?;
     let mut rows = reader
-        .query(&program.sql, &values(&program.params))
+        .query_rows(&program)
         .unwrap_or_else(|e| panic!("{text}: {e}"));
     for row in &mut rows {
-        row.as_object_mut()
-            .unwrap()
-            .retain(|name, _| !name.starts_with('_'));
+        polylogue_store::query::execute::present(&program, row)
+            .unwrap_or_else(|error| panic!("{text}: {error}"));
     }
     Ok(json!({"rows": rows, "outcome": if rows.is_empty() {"empty"} else {"rows"}}))
 }
