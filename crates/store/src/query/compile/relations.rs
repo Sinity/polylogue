@@ -992,9 +992,9 @@ impl Compiler<'_> {
         let input_from = if let Some(context) = &native {
             let key = context.a.expand(units::spec(context.unit).key);
             format!(
-                "({}) r JOIN ({}) ON {key}=r.{}",
-                input.program.sql,
+                "{} JOIN ({}) r ON {key}=r.{}",
                 base_from(context.unit, &context.a),
+                input.program.sql,
                 column_sql(&input.sources[0].key)
             )
         } else {

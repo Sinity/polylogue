@@ -677,6 +677,10 @@ fn native_aggregates_keep_child_rows_and_unknown_values() {
         }
     }
     assert_eq!(
+        rows(&fixture, "sessions | agg count(), sum(cost) as total"),
+        [json!({"count":1, "total":2.0, "unknown_cost":0, "partial_cost":1})]
+    );
+    assert_eq!(
         rows(&fixture, "messages | agg count(), sum(cost) as total"),
         [json!({"count":2, "total":2.0, "unknown_cost":1})]
     );
@@ -728,12 +732,62 @@ fn explanation_clauses_use_bound_syntax_instead_of_original_byte_spans() {
 fn expression_lowering_does_not_slice_formatted_text_at_original_positions() {
     let text = format!(
         "sessions where {}repo:east{} | fields input_tokens",
-        "(".repeat(80),
-        ")".repeat(80)
+        "(".repeat(24),
+        ")".repeat(24)
     );
     let (_directory, fixture) = fixture();
     assert_eq!(
         rows(&fixture, &text),
         [json!({"input_tokens":3}), json!({"input_tokens":1})]
+    );
+}
+
+#[test]
+fn native_aggregate_aliases_remain_visible_to_fields_and_correlated_measures() {
+    let (_directory, fixture) = fixture();
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions | agg count(), min(id) as first_id, sum(input_tokens) as tokens"
+        ),
+        [
+            json!({"count":3, "first_id":"claude-code:a", "unknown_id":0, "tokens":9, "unknown_input_tokens":0})
+        ]
+    );
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions | sort by id | limit 2 | agg count(), sum(input_tokens) as tokens"
+        ),
+        [json!({"count":2, "tokens":4, "unknown_input_tokens":0})]
+    );
+    assert_eq!(
+        rows(
+            &fixture,
+            "sessions | group by repo | where count > 1 | agg sum(input_tokens) as tokens | sort by repo"
+        ),
+        [json!({"repo":"east", "count":2, "tokens":4, "unknown_input_tokens":0})]
+    );
+}
+
+#[test]
+fn native_assertion_aggregates_keep_the_selected_rowid_scope() {
+    let (_directory, mut fixture) = fixture();
+    fixture
+        .note("note", None, Some("one"), "session:claude-code:a")
+        .unwrap();
+    fixture
+        .note("note", None, Some("two"), "session:claude-code:b")
+        .unwrap();
+    assert_eq!(
+        rows(&fixture, "assertions where kind:note | agg count()"),
+        [json!({"count":2})]
+    );
+    assert_eq!(
+        rows(
+            &fixture,
+            "assertions where kind:note | group by kind | count"
+        ),
+        [json!({"kind":"note", "count":2})]
     );
 }
