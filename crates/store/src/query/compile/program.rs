@@ -49,7 +49,31 @@ impl<'a> Compiler<'a> {
             let rank = self.rank.clone();
             let alone = self.cond(c, &scope, false)?;
             self.rank = rank;
-            why.push((self.text[c.span.start..c.span.end].to_owned(), alone));
+            // Bound conditions retain their original spans, while the compiler's
+            // text is a formatted expansion. Render the bound clause itself.
+            let clause = Query {
+                source: Source::Unit {
+                    unit: scope.unit.name().into(),
+                    implicit: false,
+                    condition: Some(c.clone()),
+                },
+                transforms: vec![],
+                attach: vec![],
+            };
+            let catalog = self
+                .catalog
+                .clone()
+                .unwrap_or_else(|| std::sync::Arc::new(self.opts.catalog()));
+            let clause = query_language::format::format_query(&clause, &catalog)
+                .map_err(|error| QueryError::language(error, self.text))?;
+            let prefix = format!("{} where ", scope.unit.name());
+            why.push((
+                clause
+                    .strip_prefix(&prefix)
+                    .expect("unit clause")
+                    .to_owned(),
+                alone,
+            ));
         }
         if !self.near_needed {
             self.near_request = None;

@@ -633,3 +633,107 @@ fn grouped_reference_values_keep_field_metadata_without_native_row_targets() {
         assert!(seen > 0);
     }
 }
+
+#[test]
+fn native_aggregates_keep_child_rows_and_unknown_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(directory.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "claude-code:aggregates",
+            ..Default::default()
+        })
+        .unwrap();
+    for (id, cost, exits) in [
+        ("claude-code:one", Some(2_000_000_000), vec![Some(0), None]),
+        ("claude-code:two", None, vec![Some(1)]),
+    ] {
+        let message = fixture
+            .message(
+                session,
+                MessageFacts {
+                    id,
+                    role: "assistant",
+                    written_by: "model",
+                    cost_nusd: cost,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        for exit_code in exits {
+            fixture
+                .tool_call(
+                    session,
+                    message,
+                    CallFacts {
+                        tool: "Bash",
+                        action: "shell",
+                        outcome: "ok",
+                        exit_code,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+    }
+    assert_eq!(
+        rows(&fixture, "messages | agg count(), sum(cost) as total"),
+        [json!({"count":2, "total":2.0, "unknown_cost":1})]
+    );
+    assert_eq!(
+        rows(
+            &fixture,
+            "tool_calls | sort by exit_code desc | limit 2 | agg count(), sum(exit_code) as total"
+        ),
+        [json!({"count":2, "total":1, "unknown_exit_code":0})]
+    );
+    assert_eq!(
+        rows(
+            &fixture,
+            "tool_calls | group by message | agg count(), sum(exit_code) as total | sort by message"
+        ),
+        [
+            json!({"message":"claude-code:one", "count":2, "total":0, "unknown_exit_code":1}),
+            json!({"message":"claude-code:two", "count":1, "total":1, "unknown_exit_code":0})
+        ]
+    );
+}
+
+#[test]
+fn explanation_clauses_use_bound_syntax_instead_of_original_byte_spans() {
+    let text = "messages where active:* (((active:false AND (active:false OR active:false)) AND active:false)) walrus";
+    let program = compile(text, &opts(&[])).unwrap();
+    assert!(
+        program
+            .why
+            .iter()
+            .any(|clause| clause.clause.contains("active"))
+    );
+    assert!(
+        program
+            .why
+            .iter()
+            .any(|clause| clause.clause.contains("walrus"))
+    );
+    let unicode = compile("messages where model:\"Żółw\" AND active:false", &opts(&[])).unwrap();
+    assert!(
+        unicode
+            .why
+            .iter()
+            .any(|clause| clause.clause.contains("Żółw"))
+    );
+}
+
+#[test]
+fn expression_lowering_does_not_slice_formatted_text_at_original_positions() {
+    let text = format!(
+        "sessions where {}repo:east{} | fields input_tokens",
+        "(".repeat(80),
+        ")".repeat(80)
+    );
+    let (_directory, fixture) = fixture();
+    assert_eq!(
+        rows(&fixture, &text),
+        [json!({"input_tokens":3}), json!({"input_tokens":1})]
+    );
+}

@@ -20,10 +20,7 @@ impl Expressions<'_> {
         at: usize,
     ) -> Result<(String, ColKind), QueryError> {
         let lower = field.to_ascii_lowercase();
-        let span = Span {
-            start: self.text[at..].find(field).map_or(at, |i| at + i),
-            end: at,
-        };
+        let span = Span { start: at, end: at };
         let a = &scope.a;
         if lower == "session" && fields::has_session(scope.unit) {
             return Ok((format!("{}.id", a.s), ColKind::Text));
