@@ -197,12 +197,21 @@ impl Sinex {
     /// Opens this producer and requires Sinex to answer immediately.
     pub fn connect(config: &Config, authentication: &Authentication, host: &str) -> Result<Self> {
         let sinex = Self::open(config, authentication, host)?;
-        sinex.with(async |_client| Ok(()))?;
+        sinex.read_client(async |_client| Ok(()))?;
         Ok(sinex)
     }
 
-    /// Runs `work` on the connection; frames never interleave.
-    fn with<T>(&self, work: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
+    /// Reads and connection checks own their outcome independently of publication.
+    fn read_client<T>(&self, work: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
+        let result = self.client_operation(work);
+        if let Ok(mut health) = self.health.lock() {
+            health.error = result.as_ref().err().map(ToString::to_string);
+        }
+        result
+    }
+
+    /// Executes one client operation under the connection lock; frames never interleave.
+    fn client_operation<T>(&self, work: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
         let mut client = self
             .client
             .lock()
@@ -219,7 +228,6 @@ impl Sinex {
                 Err(error) => {
                     if let Ok(mut health) = self.health.lock() {
                         health.reachable = Some(!matches!(error, Error::Unreachable(_)));
-                        health.error = Some(error.to_string());
                     }
                     return Err(error);
                 }
@@ -230,7 +238,6 @@ impl Sinex {
             .block_on(work(client.as_mut().expect("connected client")));
         if let Ok(mut health) = self.health.lock() {
             health.reachable = Some(!matches!(result, Err(Error::Unreachable(_))));
-            health.error = result.as_ref().err().map(ToString::to_string);
         }
         if matches!(result, Err(Error::Unreachable(_))) {
             // The immutable spool keeps every unacknowledged frame. A fresh
@@ -248,7 +255,7 @@ impl Sinex {
 
     /// Whether Sinex answers.
     pub fn reachable(&self) -> Result<()> {
-        self.with(async |client| {
+        self.read_client(async |client| {
             client
                 .recorded(&["polylogue-reachable".into()])
                 .await
@@ -408,13 +415,13 @@ impl polylogue_store::primary::Sinex for Sinex {
         // Send durable preparations before reading the page that can confirm
         // them. The follower owns both this read and its later acknowledgment.
         self.send_pending();
-        Ok(self.with(async |client| client.confirmed(state, cache).await)?)
+        Ok(self.read_client(async |client| client.confirmed(state, cache).await)?)
     }
     fn acknowledge(
         &self,
         state: &polylogue_store::primary::ReplayState,
     ) -> polylogue_store::Result<()> {
-        Ok(self.with(async |client| client.acknowledge(state).await)?)
+        Ok(self.read_client(async |client| client.acknowledge(state).await)?)
     }
 }
 

@@ -74,7 +74,7 @@ fn encoding(
 /// then ordinary consumer retirement. No test manufactures a receipt or position.
 fn publish_and_project(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]) {
     sinex
-        .with(async |client| client.retry_prepared().await)
+        .client_operation(async |client| client.retry_prepared().await)
         .unwrap();
     for (identity, bytes) in items {
         let receipt = sinex
@@ -226,8 +226,9 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_retirement() {
     // gate. It may own the connection mutex, but capture above used only the
     // independent queue owner and completed before acquisition was released.
     let sender = sinex.clone();
-    let sending =
-        std::thread::spawn(move || sender.with(async |client| client.retry_prepared().await));
+    let sending = std::thread::spawn(move || {
+        sender.client_operation(async |client| client.retry_prepared().await)
+    });
     wait_until(|| sinex.client.try_lock().is_err());
     assert_eq!(frame_count(&running, &before_id), 0);
     assert_eq!(frame_count(&running, &during_id), 0);

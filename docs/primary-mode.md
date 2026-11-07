@@ -132,6 +132,7 @@ When Sinex is unreachable or refuses this producer:
 - Polylogue never falls back to standalone, whatever the cause, a broken configuration file included.
 
 **Status in primary** adds a section: the mode, the Sinex endpoint and this host's producer identity; reachability and the time of the last acknowledgement; prepared materials and writes waiting (count and bytes); the stream position applied and its lag; chains parsed but not yet confirmed.
+Publication and read failures remain distinct observations in that status. A successful confirmed read does not clear an outstanding publication failure; only a successful publication retry clears it. Both reasons remain visible when both operations fail.
 
 ## Rebuild and parser upgrades
 

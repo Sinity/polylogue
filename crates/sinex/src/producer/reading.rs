@@ -200,7 +200,7 @@ impl Sinex {
                 until: None,
                 after: None,
             };
-            let (selection, declarations, source) = self.with(async |client| {
+            let (selection, declarations, source) = self.client_operation(async |client| {
                 let mut selections = client.replay_scope(&query).await?;
                 if selections.len() != 1 || selections[0].root != root {
                     return Err(Error::Invalid(

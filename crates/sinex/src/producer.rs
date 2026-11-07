@@ -17,17 +17,15 @@ mod requests;
 
 impl Sinex {
     pub(crate) fn send_pending(&self) {
-        let result = self.with(async |client| client.retry_prepared().await);
-        if result.is_ok() {
-            let result = self
-                .drain_requests()
-                .and_then(|()| self.drain_observations())
-                .and_then(|()| self.drain_readings());
-            if let Err(error) = result
-                && let Ok(mut health) = self.health.lock()
-            {
-                health.error = Some(error.to_string());
-            }
+        let result = self
+            .client_operation(async |client| client.retry_prepared().await)
+            .and_then(|()| self.drain_requests())
+            .and_then(|()| self.drain_observations())
+            .and_then(|()| self.drain_readings());
+        // Publication owns this complete retry result. Reading the confirmed
+        // stream remains independent and cannot erase a failed publication.
+        if let Ok(mut health) = self.health.lock() {
+            health.publication_error = result.as_ref().err().map(ToString::to_string);
         }
     }
 

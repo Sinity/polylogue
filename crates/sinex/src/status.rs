@@ -8,11 +8,29 @@ pub(crate) struct Health {
     pub context: crate::context::Cache,
     pub reachable: Option<bool>,
     pub family: Option<String>,
+    /// The current read or connection outcome.
     pub error: Option<String>,
+    /// The last complete publication retry, independent of reads.
+    pub publication_error: Option<String>,
     pub last_ack: Option<Instant>,
     pub owner_position: Option<i64>,
     pub position_observed: Option<Instant>,
     pub owner_scope: Option<String>,
+}
+
+impl Health {
+    fn error(&self) -> Option<String> {
+        match (&self.publication_error, &self.error) {
+            (Some(publication), Some(read)) if publication == read => {
+                Some(format!("publication and read: {publication}"))
+            }
+            (Some(publication), Some(read)) => {
+                Some(format!("publication: {publication}; read: {read}"))
+            }
+            (Some(publication), None) => Some(format!("publication: {publication}")),
+            (None, read) => read.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -52,7 +70,7 @@ impl Sinex {
                 .position_observed
                 .map(|at| at.elapsed().as_secs_f64()),
             health.reachable,
-            health.error.clone().or_else(|| {
+            health.error().or_else(|| {
                 (!same_scope)
                     .then(|| "the applied read scope has not been confirmed by Sinex".into())
             }),
@@ -74,7 +92,7 @@ impl Sinex {
                 .map_err(|_| crate::Error::Invalid("producer health panicked".into()))?;
             (
                 health.reachable,
-                health.error.clone(),
+                health.error(),
                 health.last_ack.map(|at| at.elapsed().as_secs_f64()),
                 health.owner_position,
                 health

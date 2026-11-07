@@ -83,7 +83,7 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
     .unwrap();
     assert_eq!(sinex.status().unwrap().family.as_deref(), Some("polylogue"));
     sinex
-        .with(async |client| {
+        .client_operation(async |client| {
             let frame = sinex_protocol::Ingress::RegisterKinds {
                 frame: "refused-registration".into(),
                 declarations: Vec::new(),
@@ -156,7 +156,43 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
         head: None,
         staged_delivery: None,
     };
+    // A committed local frame can fail before reaching ingress. Its retry
+    // error belongs to publication, while confirmed reads remain available.
+    let pending = sinex_protocol::Ingress::Events {
+        source: None,
+        coverage: None,
+        frame: "recoverable-publication".into(),
+        events: Vec::new(),
+        failures: Vec::new(),
+    };
+    sinex.queue().unwrap().prepare(pending.clone()).unwrap();
+    let frame_path = root
+        .path()
+        .join("producer-spool")
+        .join(blake3::hash(b"polylogue").to_hex().to_string())
+        .join("operations")
+        .join(
+            blake3::hash(pending.frame().as_bytes())
+                .to_hex()
+                .to_string(),
+        )
+        .join("frame.zst");
+    let original_frame = std::fs::read(&frame_path).unwrap();
+    let mut corrupt_frame = original_frame.clone();
+    corrupt_frame[0] ^= 1;
+    std::fs::write(&frame_path, corrupt_frame).unwrap();
+    sinex.send_pending();
+    let publication_error = sinex.status().unwrap().error.unwrap();
+    assert!(
+        publication_error.starts_with("publication:"),
+        "{publication_error}"
+    );
     let control = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap();
+    assert_eq!(
+        sinex.status().unwrap().error.as_deref(),
+        Some(publication_error.as_str()),
+        "a successful confirmed read cannot clear a failed publication"
+    );
     assert!(
         matches!(control.as_slice(),[primary::Confirmed{change:ConfirmedChange::Control(control),..}]
         if matches!(control.as_ref(),ReplayControl::Reset{scope} if scope=="test-scope"))
@@ -175,6 +211,38 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
         refused.to_string().contains("synthetic refusal"),
         "{refused}"
     );
+    let both = sinex.status().unwrap().error.unwrap();
+    assert!(
+        both.contains(&publication_error) && both.contains("synthetic refusal"),
+        "{both}"
+    );
+    // Restore the original encoded frame and install its exact owner receipt.
+    // The corresponding retry succeeds without changing bytes or identity.
+    std::fs::write(&frame_path, original_frame).unwrap();
+    let receipt = serde_json::from_value(serde_json::json!({
+        "number":4,"frame":pending.frame(),"material":null,"admitted":[],
+        "outcome":{"frame_content_hash":sinex_transport::producer::content_hash(&pending).unwrap()},
+        "refusal":null,"commit_seq":null,
+    }))
+    .unwrap();
+    sinex.queue().unwrap().acknowledge(receipt).unwrap();
+    sinex.send_pending();
+    let read_error = sinex.status().unwrap().error.unwrap();
+    assert!(
+        read_error.contains("synthetic refusal"),
+        "a successful publication retry must preserve the independent read error: {read_error}"
+    );
+    assert!(!read_error.contains(&publication_error));
+    sinex
+        .read_client(async |client| {
+            client
+                .client
+                .flush()
+                .await
+                .map_err(|error| Error::Unreachable(error.to_string()))
+        })
+        .unwrap();
+    assert!(sinex.status().unwrap().error.is_none());
     drop(sinex);
     owner.join().unwrap();
 }
