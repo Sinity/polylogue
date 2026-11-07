@@ -344,16 +344,20 @@ fn native_time_companions_use_evidence_and_keep_missing_relations_distinct() {
         "links | group by child.started_at.time_quality | count",
         &[],
     );
-    assert_eq!(groups.len(), 2);
+    assert_eq!(groups.len(), 2, "{groups:?}");
     assert!(
-        groups
-            .iter()
-            .any(|row| row["child_started_at_time_quality"].is_null() && row["count"] == 1)
+        groups.contains(&serde_json::json!({
+            "child.started_at.time_quality": null,
+            "count": 1,
+        })),
+        "{groups:?}"
     );
     assert!(
-        groups
-            .iter()
-            .any(|row| row["child_started_at_time_quality"] == "unknown" && row["count"] == 1)
+        groups.contains(&serde_json::json!({
+            "child.started_at.time_quality": "unknown",
+            "count": 1,
+        })),
+        "{groups:?}"
     );
     // Metadata columns use canonical envelopes, independently of body decoders.
     drop(reader);
