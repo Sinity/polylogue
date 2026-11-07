@@ -11,18 +11,13 @@ pub struct Outgoing<'a> {
     pub parent_deadline_ms: Option<i64>,
 }
 
-pub fn incoming(
-    text: &str,
-) -> Option<
-    Result<
-        (
-            command_surface::RunnableRequest,
-            CallerEvidence,
-            Option<i64>,
-        ),
-        serde_json::Error,
-    >,
-> {
+pub struct Incoming {
+    pub request: command_surface::RunnableRequest,
+    pub caller: CallerEvidence,
+    pub parent_deadline_ms: Option<i64>,
+}
+
+pub fn incoming(text: &str) -> Option<Result<Incoming, serde_json::Error>> {
     let mut value: serde_json::Value = serde_json::from_str(text).ok()?;
     value.get("operation")?;
     Some((|| {
@@ -41,7 +36,11 @@ pub fn incoming(
             .map(serde_json::from_value)
             .transpose()?;
         let request = serde_json::from_value(value)?;
-        Ok((request, caller, parent_deadline_ms))
+        Ok(Incoming {
+            request,
+            caller,
+            parent_deadline_ms,
+        })
     })())
 }
 
@@ -59,7 +58,11 @@ mod tests {
             parent_deadline_ms: Some(123),
         })
         .unwrap();
-        let (accepted, _, parent) = incoming(&wire).unwrap().unwrap();
+        let Incoming {
+            request: accepted,
+            parent_deadline_ms: parent,
+            ..
+        } = incoming(&wire).unwrap().unwrap();
         assert_eq!(accepted, request);
         assert_eq!(parent, Some(123));
     }
@@ -76,10 +79,13 @@ mod tests {
             fresh: false,
             format: Default::default(),
         };
-        let (accepted, caller, parent_deadline_ms) =
-            incoming(&serde_json::to_string(&request).unwrap())
-                .unwrap()
-                .unwrap();
+        let Incoming {
+            request: accepted,
+            caller,
+            parent_deadline_ms,
+        } = incoming(&serde_json::to_string(&request).unwrap())
+            .unwrap()
+            .unwrap();
         assert_eq!(accepted, request);
         assert_eq!(parent_deadline_ms, None);
         assert_eq!(caller, CallerEvidence::default());

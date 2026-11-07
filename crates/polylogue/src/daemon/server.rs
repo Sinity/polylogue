@@ -84,7 +84,11 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                     "bad_request",
                     error.to_string(),
                 )),
-                Ok((request, caller, parent_deadline_ms)) => {
+                Ok(crate::protocol::wire::Incoming {
+                    request,
+                    caller,
+                    parent_deadline_ms,
+                }) => {
                     let (evidence, channel) =
                         crate::protocol::caller::peer(&out, &caller, d.config.requests.machine())
                             .unwrap_or_else(|_| {
