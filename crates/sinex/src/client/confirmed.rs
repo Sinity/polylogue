@@ -29,9 +29,8 @@ pub(crate) fn readable(
             // Only an exact known non-input declaration can exclude a hidden input.
             let known = kind.rsplit_once('@').and_then(|(name, version)| {
                 crate::kinds::kind_reference(name).ok().filter(|kind| {
-                    version.parse::<u32>() == Ok(kind.version)
-                        && crate::kinds::declared_definition(kind).map(String::as_str)
-                            == definition_hash
+                    version.parse::<u64>() == Ok(kind.version)
+                        && crate::kinds::declared_definition(kind) == definition_hash
                 })
             });
             let unreadable_input = known.is_none_or(|kind| kind.name == crate::kinds::INPUT_KIND);

@@ -274,7 +274,7 @@ fn an_unreadable_event_is_refused_at_its_position_but_a_lost_connection_stops_th
             10,
             "unreadable-fact",
             kind.into(),
-            definition.map(String::as_str),
+            definition,
             Err(Error::Invalid("synthetic unreadable payload".into())),
         )
         .unwrap();
