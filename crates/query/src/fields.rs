@@ -801,6 +801,12 @@ pub static FIELDS: &[Field] = &[
         "until",
         "before the instant or through the logical day",
     ),
+    f(
+        ToolCalls,
+        "message",
+        Prefix,
+        "the message containing the call",
+    ),
     f(ToolCalls, "tool", Match, "the tool name as written"),
     sp(
         ToolCalls,

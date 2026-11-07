@@ -339,6 +339,21 @@ fn codex_message_counts_include_script_commands() {
     );
 }
 
+fn example_cases(number: &str, text: &str, want: &Value) -> Vec<(String, Value)> {
+    match (number, want) {
+        // The published model example also specifies two alternate scopes.
+        ("29", Value::Object(outcomes)) => vec![
+            (text.to_owned(), outcomes["default"].clone()),
+            (format!("{text} kind:*"), outcomes["kind:*"].clone()),
+            (
+                "model:unknown".to_owned(),
+                outcomes["model:unknown"].clone(),
+            ),
+        ],
+        _ => vec![(text.to_owned(), want.clone())],
+    }
+}
+
 #[test]
 fn the_query_examples_match_on_the_real_archive() {
     let w = archive_with_notes();
@@ -351,15 +366,7 @@ fn the_query_examples_match_on_the_real_archive() {
     let mut wrong = Vec::new();
     for (key, want) in expected["queries"].as_object().unwrap() {
         let (number, text) = key.split_once(' ').unwrap();
-        // 29 lists its variants: the example, with `kind:*`, and `model:unknown`.
-        let cases: Vec<(String, Value)> = match (number, want) {
-            ("29", Value::Object(o)) => vec![
-                (text.to_owned(), o["default"].clone()),
-                (format!("{text} kind:*"), o["kind:*"].clone()),
-                ("model:unknown".to_owned(), o["model:unknown"].clone()),
-            ],
-            _ => vec![(text.to_owned(), want.clone())],
-        };
+        let cases = example_cases(number, text, want);
         let mut failures = Vec::new();
         for (q, want) in &cases {
             if let Err(why) = compare(&r, number, &run(&r, ask(q)), want) {
@@ -391,44 +398,66 @@ fn pages_of_every_size_concatenate_to_the_whole_answer() {
     )
     .unwrap();
     let mut wrong = Vec::new();
-    let mut paged = 0;
-    for key in expected["queries"].as_object().unwrap().keys() {
-        let text = key.split_once(' ').unwrap().1;
-        let Ok(whole) = run(&r, ask(text)) else {
-            continue;
-        };
-        let want = rows(&whole);
-        for size in 1..=want.len() as u64 + 1 {
-            let mut got = Vec::new();
-            let mut cursor: Option<String> = None;
-            loop {
-                let page = run(
-                    &r,
-                    Ask {
-                        page_size: Some(size),
-                        cursor: cursor.as_deref(),
-                        ..ask(text)
-                    },
-                )
-                .unwrap_or_else(|f| panic!("{key} by {size}: {} {}", f.code(), f.message));
-                if page["count"] != whole["count"] {
-                    wrong.push(format!(
-                        "{key} by {size}: count {} of {}",
-                        page["count"], whole["count"]
-                    ));
+    for (key, expected) in expected["queries"].as_object().unwrap() {
+        let (number, text) = key.split_once(' ').unwrap();
+        for (text, expected) in example_cases(number, text, expected) {
+            let whole = match run(&r, ask(&text)) {
+                Err(failure) if expected.get("outcome") == Some(&json!("error")) => {
+                    compare(&r, number, &Err(failure), &expected)
+                        .unwrap_or_else(|why| panic!("{key}: {why}"));
+                    continue;
                 }
-                got.extend(rows(&page).iter().cloned());
-                cursor = page["next"].as_str().map(str::to_owned);
-                if cursor.is_none() {
-                    break;
+                // GAPS documents example 21's unsupported sequence search words.
+                // Its syntax has no executable answer to page yet.
+                Err(failure) if number == "21" && GAPS.iter().any(|(gap, _)| *gap == number) => {
+                    assert_eq!(failure.code(), "invalid_query", "{key}: {failure:?}");
+                    assert!(
+                        failure.message.contains("for tool calls use"),
+                        "{key}: {failure:?}"
+                    );
+                    continue;
                 }
-            }
-            if got != want {
-                wrong.push(format!("{key} by {size}: the pages differ from the rows"));
+                Err(failure) => panic!("{key}: {} {}", failure.code(), failure.message),
+                Ok(whole) => {
+                    assert_ne!(
+                        expected.get("outcome"),
+                        Some(&json!("error")),
+                        "{key}: the published refusal unexpectedly succeeded"
+                    );
+                    whole
+                }
+            };
+            let want = rows(&whole);
+            for size in 1..=want.len() as u64 + 1 {
+                let mut got = Vec::new();
+                let mut cursor: Option<String> = None;
+                loop {
+                    let page = run(
+                        &r,
+                        Ask {
+                            page_size: Some(size),
+                            cursor: cursor.as_deref(),
+                            ..ask(&text)
+                        },
+                    )
+                    .unwrap_or_else(|f| panic!("{key} by {size}: {} {}", f.code(), f.message));
+                    if page["count"] != whole["count"] {
+                        wrong.push(format!(
+                            "{key} by {size}: count {} of {}",
+                            page["count"], whole["count"]
+                        ));
+                    }
+                    got.extend(rows(&page).iter().cloned());
+                    cursor = page["next"].as_str().map(str::to_owned);
+                    if cursor.is_none() {
+                        break;
+                    }
+                }
+                if got != want {
+                    wrong.push(format!("{key} by {size}: the pages differ from the rows"));
+                }
             }
         }
-        paged += 1;
     }
-    assert!(paged > 30, "{paged} examples paged");
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }

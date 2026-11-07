@@ -21,7 +21,6 @@ struct Plan {
     unit: String,
     shape: Shape,
     fields: BTreeSet<String>,
-    requested: Vec<String>,
     paired: bool,
 }
 fn error(message: impl ToString) -> Error {
@@ -47,14 +46,11 @@ impl laws::Compiler for Product {
         let Source::Unit { unit, .. } = &value.source else {
             return Err(error("law fixture has no native source unit"));
         };
-        let requested = if unit == "tool_calls" {
-            CHILD_FIELDS
-        } else {
-            OUTER_FIELDS
-        };
-        let mut options = options(requested.iter().map(|name| (*name).into()).collect());
+        let options = options(vec![]);
         let catalog = polylogue_query::catalog::catalog(&options.origins);
-        let text = query_language::format::format_query(value, &catalog)?;
+        let mut value = value.clone();
+        project_fixture_sources(&mut value, &catalog)?;
+        let text = query_language::format::format_query(&value, &catalog)?;
         let prepared = polylogue_query::compile(&text, &options).map_err(error)?;
         let bound = prepared.expanded_query();
         let typing = bound
@@ -70,19 +66,6 @@ impl laws::Compiler for Product {
             .iter()
             .map(|info| info.field.name.clone())
             .collect();
-        options.fields.extend(
-            [
-                "match.message",
-                "match.exit_code",
-                "match.distance",
-                "change",
-                "old_rank",
-                "new_rank",
-            ]
-            .into_iter()
-            .filter(|name| fields.contains(*name))
-            .map(str::to_owned),
-        );
         let program = polylogue_store::query::lower(&prepared, &options).map_err(error)?;
         fields.extend(
             program
@@ -96,7 +79,6 @@ impl laws::Compiler for Product {
             unit: unit.clone(),
             shape: program.shape,
             fields,
-            requested: options.fields,
             paired: value
                 .transforms
                 .iter()
@@ -104,6 +86,99 @@ impl laws::Compiler for Product {
         })
     }
 }
+/// Give each native source the fixture's declared columns through the real
+/// projection stage. Display options belong to the final answer and cannot
+/// request generated witness/diff columns from an earlier native source.
+fn project_fixture_sources(
+    query: &mut Query,
+    catalog: &query_language::catalog::Catalog,
+) -> Result<(), Error> {
+    fn condition(
+        value: &mut Condition,
+        catalog: &query_language::catalog::Catalog,
+    ) -> Result<(), Error> {
+        match &mut value.kind {
+            ConditionKind::And { conditions } | ConditionKind::Or { conditions } => {
+                for value in conditions {
+                    condition(value, catalog)?;
+                }
+            }
+            ConditionKind::Not { condition: value } => condition(value, catalog)?,
+            ConditionKind::Exists {
+                condition: Some(value),
+                ..
+            }
+            | ConditionKind::Count {
+                condition: Some(value),
+                ..
+            } => condition(value, catalog)?,
+            ConditionKind::Sequence { steps, .. } => {
+                for value in steps {
+                    condition(value, catalog)?;
+                }
+            }
+            ConditionKind::In { query, .. } | ConditionKind::Order { query, .. } => {
+                project_fixture_sources(query, catalog)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    let Source::Unit {
+        unit,
+        condition: source_condition,
+        ..
+    } = &mut query.source
+    else {
+        return Err(error("law fixture has no native source unit"));
+    };
+    let requested = if unit == "tool_calls" {
+        CHILD_FIELDS
+    } else {
+        OUTER_FIELDS
+    };
+    if let Some(value) = source_condition {
+        condition(value, catalog)?;
+    }
+    for stage in &mut query.transforms {
+        match &mut stage.kind {
+            TransformKind::Where { condition: value }
+            | TransformKind::Scope {
+                condition: Some(value),
+                ..
+            } => condition(value, catalog)?,
+            TransformKind::Combine { query, .. }
+            | TransformKind::Join { query, .. }
+            | TransformKind::Diff { query } => project_fixture_sources(query, catalog)?,
+            _ => {}
+        }
+    }
+    let bound = query_language::bind::bind(query, catalog)?;
+    let source = &bound
+        .typing()
+        .query(&Default::default())
+        .ok_or_else(|| error("law fixture source has no typed scope"))?
+        .source;
+    let mut columns = requested
+        .iter()
+        .map(|name| query_language::ast::Column::field(*name))
+        .collect::<Vec<_>>();
+    columns.extend(
+        ["match.message", "match.exit_code", "match.distance"]
+            .into_iter()
+            .filter(|name| source.fields.iter().any(|info| info.field.name == *name))
+            .map(query_language::ast::Column::field),
+    );
+    query.transforms.insert(
+        0,
+        Transform {
+            span: Span::default(),
+            kind: TransformKind::Fields { columns },
+        },
+    );
+    Ok(())
+}
+
 /// Presence belongs to the fixture schema. Values below always come from the
 /// real query page; clock evidence and order come back through native storage.
 struct Metadata {
@@ -487,7 +562,7 @@ impl laws::Executor<Plan> for Execution {
                 embeddings: false,
                 ranking_identity: None,
                 near: None,
-                fields: &plan.requested,
+                fields: &[],
             },
         )
         .map_err(|failure| error(failure.message.clone()))?;
@@ -536,6 +611,17 @@ impl laws::Executor<Plan> for Execution {
                         .with("step", step.as_str());
                     if let Some(number) = value.get("step.exit_code") {
                         row = row.with("step.exit_code", scalar(number)?);
+                    }
+                    let metadata = loaded
+                        .metadata
+                        .get(&(plan.unit.clone(), parent.clone()))
+                        .ok_or_else(|| error("match returned an uninstalled parent"))?;
+                    for field in &metadata.fields {
+                        let name = format!("parent.{field}");
+                        let value = value
+                            .get(&name)
+                            .ok_or_else(|| error(format!("match omitted {name}")))?;
+                        row = row.with(name, scalar(value)?);
                     }
                     row.parent = Some(parent);
                     row.matches = vec![step];

@@ -1220,6 +1220,9 @@ impl Compiler<'_> {
         compiler.input_rows = Some(relation.program.sql.clone());
         compiler.near = self.near.clone().or(relation.program.near.clone());
         let mut result = compiler.native_program_with(&native, None)?;
+        if matches!(stage.kind, TransformKind::Matches) {
+            sequences::project_match_parent(&mut result, &relation.program);
+        }
         self.near = result.near.clone();
         self.params = std::mem::take(&mut result.params);
         if let Some(mut measure) = result.measure.take() {

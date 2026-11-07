@@ -125,7 +125,7 @@ Stages apply in the order written:
 - `| where C` after grouping filters groups. Projection, filtering, sorting, row selection, grouping and aggregation execute at their written relation boundaries. An output alias may use any accepted name, including `_pk`; physical row keys and ordering slots occupy a separate namespace.
 - `| group by K | first N` returns the first N input rows of each retained group, in the input order. A key join returns every matching pair, with the right-hand columns under `match.`. An order condition keeps an outer row once and exposes its nearest satisfying witness under `match.`; a later order condition replaces that namespace.
 - `limit N`, `offset N` are selections and change the question; there is no maximum.
-- `distinct`; `matches`; `| UNIT [where C]` (rows of another unit within the matched sessions); `fields a,b` (projection; `--fields` on the command line).
+- `distinct`; `matches`; `| UNIT [where C]` (rows of another unit within the matched sessions); `fields a,b` (projection; `--fields` on the command line). A `matches` row retains the entering row's visible columns under `parent.` with their types and reference metadata; projected aliases keep their names. Its matched child fields are under `step.`.
 - `| measure WHAT` hands the selection to a measure ([measures.md](measures.md)).
 - Further stages are part of the language and answer `not_built` until built: derived keys (`program(command)`, `fingerprint(text)`), `| series`, `| extract number before "MB/s" as rate`, `| cluster by similar [k:20]`, and `let` names within one query.
 

@@ -106,3 +106,44 @@ fn sequences_follow_session_order_when_times_run_backwards() {
     let within = "sessions where seq(command:\"cargo test\" AND outcome:error -> [within 5h] command:\"cargo test\" AND outcome:ok)";
     assert_eq!(q(&w, within)["outcome"], "empty");
 }
+
+#[test]
+fn matches_keep_only_entering_parent_columns_with_aliases_and_metadata() {
+    let archive = backwards();
+    let source = q(&archive, "sessions");
+    let started = &source["rows"][0]["started"];
+    for predicate in [
+        "seq(command:\"cargo test\" AND outcome:error -> command:\"cargo test\" AND outcome:ok)",
+        "exists tool_call(outcome:error)",
+    ] {
+        let text =
+            format!("sessions where {predicate} | fields id as source, started as began | matches");
+        let matched = q(&archive, &text);
+        let rows = matched["rows"].as_array().unwrap();
+        assert!(!rows.is_empty(), "{matched}");
+        for row in rows {
+            assert_eq!(row["parent.source"], "claude-code:backwards");
+            assert_eq!(&row["parent.began"], started);
+            assert!(row.get("parent.title").is_none(), "{matched}");
+            assert!(row.get("parent.id").is_none(), "{matched}");
+        }
+        let columns = matched["columns"].as_array().unwrap();
+        assert!(columns.iter().any(|column| column["name"] == "parent.source"
+            && column["reference"] == "session"), "{matched}");
+        assert!(
+            columns
+                .iter()
+                .any(|column| column["name"] == "parent.began" && column["kind"] == "time"),
+            "{matched}"
+        );
+        let projected = q(
+            &archive,
+            &format!("{text} | fields parent.source, parent.began"),
+        );
+        assert_eq!(projected["count"], matched["count"]);
+        for row in projected["rows"].as_array().unwrap() {
+            assert_eq!(row["parent.source"], "claude-code:backwards");
+            assert_eq!(&row["parent.began"], started);
+        }
+    }
+}

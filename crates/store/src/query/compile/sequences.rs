@@ -415,3 +415,40 @@ fn row_reference(scope: &RowContext) -> Result<String, QueryError> {
         _ => return Err(not_built("match references at this row grain")),
     })
 }
+
+/// Matches retain the entering relation's visible values under `parent.`.
+/// Reuse those values and metadata, including projected aliases, rather than
+/// reading native fields with the same names from a different row scope.
+pub(super) fn project_match_parent(result: &mut Program, parent: &Program) {
+    let mut projection = vec!["matched.*".to_owned()];
+    for column in &parent.columns {
+        let name = format!("parent.{}", column.name);
+        projection.push(format!(
+            "parent_values.{} AS {}",
+            column_sql(parent.column_slot(&column.name)),
+            column_sql(&name)
+        ));
+        if parent.time_text_columns.contains(&column.name) {
+            result.time_text_columns.insert(name.clone());
+        }
+        let mut column = column.clone();
+        column.name = name;
+        result.columns.push(column);
+    }
+    result.sql = format!(
+        "SELECT {} FROM ({}) matched JOIN ({}) parent_values ON parent_values._pk = matched._match_parent_pk ORDER BY {}",
+        projection.join(", "),
+        result.sql,
+        parent.sql,
+        result
+            .order
+            .iter()
+            .map(|key| format!(
+                "matched.{}{}",
+                column_sql(&key.column),
+                if key.descending { " DESC" } else { "" }
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+}
