@@ -97,6 +97,26 @@ fn configure(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA mmap_size=268435456; PRAGMA temp_store=MEMORY;")?;
     Ok(())
 }
+// SQLite's persistent WAL option preserves the journals for read-only clients
+// after the writer closes; it does not change transaction or checkpoint rules.
+#[allow(unsafe_code)]
+fn persist_wal(conn: &Connection) -> Result<()> {
+    let mut enabled: std::ffi::c_int = 1;
+    // SAFETY: the connection and integer remain live for the synchronous call;
+    // this opcode reads one integer and configures the connection's main file.
+    let code = unsafe {
+        rusqlite::ffi::sqlite3_file_control(
+            conn.handle(),
+            c"main".as_ptr(),
+            rusqlite::ffi::SQLITE_FCNTL_PERSIST_WAL,
+            (&mut enabled as *mut std::ffi::c_int).cast(),
+        )
+    };
+    if code != rusqlite::ffi::SQLITE_OK {
+        return Err(rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None).into());
+    }
+    Ok(())
+}
 fn count(value: u64) -> Result<i64> {
     i64::try_from(value)
         .map_err(|_| StoreError::Invalid("completion count exceeds SQLite's integer range".into()))
@@ -154,7 +174,13 @@ impl CatalogWriter {
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         configure(&conn)?;
-        conn.execute_batch("PRAGMA synchronous=FULL;")?;
+        // New readers must retain the previous committed vocabulary while a
+        // publication commits. Rollback journaling excludes them at COMMIT.
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")?;
+        persist_wal(&conn)?;
+        // Initialize the WAL and shared memory as the writer, before activation.
+        // Offline readers need neither directory writes nor journal creation.
+        conn.query_row("SELECT count(*) FROM metadata", [], |_| Ok(()))?;
         let file = fs::metadata(path)?;
         Ok(Self {
             conn,
@@ -354,9 +380,23 @@ impl CatalogReader {
             return Ok(None);
         }
         let before = fs::metadata(path)?;
+        // Read-only database access alone may still create or rebuild SHM.
+        // SQLite's VFS option keeps offline clients read-only there as well.
+        let mut uri = String::from("file:");
+        for byte in path.as_os_str().as_encoded_bytes() {
+            if byte.is_ascii_alphanumeric() || b"/._-".contains(byte) {
+                uri.push(char::from(*byte));
+            } else {
+                use std::fmt::Write;
+                write!(&mut uri, "%{byte:02X}").expect("writing a String cannot fail");
+            }
+        }
+        uri.push_str("?readonly_shm=1");
         let conn = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_URI,
         )?;
         configure(&conn)?;
         conn.execute_batch("PRAGMA query_only=ON; BEGIN")?;

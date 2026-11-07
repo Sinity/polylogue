@@ -178,7 +178,7 @@ Completion is advanced and works with the daemon down. Ruling, 2026-05-01: "CLI 
 
 - **Location:** `$XDG_CACHE_HOME/polylogue/<archive key>/catalog`, so it survives a reboot before the daemon starts.
 - **Contents:** a header (format version, archive key, write position, time written); values with counts per completable field; saved query names with parameters and help; kept results (ID, name, unit, row count); settings keys and values; sessions (full ID, shortest unique prefix, title, origin, repository, last activity, first prompt), sorted by ID with a second order by last activity.
-- **Format:** versioned binary with a fixed header and offset tables, memory-mapped. A catalog of another format version is ignored, leaving grammar-only completion.
+- **Format:** a private, versioned SQLite derived catalog with indexed values and typed metadata, opened read-only with memory mapping. The publisher owns its WAL and shared-memory files and preserves them for offline readers; a daemon-down read changes none of the cache files. Concurrent readers retain a committed SQL snapshot while publication continues. SQLite may coordinate shared-memory read marks inside the live owner process. The catalog path selects a generation-specific database through an atomically published pointer. Missing, wrong-archive, obsolete or corrupt catalogs leave grammar-only completion.
 - **Freshness:** updated incrementally from each committed batch, written by temporary file, sync and rename, at most every 2 s while writes continue. Candidates may trail by that interval; query answers never do.
 - It is derived and harmless to delete.
 

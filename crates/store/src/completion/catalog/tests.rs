@@ -163,6 +163,7 @@ fn read_only_snapshot_never_writes_and_typed_items_use_exact_identity() {
             })
         })
         .unwrap();
+    let files = fs::read_dir(directory.path()).unwrap().count();
     let before = fs::metadata(&path).unwrap().modified().unwrap();
     assert_eq!(
         fs::metadata(&path).unwrap().permissions().mode() & 0o777,
@@ -180,7 +181,7 @@ fn read_only_snapshot_never_writes_and_typed_items_use_exact_identity() {
     assert!(reader.conn.execute("DELETE FROM session", []).is_err());
     drop(reader);
     assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
-    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), files);
     assert!(CatalogReader::open(&path, "different").unwrap().is_none());
 }
 
@@ -352,4 +353,87 @@ fn derived_saved_pattern_codec_is_atomic_and_old_versions_are_invalidated() {
         .execute("UPDATE metadata SET value='5' WHERE key='version'", [])
         .unwrap();
     assert!(CatalogReader::open(&path, "synthetic").unwrap().is_none());
+}
+
+#[test]
+fn publication_keeps_old_snapshots_readable_and_offline_reads_create_no_files() {
+    const CHILD: &str = "POLYLOGUE_COMPLETION_READER_CASE";
+    const VALUE: &str = "POLYLOGUE_COMPLETION_READER_VALUE";
+    const POSITION: &str = "POLYLOGUE_COMPLETION_READER_POSITION";
+    if let Some(path) = std::env::var_os(CHILD) {
+        let reader = CatalogReader::open(Path::new(&path), "synthetic")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reader.values("model", "").unwrap()[0].value,
+            std::env::var(VALUE).unwrap()
+        );
+        assert_eq!(
+            reader.metadata.position,
+            metadata(std::env::var(POSITION).unwrap().parse().unwrap()).position
+        );
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("generation.db");
+    use std::os::unix::ffi::OsStringExt;
+    let pointer = directory
+        .path()
+        .join(std::ffi::OsString::from_vec(b"catalog %?#\xff".to_vec()));
+    let child = |value: &str, position: i64| {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "completion::catalog::tests::publication_keeps_old_snapshots_readable_and_offline_reads_create_no_files", "--nocapture"])
+            .env(CHILD, &pointer).env(VALUE, value).env(POSITION, position.to_string()).output().unwrap();
+        assert!(output.status.success(), "reader child: {output:?}");
+    };
+    let mut writer = writer(&path);
+    std::os::unix::fs::symlink("generation.db", &pointer).unwrap();
+    writer
+        .update(&metadata(2), |writer| {
+            writer.put_session(&session("codex:one", "before", 1))
+        })
+        .unwrap();
+    let old = CatalogReader::open(&pointer, "synthetic").unwrap().unwrap();
+    // In WAL mode even an exclusive publication transaction leaves committed
+    // snapshots available. Rollback journaling blocks this new reader.
+    writer.conn.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    writer
+        .put_session(&session("codex:one", "uncommitted", 1))
+        .unwrap();
+    let during = CatalogReader::open(&pointer, "synthetic").unwrap().unwrap();
+    assert_eq!(during.values("model", "").unwrap()[0].value, "before");
+    assert_eq!(during.metadata.position, metadata(2).position);
+    child("before", 2);
+    writer.conn.execute_batch("ROLLBACK").unwrap();
+    writer
+        .update(&metadata(3), |writer| {
+            writer.put_session(&session("codex:one", "after", 1))
+        })
+        .unwrap();
+    assert_eq!(old.values("model", "").unwrap()[0].value, "before");
+    assert_eq!(old.metadata.position, metadata(2).position);
+    let current = CatalogReader::open(&pointer, "synthetic").unwrap().unwrap();
+    assert_eq!(current.values("model", "").unwrap()[0].value, "after");
+    assert_eq!(current.metadata.position, metadata(3).position);
+    child("after", 3);
+    drop((old, during, current));
+    drop(writer);
+    let files = || {
+        fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (entry.file_name(), fs::read(entry.path()).unwrap())
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let before = files();
+    assert!(before.contains_key(std::ffi::OsStr::new("generation.db-wal")));
+    assert!(before.contains_key(std::ffi::OsStr::new("generation.db-shm")));
+    let offline = CatalogReader::open(&pointer, "synthetic").unwrap().unwrap();
+    assert_eq!(offline.values("model", "").unwrap()[0].value, "after");
+    drop(offline);
+    assert_eq!(files(), before);
+    child("after", 3);
+    assert_eq!(files(), before);
 }
