@@ -256,6 +256,79 @@ fn answers(archive: &Archive) -> (BTreeMap<String, serde_json::Value>, Vec<serde
     (sessions, notes)
 }
 
+/// Structural comparison of synthetic answers, without logging their text bodies.
+fn answer_difference(
+    expected: &BTreeMap<String, serde_json::Value>,
+    actual: &BTreeMap<String, serde_json::Value>,
+) -> String {
+    use serde_json::Value;
+    fn summary(value: Option<&Value>) -> String {
+        match value {
+            None => "absent".into(),
+            Some(Value::Null) => "null".into(),
+            Some(Value::Bool(value)) => format!("bool({value})"),
+            Some(Value::Number(value)) => format!("number({value})"),
+            Some(Value::String(value)) => format!(
+                "string(bytes={},blake3={})",
+                value.len(),
+                blake3::hash(value.as_bytes()).to_hex()
+            ),
+            Some(Value::Array(value)) => format!("array(length={})", value.len()),
+            Some(Value::Object(value)) => format!("object(fields={})", value.len()),
+        }
+    }
+    fn first(expected: Option<&Value>, actual: Option<&Value>, path: String) -> Option<String> {
+        if expected == actual {
+            return None;
+        }
+        match (expected, actual) {
+            (Some(Value::Object(left)), Some(Value::Object(right))) => {
+                let keys: std::collections::BTreeSet<_> = left.keys().chain(right.keys()).collect();
+                keys.into_iter().find_map(|key| {
+                    first(
+                        left.get(key),
+                        right.get(key),
+                        format!("{path}/{}", key.replace('~', "~0").replace('/', "~1")),
+                    )
+                })
+            }
+            (Some(Value::Array(left)), Some(Value::Array(right))) if left.len() == right.len() => {
+                left.iter()
+                    .zip(right)
+                    .enumerate()
+                    .find_map(|(index, (left, right))| {
+                        first(Some(left), Some(right), format!("{path}/{index}"))
+                    })
+            }
+            _ => Some(format!(
+                "{path}: expected {}, actual {}",
+                summary(expected),
+                summary(actual)
+            )),
+        }
+    }
+    let missing: Vec<_> = expected
+        .keys()
+        .filter(|id| !actual.contains_key(*id))
+        .take(8)
+        .collect();
+    let extra: Vec<_> = actual
+        .keys()
+        .filter(|id| !expected.contains_key(*id))
+        .take(8)
+        .collect();
+    let changed = expected.iter().find_map(|(id, value)| {
+        actual
+            .get(id)
+            .and_then(|actual| first(Some(value), Some(actual), id.clone()))
+    });
+    format!(
+        "sessions expected={}, actual={}; missing(first8)={missing:?}; extra(first8)={extra:?}; first changed={changed:?}",
+        expected.len(),
+        actual.len()
+    )
+}
+
 /// Rows a Sinex query answers, asked over its API socket as a reader.
 fn sinex_rows(socket: &Path, query: &str) -> usize {
     let value = native::request(
@@ -290,6 +363,7 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
         let mut engine =
             Engine::on_sinex(example.config(), archive.clone(), sinex.clone()).unwrap();
         let commits = engine.writer().unwrap().completion_commits();
+        let before_import = answer_difference(&expected, &answers(&archive).0);
         let imported = example.import_exports(&mut engine).unwrap();
         assert!(
             imported.pass.errors.is_empty() && imported.refused.is_empty(),
@@ -300,7 +374,8 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
         loop {
             assert!(
                 imported_at.elapsed() < Duration::from_secs(120),
-                "imported sessions did not reach confirmed application; {}",
+                "imported sessions did not reach the standalone answer; before import: {before_import}; current: {}; {}",
+                answer_difference(&expected, &answers(&archive).0),
                 running.evidence(&sinex, &archive)
             );
             let pass = engine.run_pass().unwrap();
@@ -316,7 +391,8 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
                 .recv_timeout(Duration::from_secs(120).saturating_sub(imported_at.elapsed()))
                 .unwrap_or_else(|error| {
                     panic!(
-                        "import confirmation: {error}; {}",
+                        "import answer wait: {error}; before import: {before_import}; current: {}; {}",
+                        answer_difference(&expected, &answers(&archive).0),
                         running.evidence(&sinex, &archive)
                     )
                 });
