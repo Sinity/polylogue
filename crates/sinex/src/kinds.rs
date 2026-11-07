@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use sinex_model::MaterialId;
 pub use sinex_model::event_types::work::{GitIdentity, Objective, TerminalIdentity};
 
+pub(crate) const INPUT_KIND: &str = "polylogue.input_observation";
+
 /// A record in a material: another version of a message, or a tool call's
 /// output.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

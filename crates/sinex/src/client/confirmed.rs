@@ -20,20 +20,33 @@ pub(crate) fn readable(
     position: i64,
     event: &str,
     kind: String,
+    definition_hash: Option<&str>,
     read: Result<Confirmed>,
 ) -> Result<Confirmed> {
     match read {
         Err(Error::Unreachable(reason)) => Err(Error::Unreachable(reason)),
-        Err(error) => Ok(Confirmed {
-            position,
-            event: event.into(),
-            output_index: 0,
-            native: None,
-            change: ConfirmedChange::Refused {
-                kind,
-                reason: error.to_string(),
-            },
-        }),
+        Err(error) => {
+            // Only an exact known non-input declaration can exclude a hidden input.
+            let known = kind.rsplit_once('@').and_then(|(name, version)| {
+                crate::kinds::kind_reference(name).ok().filter(|kind| {
+                    version.parse::<u32>() == Ok(kind.version)
+                        && crate::kinds::declared_definition(kind).map(String::as_str)
+                            == definition_hash
+                })
+            });
+            let unreadable_input = known.is_none_or(|kind| kind.name == crate::kinds::INPUT_KIND);
+            Ok(Confirmed {
+                position,
+                event: event.into(),
+                output_index: 0,
+                native: None,
+                change: ConfirmedChange::Refused {
+                    kind,
+                    reason: error.to_string(),
+                    unreadable_input,
+                },
+            })
+        }
         read => read,
     }
 }
@@ -290,69 +303,85 @@ impl Client {
                 stream_sequence: sequence,
             });
             let change: sinex_protocol::Confirmed = serde_json::from_slice(&message.payload)?;
-            let item = match change {
-                sinex_protocol::Confirmed::EventReference { commit_seq, event }
-                    if commit_seq > after =>
-                {
-                    let fetched = self.fetch_event(event, commit_seq).await;
-                    let kind = match &fetched {
-                        Ok(Some(fetched)) => {
-                            format!("{}@{}", fetched.event_type, fetched.kind_version)
+            let item =
+                match change {
+                    sinex_protocol::Confirmed::EventReference { commit_seq, event }
+                        if commit_seq > after =>
+                    {
+                        match self.fetch_event(event, commit_seq).await {
+                            Ok(Some(fetched)) => {
+                                let (definition, read) =
+                                    if fetched.commit_seq != commit_seq {
+                                        (None, Err(Error::Invalid(
+                                    "a fetched event differs from its confirmed position".into(),
+                                )))
+                                    } else {
+                                        (
+                                            Some(fetched.kind_definition_hash.as_str()),
+                                            decode_event(&fetched),
+                                        )
+                                    };
+                                readable(
+                                    commit_seq,
+                                    &event.to_string(),
+                                    format!("{}@{}", fetched.event_type, fetched.kind_version),
+                                    definition,
+                                    read,
+                                )?
+                            }
+                            Ok(None) => Confirmed {
+                                position: commit_seq,
+                                event: event.to_string(),
+                                output_index: 0,
+                                native: None,
+                                change: ConfirmedChange::Tombstoned,
+                            },
+                            Err(error) => readable(
+                                commit_seq,
+                                &event.to_string(),
+                                String::new(),
+                                None,
+                                Err(error),
+                            )?,
                         }
-                        _ => String::new(),
-                    };
-                    let read = fetched.and_then(|fetched| match fetched {
-                        Some(fetched) if fetched.commit_seq != commit_seq => Err(Error::Invalid(
-                            "a fetched event differs from its confirmed position".into(),
-                        )),
-                        Some(fetched) => decode_event(&fetched),
-                        None => Ok(Confirmed {
-                            position: commit_seq,
-                            event: event.to_string(),
-                            output_index: 0,
-                            native: None,
-                            change: ConfirmedChange::Tombstoned,
-                        }),
-                    });
-                    readable(commit_seq, &event.to_string(), kind, read)?
-                }
-                sinex_protocol::Confirmed::EventReference { .. } => continue,
-                sinex_protocol::Confirmed::Archived(change) => Confirmed {
-                    position: change.archived_seq,
-                    event: change.event.to_string(),
-                    output_index: 0,
-                    native: None,
-                    change: ConfirmedChange::Archived,
-                },
-                sinex_protocol::Confirmed::Restored(change) => Confirmed {
-                    position: change.restored_seq,
-                    event: change.event.to_string(),
-                    output_index: 0,
-                    native: None,
-                    change: ConfirmedChange::Restored,
-                },
-                sinex_protocol::Confirmed::Tombstoned {
-                    event, commit_seq, ..
-                } => Confirmed {
-                    position: commit_seq
-                        .ok_or_else(|| Error::Invalid("a tombstone has no position".into()))?,
-                    event: event.to_string(),
-                    output_index: 0,
-                    native: None,
-                    change: ConfirmedChange::Tombstoned,
-                },
-                sinex_protocol::Confirmed::Gap { reason } => {
-                    return Err(Error::Invalid(format!("confirmed history gap: {reason}")));
-                }
-                sinex_protocol::Confirmed::PositionComplete { commit_seq } => {
-                    if commit_seq >= after {
-                        page.push(control_fact(ReplayControl::Completion {
-                            position: commit_seq,
-                        }));
                     }
-                    continue;
-                }
-            };
+                    sinex_protocol::Confirmed::EventReference { .. } => continue,
+                    sinex_protocol::Confirmed::Archived(change) => Confirmed {
+                        position: change.archived_seq,
+                        event: change.event.to_string(),
+                        output_index: 0,
+                        native: None,
+                        change: ConfirmedChange::Archived,
+                    },
+                    sinex_protocol::Confirmed::Restored(change) => Confirmed {
+                        position: change.restored_seq,
+                        event: change.event.to_string(),
+                        output_index: 0,
+                        native: None,
+                        change: ConfirmedChange::Restored,
+                    },
+                    sinex_protocol::Confirmed::Tombstoned {
+                        event, commit_seq, ..
+                    } => Confirmed {
+                        position: commit_seq
+                            .ok_or_else(|| Error::Invalid("a tombstone has no position".into()))?,
+                        event: event.to_string(),
+                        output_index: 0,
+                        native: None,
+                        change: ConfirmedChange::Tombstoned,
+                    },
+                    sinex_protocol::Confirmed::Gap { reason } => {
+                        return Err(Error::Invalid(format!("confirmed history gap: {reason}")));
+                    }
+                    sinex_protocol::Confirmed::PositionComplete { commit_seq } => {
+                        if commit_seq >= after {
+                            page.push(control_fact(ReplayControl::Completion {
+                                position: commit_seq,
+                            }));
+                        }
+                        continue;
+                    }
+                };
             if item.position > after {
                 page.push(item);
             }

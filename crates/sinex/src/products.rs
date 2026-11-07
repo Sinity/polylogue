@@ -71,7 +71,7 @@ pub(crate) fn require_reading(
 pub(crate) fn kind(product: &Product) -> &'static str {
     match product {
         Product::AttachmentBinding { .. } => "polylogue.attachment_binding",
-        Product::Input { .. } => "polylogue.input_observation",
+        Product::Input { .. } => crate::kinds::INPUT_KIND,
         Product::Blob(_) => "polylogue.blob",
         Product::Session { .. } => "polylogue.session",
         Product::Message { .. } => "polylogue.message",
@@ -350,7 +350,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
     use sinex_model::{Class, KindDeclaration, KindRef, ReplaceRule, TimeQuality};
     const KINDS: &[(&str, &str)] = &[
         ("polylogue.attachment_binding", "attachment_binding"),
-        ("polylogue.input_observation", "input"),
+        (crate::kinds::INPUT_KIND, "input"),
         ("polylogue.blob", "blob"),
         ("polylogue.session", "session"),
         ("polylogue.message", "message"),

@@ -33,6 +33,9 @@ the outer fields let Sinex join the record to its other domains.
 A durable capture can remain pending while its confirmed input reaches the local
 index. The capture loop reports this as pending progress and resumes the original
 acquisition; it is complete only after confirmed application.
+Before assigning source revisions, the writer compares the capture with the
+completed confirmed-stream history. If an unreadable record might describe an
+input, new source revisions remain pending. Already readable facts remain available.
 
 Confirmed payloads are checked against their current immutable kind declaration
 and payload digest. The saved native context carries that digest and the

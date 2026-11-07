@@ -29,12 +29,31 @@ struct Running {
 }
 
 impl Running {
-    fn evidence(&self, sinex: &Sinex) -> String {
+    fn evidence(&self, sinex: &Sinex, archive: &Archive) -> String {
+        let local = ReadPool::open(archive).and_then(|pool| {
+            let reader = pool.reader()?;
+            reader.query(
+                "SELECT key,value FROM meta WHERE key IN ('confirmed_position','confirmed_scope','confirmed_replay') ORDER BY key",
+                &[],
+            )
+        });
+        let pending = polylogue_store::primary::Sinex::pending_captures(sinex).map(|captures| {
+            captures
+                .into_iter()
+                .map(|capture| {
+                    (
+                        capture.identity,
+                        capture.material.map(|material| material.id),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
         format!(
-            "producer: {:?}; first native refusals: {}; latest native receipts: {}",
+            "producer: {:?}; local replay: {local:?}; pending capture/material IDs: {pending:?}; first native refusals: {}; latest native receipts: {}; native event counts: {}",
             sinex.status(),
             self.native.sql("SELECT frame,refusal FROM core.ingress_frames WHERE producer='polylogue' AND refusal IS NOT NULL ORDER BY number LIMIT 8"),
-            self.native.sql("SELECT frame,commit_seq,refusal FROM core.ingress_frames WHERE producer='polylogue' ORDER BY number DESC LIMIT 8"),
+            self.native.sql("SELECT number,frame,commit_seq,admitted,outcome,refusal FROM core.ingress_frames WHERE producer='polylogue' ORDER BY number DESC LIMIT 8"),
+            self.native.sql("SELECT event_type,kind_version,source,source_version,source_fingerprint,count(*) FROM core.events WHERE producer_family='polylogue' GROUP BY event_type,kind_version,source,source_version,source_fingerprint ORDER BY event_type,kind_version"),
         )
     }
 }
@@ -92,17 +111,22 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
     let commits = engine.writer().unwrap().completion_commits();
     let started = Instant::now();
     loop {
+        assert!(
+            started.elapsed() < Duration::from_secs(120),
+            "capture did not reach confirmed application within its budget; {}",
+            running.evidence(sinex, &archive)
+        );
         let pass = engine.run_pass().unwrap_or_else(|error| {
             panic!(
                 "native capture pass failed: {error}; {}",
-                running.evidence(sinex)
+                running.evidence(sinex, &archive)
             )
         });
         assert!(
             pass.errors.is_empty(),
             "{:?}; {}",
             pass.errors,
-            running.evidence(sinex)
+            running.evidence(sinex, &archive)
         );
         if !pass.capture_pending {
             break;
@@ -111,7 +135,7 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
         commits.recv_timeout(remaining).unwrap_or_else(|error| {
             panic!(
                 "capture did not reach confirmed application: {error}; {}",
-                running.evidence(sinex)
+                running.evidence(sinex, &archive)
             )
         });
     }
@@ -130,7 +154,7 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
         assert!(
             started.elapsed() < Duration::from_secs(120),
             "the index did not reach Sinex's head: {applied:?} of {head:?}; {}",
-            running.evidence(sinex)
+            running.evidence(sinex, &archive)
         );
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -139,7 +163,7 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
     assert!(
         repeated.errors.is_empty() && !repeated.capture_pending,
         "an unchanged capture must already be confirmed: {repeated:?}; {}",
-        running.evidence(sinex)
+        running.evidence(sinex, &archive)
     );
     assert_eq!(
         running.native.sql("SELECT frame,material_id FROM core.ingress_frames WHERE producer='polylogue' AND frame LIKE 'acquisition:%' ORDER BY frame"),
@@ -202,8 +226,40 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     phase("built on Sinex");
     {
         let (archive, _lock) = Archive::open_primary(&example.root, &running.config.store).unwrap();
-        let mut engine = Engine::on_sinex(example.config(), archive, sinex.clone()).unwrap();
-        example.import_exports(&mut engine);
+        let mut engine =
+            Engine::on_sinex(example.config(), archive.clone(), sinex.clone()).unwrap();
+        let commits = engine.writer().unwrap().completion_commits();
+        let imported = example.import_exports(&mut engine).unwrap();
+        assert!(
+            imported.pass.errors.is_empty() && imported.refused.is_empty(),
+            "{imported:?}; {}",
+            running.evidence(&sinex, &archive)
+        );
+        let imported_at = Instant::now();
+        loop {
+            assert!(
+                imported_at.elapsed() < Duration::from_secs(120),
+                "imported sessions did not reach confirmed application; {}",
+                running.evidence(&sinex, &archive)
+            );
+            let pass = engine.run_pass().unwrap();
+            assert!(
+                pass.errors.is_empty(),
+                "{pass:?}; {}",
+                running.evidence(&sinex, &archive)
+            );
+            if answers(&archive).0 == expected {
+                break;
+            }
+            commits
+                .recv_timeout(Duration::from_secs(120).saturating_sub(imported_at.elapsed()))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "import confirmation: {error}; {}",
+                        running.evidence(&sinex, &archive)
+                    )
+                });
+        }
         engine
             .writer()
             .unwrap()
@@ -223,6 +279,25 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
                 },
             ))
             .unwrap();
+        let authored_at = Instant::now();
+        loop {
+            assert!(
+                authored_at.elapsed() < Duration::from_secs(120),
+                "the authored note did not reach confirmed application; {}",
+                running.evidence(&sinex, &archive)
+            );
+            if answers(&archive).1.len() == 1 {
+                break;
+            }
+            commits
+                .recv_timeout(Duration::from_secs(120).saturating_sub(authored_at.elapsed()))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "note confirmation: {error}; {}",
+                        running.evidence(&sinex, &archive)
+                    )
+                });
+        }
     }
     phase("exports imported");
     let on_sinex = Archive::on_sinex(&example.root, &running.config.store);

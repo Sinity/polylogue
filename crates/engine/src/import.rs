@@ -242,6 +242,10 @@ impl Engine {
         for ((at, origin, facts, input), outcome) in metadata.into_iter().zip(outcomes) {
             let stored = match outcome {
                 Ok(stored) => stored,
+                Err(polylogue_store::StoreError::PrimaryPending { .. }) => {
+                    report.pass.capture_pending = true;
+                    continue;
+                }
                 Err(error) => {
                     report.pass.errors.push(error.to_string());
                     continue;

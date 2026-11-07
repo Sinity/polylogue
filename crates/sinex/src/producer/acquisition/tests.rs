@@ -61,6 +61,28 @@ fn accepted(receipt: CaptureReceipt) -> PreparedWrite {
 }
 
 #[test]
+fn empty_local_sources_are_known_but_unattributed_custody_stays_uncertain() {
+    let root = tempfile::tempdir().unwrap();
+    let sinex = client(root.path());
+    let state = sinex
+        .pending_source(&source(b"/synthetic/new-source.jsonl"), "reading")
+        .unwrap();
+    assert_eq!(state.status, SourceStatus::Ready);
+    assert!(state.head.is_none() && state.raw.is_none() && state.continuation.is_none());
+    let bytes = b"synthetic unattributed capture";
+    sinex
+        .prepare_input(&capture(bytes, Vec::new()), body(root.path(), bytes))
+        .unwrap();
+    assert_eq!(
+        sinex
+            .pending_source(&source(b"/synthetic/new-source.jsonl"), "reading")
+            .unwrap()
+            .status,
+        SourceStatus::MissingEvidence
+    );
+}
+
+#[test]
 fn receiver_downgrade_retains_new_bodies_and_exact_frozen_retries_keep_first_disposition() {
     let root = tempfile::tempdir().unwrap();
     let sinex = client(root.path());

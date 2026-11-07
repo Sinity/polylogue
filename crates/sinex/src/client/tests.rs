@@ -243,6 +243,7 @@ fn an_unreadable_event_is_refused_at_its_position_but_a_lost_connection_stops_th
         9,
         "event-x",
         "polylogue.future@7".into(),
+        None,
         Err(Error::Invalid(
             "unsupported Polylogue kind polylogue.future@7".into(),
         )),
@@ -255,13 +256,56 @@ fn an_unreadable_event_is_refused_at_its_position_but_a_lost_connection_stops_th
         ConfirmedChange::Refused {
             kind: "polylogue.future@7".into(),
             reason: "unsupported Polylogue kind polylogue.future@7".into(),
+            unreadable_input: true,
         }
     );
+    for (kind, unreadable_input) in [
+        ("polylogue.input_observation@4", true),
+        ("polylogue.session@5", false),
+        ("polylogue.session@999", true),
+        ("", true),
+    ] {
+        let definition = kind.rsplit_once('@').and_then(|(name, _)| {
+            crate::kinds::kind_reference(name)
+                .ok()
+                .and_then(|kind| crate::kinds::declared_definition(&kind))
+        });
+        let refused = crate::client::confirmed::readable(
+            10,
+            "unreadable-fact",
+            kind.into(),
+            definition.map(String::as_str),
+            Err(Error::Invalid("synthetic unreadable payload".into())),
+        )
+        .unwrap();
+        assert!(
+            matches!(refused.change,
+            ConfirmedChange::Refused { unreadable_input: actual, .. }
+            if actual == unreadable_input),
+            "{kind}"
+        );
+    }
+    let unknown_definition = crate::client::confirmed::readable(
+        11,
+        "unknown-definition",
+        "polylogue.session@5".into(),
+        Some("unrecognized definition"),
+        Err(Error::Invalid("synthetic unreadable payload".into())),
+    )
+    .unwrap();
+    assert!(matches!(
+        unknown_definition.change,
+        ConfirmedChange::Refused {
+            unreadable_input: true,
+            ..
+        }
+    ));
     assert!(matches!(
         crate::client::confirmed::readable(
             9,
             "event-x",
             String::new(),
+            None,
             Err(Error::Unreachable("connection lost".into()))
         ),
         Err(Error::Unreachable(_))

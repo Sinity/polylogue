@@ -369,7 +369,10 @@ impl Sinex {
     ) -> Result<PendingSource> {
         let queue = self.queue()?;
         let heads = queue.source_heads(source, reading_version)?;
-        let mut result = PendingSource::default();
+        let mut result = PendingSource {
+            status: SourceStatus::Ready,
+            ..Default::default()
+        };
         if let Some(head) = heads.head {
             if let Some(Capture::Input(input)) = head.capture() {
                 result.status = input
