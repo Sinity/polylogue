@@ -45,8 +45,10 @@ fn source(id: &str) -> Product {
 }
 
 fn callbacks(version: &str) -> (crate::ParseStep, crate::ParseStep) {
-    let mut counts = RecordCounts::default();
-    counts.records = 1;
+    let mut counts = RecordCounts {
+        records: 1,
+        ..Default::default()
+    };
     counts.add("item", &RecordOutcome::Used);
     counts.wire_shapes.insert(
         "item".into(),
