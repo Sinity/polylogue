@@ -96,12 +96,12 @@ pub(crate) fn decode_source(
             ("binding_hash", run.binding_hash()?),
             ("run_hash", run.record_hash()?),
         ] {
-            if let Some(expected) = payload.get(key).filter(|value| !value.is_null()) {
-                if *expected != serde_json::to_value(actual)? {
-                    return Err(Error::Invalid(format!(
-                        "historical query run {key} differs from its exact source custody"
-                    )));
-                }
+            if let Some(expected) = payload.get(key).filter(|value| !value.is_null())
+                && *expected != serde_json::to_value(actual)?
+            {
+                return Err(Error::Invalid(format!(
+                    "historical query run {key} differs from its exact source custody"
+                )));
             }
         }
     }

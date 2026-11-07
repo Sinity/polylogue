@@ -37,7 +37,7 @@ pub fn read(
     frame.status = currency(&page.snapshot.currency);
     let route = table
         .descriptions()
-        .into_iter()
+        .iter()
         .find(|description| description.spec.name == request.operation)
         .ok_or_else(|| Failure::new(FailureKind::BadRequest, "unknown read operation"))?
         .spec
