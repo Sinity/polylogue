@@ -23,7 +23,15 @@ fn first_build_uses_the_selected_root_lock() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let binary = dir.path().join("fixture");
-    fs::write(&binary, b"#!/bin/sh\nprintf '%s\\n' '{\"errors\":0,\"input_mb\":1,\"seconds\":1,\"messages_written\":1,\"unreadable_root_count\":0}'\n").unwrap();
+    let shell = env::var("SHELL").expect("test environment declares SHELL");
+    let result = json!({
+        "errors": 0,
+        "input_mb": 1,
+        "seconds": 1,
+        "messages_written": 1,
+        "unreadable_root_count": 0,
+    });
+    fs::write(&binary, format!("#!{shell}\nprintf '%s\\n' '{result}'\n")).unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
     let lock = dir.path().join("bench.lock");
     first_build(&binary, dir.path(), &dir.path().join("out"), true, &lock).unwrap();

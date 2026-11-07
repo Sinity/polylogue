@@ -96,7 +96,10 @@ let
           pkgs.git
           pkgs.python3
           pkgs.dbus
+          pkgs.nodejs_22
+          pkgs.sqlite
         ];
+        SHELL = pkgs.runtimeShell;
         TZDIR = "${pkgs.tzdata}/share/zoneinfo";
         preCheck = ''
           export XDG_STATE_HOME="$TMPDIR/state"
