@@ -1245,6 +1245,7 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
     reading.batch.observation = None;
     let mut step = ParseStep::new(Default::default(), Default::default(), 0..4, true);
     step.reading_version = "database-reading".into();
+    step.prepare();
     reading.batch.parse.push(step);
     let store = Arc::new(archive.blobs().unwrap());
     for _ in 0..2 {
@@ -1260,7 +1261,8 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
             )
             .unwrap();
         assert!(
-            matches!(&results[0], Ok(stored) if stored.input == "first-session" && stored.chain == 1 && stored.already_stored)
+            matches!(&results[0], Ok(stored) if stored.input == "first-session" && stored.chain == 1 && stored.already_stored),
+            "stored reading result: {results:?}"
         );
         assert!(
             !producer_root.join("capture.json").exists(),
@@ -1279,6 +1281,11 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
     let writes: Vec<ProductWrite> =
         serde_json::from_slice(&std::fs::read(producer_root.join("products.json")).unwrap())
             .unwrap();
+    assert_eq!(
+        writes.len(),
+        1,
+        "one retained parse-progress product: {writes:?}"
+    );
     assert!(
         writes
             .iter()
@@ -1333,7 +1340,10 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
                 Arc::clone(&store),
             )
             .unwrap();
-        assert!(results[0].is_err(), "invalid {invalid} was accepted");
+        assert!(
+            results[0].is_err(),
+            "invalid {invalid} was accepted: {results:?}"
+        );
     }
     assert!(!producer_root.join("capture.json").exists());
     let mut fresh = source("fresh-provider", b"new source");
@@ -1354,8 +1364,12 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
             Arc::clone(&store),
         )
         .unwrap();
-    assert!(matches!(&mixed[0], Err(StoreError::PrimaryPending { .. })));
     assert!(
-        matches!(&mixed[1], Ok(stored) if stored.input == "first-session" && stored.chain == 1)
+        matches!(&mixed[0], Err(StoreError::PrimaryPending { .. })),
+        "mixed source acquisition: {mixed:?}"
+    );
+    assert!(
+        matches!(&mixed[1], Ok(stored) if stored.input == "first-session" && stored.chain == 1),
+        "mixed stored reading: {mixed:?}"
     );
 }
