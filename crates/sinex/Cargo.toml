@@ -17,9 +17,9 @@ hashed-blobs.workspace = true
 query-language.workspace = true
 shared-signals.workspace = true
 jiff.workspace = true
-sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "b609f3efa8e2e708b564c23990494478fd6568b5" }
-sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "b609f3efa8e2e708b564c23990494478fd6568b5" }
-sinex-model = { git = "https://github.com/Sinity/sinex", rev = "b609f3efa8e2e708b564c23990494478fd6568b5" }
+sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "ba8bece14053e9af311047fb3f86a245569b2070" }
+sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "ba8bece14053e9af311047fb3f86a245569b2070" }
+sinex-model = { git = "https://github.com/Sinity/sinex", rev = "ba8bece14053e9af311047fb3f86a245569b2070" }
 async-nats = "0.47"
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros"] }
 futures-util = "0.3"

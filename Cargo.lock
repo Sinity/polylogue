@@ -83,7 +83,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -94,7 +94,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -191,21 +191,10 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "authored"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#122ac8bf4bc2f790ad56facb977a0293e87ea28e"
 dependencies = [
  "blake3",
  "proptest",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "authored"
-version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?rev=8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7#8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7"
-dependencies = [
- "blake3",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -544,14 +533,17 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 [[package]]
 name = "command-surface"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#122ac8bf4bc2f790ad56facb977a0293e87ea28e"
 dependencies = [
  "http",
+ "jiff",
+ "query-language",
  "schemars",
  "serde",
  "serde_json",
  "tokio",
  "tokio-util",
+ "ts-rs",
 ]
 
 [[package]]
@@ -758,7 +750,7 @@ dependencies = [
 [[package]]
 name = "devkit"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#122ac8bf4bc2f790ad56facb977a0293e87ea28e"
 dependencies = [
  "blake3",
  "clap",
@@ -776,7 +768,7 @@ dependencies = [
 [[package]]
 name = "devkit-macros"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#122ac8bf4bc2f790ad56facb977a0293e87ea28e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -891,7 +883,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1209,7 +1201,7 @@ dependencies = [
 [[package]]
 name = "hashed-blobs"
 version = "0.1.1"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#122ac8bf4bc2f790ad56facb977a0293e87ea28e"
 dependencies = [
  "blake3",
  "chacha20poly1305",
@@ -1240,6 +1232,18 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "historical-query-format-v1"
+version = "0.1.0"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#122ac8bf4bc2f790ad56facb977a0293e87ea28e"
+dependencies = [
+ "blake3",
+ "jiff",
+ "schemars",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "hkdf"
@@ -1519,7 +1523,7 @@ version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82cb6a9f675da968c63b6208c641b9dca58fc0133ae53375736b1767b0cab8bd"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2139,6 +2143,7 @@ dependencies = [
  "mimalloc",
  "notify",
  "polylogue-model",
+ "polylogue-query",
  "polylogue-sources",
  "polylogue-store",
  "polylogue-testkit",
@@ -2160,8 +2165,9 @@ dependencies = [
 name = "polylogue-model"
 version = "0.1.0"
 dependencies = [
- "authored 0.1.0 (git+https://github.com/Sinity/polylogue-sinex-common?branch=master)",
+ "authored",
  "blake3",
+ "historical-query-format-v1",
  "jiff",
  "query-language",
  "schemars",
@@ -2254,7 +2260,7 @@ dependencies = [
 name = "polylogue-store"
 version = "0.1.0"
 dependencies = [
- "authored 0.1.0 (git+https://github.com/Sinity/polylogue-sinex-common?branch=master)",
+ "authored",
  "base64 0.22.1",
  "blake3",
  "hashed-blobs",
@@ -2401,7 +2407,7 @@ checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
 [[package]]
 name = "query-language"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#122ac8bf4bc2f790ad56facb977a0293e87ea28e"
 dependencies = [
  "blake3",
  "jiff",
@@ -2477,7 +2483,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2617,7 +2623,7 @@ dependencies = [
 [[package]]
 name = "references"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#122ac8bf4bc2f790ad56facb977a0293e87ea28e"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -2770,7 +2776,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3052,7 +3058,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "signal-delivery"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#122ac8bf4bc2f790ad56facb977a0293e87ea28e"
 dependencies = [
  "futures-util",
  "serde_json",
@@ -3084,7 +3090,7 @@ dependencies = [
 [[package]]
 name = "signals"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#122ac8bf4bc2f790ad56facb977a0293e87ea28e"
 dependencies = [
  "blake3",
  "jiff",
@@ -3125,7 +3131,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 [[package]]
 name = "sinex-macros"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=b609f3efa8e2e708b564c23990494478fd6568b5#b609f3efa8e2e708b564c23990494478fd6568b5"
+source = "git+https://github.com/Sinity/sinex?rev=ba8bece14053e9af311047fb3f86a245569b2070#ba8bece14053e9af311047fb3f86a245569b2070"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3135,11 +3141,12 @@ dependencies = [
 [[package]]
 name = "sinex-model"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=b609f3efa8e2e708b564c23990494478fd6568b5#b609f3efa8e2e708b564c23990494478fd6568b5"
+source = "git+https://github.com/Sinity/sinex?rev=ba8bece14053e9af311047fb3f86a245569b2070#ba8bece14053e9af311047fb3f86a245569b2070"
 dependencies = [
- "authored 0.1.0 (git+https://github.com/Sinity/polylogue-sinex-common?rev=8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7)",
+ "authored",
  "blake3",
  "caseless",
+ "historical-query-format-v1",
  "jiff",
  "query-language",
  "references",
@@ -3159,7 +3166,7 @@ dependencies = [
 [[package]]
 name = "sinex-protocol"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=b609f3efa8e2e708b564c23990494478fd6568b5#b609f3efa8e2e708b564c23990494478fd6568b5"
+source = "git+https://github.com/Sinity/sinex?rev=ba8bece14053e9af311047fb3f86a245569b2070#ba8bece14053e9af311047fb3f86a245569b2070"
 dependencies = [
  "query-language",
  "schemars",
@@ -3172,7 +3179,7 @@ dependencies = [
 [[package]]
 name = "sinex-transport"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=b609f3efa8e2e708b564c23990494478fd6568b5#b609f3efa8e2e708b564c23990494478fd6568b5"
+source = "git+https://github.com/Sinity/sinex?rev=ba8bece14053e9af311047fb3f86a245569b2070#ba8bece14053e9af311047fb3f86a245569b2070"
 dependencies = [
  "async-nats",
  "base64 0.22.1",
@@ -3208,7 +3215,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3311,10 +3318,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3685,7 +3692,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3953,7 +3960,7 @@ dependencies = [
 [[package]]
 name = "web-shell"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8c22e127bb1f5c10d8c1740de4c4f0bfe53ffdb7"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#122ac8bf4bc2f790ad56facb977a0293e87ea28e"
 dependencies = [
  "command-surface",
  "http",
@@ -4007,7 +4014,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
