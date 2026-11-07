@@ -39,6 +39,8 @@ export function exchange(runtime, method, path, body = null) {
     const content = body === null ? null : body instanceof Blob ? body : new Blob([body]);
     let sent = 0;
     let answer = null;
+    let phase = "upload";
+    let acknowledged = -1;
     const responseBytes = [];
     let done = false;
     const finish = (error, value) => {
@@ -50,31 +52,43 @@ export function exchange(runtime, method, path, body = null) {
       if (error) reject(error); else resolve(value);
     };
     const sendNext = async () => {
+      if (done) return;
       if (!content || sent >= content.size) {
+        phase = "response";
         port.postMessage({ type: "body_end" });
         return;
       }
       const chunk = new Uint8Array(await content.slice(sent, sent + CHUNK_BYTES).arrayBuffer());
-      port.postMessage({ type: "body", sequence: Math.floor(sent / CHUNK_BYTES), data: encode(chunk) });
+      if (done) return;
+      const sequence = Math.floor(sent / CHUNK_BYTES);
       sent += chunk.length;
+      phase = "ack";
+      port.postMessage({ type: "body", sequence, data: encode(chunk) });
     };
     const onMessage = (frame) => {
-      if (frame?.type === "error") return finish(new HostError(frame.error));
-      if (frame?.type === "body_ack") return void sendNext().catch((e) => finish(e));
-      if (frame?.type === "response" && !answer) {
-        answer = { status: frame.status, headers: frame.headers || {} };
-        port.postMessage({ type: "response_next" });
-        return;
-      }
-      if (frame?.type === "response_body" && answer) {
-        responseBytes.push(decode(frame.data));
-        port.postMessage({ type: "response_next" });
-        return;
-      }
-      if (frame?.type === "response_end" && answer) {
-        return finish(null, { ...answer, body: new Blob(responseBytes) });
-      }
-      finish(new HostError("host_answer_unreadable"));
+      try {
+        if (frame?.type === "error") return finish(new HostError(frame.error));
+        if (frame?.type === "body_ack" && phase === "ack" && frame.sequence === acknowledged + 1) {
+          acknowledged = frame.sequence;
+          phase = "upload";
+          return void sendNext().catch((e) => finish(e));
+        }
+        if (frame?.type === "response" && phase === "response" && !answer && Number.isInteger(frame.status)) {
+          phase = "body";
+          answer = { status: frame.status, headers: frame.headers || {} };
+          port.postMessage({ type: "response_next" });
+          return;
+        }
+        if (frame?.type === "response_body" && phase === "body" && answer) {
+          responseBytes.push(decode(frame.data));
+          port.postMessage({ type: "response_next" });
+          return;
+        }
+        if (frame?.type === "response_end" && phase === "body" && answer) {
+          return finish(null, { ...answer, body: new Blob(responseBytes) });
+        }
+        finish(new HostError("host_answer_unreadable"));
+      } catch { finish(new HostError("host_answer_unreadable")); }
     };
     const onDisconnect = () => {
       // Reading lastError tells a missing host from one that stopped.

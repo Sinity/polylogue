@@ -43,3 +43,36 @@ describe("a note on a selected passage", () => {
     expect(() => notePayload({ ...note, body: " " }, sender)).toThrow("the_note_needs_text_and_a_quote");
   });
 });
+
+function scriptedPort(reply) {
+  const listeners = new Set();
+  const disconnected = new Set();
+  const port = {
+    onMessage: { addListener: (fn) => listeners.add(fn), removeListener: (fn) => listeners.delete(fn) },
+    onDisconnect: { addListener: (fn) => disconnected.add(fn), removeListener: (fn) => disconnected.delete(fn) },
+    postMessage: (message) => reply(message, (frame) => queueMicrotask(() => { for (const fn of listeners) fn(frame); })),
+    disconnect: () => {},
+  };
+  return port;
+}
+
+it("rejects a response before upload completion and an incorrect body acknowledgment", async () => {
+  const early = { connectNative: () => scriptedPort((message, emit) => {
+    if (message.type === "request") emit({ type: "response", status: 200 });
+  }) };
+  await expect(exchange(early, "POST", "/", new Blob(["x"]))).rejects.toMatchObject({ code: "host_answer_unreadable" });
+  const badAck = { connectNative: () => scriptedPort((message, emit) => {
+    if (message.type === "body") emit({ type: "body_ack", sequence: message.sequence + 1 });
+  }) };
+  await expect(exchange(badAck, "POST", "/", new Blob(["x"]))).rejects.toMatchObject({ code: "host_answer_unreadable" });
+});
+
+it("rejects duplicate acknowledgments while preparing the next chunk", async () => {
+  const runtime = { connectNative: () => scriptedPort((message, emit) => {
+    if (message.type === "body") {
+      emit({ type: "body_ack", sequence: message.sequence });
+      emit({ type: "body_ack", sequence: message.sequence });
+    }
+  }) };
+  await expect(exchange(runtime, "POST", "/", new Blob([new Uint8Array(200000)]))).rejects.toMatchObject({ code: "host_answer_unreadable" });
+});

@@ -13,6 +13,22 @@
   const provider = globalThis.polylogueProvider;
   if (!provider) return;
   globalThis.polylogueContent = true;
+  globalThis.polylogueFetch = async (...args) => {
+    const permit = await chrome.runtime.sendMessage({ type: "polylogue.provider-request" });
+    if (permit?.ok !== true) {
+      const error = new Error(permit?.error || "provider request was not authorized");
+      error.until = permit?.until;
+      throw error;
+    }
+    const response = await fetch(...args);
+    if (response.status === 429 || response.status >= 500) {
+      const error = new Error(`provider_http_${response.status}`);
+      error.status = response.status;
+      error.retryAfter = response.headers.get("retry-after");
+      throw error;
+    }
+    return response;
+  };
 
   // A body is sent in chunks as it arrives, so a slow download keeps
   // talking to the background, which Chrome would otherwise stop as idle.
@@ -67,8 +83,14 @@
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name !== "polylogue") return;
     let open = true;
+    let requested = false;
     port.onDisconnect.addListener(() => { open = false; });
     port.onMessage.addListener(async (request) => {
+      if (requested) {
+        if (open) port.postMessage({ type: "failed", error: "duplicate_page_request" });
+        return;
+      }
+      requested = true;
       try {
         const { body = null, ...facts } = await answer(request);
         if (!open) return;
@@ -76,7 +98,7 @@
         if (body) await sendBody(port, body);
         if (open) port.postMessage({ type: "end" });
       } catch (error) {
-        if (open) port.postMessage({ type: "failed", error: String(error?.message || error) });
+        if (open) port.postMessage({ type: "failed", error: String(error?.message || error), until: error?.until ?? null, status: error?.status ?? null, retry_after: error?.retryAfter ?? null });
       }
     });
   });

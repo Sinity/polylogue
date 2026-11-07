@@ -2,6 +2,7 @@
 // JSON the export holds, the conversation list, and the files a
 // conversation names. Requests from a content script go out as the page's.
 (function () {
+  const request = (...args) => (globalThis.polylogueFetch || fetch)(...args);
   const PAGE_SIZE = 28;
   // The conversation list comes in four parts: archived or not, starred or
   // not. A list position is `<part>:<offset>`.
@@ -47,13 +48,13 @@
   }
 
   function wait(response) {
-    return { status: 429, retry_after: response.headers.get("retry-after") };
+    return { status: response.status, retry_after: response.headers.get("retry-after") };
   }
 
   async function headers() {
     if (auth && auth.until > Date.now()) return auth.headers;
-    const response = await fetch("/api/auth/session", { credentials: "include", cache: "no-store" });
-    if (response.status === 429) return wait(response);
+    const response = await request("/api/auth/session", { credentials: "include", cache: "no-store" });
+    if (response.status === 429 || response.status >= 500) return wait(response);
     let session = response.ok ? await response.json().catch(() => null) : null;
     if (!session?.accessToken) {
       try {
@@ -73,8 +74,8 @@
   async function api(path) {
     const sent = await headers();
     if (typeof sent.status === "number") return { failed: sent };
-    const response = await fetch(path, { credentials: "include", cache: "no-store", headers: sent });
-    if (response.status === 429) return { failed: wait(response) };
+    const response = await request(path, { credentials: "include", cache: "no-store", headers: sent });
+    if (response.status === 429 || response.status >= 500) return { failed: wait(response) };
     if (!response.ok) return { failed: { status: response.status, error: `chatgpt_http_${response.status}` } };
     return { response };
   }
@@ -115,7 +116,7 @@
     return {
       status: 200,
       // Each part is listed newest change first.
-      info: { conversations, next: partDone ? (done ? null : `${part + 1}:0`) : `${part}:${next}`, done, newest_first: true },
+      info: { conversations, next_partition: part < PARTS.length - 1 ? `${part + 1}:0` : null, next: partDone ? (done ? null : `${part + 1}:0`) : `${part}:${next}`, done, newest_first: true },
     };
   }
 
@@ -145,10 +146,10 @@
     const target = new URL(href, location.origin);
     if (target.protocol !== "https:") return { status: 400, error: "download_not_https" };
     // Page cookies go only to ChatGPT itself, never to a storage host.
-    const bytes = await fetch(target.href, {
+    const bytes = await request(target.href, {
       credentials: target.origin === location.origin ? "include" : "omit", cache: "no-store",
     });
-    if (bytes.status === 429) return wait(bytes);
+    if (bytes.status === 429 || bytes.status >= 500) return wait(bytes);
     if (!bytes.ok) return { status: bytes.status, error: `download_http_${bytes.status}` };
     return {
       status: 200,
