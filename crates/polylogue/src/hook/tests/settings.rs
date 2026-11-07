@@ -31,7 +31,12 @@ fn malformed_or_conflicting_settings_refuse_without_changing_bytes_or_permission
             let original = format!(" \n{text}\n ");
             std::fs::write(&path, &original).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
-            let result = install(&path, Harness::ClaudeCode, None, on);
+            let result = install(
+                &path,
+                Harness::ClaudeCode,
+                || panic!("malformed settings must be refused before probing the harness"),
+                on,
+            );
             assert!(result.is_err(), "on={on}, input={text}, result={result:?}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
             assert_eq!(
@@ -55,7 +60,7 @@ fn mixed_hook_entries_keep_other_commands_matchers_and_unknown_fields() {
         ]});
         let original = json!({"model":"example","hooks":{"Stop":[entry],"UnknownFutureEvent":[]},"future":{"a":[{"key":1},{"key":2}]}});
         std::fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
-        install(&path, Harness::ClaudeCode, None, on).unwrap();
+        install(&path, Harness::ClaudeCode, || None, on).unwrap();
         let once: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             once["hooks"]["Stop"][0],
@@ -64,7 +69,7 @@ fn mixed_hook_entries_keep_other_commands_matchers_and_unknown_fields() {
         assert_eq!(once["hooks"]["UnknownFutureEvent"], json!([]));
         assert_eq!(once["model"], original["model"]);
         assert_eq!(once["future"], original["future"]);
-        install(&path, Harness::ClaudeCode, None, on).unwrap();
+        install(&path, Harness::ClaudeCode, || None, on).unwrap();
         let twice: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(once, twice);
     }
@@ -77,8 +82,8 @@ fn unknown_hook_kinds_and_native_json_numbers_survive_setup() {
     let original = r#"{"large":900719925474099312345,"real":1.23456789012345,"hooks":{"Stop":[{"hooks":[{"type":"future","command":"polylogue hook Stop","opaque":null}]}]}}"#;
     std::fs::write(&path, original).unwrap();
     let expected: Value = serde_json::from_str(original).unwrap();
-    install(&path, Harness::ClaudeCode, None, true).unwrap();
-    install(&path, Harness::ClaudeCode, None, false).unwrap();
+    install(&path, Harness::ClaudeCode, || None, true).unwrap();
+    install(&path, Harness::ClaudeCode, || None, false).unwrap();
     let actual: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert_eq!(actual, expected);
 }
@@ -95,5 +100,30 @@ fn uninstall_preserves_empty_containers_and_shell_programs_it_did_not_install() 
             merge_hooks(original.clone(), Harness::ClaudeCode, None, false).unwrap(),
             original
         );
+    }
+}
+
+#[test]
+fn only_valid_installs_probe_the_version_and_keep_confirmed_events() {
+    for on in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{}").unwrap();
+        let probed = std::cell::Cell::new(false);
+        install(
+            &path,
+            Harness::ClaudeCode,
+            || {
+                probed.set(true);
+                HarnessVersion::parse("2.1.316")
+            },
+            on,
+        )
+        .unwrap();
+        assert_eq!(probed.get(), on);
+        let settings: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        for (event, _) in CONFIRMED_FROM {
+            assert_eq!(settings["hooks"].get(*event).is_some(), on);
+        }
     }
 }

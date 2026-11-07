@@ -211,12 +211,12 @@ fn hook_install_merges_and_is_idempotent() {
 fn install_writes_a_file_and_refuses_symlinks() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.json");
-    install(&path, Harness::ClaudeCode, None, true).unwrap();
+    install(&path, Harness::ClaudeCode, || None, true).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("polylogue hook SessionStart"));
     let link = dir.path().join("linked.json");
     std::os::unix::fs::symlink(&path, &link).unwrap();
-    assert!(install(&link, Harness::ClaudeCode, None, true).is_err());
+    assert!(install(&link, Harness::ClaudeCode, || None, true).is_err());
 }
 
 #[test]
@@ -247,7 +247,7 @@ fn install_preserves_permissions_and_ignores_an_old_temporary_name() {
         .path()
         .join(format!(".settings.json.polylogue-{}", std::process::id()));
     std::os::unix::fs::symlink(&other, stale).unwrap();
-    install(&path, Harness::ClaudeCode, None, true).unwrap();
+    install(&path, Harness::ClaudeCode, || None, true).unwrap();
     assert_eq!(std::fs::read(&other).unwrap(), b"unchanged");
     assert!(!path.is_symlink());
     assert_eq!(

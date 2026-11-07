@@ -31,8 +31,10 @@ impl Drop for PeerCleanup<'_> {
 }
 
 fn cancelled_read(disconnect: bool, name: &str) {
-    // Background counts, signals and startup preload keep their own slots.
-    let daemon = test_daemon::start_with_workers("MCP cancellation", 4);
+    let mut daemon = test_daemon::start_with_workers("MCP cancellation", 4);
+    // As in the deadline fixture, join the unrelated signal poller before
+    // blocking storage, so its background work cannot retain a reader here.
+    daemon.pause_signals();
     let lock = std::fs::File::open(daemon.daemon.archive.archive_db()).unwrap();
     lock.lock().unwrap();
     let reads = daemon.watch_reads();
@@ -125,11 +127,6 @@ fn cancelled_read(disconnect: bool, name: &str) {
         let _ = client.shutdown(Shutdown::Both);
         let _ = service.join().unwrap();
         assert!(
-            started,
-            "MCP {name} never acquired its reader: request={params}, reply={acquisition_reply:?}, acquisition_check={acquisition_check}, pool_slots={acquisition_slots}, stop_error={stop_error:?}, limit={:?}",
-            limit.limit
-        );
-        assert!(
             stop_error.is_none(),
             "MCP {name} stop failed: {stop_error:?}"
         );
@@ -139,6 +136,11 @@ fn cancelled_read(disconnect: bool, name: &str) {
             limit.limit
         );
         assert!(cancelled, "MCP {name} did not cancel its daemon read");
+        assert!(
+            started,
+            "MCP {name} never acquired its reader: request={params}, reply={acquisition_reply:?}, acquisition_check={acquisition_check}, pool_slots={acquisition_slots}, queued_cancellation={cancelled}, released_slots={owner_slots}, stop_error={stop_error:?}, limit={:?}",
+            limit.limit
+        );
     });
     assert_no_prepared(&daemon);
 }

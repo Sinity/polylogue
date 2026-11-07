@@ -255,11 +255,12 @@ pub(super) fn merge_hooks(
 
 /// Installs or removes the hooks in a settings file, atomically. A file
 /// that is a symlink (managed by Home Manager or similar) is refused: the
-/// hooks belong in the file's declared source.
+/// hooks belong in the file's declared source. The version provider runs only
+/// for an install after the existing file has passed structural validation.
 pub fn install(
     path: &Path,
     harness: Harness,
-    version: Option<&HarnessVersion>,
+    version: impl FnOnce() -> Option<HarnessVersion>,
     install: bool,
 ) -> std::io::Result<()> {
     if path.is_symlink() {
@@ -273,7 +274,10 @@ pub fn install(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
         Err(e) => return Err(e),
     };
-    let merged = merge_hooks(current, harness, version, install)?;
+    // Refuse the settings before consulting an external harness launcher.
+    validate(&current)?;
+    let version = install.then(version).flatten();
+    let merged = merge_hooks(current, harness, version.as_ref(), install)?;
     let mut text = serde_json::to_string_pretty(&merged).map_err(std::io::Error::other)?;
     text.push('\n');
     let dir = path

@@ -180,8 +180,7 @@ fn hooks(v: &Values, startup: &crate::config::Startup, json: bool, on: bool) -> 
             Err(message) => return fail(startup.output, json, "bad_request", &message, 2),
         },
     };
-    let version = on.then(|| crate::hook::probe_version(harness)).flatten();
-    match crate::hook::install(&path, harness, version.as_ref(), on) {
+    match crate::hook::install(&path, harness, || crate::hook::probe_version(harness), on) {
         Ok(()) => {
             println!(
                 "{} Polylogue's hooks {} {}",

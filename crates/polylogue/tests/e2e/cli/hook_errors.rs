@@ -69,6 +69,17 @@ fn hook_setup_cli_refuses_malformed_settings_without_replacing_them() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("settings.json");
             std::fs::write(&path, original).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            let tools = dir.path().join("tools");
+            std::fs::create_dir(&tools).unwrap();
+            let probe = tools.join("claude");
+            std::fs::write(
+                &probe,
+                "#!/bin/sh\n: > \"$HOOK_PROBE_MARKER\"\nprintf '2.1.316\\n'\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let marker = dir.path().join("probed");
             let out = crate::command(dir.path())
                 .args([
                     "--json",
@@ -77,8 +88,11 @@ fn hook_setup_cli_refuses_malformed_settings_without_replacing_them() {
                     "--settings",
                     path.to_str().unwrap(),
                 ])
+                .env("PATH", &tools)
+                .env("HOOK_PROBE_MARKER", &marker)
                 .output()
                 .unwrap();
+            assert!(!marker.exists(), "malformed settings invoked the harness");
             assert_eq!(out.status.code(), Some(4), "{out:?}");
             assert_eq!(json(&out)["error"]["kind"], "io", "{out:?}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
