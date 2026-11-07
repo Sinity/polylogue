@@ -764,7 +764,7 @@ fn native_aggregate_aliases_remain_visible_to_fields_and_correlated_measures() {
     assert_eq!(
         rows(
             &fixture,
-            "sessions | group by repo | where count > 1 | agg sum(input_tokens) as tokens | sort by repo"
+            "sessions | group by repo | agg sum(input_tokens) as tokens | where count > 1 | sort by repo"
         ),
         [json!({"repo":"east", "count":2, "tokens":4, "unknown_input_tokens":0})]
     );
