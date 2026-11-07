@@ -435,20 +435,26 @@ pub(super) fn project_match_parent(result: &mut Program, parent: &Program) {
         column.name = name;
         result.columns.push(column);
     }
+    let mut order = Vec::new();
+    for (index, key) in parent.order.iter().enumerate() {
+        let column = format!("_match_parent_order{index}");
+        projection.push(format!(
+            "parent_values.{} AS {}",
+            column_sql(&key.column),
+            column_sql(&column)
+        ));
+        order.push(OrderKey {
+            column,
+            descending: key.descending,
+        });
+    }
+    order.extend(result.order.iter().cloned());
+    result.order = order;
     result.sql = format!(
         "SELECT {} FROM ({}) matched JOIN ({}) parent_values ON parent_values._pk = matched._match_parent_pk ORDER BY {}",
         projection.join(", "),
         result.sql,
         parent.sql,
-        result
-            .order
-            .iter()
-            .map(|key| format!(
-                "matched.{}{}",
-                column_sql(&key.column),
-                if key.descending { " DESC" } else { "" }
-            ))
-            .collect::<Vec<_>>()
-            .join(", ")
+        order_by(&result.order)
     );
 }

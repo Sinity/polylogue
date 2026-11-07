@@ -1035,3 +1035,47 @@ fn unseeded_random_windows_keep_selected_rows_and_order_witnesses() {
         }));
     }
 }
+
+#[test]
+fn matches_evaluate_selected_parents_once_and_keep_their_order() {
+    let (_directory, fixture) = fixture();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut options = options();
+    options.random_seed = None;
+    for order in ["id desc", "random()"] {
+        for _ in 0..8 {
+            let selection = reader.prepare_query_selection(
+                &format!("sessions where exists message(role:assistant) | sort by {order} | limit 2 | matches"),
+                &options
+            ).unwrap();
+            let mut rows = Vec::new();
+            reader
+                .visit_selection::<SelectionError>(&selection, None, None, |row| {
+                    rows.push(row);
+                    Ok(ControlFlow::Continue(()))
+                })
+                .unwrap();
+            assert_eq!(rows.len(), 2, "{order}");
+            let parents = rows
+                .iter()
+                .map(|row| row.values["parent"].as_str().unwrap())
+                .collect::<Vec<_>>();
+            assert_ne!(parents[0], parents[1]);
+            if order == "id desc" {
+                assert_eq!(parents, ["session:test:two", "session:test:three"]);
+            } else {
+                assert!(
+                    rows[0].position.values[1].as_i64().unwrap()
+                        <= rows[1].position.values[1].as_i64().unwrap()
+                );
+            }
+            for row in &rows {
+                assert_eq!(
+                    row.values["parent"],
+                    format!("session:{}", row.values["parent.id"].as_str().unwrap())
+                );
+            }
+        }
+    }
+}

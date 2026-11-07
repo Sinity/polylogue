@@ -1214,14 +1214,21 @@ impl Compiler<'_> {
             transforms: vec![stage.clone()],
             attach: vec![],
         };
+        let mut parent_input = relation.program.clone();
+        if matches!(stage.kind, TransformKind::Matches) {
+            let name = relation.slot();
+            self.ctes
+                .push(format!("{name} AS MATERIALIZED ({})", parent_input.sql));
+            parent_input.sql = format!("SELECT * FROM {name}");
+        }
         let mut compiler = Compiler::new(self.text, self.opts);
         compiler.catalog = self.catalog.clone();
         compiler.params = std::mem::take(&mut self.params);
-        compiler.input_rows = Some(relation.program.sql.clone());
+        compiler.input_rows = Some(parent_input.sql.clone());
         compiler.near = self.near.clone().or(relation.program.near.clone());
         let mut result = compiler.native_program_with(&native, None)?;
         if matches!(stage.kind, TransformKind::Matches) {
-            sequences::project_match_parent(&mut result, &relation.program);
+            sequences::project_match_parent(&mut result, &parent_input);
         }
         self.near = result.near.clone();
         self.params = std::mem::take(&mut result.params);
