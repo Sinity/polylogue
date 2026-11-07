@@ -46,6 +46,8 @@ receives its result. The loop then adopts the exact confirmed input, file facts
 and covered chain through that acquisition's actual range. A partial confirmed
 prefix leaves the remaining bytes and reading pending; the next normal plan
 continues from that prefix. Fully confirmed parsing needs no extra pass.
+When a pass waits for a tool database, its later turns revisit that pass's
+provider paths. Database completion cannot clear still-pending file capture.
 Before assigning source revisions, the writer compares the capture with the
 completed confirmed-stream history. If an unreadable record might describe an
 input, new source revisions remain pending. Already readable facts remain available.

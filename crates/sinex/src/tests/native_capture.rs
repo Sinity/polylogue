@@ -144,6 +144,61 @@ fn assert_custody_waits_for_confirmation(
 }
 
 #[test]
+fn database_completion_preserves_pending_provider_files_in_the_same_batch() {
+    let home = ClaudeHome::new();
+    home.append(
+        "pending.jsonl",
+        &polylogue_testkit::claude_user("u1", "pending", "owned Claude bytes"),
+    );
+    let codex = home.home.join(".codex");
+    std::fs::create_dir_all(codex.join("sessions")).unwrap();
+    std::fs::copy(
+        polylogue_testkit::morrow_dir().join("codex/state_5.sqlite"),
+        codex.join("state_5.sqlite"),
+    )
+    .unwrap();
+    std::fs::write(codex.join("sessions/rollout-pending.jsonl"),
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"pending-native\"}}\n{\"type\":\"response_item\",\"payload\":{\"id\":\"m1\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"owned Codex bytes\"}]}}\n"
+    ).unwrap();
+    let (mut engine, _archive, _lock, sdk) = open(&home);
+    let pass = engine.run_pass().unwrap();
+    assert!(
+        pass.errors
+            .iter()
+            .all(|error| error.starts_with("confirmed stream:")
+                && error.contains("Connection refused")),
+        "{pass:?}"
+    );
+    assert_eq!(
+        pass.full_scans, 1,
+        "database completion revisits only this batch's paths"
+    );
+    assert!(
+        pass.capture_pending,
+        "database completion cannot clear pending provider work: {pass:?}"
+    );
+    let captures = sdk.pending_captures().unwrap();
+    assert!(captures.iter().any(|capture| matches!(&capture.captured, Capture::Input(input) if input.rows.format == "claude-code")));
+    assert!(captures.iter().any(|capture| matches!(&capture.captured, Capture::Input(input) if input.rows.input == "codex:rollout:pending-native")));
+    let identities = |captures: Vec<polylogue_store::primary::PendingCapture>| {
+        let mut ids = captures
+            .into_iter()
+            .map(|capture| capture.identity)
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    };
+    let original = identities(captures);
+    let repeated = engine.run_pass().unwrap();
+    assert!(repeated.capture_pending, "{repeated:?}");
+    assert_eq!(
+        repeated.bytes_read, 0,
+        "owned provider bytes are not read again"
+    );
+    assert_eq!(identities(sdk.pending_captures().unwrap()), original);
+}
+
+#[test]
 fn quiet_offline_native_file_finishes_all_chunks_and_reopens_without_provider_prefix_reads() {
     let home = ClaudeHome::new();
     let text = polylogue_testkit::claude_user(

@@ -159,7 +159,8 @@ impl Engine {
     /// Waits for database reads as well as the current file pass.
     pub fn run_pass(&mut self) -> Result<Pass, EngineError> {
         let started = Instant::now();
-        let mut total = self.run_turn()?;
+        let (mut total, seen) = self.one_pass(true, &Default::default())?;
+        let mut paths: std::collections::BTreeSet<_> = seen.into_iter().collect();
         while total.capture_pending
             && (self.captures.pending()
                 || self.capture_checked.is_none() && !self.databases.is_empty())
@@ -172,7 +173,8 @@ impl Engine {
             if completed.finished && self.capture_checked.is_some() {
                 self.capture_checked = Some(Instant::now());
             }
-            let next = self.one_pass(false, &Default::default())?;
+            let (next, seen) = self.one_pass(false, &paths)?;
+            paths.extend(seen);
             total.add(next);
         }
         total.seconds = started.elapsed().as_secs_f64();
@@ -182,13 +184,14 @@ impl Engine {
     /// Services files and starts or observes an independent database read.
     pub fn run_turn(&mut self) -> Result<Pass, EngineError> {
         self.one_pass(true, &Default::default())
+            .map(|(pass, _)| pass)
     }
 
     fn one_pass(
         &mut self,
         discover: bool,
         paths: &std::collections::BTreeSet<PathBuf>,
-    ) -> Result<Pass, EngineError> {
+    ) -> Result<(Pass, HashSet<PathBuf>), EngineError> {
         let continuing = self.pass_open;
         self.pass_open = false;
         let started = Instant::now();
@@ -276,7 +279,7 @@ impl Engine {
             && !database_changed
         {
             pass.seconds = started.elapsed().as_secs_f64();
-            return Ok(pass);
+            return Ok((pass, HashSet::new()));
         }
         // The asset lookup comes from stored observations and sidecars, so
         // after an index rebuild it is in place before any message that
@@ -370,7 +373,7 @@ impl Engine {
         }
         self.pass_open = pass.capture_pending;
         pass.seconds = started.elapsed().as_secs_f64();
-        Ok(pass)
+        Ok((pass, seen))
     }
 
     /// Plans for found files; `seen` collects their paths.
@@ -1510,7 +1513,7 @@ impl Engine {
             busy(true);
             let pending;
             let mut finished = match self.one_pass(discover, &std::mem::take(&mut changed)) {
-                Ok(pass) => {
+                Ok((pass, _)) => {
                     pending = pass.capture_pending;
                     pass
                 }
