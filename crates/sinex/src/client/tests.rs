@@ -213,3 +213,5 @@ fn an_unreadable_event_is_refused_at_its_position_but_a_lost_connection_stops_th
         Err(Error::Unreachable(_))
     ));
 }
+
+mod backup_restore;

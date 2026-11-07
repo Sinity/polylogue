@@ -18,6 +18,25 @@ const ACKNOWLEDGMENT_WAIT: Duration = Duration::from_secs(120);
 /// Room left in a NATS message for its subject and headers.
 const MESSAGE_OVERHEAD: usize = 4096;
 
+/// Acquire the producer-owned artifact. Pinning holds the queue mutex only
+/// while retaining immutable files; byte copying and hashing happen after it.
+pub(crate) fn capture_backup(
+    spool: &std::sync::Mutex<crate::spool::Spool>,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> std::result::Result<sinex_transport::backup::Captured, String> {
+    let pinned = spool
+        .lock()
+        .map_err(|_| "producer spool panicked".to_string())?
+        .pin_backup(cancelled)
+        .map_err(|error| error.to_string())?;
+    let directory = tempfile::Builder::new()
+        .prefix(".backup-acquired-")
+        .tempdir_in(pinned.path().parent().expect("snapshot parent"))
+        .map_err(|error| error.to_string())?;
+    let files = sinex_transport::backup::capture_tree(pinned.path(), directory.path(), cancelled)?;
+    Ok(sinex_transport::backup::Captured { directory, files })
+}
+
 pub(crate) struct Client {
     client: async_nats::Client,
     subjects: Subjects,
@@ -78,6 +97,25 @@ impl Client {
         spool: std::sync::Arc<std::sync::Mutex<crate::spool::Spool>>,
         health: std::sync::Arc<std::sync::Mutex<crate::status::Health>>,
     ) -> Result<Self> {
+        let backup_spool = std::sync::Arc::clone(&spool);
+        Self::connect_with_backup(config, authentication, spool, health, move |cancelled| {
+            capture_backup(&backup_spool, &cancelled)
+        })
+        .await
+    }
+
+    async fn connect_with_backup(
+        config: &Config,
+        authentication: &Authentication,
+        spool: std::sync::Arc<std::sync::Mutex<crate::spool::Spool>>,
+        health: std::sync::Arc<std::sync::Mutex<crate::status::Health>>,
+        capture: impl Fn(
+            std::sync::Arc<std::sync::atomic::AtomicBool>,
+        ) -> std::result::Result<sinex_transport::backup::Captured, String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<Self> {
         let (client, subjects, welcome) = transport(config, authentication).await?;
         let acknowledgments = client
             .subscribe(subjects.ack(&config.producer))
@@ -99,29 +137,12 @@ impl Client {
         }
         let max_message = client.server_info().max_payload;
         let publication = sinex_transport::backup::Publication::default();
-        let backup_spool = std::sync::Arc::clone(&spool);
         let backup = sinex_transport::backup::Participant::start(
             client.clone(),
             subjects.clone(),
             config.producer.clone(),
             publication.clone(),
-            std::sync::Arc::new(move |cancelled| {
-                let pinned = backup_spool
-                    .lock()
-                    .map_err(|_| "producer spool panicked".to_string())?
-                    .pin_backup(&cancelled)
-                    .map_err(|error| error.to_string())?;
-                let directory = tempfile::Builder::new()
-                    .prefix(".backup-acquired-")
-                    .tempdir_in(pinned.path().parent().expect("snapshot parent"))
-                    .map_err(|error| error.to_string())?;
-                let files = sinex_transport::backup::capture_tree(
-                    pinned.path(),
-                    directory.path(),
-                    &cancelled,
-                )?;
-                Ok(sinex_transport::backup::Captured { directory, files })
-            }),
+            std::sync::Arc::new(capture),
         )
         .await
         .map_err(Error::Invalid)?;

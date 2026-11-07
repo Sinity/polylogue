@@ -3,8 +3,7 @@
 //! and rebuilding them from Sinex, with no provider file left, gives the same
 //! answers again; and Sinex answers its own query language about the
 //! sessions. It runs a real `sinexd` over a throwaway PostgreSQL and NATS, so
-//! it needs Sinex's binaries: `SINEXD` and `SINEX_SCHEMA` name them
-//! (`cargo build -p sinexd -p sinex-schema` in a Sinex checkout).
+//! `SINEXD` names the matching built daemon, including its admin schema command.
 use polylogue_engine::Engine;
 use polylogue_model::Reference;
 use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
@@ -16,85 +15,36 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-struct Daemon(Child);
+// This shared fixture exposes restore phases exercised by the unit-level backup test.
+#[allow(dead_code)]
+#[path = "../support/native.rs"]
+mod native;
 
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-/// A Sinex: PostgreSQL with its schema, NATS and `sinexd`.
 struct Running {
     config: Config,
     socket: PathBuf,
-    _daemon: Daemon,
-    _nats: devkit::nats::Server,
-    _pg: devkit::pg::Server,
+    _native: native::Native,
 }
 
 fn sinex(dir: &Path) -> Running {
-    let sinexd = std::env::var("SINEXD").expect("SINEXD names a built sinexd");
-    let schema = std::env::var("SINEX_SCHEMA").expect("SINEX_SCHEMA names a built sinex-schema");
-    let pg = devkit::pg::Server::start(&devkit::pg::ClusterOptions {
-        required_extensions: vec!["timescaledb".into(), "vector".into()],
-        preload: vec!["timescaledb".into()],
-        settings: vec![("timescaledb.enable_chunk_skipping".into(), "on".into())],
-    })
-    .unwrap();
-    pg.sql("postgres", "CREATE DATABASE sinex").unwrap();
-    let url = pg.url("sinex", None);
-    let applied = Command::new(&schema)
-        .args(["apply", &url])
-        .status()
-        .unwrap();
-    assert!(applied.success(), "sinex-schema apply");
-    let nats = devkit::nats::Server::start().unwrap();
-    let store = dir.join("sinex-store");
-    let tokens = dir.join("tokens");
-    fs::create_dir_all(&tokens).unwrap();
-    for t in ["read", "agent", "operator"] {
-        fs::write(
-            tokens.join(format!("{t}.token")),
-            format!("{t}-rebuild-token"),
-        )
-        .unwrap();
-    }
-    let socket = dir.join("sinexd.sock");
-    let daemon = Daemon(
-        polylogue_testkit::spawn_daemon(
-            Command::new(&sinexd)
-                .arg("run")
-                .args(["--database", &url])
-                .arg("--store")
-                .arg(&store)
-                .args(["--nats", nats.url(), "--subject-root", "rebuild"])
-                .arg("--tokens")
-                .arg(&tokens)
-                .arg("--socket")
-                .arg(&socket),
-        )
-        .unwrap(),
+    let native = native::Native::start(
+        dir,
+        serde_json::to_value(polylogue_sinex::kinds::source_declaration()).unwrap(),
     );
-    let config = Config {
-        mode: Mode::Primary,
-        nats: nats.url().into(),
-        password_file: None,
-        subject_root: "rebuild".into(),
-        producer: "polylogue".into(),
-        store,
-    };
     Running {
-        config,
-        socket,
-        _daemon: daemon,
-        _nats: nats,
-        _pg: pg,
+        config: Config {
+            mode: Mode::Primary,
+            nats: native.nats.url().into(),
+            password_file: None,
+            subject_root: "rebuild".into(),
+            producer: "polylogue".into(),
+            store: native.store.clone(),
+        },
+        socket: native.socket.clone(),
+        _native: native,
     }
 }
 
@@ -195,7 +145,7 @@ fn sinex_rows(socket: &Path, query: &str) -> usize {
 }
 
 #[test]
-#[ignore = "needs Sinex's binaries; set SINEXD and SINEX_SCHEMA"]
+#[ignore = "needs the matching Sinex daemon; set SINEXD"]
 fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     let started = Instant::now();
     let phase = |name: &str| eprintln!("{:>6.1}s {name}", started.elapsed().as_secs_f64());
