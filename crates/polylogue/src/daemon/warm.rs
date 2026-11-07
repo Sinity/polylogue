@@ -2,7 +2,7 @@
 //! come without reloading or recomputing.
 //!
 //! - **Vectors**: every vector of the embedding key `similar:` ranks by, in
-//!   memory, reloaded after a commit stored or removed vectors.
+//!   memory, keyed by the model revision of the requesting read snapshot.
 //! - **Query vectors**: the provider's vector for each recent `similar:` text,
 //!   so a repeated or paged query neither pays nor waits for the provider
 //!   again, and ranks by the same values.
@@ -15,13 +15,12 @@
 //!   commit one count after it, and `status` says which read position its
 //!   counts are from.
 //!
-//! Every entry is checked against the read position (or the vector write
-//! count) of the request that uses it, so a write is never answered from
-//! before it.
+//! Entries are bound to their read position or embeddings snapshot revision.
+//! SQL reads and quantization do not hold the vector cache mutex.
 
 use crate::embeddings::Provider;
 use polylogue_store::Reader;
-use polylogue_store::vectors::{self, Loaded, Similarity};
+use polylogue_store::vectors::{Loaded, Similarity};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -83,8 +82,14 @@ pub struct Counted {
     pub status: polylogue_store::Status,
 }
 
+#[derive(Default)]
+struct VectorCache {
+    loaded: Option<Arc<Loaded>>,
+    invalidation: Arc<()>,
+}
+
 pub struct Warm {
-    vectors: Mutex<Option<Arc<Loaded>>>,
+    vectors: Mutex<VectorCache>,
     archive_counts: Mutex<Option<Counted>>,
     /// Whether the index had caught up, with the change position it was read at.
     caught_up: Mutex<Option<(String, bool)>>,
@@ -103,7 +108,7 @@ pub struct Warm {
 impl Default for Warm {
     fn default() -> Self {
         Self {
-            vectors: Mutex::new(None),
+            vectors: Mutex::new(VectorCache::default()),
             archive_counts: Mutex::new(None),
             caught_up: Mutex::new(None),
             count_error: Mutex::new(None),
@@ -143,22 +148,56 @@ impl Warm {
         provider: &Provider,
     ) -> Result<Option<Arc<Loaded>>, String> {
         let prefix = provider.key_prefix();
-        let mut held = read_lock(&self.vectors, reader)?;
-        if let Some(loaded) = held.as_ref()
-            && loaded.key.starts_with(&prefix)
-            && loaded.writes == vectors::writes()
-        {
-            return Ok(Some(Arc::clone(loaded)));
-        }
         let store = reader.vectors().map_err(|e| e.to_string())?;
         let Some(key) = store.key_with_prefix(&prefix).map_err(|e| e.to_string())? else {
-            *held = None;
             return Ok(None);
         };
-        let loaded = Arc::new(store.load(&key).map_err(|e| e.to_string())?);
+        let revision = store.revision(&key).map_err(|e| e.to_string())?;
+        self.cached_vectors(reader, &key, revision, || {
+            store.load(&key).map_err(|e| e.to_string())
+        })
+        .map(Some)
+    }
+
+    fn cached_vectors(
+        &self,
+        reader: &Reader<'_>,
+        key: &str,
+        revision: i64,
+        load: impl FnOnce() -> Result<Loaded, String>,
+    ) -> Result<Arc<Loaded>, String> {
+        let invalidation = {
+            let held = read_lock(&self.vectors, reader)?;
+            if let Some(loaded) = &held.loaded
+                && loaded.key == key
+                && loaded.revision == revision
+            {
+                return Ok(Arc::clone(loaded));
+            }
+            Arc::clone(&held.invalidation)
+        };
+        // SQL and quantization never hold the shared cache lock. The reader's
+        // snapshot, rather than a process counter, identifies these values.
+        let loaded = Arc::new(load()?);
         self.counts.vector_loads.fetch_add(1, Ordering::Relaxed);
-        *held = Some(Arc::clone(&loaded));
-        Ok(Some(loaded))
+        reader.check().map_err(|e| e.to_string())?;
+        let mut held = read_lock(&self.vectors, reader)?;
+        if Arc::ptr_eq(&invalidation, &held.invalidation) {
+            if let Some(current) = &held.loaded
+                && current.key == key
+                && current.revision == loaded.revision
+            {
+                return Ok(Arc::clone(current));
+            }
+            let newer = held
+                .loaded
+                .as_ref()
+                .is_some_and(|current| current.key == key && current.revision > loaded.revision);
+            if !newer {
+                held.loaded = Some(Arc::clone(&loaded));
+            }
+        }
+        Ok(loaded)
     }
 
     /// Every stored text's similarity to `text`, for `similar:`.
@@ -385,7 +424,7 @@ impl Warm {
     /// Drops everything; the next requests rebuild what they use.
     pub fn clear(&self) {
         if let Ok(mut v) = self.vectors.lock() {
-            *v = None;
+            *v = VectorCache::default();
         }
         if let Ok(mut q) = self.query_vectors.lock() {
             q.clear();
@@ -403,7 +442,7 @@ impl Warm {
     pub fn summary(&self) -> crate::protocol::status::Warm {
         use crate::protocol::status::{Vectors, Warm};
         let vectors = self.vectors.lock().ok().and_then(|vectors| {
-            vectors.as_ref().map(|loaded| Vectors {
+            vectors.loaded.as_ref().map(|loaded| Vectors {
                 key: loaded.key.clone(),
                 vectors: loaded.vectors(),
             })

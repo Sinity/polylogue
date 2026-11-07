@@ -237,9 +237,20 @@ pub fn ensure_archive(conn: &Connection) -> Result<()> {
     ensure(conn, "archive", &[ARCHIVE], ARCHIVE_MIGRATIONS)
 }
 
-/// Creates `embeddings.db` in an empty file; refuses one with other tables.
+/// Creates `embeddings.db` or upgrades its model-revision metadata in place.
 pub(crate) fn ensure_embeddings(conn: &Connection) -> Result<()> {
-    ensure(conn, "embeddings", &[EMBEDDINGS], &[])
+    ensure(
+        conn,
+        "embeddings",
+        &[EMBEDDINGS],
+        &[Migration::Data {
+            name: "model vector snapshot revisions",
+            apply: |conn| {
+                conn.execute_batch(include_str!("schema/embeddings_2.sql"))?;
+                Ok(())
+            },
+        }],
+    )
 }
 
 /// Creates the database from `sql` in an empty file, or applies the

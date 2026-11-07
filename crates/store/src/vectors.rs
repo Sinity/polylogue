@@ -5,8 +5,9 @@
 //!
 //! Search is a scan of every vector of one key held in memory ([`Loaded`]):
 //! a dot product against a unit query vector, the best chunk per text. The
-//! daemon keeps the loaded vectors and reloads them after [`writes`]
-//! changes.
+//! daemon keeps loaded vectors by model revision read from the same SQLite
+//! snapshot as their rows. [`writes`] is a coarse process-local invalidation
+//! counter for query continuations, not the identity of a loaded snapshot.
 
 use crate::archive::{Archive, open_read, open_write};
 use crate::read::Reader;
@@ -292,6 +293,19 @@ impl Vectors {
             .optional()?)
     }
 
+    /// Revision of a model in this handle's SQLite read snapshot.
+    pub fn revision(&self, key: &str) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT revision FROM embedding_revision WHERE model = ?1",
+                [key],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+    }
+
     /// Every vector of `key` in memory, for `near:`. Each value is kept as
     /// one signed byte scaled by its vector's largest value: a quarter of
     /// the size, and similarities within about 1% of the stored ones,
@@ -300,7 +314,7 @@ impl Vectors {
         let _read = self.read_transaction()?;
         let mut loaded = Loaded {
             key: key.to_owned(),
-            writes: writes(),
+            revision: self.revision(key)?,
             dims: 0,
             texts: HashMap::new(),
             owner: Vec::new(),
@@ -435,8 +449,8 @@ fn now_ms() -> i64 {
 /// Every vector of one embedding key, in memory.
 pub struct Loaded {
     pub key: String,
-    /// [`writes`] when loaded: the copy is current while it is unchanged.
-    pub writes: u64,
+    /// Model revision in the embeddings snapshot that supplied these rows.
+    pub revision: i64,
     pub dims: usize,
     /// Text hash to text number.
     texts: HashMap<Box<[u8]>, u32>,

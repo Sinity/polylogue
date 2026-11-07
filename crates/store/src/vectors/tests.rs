@@ -57,7 +57,7 @@ fn stores_scans_and_survives_reopening() {
     let v = reader.vectors().unwrap();
     let loaded = std::sync::Arc::new(v.load(key).unwrap());
     assert_eq!(loaded.vectors(), 3);
-    assert_eq!(loaded.writes, writes());
+    assert_eq!(loaded.revision, v.revision(key).unwrap());
     let near = loaded.similarity(&unit(&[1.0, 0.05, 0.0])).unwrap();
     let (one, two) = (near.of(&[1]).unwrap(), near.of(&[2]).unwrap());
     assert!(one > two, "{one} {two}");
@@ -233,4 +233,45 @@ fn purchased_vectors_are_kept_when_their_text_has_no_current_index_row() {
         .unwrap();
     assert!(vectors.done(key).unwrap().contains(&vec![9; 32]));
     assert_eq!(vectors.load(key).unwrap().vectors(), 1);
+}
+
+#[test]
+fn loaded_vectors_keep_their_database_snapshot_revision_after_a_concurrent_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
+    texts(&archive, &[&[1]]);
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let writer_reader = pool.reader().unwrap();
+    let key = "synthetic/model/2/document/unit";
+    let mut writer = writer_reader.vectors_writer().unwrap();
+    writer
+        .put(
+            key,
+            &[Vector {
+                text_hash: vec![1],
+                chunk: 0,
+                values: vec![1., 0.],
+            }],
+        )
+        .unwrap();
+    let old_reader = pool.reader().unwrap();
+    let old = old_reader.vectors().unwrap();
+    let revision = old.revision(key).unwrap();
+    writer
+        .put(
+            key,
+            &[Vector {
+                text_hash: vec![1],
+                chunk: 0,
+                values: vec![0., 1.],
+            }],
+        )
+        .unwrap();
+    let old_load = Arc::new(old.load(key).unwrap());
+    assert_eq!(old_load.revision, revision);
+    assert_eq!(old_load.similarity(&[1., 0.]).unwrap().of(&[1]), Some(1.));
+    let new_reader = pool.reader().unwrap();
+    let new_load = Arc::new(new_reader.vectors().unwrap().load(key).unwrap());
+    assert!(new_load.revision > revision);
+    assert_eq!(new_load.similarity(&[1., 0.]).unwrap().of(&[1]), Some(0.));
 }

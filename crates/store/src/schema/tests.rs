@@ -27,7 +27,7 @@ fn every_database_starts_at_its_current_version() {
         ),
         (ensure_index, INDEX_VERSION),
         (ensure_primary_index, INDEX_VERSION),
-        (ensure_embeddings, 1),
+        (ensure_embeddings, 2),
     ] {
         let conn = Connection::open_in_memory().unwrap();
         create(&conn).unwrap();
@@ -165,7 +165,7 @@ fn a_newer_database_or_one_with_unknown_tables_is_refused() {
     ));
     let conn = Connection::open_in_memory().unwrap();
     ensure_embeddings(&conn).unwrap();
-    set_version(&conn, 2).unwrap();
+    set_version(&conn, 3).unwrap();
     assert!(matches!(
         ensure_embeddings(&conn),
         Err(StoreError::NewerSchema {
@@ -512,4 +512,43 @@ fn query_position_upgrade_preserves_unknown_original_objects() {
         }
         assert_eq!(version(&conn).unwrap(), 4);
     }
+}
+
+#[test]
+fn embeddings_revision_migration_preserves_paid_rows_and_rejections() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(include_str!("fixtures/embeddings_1.sql"))
+        .unwrap();
+    set_version(&conn, 1).unwrap();
+    conn.execute("INSERT INTO embedded(id,text_hash,model,chunk,dims,vector,embedded_at) VALUES (37,x'01','synthetic/1',2,1,x'0000803f',123)", []).unwrap();
+    conn.execute(
+        "INSERT INTO embed_failure VALUES (x'02','synthetic/1','original rejection',456)",
+        [],
+    )
+    .unwrap();
+    ensure_embeddings(&conn).unwrap();
+    assert_eq!(version(&conn).unwrap(), 2);
+    assert_eq!(conn.query_row("SELECT id || ':' || hex(text_hash) || ':' || model || ':' || chunk || ':' || dims || ':' || hex(vector) || ':' || embedded_at FROM embedded", [], |r|r.get::<_,String>(0)).unwrap(), "37:01:synthetic/1:2:1:0000803F:123");
+    assert_eq!(conn.query_row("SELECT hex(text_hash) || ':' || model || ':' || error || ':' || failed_at FROM embed_failure", [], |r|r.get::<_,String>(0)).unwrap(), "02:synthetic/1:original rejection:456");
+    ensure_embeddings(&conn).unwrap();
+    let revision = |model: &str| {
+        conn.query_row(
+            "SELECT revision FROM embedding_revision WHERE model=?1",
+            [model],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(revision("synthetic/1"), 1);
+    conn.execute("UPDATE embedded SET vector=x'0000003f' WHERE id=37", [])
+        .unwrap();
+    assert_eq!(revision("synthetic/1"), 2);
+    conn.execute("UPDATE embedded SET model='synthetic/2' WHERE id=37", [])
+        .unwrap();
+    assert_eq!(revision("synthetic/1"), 3);
+    assert_eq!(revision("synthetic/2"), 1);
+    conn.execute("UPDATE embed_failure SET error='new rejection'", [])
+        .unwrap();
+    assert_eq!(revision("synthetic/1"), 4);
+
 }
