@@ -41,7 +41,7 @@ fn every_agent_string_gets_rows_or_a_corrected_query() {
         assert!(!f.message.is_empty(), "{text}: no message");
         let suggestion = crate::protocol::suggestion_text(&f)
             .unwrap_or_else(|| panic!("{text}: no corrected query: {} {}", f.code(), f.message))
-            .to_owned();
+            .into_owned();
         if let Err(again) = run_q(&w, ask(&suggestion)) {
             panic!(
                 "{text}: the corrected query {suggestion:?} fails too: {} {}",

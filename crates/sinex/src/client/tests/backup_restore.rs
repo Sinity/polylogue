@@ -2,7 +2,7 @@
 use super::super::*;
 use crate::{Mode, Sinex};
 use polylogue_model::BlobHash;
-use polylogue_store::primary::{Material, Product, ProductWrite, Sinex as _, SourceLocation};
+use polylogue_store::primary::{Material, Product, ProductWrite, SourceLocation};
 use polylogue_store::{Archive, ReadPool, Writer};
 use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};

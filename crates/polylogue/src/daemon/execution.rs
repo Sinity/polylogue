@@ -182,7 +182,7 @@ pub fn refusal(
     command_surface::Answer {
         outcome: command_surface::Outcome::Error(failure),
         envelope: command_surface::Envelope {
-            notes: notes,
+            notes,
             next: vec![],
             ..Default::default()
         },

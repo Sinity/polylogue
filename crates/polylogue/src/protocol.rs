@@ -246,10 +246,7 @@ pub fn into_value<T>(answer: Answer<T>) -> Result<T, Failure> {
             ..
         }
         | command_surface::Answer {
-            outcome:
-                command_surface::Outcome::Degraded {
-                    value, missing: _, ..
-                },
+            outcome: command_surface::Outcome::Degraded { value, .. },
             ..
         } => Ok(value),
         command_surface::Answer {

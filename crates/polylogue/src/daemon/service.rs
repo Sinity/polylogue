@@ -111,7 +111,7 @@ impl Daemon {
             })?;
         let description = table
             .descriptions()
-            .into_iter()
+            .iter()
             .find(|description| description.spec.name == request.operation)
             .ok_or_else(|| Failure::new(FailureKind::BadRequest, "unknown operation"))?;
         let command =
@@ -213,7 +213,7 @@ fn query_outcome(
     if degraded {
         command_surface::Answer {
             outcome: command_surface::Outcome::Degraded {
-                value: value,
+                value,
                 missing: notes,
             },
             envelope: command_surface::Envelope {
@@ -225,7 +225,7 @@ fn query_outcome(
         command_surface::Answer {
             outcome: command_surface::Outcome::Empty(value),
             envelope: command_surface::Envelope {
-                notes: notes,
+                notes,
                 next: vec![],
                 ..Default::default()
             },
@@ -234,7 +234,7 @@ fn query_outcome(
         command_surface::Answer {
             outcome: command_surface::Outcome::Ok(value),
             envelope: command_surface::Envelope {
-                notes: notes,
+                notes,
                 next: vec![],
                 ..Default::default()
             },

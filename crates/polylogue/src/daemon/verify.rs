@@ -58,7 +58,7 @@ pub(super) fn run(d: &Daemon, manifest: Option<&Path>) -> Answer<Value> {
             match serde_json::to_value(found) {
                 Ok(value) => command_surface::Answer {
                     outcome: command_surface::Outcome::Degraded {
-                        value: value,
+                        value,
                         missing: vec![note],
                     },
                     envelope: command_surface::Envelope {

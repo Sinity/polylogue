@@ -72,11 +72,7 @@ fn pending_capture_returns_receipt_instead_of_storage_failure() {
     assert!(matches!(
         answer,
         command_surface::Answer {
-            outcome: command_surface::Outcome::Degraded {
-                value: _,
-                missing: _,
-                ..
-            },
+            outcome: command_surface::Outcome::Degraded { .. },
             ..
         }
     ));
