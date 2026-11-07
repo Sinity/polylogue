@@ -145,6 +145,11 @@ fn same_source_generation_rebuild_never_reuses_a_pinned_wal_namespace() {
     let second = build(&pointer, "same-source-generation", "rebuilt");
     assert_ne!(second.path, first_path);
     pointer.activate(&second, &token).unwrap();
+    for suffix in ["", "-wal", "-shm"] {
+        assert!(!Path::new(&format!("{}{suffix}", first_path.display())).exists());
+    }
+    assert_eq!(old.values("repo", "").unwrap()[0].value, "first");
+    assert_eq!(latest.values("repo", "").unwrap()[0].value, "newer-commit");
     let rebuilt = CatalogReader::open(&pointer.path, "synthetic")
         .unwrap()
         .unwrap();
@@ -161,9 +166,40 @@ fn same_source_generation_rebuild_never_reuses_a_pinned_wal_namespace() {
     assert_ne!(third.path, second_path);
     assert_ne!(third.path, first_path);
     pointer.activate(&third, &token).unwrap();
+    for suffix in ["", "-wal", "-shm"] {
+        assert!(!Path::new(&format!("{}{suffix}", second_path.display())).exists());
+    }
     let recreated = CatalogReader::open(&pointer.path, "synthetic")
         .unwrap()
         .unwrap();
     assert_eq!(recreated.values("repo", "").unwrap()[0].value, "recreated");
     assert!(matches!(rebuilt.check(), Err(StoreError::ScopeChanged)));
+}
+
+#[test]
+fn namespace_retirement_stays_local_and_cannot_fail_an_activated_pointer() {
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&directory.path().join("archive")).unwrap();
+    let token = archive.scope_token().unwrap();
+    let cache = directory.path().join("cache");
+    std::fs::create_dir(&cache).unwrap();
+    let pointer = CatalogPointer::new(cache.join("catalog"));
+    let outside = directory.path().join("catalog.outside.db");
+    std::fs::write(&outside, "unrelated").unwrap();
+    std::os::unix::fs::symlink("../catalog.outside.db", &pointer.path).unwrap();
+    let first = build(&pointer, "source", "first");
+    pointer.activate(&first, &token).unwrap();
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "unrelated");
+    pointer.invalidate().unwrap();
+    assert!(!first.path.exists());
+    let unremovable = cache.join("catalog.unremovable.db");
+    std::fs::create_dir(&unremovable).unwrap();
+    std::os::unix::fs::symlink("catalog.unremovable.db", &pointer.path).unwrap();
+    let second = build(&pointer, "source", "second");
+    pointer.activate(&second, &token).unwrap();
+    assert!(unremovable.is_dir(), "cleanup cannot remove a directory");
+    let reader = CatalogReader::open(&pointer.path, "synthetic")
+        .unwrap()
+        .unwrap();
+    assert_eq!(reader.values("repo", "").unwrap()[0].value, "second");
 }

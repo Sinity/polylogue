@@ -30,10 +30,14 @@ impl CatalogPointer {
     }
     /// Called synchronously by the native scope owner, never by a commit wake.
     pub fn invalidate(&self) -> Result<()> {
+        let previous = fs::read_link(&self.path).ok();
         match fs::remove_file(&self.path) {
             Ok(()) => {
                 if let Some(parent) = self.path.parent() {
                     fs::File::open(parent)?.sync_all()?;
+                }
+                if let Some(previous) = previous {
+                    self.retire(&previous);
                 }
                 Ok(())
             }
@@ -49,7 +53,8 @@ impl CatalogPointer {
                 return Err(StoreError::ScopeChanged);
             }
             let name = target.file_name().expect("materialization file name");
-            if fs::read_link(&self.path).ok().as_deref() == Some(Path::new(name)) {
+            let previous = fs::read_link(&self.path).ok();
+            if previous.as_deref() == Some(Path::new(name)) {
                 return Ok(());
             }
             let parent = self
@@ -65,9 +70,33 @@ impl CatalogPointer {
             })();
             if result.is_err() {
                 let _ = fs::remove_file(&temporary);
+            } else if let Some(previous) = previous {
+                self.retire(&previous);
             }
             result
         })
+    }
+    // The pointer owns only these cache-local namespaces. Unlinking a retired
+    // namespace leaves pinned SQLite descriptors valid; its pointer is revoked.
+    // Cleanup cannot change the outcome of an already published replacement.
+    fn retire(&self, target: &Path) {
+        let Some(name) = target.to_str() else { return };
+        if target.components().count() != 1
+            || !matches!(
+                target.components().next(),
+                Some(std::path::Component::Normal(_))
+            )
+            || !name.starts_with("catalog.")
+            || !name.ends_with(".db")
+        {
+            return;
+        }
+        let Some(parent) = self.path.parent() else {
+            return;
+        };
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = fs::remove_file(parent.join(format!("{name}{suffix}")));
+        }
     }
 }
 #[cfg(test)]

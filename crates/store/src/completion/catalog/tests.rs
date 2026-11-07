@@ -360,6 +360,7 @@ fn publication_keeps_old_snapshots_readable_and_offline_reads_create_no_files() 
     const CHILD: &str = "POLYLOGUE_COMPLETION_READER_CASE";
     const VALUE: &str = "POLYLOGUE_COMPLETION_READER_VALUE";
     const POSITION: &str = "POLYLOGUE_COMPLETION_READER_POSITION";
+    const VERIFIED: &str = "completion reader verified values and position";
     if let Some(path) = std::env::var_os(CHILD) {
         let reader = CatalogReader::open(Path::new(&path), "synthetic")
             .unwrap()
@@ -372,6 +373,7 @@ fn publication_keeps_old_snapshots_readable_and_offline_reads_create_no_files() 
             reader.metadata.position,
             metadata(std::env::var(POSITION).unwrap().parse().unwrap()).position
         );
+        eprintln!("{VERIFIED}");
         return;
     }
     let directory = tempfile::tempdir().unwrap();
@@ -385,6 +387,27 @@ fn publication_keeps_old_snapshots_readable_and_offline_reads_create_no_files() 
             .args(["--exact", "completion::catalog::tests::publication_keeps_old_snapshots_readable_and_offline_reads_create_no_files", "--nocapture"])
             .env(CHILD, &pointer).env(VALUE, value).env(POSITION, position.to_string()).output().unwrap();
         assert!(output.status.success(), "reader child: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
+            "reader child: {output:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .filter(|line| *line == VERIFIED)
+                .count(),
+            1,
+            "reader child: {output:?}"
+        );
+    };
+    let files = || {
+        fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (entry.file_name(), fs::read(entry.path()).unwrap())
+            })
+            .collect::<BTreeMap<_, _>>()
     };
     let mut writer = writer(&path);
     std::os::unix::fs::symlink("generation.db", &pointer).unwrap();
@@ -410,23 +433,16 @@ fn publication_keeps_old_snapshots_readable_and_offline_reads_create_no_files() 
             writer.put_session(&session("codex:one", "after", 1))
         })
         .unwrap();
+    let before_child = files();
+    child("after", 3);
+    assert_eq!(files(), before_child);
     assert_eq!(old.values("model", "").unwrap()[0].value, "before");
     assert_eq!(old.metadata.position, metadata(2).position);
     let current = CatalogReader::open(&pointer, "synthetic").unwrap().unwrap();
     assert_eq!(current.values("model", "").unwrap()[0].value, "after");
     assert_eq!(current.metadata.position, metadata(3).position);
-    child("after", 3);
     drop((old, during, current));
     drop(writer);
-    let files = || {
-        fs::read_dir(directory.path())
-            .unwrap()
-            .map(|entry| {
-                let entry = entry.unwrap();
-                (entry.file_name(), fs::read(entry.path()).unwrap())
-            })
-            .collect::<BTreeMap<_, _>>()
-    };
     let before = files();
     assert!(before.contains_key(std::ffi::OsStr::new("generation.db-wal")));
     assert!(before.contains_key(std::ffi::OsStr::new("generation.db-shm")));
