@@ -20,7 +20,7 @@ const MESSAGE_OVERHEAD: usize = 4096;
 
 /// Acquire the producer-owned artifact. Pinning holds the queue mutex only
 /// while retaining immutable files; byte copying and hashing happen after it.
-pub(crate) fn capture_backup(
+fn capture_backup(
     spool: &std::sync::Mutex<crate::spool::Spool>,
     cancelled: &std::sync::atomic::AtomicBool,
 ) -> std::result::Result<sinex_transport::backup::Captured, String> {
@@ -98,13 +98,13 @@ impl Client {
         health: std::sync::Arc<std::sync::Mutex<crate::status::Health>>,
     ) -> Result<Self> {
         let backup_spool = std::sync::Arc::clone(&spool);
-        Self::connect_with_backup(config, authentication, spool, health, move |cancelled| {
+        Self::connect_with_backup_capture(config, authentication, spool, health, move |cancelled| {
             capture_backup(&backup_spool, &cancelled)
         })
         .await
     }
 
-    async fn connect_with_backup(
+    async fn connect_with_backup_capture(
         config: &Config,
         authentication: &Authentication,
         spool: std::sync::Arc<std::sync::Mutex<crate::spool::Spool>>,

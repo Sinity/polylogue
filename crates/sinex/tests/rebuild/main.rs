@@ -13,7 +13,6 @@ use polylogue_store::{Archive, ReadPool};
 use polylogue_testkit::{Morrow, Set};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -119,25 +118,11 @@ fn answers(archive: &Archive) -> (BTreeMap<String, serde_json::Value>, Vec<serde
 
 /// Rows a Sinex query answers, asked over its API socket as a reader.
 fn sinex_rows(socket: &Path, query: &str) -> usize {
-    let body = serde_json::json!({ "method": "query", "query": query, "page": 1000 }).to_string();
-    let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
-    write!(
-        stream,
-        "POST /v1 HTTP/1.1\r\nHost: sinexd\r\nContent-Type: application/json\r\nAuthorization: Bearer read-rebuild-token\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    )
-    .unwrap();
-    let mut reply = String::new();
-    stream.read_to_string(&mut reply).unwrap();
-    let json = reply
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or_default();
-    // A chunked body: the JSON object starts at its first brace.
-    let start = json.find('{').expect("a JSON reply");
-    let end = json.rfind('}').expect("a JSON reply");
-    let value: serde_json::Value =
-        serde_json::from_str(&json[start..=end]).unwrap_or_else(|e| panic!("{e}: {reply}"));
+    let value = native::request(
+        socket,
+        "read",
+        serde_json::json!({ "method": "query", "query": query, "page": 1000 }),
+    );
     value["result"]["rows"]
         .as_array()
         .unwrap_or_else(|| panic!("no rows in {value}"))

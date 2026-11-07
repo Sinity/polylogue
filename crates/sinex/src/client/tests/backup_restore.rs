@@ -2,7 +2,7 @@
 use super::super::*;
 use crate::{Mode, Sinex};
 use polylogue_model::BlobHash;
-use polylogue_store::primary::{Material, Product, ProductWrite, SourceLocation};
+use polylogue_store::primary::{Material, Product, ProductWrite, Sinex as _, SourceLocation};
 use polylogue_store::{Archive, ReadPool, Writer};
 use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
@@ -146,8 +146,8 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_retirement() {
     );
     drop(initial);
 
-    // Pausing the native callback before its queue lock gives the test a real
-    // frozen publication frontier while acquisition uses the ordinary SDK.
+    // Pausing the native callback before its queue lock lets the ordinary SDK
+    // prepare new bytes while publication is paused.
     let sinex = Arc::new(
         Sinex::open(
             &config(&running),
@@ -172,7 +172,7 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_retirement() {
     };
     let client = sinex
         .runtime
-        .block_on(Client::connect_with_backup(
+        .block_on(Client::connect_with_backup_capture(
             &sinex.config,
             &sinex.authentication,
             sinex.spool.clone(),
@@ -181,7 +181,7 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_retirement() {
         ))
         .unwrap();
     *sinex.client.lock().unwrap() = Some(client);
-    let before = b"synthetic pending before core P";
+    let before = b"synthetic pending before the core backup";
     let before_id = prepare(&sinex, before);
     let before_encoding = encoding(&sinex, &before_id);
     assert_eq!(frame_count(&running, &before_id), 0);
@@ -253,7 +253,7 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_retirement() {
     drop(sinex);
     let restored_store = root.path().join("restored-store");
     running.restore(&artifact, &restored_store);
-    // P excludes both untransmitted frames, even though the later live core
+    // The core backup excludes both untransmitted frames, although the later live core
     // admitted and retired them. Only the acquired producer artifact can retry.
     assert_eq!(frame_count(&running, &baseline_id), 1);
     assert_eq!(frame_count(&running, &before_id), 0);
