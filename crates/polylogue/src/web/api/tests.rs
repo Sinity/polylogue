@@ -617,7 +617,7 @@ fn actual_ready_http_calls_preserve_absent_null_and_finite_deadlines() {
     ] {
         let request = command_surface::Request {
             operation: "query".into(),
-            arguments: serde_json::json!({"query":"sessions","cursor":null,"session":null,"limit":null,"fields":[]}),
+            arguments: serde_json::json!({"query":"sessions","session":null,"limit":null,"fields":[]}),
             request_id: "actual-ready-http-deadline".into(),
             deadline,
             budget_tokens: Default::default(),
@@ -642,12 +642,6 @@ fn actual_ready_http_calls_preserve_absent_null_and_finite_deadlines() {
         assert_eq!(
             parsed, request,
             "actual generated call changed its accepted envelope: {url}"
-        );
-        assert!(
-            parsed
-                .arguments
-                .get("cursor")
-                .is_some_and(serde_json::Value::is_null)
         );
         assert!(
             parsed

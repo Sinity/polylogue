@@ -125,6 +125,26 @@ fn generated_ready_cli_call_reaches_the_socket_with_its_identity_and_deadline() 
 }
 
 #[test]
+fn query_options_work_after_words_and_the_separator_keeps_literal_options() {
+    for argv in [
+        vec!["polylogue", "--json", "sessions where parser"],
+        vec!["polylogue", "sessions where parser", "--json"],
+        vec!["polylogue", "find", "sessions where parser", "--json"],
+    ] {
+        let matches = command().try_get_matches_from(argv).unwrap();
+        let (selected, arguments) = chosen(&matches).unwrap();
+        assert_eq!(selected.name, "query");
+        assert!(matches.get_flag("json"));
+        assert_eq!(
+            values(selected, arguments).text("query").as_deref(),
+            Some("sessions where parser")
+        );
+    }
+    let (_, literal) = parse(&["polylogue", "find", "--", "--json"]).unwrap();
+    assert_eq!(literal.text("query").as_deref(), Some("--json"));
+}
+
+#[test]
 fn raw_cli_arguments_replace_required_positionals() {
     let (selected, values) =
         parse(&["polylogue", "find", "--request", "{}", "--deadline", "none"]).unwrap();

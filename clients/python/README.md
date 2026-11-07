@@ -32,7 +32,8 @@ integer precision and complete refusals survive. Ordinary calls retain the whole
 shared `outcome`/`value` envelope. Empty and degraded answers retain their payloads;
 refusals expose the complete error answer. Query cursors belong to query pages.
 Read continuations execute the complete generated request, including its original
-root, cursor, deadline and budget, through `--request`.
+arguments, cursor and deadline. Use `client.read(identity, page_tokens=600)` to
+choose the number of tokens transferred in one page.
 
 `client.call(*arguments)` takes the same words as a CLI command, without
 `polylogue --json`. It covers the other declared operations. A write is sent

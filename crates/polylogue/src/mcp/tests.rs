@@ -505,13 +505,18 @@ fn a_tool_call_names_one_of_its_operations() {
         json!({"operation": "brief", "arguments": {"cwd": "/synthetic", "detail": "full"}, "request_id": "unknown-argument"}),
     );
     assert!(unknown.contains("has no argument `detail`"), "{unknown}");
-    let live = crate::test_daemon::start("lifted context deadline");
+    let lifted = run(
+        "polylogue_context",
+        json!({"operation":"brief", "arguments":{"cwd":"/synthetic"}, "request_id":"lifted", "deadline":null}),
+    );
+    assert!(lifted.contains("cannot be lifted"), "{lifted}");
+    let live = crate::test_daemon::start("finite context deadline");
     let rows = call(&live.daemon.archive, "list", args(json!({}))).unwrap();
     let rows: Value = serde_json::from_str(&rows).unwrap();
     assert_eq!(rows["count"], 1, "{rows}");
     let (_, answer, failed) = call_with_limit(
         &live.daemon.archive, "polylogue_context",
-        json!({"operation":"brief", "arguments":{"cwd":"/synthetic"}, "request_id":"lifted", "deadline":null}).as_object().unwrap().clone(),
+        json!({"operation":"brief", "arguments":{"cwd":"/synthetic"}, "request_id":"finite", "deadline":1000}).as_object().unwrap().clone(),
         None, &tokio_util::sync::CancellationToken::new(), None,
     ).unwrap();
     assert!(!failed, "{answer}");

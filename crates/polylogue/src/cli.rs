@@ -150,7 +150,7 @@ fn clap_arg(a: &crate::commands::Arg) -> clap::Arg {
             choices.iter().copied(),
         )),
         Kind::Words => arg.num_args(1..),
-        Kind::Rest => arg.num_args(1..).trailing_var_arg(true),
+        Kind::Rest => arg.num_args(1..),
         Kind::List if a.positional => arg.num_args(1..),
         Kind::List => arg.action(ArgAction::Append).value_delimiter(','),
     };

@@ -71,10 +71,10 @@ class Client:
             arguments.extend(["--limit", str(page_size)])
         return self.call(*arguments, "--", text)
 
-    def read(self, identity, *, view="transcript", budget=None):
+    def read(self, identity, *, view="transcript", page_tokens=None):
         arguments = ["read", identity, "--view", view]
-        if budget is not None:
-            arguments.extend(["--budget", str(budget)])
+        if page_tokens is not None:
+            arguments.extend(["--page-tokens", str(page_tokens)])
         return self.call(*arguments)
 
     def changes(self, since=None):

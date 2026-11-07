@@ -63,8 +63,8 @@ class ClientTests(unittest.TestCase):
 
     def test_generated_read_calls_continue_without_losing_their_envelope(self):
         target = "session:claude-code:python-pages"
-        whole = self.direct.call("read", target, "--budget", "100000").json()["value"]["document"]["items"]
-        answer = self.checked(lambda: self.client.call("read", target, "--budget", "600"))
+        whole = self.direct.call("read", target, "--page-tokens", "100000").json()["value"]["document"]["items"]
+        answer = self.checked(lambda: self.client.read(target, page_tokens=600))
         snapshot = answer["value"]["snapshot"]
         complete, partial, seen_calls = [], {}, set()
         count = 0

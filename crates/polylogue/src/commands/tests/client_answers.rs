@@ -16,6 +16,7 @@ const ASKED: &[(&str, &[&str])] = &[
     ("query", &["messages where parser"]),
     ("query", &["sessions where"]),
     ("explain", &["syntax"]),
+    ("sql", &["SELECT id FROM v1_sessions ORDER BY id"]),
     ("schema infer", &[]),
     ("schema unread", &[]),
     (
@@ -73,9 +74,8 @@ fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str]) -> (Answer, Exit) {
     (shown, Some(exit))
 }
 
-/// The MCP answer for the same request: the command's own tool operation,
-/// or for a command MCP offers in another form, that form (`list` is a
-/// `query`, `complete` the protocol's completion method).
+/// The MCP answer for the same request through its declared operation;
+/// `complete` also has the protocol's completion method.
 fn mcp_answer(w: &test_daemon::TestDaemon, c: &Command, values: &Values) -> Answer {
     if c.name == "complete" {
         return crate::mcp::tests::complete(
@@ -84,28 +84,14 @@ fn mcp_answer(w: &test_daemon::TestDaemon, c: &Command, values: &Values) -> Answ
             values.integer("position"),
         );
     }
-    let (operation, arguments) = if c.name == "list" {
-        let Action::Request(build) = c.action else {
-            panic!("list is a daemon request")
-        };
-        let request = build(c, values, &cli_caller()).unwrap();
-        let arguments =
-            crate::protocol::query::Arguments::from_request(&request).expect("list builds a query");
-        let Value::Object(arguments) = serde_json::to_value(arguments).unwrap() else {
-            panic!("query arguments are an object")
-        };
-        ("query", arguments)
-    } else {
-        let names: Vec<&str> = c.args_for(Surface::Mcp).map(|a| a.name).collect();
-        let arguments = values
-            .0
-            .iter()
-            .filter(|(k, _)| names.contains(&k.as_str()))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        (c.name, arguments)
-    };
-    match crate::mcp::tests::call(&w.daemon.archive, operation, arguments) {
+    let names: Vec<&str> = c.args_for(Surface::Mcp).map(|a| a.name).collect();
+    let arguments = values
+        .0
+        .iter()
+        .filter(|(k, _)| names.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    match crate::mcp::tests::call(&w.daemon.archive, c.name, arguments) {
         Ok(text) => Ok(serde_json::from_str(&text).unwrap()),
         // `error (kind): message`, with the corrected query on a last line
         // of its own when there is one.

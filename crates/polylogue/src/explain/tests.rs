@@ -215,7 +215,7 @@ fn capabilities_publish_each_operation_with_its_tool_unlisted_arguments_and_answ
         .iter()
         .find(|entry| entry["kind"] == "command" && entry["name"] == "list")
         .unwrap();
-    assert_eq!(list["tool"], Value::Null);
+    assert_eq!(list["tool"], "polylogue_read");
     let envelope = capabilities
         .iter()
         .find(|entry| entry["kind"] == "answer")

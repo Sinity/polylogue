@@ -265,7 +265,7 @@ fn mcp_schemas_follow_the_arguments() {
         assert_eq!(schema["additionalProperties"], false, "{}", command.name);
         for arg in command
             .args_for(Surface::Mcp)
-            .filter(|arg| !arg.unlisted && arg.name != "request_id")
+            .filter(|arg| !arg.unlisted && !matches!(arg.name, "request_id" | "cursor"))
         {
             assert!(
                 schema["properties"]["arguments"]["properties"]
@@ -313,7 +313,7 @@ fn every_measurement_is_a_command_and_named_in_the_query_help() {
     let (c, v) =
         crate::cli::parse(&["polylogue", "measure", "daily", "--metric", "tokens"]).unwrap();
     let r = request_json(c, &v, &cli_caller());
-    assert_eq!(r["text"], "sessions | measure daily:tokens");
+    assert_eq!(r["text"], r#"sessions | measure "daily:tokens""#);
 }
 
 #[test]
@@ -447,7 +447,7 @@ fn measure_options_build_the_same_query_as_the_query_surface() {
         let request = request_json(command, &values, &cli_caller());
         assert_eq!(
             request["text"],
-            format!("sessions where origin:codex | measure {name}:{metric}")
+            format!(r#"sessions where origin:codex | measure "{name}:{metric}""#)
         );
     }
 }
@@ -465,7 +465,7 @@ fn daily_series_is_a_metric_option() {
     .unwrap();
     assert_eq!(
         request_json(command, &values, &cli_caller())["text"],
-        "sessions where origin:codex | measure daily:tokens"
+        r#"sessions where origin:codex | measure "daily:tokens""#
     );
 }
 
