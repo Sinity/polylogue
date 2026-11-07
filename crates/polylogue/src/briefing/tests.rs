@@ -940,12 +940,20 @@ fn contrary_evidence_precedes_any_claim_expansion_under_a_tight_budget() {
     let correction = fact(
         "correction",
         correction_text.clone(),
-        vec![AssertionLink {
-            role: LinkRole::Corrects,
-            reference: Reference::parse("assertion:original@original-v1").unwrap(),
-            seen_hash: None,
-            quote: None,
-        }],
+        vec![
+            AssertionLink {
+                role: LinkRole::About,
+                reference: Reference::parse("assertion:original@original-v1").unwrap(),
+                seen_hash: None,
+                quote: None,
+            },
+            AssertionLink {
+                role: LinkRole::Corrects,
+                reference: Reference::parse("assertion:original@original-v1").unwrap(),
+                seen_hash: None,
+                quote: None,
+            },
+        ],
     );
     archive.writer.restore_assertion(correction).unwrap();
     let pool = polylogue_store::ReadPool::open(&archive.archive).unwrap();
@@ -1154,12 +1162,20 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
     };
     let subject = Reference::parse("assertion:subject@subject-v1").unwrap();
     let link = |role| {
-        vec![AssertionLink {
-            role,
-            reference: subject.clone(),
-            seen_hash: None,
-            quote: None,
-        }]
+        vec![
+            AssertionLink {
+                role: LinkRole::About,
+                reference: subject.clone(),
+                seen_hash: None,
+                quote: None,
+            },
+            AssertionLink {
+                role,
+                reference: subject.clone(),
+                seen_hash: None,
+                quote: None,
+            },
+        ]
     };
     let claim = "Eligible operator claim with retained qualifications.";
     let operator_correction = "Operator correction: check the recorded constraint.";

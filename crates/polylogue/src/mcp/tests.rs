@@ -45,6 +45,32 @@ pub(crate) fn call_as(
     call_params(archive, params)
 }
 
+/// The native tool result's complete answer, independent of its human text.
+pub(crate) fn structured_call_as(
+    archive: &Archive,
+    operation: &str,
+    arguments: serde_json::Map<String, Value>,
+    request_id: &str,
+) -> command_surface::Answer<Value> {
+    let reply = Session {
+        initialized: true,
+        ..Default::default()
+    }
+    .prepare(json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": tool_call(operation, Value::Object(arguments), request_id),
+    }))
+    .answer(archive)
+    .expect("a tools/call response");
+    let answer: command_surface::Answer<Value> =
+        serde_json::from_value(reply["result"]["structuredContent"].clone())
+            .unwrap_or_else(|error| panic!("invalid structured tool answer: {error}: {reply}"));
+    assert_eq!(reply["result"]["isError"], answer.failure().is_some());
+    answer
+}
+
 pub(crate) fn call_page(
     archive: &Archive,
     operation: &str,

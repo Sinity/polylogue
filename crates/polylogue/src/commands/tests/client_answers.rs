@@ -110,21 +110,15 @@ fn mcp_answer(
         .filter(|(k, _)| names.contains(&k.as_str()))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    match crate::mcp::tests::call_as(&w.daemon.archive, c.name, arguments, request_id) {
-        Ok(text) => Ok(serde_json::from_str(&text).unwrap()),
-        // `error (kind): message`, with the corrected query on a last line
-        // of its own when there is one.
-        Err(text) => {
-            let text = text
-                .rsplit_once("\ntry: ")
-                .map_or(text.as_str(), |(t, _)| t);
-            let (kind, message) = text
-                .strip_prefix("error (")
-                .and_then(|rest| rest.split_once("): "))
-                .unwrap_or_else(|| panic!("{text}"));
-            Err(format!("{kind}: {message}"))
-        }
-    }
+    let answer =
+        crate::mcp::tests::structured_call_as(&w.daemon.archive, c.name, arguments, request_id);
+    crate::protocol::into_value(answer).map_err(|error| {
+        format!(
+            "{}: {}",
+            error.code.as_deref().unwrap_or_default(),
+            error.message
+        )
+    })
 }
 
 /// Text as a query parameter value.
