@@ -82,6 +82,47 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         // input is now confirmed. Mismatched identity, coordinates and file
         // evidence must still report the missing continuation proof.
         let original_id = plan.input.id.clone();
+        let captured_source = |engine: &Engine| {
+            let reader = engine.reads.reader().unwrap();
+            let input = [polylogue_store::SqlValue::Text(original_id.clone())];
+            let revisions = reader
+                .query(
+                    "SELECT number,produced,chain,length FROM a.revision WHERE input=?1 ORDER BY number",
+                    &input,
+                )
+                .unwrap();
+            let extents = reader
+                .query(
+                    "SELECT chain,offset,length,lower(hex(blob)) AS blob,blob_offset FROM a.extent WHERE input=?1 ORDER BY chain,offset",
+                    &input,
+                )
+                .unwrap();
+            let progress = reader.input_progress(&original_id).unwrap().unwrap();
+            let stored = reader
+                .stored_range(
+                    &original_id,
+                    progress.chain,
+                    0,
+                    progress.length,
+                    &engine.blobs,
+                )
+                .unwrap();
+            (revisions, extents, stored)
+        };
+        let first_capture = captured_source(&engine);
+        assert_eq!(
+            first_capture,
+            (
+                vec![
+                    serde_json::json!({"number":1,"produced":"first","chain":1,"length":done.end})
+                ],
+                vec![serde_json::json!({
+                    "chain":1,"offset":0,"length":done.end,"blob_offset":0,
+                    "blob":polylogue_model::BlobHash::of(&bytes.as_bytes()[..done.end as usize]).to_string()
+                })],
+                bytes.as_bytes()[..done.end as usize].to_vec(),
+            )
+        );
         let original_format = plan.input.format.clone();
         let original_facts = plan.facts;
         let original_size = plan.size;
@@ -155,6 +196,27 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
             .store_group(vec![prepared.unwrap()], Arc::clone(&engine.blobs))
             .unwrap();
         assert!(results.into_iter().all(|result| result.is_ok()));
+        // This is a new acquisition after the prefix committed, rather than
+        // another chunk of the original plan. It adds an appended revision in
+        // the same chain, retaining both exact acquired byte ranges.
+        let complete_capture = captured_source(&engine);
+        assert_eq!(
+            complete_capture,
+            (
+                vec![
+                    serde_json::json!({"number":1,"produced":"first","chain":1,"length":done.end}),
+                    serde_json::json!({"number":2,"produced":"appended","chain":1,"length":bytes.len()}),
+                ],
+                vec![
+                    first_capture.1[0].clone(),
+                    serde_json::json!({
+                        "chain":1,"offset":done.end,"length":bytes.len() as u64-done.end,"blob_offset":0,
+                        "blob":polylogue_model::BlobHash::of(&bytes.as_bytes()[done.end as usize..]).to_string()
+                    }),
+                ],
+                bytes.as_bytes().to_vec(),
+            )
+        );
         engine.refresh_confirmed_input(&path).unwrap();
         assert_eq!(engine.inputs[&path].stored, bytes.len() as u64);
         let parse = engine.stored_plan(&path).unwrap().unwrap();
@@ -251,8 +313,11 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
             assert_eq!(engine.inputs[&path].parsed_upto, bytes.len() as u64);
             assert_eq!(engine.inputs[&path].input_id, original_id);
         }
-        assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 1);
-        assert_eq!(home.count("SELECT count(*) AS n FROM a.extent"), 2);
+        assert_eq!(
+            captured_source(&engine),
+            complete_capture,
+            "stored parsing and cache refresh cannot acquire another revision or extent"
+        );
     }
 }
 
