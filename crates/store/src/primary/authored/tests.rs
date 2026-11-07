@@ -577,7 +577,7 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_through_primary_apply
     let tx = fresh.transaction().unwrap();
     assert!(matches!(
         apply(&tx, &malformed, 1),
-        Err(StoreError::Invalid(message)) if message.starts_with("kept result \"kept\" field unit: ")
+        Err(StoreError::Invalid(message)) if message.starts_with("kept result \"kept\" field rows_json: ")
     ));
     drop(tx);
     assert_eq!(count(&fresh, "kept_result"), 0);

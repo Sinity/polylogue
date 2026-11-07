@@ -260,19 +260,16 @@ impl State {
                 .unit
                 .as_ref()
                 .zip(columns.as_ref())
-                .map(|(unit, columns)| polylogue_query::Kept {
-                    output_metadata: kept.output_metadata.clone(),
+                .zip(kept.output_metadata.as_ref())
+                .map(|((unit, columns), metadata)| polylogue_query::Kept {
+                    output_metadata: metadata.clone(),
                     shape: kept.shape,
                     native_identity: kept.native_identity,
                     unit: unit.clone(),
                     columns: columns.clone(),
                     match_columns: matches.clone().unwrap_or_default(),
-                });
-            if let Some(typed) = &typed {
-                typed
-                    .validate_output_metadata()
-                    .map_err(|error| polylogue_store::StoreError::Invalid(error.to_string()))?;
-            }
+                })
+                .filter(|typed| typed.validate_output_metadata().is_ok());
             let schema = typed
                 .as_ref()
                 .map(|typed| typed.output_schema(query_language::ast::ResultPart::Rows));

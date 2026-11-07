@@ -49,7 +49,7 @@ fn seed(root: &Path, cache: &Path, model: &str) {
                 kind,
                 ..Default::default()
             };
-            writer.put_saved(&Saved {
+            let mut saved = Saved {
                 relation_scope: None,
                 family: "saved-family".into(),
                 revision: "saved-revision".into(),
@@ -66,7 +66,9 @@ fn seed(root: &Path, cache: &Path, model: &str) {
                     ],
                     main_time: None,
                 }),
-            })?;
+            };
+            saved.relation_scope = saved.schema.clone();
+            writer.put_saved(&saved)?;
             writer.put_kept(&Kept {
                 id: "kept-id".into(),
                 name: Some("Kept calls".into()),

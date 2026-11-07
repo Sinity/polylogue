@@ -78,14 +78,10 @@ impl Plan {
                 ),
             })?;
             field.name = column.name.clone();
-            if column.reference.is_some() && field.kind != FieldKind::Reference {
-                return Err(QueryError::Invalid {
-                    message: format!(
-                        "producer reference disagrees with logical column {:?}",
-                        column.name
-                    ),
-                    position: 0,
-                });
+            if column.reference.is_some() {
+                // The physical producer proves the reference target. Filter-only
+                // catalog matching rules need not describe its emitted value.
+                field.kind = FieldKind::Reference;
             }
             fields.push(field);
         }

@@ -399,7 +399,7 @@ pub(super) fn retained_definition(
             .iter()
             .find(|node| node.question == question)
             .cloned()
-            .ok_or_else(|| invalid("saved definition is absent from its retained object"))?
+            .ok_or_else(|| invalid("saved query differs from its declared semantic hash"))?
     };
     let native = runtime_catalog(object)?;
     let mut queue = VecDeque::from(dependencies(&edges(

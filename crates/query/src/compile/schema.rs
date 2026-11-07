@@ -20,7 +20,8 @@ fn unit_schema(unit: &str, catalog: &Catalog) -> Result<OutputSchema, QueryError
         .columns
         .iter()
         .map(|column| {
-            unit.fields
+            let mut field = unit
+                .fields
                 .iter()
                 .find(|field| field.name == column.name)
                 .cloned()
@@ -28,7 +29,13 @@ fn unit_schema(unit: &str, catalog: &Catalog) -> Result<OutputSchema, QueryError
                     name: column.name.into(),
                     kind: super::source::column_kind(column.kind),
                     ..Field::default()
-                })
+                });
+            if let Some(kind) =
+                crate::fields::lookup(product, column.name).and_then(|field| field.value_kind)
+            {
+                field.kind = super::source::column_kind(kind);
+            }
+            field
         })
         .collect();
     Ok(OutputSchema {

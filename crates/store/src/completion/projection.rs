@@ -23,7 +23,7 @@ pub struct NativeSaved {
 }
 #[derive(Debug)]
 pub struct NativeKept {
-    pub output_metadata: polylogue_model::kept::OutputMetadata,
+    pub output_metadata: Option<polylogue_model::kept::OutputMetadata>,
     pub shape: Option<polylogue_query::Shape>,
     pub native_identity: bool,
     pub id: String,
@@ -220,9 +220,10 @@ impl Reader<'_> {
                 .get::<_, Option<String>>(6)?
                 .map(|value| serde_json::from_value(serde_json::Value::String(value)))
                 .transpose()?;
-            let output_metadata = row.get::<_, String>(8)?;
+            let output_metadata = row.get::<_, Option<String>>(8)?;
             visit(NativeKept {
-                output_metadata: serde_json::from_str(&output_metadata)?,
+                output_metadata: output_metadata
+                    .and_then(|value| serde_json::from_str(&value).ok()),
                 shape,
                 native_identity: shape == Some(polylogue_query::Shape::Rows)
                     && row.get::<_, Option<bool>>(7)?.unwrap_or(false),

@@ -630,6 +630,15 @@ impl Fixture {
         Ok(())
     }
 
+    /// Replace a stored kept body with deliberately damaged bytes for read tests.
+    pub fn corrupt_kept_body(&mut self, id: &str, body: &str) -> Result<()> {
+        self.notes.execute(
+            "UPDATE kept_result SET rows_json=?1 WHERE id=?2",
+            params![body, id],
+        )?;
+        Ok(())
+    }
+
     /// A catalog setting, as the operator would set it.
     pub fn setting(&mut self, key: &str, value: &str) -> Result<()> {
         let at = polylogue_model::Timestamp::from_unix_ms(self.commit_seq + 1)

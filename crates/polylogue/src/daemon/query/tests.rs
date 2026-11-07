@@ -1286,8 +1286,13 @@ fn failed_saved_result_storage_is_not_an_empty_catalog() {
     let mut fixture = morrow();
     fixture
         .fx
-        .kept_result("broken", "sessions", "not JSON")
+        .kept_result(
+            "broken",
+            "sessions",
+            r#"{"unit":"sessions","columns":[],"rows":[]}"#,
+        )
         .unwrap();
+    fixture.fx.corrupt_kept_body("broken", "not JSON").unwrap();
     let failure = run_q(&fixture, ask("sessions")).unwrap_err();
     assert_eq!(failure.code(), "store");
     assert_eq!(
@@ -1339,7 +1344,14 @@ fn damaged_kept_result_shapes_are_not_defaulted_or_discarded() {
     {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-        fixture.kept_result("broken", "sessions", &body).unwrap();
+        fixture
+            .kept_result(
+                "broken",
+                "sessions",
+                r#"{"unit":"sessions","columns":[],"rows":[]}"#,
+            )
+            .unwrap();
+        fixture.corrupt_kept_body("broken", &body).unwrap();
         let pool = fixture.reads().unwrap();
         let reader = pool.reader().unwrap();
         for failure in [

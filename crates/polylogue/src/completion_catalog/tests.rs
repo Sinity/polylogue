@@ -36,7 +36,7 @@ fn populated(path: &Path) {
                 ("model".into(), BTreeMap::from([("alpha".into(), 2)])),
             ]),
         })?;
-        writer.put_saved(&Saved {
+        let mut saved = Saved {
             relation_scope: None,
             family: "saved-family".into(),
             revision: "saved-revision".into(),
@@ -61,7 +61,9 @@ fn populated(path: &Path) {
                 ],
                 main_time: None,
             }),
-        })?;
+        };
+        saved.relation_scope = saved.schema.clone();
+        writer.put_saved(&saved)?;
         writer.put_kept(&Kept {
             id: "kept-id".into(),
             name: Some("Kept calls".into()),
@@ -320,7 +322,14 @@ fn unavailable_kept_schema_does_not_prevent_other_vocabulary_publication() {
         })
         .unwrap();
     fixture
-        .kept_result("invalid-json", "sessions", "not JSON")
+        .kept_result(
+            "invalid-json",
+            "sessions",
+            r#"{"unit":"sessions","columns":[],"rows":[]}"#,
+        )
+        .unwrap();
+    fixture
+        .corrupt_kept_body("invalid-json", "not JSON")
         .unwrap();
     fixture
         .kept_result("missing-shape", "sessions", "{}")
@@ -452,7 +461,12 @@ fn observation_literals_roundtrip_and_terminal_controls_never_enter_candidates()
             .all(|candidate| !candidate.value.chars().any(char::is_control))
     );
     let candidates = complete_file(&path, "synthetic", "claude-code:", 12);
-    assert!(candidates.iter().any(|candidate| candidate.value == "a"));
+    let native = candidates
+        .iter()
+        .find(|candidate| candidate.value == "a")
+        .unwrap();
+    assert_eq!(native.replace.start, 12);
+    assert_eq!(native.replace.end, 12);
     assert!(
         candidates
             .iter()

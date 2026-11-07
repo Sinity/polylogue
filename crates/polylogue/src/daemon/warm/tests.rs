@@ -94,7 +94,7 @@ fn completion_reads_declared_values_and_refreshes_observed_models() {
                 && v["replace"]["start"] == 5
                 && v["replace"]["end"] == 5)
     );
-    // No session names a model yet: only the field's wildcard and unknown word are offered.
+    // No session names a model yet: the field's existence predicates are offered.
     assert_eq!(
         crate::test_answers::ok(values("model:"))
             .as_array()
@@ -102,7 +102,7 @@ fn completion_reads_declared_values_and_refreshes_observed_models() {
             .iter()
             .map(|value| value["value"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["*", "unknown"]
+        ["*", "known", "unknown"]
     );
     let mut message: serde_json::Value = serde_json::from_str(
         &polylogue_testkit::claude_assistant("a1", "s1", "synthetic answer"),

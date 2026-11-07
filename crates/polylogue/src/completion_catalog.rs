@@ -182,14 +182,28 @@ fn complete_snapshot(
             .strip_prefix("session:")
             .unwrap_or(&reference.prefix);
         let sessions = reader.sessions(prefix)?;
-        let references = sessions.into_iter().map(|session| {
+        let origin = polylogue_sources::origin::ORIGINS
+            .iter()
+            .find(|origin| prefix.starts_with(&format!("{}:", origin.name)));
+        let references = sessions.into_iter().filter_map(|session| {
             let help = session_help(&session);
-            Completion {
-                value: session.prefix,
-                replace: reference.replace,
+            let mut replace = reference.replace;
+            let value = if let Some(origin) = origin {
+                let offset = origin.name.len() + 1;
+                replace.start += offset;
+                session
+                    .prefix
+                    .strip_prefix(&format!("{}:", origin.name))?
+                    .to_owned()
+            } else {
+                session.prefix
+            };
+            Some(Completion {
+                value,
+                replace,
                 kind: CompletionKind::Value,
                 help,
-            }
+            })
         });
         candidates.extend(references);
         for saved in reader.saved_names(prefix)? {
