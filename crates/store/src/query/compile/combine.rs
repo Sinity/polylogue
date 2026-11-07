@@ -103,12 +103,12 @@ impl<'a> Compiler<'a> {
         if let Some(stage) = query.transforms.iter().find(|s| {
             matches!(
                 s.kind,
-                TransformKind::Distinct | TransformKind::Matches
+                TransformKind::Matches
             ) || matches!(&s.kind, TransformKind::Extension { name, .. } if name == polylogue_query::catalog::MEASURE
             )
         }) {
             return Err(QueryError::Invalid {
-                message: "a combined query gives rows; distinct, matches and measure do not".into(),
+                message: "a combined query gives rows; matches and measure do not".into(),
                 position: stage.span.start,
             });
         }
@@ -129,6 +129,16 @@ impl<'a> Compiler<'a> {
                 ),
                 position: at,
             });
+        }
+        if !matches!(program.row_basis, RowBasis::Native { .. })
+            || !relations::Relation::new(program.clone())
+                .sources
+                .iter()
+                .any(|source| source.prefix.is_empty())
+        {
+            return Err(not_built(
+                "combining rows without native source coordinates",
+            ));
         }
         Ok(program)
     }
@@ -180,116 +190,178 @@ impl<'a> Compiler<'a> {
         ))
     }
 
-    /// `| intersect (…)` and `| except (…)`: membership in the other
-    /// query's rows; this query's order stays.
-    pub(super) fn membership(
-        &mut self,
-        how: Combination,
-        query: &Query,
-        scope: &RowContext,
-        where_sql: &mut Vec<String>,
-        at: usize,
-    ) -> Result<(), QueryError> {
-        let other = self.combined_rows(query, scope.unit, at)?;
-        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now.as_millisecond());
-        let not = if how == Combination::Except {
-            "NOT "
-        } else {
-            ""
-        };
-        where_sql.push(format!("{pk} {not}IN (SELECT _pk FROM ({}))", other.sql));
-        Ok(())
-    }
-
-    /// Ends a run of `| union` and `| fuse` stages. Unions of unranked rows
-    /// are plain membership in this query's order; otherwise every list
-    /// (this query's rows, each union's and each fuse's, the last over
-    /// the rows some list ranks) ranks the rows by reciprocal rank fusion,
-    /// and `found_in` names the lists that rank each row.
+    /// Combine the original operand rows once. Values come from the first
+    /// membership operand; every ranking keeps its captured, full input order.
     pub(super) fn fuse_pending(
         &mut self,
         pending: PendingFusion,
-        scope: &RowContext,
-        where_sql: &mut Vec<String>,
-        order: &mut Option<Vec<String>>,
+        relation: &mut relations::Relation,
     ) -> Result<(), QueryError> {
         if pending.is_empty() {
             return Ok(());
         }
-        self.setup_near(false);
-        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now.as_millisecond());
-        let any_ranked = self.ranking().is_some() || pending.unions.iter().any(|p| p.ranked);
-        if pending.fuses.is_empty() && !any_ranked {
-            let mut any = vec![format!("({})", and_all(where_sql))];
-            for other in &pending.unions {
-                any.push(format!("{pk} IN (SELECT _pk FROM ({}))", other.sql));
-            }
-            *where_sql = vec![format!("({})", any.join(" OR "))];
-            return Ok(());
+        if !matches!(relation.program.row_basis, RowBasis::Native { .. })
+            || !relation
+                .sources
+                .iter()
+                .any(|source| source.prefix.is_empty())
+        {
+            return Err(not_built("combining rows after a change of row grain"));
         }
-        self.fuse_text_and_near(scope, where_sql)?;
-        let from = self.from(scope)?;
-        let here = and_all(where_sql);
-        let own_order = order
-            .take()
-            .unwrap_or_else(|| self.default_order(scope))
-            .join(", ");
-        let own_counts = match self.ranking() {
-            Some(rank) => format!("({rank}) IS NOT NULL"),
-            None => "1".into(),
+        let ranked = !pending.fuses.is_empty()
+            || relation.program.ranked
+            || pending.unions.iter().any(|program| program.ranked);
+        let mut members = vec![relation.program.clone()];
+        members.extend(pending.unions);
+        let mut fuses = pending.fuses;
+        for program in members.iter_mut().chain(&mut fuses) {
+            let name = relation.slot();
+            self.ctes
+                .push(format!("{name} AS MATERIALIZED ({})", program.sql));
+            program.sql = format!("SELECT * FROM {name}");
+        }
+        let source_list = relation.slot();
+        let mut projections = Vec::new();
+        let mut slots = Vec::new();
+        for (index, program) in members.iter().enumerate() {
+            let columns = aligned_columns(relation, program, ranked)?;
+            slots = columns.keys().cloned().collect();
+            projections.push(format!(
+                "SELECT {}, {index} AS {source_list} FROM ({}) r",
+                columns
+                    .iter()
+                    .map(|(slot, expression)| format!("{expression} AS {}", column_sql(slot)))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                program.sql
+            ));
+        }
+        let values = relation.slot();
+        let precedence = relation.slot();
+        self.ctes.push(format!(
+            "{values} AS MATERIALIZED (SELECT *, row_number() OVER (PARTITION BY _pk ORDER BY {source_list}) AS {precedence} FROM ({}))",
+            projections.join(" UNION ALL ")
+        ));
+        let near_inputs = members
+            .iter()
+            .chain(&fuses)
+            .filter(|program| program.counts_near)
+            .map(|program| format!("SELECT _pk, _near FROM ({})", program.sql))
+            .collect::<Vec<_>>();
+        let near = if near_inputs.is_empty() {
+            None
+        } else {
+            let name = relation.slot();
+            self.ctes.push(format!(
+                "{name} AS MATERIALIZED (SELECT _pk,max(_near) AS _near FROM ({}) GROUP BY _pk)",
+                near_inputs.join(" UNION ALL ")
+            ));
+            Some(name)
         };
-        // Each list is `SELECT k, place, counts, list`: the row, its place
-        // in the list's order, whether that place is a rank (a ranked list
-        // holds rows without a rank, such as messages with no vector, after
-        // its ranked ones) and which list it is (0 for a fuse list).
-        let mut lists = vec![format!(
-            "SELECT {pk} AS k, row_number() OVER (ORDER BY {own_order}) AS place, {own_counts} AS counts, 1 AS list FROM {from} WHERE {here}"
-        )];
-        for (i, other) in pending.unions.iter().enumerate() {
-            lists.push(other_list(other, None, i + 2));
+        let mut projection = slots
+            .iter()
+            .map(|slot| {
+                let value = if slot == "_near" && near.is_some() {
+                    format!(
+                        "(SELECT _near FROM {} WHERE _pk=d._pk)",
+                        near.as_deref().unwrap()
+                    )
+                } else {
+                    format!("d.{}", column_sql(slot))
+                };
+                format!("{value} AS {}", column_sql(slot))
+            })
+            .collect::<Vec<_>>();
+        let mut join_rank = String::new();
+        let mut order = relation.identity_order();
+        if ranked {
+            let rows = relation.slot();
+            self.ctes.push(format!(
+                "{rows} AS MATERIALIZED ({})",
+                members
+                    .iter()
+                    .enumerate()
+                    .map(|(index, program)| other_list(program, None, index + 1))
+                    .collect::<Vec<_>>()
+                    .join(" UNION ALL ")
+            ));
+            let found = format!("SELECT k FROM {rows}");
+            let mut lists = vec![format!("SELECT * FROM {rows}")];
+            lists.extend(
+                fuses
+                    .iter()
+                    .map(|program| other_list(program, Some(&found), 0)),
+            );
+            let found_in = (1..=members.len())
+                .map(|index| format!("max(list={index} AND counts) AS in{index}"))
+                .collect::<Vec<_>>();
+            let scores = relation.slot();
+            self.ctes.push(format!(
+                "{scores} AS MATERIALIZED (SELECT k,CASE WHEN max(counts) THEN -sum(CASE WHEN counts THEN 1.0/({RANK_FUSION_OFFSET}+place) ELSE 0.0 END ORDER BY place) END AS r,max(recency) AS recency,{} FROM ({}) GROUP BY k)",
+                found_in.join(", "), lists.join(" UNION ALL ")
+            ));
+            let rank = relation.slot();
+            let missing = relation.slot();
+            let contributors = relation.slot();
+            let recency = relation.slot();
+            let undated = relation.slot();
+            projection.push("f.r AS _rank".into());
+            projection.push(format!("f.r AS {}", column_sql(&rank)));
+            projection.push(format!("f.r IS NULL AS {}", column_sql(&missing)));
+            projection.push(format!("f.recency AS {}", column_sql(&recency)));
+            projection.push(format!("f.recency IS NULL AS {}", column_sql(&undated)));
+            projection.push(format!(
+                "(SELECT json_group_array(value) FROM json_each(json_array({})) WHERE value>0) AS {}",
+                (1..=members.len()).map(|index| format!("f.in{index}*{index}")).collect::<Vec<_>>().join(", "),
+                column_sql(&contributors)
+            ));
+            join_rank = format!(" JOIN {scores} f ON f.k=d._pk");
+            if let Some(index) = slots.iter().position(|slot| slot == "_recency") {
+                projection[index] = "f.recency AS _recency".into();
+            }
+            relation
+                .program
+                .columns
+                .retain(|column| !matches!(column.name.as_str(), "rank" | "found_in"));
+            relation
+                .program
+                .column_slots
+                .retain(|name, _| !matches!(name.as_str(), "rank" | "found_in"));
+            for (name, slot, kind) in [
+                ("rank", rank.clone(), ColKind::Number),
+                ("found_in", contributors, ColKind::Json),
+            ] {
+                relation.program.columns.push(Column {
+                    name: name.into(),
+                    kind,
+                    reference: None,
+                });
+                relation.program.column_slots.insert(name.into(), slot);
+            }
+            order.splice(
+                0..0,
+                [
+                    OrderKey::ascending(&missing),
+                    OrderKey::ascending(&rank),
+                    OrderKey::ascending(&undated),
+                    OrderKey {
+                        column: recency,
+                        descending: true,
+                    },
+                ],
+            );
         }
-        let rows = format!("c{}", self.ctes.len() + 1);
-        self.ctes.push(format!(
-            "{rows} AS MATERIALIZED ({})",
-            lists.join(" UNION ALL ")
-        ));
-        // A fuse list ranks only rows some list ranks: it orders what was
-        // found, it finds nothing.
-        let found = format!("SELECT k FROM {rows} WHERE counts");
-        let mut fuses = vec![format!("SELECT * FROM {rows}")];
-        for other in &pending.fuses {
-            fuses.push(other_list(other, Some(&found), 0));
-        }
-        let found_in: Vec<String> = (1..=pending.unions.len() + 1)
-            .map(|n| format!("max(list = {n} AND counts) AS in{n}"))
-            .collect();
-        let fused = format!("c{}", self.ctes.len() + 1);
-        self.ctes.push(format!(
-            "{fused} AS MATERIALIZED (SELECT k, \
-             -sum(CASE WHEN counts THEN 1.0 / ({RANK_FUSION_OFFSET} + place) ELSE 0.0 END) AS r, {} \
-             FROM ({}) GROUP BY k)",
-            found_in.join(", "),
-            fuses.join(" UNION ALL ")
-        ));
-        let alias = format!("{fused}_rank");
-        self.fusion = Some(Fusion {
-            join: format!("JOIN {fused} {alias} ON {alias}.k = {pk}"),
-            rank: format!("{alias}.r"),
-        });
-        let numbered: Vec<String> = (1..=pending.unions.len() + 1)
-            .map(|n| format!("{alias}.in{n} * {n}"))
-            .collect();
-        self.shown.retain(|(name, ..)| name != "found_in");
-        self.shown.push((
-            "found_in".into(),
-            format!(
-                "(SELECT json_group_array(value) FROM json_each(json_array({})) WHERE value > 0)",
-                numbered.join(", ")
-            ),
-            ColKind::Json,
-            None,
-        ));
-        *where_sql = vec![format!("{pk} IN (SELECT k FROM {fused})")];
+        relation.program.sql = format!(
+            "SELECT {} FROM {values} d{join_rank} WHERE d.{precedence}=1 ORDER BY {}",
+            projection.join(", "),
+            order_by(&order)
+        );
+        relation.program.order = order;
+        relation.program.ranked = ranked;
+        relation.program.counts_near = near.is_some();
+        relation.program.row_count_sql = None;
+        relation.program.row_membership_sql = None;
+        relation.program.time_text_columns.clear();
         Ok(())
     }
 }
@@ -304,25 +376,90 @@ pub(super) fn join<T: PartialEq>(list: &mut Vec<T>, more: &mut Vec<T>) {
 }
 
 /// The ranked list of another query's rows: each row's place in its
-/// order, counted when the query ranks it. With `within`, only the rows
-/// that query selects take places. `list` names it in `found_in` (0:
-/// none).
+/// order, counted when the query ranks it. `within` restricts emitted
+/// members after their full operand ranks have been captured. `list` names
+/// it in `found_in` (0: none).
 fn other_list(other: &Program, within: Option<&str>, list: usize) -> String {
     let order = if other.order.is_empty() {
         "\"_pk\"".to_owned()
     } else {
         order_by(&other.order)
     };
-    let counts = if other.ranked {
-        "rank IS NOT NULL"
+    let counts: String = if other.ranked {
+        "_rank IS NOT NULL".into()
     } else {
-        "1"
+        "1".into()
     };
-    let within = within
-        .map(|rows| format!(" WHERE _pk IN ({rows})"))
-        .unwrap_or_default();
-    format!(
-        "SELECT _pk AS k, row_number() OVER (ORDER BY {order}) AS place, {counts} AS counts, {list} AS list FROM ({}){within}",
+    let ranked = format!(
+        "SELECT _pk AS k,row_number() OVER (ORDER BY {order}) AS place,{counts} AS counts,{list} AS list,_recency AS recency FROM ({})",
         other.sql
-    )
+    );
+    match within {
+        Some(rows) => format!("SELECT * FROM ({ranked}) WHERE k IN ({rows})"),
+        None => ranked,
+    }
+}
+
+/// Align actual operand values and private native coordinates, never aliases
+/// fetched afresh from the current native tables.
+fn aligned_columns(
+    relation: &relations::Relation,
+    input: &Program,
+    ranked: bool,
+) -> Result<std::collections::BTreeMap<String, String>, QueryError> {
+    let mut columns = std::collections::BTreeMap::from([("_pk".into(), "r._pk".into())]);
+    if let (
+        RowBasis::Native {
+            columns: output, ..
+        },
+        RowBasis::Native {
+            columns: source, ..
+        },
+    ) = (&relation.program.row_basis, &input.row_basis)
+    {
+        if output.len() != source.len() {
+            return Err(not_built("combining different native row identities"));
+        }
+        for (output, source) in output.iter().zip(source) {
+            columns.insert(output.clone(), format!("r.{}", column_sql(source)));
+        }
+    }
+    let input_sources = relations::Relation::new(input.clone()).sources;
+    for source in &relation.sources {
+        let input_source = input_sources
+            .iter()
+            .find(|candidate| candidate.prefix == source.prefix && candidate.unit == source.unit)
+            .ok_or_else(|| not_built("combining different native source coordinates"))?;
+        columns.insert(
+            source.key.clone(),
+            format!("r.{}", column_sql(&input_source.key)),
+        );
+    }
+    columns.insert("_near".into(), "r._near".into());
+    columns.insert("_recency".into(), "r._recency".into());
+    if fields::lookup(relation.program.unit, "first_seen").is_some_and(|field| field.sql.is_some())
+    {
+        columns.insert("_first_seen".into(), "r._first_seen".into());
+    }
+    for column in &relation.program.columns {
+        if ranked && matches!(column.name.as_str(), "rank" | "found_in") {
+            continue;
+        }
+        if !input
+            .columns
+            .iter()
+            .any(|candidate| candidate.name == column.name)
+        {
+            return Err(QueryError::Invalid {
+                message: format!("combined output has no column {:?}", column.name),
+                position: 0,
+            });
+        }
+        let mut value = format!("r.{}", column_sql(input.column_slot(&column.name)));
+        if input.time_text_columns.contains(&column.name) {
+            value = format!("pl_kept_time({value})");
+        }
+        columns.insert(relation.program.column_slot(&column.name).to_owned(), value);
+    }
+    Ok(columns)
 }

@@ -135,9 +135,6 @@ pub(crate) fn bound_output_metadata(
                         schema.main_time = None
                     }
                     TransformKind::Fields { .. } => {
-                        for field in &mut schema.fields {
-                            field.name = flat(&field.name);
-                        }
                         schema.main_time = schema
                             .main_time
                             .filter(|name| schema.fields.iter().any(|field| &field.name == name));
@@ -186,6 +183,12 @@ pub(crate) fn bound_output_metadata(
                             .columns
                             .iter()
                             .map(|column| format!("step.{}", column.name)),
+                    )
+                    .chain(
+                        schema
+                            .fields
+                            .iter()
+                            .map(|field| format!("parent.{}", field.name)),
                     );
                 schema = OutputSchema {
                     match_units: None,

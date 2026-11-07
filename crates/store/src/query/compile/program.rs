@@ -78,31 +78,14 @@ impl<'a> Compiler<'a> {
         if !self.near_needed {
             self.near_request = None;
         }
-        let mut order: Option<Vec<String>> = None;
         let mut matched = preset;
         let mut measure: Option<Measure> = None;
-        let mut pending = combine::PendingFusion::default();
         for stage in &q.transforms {
             if measure.is_some() {
                 return Err(QueryError::Invalid {
                     message: "`| measure WHAT` is the last stage".into(),
                     position: stage.span.start,
                 });
-            }
-            let fusing = matches!(
-                stage.kind,
-                TransformKind::Combine {
-                    how: Combination::Union | Combination::Fuse,
-                    ..
-                }
-            );
-            if !fusing && !pending.is_empty() {
-                self.fuse_pending(
-                    std::mem::take(&mut pending),
-                    &scope,
-                    &mut where_sql,
-                    &mut order,
-                )?;
             }
             match &stage.kind {
                 TransformKind::Scope {
@@ -144,26 +127,10 @@ impl<'a> Compiler<'a> {
                     top = ntop;
                     where_sql = w;
                     why.clear();
-                    order = None;
                     // A fused rank and the lists it names belong to the
                     // sessions.
                     self.fusion = None;
                     self.shown.retain(|(name, ..)| name != "found_in");
-                }
-                TransformKind::Combine { how, query } => {
-                    let at = stage.span.start;
-                    match how {
-                        Combination::Union => pending
-                            .unions
-                            .push(self.combined_rows(query, scope.unit, at)?),
-                        Combination::Fuse => pending
-                            .fuses
-                            .push(self.combined_rows(query, scope.unit, at)?),
-                        Combination::Intersect | Combination::Except => {
-                            self.membership(*how, query, &scope, &mut where_sql, at)?
-                        }
-                    }
-                    why.clear();
                 }
                 TransformKind::Extension { name, arguments }
                     if name == polylogue_query::catalog::MEASURE =>
@@ -233,7 +200,6 @@ impl<'a> Compiler<'a> {
                             });
                         }
                     });
-                    order = None;
                     self.notes.push("one row per step of each match".into());
                 }
                 TransformKind::AsOf { .. } => return Err(relations::as_of_unavailable()),
@@ -246,32 +212,10 @@ impl<'a> Compiler<'a> {
             self.setup_near(true);
         }
         let count_relation = if rows_answer {
-            let from = self.from(&scope)?;
-            let wh = and_all(&where_sql);
-            if pending.is_empty() {
-                Some((from, wh))
-            } else {
-                let (pk, _) =
-                    row_columns(scope.unit, &scope.a, self.opts.clock.now.as_millisecond());
-                let mut members = vec![format!("SELECT {pk} AS _pk FROM {from} WHERE {wh}")];
-                for other in &pending.unions {
-                    let relation = other.row_membership_sql.as_ref().unwrap_or(&other.sql);
-                    members.push(format!("SELECT _pk FROM ({relation})"));
-                }
-                Some((
-                    self.row_source(&scope),
-                    format!("{pk} IN ({})", members.join(" UNION ")),
-                ))
-            }
+            Some((self.from(&scope)?, and_all(&where_sql)))
         } else {
             None
         };
-        self.fuse_pending(
-            std::mem::take(&mut pending),
-            &scope,
-            &mut where_sql,
-            &mut order,
-        )?;
         self.fuse_text_and_near(&scope, &mut where_sql)?;
         let recursive = matched.as_ref().is_some_and(|m| m.recursive);
         let ctes = if self.ctes.is_empty() {
@@ -305,7 +249,7 @@ impl<'a> Compiler<'a> {
                 rel.order,
             )
         } else {
-            let order = order.unwrap_or_else(|| self.default_order(&scope));
+            let order = self.default_order(&scope);
             let (pk, mut cols) = row_columns(unit, &scope.a, self.opts.clock.now.as_millisecond());
             if !self.opts.fields.is_empty() {
                 cols.clear();
@@ -347,7 +291,13 @@ impl<'a> Compiler<'a> {
                     reference: None,
                 });
             }
-            let mut select = vec![format!("{pk} AS _pk")];
+            let mut select = vec![
+                format!("{pk} AS _pk"),
+                format!("{} AS _recency", scope.a.expand(units::spec(unit).time)),
+            ];
+            if let Some(rank) = self.ranking() {
+                select.push(format!("{rank} AS _rank"));
+            }
             select.extend(
                 cols.iter().map(|(name, expression, _, _)| {
                     format!("{expression} AS {}", column_sql(name))

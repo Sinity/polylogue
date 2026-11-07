@@ -262,6 +262,7 @@ fn relational(kind: &TransformKind) -> bool {
             | TransformKind::Diff { .. }
             | TransformKind::Scope { .. }
             | TransformKind::Matches
+            | TransformKind::Combine { .. }
     )
 }
 
@@ -326,21 +327,56 @@ impl<'a> Compiler<'a> {
                     .field("condition"),
             )?;
         }
-        for (index, stage) in query.transforms.iter().enumerate().skip(first) {
+        let mut index = first;
+        while let Some(stage) = query.transforms.get(index) {
             if relation.program.measure.is_some() {
                 return Err(QueryError::Invalid {
                     message: "`| measure WHAT` is the last stage".into(),
                     position: stage.span.start,
                 });
             }
-            self.relation_stage(&mut relation, stage, query, index)?;
+            if matches!(
+                stage.kind,
+                TransformKind::Combine {
+                    how: Combination::Union | Combination::Fuse,
+                    ..
+                }
+            ) {
+                let mut pending = combine::PendingFusion::default();
+                while let Some(Transform {
+                    kind:
+                        TransformKind::Combine {
+                            how: Combination::Union | Combination::Fuse,
+                            query: other,
+                        },
+                    span,
+                }) = query.transforms.get(index)
+                {
+                    let operand = self.combined_rows(other, relation.program.unit, span.start)?;
+                    relation.reserve(&Relation::new(operand.clone()));
+                    match &query.transforms[index].kind {
+                        TransformKind::Combine {
+                            how: Combination::Union,
+                            ..
+                        } => pending.unions.push(operand),
+                        _ => pending.fuses.push(operand),
+                    }
+                    index += 1;
+                }
+                self.fuse_pending(pending, &mut relation)?;
+            } else {
+                self.relation_stage(&mut relation, stage, query, index)?;
+                index += 1;
+            }
         }
         if !self.ctes.is_empty() {
-            relation.program.sql = format!(
-                "WITH RECURSIVE {} SELECT * FROM ({})",
-                self.ctes.join(", "),
-                relation.program.sql
-            );
+            let prefix = format!("WITH RECURSIVE {}", self.ctes.join(", "));
+            let scoped = |sql: &str| format!("{prefix} SELECT * FROM ({sql})");
+            relation.program.sql = scoped(&relation.program.sql);
+            if let Some(measure) = &mut relation.program.measure {
+                measure.selection_sql = scoped(&measure.selection_sql);
+                measure.population_sql = scoped(&measure.population_sql);
+            }
         }
         if !relation.program.attach.is_empty() && relation.program.shape != Shape::Rows {
             return Err(QueryError::Invalid {
@@ -353,6 +389,7 @@ impl<'a> Compiler<'a> {
         }
         relation.program.params = self.params;
         join(&mut relation.program.notes, &mut self.notes);
+        join(&mut relation.program.text_terms, &mut self.text_terms);
         join(&mut relation.program.incomplete, &mut self.incomplete);
         join(&mut relation.program.id_checks, &mut self.id_checks);
         join(&mut relation.program.definitions, &mut self.definitions);
@@ -850,10 +887,14 @@ impl Relation {
         if self.program.counts_near {
             names.insert("_near".into());
         }
+        if self.program.ranked {
+            names.insert("_rank".into());
+        }
         if self.sources.iter().any(|source| source.prefix.is_empty())
             && matches!(self.program.row_basis, RowBasis::Native { .. })
         {
             names.insert("_near".into());
+            names.insert("_recency".into());
             if fields::lookup(self.program.unit, "first_seen").is_some_and(|f| f.sql.is_some()) {
                 names.insert("_first_seen".into());
             }
@@ -871,7 +912,7 @@ impl Relation {
             .map(|name| format!("r.{}", column_sql(&name)))
             .collect()
     }
-    fn identity_order(&self) -> Vec<OrderKey> {
+    pub(super) fn identity_order(&self) -> Vec<OrderKey> {
         match &self.program.row_basis {
             RowBasis::Native { columns, .. }
             | RowBasis::Group { columns }
@@ -1116,16 +1157,10 @@ impl Compiler<'_> {
     }
 
     fn relation_distinct(&mut self, relation: &mut Relation) {
-        let columns = relation
-            .program
-            .columns
+        let values = relation
+            .identity_order()
             .iter()
-            .filter(|column| column.name != "rank")
-            .map(|column| relation.program.column_slot(&column.name).to_owned())
-            .collect::<Vec<_>>();
-        let values = columns
-            .iter()
-            .map(|name| column_sql(name))
+            .map(|key| column_sql(&key.column))
             .collect::<Vec<_>>();
         let ordinal = relation.slot();
         relation.program.sql = format!(
@@ -1141,9 +1176,6 @@ impl Compiler<'_> {
             column_sql(&ordinal),
             relation_order(&relation.program.order)
         );
-        relation.program.row_basis = RowBasis::Distinct { columns };
-        relation.sources.clear();
-        relation.open_fields = false;
         relation.group = None;
     }
 }
@@ -1184,6 +1216,7 @@ impl Compiler<'_> {
             self.relation_filter(relation, &predicate);
             return Ok(());
         }
+        debug_assert!(!matches!(stage.kind, TransformKind::Combine { .. }));
         let condition =
             if matches!(stage.kind, TransformKind::Matches) && !relation.patterns.is_empty() {
                 Some(Condition {

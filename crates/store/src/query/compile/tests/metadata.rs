@@ -37,6 +37,8 @@ fn matches_declarations_follow_actual_producer_columns_and_replay_frozen_saved_b
         "sessions where seq(action:shell -> outcome:error) | matches",
         "sessions where exists tool_call() | limit 1 | matches",
         "sessions where exists tool_call() | distinct | matches",
+        "sessions where exists tool_call() | fields id as source, started as began | matches",
+        "sessions where exists tool_call() | fields repo as \"source.repo\" | matches",
     ] {
         let options = opts(&[]);
         let schema = options.output_schema(text).unwrap();
@@ -449,4 +451,22 @@ fn canonical_replay_preserves_unproven_text_and_json_matching_policy() {
         recovered.kept = replay.bindings().kept.clone();
         assert!(lower(&replay, &recovered).is_ok());
     }
+}
+
+#[test]
+fn match_parent_text_alias_keeps_explicit_absence_of_reference_metadata() {
+    let text = "sessions where exists tool_call() | fields text(id) as source | matches | fields parent.source";
+    let options = opts(&[]);
+    let plan = polylogue_query::compile(text, &options).unwrap();
+    let program = lower(&plan, &options).unwrap();
+    assert_eq!(program.columns.len(), 1);
+    assert_eq!(program.columns[0].name, "parent.source");
+    assert_eq!(program.columns[0].kind, ColKind::Text);
+    assert_eq!(program.columns[0].reference, None);
+    let schema = plan.output_schema_for_columns(&program.columns).unwrap();
+    assert_eq!(
+        schema.fields[0].kind,
+        query_language::catalog::FieldKind::Text
+    );
+    assert_eq!(schema.fields[0].unit, None);
 }

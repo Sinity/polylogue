@@ -153,7 +153,12 @@ fn project_fixture_sources(
             _ => {}
         }
     }
-    let bound = query_language::bind::bind(query, catalog)?;
+    let source_query = Query {
+        source: query.source.clone(),
+        transforms: vec![],
+        attach: vec![],
+    };
+    let bound = query_language::bind::bind(&source_query, catalog)?;
     let source = &bound
         .typing()
         .query(&Default::default())

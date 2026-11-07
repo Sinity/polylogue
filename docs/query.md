@@ -125,7 +125,9 @@ Stages apply in the order written:
 - `| where C` after grouping filters groups. Projection, filtering, sorting, row selection, grouping and aggregation execute at their written relation boundaries. An output alias may use any accepted name, including `_pk`; physical row keys and ordering slots occupy a separate namespace.
 - `| group by K | first N` returns the first N input rows of each retained group, in the input order. A key join returns every matching pair, with the right-hand columns under `match.`. An order condition keeps an outer row once and exposes its nearest satisfying witness under `match.`; a later order condition replaces that namespace.
 - `limit N`, `offset N` are selections and change the question; there is no maximum.
-- `distinct`; `matches`; `| UNIT [where C]` (rows of another unit within the matched sessions); `fields a,b` (projection; `--fields` on the command line). A `matches` row retains the entering row's visible columns under `parent.` with their types and reference metadata; projected aliases keep their names. Its matched child fields are under `step.`. Parent rows retain their entering order, followed by each parent's match and step order.
+- `distinct` removes repeated row identities. A projection changes visible fields while retaining row identity, so equal projected values from different rows remain separate.
+- `matches` retains the entering row's visible columns under `parent.` with their types and reference metadata; projected aliases keep their names. Its matched child fields are under `step.`. Parent rows retain their entering order, followed by each parent's match and step order.
+- `| UNIT [where C]` returns rows of another unit within the matched sessions; `fields a,b` projects columns (`--fields` on the command line).
 - `| measure WHAT` hands the selection to a measure ([measures.md](measures.md)).
 - Further stages are part of the language and answer `not_built` until built: derived keys (`program(command)`, `fingerprint(text)`), `| series`, `| extract number before "MB/s" as rate`, `| cluster by similar [k:20]`, and `let` names within one query.
 
@@ -136,7 +138,7 @@ Stages apply in the order written:
 ### Combining queries
 
 - `Q | union (R)`, `| intersect (R)` and `| except (R)` combine two queries of the same unit; `| fuse (R)` adds R's order as one more ranking without adding rows.
-- A chain of `| union` and `| fuse` stages at one level is one reciprocal-rank fusion over all operands ([search.md](search.md#fusion)); `intersect` and `except` keep the left order; an unranked operand contributes its own order; `found_in` names the lists that ranked each row.
+- A chain containing `| fuse` or a ranked operand is one reciprocal-rank fusion over all original operands ([search.md](search.md#fusion)); an unranked operand contributes its captured order. A fuse operand's ranks are taken over its full input before membership restriction. Values come from the first membership operand that supplies a row; `found_in` names the membership lists that ranked it. Ordinary unranked unions remove duplicate identities and order by identity. `intersect` and `except` keep the left order.
 - Grains must match; a mismatch is `invalid_query` suggesting the explicit lift (`| sessions`). Combining applies before a terminal aggregate.
 
 ## Query objects
