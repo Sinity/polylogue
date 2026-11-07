@@ -1001,3 +1001,37 @@ fn cwd_searches_recorded_directories_and_never_scans_sessions() {
     );
     assert_eq!(ids("sessions where cwd:/").len(), 4);
 }
+
+#[test]
+fn unseeded_random_windows_keep_selected_rows_and_order_witnesses() {
+    let (_directory, fixture) = fixture();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut options = options();
+    options.random_seed = None;
+    for count in 1..=3 {
+        let selection = reader
+            .prepare_query_selection(
+                &format!("sessions | sort by random() | limit {count}"),
+                &options,
+            )
+            .unwrap();
+        let mut rows = Vec::new();
+        reader
+            .visit_selection::<SelectionError>(&selection, None, None, |row| {
+                rows.push(row);
+                Ok(ControlFlow::Continue(()))
+            })
+            .unwrap();
+        assert_eq!(rows.len(), count);
+        let targets = rows
+            .iter()
+            .map(|row| row.target.as_ref().unwrap().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(targets.len(), count);
+        assert!(rows.windows(2).all(|pair| {
+            pair[0].position.values[1].as_i64().unwrap()
+                <= pair[1].position.values[1].as_i64().unwrap()
+        }));
+    }
+}

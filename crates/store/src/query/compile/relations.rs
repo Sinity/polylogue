@@ -771,32 +771,70 @@ impl Relation {
             self.program.sql = format!("SELECT * FROM ({}) {window}", self.program.sql);
             return;
         }
-        let keys = self
+        let identity = self.identity_order();
+        let mut keys = std::collections::BTreeSet::new();
+        keys.extend(identity.iter().map(|key| key.column.clone()));
+        keys.extend(self.program.order.iter().map(|key| key.column.clone()));
+        let input = self.slot();
+        let selected = format!(
+            "SELECT {} FROM {input} r ORDER BY {} {window}",
+            keys.iter()
+                .map(|key| column_sql(key))
+                .collect::<Vec<_>>()
+                .join(", "),
+            relation_order(&self.program.order)
+        );
+        let same = identity
+            .iter()
+            .map(|key| {
+                let key = column_sql(&key.column);
+                format!("r.{key} IS selected.{key}")
+            })
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let mut columns = self
+            .private_columns()
+            .into_iter()
+            .map(|column| {
+                column
+                    .strip_prefix("r.")
+                    .expect("qualified private column")
+                    .to_owned()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        columns.extend(
+            self.program
+                .columns
+                .iter()
+                .map(|column| column_sql(self.program.column_slot(&column.name))),
+        );
+        let order_columns = self
             .program
             .order
             .iter()
             .map(|key| column_sql(&key.column))
-            .collect::<Vec<_>>();
-        let selected = format!(
-            "SELECT {} FROM ({}) r ORDER BY {} {window}",
-            keys.join(", "),
-            self.program.sql,
-            relation_order(&self.program.order)
-        );
-        let same = keys
+            .collect::<std::collections::BTreeSet<_>>();
+        let projection = columns
             .iter()
-            .map(|key| format!("r.{key} IS selected.{key}"))
+            .map(|column| {
+                let source = if order_columns.contains(column) {
+                    "selected"
+                } else {
+                    "r"
+                };
+                format!("{source}.{column} AS {column}")
+            })
             .collect::<Vec<_>>()
-            .join(" AND ");
+            .join(", ");
         self.program.sql = format!(
-            "SELECT r.* FROM ({selected}) selected JOIN ({}) r ON {same} ORDER BY {}",
+            "WITH {input} AS NOT MATERIALIZED ({}) SELECT {projection} FROM ({selected}) selected JOIN {input} r ON {same} ORDER BY {}",
             self.program.sql,
             self.program
                 .order
                 .iter()
                 .map(|key| {
                     format!(
-                        "r.{}{}",
+                        "selected.{}{}",
                         column_sql(&key.column),
                         if key.descending { " DESC" } else { "" }
                     )
