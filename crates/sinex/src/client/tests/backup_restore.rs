@@ -34,12 +34,18 @@ fn wait_until(mut predicate: impl FnMut() -> bool) {
 }
 
 fn connect(config: &Config) -> Arc<Sinex> {
-    let mut connected = None;
-    wait_until(|| {
-        connected = Sinex::connect(config, &Authentication::Anonymous, "fixture-host").ok();
-        connected.is_some()
-    });
-    Arc::new(connected.unwrap())
+    let started = Instant::now();
+    loop {
+        match Sinex::connect(config, &Authentication::Anonymous, "fixture-host") {
+            Ok(connected) => return Arc::new(connected),
+            Err(error @ Error::Unreachable(_)) => assert!(
+                started.elapsed() < Duration::from_secs(90),
+                "native producer did not become reachable: {error}"
+            ),
+            Err(error) => panic!("native producer connection failed: {error}"),
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn prepare(sinex: &Sinex, bytes: &[u8]) -> String {

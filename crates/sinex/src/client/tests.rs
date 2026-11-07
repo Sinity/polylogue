@@ -82,6 +82,60 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
     )
     .unwrap();
     assert_eq!(sinex.status().unwrap().family.as_deref(), Some("polylogue"));
+    sinex
+        .with(async |client| {
+            let frame = sinex_protocol::Ingress::RegisterKinds {
+                frame: "refused-registration".into(),
+                declarations: Vec::new(),
+            };
+            let hash = sinex_transport::producer::content_hash(&frame).unwrap();
+            let receipt: sinex_protocol::Acknowledgment = serde_json::from_value(
+                serde_json::json!({"number":2,"frame":frame.frame(),"material":null,
+                    "admitted":[],"outcome":{"frame_content_hash":hash},
+                    "refusal":"exact owner declaration refusal","commit_seq":null}),
+            )
+            .unwrap();
+            {
+                let spool = client.spool.lock().unwrap();
+                let prepared = spool.prepare(frame.clone()).unwrap();
+                let mut mismatch = receipt.clone();
+                mismatch.outcome["frame_content_hash"] = "different payload".into();
+                assert!(matches!(
+                    super::verified_receipt(&prepared, mismatch),
+                    Err(Error::ReceiptConflict { .. })
+                ));
+                spool.acknowledge(receipt).unwrap();
+            }
+            for _ in 0..2 {
+                assert!(matches!(client.send(frame.clone()).await,
+                    Err(Error::Refused { name, reason })
+                    if name == frame.frame() && reason == "exact owner declaration refusal"));
+            }
+
+            let conflict = sinex_protocol::Ingress::RegisterKinds {
+                frame: "conflicting-registration".into(),
+                declarations: Vec::new(),
+            };
+            let offered_hash = sinex_transport::producer::content_hash(&conflict).unwrap();
+            let receipt: sinex_protocol::Acknowledgment = serde_json::from_value(
+                serde_json::json!({"number":3,"frame":conflict.frame(),"material":null,
+                    "admitted":[],"outcome":{"frame_content_hash":"different payload"},
+                    "refusal":null,"commit_seq":null}),
+            )
+            .unwrap();
+            {
+                let spool = client.spool.lock().unwrap();
+                spool.prepare(conflict.clone()).unwrap();
+                spool
+                    .record_conflict(conflict.frame(), &offered_hash, &receipt)
+                    .unwrap();
+            }
+            assert!(matches!(client.send(conflict).await,
+                Err(Error::Refused { reason, .. })
+                if reason == "the original operation is not publishable"));
+            Ok(())
+        })
+        .unwrap();
     let context = sinex
         .context(|zone| jiff::tz::TimeZone::get(zone).map_err(|error| error.to_string()))
         .unwrap();

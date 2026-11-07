@@ -394,6 +394,11 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object", "properties": {
                     "record_key": {"type":"string", "minLength":1}, "record":facts,
+                    "text": {"type":"string"},
+                    "query": {"type":"string"}, "rows": {},
+                    "refs": {"type":"array", "items":{"type":"string"}},
+                    "at": {"type":["string","null"]},
+                    "started": {"type":["string","null"]},
                 },
                 "required":["record_key","record"], "$defs":definitions,
             });
@@ -451,15 +456,13 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         quality: TimeQuality::Intrinsic,
                     }
                 }),
-                field_hints: [
-                    "record", "text", "value", "targets", "query", "rows", "refs",
-                ]
-                .into_iter()
-                .map(|field| FieldHint {
-                    field: format!("/{field}"),
-                    class: Class::Guarded,
-                })
-                .collect(),
+                field_hints: ["record", "text", "query", "rows", "refs"]
+                    .into_iter()
+                    .map(|field| FieldHint {
+                        field: format!("/{field}"),
+                        class: Class::Guarded,
+                    })
+                    .collect(),
                 removed_rule: Some(RemovedRule::Never),
                 keep_known: Vec::new(),
                 owned_blobs: Vec::new(),

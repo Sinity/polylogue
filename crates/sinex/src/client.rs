@@ -270,7 +270,7 @@ impl Client {
         // Freeze waits for transmission and durable receipt publication as one
         // unit. Capture may append new spool operations while this waits.
         let _publication = self.publication.enter().await;
-        let (receipt, frame, body) = {
+        let (frame, body) = {
             let spool = self
                 .spool
                 .lock()
@@ -278,6 +278,9 @@ impl Client {
             let current = spool
                 .get(&prepared.identity)?
                 .ok_or_else(|| Error::Invalid("prepared operation disappeared".into()))?;
+            if let Some(receipt) = spool.acknowledgment(&prepared.identity)? {
+                return checked(verified_receipt(&prepared, receipt)?);
+            }
             if current.unresolved || current.phase.is_refused() {
                 return Err(Error::Refused {
                     name: prepared.identity.clone(),
@@ -285,7 +288,6 @@ impl Client {
                 });
             }
             (
-                spool.acknowledgment(&prepared.identity)?,
                 spool.prepared_frame(&prepared.identity)?,
                 if prepared.body().is_some() {
                     Some(spool.prepared_body(&prepared.identity)?)
@@ -294,9 +296,6 @@ impl Client {
                 },
             )
         };
-        if let Some(receipt) = receipt {
-            return checked(verified_receipt(&prepared, receipt)?);
-        }
         if let Some(body) = body {
             frame_bytes::write_prepared(&self.store_root, &self.producer, &prepared.identity, body)
                 .map_err(|error| Error::Invalid(error.to_string()))?;

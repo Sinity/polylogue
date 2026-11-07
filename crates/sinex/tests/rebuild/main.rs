@@ -54,9 +54,15 @@ fn connect(config: &Config) -> Arc<Sinex> {
         let error = match Sinex::connect(config, &Authentication::Anonymous, "fixture-host") {
             Ok(sinex) => match sinex.reachable() {
                 Ok(()) => return Arc::new(sinex),
-                Err(error) => format!("producer reachability: {error}"),
+                Err(error @ polylogue_sinex::Error::Unreachable(_)) => {
+                    format!("producer reachability: {error}")
+                }
+                Err(error) => panic!("producer reachability failed: {error}"),
             },
-            Err(error) => format!("producer connection: {error}"),
+            Err(error @ polylogue_sinex::Error::Unreachable(_)) => {
+                format!("producer connection: {error}")
+            }
+            Err(error) => panic!("producer connection failed: {error}"),
         };
         assert!(
             started.elapsed() < Duration::from_secs(60),

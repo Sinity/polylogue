@@ -53,6 +53,11 @@ fn source_copies_have_distinct_keys_and_chunk_boundaries_do_not_rename_a_record(
     let validator =
         jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap()).unwrap();
     validator.validate(&payload).unwrap();
+    for (field, malformed) in [("text", json!(17)), ("at", json!(17))] {
+        let mut malformed_payload = payload.clone();
+        malformed_payload[field] = malformed;
+        assert!(validator.validate(&malformed_payload).is_err(), "{field}");
+    }
     let mut malformed = payload;
     malformed["record"]["facts"]["message"]["usage"] = json!("invalid usage");
     assert!(validator.validate(&malformed).is_err());
@@ -61,6 +66,26 @@ fn source_copies_have_distinct_keys_and_chunk_boundaries_do_not_rename_a_record(
 #[test]
 fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
     for declaration in declarations("polylogue") {
+        let schema = declaration.payload_schema.as_ref().unwrap();
+        for hint in &declaration.field_hints {
+            let field = hint.field.strip_prefix('/').unwrap();
+            assert!(
+                schema["properties"].get(field).is_some(),
+                "{} hints undeclared {field}",
+                declaration.kind.name
+            );
+        }
+        if let Some(sinex_model::kinds::TimeRule::FirstPresent { fields, .. }) =
+            &declaration.time_rule
+        {
+            for field in fields {
+                assert!(
+                    schema["properties"].get(field).is_some(),
+                    "{} reads undeclared time field {field}",
+                    declaration.kind.name
+                );
+            }
+        }
         assert_eq!(
             declaration.kind.version,
             match declaration.kind.name.as_str() {

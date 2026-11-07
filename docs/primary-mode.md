@@ -23,7 +23,12 @@ empty hello. This checks the protocol and sealing configuration before its
 producer-owned kinds exist. It then registers its `polylogue.*` declarations
 and requires the acknowledgment to name their exact definition hashes before
 sending materials or events. Each event selects its declaration by name and
-version. A refused hello returns Sinex's reason.
+version. A refused hello or frame returns Sinex's reason. Retrying an operation
+with a durable refusal returns the same reason from its verified receipt.
+
+Declarations validate the complete record and describe the outer projected
+fields used by privacy hints and time rules. The complete record remains guarded;
+the outer fields let Sinex join the record to its other domains.
 
 Confirmed payloads are checked against their current immutable kind declaration
 and payload digest. The saved native context carries that digest and the
