@@ -109,19 +109,72 @@ impl Inner {
         Ok(writes)
     }
 
+    pub(super) fn validate_primary_reading(&self, batch: &Batch) -> Result<i64> {
+        self.primary_cache_ready()?;
+        let Change::Reparse { chain } = batch.change else {
+            return Err(StoreError::Invalid(
+                "primary parsed products need their confirmed source chain".into(),
+            ));
+        };
+        if batch.acquisition.is_some()
+            || batch.observation.is_some()
+            || batch.new_blob.is_some()
+            || batch.basis.is_some()
+            || batch.required_disposition.is_some()
+            || batch.continues
+        {
+            return Err(StoreError::Invalid(
+                "a stored reading cannot acquire or rebind its source".into(),
+            ));
+        }
+        let exact: bool = self.index.query_row(
+            "SELECT EXISTS(SELECT 1 FROM source_input WHERE id=?1 AND format=?2)",
+            params![batch.input.id, batch.input.format],
+            |row| row.get(0),
+        )?;
+        if !exact {
+            return Err(StoreError::Invalid(
+                "stored reading input identity differs".into(),
+            ));
+        }
+        crate::staging::require_range(
+            &self.index,
+            "source_",
+            &batch.input.id,
+            chain,
+            0..batch.length,
+        )?;
+        if crate::source::Source::admitted_through(
+            &self.index,
+            &batch.input.id,
+            chain,
+            batch.length,
+        )?
+        .is_none()
+        {
+            return Err(StoreError::Invalid(
+                "stored reading source extents do not cover its range".into(),
+            ));
+        }
+        for step in &batch.parse {
+            step.counts.check()?;
+            if step.start > step.parsed_upto || step.parsed_upto > batch.length {
+                return Err(StoreError::Invalid(
+                    "stored reading exceeds its source range".into(),
+                ));
+            }
+        }
+        Ok(chain)
+    }
+
     pub(super) fn primary_products<'a>(
         &mut self,
         batches: impl Iterator<Item = &'a Batch>,
     ) -> Result<()> {
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
         for batch in batches {
-            let Change::Reparse { chain } = batch.change else {
-                return Err(StoreError::Invalid(
-                    "primary parsed products need their confirmed source chain".into(),
-                ));
-            };
+            let chain = self.validate_primary_reading(batch)?;
             for step in &batch.parse {
-                step.counts.check()?;
                 let key = step.delivery.map(|_| crate::primary::ExportReadingKey {
                     input: batch.input.clone(),
                     chain,
@@ -139,6 +192,14 @@ impl Inner {
                     Some(batch.length),
                     step,
                 )?)?;
+                if writes
+                    .iter()
+                    .any(|write| write.product.reading().is_some() && write.location.is_none())
+                {
+                    return Err(StoreError::Invalid(
+                        "stored reading has no confirmed source material anchor".into(),
+                    ));
+                }
                 if let Some(key) = &key {
                     sinex.prepare_export_products(key, &writes)?;
                 } else {

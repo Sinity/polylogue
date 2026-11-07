@@ -1154,3 +1154,208 @@ fn captured_body_anchors_survive_duplicate_and_trimmed_logical_extents() {
             .is_none()
     );
 }
+
+#[test]
+fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_head() {
+    use crate::primary::{Confirmed, ConfirmedChange, ReplayControl};
+    let directory = tempfile::tempdir().unwrap();
+    let producer_root = directory.path().join("producer");
+    let (archive, _lock) = Archive::open_primary(
+        &directory.path().join("cache"),
+        &directory.path().join("bytes"),
+    )
+    .unwrap();
+    let producer = Arc::new(OfflineProducer {
+        root: producer_root.clone(),
+    });
+    let writer = Writer::start_on_sinex(&archive, producer).unwrap();
+    let control = |control| Confirmed {
+        position: 0,
+        output_index: 0,
+        event: String::new(),
+        native: None,
+        change: ConfirmedChange::Control(Box::new(control)),
+    };
+    writer
+        .apply_confirmed(vec![control(ReplayControl::Reset {
+            scope: "scope".into(),
+        })])
+        .unwrap();
+    let hash = BlobHash::of(b"rows");
+    let extent = hashed_blobs::Extent {
+        segment: "segments/confirmed.hb".into(),
+        offset: 0,
+        len: 100,
+        decoded_len: 4,
+        hash: hashed_blobs::Hash(hash.0),
+        kind: hashed_blobs::Kind::Plain,
+        index_hash: hashed_blobs::Hash([1; 32]),
+        encoded_hash: hashed_blobs::Hash([2; 32]),
+    };
+    for (position, id) in [(1, "first-session"), (2, "second-session")] {
+        let observation = serde_json::from_value(serde_json::json!({
+            "id":format!("observation-{id}"), "machine":"machine", "host":"host",
+            "path":"/home/op/state.sqlite", "path_bytes":b"/home/op/state.sqlite".to_vec(),
+            "class":"seen", "revision":1, "length":4, "polylogue_version":"test", "seen_at":1
+        }))
+        .unwrap();
+        writer
+            .apply_confirmed(vec![
+                Confirmed {
+                    position,
+                    output_index: 0,
+                    event: format!("input-{id}"),
+                    native: None,
+                    change: ConfirmedChange::Live(Box::new(Product::Input {
+                        rows: Box::new(InputRows {
+                            acquisition: None,
+                            input: id.into(),
+                            format: "codex-database".into(),
+                            revision: Some(Revision {
+                                number: 1,
+                                produced: "first".into(),
+                                chain: 1,
+                                length: 4,
+                            }),
+                            extent: Some(crate::input_rows::Extent {
+                                chain: 1,
+                                offset: 0,
+                                length: 4,
+                                blob: hash,
+                                blob_offset: 0,
+                            }),
+                            observation: Some(observation),
+                        }),
+                        material: Some(Material {
+                            id: format!("material-{id}"),
+                            hash,
+                            length: 4,
+                            extents: vec![extent.encode()],
+                        }),
+                    })),
+                },
+                control(ReplayControl::Completion { position }),
+            ])
+            .unwrap();
+    }
+    let mut reading = source("first-session", b"rows");
+    reading.batch.input.format = "codex-database".into();
+    reading.batch.change = Change::Reparse { chain: 1 };
+    reading.batch.new_blob = None;
+    reading.batch.observation = None;
+    let mut step = ParseStep::new(Default::default(), Default::default(), 0..4, true);
+    step.reading_version = "database-reading".into();
+    reading.batch.parse.push(step);
+    let store = Arc::new(archive.blobs().unwrap());
+    for _ in 0..2 {
+        let results = writer
+            .sender()
+            .unwrap()
+            .store_group(
+                vec![PreparedBatch {
+                    batch: reading.batch.clone(),
+                    files: vec![],
+                }],
+                Arc::clone(&store),
+            )
+            .unwrap();
+        assert!(
+            matches!(&results[0], Ok(stored) if stored.input == "first-session" && stored.chain == 1 && stored.already_stored)
+        );
+        assert!(
+            !producer_root.join("capture.json").exists(),
+            "stored parsing must not prepare another acquisition"
+        );
+        assert!(
+            crate::ReadPool::open(&archive)
+                .unwrap()
+                .reader()
+                .unwrap()
+                .parser_checkpoint("first-session", 1, "database-reading")
+                .unwrap()
+                .is_none()
+        );
+    }
+    let writes: Vec<ProductWrite> =
+        serde_json::from_slice(&std::fs::read(producer_root.join("products.json")).unwrap())
+            .unwrap();
+    assert!(
+        writes
+            .iter()
+            .filter_map(|write| write.product.reading())
+            .all(|reading| reading.input.id == "first-session" && reading.chain == 1)
+    );
+    assert!(writes.iter().all(|write| {
+        write
+            .location
+            .as_ref()
+            .is_some_and(|location| location.material == "material-first-session")
+    }));
+    let mut confirmed: Vec<_> = writes
+        .into_iter()
+        .enumerate()
+        .map(|(index, write)| Confirmed {
+            position: 3,
+            output_index: index as u64,
+            event: format!("reading-{index}"),
+            native: None,
+            change: ConfirmedChange::Live(Box::new(write.product)),
+        })
+        .collect();
+    confirmed.push(control(ReplayControl::Completion { position: 3 }));
+    writer.apply_confirmed(confirmed).unwrap();
+    assert_eq!(
+        crate::ReadPool::open(&archive)
+            .unwrap()
+            .reader()
+            .unwrap()
+            .parser_checkpoint("first-session", 1, "database-reading")
+            .unwrap()
+            .unwrap()
+            .parsed_upto,
+        4
+    );
+    for invalid in ["format", "chain", "range"] {
+        let mut batch = reading.batch.clone();
+        match invalid {
+            "format" => batch.input.format = "other-origin".into(),
+            "chain" => batch.change = Change::Reparse { chain: 2 },
+            _ => batch.length = 5,
+        }
+        let results = writer
+            .sender()
+            .unwrap()
+            .store_group(
+                vec![PreparedBatch {
+                    batch,
+                    files: vec![],
+                }],
+                Arc::clone(&store),
+            )
+            .unwrap();
+        assert!(results[0].is_err(), "invalid {invalid} was accepted");
+    }
+    assert!(!producer_root.join("capture.json").exists());
+    let mut fresh = source("fresh-provider", b"new source");
+    fresh
+        .files
+        .push(archive.prepare_bytes(b"new source".as_slice()).unwrap());
+    let mixed = writer
+        .sender()
+        .unwrap()
+        .store_group(
+            vec![
+                fresh,
+                PreparedBatch {
+                    batch: reading.batch.clone(),
+                    files: vec![],
+                },
+            ],
+            Arc::clone(&store),
+        )
+        .unwrap();
+    assert!(matches!(&mixed[0], Err(StoreError::PrimaryPending { .. })));
+    assert!(
+        matches!(&mixed[1], Ok(stored) if stored.input == "first-session" && stored.chain == 1)
+    );
+}

@@ -259,6 +259,25 @@ impl Engine {
         result
     }
 
+    /// Durable preparation does not advance a cached parser cursor. Both
+    /// pooled stored parsing and replacement readings await this exact fact.
+    pub(crate) fn confirmed_reading(&self, plan: &Plan) -> Result<bool, EngineError> {
+        let Change::Reparse { chain } = plan.change else {
+            return Err(polylogue_store::StoreError::Invalid(
+                "a stored reading needs its confirmed source chain".into(),
+            )
+            .into());
+        };
+        let version = plan.origin.reading_version();
+        let cursor = self
+            .reads
+            .reader()?
+            .parser_checkpoint(&plan.input.id, chain, &version)?;
+        Ok(cursor.is_some_and(|cursor| {
+            cursor.reading_version == version && cursor.parsed_upto >= plan.parse_pos
+        }))
+    }
+
     fn reading_committed(
         &mut self,
         busy: &mut HashMap<PathBuf, usize>,
@@ -270,18 +289,9 @@ impl Engine {
         match written {
             Ok(written) => {
                 if self.archive.is_primary() {
-                    let Change::Reparse { chain } = plan.change else {
-                        unreachable!("a queued replacement has its original chain")
-                    };
-                    let version = plan.origin.reading_version();
-                    let confirmed = self.reads.reader().and_then(|reader| {
-                        reader.parser_checkpoint(&plan.input.id, chain, &version)
-                    });
+                    let confirmed = self.confirmed_reading(&plan);
                     match confirmed {
-                        Ok(Some(cursor))
-                            if cursor.reading_version == version
-                                && cursor.parsed_upto >= plan.parse_pos =>
-                        {
+                        Ok(true) => {
                             pass.messages_written += written;
                             if plan.tracked
                                 && let Err(error) = self.refresh_confirmed_input(&plan.path)

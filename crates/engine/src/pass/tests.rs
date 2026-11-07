@@ -158,6 +158,9 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         engine.refresh_confirmed_input(&path).unwrap();
         assert_eq!(engine.inputs[&path].stored, bytes.len() as u64);
         let parse = engine.stored_plan(&path).unwrap().unwrap();
+        let mut expected = engine.stored_plan(&path).unwrap().unwrap();
+        expected.parse_pos = expected.size;
+        assert!(!engine.confirmed_reading(&expected).unwrap());
         assert_eq!(parse.input.id, original_id);
         std::fs::remove_file(&path).unwrap();
         let mut pass = Pass::default();
@@ -165,6 +168,9 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         assert!(pass.errors.is_empty(), "{pass:?}");
         assert_eq!(pass.bytes_read, bytes.len() as u64);
         assert_eq!(pass.bytes_stored, 0);
+        assert!(engine.confirmed_reading(&expected).unwrap());
+        expected.change = Change::Reparse { chain: 99 };
+        assert!(!engine.confirmed_reading(&expected).unwrap());
         let session = polylogue_model::SessionId::parse(session).unwrap();
         let messages = engine
             .reads

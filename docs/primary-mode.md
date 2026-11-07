@@ -56,6 +56,12 @@ scoped history cut. Later confirmations do not rebind that basis or turn missing
 evidence into an alias claim. Parsed facts use the acquired body's original byte
 range for their material anchors, even when those bytes add no new logical
 extent. Facts outside that range need an existing confirmed source anchor.
+Parsing an already confirmed chain prepares reading products directly, using the
+exact input, origin, chain, byte range and material anchors. It does not sample a
+new provider head; several database inputs can share one provider path. Inline
+attachments decoded by that parser retain their own blob preparation. Durable
+product preparation advances the sampler's cached parser state only after the
+matching reading version and cursor reach the confirmed index.
 
 Confirmed payloads are checked against their current immutable kind declaration
 and payload digest. The saved native context carries that digest and the

@@ -1338,6 +1338,16 @@ impl Engine {
             let parsed = has_reading(plan.origin);
             plan.apply(d, parsed);
             if plan.finished() {
+                if self.archive.is_primary() && matches!(plan.change, Change::Reparse { .. }) {
+                    if self.confirmed_reading(&plan)? {
+                        if plan.tracked {
+                            self.refresh_confirmed_input(&plan.path)?;
+                        }
+                    } else {
+                        pass.capture_pending = true;
+                    }
+                    continue;
+                }
                 pass.capture_pending |= plan.pending.is_some();
                 self.finish_plan(plan);
             } else {

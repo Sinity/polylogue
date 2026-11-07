@@ -233,6 +233,57 @@ impl Inner {
         &mut self,
         group: Vec<PreparedBatch>,
     ) -> Vec<Result<StoredInput>> {
+        if group
+            .iter()
+            .any(|item| matches!(item.batch.change, Change::Reparse { .. }))
+        {
+            // Stored readings refer to confirmed input chains, never to the
+            // latest provider-path head or a fresh receiving-I/O acquisition.
+            let valid = (|| {
+                if super::staging::atomic_acquisition(&group) {
+                    return Err(StoreError::Invalid(
+                        "stored readings cannot join a source acquisition".into(),
+                    ));
+                }
+                for item in &group {
+                    validate(item, &self.location)?;
+                    if matches!(item.batch.change, Change::Reparse { .. }) {
+                        self.validate_primary_reading(&item.batch)?;
+                    }
+                }
+                Ok(())
+            })();
+            if let Err(error) = valid {
+                return failed(group.len(), error);
+            }
+            let mut outcomes = Vec::with_capacity(group.len());
+            for item in group {
+                if let Change::Reparse { chain } = item.batch.change {
+                    let result = (|| {
+                        for file in item.files {
+                            self.primary_blob(
+                                crate::NewBlob {
+                                    hash: file.hash(),
+                                    size: file.len(),
+                                },
+                                Some(file),
+                            )?;
+                        }
+                        self.primary_products(std::iter::once(&item.batch))?;
+                        Ok(StoredInput {
+                            input: item.batch.input.id.clone(),
+                            chain,
+                            length: item.batch.length,
+                            already_stored: true,
+                        })
+                    })();
+                    outcomes.push(result);
+                } else {
+                    outcomes.extend(self.primary_store_group(vec![item]));
+                }
+            }
+            return outcomes;
+        }
         if super::staging::independent_files(&group) {
             let mut outcomes = Vec::with_capacity(group.len());
             for item in group {
