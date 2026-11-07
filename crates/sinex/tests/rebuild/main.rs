@@ -219,146 +219,135 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     assert!(expected.len() >= 8, "the example produced its sessions");
 
     let example = Morrow::lay_out(Set::Main);
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let running = sinex(example.dir.path());
-        let sinex = connect(&running.config);
-        phase("sinexd answers");
-        build_on_sinex(&example, &example.home, &sinex, &running);
-        phase("built on Sinex");
-        {
-            let (archive, _lock) =
-                Archive::open_primary(&example.root, &running.config.store).unwrap();
-            let mut engine =
-                Engine::on_sinex(example.config(), archive.clone(), sinex.clone()).unwrap();
-            let commits = engine.writer().unwrap().completion_commits();
-            let imported = example.import_exports(&mut engine).unwrap();
+    let running = sinex(example.dir.path());
+    let sinex = connect(&running.config);
+    phase("sinexd answers");
+    build_on_sinex(&example, &example.home, &sinex, &running);
+    phase("built on Sinex");
+    {
+        let (archive, _lock) = Archive::open_primary(&example.root, &running.config.store).unwrap();
+        let mut engine =
+            Engine::on_sinex(example.config(), archive.clone(), sinex.clone()).unwrap();
+        let commits = engine.writer().unwrap().completion_commits();
+        let imported = example.import_exports(&mut engine).unwrap();
+        assert!(
+            imported.pass.errors.is_empty() && imported.refused.is_empty(),
+            "{imported:?}; {}",
+            running.evidence(&sinex, &archive)
+        );
+        let imported_at = Instant::now();
+        loop {
             assert!(
-                imported.pass.errors.is_empty() && imported.refused.is_empty(),
-                "{imported:?}; {}",
+                imported_at.elapsed() < Duration::from_secs(120),
+                "imported sessions did not reach confirmed application; {}",
                 running.evidence(&sinex, &archive)
             );
-            let imported_at = Instant::now();
-            loop {
-                assert!(
-                    imported_at.elapsed() < Duration::from_secs(120),
-                    "imported sessions did not reach confirmed application; {}",
-                    running.evidence(&sinex, &archive)
-                );
-                let pass = engine.run_pass().unwrap();
-                assert!(
-                    pass.errors.is_empty(),
-                    "{pass:?}; {}",
-                    running.evidence(&sinex, &archive)
-                );
-                if answers(&archive).0 == expected {
-                    break;
-                }
-                commits
-                    .recv_timeout(Duration::from_secs(120).saturating_sub(imported_at.elapsed()))
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "import confirmation: {error}; {}",
-                            running.evidence(&sinex, &archive)
-                        )
-                    });
+            let pass = engine.run_pass().unwrap();
+            assert!(
+                pass.errors.is_empty(),
+                "{pass:?}; {}",
+                running.evidence(&sinex, &archive)
+            );
+            if answers(&archive).0 == expected {
+                break;
             }
-            engine
-                .writer()
-                .unwrap()
-                .user(polylogue_store::fixture::authored::operator_request(
-                    "0199d8a0-0000-7000-8000-00000000a001".into(),
-                    UserWrite::Assert {
-                        assertions: vec![NewAssertion {
-                            kind: AssertionKind::Note,
-                            key: None,
-                            value: Some(serde_json::json!("Synthetic note kept in Sinex")),
-                            links: vec![NewAssertionLink {
-                                role: LinkRole::About,
-                                reference: Reference::Session(polylogue_testkit::session(1)),
-                            }],
-                            valid_until: None,
-                        }],
-                    },
-                ))
-                .unwrap();
-            let authored_at = Instant::now();
-            loop {
-                assert!(
-                    authored_at.elapsed() < Duration::from_secs(120),
-                    "the authored note did not reach confirmed application; {}",
-                    running.evidence(&sinex, &archive)
-                );
-                if answers(&archive).1.len() == 1 {
-                    break;
-                }
-                commits
-                    .recv_timeout(Duration::from_secs(120).saturating_sub(authored_at.elapsed()))
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "note confirmation: {error}; {}",
-                            running.evidence(&sinex, &archive)
-                        )
-                    });
-            }
+            commits
+                .recv_timeout(Duration::from_secs(120).saturating_sub(imported_at.elapsed()))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "import confirmation: {error}; {}",
+                        running.evidence(&sinex, &archive)
+                    )
+                });
         }
-        phase("exports imported");
-        let on_sinex = Archive::on_sinex(&example.root, &running.config.store);
-        let (sessions, notes) = answers(&on_sinex);
-        assert_eq!(
-            sessions, expected,
-            "primary and standalone give the same answers"
-        );
-        assert_eq!(notes.len(), 1);
-        assert!(
-            !example.root.join("archive.db").exists(),
-            "primary keeps no archive.db"
-        );
-        assert!(
-            !example.root.join("blobs").exists(),
-            "primary keeps no local blobs"
-        );
-
-        // Sinex answers its own query language about the sessions.
-        assert!(
-            sinex_rows(
-                &running.socket,
-                "events where event_type = polylogue.session"
-            ) >= 8
-        );
-        assert!(
-            sinex_rows(
-                &running.socket,
-                "events where event_type = polylogue.message"
-            ) > 0
-        );
-        assert_eq!(
-            sinex_rows(
-                &running.socket,
-                "events where event_type = polylogue.assertion"
-            ),
-            1
-        );
-
-        // Delete every local file Polylogue derived (the archive directory with
-        // its index, and the producer spool), then rebuild from Sinex alone with
-        // no provider file.
-        drop(sinex);
-        fs::remove_dir_all(&example.root).unwrap();
-        fs::create_dir_all(&example.root).unwrap();
-        fs::remove_dir_all(running.config.store.join("producer-spool")).unwrap();
-        let sinex = connect(&running.config);
-        let empty = example.dir.path().join("empty-home");
-        fs::create_dir_all(&empty).unwrap();
-        build_on_sinex(&example, &empty, &sinex, &running);
-        phase("rebuilt from Sinex");
-        assert_eq!(answers(&on_sinex), (sessions, notes), "rebuilt from Sinex");
-    }));
-    if let Err(error) = outcome {
-        let retained = example.dir.keep();
-        eprintln!(
-            "failed synthetic primary fixture retained at {}",
-            retained.display()
-        );
-        std::panic::resume_unwind(error);
+        engine
+            .writer()
+            .unwrap()
+            .user(polylogue_store::fixture::authored::operator_request(
+                "0199d8a0-0000-7000-8000-00000000a001".into(),
+                UserWrite::Assert {
+                    assertions: vec![NewAssertion {
+                        kind: AssertionKind::Note,
+                        key: None,
+                        value: Some(serde_json::json!("Synthetic note kept in Sinex")),
+                        links: vec![NewAssertionLink {
+                            role: LinkRole::About,
+                            reference: Reference::Session(polylogue_testkit::session(1)),
+                        }],
+                        valid_until: None,
+                    }],
+                },
+            ))
+            .unwrap();
+        let authored_at = Instant::now();
+        loop {
+            assert!(
+                authored_at.elapsed() < Duration::from_secs(120),
+                "the authored note did not reach confirmed application; {}",
+                running.evidence(&sinex, &archive)
+            );
+            if answers(&archive).1.len() == 1 {
+                break;
+            }
+            commits
+                .recv_timeout(Duration::from_secs(120).saturating_sub(authored_at.elapsed()))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "note confirmation: {error}; {}",
+                        running.evidence(&sinex, &archive)
+                    )
+                });
+        }
     }
+    phase("exports imported");
+    let on_sinex = Archive::on_sinex(&example.root, &running.config.store);
+    let (sessions, notes) = answers(&on_sinex);
+    assert_eq!(
+        sessions, expected,
+        "primary and standalone give the same answers"
+    );
+    assert_eq!(notes.len(), 1);
+    assert!(
+        !example.root.join("archive.db").exists(),
+        "primary keeps no archive.db"
+    );
+    assert!(
+        !example.root.join("blobs").exists(),
+        "primary keeps no local blobs"
+    );
+
+    // Sinex answers its own query language about the sessions.
+    assert!(
+        sinex_rows(
+            &running.socket,
+            "events where event_type = polylogue.session"
+        ) >= 8
+    );
+    assert!(
+        sinex_rows(
+            &running.socket,
+            "events where event_type = polylogue.message"
+        ) > 0
+    );
+    assert_eq!(
+        sinex_rows(
+            &running.socket,
+            "events where event_type = polylogue.assertion"
+        ),
+        1
+    );
+
+    // Delete every local file Polylogue derived (the archive directory with
+    // its index, and the producer spool), then rebuild from Sinex alone with
+    // no provider file.
+    drop(sinex);
+    fs::remove_dir_all(&example.root).unwrap();
+    fs::create_dir_all(&example.root).unwrap();
+    fs::remove_dir_all(running.config.store.join("producer-spool")).unwrap();
+    let sinex = connect(&running.config);
+    let empty = example.dir.path().join("empty-home");
+    fs::create_dir_all(&empty).unwrap();
+    build_on_sinex(&example, &empty, &sinex, &running);
+    phase("rebuilt from Sinex");
+    assert_eq!(answers(&on_sinex), (sessions, notes), "rebuilt from Sinex");
 }
