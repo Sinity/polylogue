@@ -5267,6 +5267,25 @@
             "$ref": "#/$defs/Report"
           }
         },
+        "retractions": {
+          "description": "Refused deliveries, each dropped at its instant, in time order. An\nabsent field means none are queued.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "array",
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        },
         "rules": {
           "type": "object",
           "additionalProperties": {
@@ -10306,6 +10325,28 @@
             "report": {
               "type": "string",
               "const": "cleared"
+            }
+          },
+          "required": [
+            "report",
+            "delivery",
+            "at"
+          ]
+        },
+        {
+          "description": "A delivery the product's writer refused because its cited basis\nchanged. Every record of it is dropped, so the trigger can fire afresh.",
+          "type": "object",
+          "properties": {
+            "at": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "delivery": {
+              "type": "string"
+            },
+            "report": {
+              "type": "string",
+              "const": "retracted"
             }
           },
           "required": [
