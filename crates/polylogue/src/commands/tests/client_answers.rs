@@ -354,19 +354,18 @@ fn every_client_answers_the_same_request_identically() {
             assert_eq!(Ok(expected), http, "whole HTTP read answer");
             continue;
         }
-        let mut expected_mcp = cli.clone();
         if matches!(*name, "brief" | "takeover" | "recall")
-            && let Ok(value) = &mut expected_mcp
+            && let Ok(value) = &cli
         {
-            // MCP hands the prepared bytes to a model and records that
-            // delivery; CLI and HTTP only show the preparation to a person.
+            // Session's protocol handler runs in this test process. The
+            // daemon observes that native peer as CLI, so it does not record
+            // a model delivery. The native MCP process control is in e2e.
             assert_eq!(value["delivery"], Value::Null);
             assert_eq!(http.as_ref().unwrap()["delivery"], Value::Null);
-            assert_eq!(mcp.as_ref().unwrap()["delivery"], request_id);
-            value["delivery"] = Value::String(request_id.clone());
+            assert_eq!(mcp.as_ref().unwrap()["delivery"], Value::Null);
         }
         assert_eq!(
-            expected_mcp,
+            cli,
             mcp,
             "`{}`: the command line and MCP differ",
             argv.join(" ")

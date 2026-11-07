@@ -157,6 +157,65 @@ fn answer(
     value(surface_answer(env, archive, mcp, surface, text))
 }
 
+#[test]
+fn native_mcp_records_only_nonempty_context_deliveries() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = crate::Fixture::new(
+        &dir.path().join("archive"),
+        &dir.path().join("home"),
+        &dir.path().join("config"),
+    );
+    let _daemon = start_daemon(&env);
+    wait_status(&env, |status| status["store"]["messages"] == 0);
+    let mut mcp = Mcp::start(&env);
+    for (source, request_id, empty) in [
+        ("startup", "native-context-startup", false),
+        ("resume", "native-context-resume", true),
+    ] {
+        let cli = cli(
+            &env,
+            &[
+                "--json",
+                "--request-id",
+                request_id,
+                "brief",
+                "--cwd",
+                "/synthetic",
+                "--source",
+                source,
+            ],
+        );
+        assert!(cli.status.success(), "{cli:?}");
+        let cli: command_surface::Answer<Value> = serde_json::from_slice(&cli.stdout).unwrap();
+        let mut expected = value(cli).unwrap();
+        assert_eq!(expected["delivery"], Value::Null);
+        assert_eq!(expected["prepared"]["empty"], empty);
+        assert!(
+            expected["prepared"]["text"]
+                .as_str()
+                .unwrap()
+                .contains(request_id),
+            "{expected}",
+        );
+        let reply = mcp.request(
+            "tools/call",
+            json!({"name":"polylogue_context", "arguments":{
+                "operation":"brief",
+                "arguments":{"cwd":"/synthetic", "source":source},
+                "request_id":request_id,
+            }}),
+        );
+        assert!(reply["error"].is_null(), "{reply}");
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        let mcp: command_surface::Answer<Value> =
+            serde_json::from_value(reply["result"]["structuredContent"].clone()).unwrap();
+        if !empty {
+            expected["delivery"] = Value::String(request_id.into());
+        }
+        assert_eq!(value(mcp).unwrap(), expected, "native {source} context");
+    }
+}
+
 fn same_question(actual: &str, expected: &str) {
     let catalog = polylogue_query::catalog::catalog(&[]);
     let identity = |text: &str| {
