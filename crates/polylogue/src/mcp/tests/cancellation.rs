@@ -53,7 +53,13 @@ fn cancelled_read(disconnect: bool, name: &str) {
         let mut line = String::new();
         input.read_line(&mut line).unwrap();
         assert!(serde_json::from_str::<Value>(&line).unwrap()["result"].is_object());
-        let params = tool_call(name);
+        let mut params = tool_call(name);
+        // The caller's cancellation is the stop condition under test.
+        params["arguments"]["deadline"] = if name == "query" {
+            Value::Null
+        } else {
+            json!(60_000)
+        };
         writeln!(
             client,
             "{}",
@@ -68,11 +74,43 @@ fn cancelled_read(disconnect: bool, name: &str) {
             std::thread::yield_now();
         }
         let started = daemon.daemon.reads.checked_out_by(limit.owner) > 0;
-        if disconnect {
-            client.shutdown(Shutdown::Both).unwrap();
-        } else {
-            writeln!(client, "{}", json!({"jsonrpc":"2.0", "method":"notifications/cancelled", "params":{"requestId":2, "reason":"caller stopped"}})).unwrap();
+        let acquisition_check = format!("{:?}", limit.check());
+        let acquisition_slots = daemon.daemon.reads.checked_out();
+        let mut acquisition_reply = Vec::new();
+        if !started {
+            client
+                .set_read_timeout(Some(Duration::from_millis(1)))
+                .unwrap();
+            loop {
+                line.clear();
+                match input.read_line(&mut line) {
+                    Ok(0) => {
+                        acquisition_reply.push("MCP closed without an answer".into());
+                        break;
+                    }
+                    Ok(_) => {
+                        let answered = serde_json::from_str::<Value>(&line)
+                            .is_ok_and(|reply| reply["id"] == 2);
+                        acquisition_reply.push(line.clone());
+                        if answered {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        acquisition_reply.push(format!("MCP read: {error:?}"));
+                        break;
+                    }
+                }
+            }
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
         }
+        let stop_error = if disconnect {
+            client.shutdown(Shutdown::Both)
+        } else {
+            writeln!(client, "{}", json!({"jsonrpc":"2.0", "method":"notifications/cancelled", "params":{"requestId":2, "reason":"caller stopped"}}))
+        }.err().map(|error| error.to_string());
         let until = std::time::Instant::now() + Duration::from_secs(2);
         while (daemon.daemon.reads.checked_out_by(limit.owner) != 0
             || !limit.cancellation.is_cancelled())
@@ -86,9 +124,17 @@ fn cancelled_read(disconnect: bool, name: &str) {
         let slots = daemon.daemon.reads.checked_out();
         // Teardown must also finish when the regression retains its reader.
         lock.unlock().unwrap();
-        client.shutdown(Shutdown::Both).unwrap();
+        let _ = client.shutdown(Shutdown::Both);
         let _ = service.join().unwrap();
-        assert!(started, "MCP {name} never acquired its reader");
+        assert!(
+            started,
+            "MCP {name} never acquired its reader: request={params}, reply={acquisition_reply:?}, acquisition_check={acquisition_check}, pool_slots={acquisition_slots}, stop_error={stop_error:?}, limit={:?}",
+            limit.limit
+        );
+        assert!(
+            stop_error.is_none(),
+            "MCP {name} stop failed: {stop_error:?}"
+        );
         assert!(
             released,
             "MCP {name} retained its reader after cancellation: cancelled={cancelled}, owner_slots={owner_slots}, pool_slots={slots}, limit={:?}",
@@ -278,14 +324,14 @@ fn mcp_context_deadline_releases_blocked_read_without_a_prepared_delivery() {
 }
 
 #[test]
-fn mcp_context_cancellation_interrupts_preparation_without_explicit_deadline() {
+fn mcp_context_cancellation_interrupts_preparation_before_its_deadline() {
     for name in CONTEXT_TOOLS {
         cancelled_read(false, name);
     }
 }
 
 #[test]
-fn mcp_context_disconnect_interrupts_preparation_without_explicit_deadline() {
+fn mcp_context_disconnect_interrupts_preparation_before_its_deadline() {
     for name in CONTEXT_TOOLS {
         cancelled_read(true, name);
     }
