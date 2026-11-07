@@ -1,7 +1,8 @@
 //! Paged reads. A session, a message or a message range is read over the
 //! session item index (`session`); documents, events, authored records
 //! and query rows are read row by row, resumed by a row's order values.
-//! A read writes nothing: no run, no query object, no proof of content.
+//! Session and query pages queue their first-page run without waiting for a write.
+//! Exact request and raw run reads retain the execution before exposing its reference.
 use super::{Daemon, Failure, error};
 use crate::daemon::Request;
 use command_surface::Answer;

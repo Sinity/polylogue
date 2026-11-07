@@ -207,6 +207,31 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
     let mut r = reader();
     // Signal commits advance the archive independently of this read comparison.
     r.w.pause_signals();
+    let wait_for_runs = |expected| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let completed =
+                r.w.daemon
+                    .reads
+                    .reader()
+                    .unwrap()
+                    .query(
+                        "SELECT count(*) AS n FROM source_query_run WHERE completion IS NOT NULL",
+                        &[],
+                    )
+                    .unwrap()[0]["n"]
+                    .as_u64()
+                    .unwrap();
+            if completed == expected {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "expected {expected} completed read runs, found {completed}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
     rt().block_on(async {
         let (status, _, page) = send_html(&r, "/s/claude-code%3As1").await;
         assert_eq!(status, StatusCode::OK, "{page}");
@@ -217,6 +242,9 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
         assert!(!page.contains("<script>alert"));
         assert!(page.contains("polylogue read --request"));
         assert!(page.contains("/assets/shell.js"));
+        // A first page records its run after answering. Finish the previous
+        // reading before comparing the next reading's exact snapshot position.
+        wait_for_runs(1);
         let api_read_at = {
             r.w.daemon
                 .reads
@@ -227,6 +255,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
         };
         let api = read_page(&r, "session:claude-code:s1", &[]).await;
         assert_eq!(api.snapshot.read_at, api_read_at);
+        wait_for_runs(2);
         let socket_read_at = {
             r.w.daemon
                 .reads
