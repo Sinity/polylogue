@@ -12,6 +12,106 @@ mod live_queue;
 mod standings;
 
 #[test]
+fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_bytes() {
+    for codex in [false, true] {
+        let home = ClaudeHome::new();
+        let (path, origin, bytes, session) = if codex {
+            let path = home.home.join(".codex/sessions/rollout-delayed.jsonl");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let bytes = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"delayed\"}}\n{\"type\":\"response_item\",\"payload\":{\"id\":\"m1\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"independent payload\"}]}}\n".to_owned();
+            std::fs::write(&path, &bytes).unwrap();
+            (path, "codex", bytes, "codex:delayed")
+        } else {
+            let bytes = claude_user("u1", "delayed", "confirmed once");
+            home.append("delayed.jsonl", &bytes);
+            (
+                home.file("delayed.jsonl"),
+                "claude-code",
+                bytes,
+                "claude-code:delayed",
+            )
+        };
+        let origin = polylogue_sources::origin::by_name(origin).unwrap();
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 64 << 10);
+        engine.load().unwrap();
+        assert!(engine.track(&collect::Found {
+            path: path.clone(),
+            origin
+        }));
+        let now = FileFacts::of(&std::fs::metadata(&path).unwrap());
+        let mut plan = engine.plan(&path, now).unwrap().unwrap();
+        if codex {
+            plan.input.id = "codex:rollout:delayed".into();
+        }
+        plan.parser_deferred = true;
+        let mut job = plan.next_job();
+        let mut context = engine.sampling_context(&path, origin.name, "").unwrap();
+        context.facts = Some(now);
+        job.acquisition = Some(context);
+        let (prepared, done) = crate::pool::run(job, &engine.archive, &engine.blobs, true);
+        assert!(done.error.is_none(), "{:?}", done.error);
+        let results = engine
+            .writer
+            .sender()
+            .unwrap()
+            .store_group(vec![prepared.unwrap()], Arc::clone(&engine.blobs))
+            .unwrap();
+        assert!(results.into_iter().all(|result| result.is_ok()));
+        // Confirmation arrives after the initial load, without finishing a
+        // logical plan. A rollout may not have been tracked at all yet.
+        if codex {
+            engine.inputs.remove(&path);
+        }
+        assert!(
+            engine
+                .inputs
+                .get(&path)
+                .is_none_or(|state| state.chain.is_none())
+        );
+        engine.refresh_confirmed_input(&path).unwrap();
+        assert_eq!(engine.inputs[&path].stored, bytes.len() as u64);
+        let parse = engine.stored_plan(&path).unwrap().unwrap();
+        assert_eq!(parse.input.id, plan.input.id);
+        std::fs::remove_file(&path).unwrap();
+        let mut pass = Pass::default();
+        engine.execute_pool(vec![parse], &mut pass).unwrap();
+        assert!(pass.errors.is_empty(), "{pass:?}");
+        assert_eq!(pass.bytes_read, bytes.len() as u64);
+        assert_eq!(pass.bytes_stored, 0);
+        let session = polylogue_model::SessionId::parse(session).unwrap();
+        let messages = engine
+            .reads
+            .reader()
+            .unwrap()
+            .messages(&session, false)
+            .unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].text(),
+            if codex {
+                "independent payload"
+            } else {
+                "confirmed once"
+            }
+        );
+        let state = engine.inputs.get_mut(&path).unwrap();
+        state.parser_state = Some(serde_json::json!({"continuation":"unchanged"}));
+        engine.refresh_confirmed_input(&path).unwrap();
+        assert_eq!(
+            engine.inputs[&path].parser_state,
+            Some(serde_json::json!({"continuation":"unchanged"}))
+        );
+        assert!(engine.stored_plan(&path).unwrap().is_none());
+        engine.inputs.get_mut(&path).unwrap().parsed_upto = 0;
+        engine.refresh_confirmed_input(&path).unwrap();
+        assert!(engine.inputs[&path].parser_state.is_none());
+        assert_eq!(engine.inputs[&path].parsed_upto, bytes.len() as u64);
+        assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 1);
+        assert_eq!(home.count("SELECT count(*) AS n FROM a.extent"), 1);
+    }
+}
+
+#[test]
 fn extent_checkpoint_survives_a_rewrite_read_failure_before_same_inode_growth() {
     failed_rewrite_then_growth(false);
 }

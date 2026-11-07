@@ -417,6 +417,88 @@ impl Engine {
         Ok(plans)
     }
 
+    /// Reconcile the sampler with confirmed application after a pending capture.
+    /// Private raw custody never supplies these logical source coordinates.
+    pub(crate) fn refresh_confirmed_input(&mut self, path: &Path) -> Result<(), EngineError> {
+        let Some(known) = self
+            .reads
+            .reader()?
+            .known_watched_input_at(&self.config.machine, path.as_os_str().as_encoded_bytes())?
+        else {
+            if let Some(state) = self.inputs.get_mut(path)
+                && (state.facts.is_some() || state.chain.is_some() || state.stored != 0)
+            {
+                state.facts = None;
+                state.chain = None;
+                state.stored = 0;
+                state.parsed_upto = 0;
+                state.parsed = false;
+                state.waiting = false;
+                state.parser_state = None;
+                state.tail = None;
+                state.unread = None;
+            }
+            return Ok(());
+        };
+        let Some(origin) = ORIGINS.iter().find(|origin| origin.name == known.format) else {
+            return Ok(());
+        };
+        if let Some(state) = self.inputs.get_mut(path) {
+            let same_cursor = state.input_id == known.input_id
+                && state.origin.name == known.format
+                && state.chain == known.chain
+                && state.parsed_upto == known.parsed_upto
+                && state.parsed == known.parsed
+                && state.waiting == known.waiting;
+            if !same_cursor {
+                state.parser_state = None;
+            }
+            if state.input_id != known.input_id
+                || state.chain != known.chain
+                || state.stored != known.stored
+            {
+                state.tail = None;
+            }
+            if state.facts != known.facts || !same_cursor {
+                state.unread = None;
+            }
+            if state.input_id != known.input_id
+                || state.working.as_ref().is_some_and(|working| {
+                    working.facts == known.facts && working.stored <= known.stored
+                })
+            {
+                state.working = None;
+            }
+            state.input_id = known.input_id;
+            state.origin = origin;
+            state.facts = known.facts;
+            state.chain = known.chain;
+            state.stored = known.stored;
+            state.parsed_upto = known.parsed_upto;
+            state.parsed = known.parsed;
+            state.waiting = known.waiting;
+        } else {
+            self.inputs.insert(
+                path.to_path_buf(),
+                InputState {
+                    input_id: known.input_id,
+                    origin,
+                    facts: known.facts,
+                    stored: known.stored,
+                    parsed_upto: known.parsed_upto,
+                    parsed: known.parsed,
+                    waiting: known.waiting,
+                    parser_state: None,
+                    tail: None,
+                    chain: known.chain,
+                    unread: None,
+                    working: None,
+                },
+            );
+        }
+        Ok(())
+    }
+
     /// Starts tracking a found path its origin recognizes; false when it
     /// does not.
     fn track(&mut self, f: &collect::Found) -> bool {
@@ -572,6 +654,9 @@ impl Engine {
 
     /// Decides what to read for one tracked path.
     fn plan(&mut self, path: &Path, now: FileFacts) -> Result<Option<Plan>, EngineError> {
+        if self.archive.is_primary() {
+            self.refresh_confirmed_input(path)?;
+        }
         let origin = self.inputs[path].origin;
         let source = self
             .acquisition_context(
@@ -871,6 +956,9 @@ impl Engine {
     /// The plan for a watched location whose current chain the index is
     /// behind while its file is gone, moved or unchanged.
     pub(crate) fn stored_plan(&mut self, path: &Path) -> Result<Option<Plan>, EngineError> {
+        if self.archive.is_primary() {
+            self.refresh_confirmed_input(path)?;
+        }
         let Some(st) = self.inputs.get(path) else {
             return Ok(None);
         };

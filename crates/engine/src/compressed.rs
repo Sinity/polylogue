@@ -75,6 +75,9 @@ impl Engine {
         pass: &mut Pass,
     ) -> Result<Option<Plan>, EngineError> {
         let path = &found.path;
+        if self.archive.is_primary() {
+            self.refresh_confirmed_input(path)?;
+        }
         let origin = polylogue_sources::origin::by_name("codex").expect("declared origin");
         let compressed = found.origin.name == "codex-compressed";
         let mut context = self.acquisition_context(
