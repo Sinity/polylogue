@@ -98,6 +98,7 @@ let
           pkgs.dbus
           pkgs.nodejs_22
           pkgs.sqlite
+          (lib.getBin pkgs.util-linux)
         ];
         SHELL = pkgs.runtimeShell;
         TZDIR = "${pkgs.tzdata}/share/zoneinfo";
