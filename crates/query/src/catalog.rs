@@ -6,25 +6,31 @@ pub const MEASURE: &str = "measure";
 
 fn field(value: &fields::Field, name: String) -> Field {
     use fields::Kind;
+    let target = fields::reference_target(value.unit, value.name);
+    let kind = if value.value_kind == Some(crate::ColKind::Ids) {
+        FieldKind::List(Box::new(FieldKind::Reference))
+    } else if target.is_some() && value.column_kind() == crate::ColKind::Text {
+        FieldKind::Reference
+    } else if value.unit == Unit::Sessions && value.name == "cwd" {
+        FieldKind::Subtree
+    } else {
+        match value.kind {
+            Kind::Match | Kind::Special => FieldKind::Exact,
+            Kind::Prefix => FieldKind::Reference,
+            Kind::Substring => FieldKind::Substring,
+            Kind::Subtree => FieldKind::Subtree,
+            Kind::Number => FieldKind::Number,
+            Kind::Money => FieldKind::Money,
+            Kind::Duration => FieldKind::Duration,
+            Kind::Time => FieldKind::Time,
+            Kind::Bool => FieldKind::Bool,
+        }
+    };
+    let reference = matches!(kind, FieldKind::Reference)
+        || matches!(&kind, FieldKind::List(element) if **element == FieldKind::Reference);
     Field {
         name,
-        kind: if value.value_kind == Some(crate::ColKind::Ids) {
-            FieldKind::List(Box::new(FieldKind::Reference))
-        } else if value.unit == Unit::Sessions && value.name == "cwd" {
-            FieldKind::Subtree
-        } else {
-            match value.kind {
-                Kind::Match | Kind::Special => FieldKind::Exact,
-                Kind::Prefix => FieldKind::Reference,
-                Kind::Substring => FieldKind::Substring,
-                Kind::Subtree => FieldKind::Subtree,
-                Kind::Number => FieldKind::Number,
-                Kind::Money => FieldKind::Money,
-                Kind::Duration => FieldKind::Duration,
-                Kind::Time => FieldKind::Time,
-                Kind::Bool => FieldKind::Bool,
-            }
-        },
+        kind,
         values: value
             .values
             .into_iter()
@@ -36,7 +42,11 @@ fn field(value: &fields::Field, name: String) -> Field {
             .map_or(UnknownRule::Unknown, |v| UnknownRule::Word(v.into())),
         help: value.help.into(),
         read_as: value.help.into(),
-        unit: Some(value.unit.name().into()),
+        unit: if reference {
+            target.map(|unit| unit.name().into())
+        } else {
+            Some(value.unit.name().into())
+        },
     }
 }
 
@@ -71,13 +81,16 @@ pub fn catalog(origins: &[String]) -> Catalog {
                 .map(|f| field(f, f.name.into()))
                 .collect();
             if fields::has_session(unit) {
-                declarations.push(Field {
-                    name: "session".into(),
-                    kind: FieldKind::Reference,
-                    unit: Some("sessions".into()),
-                    help: "The session containing this row".into(),
-                    ..Field::default()
-                });
+                if !declarations.iter().any(|field| field.name == "session") {
+                    declarations.push(Field {
+                        name: "session".into(),
+                        kind: FieldKind::Reference,
+                        unit: fields::reference_target(unit, "session")
+                            .map(|unit| unit.name().into()),
+                        help: "The session containing this row".into(),
+                        ..Field::default()
+                    });
+                }
                 for f in fields::FIELDS.iter().filter(|f| f.unit == Unit::Sessions) {
                     if !declarations.iter().any(|d| d.name == f.name) {
                         declarations.push(field(f, f.name.into()));

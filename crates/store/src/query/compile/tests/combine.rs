@@ -307,3 +307,101 @@ fn compatible_projected_sets_keep_plain_text_and_matching_reference_metadata() {
     );
     assert_eq!(schema.fields[0].unit.as_deref(), Some("messages"));
 }
+
+fn mixed_duration_archive() -> crate::fixture::writer::WriterArchive {
+    use crate::fixture::writer::{WriterArchive, bash};
+    let mut archive = WriterArchive::new();
+    let mut messages = bash("mixed-duration", 1, 1_000, "first", true, "first result");
+    let mut last = bash("mixed-duration", 2, 4_000, "last", true, "last result");
+    last[1].at = polylogue_model::Timestamp::from_unix_ms(6_500);
+    for block in &mut last[1].blocks {
+        if let polylogue_model::Block::ToolResult {
+            reported_duration_ms,
+            ..
+        } = block
+        {
+            *reported_duration_ms = Some(2_500);
+        }
+    }
+    messages.extend(last);
+    archive.write("mixed-duration", messages);
+    archive
+}
+
+#[test]
+fn compatible_duration_operands_normalize_real_values_in_both_directions() {
+    let archive = mixed_duration_archive();
+    let reads = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = reads.reader().unwrap();
+    let reported = "tool_calls where command:last | fields reported_duration as d";
+    let distance = "tool_calls where command:first AND before(tool_calls where command:last) within 5s | fields match.distance as d";
+    for (left, right, kind, expected) in [
+        (reported, distance, ColKind::Duration, [2_500.0, 3_000.0]),
+        (distance, reported, ColKind::DurationSeconds, [2.5, 3.0]),
+    ] {
+        let text = format!("{left} | union ({right}) | sort by d");
+        let plan = polylogue_query::compile(&text, &opts(&[])).unwrap();
+        let program = lower(&plan, &opts(&[])).unwrap();
+        assert_eq!(program.columns[0].kind, kind);
+        let schema = plan.output_schema_for_columns(&program.columns).unwrap();
+        assert_eq!(
+            schema.fields[0].kind,
+            query_language::catalog::FieldKind::Duration
+        );
+        let rows = read(&reader, &text);
+        assert_eq!(rows.len(), 2, "{text}: {rows:?}");
+        assert_eq!(
+            rows.iter()
+                .map(|row| row["d"].as_f64().unwrap())
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn union_members_without_an_optional_witness_keep_unknown_values_and_provenance() {
+    let archive = mixed_duration_archive();
+    let reads = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = reads.reader().unwrap();
+    let witnessed =
+        "tool_calls where command:first AND before(tool_calls where command:last) within 5s";
+    let plain = "tool_calls where command:last";
+    let text = format!(
+        "{witnessed} | union ({plain}) | sort by command | fields command,match.command,match.message.id"
+    );
+    assert_eq!(
+        read(&reader, &text),
+        [
+            json!({"command":"first", "match.command":"last", "match.message.id":"claude-code:mixed-duration-c2"}),
+            json!({"command":"last", "match.command":null, "match.message.id":null}),
+        ]
+    );
+    let unknown =
+        format!("{witnessed} | union ({plain}) | where match.command:unknown | fields command");
+    assert_eq!(read(&reader, &unknown), [json!({"command":"last"})]);
+}
+
+#[test]
+fn equivalent_message_targets_bind_and_keep_their_reference_metadata() {
+    let archive = mixed_duration_archive();
+    let reads = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = reads.reader().unwrap();
+    let text = "tool_calls | fields message as ref | union (tool_calls | fields message.id as ref) | fields ref";
+    let plan = polylogue_query::compile(text, &opts(&[])).unwrap();
+    let program = lower(&plan, &opts(&[])).unwrap();
+    assert_eq!(program.columns[0].reference, Some(ColumnReference::Message));
+    let schema = plan.output_schema_for_columns(&program.columns).unwrap();
+    assert_eq!(
+        schema.fields[0].kind,
+        query_language::catalog::FieldKind::Reference
+    );
+    assert_eq!(schema.fields[0].unit.as_deref(), Some("messages"));
+    assert_eq!(
+        read(&reader, text),
+        [
+            json!({"ref":"claude-code:mixed-duration-c1"}),
+            json!({"ref":"claude-code:mixed-duration-c2"}),
+        ]
+    );
+}

@@ -470,3 +470,132 @@ fn match_parent_text_alias_keeps_explicit_absence_of_reference_metadata() {
     );
     assert_eq!(schema.fields[0].unit, None);
 }
+
+#[test]
+fn reference_targets_agree_between_catalog_native_columns_and_projections() {
+    use query_language::catalog::FieldKind;
+    let options = opts(&[]);
+    let catalog = options.catalog();
+    for (unit, name, reference, default_column) in [
+        ("sessions", "id", ColumnReference::Session, true),
+        ("documents", "id", ColumnReference::Document, true),
+        ("messages", "id", ColumnReference::Message, true),
+        ("messages", "session", ColumnReference::Session, true),
+        ("blocks", "message", ColumnReference::Message, true),
+        ("blocks", "session", ColumnReference::Session, true),
+        ("tool_calls", "message", ColumnReference::Message, true),
+        ("tool_calls", "session", ColumnReference::Session, true),
+        ("events", "session", ColumnReference::Session, true),
+        ("files", "session", ColumnReference::Session, true),
+        ("links", "parent", ColumnReference::Session, true),
+        ("links", "child", ColumnReference::Session, true),
+        ("links", "branch_point", ColumnReference::Message, false),
+        ("assertions", "reference", ColumnReference::Assertion, true),
+        ("turns", "id", ColumnReference::Message, true),
+        ("turns", "answer", ColumnReference::Message, true),
+        ("turns", "session", ColumnReference::Session, true),
+        ("deliveries", "recipient", ColumnReference::Session, true),
+        ("deliveries", "session", ColumnReference::Session, false),
+        ("live_intervals", "session", ColumnReference::Session, true),
+        ("processes", "session", ColumnReference::Session, true),
+    ] {
+        let field = catalog.field(unit, name).unwrap();
+        assert_eq!(field.kind, FieldKind::Reference, "{unit}.{name}");
+        assert_eq!(
+            field.unit.as_deref(),
+            Some(reference.unit()),
+            "{unit}.{name}"
+        );
+        let native = compile(unit, &options).unwrap();
+        let emitted = native.columns.iter().find(|column| column.name == name);
+        assert_eq!(emitted.is_some(), default_column, "{unit}.{name}");
+        if let Some(column) = emitted {
+            assert_eq!(column.reference, Some(reference), "{unit}.{name}");
+        }
+        let text = format!("{unit} | fields {name}");
+        let plan = polylogue_query::compile(&text, &options).unwrap();
+        let program = lower(&plan, &options).unwrap();
+        assert_eq!(program.columns[0].reference, Some(reference), "{text}");
+        let schema = plan.output_schema_for_columns(&program.columns).unwrap();
+        assert_eq!(schema.fields[0].kind, FieldKind::Reference, "{text}");
+        assert_eq!(
+            schema.fields[0].unit.as_deref(),
+            Some(reference.unit()),
+            "{text}"
+        );
+    }
+    for unit in ["live_intervals", "processes"] {
+        assert_eq!(
+            catalog
+                .unit(unit)
+                .unwrap()
+                .fields
+                .iter()
+                .filter(|field| field.name == "session")
+                .count(),
+            1
+        );
+    }
+    let matches = compile("sessions where exists tool_call() | matches", &options).unwrap();
+    for name in ["parent", "step"] {
+        assert_eq!(
+            matches
+                .columns
+                .iter()
+                .find(|column| column.name == name)
+                .unwrap()
+                .reference,
+            None
+        );
+    }
+    for (name, reference) in [
+        ("step.message", ColumnReference::Message),
+        ("step.session", ColumnReference::Session),
+    ] {
+        assert_eq!(
+            matches
+                .columns
+                .iter()
+                .find(|column| column.name == name)
+                .unwrap()
+                .reference,
+            Some(reference)
+        );
+    }
+}
+
+#[test]
+fn reference_containers_and_unconstrained_ids_keep_their_physical_shapes() {
+    use query_language::catalog::FieldKind;
+    let options = opts(&[]);
+    let catalog = options.catalog();
+    for (name, target) in [("sessions", "sessions"), ("messages", "messages")] {
+        let field = catalog.field("changes", name).unwrap();
+        assert_eq!(field.kind, FieldKind::List(Box::new(FieldKind::Reference)));
+        assert_eq!(field.unit.as_deref(), Some(target));
+        let declaration = polylogue_query::fields::lookup(Unit::Changes, name).unwrap();
+        assert_eq!(declaration.column_kind(), ColKind::Ids);
+        assert_eq!(
+            polylogue_query::fields::column_reference(Unit::Changes, name),
+            None
+        );
+    }
+    for (unit, name) in [
+        (Unit::Assertions, "id"),
+        (Unit::Assertions, "root"),
+        (Unit::Processes, "tool_call"),
+        (Unit::Changes, "ref"),
+    ] {
+        assert_eq!(polylogue_query::fields::reference_target(unit, name), None);
+        assert_eq!(polylogue_query::fields::column_reference(unit, name), None);
+        assert_eq!(catalog.field(unit.name(), name).unwrap().unit, None);
+    }
+    let turns = compile("turns", &options).unwrap();
+    let prompts = turns
+        .columns
+        .iter()
+        .find(|column| column.name == "prompts")
+        .unwrap();
+    assert_eq!(prompts.kind, ColKind::Text);
+    assert_eq!(prompts.reference, None);
+}

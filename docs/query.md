@@ -42,7 +42,7 @@ A reference names exactly one thing and drops the reachability defaults (subagen
 
 Raw tool-call failures are queryable as recorded outcomes: `tool_calls where outcome:error`. These rows report tool results without classifying a command as a verification check.
 
-Each unit declares, once, its rows, key and identity, default filters, default order, search behaviour and relations (`session.`, `message.`, `call.`, `child.`, `next.`, `parent.`, `recipient.`). Each field declares its kind (match, substring, words, subtree, number, money, time, duration, bool, ref), its closed value set taken from the model's stored names, its unknown word, a one-line help and the phrase `read_as` uses. The full listing will be rendered into [planned reference/query-units.md](reference/README.md#planned-pages).
+Each unit declares, once, its rows, key and identity, default filters, default order, search behaviour and relations (`session.`, `message.`, `call.`, `child.`, `next.`, `parent.`, `recipient.`). Each field declares its kind (match, substring, words, subtree, number, money, time, duration, bool, ref), its closed value set taken from the model's stored names, its unknown word, a one-line help and the phrase `read_as` uses. The full listing will be rendered into [planned reference/query-units.md](reference/README.md#planned-pages). Entity-reference fields declare their target independently of their storage unit. A raw provider ID or mixed-reference value has no fixed entity target. An ID list retains its list shape and declares only its members' target.
 
 | Unit | Rows |
 |---|---|
@@ -138,8 +138,8 @@ Stages apply in the order written:
 ### Combining queries
 
 - `Q | union (R)`, `| intersect (R)` and `| except (R)` combine two queries of the same unit; `| fuse (R)` adds R's order as one more ranking without adding rows.
-- A chain containing `| fuse` or a ranked operand is one reciprocal-rank fusion over all original operands ([search.md](search.md#fusion)); an unranked operand contributes its captured order. A fuse operand's ranks are taken over its full input before membership restriction. Values come from the first membership operand that supplies a row; `found_in` names the membership lists that ranked it. Ordinary unranked unions remove duplicate identities and order by identity. `intersect` and `except` keep the left order.
-- Grains must match; a mismatch is `invalid_query` suggesting the explicit lift (`| sessions`). Combining applies before a terminal aggregate.
+- A chain containing `| fuse` or a ranked operand is one reciprocal-rank fusion over all original operands ([search.md](search.md#fusion)); an unranked operand contributes its captured order. A fuse operand's ranks are taken over its full input before membership restriction. Values come from the first membership operand that supplies a row; compatible physical representations are converted to the output column's units. A member without an optional witness keeps unknown witness values and coordinates. `found_in` names the membership lists that ranked it. Ordinary unranked unions remove duplicate identities and order by identity. `intersect` and `except` keep the left order.
+- Grains must match; a mismatch is `invalid_query` suggesting the explicit lift (`| sessions`). Projected set operands require compatible semantic declarations, including reference targets; a reference and `text(reference)` need the same explicit projection on both sides. Combining applies before a terminal aggregate.
 
 ## Query objects
 

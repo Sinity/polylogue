@@ -20,7 +20,7 @@ impl<'a> Compiler<'a> {
     pub(super) fn field_reference(field: &str, scope: &RowContext) -> Option<ColumnReference> {
         let lower = field.to_ascii_lowercase();
         if lower == "session" && fields::has_session(scope.unit) {
-            return Some(ColumnReference::Session);
+            return polylogue_query::fields::column_reference(scope.unit, &lower);
         }
         if let Some((prefix, rest)) = lower.split_once('.')
             && let Some(rel) = units::spec(scope.unit).relation(prefix)
@@ -38,8 +38,8 @@ impl<'a> Compiler<'a> {
                     .then(|| fields::lookup(Unit::Sessions, &lower))
                     .flatten()
             })
-            .and_then(|def| def.sql)
-            .and_then(|e| e.reference())
+            .filter(|def| def.sql.is_some())
+            .and_then(|def| def.reference())
     }
 
     /// The same typed selector supplies query lowering and native facets.

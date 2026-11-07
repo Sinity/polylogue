@@ -11,7 +11,7 @@
 //! aliases with an `n` prefix (`{ns}`, `{nt}`, `{nr}`, …), its FROM clause as
 //! `{from}` and the condition on it as `{cond}`.
 
-use crate::query::compile::{ColKind, ColumnReference};
+use crate::query::compile::ColKind;
 use crate::query::fields::{self, Aliases, Expr};
 use polylogue_model::SessionKind;
 pub use polylogue_query::units::Unit;
@@ -390,11 +390,7 @@ pub static UNITS: &[UnitSpec] = &[
         key: "{s}.pk",
         identity: &["{s}.id"],
         columns: &[
-            (
-                "id",
-                Expr::Reference("{s}.id", ColumnReference::Session),
-                Text,
-            ),
+            ("id", Expr::Template("{s}.id"), Text),
             ("origin", T("{s}.origin"), Text),
             ("kind", T("{s}.kind"), Text),
             ("title", T("COALESCE({s}.title, {s}.derived_title)"), Text),
@@ -435,11 +431,7 @@ pub static UNITS: &[UnitSpec] = &[
         key: "{r}.pk",
         identity: &["{r}.id"],
         columns: &[
-            (
-                "id",
-                Expr::Reference("{r}.id", ColumnReference::Document),
-                Text,
-            ),
+            ("id", Expr::Template("{r}.id"), Text),
             ("origin", T("{r}.origin"), Text),
             ("purpose", T("{r}.purpose"), Text),
             ("title", T("{r}.title"), Text),
@@ -470,16 +462,8 @@ pub static UNITS: &[UnitSpec] = &[
         key: "{m}.pk",
         identity: &["{m}.id"],
         columns: &[
-            (
-                "id",
-                Expr::Reference("{m}.id", ColumnReference::Message),
-                Text,
-            ),
-            (
-                "session",
-                Expr::Reference("{s}.id", ColumnReference::Session),
-                Text,
-            ),
+            ("id", Expr::Template("{m}.id"), Text),
+            ("session", Expr::Template("{s}.id"), Text),
             ("role", T("{m}.role"), Text),
             ("written_by", T("{m}.written_by"), Text),
             ("at", T("{m}.at"), Time),
@@ -511,11 +495,7 @@ pub static UNITS: &[UnitSpec] = &[
         key: "{b}.pk",
         identity: &["{m}.id", "{b}.idx"],
         columns: &[
-            (
-                "session",
-                Expr::Reference("{s}.id", ColumnReference::Session),
-                Text,
-            ),
+            ("session", Expr::Template("{s}.id"), Text),
             ("message", T("{m}.id"), Text),
             ("kind", T("{b}.kind"), Text),
             ("idx", T("{b}.idx"), Number),
@@ -559,11 +539,7 @@ pub static UNITS: &[UnitSpec] = &[
         key: "{t}.pk",
         identity: &["{m}.id", "{cb}.idx"],
         columns: &[
-            (
-                "session",
-                Expr::Reference("{s}.id", ColumnReference::Session),
-                Text,
-            ),
+            ("session", Expr::Template("{s}.id"), Text),
             ("message", T("{m}.id"), Text),
             ("tool", T("{t}.tool"), Text),
             ("action", T("{t}.action"), Text),
@@ -646,11 +622,7 @@ pub static UNITS: &[UnitSpec] = &[
         key: "{r}.pk",
         identity: &["{s}.id", "{r}.path"],
         columns: &[
-            (
-                "session",
-                Expr::Reference("{s}.id", ColumnReference::Session),
-                Text,
-            ),
+            ("session", Expr::Template("{s}.id"), Text),
             ("path", T("{r}.path"), Text),
             ("reads", T("{r}.reads"), Number),
             ("writes", T("{r}.writes"), Number),
@@ -682,11 +654,7 @@ pub static UNITS: &[UnitSpec] = &[
         identity: &["{r}.id"],
         columns: &[
             ("id", T("{r}.id"), Text),
-            (
-                "session",
-                Expr::Reference("{s}.id", ColumnReference::Session),
-                Text,
-            ),
+            ("session", Expr::Template("{s}.id"), Text),
             ("input", T("{r}i.id"), Text),
             ("source", T("{r}i.format"), Text),
             ("kind", T("{r}.kind"), Text),
@@ -771,10 +739,7 @@ pub static UNITS: &[UnitSpec] = &[
             ("id", T("{r}.id"), Text),
             (
                 "reference",
-                Expr::Reference(
-                    "pl_assertion_ref({r}.root,{r}.id)",
-                    ColumnReference::Assertion,
-                ),
+                Expr::Template("pl_assertion_ref({r}.root,{r}.id)"),
                 Text,
             ),
             ("kind", T("{r}.kind"), Text),
@@ -844,16 +809,8 @@ pub static UNITS: &[UnitSpec] = &[
         key: "{r}.pk",
         identity: &["{r}.parent_id", "{r}.child_id", "{r}.kind", "{r}.how"],
         columns: &[
-            (
-                "parent",
-                Expr::Reference("{r}.parent_id", ColumnReference::Session),
-                Text,
-            ),
-            (
-                "child",
-                Expr::Reference("{r}.child_id", ColumnReference::Session),
-                Text,
-            ),
+            ("parent", Expr::Template("{r}.parent_id"), Text),
+            ("child", Expr::Template("{r}.child_id"), Text),
             ("kind", T("{r}.kind"), Text),
             ("how", T("{r}.how"), Text),
             ("evidence", T("{r}.evidence"), Text),
@@ -884,11 +841,7 @@ pub static UNITS: &[UnitSpec] = &[
         identity: &["{r}.id"],
         columns: &[
             ("id", T("{r}.id"), Text),
-            (
-                "session",
-                Expr::Reference("{s}.id", ColumnReference::Session),
-                Text,
-            ),
+            ("session", Expr::Template("{s}.id"), Text),
             ("start", T("{r}.start"), Time),
             ("end", T("{r}.end"), Time),
             ("burst", T("{r}.burst"), Number),
@@ -963,11 +916,7 @@ pub static UNITS: &[UnitSpec] = &[
         key: "{r}.rowid",
         identity: &["{s}.id", "{r}.aspect", "{r}.start_at"],
         columns: &[
-            (
-                "session",
-                Expr::Reference("{s}.id", ColumnReference::Session),
-                Text,
-            ),
+            ("session", Expr::Template("{s}.id"), Text),
             ("aspect", T("{r}.aspect"), Text),
             ("value", T("{r}.value"), Text),
             ("start", T("{r}.start_at"), Time),
@@ -996,11 +945,7 @@ pub static UNITS: &[UnitSpec] = &[
         key: "{r}.rowid",
         identity: &["{s}.id", "{r}.boot_id", "{r}.pid", "{r}.start"],
         columns: &[
-            (
-                "session",
-                Expr::Reference("{s}.id", ColumnReference::Session),
-                Text,
-            ),
+            ("session", Expr::Template("{s}.id"), Text),
             ("boot_id", T("{r}.boot_id"), Text),
             ("pid", T("{r}.pid"), Number),
             ("start", T("{r}.start"), Number),

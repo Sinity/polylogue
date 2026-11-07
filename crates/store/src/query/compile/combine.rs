@@ -224,7 +224,7 @@ impl<'a> Compiler<'a> {
         let mut projections = Vec::new();
         let mut slots = Vec::new();
         for (index, program) in members.iter().enumerate() {
-            let columns = aligned_columns(relation, program, ranked)?;
+            let columns = aligned_columns(self, relation, program, ranked)?;
             slots = columns.keys().cloned().collect();
             projections.push(format!(
                 "SELECT {}, {index} AS {source_list} FROM ({}) r",
@@ -403,6 +403,7 @@ fn other_list(other: &Program, within: Option<&str>, list: usize) -> String {
 /// Align actual operand values and private native coordinates, never aliases
 /// fetched afresh from the current native tables.
 fn aligned_columns(
+    compiler: &mut Compiler<'_>,
     relation: &relations::Relation,
     input: &Program,
     ranked: bool,
@@ -424,16 +425,19 @@ fn aligned_columns(
             columns.insert(output.clone(), format!("r.{}", column_sql(source)));
         }
     }
-    let input_sources = relations::Relation::new(input.clone()).sources;
+    let input_relation = relations::Relation::new(input.clone());
     for source in &relation.sources {
-        let input_source = input_sources
+        let input_source = input_relation
+            .sources
             .iter()
-            .find(|candidate| candidate.prefix == source.prefix && candidate.unit == source.unit)
-            .ok_or_else(|| not_built("combining different native source coordinates"))?;
-        columns.insert(
-            source.key.clone(),
-            format!("r.{}", column_sql(&input_source.key)),
-        );
+            .find(|candidate| candidate.prefix == source.prefix && candidate.unit == source.unit);
+        let value = match input_source {
+            Some(input_source) => format!("r.{}", column_sql(&input_source.key)),
+            // An operand without this optional witness has no witness provenance.
+            None if source.prefix.starts_with("match.") => "NULL".into(),
+            None => return Err(not_built("combining different native source coordinates")),
+        };
+        columns.insert(source.key.clone(), value);
     }
     columns.insert("_near".into(), "r._near".into());
     columns.insert("_recency".into(), "r._recency".into());
@@ -445,20 +449,38 @@ fn aligned_columns(
         if ranked && matches!(column.name.as_str(), "rank" | "found_in") {
             continue;
         }
-        if !input
+        let input_column = input
             .columns
             .iter()
-            .any(|candidate| candidate.name == column.name)
-        {
+            .find(|candidate| candidate.name == column.name);
+        let Some(input_column) = input_column else {
+            if relation.open_fields
+                && input_relation.open_fields
+                && column.name.starts_with("match.")
+            {
+                // The shared scope permits this witness namespace on native
+                // rows. RHS-only members without a witness retain unknowns.
+                columns.insert(
+                    relation.program.column_slot(&column.name).to_owned(),
+                    "NULL".into(),
+                );
+                continue;
+            }
             return Err(QueryError::Invalid {
                 message: format!("combined output has no column {:?}", column.name),
                 position: 0,
             });
-        }
-        let mut value = format!("r.{}", column_sql(input.column_slot(&column.name)));
-        if input.time_text_columns.contains(&column.name) {
-            value = format!("pl_kept_time({value})");
-        }
+        };
+        let value = if input_column.kind == column.kind
+            && !input.time_text_columns.contains(&column.name)
+        {
+            format!("r.{}", column_sql(input.column_slot(&column.name)))
+        } else {
+            // The bound declarations already agree. Normalize a captured
+            // physical representation before displaying it in the output unit.
+            let (value, _) = input_relation.field_on(compiler, &column.name, 0, "r")?;
+            Compiler::display_value(&value, column.kind)
+        };
         columns.insert(relation.program.column_slot(&column.name).to_owned(), value);
     }
     Ok(columns)

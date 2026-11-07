@@ -390,7 +390,7 @@ impl RowContext {
 /// `WITH RECURSIVE`.
 struct MatchRel {
     sql: String,
-    columns: Vec<(String, ColKind)>,
+    columns: Vec<Column>,
     order: Vec<OrderKey>,
     recursive: bool,
 }
@@ -672,7 +672,18 @@ fn row_columns(unit: Unit, a: &Aliases, now: i64) -> (String, Vec<RowColumn>) {
     let cols = spec
         .columns
         .iter()
-        .map(|(name, e, k)| ((*name).to_owned(), e.render(a, now), *k, e.reference()))
+        .map(|(name, e, k)| {
+            (
+                (*name).to_owned(),
+                e.render(a, now),
+                *k,
+                if *k == ColKind::Text {
+                    polylogue_query::fields::column_reference(unit, name)
+                } else {
+                    None
+                },
+            )
+        })
         .collect();
     (a.expand(spec.key), cols)
 }

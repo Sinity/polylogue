@@ -191,13 +191,21 @@ impl<'a> Compiler<'a> {
         if catalog.field(unit.name(), "position").is_some() {
             let (position, kind) = self.expr("position", &child, span.start)?;
             select.push(format!("{position} AS {}", column_sql("step.position")));
-            columns.push(("step.position".into(), kind));
+            columns.push(Column {
+                name: "step.position".into(),
+                kind,
+                reference: None,
+            });
         }
-        for (name, expression, kind, _) in child_cols {
+        for (name, expression, kind, reference) in child_cols {
             if catalog.field(unit.name(), &name).is_some() {
                 let name = format!("step.{name}");
                 select.push(format!("{expression} AS {}", column_sql(&name)));
-                columns.push((name, kind));
+                columns.push(Column {
+                    name,
+                    kind,
+                    reference,
+                });
             }
         }
         let (hidden, order) = hidden_order(&[parent_order, child_order].concat(), "_m");
@@ -362,12 +370,20 @@ impl<'a> Compiler<'a> {
             format!("{} AS step", row_reference(&child)?),
         ];
         let mut columns = match_columns();
-        columns.push(("step.position".into(), ColKind::Number));
-        for (name, expression, kind, _) in child_cols {
+        columns.push(Column {
+            name: "step.position".into(),
+            kind: ColKind::Number,
+            reference: None,
+        });
+        for (name, expression, kind, reference) in child_cols {
             if catalog.field(child.unit.name(), &name).is_some() {
                 let name = format!("step.{name}");
                 select.push(format!("{expression} AS {}", column_sql(&name)));
-                columns.push((name, kind));
+                columns.push(Column {
+                    name,
+                    kind,
+                    reference,
+                });
             }
         }
         // A recursive prefix is exposed only after its final step exists.
@@ -393,12 +409,30 @@ impl<'a> Compiler<'a> {
     }
 }
 
-fn match_columns() -> Vec<(String, ColKind)> {
+fn match_columns() -> Vec<Column> {
+    // These reference values already carry their natural prefixes. Their
+    // shared declarations retain the targets; raw-ID wire hints stay absent.
     vec![
-        ("parent".into(), ColKind::Text),
-        ("match".into(), ColKind::Number),
-        ("position".into(), ColKind::Number),
-        ("step".into(), ColKind::Text),
+        Column {
+            name: "parent".into(),
+            kind: ColKind::Text,
+            reference: None,
+        },
+        Column {
+            name: "match".into(),
+            kind: ColKind::Number,
+            reference: None,
+        },
+        Column {
+            name: "position".into(),
+            kind: ColKind::Number,
+            reference: None,
+        },
+        Column {
+            name: "step".into(),
+            kind: ColKind::Text,
+            reference: None,
+        },
     ]
 }
 fn row_reference(scope: &RowContext) -> Result<String, QueryError> {

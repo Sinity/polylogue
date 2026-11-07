@@ -612,12 +612,7 @@ impl<'a> Compiler<'a> {
             .expr(&a, self.opts.clock.now.as_millisecond())
             .expect("non-special fields have SQL");
         if top && matches!(op, FieldOp::Compare(..) | FieldOp::Between(..)) {
-            self.show(
-                def.name,
-                &expr,
-                def.column_kind(),
-                def.sql.and_then(|e| e.reference()),
-            );
+            self.show(def.name, &expr, def.column_kind(), def.reference());
         }
         if def.kind == Kind::Time
             && let Some(native) = fields::native_time(def.unit, def.name, &a)
@@ -888,7 +883,7 @@ impl<'a> Compiler<'a> {
                 let values = alternatives(v);
                 let mut parts = vec![];
                 for x in values {
-                    if def.sql.and_then(|e| e.reference()) == Some(ColumnReference::Session) {
+                    if def.reference() == Some(ColumnReference::Session) {
                         parts.push(self.session_reference(expr, "id", &x));
                         continue;
                     }

@@ -67,9 +67,17 @@ pub struct Field {
     pub help: &'static str,
     /// The column kind of the value when the matching kind does not say.
     pub value_kind: Option<ColKind>,
+    /// The entity named by this value (or each member of an ID list).
+    /// Opaque provider IDs and mixed-reference fields have no fixed target.
+    pub reference_target: Option<Unit>,
 }
 
 impl Field {
+    const fn reference(mut self, target: Unit) -> Self {
+        self.reference_target = Some(target);
+        self
+    }
+
     const fn stored_unknown(mut self, word: &'static str) -> Self {
         self.stored_unknown = Some(word);
         self
@@ -116,6 +124,7 @@ const fn f(unit: Unit, name: &'static str, kind: Kind, help: &'static str) -> Fi
         stored_unknown: None,
         help,
         value_kind: None,
+        reference_target: None,
     }
 }
 
@@ -129,6 +138,7 @@ const fn sp(unit: Unit, name: &'static str, help: &'static str) -> Field {
         stored_unknown: None,
         help,
         value_kind: None,
+        reference_target: None,
     }
 }
 
@@ -146,6 +156,7 @@ const fn v(
         stored_unknown: None,
         help,
         value_kind: None,
+        reference_target: None,
     }
 }
 
@@ -367,7 +378,7 @@ pub static FIELDS: &[Field] = &[
         &TIME_PRECISIONS,
         "native time precision; absent evidence stays unknown",
     ),
-    f(Documents, "id", Prefix, "document ID or a unique prefix"),
+    f(Documents, "id", Prefix, "document ID or a unique prefix").reference(Documents),
     f(Documents, "origin", Match, "the provider export family"),
     v(
         Documents,
@@ -405,7 +416,7 @@ pub static FIELDS: &[Field] = &[
         Number,
         "the number of distinct versions its sources hold",
     ),
-    f(Sessions, "id", Prefix, "session ID or a unique prefix"),
+    f(Sessions, "id", Prefix, "session ID or a unique prefix").reference(Sessions),
     f(Sessions, "origin", Match, "claude-code, codex, chatgpt, …"),
     v(
         Sessions,
@@ -724,7 +735,7 @@ pub static FIELDS: &[Field] = &[
     sp(Sessions, "similar", "semantic similarity (a ranking)"),
     sp(Sessions, "output", "words in tool output"),
     sp(Sessions, "thinking", "words in thinking"),
-    f(Messages, "id", Prefix, "message ID"),
+    f(Messages, "id", Prefix, "message ID").reference(Messages),
     v(Messages, "role", Role::NAMES, "who the source says spoke"),
     v(Messages, "written_by", WrittenBy::NAMES, "who wrote it").stored_unknown("unknown"),
     v(
@@ -780,6 +791,13 @@ pub static FIELDS: &[Field] = &[
     sp(Messages, "similar", "semantic similarity (a ranking)"),
     sp(Messages, "output", "words in tool output"),
     sp(Messages, "thinking", "words in thinking"),
+    f(
+        Blocks,
+        "message",
+        Prefix,
+        "the message containing the block",
+    )
+    .reference(Messages),
     v(Blocks, "kind", BlockKind::NAMES, "the block kind"),
     f(Blocks, "media_type", Match, ""),
     f(Blocks, "file_name", Substring, ""),
@@ -806,7 +824,8 @@ pub static FIELDS: &[Field] = &[
         "message",
         Prefix,
         "the message containing the call",
-    ),
+    )
+    .reference(Messages),
     f(ToolCalls, "tool", Match, "the tool name as written"),
     sp(
         ToolCalls,
@@ -896,7 +915,7 @@ pub static FIELDS: &[Field] = &[
     f(Files, "edits", Number, ""),
     f(Files, "first_at", Time, ""),
     f(Files, "last_at", Time, ""),
-    f(Events, "id", Prefix, "the observation ID or its prefix"),
+    f(Events, "id", Prefix, "the observation ID or its prefix").reference(Events),
     sp(
         Events,
         "text",
@@ -946,8 +965,8 @@ pub static FIELDS: &[Field] = &[
         "the link's family: subagent or continuation",
     ),
     v(Links, "how", LINK_HOW_NAMES, "how the child relates"),
-    sp(Links, "parent", "the parent session"),
-    sp(Links, "child", "the child session"),
+    sp(Links, "parent", "the parent session").reference(Sessions),
+    sp(Links, "child", "the child session").reference(Sessions),
     f(Links, "pending", Bool, "the parent is not in the archive"),
     f(
         Links,
@@ -960,7 +979,8 @@ pub static FIELDS: &[Field] = &[
         "branch_point",
         Prefix,
         "the message where the child branched off",
-    ),
+    )
+    .reference(Messages),
     f(
         ImportedNotes,
         "id",
@@ -1037,7 +1057,8 @@ pub static FIELDS: &[Field] = &[
         "reference",
         Match,
         "the exact natural reference",
-    ),
+    )
+    .reference(Assertions),
     f(
         Assertions,
         "kind",
@@ -1101,8 +1122,8 @@ pub static FIELDS: &[Field] = &[
         "until",
         "created before the instant or through the logical day",
     ),
-    f(Deliveries, "id", Prefix, ""),
-    sp(Deliveries, "recipient", "the receiving session"),
+    f(Deliveries, "id", Prefix, "").reference(Deliveries),
+    sp(Deliveries, "recipient", "the receiving session").reference(Sessions),
     v(
         Deliveries,
         "event",
@@ -1233,14 +1254,16 @@ pub static FIELDS: &[Field] = &[
         "sessions",
         "selection array, available as output only",
     )
-    .ids(),
+    .ids()
+    .reference(Sessions),
     sp(
         Changes,
         "messages",
         "selection array, available as output only",
     )
-    .ids(),
-    f(Turns, "id", Prefix, "its first prompt's message ID"),
+    .ids()
+    .reference(Messages),
+    f(Turns, "id", Prefix, "its first prompt's message ID").reference(Messages),
     f(Turns, "start", Time, "the first message's time"),
     f(
         Turns,
@@ -1261,7 +1284,8 @@ pub static FIELDS: &[Field] = &[
         "answer",
         Prefix,
         "the model's final message in the turn",
-    ),
+    )
+    .reference(Messages),
     f(
         Turns,
         "attempts",
@@ -1341,4 +1365,37 @@ pub fn construct(field: &Field) -> Option<polylogue_model::derived::Construct> {
         "waiting_model" | "waiting_human" => Some(derived::SESSION_TIME),
         _ => None,
     }
+}
+
+/// Resolve logical reference targets independently of SQL aliases and storage.
+/// `session` is the containing-session reference declared by `in_session`.
+fn reference_value(unit: Unit, name: &str) -> (Option<Unit>, ColKind) {
+    if name.eq_ignore_ascii_case("session") && has_session(unit) {
+        return (Some(Unit::Sessions), ColKind::Text);
+    }
+    if let Some((prefix, field)) = name.split_once('.')
+        && let Some(target) = relation(unit, prefix)
+    {
+        return reference_value(target, field);
+    }
+    if let Some(field) = lookup(unit, name) {
+        return (field.reference_target, field.column_kind());
+    }
+    if has_session(unit) {
+        return reference_value(Unit::Sessions, name);
+    }
+    (None, ColKind::Text)
+}
+
+pub fn reference_target(unit: Unit, name: &str) -> Option<Unit> {
+    reference_value(unit, name).0
+}
+
+/// Scalar wire metadata never describes an ID container as one entity.
+pub fn column_reference(unit: Unit, name: &str) -> Option<crate::ColumnReference> {
+    let (target, kind) = reference_value(unit, name);
+    if kind != ColKind::Text {
+        return None;
+    }
+    target.and_then(|unit| crate::ColumnReference::from_unit(unit.name()))
 }

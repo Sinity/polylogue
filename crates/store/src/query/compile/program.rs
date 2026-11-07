@@ -233,15 +233,7 @@ impl<'a> Compiler<'a> {
         let mut row_count = None;
         let mut row_membership = None;
         let (sql, shape, columns, order) = if let Some(rel) = matched {
-            let columns = rel
-                .columns
-                .iter()
-                .map(|(name, kind)| Column {
-                    name: name.clone(),
-                    kind: *kind,
-                    reference: None,
-                })
-                .collect();
+            let columns = rel.columns;
             (
                 format!("{ctes}{}", rel.sql),
                 Shape::Matches,

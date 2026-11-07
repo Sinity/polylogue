@@ -33,7 +33,6 @@ const fn f(unit: Unit, name: &'static str) -> Field {
 #[derive(Clone, Copy)]
 pub enum Expr {
     Template(&'static str),
-    Reference(&'static str, ColumnReference),
     Fn(fn(&Aliases) -> String),
     Clock(fn(&Aliases, i64) -> String),
     NativeTime {
@@ -44,16 +43,9 @@ pub enum Expr {
 }
 
 impl Expr {
-    pub fn reference(&self) -> Option<ColumnReference> {
-        match self {
-            Self::Reference(_, kind) => Some(*kind),
-            _ => None,
-        }
-    }
-
     pub fn render(&self, a: &Aliases, now: i64) -> String {
         match self {
-            Expr::Template(t) | Expr::Reference(t, _) => a.expand(t),
+            Expr::Template(t) => a.expand(t),
             Expr::Fn(f) => f(a),
             Expr::Clock(f) => f(a, now),
             Expr::NativeTime {
@@ -69,10 +61,6 @@ impl Expr {
 impl Field {
     const fn sql(mut self, t: &'static str) -> Self {
         self.sql = Some(Expr::Template(t));
-        self
-    }
-    const fn sql_ref(mut self, t: &'static str, r: ColumnReference) -> Self {
-        self.sql = Some(Expr::Reference(t, r));
         self
     }
     const fn sql_fn(mut self, f: fn(&Aliases) -> String) -> Self {
@@ -95,6 +83,10 @@ impl Field {
         });
         self
     }
+    pub fn reference(&self) -> Option<ColumnReference> {
+        polylogue_query::fields::column_reference(self.unit, self.name)
+    }
+
     pub fn expr(&self, a: &Aliases, now: i64) -> Option<String> {
         self.sql.map(|e| e.render(a, now))
     }
@@ -349,7 +341,7 @@ f(ToolCalls,"time_quality").time_attribute("at",NativeTimeAttribute::Quality),
 f(ToolCalls,"precision").time_attribute("at",NativeTimeAttribute::Precision),
 f(Events,"time_quality").time_attribute("at",NativeTimeAttribute::Quality),
 f(Events,"precision").time_attribute("at",NativeTimeAttribute::Precision),
-f(Documents,"id").sql_ref("{r}.id", ColumnReference::Document),
+f(Documents,"id").sql("{r}.id"),
 f(Documents,"origin").sql("{r}.origin"),
 f(Documents,"purpose").sql("{r}.purpose"),
 f(Documents,"authorship").sql("{r}.authorship"),
@@ -358,7 +350,7 @@ f(Documents,"source_time").sql("{r}.source_time"),
 f(Documents,"since").custom(custom::since),
 f(Documents,"until").custom(custom::until),
 f(Documents,"versions").sql("(SELECT count(DISTINCT ds.version_hash) FROM document_source ds WHERE ds.document_pk={r}.pk)"),
-f(Sessions,"id").sql_ref("{s}.id", ColumnReference::Session),
+f(Sessions,"id").sql("{s}.id"),
 f(Sessions,"origin").sql("{s}.origin"),
 f(Sessions,"kind").sql("{s}.kind"),
 f(Sessions,"title").sql("COALESCE({s}.title, {s}.derived_title)"),
@@ -438,7 +430,7 @@ f(Sessions,"compactions").sql_fn(|a| crate::session_sql::count(&a.s,"compaction_
 f(Sessions,"similar").custom(custom::near),
 f(Sessions,"output").custom(custom::output),
 f(Sessions,"thinking").custom(custom::thinking),
-f(Messages,"id").sql_ref("{m}.id", ColumnReference::Message),
+f(Messages,"id").sql("{m}.id"),
 f(Messages,"role").sql("{m}.role"),
 f(Messages,"written_by").sql("{m}.written_by"),
 f(Messages,"prompt_kind").sql("{m}.prompt_kind"),
@@ -461,6 +453,7 @@ f(Messages,"until").custom(custom::until),
 f(Messages,"similar").custom(custom::near),
 f(Messages,"output").custom(custom::output),
 f(Messages,"thinking").custom(custom::thinking),
+f(Blocks,"message").sql("{m}.id"),
 f(Blocks,"kind").sql("{b}.kind"),
 f(Blocks,"media_type").sql("{b}.media_type"),
 f(Blocks,"file_name").sql("{b}.file_name"),
@@ -469,7 +462,7 @@ f(Blocks,"first_seen").sql_fn(message_first_seen),
 f(Blocks,"evidence_until").custom(custom::evidence_until),
 f(Blocks,"since").custom(custom::since),
 f(Blocks,"until").custom(custom::until),
-f(ToolCalls,"message").sql_ref("{m}.id", ColumnReference::Message),
+f(ToolCalls,"message").sql("{m}.id"),
 f(ToolCalls,"idx").sql("{cb}.idx"),
 f(ToolCalls,"position").sql_fn(super::units::call_position),
 f(ToolCalls,"tool").sql("{t}.tool"),
@@ -520,8 +513,8 @@ f(Events,"since").custom(custom::since),
 f(Events,"until").custom(custom::until),
 f(Links,"kind").sql("{r}.kind"),
 f(Links,"how").sql("{r}.how"),
-f(Links,"parent").custom(custom::link_parent).sql_ref("{r}.parent_id", ColumnReference::Session),
-f(Links,"child").custom(custom::link_child).sql_ref("{r}.child_id", ColumnReference::Session),
+f(Links,"parent").custom(custom::link_parent).sql("{r}.parent_id"),
+f(Links,"child").custom(custom::link_child).sql("{r}.child_id"),
 f(Links,"pending").sql("(NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = {r}.parent_id))"),
 f(Links,"evidence").sql("{r}.evidence"),
 f(Links,"branch_point").sql("{r}.branch_point"),
@@ -543,7 +536,7 @@ f(ImportedNotes,"since").custom(custom::since),
 f(ImportedNotes,"until").custom(custom::until),
 f(ImportedNotes,"evidence_until").custom(custom::imported_note_evidence_until),
 f(Assertions,"id").sql("{r}.id"),
-f(Assertions,"reference").sql_ref("pl_assertion_ref({r}.root,{r}.id)", ColumnReference::Assertion),
+f(Assertions,"reference").sql("pl_assertion_ref({r}.root,{r}.id)"),
 f(Assertions,"kind").sql("{r}.kind"),
 f(Assertions,"key").sql("{r}.key"),
 f(Assertions,"value").sql("{r}.value"),
@@ -571,14 +564,14 @@ f(Deliveries,"refs").custom(custom::refs),
 f(Deliveries,"left_out").custom(custom::left_out),
 f(Deliveries,"at").sql("{r}.at"),
 f(Deliveries,"bytes").sql("{r}.bytes"),
-f(LiveIntervals,"session").custom(custom::live_session).sql_ref("{s}.id", ColumnReference::Session),
+f(LiveIntervals,"session").custom(custom::live_session).sql("{s}.id"),
 f(LiveIntervals,"aspect").sql("{r}.aspect"),
 f(LiveIntervals,"value").sql("{r}.value"),
 f(LiveIntervals,"start").sql("{r}.start_at"),
 f(LiveIntervals,"end").sql("{r}.end_at"),
 f(LiveIntervals,"duration_ms").sql("({r}.end_at - {r}.start_at)"),
 f(LiveIntervals,"closed_by").sql("{r}.closed_by"),
-f(Processes,"session").custom(custom::live_session).sql_ref("{s}.id", ColumnReference::Session),
+f(Processes,"session").custom(custom::live_session).sql("{s}.id"),
 f(Processes,"boot_id").sql("{r}.boot_id"),
 f(Processes,"pid").sql("{r}.pid"),
 f(Processes,"start").sql("{r}.start"),
