@@ -74,16 +74,18 @@ fn manual_runs_offline_as_text_and_json() {
 
 #[test]
 fn gemini_start_and_prompt_events_request_context_through_respond() {
-    for (event, payload, expected) in [
+    for (event, payload, operation, expected) in [
         (
             "SessionStart",
             json!({"session_id":"current","cwd":"/synthetic/project","source":"resume"}),
-            json!({"ask":"session_start","cwd":"/synthetic/project","session":"gemini-cli:current","source":"resume"}),
+            "brief",
+            json!({"cwd":"/synthetic/project","session":"gemini-cli:current","source":"resume"}),
         ),
         (
             "BeforeAgent",
             json!({"session_id":"current","prompt":"Continue https://chatgpt.com/c/previous"}),
-            json!({"ask":"takeover","session":"chatgpt:previous","for_session":"gemini-cli:current"}),
+            "takeover",
+            json!({"session":"chatgpt:previous","for_session":"gemini-cli:current"}),
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -95,16 +97,34 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
             let mut line = String::new();
             BufReader::new(&stream).read_line(&mut line).unwrap();
             let request: Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(request["op"], "context");
-            assert_eq!(request["sender"], "hook");
-            assert_eq!(request["ask"], expected);
-            writeln!(stream, "{}", serde_json::to_string(&command_surface::Answer::ok(json!({"delivery":"synthetic-delivery","prepared":{"empty":false,"text":"Synthetic context"}}))).unwrap()).unwrap();
+            assert_eq!(request["operation"], operation);
+            assert_eq!(request["arguments"], expected);
+            assert!(
+                request["request_id"]
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty())
+            );
+            assert_eq!(request["deadline"], 1500);
+            assert!(request.get("op").is_none());
+            let delivery = request["request_id"].as_str().unwrap().to_owned();
+            let prepared = json!({
+                "event": if operation == "brief" { "resume" } else { "takeover" },
+                "empty": false,
+                "text": "Synthetic context",
+                "refs": [],
+                "left_out": [],
+            });
+            let answer = command_surface::Answer::ok(json!({
+                "delivery": delivery,
+                "prepared": prepared,
+            }));
+            writeln!(stream, "{}", serde_json::to_string(&answer).unwrap()).unwrap();
             let (mut stream, _) = listener.accept().unwrap();
             line.clear();
             BufReader::new(&stream).read_line(&mut line).unwrap();
             let request: Value = serde_json::from_str(&line).unwrap();
             assert_eq!(request["op"], "delivery_event");
-            assert_eq!(request["delivery"], "synthetic-delivery");
+            assert_eq!(request["delivery"], delivery);
             assert_eq!(request["what"], "delivered");
             writeln!(
                 stream,

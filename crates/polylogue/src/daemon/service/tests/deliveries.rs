@@ -290,7 +290,12 @@ fn a_compaction_brief_right_after_a_startup_brief_reports_only_what_changed_sinc
     let text = compact["prepared"]["text"].as_str().unwrap();
     assert!(text.contains("Changes since your last brief at"), "{text}");
     assert!(!text.contains("claude-code:s9"), "{text}");
-    assert_eq!(compact["prepared"]["empty"], true, "{text}");
+    assert!(text.contains("Nothing changed."), "{text}");
+    assert!(text.contains(&crate::manual::text()), "{text}");
+    assert_eq!(compact["prepared"]["refs"], serde_json::json!([]));
+    assert_eq!(compact["prepared"]["left_out"], serde_json::json!([]));
+    // The protected compaction manual is still handed over without a delta.
+    assert_eq!(compact["prepared"]["empty"], false, "{text}");
     barrier.release();
     held.join().unwrap();
 }

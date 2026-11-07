@@ -29,6 +29,10 @@ const ASKED: &[(&str, &[&str])] = &[
     ("attachment", &["claude-code:missing", "0"]),
     ("read", &["assertion:missing"]),
     ("continue", &["claude-code:s1"]),
+    ("brief", &["--cwd", "/synthetic", "--source", "startup"]),
+    ("takeover", &["claude-code:s1"]),
+    ("takeover", &["claude-code:missing"]),
+    ("recall", &["parser", "--cwd", "/synthetic"]),
     ("chat list", &[]),
     ("backfill list", &[]),
     ("timeline", &["--date", "2024-01-01"]),
@@ -48,7 +52,7 @@ type Answer = Result<Value, String>;
 /// or the refusal's code. A refusal before the request is sent has none.
 type Exit = Option<u8>;
 
-fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str]) -> (Answer, Exit) {
+fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str], request_id: &str) -> (Answer, Exit) {
     let (c, values) = crate::cli::parse(argv).unwrap();
     let (Action::Request(build) | Action::Stream { build, .. }) = c.action else {
         panic!("{} is local", c.name)
@@ -62,7 +66,17 @@ fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str]) -> (Answer, Exit) {
         Ok(request) => request,
         Err(e) => return (Err(format!("bad_request: {e}")), None),
     };
-    let answer = crate::client::send(&w.daemon.archive.socket(), &request).unwrap();
+    let answer = if c.register.is_some() {
+        let envelope = crate::protocol::operations::request(
+            c,
+            values,
+            request_id.into(),
+            command_surface::Deadline::Default,
+        );
+        crate::client::call_ready(&w.daemon.archive, &envelope).unwrap()
+    } else {
+        crate::client::send(&w.daemon.archive.socket(), &request).unwrap()
+    };
     let exit = answer.exit_code();
     let shown = crate::protocol::into_value(answer).map_err(|error| {
         format!(
@@ -76,7 +90,12 @@ fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str]) -> (Answer, Exit) {
 
 /// The MCP answer for the same request through its declared operation;
 /// `complete` also has the protocol's completion method.
-fn mcp_answer(w: &test_daemon::TestDaemon, c: &Command, values: &Values) -> Answer {
+fn mcp_answer(
+    w: &test_daemon::TestDaemon,
+    c: &Command,
+    values: &Values,
+    request_id: &str,
+) -> Answer {
     if c.name == "complete" {
         return crate::mcp::tests::complete(
             &w.daemon.archive,
@@ -91,7 +110,7 @@ fn mcp_answer(w: &test_daemon::TestDaemon, c: &Command, values: &Values) -> Answ
         .filter(|(k, _)| names.contains(&k.as_str()))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    match crate::mcp::tests::call(&w.daemon.archive, c.name, arguments) {
+    match crate::mcp::tests::call_as(&w.daemon.archive, c.name, arguments, request_id) {
         Ok(text) => Ok(serde_json::from_str(&text).unwrap()),
         // `error (kind): message`, with the corrected query on a last line
         // of its own when there is one.
@@ -120,7 +139,12 @@ fn encoded(text: &str) -> String {
         .collect()
 }
 
-fn http_answer(web: &Arc<crate::web::Web>, c: &Command, values: &Values) -> (Answer, Exit) {
+fn http_answer(
+    web: &Arc<crate::web::Web>,
+    c: &Command,
+    values: &Values,
+    request_id: &str,
+) -> (Answer, Exit) {
     let mut pairs: Vec<String> = Vec::new();
     let names: Vec<&str> = c.args_for(Surface::Http).map(|a| a.name).collect();
     for (name, value) in values
@@ -141,6 +165,19 @@ fn http_answer(web: &Arc<crate::web::Web>, c: &Command, values: &Values) -> (Ans
             other => vec![other.to_string()],
         };
         pairs.extend(texts.iter().map(|t| format!("{name}={}", encoded(t))));
+    }
+    if c.register.is_some() {
+        let request = crate::protocol::operations::request(
+            c,
+            values.clone(),
+            request_id.into(),
+            command_surface::Deadline::Default,
+        );
+        pairs = vec![
+            format!("operation={}", encoded(&request.operation)),
+            format!("arguments={}", encoded(&request.arguments.to_string())),
+            format!("request_id={}", encoded(request_id)),
+        ];
     }
     let uri = format!("/api/v1{}?{}", c.http_path(), pairs.join("&"));
     let request = axum::http::Request::get(uri)
@@ -283,7 +320,8 @@ fn every_client_answers_the_same_request_identically() {
     let socket_author = socket_authorship(&w);
     let web_author =
         polylogue_model::authorship::compute_authorship(Channel::Web, &Default::default(), None);
-    for (name, args) in ASKED {
+    for (index, (name, args)) in ASKED.iter().enumerate() {
+        let request_id = format!("client-parity-{index}");
         let command = command(name).unwrap();
         let words = command.cli_words();
         let mut argv = vec!["polylogue"];
@@ -293,11 +331,11 @@ fn every_client_answers_the_same_request_identically() {
         argv.extend(*args);
         let (c, values) = crate::cli::parse(&argv).unwrap();
         let cli_position = (*name == "read").then(|| read_position(&w));
-        let (cli, cli_exit) = cli_answer(&w, &argv);
+        let (cli, cli_exit) = cli_answer(&w, &argv, &request_id);
         let mcp_position = (*name == "read").then(|| read_position(&w));
-        let mcp = mcp_answer(&w, c, &values);
+        let mcp = mcp_answer(&w, c, &values, &request_id);
         let http_position = (*name == "read").then(|| read_position(&w));
-        let (http, http_exit) = http_answer(&web, c, &values);
+        let (http, http_exit) = http_answer(&web, c, &values, &request_id);
         if cli_exit.is_some() {
             assert_eq!(
                 cli_exit,
@@ -322,8 +360,19 @@ fn every_client_answers_the_same_request_identically() {
             assert_eq!(Ok(expected), http, "whole HTTP read answer");
             continue;
         }
+        let mut expected_mcp = cli.clone();
+        if matches!(*name, "brief" | "takeover" | "recall")
+            && let Ok(value) = &mut expected_mcp
+        {
+            // MCP hands the prepared bytes to a model and records that
+            // delivery; CLI and HTTP only show the preparation to a person.
+            assert_eq!(value["delivery"], Value::Null);
+            assert_eq!(http.as_ref().unwrap()["delivery"], Value::Null);
+            assert_eq!(mcp.as_ref().unwrap()["delivery"], request_id);
+            value["delivery"] = Value::String(request_id.clone());
+        }
         assert_eq!(
-            cli,
+            expected_mcp,
             mcp,
             "`{}`: the command line and MCP differ",
             argv.join(" ")

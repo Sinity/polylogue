@@ -4,17 +4,20 @@ use crate::daemon::scope::SharedScopeIndex;
 /// Decode the exact source quotes without confusing rendering escapes with
 /// changed archived bytes. Header and entry-map text remain visible too.
 fn visible_context(text: &str) -> String {
-    let mut out = text.to_owned();
-    for line in text.lines().filter_map(|line| line.strip_prefix("┃ ")) {
-        let quote: serde_json::Value = serde_json::from_str(line).unwrap();
-        if let Some(source) = quote
-            .get("source")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| quote.as_str())
-        {
-            out.push('\n');
+    let mut out = String::new();
+    for line in text.lines() {
+        if let Some(encoded) = line.strip_prefix("┃ ") {
+            let quote: serde_json::Value = serde_json::from_str(encoded).unwrap();
+            let source = quote
+                .get("source")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| quote.as_str())
+                .expect("an archived source quote");
             out.push_str(source);
+        } else {
+            out.push_str(line);
         }
+        out.push('\n');
     }
     out
 }
@@ -312,7 +315,7 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
     assert!(!p.empty);
     for expected in [
         "parser work",
-        "1 commit (abc1234)",
+        "1 commit (abc1234f)",
         "changed 1 file: a.rs",
         "claimed pl-1; no close or release observed",
         "last answer: \"Finished the parser fix; one test still fails.\"",
@@ -917,7 +920,14 @@ fn contrary_evidence_precedes_any_claim_expansion_under_a_tight_budget() {
         machine: "synthetic-machine".into(),
         created_at: Timestamp::from_unix_ms(T0).unwrap(),
         valid_until: None,
-        links,
+        links: std::iter::once(AssertionLink {
+            role: LinkRole::About,
+            reference: Reference::parse("repo:synthetic").unwrap(),
+            seen_hash: None,
+            quote: None,
+        })
+        .chain(links)
+        .collect(),
     };
     let original = fact(
         "original",
@@ -1133,7 +1143,14 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
         machine: "synthetic-machine".into(),
         created_at: Timestamp::from_unix_ms(T0).unwrap(),
         valid_until: None,
-        links,
+        links: std::iter::once(AssertionLink {
+            role: LinkRole::About,
+            reference: Reference::parse("repo:synthetic").unwrap(),
+            seen_hash: None,
+            quote: None,
+        })
+        .chain(links)
+        .collect(),
     };
     let subject = Reference::parse("assertion:subject@subject-v1").unwrap();
     let link = |role| {
