@@ -80,15 +80,15 @@ impl Inner {
             {
                 return Ok(false);
             }
-        } else if let Some(observation) = &basis.confirmed {
-            if !crate::source::Source::observation_matches(
+        } else if let Some(observation) = &basis.confirmed
+            && !crate::source::Source::observation_matches(
                 &self.index,
                 source,
                 observation,
                 through,
-            )? {
-                return Ok(false);
-            }
+            )?
+        {
+            return Ok(false);
         }
         if let Some(subject) = &basis.resolved {
             let Some(through) = through else {

@@ -1,5 +1,6 @@
 use super::*;
 use crate::primary::PreparedInput;
+use crate::primary::Sinex as _;
 
 fn source(id: &str, bytes: &[u8]) -> PreparedBatch {
     PreparedBatch {
