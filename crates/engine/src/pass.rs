@@ -193,7 +193,6 @@ impl Engine {
         paths: &std::collections::BTreeSet<PathBuf>,
     ) -> Result<(Pass, HashSet<PathBuf>), EngineError> {
         let continuing = self.pass_open;
-        self.pass_open = false;
         let started = Instant::now();
         self.load()?;
         let collectors_due = self
@@ -273,6 +272,7 @@ impl Engine {
         });
         if !discover
             && !continuing
+            && paths.is_empty()
             && !changed
             && !disappeared
             && !pass.capture_pending
@@ -295,69 +295,106 @@ impl Engine {
 
         let mut seen = HashSet::new();
         let mut plans = self.plan_found(found, &mut pass, &mut seen)?;
-        // Paths seen before and gone now: an observation, never a delete.
-        // Without sources nothing is looked at, so nothing is gone.
-        let gone: Vec<PathBuf> = self
-            .inputs
-            .iter()
-            .filter(|(p, s)| {
-                sources
-                    && (discover
-                        || s.origin.is_row_dump(p)
-                        || paths.iter().any(|path| p.starts_with(path)))
-                    && s.facts.is_some()
-                    && !seen.contains(*p)
-                    && !p.exists()
-            })
-            .map(|(p, _)| p.clone())
-            .collect();
-        for path in gone {
-            let st = self.inputs.get_mut(&path).expect("known input");
-            st.facts = None;
-            let batch = polylogue_store::Batch {
-                required_disposition: None,
-                input: InputKey {
-                    id: st.input_id.clone(),
-                    format: st.origin.name.into(),
-                    arrival_rank: st.origin.arrival.rank(),
-                },
-                change: Change::Disappeared,
-                observation: Some(Observation {
-                    machine: self.config.machine.clone(),
-                    host: self.config.host.clone(),
-                    path: path.display().to_string(),
-                    path_bytes: path.as_os_str().as_encoded_bytes().to_vec(),
-                    facts: None,
-                    seen_at_ms: self.config.clock.now().as_millisecond(),
-                    import: None,
-                    container: None,
-                }),
-                continues: false,
-                new_blob: None,
-                blobs: vec![],
-                length: st.stored,
-                parse: Vec::new(),
-                acquisition: None,
-                basis: None,
-                release: Default::default(),
-            };
-            self.writer.send(batch)?;
-        }
-        // Inputs whose files are gone or moved are parsed from what the
-        // archive stored, when the index is behind it.
+        // Keep custody and stored parsing reachable when a provider disappears.
+        // Databases already observe their SDK heads in capture_databases.
         let unseen: Vec<PathBuf> = self
             .inputs
             .iter()
-            .filter(|(p, s)| {
+            .filter(|(p, state)| {
                 (discover
-                    || s.origin.is_row_dump(p)
+                    || state.origin.is_row_dump(p)
                     || paths.iter().any(|path| p.starts_with(path)))
                     && !seen.contains(*p)
             })
-            .map(|(p, _)| p.clone())
+            .map(|(path, _)| path.clone())
             .collect();
         for path in unseen {
+            let snapshot =
+                if self.archive.is_primary() && !self.inputs[&path].origin.is_row_dump(&path) {
+                    self.refresh_confirmed_input(&path)?;
+                    let source = self
+                        .acquisition_context(
+                            &path,
+                            self.inputs[&path].origin.name,
+                            polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                        )
+                        .source;
+                    let snapshot = self.writer.source_snapshot(source, "")?;
+                    if snapshot.pending.head.is_some()
+                        || snapshot.basis.status != polylogue_store::primary::SourceStatus::Ready
+                    {
+                        pass.capture_pending = true;
+                        seen.insert(path.clone());
+                    }
+                    Some(snapshot)
+                } else {
+                    None
+                };
+            let state = &self.inputs[&path];
+            if sources && state.facts.is_some() && !path.try_exists()? {
+                // A gone observation names the confirmed source, never an old
+                // cached identity ahead of a pending acquisition or unreadable cut.
+                let ready = snapshot.as_ref().is_none_or(|snapshot| {
+                    snapshot.basis.status == polylogue_store::primary::SourceStatus::Ready
+                        && snapshot.pending.head.is_none()
+                        && snapshot
+                            .confirmed
+                            .as_ref()
+                            .is_some_and(|confirmed| confirmed.input == state.input_id)
+                });
+                if ready {
+                    let batch = polylogue_store::Batch {
+                        required_disposition: None,
+                        input: InputKey {
+                            id: state.input_id.clone(),
+                            format: state.origin.name.into(),
+                            arrival_rank: state.origin.arrival.rank(),
+                        },
+                        change: Change::Disappeared,
+                        observation: Some(self.observation(&path, None)),
+                        continues: false,
+                        new_blob: None,
+                        blobs: vec![],
+                        length: state.stored,
+                        parse: Vec::new(),
+                        acquisition: None,
+                        basis: snapshot.map(|snapshot| snapshot.basis),
+                        release: Default::default(),
+                    };
+                    if self.archive.is_primary() {
+                        // Observation-only acquisition uses the existing source
+                        // publication route; stored-reading writes cannot publish it.
+                        let result = self
+                            .writer
+                            .sender()?
+                            .store_group(
+                                vec![polylogue_store::staging::PreparedBatch {
+                                    batch,
+                                    files: Vec::new(),
+                                }],
+                                Arc::clone(&self.blobs),
+                            )?
+                            .pop()
+                            .expect("one disappearance observation");
+                        match result {
+                            Ok(_) => self.refresh_confirmed_input(&path)?,
+                            Err(polylogue_store::StoreError::PrimaryPending { .. }) => {
+                                pass.capture_pending = true;
+                                seen.insert(path.clone());
+                            }
+                            Err(error) => return Err(error.into()),
+                        }
+                    } else {
+                        self.inputs.get_mut(&path).expect("known input").facts = None;
+                        self.writer.send(batch)?;
+                    }
+                } else {
+                    pass.capture_pending = true;
+                    seen.insert(path.clone());
+                }
+            }
             if let Some(plan) = self.stored_plan(&path)? {
+                seen.insert(path.clone());
                 plans.push(plan);
             }
         }
@@ -1396,8 +1433,8 @@ impl Engine {
         }
     }
 
-    /// Runs passes after any change under a watched location and at least
-    /// every `rescan_every`, until stopped or, for [`Lifetime::UntilIdle`],
+    /// Runs passes after changes under watched locations, until stopped or,
+    /// for [`Lifetime::UntilIdle`],
     /// until a pass ends with no work pending and nothing queued. Without
     /// sources (`reads_sources` off) nothing is watched: the first pass
     /// parses and derives what the archive stores, and later passes run only
@@ -1425,24 +1462,30 @@ impl Engine {
         ready();
         let mut summary = RunSummary::default();
         let mut discover = true;
-        let mut discovered_at = Instant::now();
         let mut changed = std::collections::BTreeSet::new();
         let mut watch_errors = Vec::new();
         loop {
             discover |= self.take_watched(&mut changed, &mut watch_errors);
-            discover |= discovered_at.elapsed() >= self.config.rescan_every;
-            if discover {
-                discovered_at = Instant::now();
-            }
             busy(true);
             let pending;
-            let mut finished = match self.one_pass(discover, &std::mem::take(&mut changed)) {
-                Ok((pass, _)) => {
+            let mut finished = match self.one_pass(discover, &changed) {
+                Ok((pass, seen)) => {
                     pending = pass.capture_pending;
+                    if pending {
+                        changed.extend(seen);
+                    } else {
+                        changed.clear();
+                    }
+                    discover = false;
                     pass
                 }
                 Err(e) => {
-                    pending = self.captures.pending();
+                    // A failed turn cannot establish that previously pending
+                    // custody has settled. Only a completed pass updates it.
+                    pending = self.pass_open
+                        || self.captures.pending()
+                        || discover
+                        || !changed.is_empty();
                     Pass {
                         full_scans: u64::from(discover && self.config.reads_sources),
                         errors: vec![e.to_string()],
@@ -1469,7 +1512,6 @@ impl Engine {
                 s.passes += 1;
                 s.busy = pending;
             }
-            discover = false;
             if lifetime == Lifetime::UntilIdle {
                 // Work queued while the pass ran (imports, changes the
                 // watcher saw) is taken now; with none, the loop is idle. A
@@ -1505,16 +1547,7 @@ impl Engine {
                 }
                 continue;
             }
-            let delay = if pending {
-                self.config.live_every
-            } else {
-                self.config.live_every.min(
-                    self.config
-                        .rescan_every
-                        .saturating_sub(discovered_at.elapsed()),
-                )
-            };
-            let mut msg = rx.recv_timeout(delay);
+            let mut msg = rx.recv_timeout(self.config.live_every);
             let burst = Instant::now();
             loop {
                 match msg {

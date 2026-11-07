@@ -32,6 +32,7 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 - **Fail closed.** A collected file that fails its origin's shape check is `refused`, with the reason, as a parse-state fact; it is never read as another origin's file. A Claude Code transcript found in Drive is not ingested as a Claude Code session, because it would duplicate the real one.
 - **A bad record is not a bad file.** A malformed line in a JSONL file is counted unreadable and the complete records after it are still read; a parser error stops that parser's rows at its last good record while the bytes keep being collected.
 - Hidden directories are entered only when a location names them. Symlinked roots resolve once. An unreadable directory is a reported state, never an empty result. A `.git` directory inside a root is ignored with its reason.
+- **Discovery follows source changes.** Full walks run at startup and when the watcher reports overflow or an error. Ordinary events schedule affected locations; idle time does not trigger a whole-tree walk. Collector schedules and live-file checks continue independently.
 - **The coverage table** `(root, class, pattern or reason, files, bytes, newest mtime)` is computed from the discovery walk the daemon already performs (the start-up walk plus file notifications). It is an index fact, rebuilt with the index; there is no separate scan.
 
 ### Live origins

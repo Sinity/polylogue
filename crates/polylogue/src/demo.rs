@@ -83,7 +83,6 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
         machine: startup.engine.machine.clone(),
         host: startup.engine.host.clone(),
         chunk: 64 << 20,
-        rescan_every: Duration::from_secs(60),
         live_every: Duration::from_secs(2),
         reads_sources: true,
     };

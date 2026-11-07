@@ -104,7 +104,6 @@ impl Morrow {
             machine: "morrow-machine".into(),
             host: "morrow".into(),
             chunk: 64 << 20,
-            rescan_every: std::time::Duration::from_secs(60),
             live_every: std::time::Duration::from_secs(2),
             reads_sources: true,
         }

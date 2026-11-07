@@ -115,9 +115,6 @@ pub struct Config {
     /// is stored and parsed in steps. Not a limit: a record longer than
     /// this doubles the range for its input until it fits.
     pub chunk: u64,
-    /// The running loop scans every watched location at least this often,
-    /// even when no change is reported (four hours).
-    pub rescan_every: Duration,
     /// While a pass runs, its spools and recently written files are looked
     /// at this often, and what changed there goes ahead of the pass's
     /// remaining work (two seconds).
@@ -213,7 +210,6 @@ impl Config {
             machine,
             host,
             chunk: 64 << 20,
-            rescan_every: Duration::from_secs(4 * 3600),
             live_every: Duration::from_secs(2),
             reads_sources: true,
         })

@@ -54,3 +54,32 @@ fn a_parser_failure_is_the_chains_failed_parse_state_until_the_bytes_change() {
     let (status, reason, at) = standing(&engine);
     assert_eq!((status.as_str(), reason, at), ("done", None, None));
 }
+
+#[test]
+fn a_failed_startup_read_keeps_discovery_work_for_the_next_turn() {
+    let home = ClaudeHome::new();
+    home.append(
+        "after-read-error.jsonl",
+        &claude_user("u1", "resumed", "retained discovery"),
+    );
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+    engine.config.live_every = Duration::from_millis(1);
+    let (tx, rx) = channel();
+    let status = Arc::new(Mutex::new(LoopStatus::default()));
+    fault::clear();
+    fault::arm("read.watched_inputs", "test-machine", Action::Fail, 0, 1);
+    let result = engine.run(tx, &rx, &status, Lifetime::UntilIdle, || {});
+    fault::clear();
+    let summary = result.unwrap();
+    assert!(summary.passes >= 2, "{summary:?}");
+    assert!(
+        summary
+            .work
+            .errors
+            .iter()
+            .any(|error| error.contains("injected fault at read.watched_inputs")),
+        "{summary:?}"
+    );
+    assert!(!summary.work.capture_pending, "{summary:?}");
+    assert_eq!(home.texts("resumed"), ["retained discovery"]);
+}
