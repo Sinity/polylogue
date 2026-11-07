@@ -151,7 +151,7 @@ fn saved_family_and_revision_are_frozen_across_pending_overlay_and_replay() {
             |_| Ok(()),
         )
         .unwrap();
-        crate::query_objects::apply_object(&conn, &plan.query_object().unwrap()).unwrap();
+        crate::query_objects::apply_object(&conn, &plan.query_object().unwrap(), 1).unwrap();
     }
 
     let first = prepare_with(

@@ -7,6 +7,7 @@ CREATE TABLE primary_fact (
 ) STRICT;
 CREATE INDEX primary_fact_chain ON primary_fact(input,chain,admitted,event);
 CREATE INDEX primary_fact_session ON primary_fact(session,kind,state,admitted);
+", include_str!("projection/read_indexes.sql"), "
 CREATE TABLE primary_fact_blob (
  event TEXT NOT NULL REFERENCES primary_fact(event), hash BLOB NOT NULL,
  PRIMARY KEY(event,hash)
@@ -926,7 +927,9 @@ fn queries(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
     while let Some(row) = rows.next()? {
         let bytes: Vec<u8> = row.get(0)?;
         match unpacked(&bytes)? {
-            Product::Query { object } => crate::query_objects::apply_object(tx, &object)?,
+            Product::Query { object } => {
+                crate::query_objects::apply_object(tx, &object, row.get(1)?)?
+            }
             Product::QueryRun { run } => {
                 crate::query_objects::apply_run(tx, &run, row.get(1)?, unsigned_column(row, 2)?)?;
             }

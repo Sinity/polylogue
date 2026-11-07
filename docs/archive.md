@@ -61,6 +61,11 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 - **Record outcomes per input:** `used`, `skipped` (with a declared reason) and `unreadable` (with the reason). They sum to the records read.
 - **Parse state per input chain:** parsed, as `parsing` (stored bytes remain), `waiting` (with the stored length it waits at, while a record is still being written) or `done`; `partial`; `refused` (with the reason); `no_parser_yet`; `failed` (with the error). A failure is a parse-state fact of its input; there is no separate failure table. A refused or failed chain records the stored length it was read at and is read again when its bytes change or its reading version does, and once more when the daemon starts, since a failure may have been transient.
 
+Canonical query records retain their source insertion position for incremental
+readers. Older records whose position was never recorded keep an unknown
+position; startup snapshots include them. This metadata does not change the
+query's sealed bytes, semantic hash or frozen dependencies.
+
 ## Format drift
 
 Providers change their formats without notice. Drift is found by field accounting during ordinary parsing, not by inferring and committing schemas.

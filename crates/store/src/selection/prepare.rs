@@ -105,6 +105,18 @@ pub(crate) fn saved_queries_on(
     )
 }
 
+pub(super) fn saved_queries_for_family(
+    conn: &Connection,
+    root: &str,
+) -> Result<(BTreeMap<String, usize>, BTreeMap<String, Vec<SavedQuery>>), SelectionError> {
+    let family = crate::assertions::saved_family(conn, root)?.definitions;
+    let names = family
+        .iter()
+        .map(|(name, definitions)| (name.clone(), definitions.len()))
+        .collect();
+    Ok((names, saved_queries_from(conn, conn, None, None, family)?))
+}
+
 fn saved_queries_from(
     original: &Connection,
     conn: &Connection,

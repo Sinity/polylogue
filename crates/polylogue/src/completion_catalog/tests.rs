@@ -295,16 +295,22 @@ fn acknowledged_commits_refresh_catalog_values_while_keystrokes_continue() {
     };
     wait("2000", false);
     let mut visibility = vec![];
+    let mut upper_bounds = vec![];
+    let mut commit_offsets = vec![];
+    let cadence = std::time::Instant::now();
     for number in 1..=5 {
+        std::thread::sleep(
+            std::time::Duration::from_secs(number - 1).saturating_sub(cadence.elapsed()),
+        );
         let value = (2000 + number).to_string();
+        let submitted = std::time::Instant::now();
         daemon.set("signal.interrupts_per_hour", &value);
+        commit_offsets.push(cadence.elapsed());
         visibility.push(wait(&value, true));
-        if number < 5 {
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        }
+        upper_bounds.push(submitted.elapsed());
     }
     eprintln!(
-        "acknowledged committed setting to catalog visibility, five one-second batches: {visibility:?}"
+        "five scheduled 1Hz setting batches: acknowledged_commit_offsets={commit_offsets:?}; ack_to_visible={visibility:?}; submit_to_visible_upper_bounds={upper_bounds:?}"
     );
 }
 

@@ -759,7 +759,7 @@ impl Fixture {
             links: vec![],
         };
         let tx = self.notes.transaction()?;
-        crate::query_objects::apply_object(&tx, &object)?;
+        crate::query_objects::apply_object(&tx, &object, self.commit_seq)?;
         crate::assertions::apply(&tx, &[fact], self.commit_seq)?;
         tx.commit()?;
         Ok(id)

@@ -17,9 +17,9 @@ fn every_schema_applies_to_an_empty_database() {
 /// law: one-baseline
 #[test]
 fn every_database_starts_at_its_current_version() {
-    assert_eq!(ARCHIVE_VERSION, 3);
-    assert_eq!(INDEX_VERSION, 3);
-    assert_eq!(ARCHIVE_MIGRATIONS.len(), 2);
+    assert_eq!(ARCHIVE_VERSION, 4);
+    assert_eq!(INDEX_VERSION, 4);
+    assert_eq!(ARCHIVE_MIGRATIONS.len(), 3);
     for (create, expected) in [
         (
             ensure_archive as fn(&Connection) -> Result<()>,
@@ -405,6 +405,8 @@ fn old_kept_output_upgrade_marks_missing_policy_without_changing_stored_values()
     );
     let original = serde_json::json!({"unit":"sessions","shape":"rows","columns":[{"name":"cwd","kind":"text"}],"rows":[{"cwd":"/work/module"}],"identities":[["test:one"]]});
     conn.execute("INSERT INTO kept_result(id,query,ran_at,read_at,rows_json) VALUES ('old','sessions',0,'{}',?1)", [original.to_string()]).unwrap();
+    conn.execute_batch("DROP INDEX query_commit_seq; ALTER TABLE query DROP COLUMN commit_seq;")
+        .unwrap();
     set_version(&conn, 2).unwrap();
     ensure_archive(&conn).unwrap();
     let stored: String = conn
@@ -441,9 +443,13 @@ fn primary_kept_output_upgrade_preserves_stored_values() {
     ensure_primary_index(&conn).unwrap();
     let original = serde_json::json!({"unit":"sessions","columns":[{"name":"cwd","kind":"text"}],"rows":[{"cwd":"/work/module"}]});
     conn.execute("INSERT INTO source_kept_result(id,query,ran_at,read_at,rows_json) VALUES ('old','sessions',0,'{}',?1)", [original.to_string()]).unwrap();
+    conn.execute_batch(
+        "DROP INDEX source_query_commit_seq; ALTER TABLE source_query DROP COLUMN commit_seq;",
+    )
+    .unwrap();
     set_version(&conn, 2).unwrap();
     ensure_primary_index(&conn).unwrap();
-    assert_eq!(version(&conn).unwrap(), 3);
+    assert_eq!(version(&conn).unwrap(), 4);
     let body: String = conn
         .query_row(
             "SELECT rows_json FROM source_kept_result WHERE id='old'",
@@ -459,4 +465,51 @@ fn primary_kept_output_upgrade_preserves_stored_values() {
         .unwrap();
     assert_eq!(metadata["rows"]["kind"], "unproven");
     assert_eq!(body, original);
+}
+
+#[test]
+fn query_position_upgrade_preserves_unknown_original_objects() {
+    for primary in [false, true] {
+        let conn = Connection::open_in_memory().unwrap();
+        if primary {
+            ensure_primary_index(&conn).unwrap();
+        } else {
+            ensure_archive(&conn).unwrap();
+        }
+        let table = if primary { "source_query" } else { "query" };
+        conn.execute_batch(&format!(
+            "DROP INDEX {table}_commit_seq; ALTER TABLE {table} DROP COLUMN commit_seq;"
+        ))
+        .unwrap();
+        // The upgrade owns metadata only and need not decode/rewrite the body.
+        conn.execute(
+            &format!("INSERT INTO {table}(hash,normal_form,object) VALUES (?1,'{{}}',?2)"),
+            rusqlite::params!["a".repeat(64), b"original sealed bytes".as_slice()],
+        )
+        .unwrap();
+        set_version(&conn, 3).unwrap();
+        if primary {
+            ensure_primary_index(&conn).unwrap();
+        } else {
+            ensure_archive(&conn).unwrap();
+        }
+        let (body, position): (Vec<u8>, Option<i64>) = conn
+            .query_row(
+                &format!("SELECT object,commit_seq FROM {table}"),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(body, b"original sealed bytes");
+        assert_eq!(
+            position, None,
+            "a missing historical admission must remain unknown"
+        );
+        if primary {
+            ensure_primary_index(&conn).unwrap();
+        } else {
+            ensure_archive(&conn).unwrap();
+        }
+        assert_eq!(version(&conn).unwrap(), 4);
+    }
 }

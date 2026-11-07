@@ -708,3 +708,5 @@ mod replay;
 mod exports;
 
 mod associations;
+
+mod completion;

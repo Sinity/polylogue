@@ -796,6 +796,21 @@ impl Reader<'_> {
         )
     }
 
+    pub(crate) fn selection_saved_queries_for_family(
+        &self,
+        root: &str,
+    ) -> Result<
+        (
+            BTreeMap<String, usize>,
+            BTreeMap<String, Vec<polylogue_query::SavedQuery>>,
+        ),
+        SelectionError,
+    > {
+        let values = prepare::saved_queries_for_family(self.conn()?, root)?;
+        self.conn()?;
+        Ok(values)
+    }
+
     pub fn selection_saved_queries(
         &self,
     ) -> Result<BTreeMap<String, Vec<polylogue_query::SavedQuery>>, SelectionError> {

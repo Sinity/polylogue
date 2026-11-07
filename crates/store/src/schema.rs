@@ -59,6 +59,10 @@ pub(crate) const ARCHIVE_MIGRATIONS: &[Migration] = &[
         name: "kept output declarations v2",
         apply: crate::kept::archive_v3,
     },
+    Migration::Data {
+        name: "query admission positions",
+        apply: crate::query_objects::evolution::archive_v4,
+    },
 ];
 
 /// A numbered upgrade has one transaction, including its data conversion.
@@ -86,7 +90,7 @@ impl Migration {
 pub const ARCHIVE_VERSION: u32 = 1 + ARCHIVE_MIGRATIONS.len() as u32;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 3;
+pub const INDEX_VERSION: u32 = 4;
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
 /// after the baseline ("PLG1"). A non-empty file without it was written by an
@@ -182,14 +186,20 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         // Read indexes are added before the shape check, so an index missing
         // only those is completed rather than refused.
         tx.execute_batch(READ_INDEXES)?;
+        if primary {
+            tx.execute_batch(include_str!("primary/projection/read_indexes.sql"))?;
+        }
         if found == 1 {
             crate::query_objects::evolution::index_v2(&tx, primary)?;
         }
         if found == 1 || found == 2 {
             crate::kept::index_v3(&tx, primary)?;
+        }
+        if (1..=3).contains(&found) {
+            crate::query_objects::evolution::index_v4(&tx, primary)?;
             set_version(&tx, INDEX_VERSION)?;
         }
-        let matches = (found == 1 || found == 2 || found == INDEX_VERSION)
+        let matches = (1..=INDEX_VERSION).contains(&found)
             && if building(&tx)? {
                 same_build_schema_in(&tx, primary)?
             } else {

@@ -179,8 +179,24 @@ Completion is advanced and works with the daemon down. Ruling, 2026-05-01: "CLI 
 - **Location:** `$XDG_CACHE_HOME/polylogue/<archive key>/catalog`, so it survives a reboot before the daemon starts.
 - **Contents:** a header (format version, archive key, write position, time written); values with counts per completable field; saved query names with parameters and help; kept results (ID, name, unit, row count); settings keys and values; sessions (full ID, shortest unique prefix, title, origin, repository, last activity, first prompt), sorted by ID with a second order by last activity.
 - **Format:** a private, versioned SQLite derived catalog with indexed values and typed metadata, opened read-only with memory mapping. The publisher owns its WAL and shared-memory files and preserves them for offline readers; a daemon-down read changes none of the cache files. Concurrent readers retain a committed SQL snapshot while publication continues. SQLite may coordinate shared-memory read marks inside the live owner process. The catalog path selects a uniquely named physical database through an atomically published pointer. Rebuilding the same source generation uses fresh database and journal names so pinned old snapshots cannot mix with the rebuild. Activation retires the previous pointer-owned cache namespace. Missing, wrong-archive, obsolete or corrupt catalogs leave grammar-only completion.
-- **Freshness:** a startup or generation rebuild writes a private database, syncs and renames it, then activates its pointer under the source scope fence. Ordinary committed batches publish values and their position together in one catalog transaction. Candidates target at most 2 s of lag while writes continue; query answers read the authoritative store rather than this cache.
+- **Freshness:** the publisher subscribes before its startup snapshot, then consumes coalesced post-commit cues and existing source/index positions. Sessions, assertion families, settings, kept results and query-body dependencies update from their committed change source. An actual native lifecycle rewrite replaces its affected vocabulary category; a scope or index generation change rebuilds the snapshot. Each catalog transaction publishes its data and position together. Activation uses the native scope fence, which revokes the old pointer synchronously. Completion never promotes staged or producer-acknowledged data to confirmed vocabulary.
+- **Budgets:** the targets are at most 50 ms per keystroke with the daemon up or down, and at most 2 s from a committed batch to visible vocabulary while a writer commits once per second. Preserve actual latency samples and workload receipts separately from functional test results; a passing test alone is not timing evidence.
 - It is derived and harmless to delete.
+
+For a bounded synthetic measurement, retain successful output from the existing
+functional matrix, real daemon up/down shell callbacks, and committed-write
+visibility fixture:
+
+```sh
+cargo xtask test -p polylogue -E 'test(completion_matrix_thirteen_positions_three_shells_empty_and_seeded) | test(completion_latency_reports_real_shell_callbacks_with_daemon_up_and_down) | test(acknowledged_commits_refresh_catalog_values_while_keystrokes_continue)' --success-output immediate
+```
+
+The output records the 78-position matrix distribution, ten real CLI callbacks
+per shell and daemon state, and five setting batches scheduled one second
+apart. Record the actual acknowledged commit offsets as workload evidence.
+Submit-to-visible samples bound commit-to-visible latency from above; the
+acknowledgment-to-visible samples are reported separately. Compare the recorded
+values with the budgets without adding elapsed-time assertions to tests.
 
 ### Registration
 
