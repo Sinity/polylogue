@@ -267,7 +267,7 @@ impl<'a> Compiler<'a> {
             .iter()
             .map(|name| format!("SELECT _pk FROM {name}"))
             .collect::<Vec<_>>()
-            .join(" UNION ");
+            .join(" UNION ALL ");
         let near = if relation.program.counts_near {
             // Choose the first supplying membership operand even when its
             // similarity is NULL. RHS rankings cannot fill an earlier unknown.
@@ -280,7 +280,10 @@ impl<'a> Compiler<'a> {
         } else {
             "1".into()
         };
-        let membership = format!("SELECT k._pk,{near} AS _near FROM ({keys}) k");
+        // One unordered identity set avoids UNION's merge-sorted inputs;
+        // similarity witnesses never participate in duplicate elimination.
+        let membership =
+            format!("SELECT k._pk,{near} AS _near FROM (SELECT DISTINCT _pk FROM ({keys})) k");
         let count = format!(
             "SELECT count(*),{} FROM ({membership})",
             if relation.program.counts_near {
