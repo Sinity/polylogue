@@ -50,6 +50,11 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         job.acquisition = Some(context);
         let (prepared, done) = crate::pool::run(job, &engine.archive, &engine.blobs, true);
         assert!(done.error.is_none(), "{:?}", done.error);
+        // A cursorless raw attempt is still unsupported before confirmation.
+        engine.apply_raw_result(&mut plan, &done).unwrap();
+        let mut unconfirmed = Pass::default();
+        engine.record_raw_status(&plan, &mut unconfirmed).unwrap();
+        assert_eq!(unconfirmed.errors.len(), 1);
         let results = engine
             .writer
             .sender()
@@ -68,10 +73,44 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
                 .get(&path)
                 .is_none_or(|state| state.chain.is_none())
         );
-        engine.refresh_confirmed_input(&path).unwrap();
+        // A retired producer cursor is unavailable, while the exact captured
+        // input is now confirmed. Mismatched identity, coordinates and file
+        // evidence must still report the missing continuation proof.
+        let original_id = plan.input.id.clone();
+        let original_format = plan.input.format.clone();
+        let original_facts = plan.facts;
+        let original_size = plan.size;
+        for mismatch in 0..4 {
+            match mismatch {
+                0 => plan.input.id = "another-input".into(),
+                1 => plan.input.format = "another-format".into(),
+                2 => plan.facts = None,
+                _ => plan.size += 1,
+            }
+            let mut refused = Pass::default();
+            engine.record_raw_status(&plan, &mut refused).unwrap();
+            assert_eq!(refused.errors.len(), 1, "{refused:?}");
+            plan.input.id = original_id.clone();
+            plan.input.format = original_format.clone();
+            plan.facts = original_facts;
+            plan.size = original_size;
+        }
+        plan.raw.as_mut().unwrap().custody = Some(polylogue_store::primary::RawCustodyReceipt {
+            identity: "unresolved-acquisition".into(),
+            count: 1,
+        });
+        let mut unresolved = Pass::default();
+        engine.record_raw_status(&plan, &mut unresolved).unwrap();
+        assert_eq!(unresolved.errors.len(), 1);
+        plan.raw.as_mut().unwrap().custody = None;
+        let mut confirmed = Pass::default();
+        engine.record_raw_status(&plan, &mut confirmed).unwrap();
+        assert!(confirmed.errors.is_empty(), "{confirmed:?}");
+        assert!(plan.raw.as_ref().unwrap().cursor.is_none());
+        engine.finish_plan(plan);
         assert_eq!(engine.inputs[&path].stored, bytes.len() as u64);
         let parse = engine.stored_plan(&path).unwrap().unwrap();
-        assert_eq!(parse.input.id, plan.input.id);
+        assert_eq!(parse.input.id, original_id);
         std::fs::remove_file(&path).unwrap();
         let mut pass = Pass::default();
         engine.execute_pool(vec![parse], &mut pass).unwrap();

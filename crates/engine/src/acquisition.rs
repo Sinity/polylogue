@@ -158,14 +158,38 @@ impl Engine {
         Ok(())
     }
 
-    pub(crate) fn record_raw_status(plan: &crate::plan::Plan, pass: &mut Pass) {
-        let Some(raw) = &plan.raw else { return };
+    pub(crate) fn record_raw_status(
+        &mut self,
+        plan: &crate::plan::Plan,
+        pass: &mut Pass,
+    ) -> Result<(), EngineError> {
+        let Some(raw) = &plan.raw else { return Ok(()) };
         let Some(cursor) = &raw.cursor else {
+            // Confirmed application may retire the producer body before this
+            // physical attempt returns. Adopt only that exact logical source;
+            // an absent raw cursor itself proves no custody or progress.
+            if raw.custody.is_none()
+                && plan.tracked
+                && matches!(plan.source, crate::pool::Bytes::File)
+                && plan.facts.is_some()
+                && let Some(known) = self.reads.reader()?.known_watched_input_at(
+                    &self.config.machine,
+                    plan.path.as_os_str().as_encoded_bytes(),
+                )?
+                && known.input_id == plan.input.id
+                && known.format == plan.input.format
+                && known.facts == plan.facts
+                && known.chain.is_some()
+                && known.stored >= plan.size
+            {
+                self.refresh_confirmed_input(&plan.path)?;
+                return Ok(());
+            }
             pass.errors.push(format!(
                 "raw custody retained for {}; continuation proof unavailable",
                 plan.input.id
             ));
-            return;
+            return Ok(());
         };
         if !cursor.is_complete_stream() {
             pass.errors.push(format!(
@@ -188,6 +212,7 @@ impl Engine {
                 plan.input.id
             )),
         }
+        Ok(())
     }
 
     pub(crate) fn apply_raw_result(

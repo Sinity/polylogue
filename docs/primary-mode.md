@@ -41,6 +41,9 @@ index. The capture loop reports this as pending progress and resumes the origina
 acquisition; it is complete only after confirmed application. Before planning
 another acquisition, the sampler adopts the confirmed input and reading cursor.
 A pending capture's raw byte cursor cannot advance that logical source state.
+Confirmed application can retire the producer body before the capture loop
+receives its result. The loop then adopts the exact confirmed input, file facts
+and covered chain; retirement does not require another raw continuation proof.
 Before assigning source revisions, the writer compares the capture with the
 completed confirmed-stream history. If an unreadable record might describe an
 input, new source revisions remain pending. Already readable facts remain available.
