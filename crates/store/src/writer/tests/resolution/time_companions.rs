@@ -238,7 +238,7 @@ fn native_time_companions_use_evidence_and_keep_missing_relations_distinct() {
         ],
     );
     assert_eq!(calls.len(), 1);
-    assert!(calls[0]["result_at"].as_i64().is_some());
+    assert_eq!(calls[0]["result_at"], "2026-10-29T11:00:00Z");
     assert_eq!(calls[0]["at_time_quality"], "operator");
     assert_eq!(calls[0]["at_precision"], "bounded");
     assert!(calls[0]["result_at_time_quality"].is_null());

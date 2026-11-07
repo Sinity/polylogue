@@ -18,8 +18,19 @@ fn error(w: &TestArchive, text: &str) -> Failure {
 fn set_stages_select_what_their_conditions_would() {
     let w = morrow();
     let union = q(&w, "origin:claude-code | union (origin:codex)");
-    assert_eq!(ids(&union), ids(&q(&w, "origin:(claude-code|codex)")));
-    assert_eq!(union["ranked"], false, "unranked rows keep their order");
+    assert_eq!(ids(&union), ["#1", "#2", "#4", "#5", "#6"]);
+    assert_eq!(
+        ids(&union),
+        ids(&q(&w, "origin:(claude-code|codex) | sort by id"))
+    );
+    assert_eq!(union["ranked"], false, "unranked unions use identity order");
+    assert_eq!(
+        ids(&q(
+            &w,
+            "origin:codex | union (origin:claude-code | distinct)"
+        )),
+        ids(&union)
+    );
     assert_eq!(
         ids(&q(&w, "origin:claude-code | intersect (cost > 2)")),
         ["#2"]
@@ -45,7 +56,7 @@ fn set_stages_select_what_their_conditions_would() {
             &w,
             "origin:codex | union (model:claude-opus-5-5 kind:*)"
         )),
-        ["#6", "#5", "#3"]
+        ["#3", "#5", "#6"]
     );
     // Later stages see the combined rows.
     assert_eq!(
@@ -61,7 +72,6 @@ fn set_stages_refuse_what_does_not_combine() {
         "origin:codex | union (messages where chrono)",
         "origin:codex | union (origin:claude-code | count)",
         "origin:codex | count | union (origin:claude-code)",
-        "origin:codex | union (origin:claude-code | distinct)",
     ] {
         assert_eq!(error(&w, bad).code(), "invalid_query", "{bad}");
     }
@@ -192,9 +202,9 @@ fn saved_queries_take_their_parameters_as_values() {
     assert_eq!(
         ids(&q(
             &w,
-            "query:costly(over=2) | union (query:costly(over=1.5))"
+            "query:costly(over=2) | union (query:costly(over=1.5)) | sort by id"
         )),
-        ids(&q(&w, "sessions where cost > 1.5"))
+        ids(&q(&w, "sessions where cost > 1.5 | sort by id"))
     );
     // A value is one value: it cannot add a condition.
     assert_eq!(
