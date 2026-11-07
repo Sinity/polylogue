@@ -728,10 +728,11 @@ fn default_numeric_and_unlimited_context_budgets_retain_their_distinct_meanings(
         session: None,
         source: StartSource::Resume,
     };
+    let scope = scope_of(&reader);
     let prepared = |budget| {
         prepare(
             &reader,
-            &SharedScopeIndex::default(),
+            &scope,
             None,
             &ask,
             "budget-witness",
