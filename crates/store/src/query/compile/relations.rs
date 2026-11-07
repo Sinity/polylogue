@@ -392,6 +392,9 @@ impl<'a> Compiler<'a> {
             let prefix = format!("WITH RECURSIVE {}", self.ctes.join(", "));
             let scoped = |sql: &str| format!("{prefix} SELECT * FROM ({sql})");
             relation.program.sql = scoped(&relation.program.sql);
+            relation.program.row_count_sql = relation.program.row_count_sql.as_deref().map(scoped);
+            relation.program.row_membership_sql =
+                relation.program.row_membership_sql.as_deref().map(scoped);
             if let Some(measure) = &mut relation.program.measure {
                 measure.selection_sql = scoped(&measure.selection_sql);
                 measure.population_sql = scoped(&measure.population_sql);
@@ -580,8 +583,13 @@ impl<'a> Compiler<'a> {
         ) {
             relation.group = None;
         }
-        relation.program.row_count_sql = None;
-        relation.program.row_membership_sql = None;
+        if !matches!(
+            stage.kind,
+            TransformKind::Fields { .. } | TransformKind::Sort { .. }
+        ) {
+            relation.program.row_count_sql = None;
+            relation.program.row_membership_sql = None;
+        }
         Ok(())
     }
 

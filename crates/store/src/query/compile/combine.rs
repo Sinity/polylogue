@@ -246,35 +246,52 @@ impl<'a> Compiler<'a> {
             "{values} AS MATERIALIZED (SELECT *, row_number() OVER (PARTITION BY _pk ORDER BY {source_list}) AS {precedence} FROM ({}))",
             projections.join(" UNION ALL ")
         ));
-        let near_inputs = members
-            .iter()
-            .chain(&fuses)
-            .filter(|program| program.counts_near)
-            .map(|program| format!("SELECT _pk, _near FROM ({})", program.sql))
-            .collect::<Vec<_>>();
-        let near = if near_inputs.is_empty() {
-            None
-        } else {
+        // Counting needs selected identities, not value precedence or fusion
+        // scores. Fall back to the captured operand only when its stages made
+        // membership depend on ranking or another relational selection.
+        let mut membership_inputs = Vec::new();
+        for program in &members {
             let name = relation.slot();
+            let input = program.row_membership_sql.as_ref().unwrap_or(&program.sql);
+            let near = if relation.program.counts_near && program.counts_near {
+                "_near"
+            } else {
+                "NULL"
+            };
             self.ctes.push(format!(
-                "{name} AS MATERIALIZED (SELECT _pk,max(_near) AS _near FROM ({}) GROUP BY _pk)",
-                near_inputs.join(" UNION ALL ")
+                "{name} AS MATERIALIZED (SELECT _pk,{near} AS _near FROM ({input}))"
             ));
-            Some(name)
+            membership_inputs.push(name);
+        }
+        let keys = membership_inputs
+            .iter()
+            .map(|name| format!("SELECT _pk FROM {name}"))
+            .collect::<Vec<_>>()
+            .join(" UNION ");
+        let near = if relation.program.counts_near {
+            // Choose the first supplying membership operand even when its
+            // similarity is NULL. RHS rankings cannot fill an earlier unknown.
+            format!(
+                "CASE {} END",
+                membership_inputs.iter().map(|name| format!(
+                    "WHEN EXISTS (SELECT 1 FROM {name} WHERE _pk=k._pk) THEN (SELECT _near FROM {name} WHERE _pk=k._pk)"
+                )).collect::<Vec<_>>().join(" ")
+            )
+        } else {
+            "1".into()
         };
+        let membership = format!("SELECT k._pk,{near} AS _near FROM ({keys}) k");
+        let count = format!(
+            "SELECT count(*),{} FROM ({membership})",
+            if relation.program.counts_near {
+                "count(*) FILTER (WHERE _near IS NULL)"
+            } else {
+                "0"
+            }
+        );
         let mut projection = slots
             .iter()
-            .map(|slot| {
-                let value = if slot == "_near" && near.is_some() {
-                    format!(
-                        "(SELECT _near FROM {} WHERE _pk=d._pk)",
-                        near.as_deref().unwrap()
-                    )
-                } else {
-                    format!("d.{}", column_sql(slot))
-                };
-                format!("{value} AS {}", column_sql(slot))
-            })
+            .map(|slot| format!("d.{0} AS {0}", column_sql(slot)))
             .collect::<Vec<_>>();
         let mut join_rank = String::new();
         let mut order = relation.identity_order();
@@ -362,9 +379,8 @@ impl<'a> Compiler<'a> {
         );
         relation.program.order = order;
         relation.program.ranked = ranked;
-        relation.program.counts_near = near.is_some();
-        relation.program.row_count_sql = None;
-        relation.program.row_membership_sql = None;
+        relation.program.row_count_sql = Some(count);
+        relation.program.row_membership_sql = Some(membership);
         relation.program.time_text_columns.clear();
         Ok(())
     }
@@ -443,7 +459,14 @@ fn aligned_columns(
         };
         columns.insert(source.key.clone(), value);
     }
-    columns.insert("_near".into(), "r._near".into());
+    columns.insert(
+        "_near".into(),
+        if relation.program.counts_near && !input.counts_near {
+            "NULL".into()
+        } else {
+            "r._near".into()
+        },
+    );
     columns.insert("_recency".into(), "r._recency".into());
     if fields::lookup(relation.program.unit, "first_seen").is_some_and(|field| field.sql.is_some())
     {

@@ -497,3 +497,37 @@ fn diff_moved_rows_keep_after_values_and_unknowns_over_before_values() {
         ]
     );
 }
+
+#[test]
+fn fused_count_and_membership_keep_rank_dependent_operand_selections() {
+    let (_directory, fixture) = fixture();
+    let reads = fixture.reads().unwrap();
+    let reader = reads.reader().unwrap();
+    let text = "sessions | sort by input_tokens desc | limit 1 | union (sessions | sort by input_tokens | limit 1) | fuse (sessions | sort by input_tokens desc)";
+    let program = compile(text, &opts(&[])).unwrap();
+    let parameters = crate::selection::values(&program.params);
+    assert_eq!(
+        reader
+            .query_counts(&program.count_sql(), &parameters)
+            .unwrap(),
+        (2, 0)
+    );
+    let membership = reader
+        .query(
+            &format!(
+                "SELECT s.id FROM ({}) k JOIN session s ON s.pk=k._pk ORDER BY s.id",
+                program.row_membership_sql.as_ref().unwrap()
+            ),
+            &parameters,
+        )
+        .unwrap();
+    assert_eq!(
+        membership,
+        [json!({"id":"claude-code:a"}), json!({"id":"claude-code:c"})]
+    );
+    let rows = read(&reader, text);
+    assert_eq!(
+        rows.iter().map(|row| row["id"].clone()).collect::<Vec<_>>(),
+        [json!("claude-code:c"), json!("claude-code:a")]
+    );
+}

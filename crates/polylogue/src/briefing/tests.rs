@@ -86,10 +86,10 @@ fn recall_fuses_prose_and_tool_output_in_the_querys_order() {
     )
     .unwrap();
     // Each list has one first-place hit. Equal ranks and unknown times
-    // are ordered by message ID, highest first.
+    // are ordered by semantic message identity, lowest first.
     assert_eq!(
         p.refs,
-        ["session:test:s1", "message:m2", "message:m1"],
+        ["session:test:s1", "message:m1", "message:m2"],
         "{}",
         p.text
     );

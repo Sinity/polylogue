@@ -325,7 +325,8 @@ impl<'a> Compiler<'a> {
                 "{ctes}SELECT count(*), {without} FROM {count_from} WHERE {count_where}"
             ));
             row_membership = Some(format!(
-                "{ctes}SELECT {pk} AS _pk FROM {count_from} WHERE {count_where}"
+                "{ctes}SELECT {pk} AS _pk,{} AS _near FROM {count_from} WHERE {count_where}",
+                self.near_rank.as_deref().unwrap_or("1")
             ));
             let (hidden, keys) = hidden_order(&order, "_o");
             select.extend(hidden);
