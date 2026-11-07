@@ -205,10 +205,52 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
             Some(serde_json::json!({"continuation":"unchanged"}))
         );
         assert!(engine.stored_plan(&path).unwrap().is_none());
-        engine.inputs.get_mut(&path).unwrap().parsed_upto = 0;
+        let facts = engine.inputs[&path].facts;
+        let stored = engine.inputs[&path].stored;
+        let state = engine.inputs.get_mut(&path).unwrap();
+        state.tail = Some(b"confirmed tail".to_vec());
+        state.unread = facts;
+        state.working = Some(crate::plan::WorkingState {
+            capture: "later-capture".into(),
+            group: "later-group".into(),
+            facts,
+            stored: stored + 1,
+        });
         engine.refresh_confirmed_input(&path).unwrap();
-        assert!(engine.inputs[&path].parser_state.is_none());
-        assert_eq!(engine.inputs[&path].parsed_upto, bytes.len() as u64);
+        let state = &engine.inputs[&path];
+        assert!(state.parser_state.is_some());
+        assert_eq!(state.tail.as_deref(), Some(b"confirmed tail".as_slice()));
+        assert_eq!(state.unread, facts);
+        assert!(
+            state.working.is_some(),
+            "later custody is still unconfirmed"
+        );
+        engine
+            .inputs
+            .get_mut(&path)
+            .unwrap()
+            .working
+            .as_mut()
+            .unwrap()
+            .stored = stored;
+        engine.refresh_confirmed_input(&path).unwrap();
+        assert!(engine.inputs[&path].working.is_none());
+        // Each stale component is compared with the real committed cursor.
+        for stale in 0..5 {
+            let state = engine.inputs.get_mut(&path).unwrap();
+            state.parser_state = Some(serde_json::json!({"continuation":"stale"}));
+            match stale {
+                0 => state.parsed_upto = 0,
+                1 => state.chain = None,
+                2 => state.parsed = false,
+                3 => state.waiting = !state.waiting,
+                _ => state.input_id = "another-input".into(),
+            }
+            engine.refresh_confirmed_input(&path).unwrap();
+            assert!(engine.inputs[&path].parser_state.is_none());
+            assert_eq!(engine.inputs[&path].parsed_upto, bytes.len() as u64);
+            assert_eq!(engine.inputs[&path].input_id, original_id);
+        }
         assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 1);
         assert_eq!(home.count("SELECT count(*) AS n FROM a.extent"), 2);
     }

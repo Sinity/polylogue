@@ -713,3 +713,115 @@ fn a_finished_database_worker_keeps_its_original_custody_pending_across_batches(
         assert_eq!(identities(), original);
     }
 }
+
+#[test]
+fn a_deferred_database_read_error_preserves_another_files_confirmation_wait() {
+    use polylogue_model::BlobHash;
+    use polylogue_store::Writer;
+    use polylogue_store::primary::{Confirmed, ConfirmedChange, Material, Product, ReplayControl};
+
+    for pending_file in [false, true] {
+        let home = ClaudeHome::new();
+        let db = home.home.join(".codex/state_5.sqlite");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        std::fs::copy(
+            polylogue_testkit::morrow_dir().join("codex/state_5.sqlite"),
+            &db,
+        )
+        .unwrap();
+        if pending_file {
+            home.append(
+                "pending-with-error.jsonl",
+                &polylogue_testkit::claude_user("u1", "pending", "retained despite database error"),
+            );
+        }
+        let store = home.dir.path().join("sdk");
+        let sdk = Arc::new(client(&store));
+        let (archive, _lock) = Archive::open_primary(&home.root, &store).unwrap();
+        let writer = Writer::start_on_sinex(&archive, sdk.clone()).unwrap();
+        let control = |control| Confirmed {
+            native: None,
+            position: 1,
+            output_index: 0,
+            event: String::new(),
+            change: ConfirmedChange::Control(Box::new(control)),
+        };
+        writer
+            .apply_confirmed(vec![control(ReplayControl::Reset {
+                scope: "database-error-scope".into(),
+            })])
+            .unwrap();
+        let bytes = b"{\"db\":\"state_5.sqlite\",\"schema\":{}}\n";
+        let physical = super::extent(&store, bytes);
+        let hash = BlobHash::of(bytes);
+        let input = "confirmed-database";
+        let rows = serde_json::from_value(serde_json::json!({
+            "input":input, "format":"codex-database",
+            "revision":{"number":1,"produced":"first","chain":1,"length":bytes.len()},
+            "extent":{"chain":1,"offset":0,"length":bytes.len(),"blob":hash,"blob_offset":0},
+            "observation":{
+                "id":"confirmed-database-observation", "machine":"test-machine", "host":"test",
+                "path":db.to_string_lossy(), "path_bytes":db.as_os_str().as_encoded_bytes(),
+                "class":"first", "revision":1, "length":bytes.len(),
+                "device":null,"inode":null,"size":null,"mtime_ns":null,"ctime_ns":null,
+                "polylogue_version":"synthetic", "seen_at":1,"details_json":null
+            }
+        }))
+        .unwrap();
+        writer
+            .apply_confirmed(vec![
+                Confirmed {
+                    native: None,
+                    position: 1,
+                    output_index: 0,
+                    event: "confirmed-database-event".into(),
+                    change: ConfirmedChange::Live(Box::new(Product::Input {
+                        rows: Box::new(rows),
+                        material: Some(Material {
+                            id: "confirmed-database-material".into(),
+                            hash,
+                            length: bytes.len() as u64,
+                            extents: vec![physical.encode()],
+                        }),
+                    })),
+                },
+                control(ReplayControl::Completion { position: 1 }),
+            ])
+            .unwrap();
+        drop(writer);
+        // A real stored-byte read fails. Its database must remain deferred,
+        // without a new database acquisition or an active worker to wait on.
+        std::fs::remove_file(store.join("segments/test.zst")).unwrap();
+        let mut engine =
+            Engine::on_sinex(home.config(CHUNK), archive.clone(), sdk.clone()).unwrap();
+        let pass = engine.run_pass().unwrap();
+        assert!(
+            pass.errors
+                .iter()
+                .any(|error| error.contains("state_5.sqlite")),
+            "the stored database read must fail: {pass:?}"
+        );
+        assert_eq!(pass.capture_pending, pending_file, "{pass:?}");
+        let captures = sdk.pending_captures().unwrap();
+        assert_eq!(captures.is_empty(), !pending_file);
+        assert!(captures.iter().all(|capture| matches!(
+            &capture.captured, Capture::Input(input) if input.rows.format == "claude-code"
+        )));
+        if pending_file {
+            assert_custody_complete(
+                &sdk,
+                &home.file("pending-with-error.jsonl"),
+                &std::fs::read(home.file("pending-with-error.jsonl")).unwrap(),
+            );
+        }
+        let reads = ReadPool::open(&archive).unwrap();
+        let progress = reads
+            .reader()
+            .unwrap()
+            .input_progress(input)
+            .unwrap()
+            .unwrap();
+        assert!(!progress.parsed);
+        assert_eq!(progress.length, bytes.len() as u64);
+    }
+}

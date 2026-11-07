@@ -227,6 +227,19 @@ fn native_capture_continues_the_input_at_the_observed_byte_path() {
     assert_eq!(admission[0]["chain"], initial_chain);
     assert!(admission[0]["admitted"].as_u64().unwrap() > 0);
     drop(reader);
+    engine.refresh_database_progress().unwrap();
+    let state = engine.inputs.get_mut(&db).unwrap();
+    state.parser_state = Some(serde_json::json!({"continuation":"confirmed database"}));
+    state.tail = Some(b"confirmed database tail".to_vec());
+    engine.refresh_database_progress().unwrap();
+    assert_eq!(
+        engine.inputs[&db].parser_state,
+        Some(serde_json::json!({"continuation":"confirmed database"}))
+    );
+    assert_eq!(
+        engine.inputs[&db].tail.as_deref(),
+        Some(b"confirmed database tail".as_slice())
+    );
     let quiet = engine.run_pass().unwrap();
     assert!(quiet.errors.is_empty(), "{quiet:?}");
     assert_eq!(quiet.bytes_stored, 0);
@@ -281,7 +294,7 @@ fn a_database_pass_yields_when_its_waiting_parser_has_no_local_work() {
     engine.load().unwrap();
     let origin = polylogue_sources::origin::by_name("codex-database").unwrap();
     let mut discovering = Pass::default();
-    engine
+    let (deferred, changed) = engine
         .capture_databases(
             &[collect::Found {
                 path: db.clone(),
@@ -291,7 +304,9 @@ fn a_database_pass_yields_when_its_waiting_parser_has_no_local_work() {
             &mut discovering,
         )
         .unwrap();
-    assert!(discovering.capture_pending);
+    assert!(deferred);
+    assert!(!changed);
+    assert!(!discovering.capture_pending);
     assert!(
         !engine.captures.pending(),
         "confirmed bytes need their first reading"

@@ -507,8 +507,8 @@ impl Engine {
         drop(reader);
         self.inputs
             .retain(|path, state| !state.origin.is_row_dump(path));
-        for k in known {
-            let Some(path_bytes) = k.path_bytes else {
+        for mut k in known {
+            let Some(path_bytes) = k.path_bytes.take() else {
                 // Historical display text cannot identify a native location.
                 continue;
             };
@@ -520,26 +520,32 @@ impl Engine {
             if !origin.is_row_dump(&path) && self.inputs.contains_key(&path) {
                 continue;
             }
-            self.inputs.insert(
-                path,
-                InputState {
-                    input_id: k.input_id,
-                    origin,
-                    facts: k.facts,
-                    stored: k.stored,
-                    parsed_upto: k.parsed_upto,
-                    parsed: k.parsed,
-                    waiting: k.waiting,
-                    parser_state: None,
-                    tail: None,
-                    chain: k.chain,
-                    unread: None,
-                    working: None,
-                },
-            );
+            self.adopt_watched_input(&path, k);
         }
         self.loaded = true;
         Ok(())
+    }
+
+    /// A watched location resolves identity before adopting its chain progress.
+    /// Database refresh uses its selected input ID instead of resolving the path.
+    fn adopt_watched_input(&mut self, path: &Path, known: KnownInput) {
+        let Some(origin) = ORIGINS.iter().find(|origin| origin.name == known.format) else {
+            return;
+        };
+        let progress = known
+            .chain
+            .map(|chain| polylogue_store::read::ChainProgress {
+                chain,
+                arrival_rank: origin.arrival.rank(),
+                length: known.stored,
+                parsed_upto: known.parsed_upto,
+                parsed: known.parsed,
+                waiting: known.waiting,
+            });
+        self.inputs
+            .entry(path.to_path_buf())
+            .or_insert_with(|| InputState::new(known.input_id.clone(), origin))
+            .adopt_confirmed(&known.input_id, origin, known.facts, progress.as_ref());
     }
 
     fn observation(&self, path: &Path, facts: Option<FileFacts>) -> Observation {

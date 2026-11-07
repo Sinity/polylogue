@@ -40,6 +40,10 @@ A durable capture can remain pending while its confirmed input reaches the local
 index. The capture loop reports this as pending progress and resumes the original
 acquisition; it is complete only after confirmed application. Before planning
 another acquisition, the sampler adopts the confirmed input and reading cursor.
+One transition adopts logical progress for watched inputs and exact database
+input IDs. It keeps parser continuation only at the same input, origin, chain
+and reading cursor, invalidates cached tail bytes when their stored range changes,
+and retires working custody only when the matching observation is covered.
 A pending capture's raw byte cursor cannot advance that logical source state.
 Confirmed application can retire the producer body before the capture loop
 receives its result. The loop then adopts the exact confirmed input, file facts
@@ -62,8 +66,11 @@ new provider head; several database inputs can share one provider path. Inline
 attachments decoded by that parser retain their own blob preparation. Durable
 product preparation advances the sampler's cached parser state only after the
 matching reading version and cursor reach the confirmed index.
-A batch waits for active local database work. Once only confirmed application
-remains, it returns pending progress so its caller can wait for stream events.
+A batch waits for active local database work. Deferred parsing is local work,
+not a confirmation wait: successful parsing can start a database read in the
+same batch, while a failed parse stops that attempt. Errors in that attempt do
+not clear another input's confirmation wait. Once only confirmed application
+remains, the batch returns pending progress so its caller can wait for stream events.
 Later batches consult the original producer custody until it is retired; an
 unchanged database does not need another physical read to report that wait.
 

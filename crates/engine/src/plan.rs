@@ -4,7 +4,7 @@
 use crate::pool::{self, Done, Job, Priority};
 use polylogue_model::Json;
 use polylogue_sources::OriginSpec;
-use polylogue_store::{Change, FileFacts, InputKey, Observation};
+use polylogue_store::{Change, FileFacts, InputKey, Observation, read::ChainProgress};
 use std::path::{Path, PathBuf};
 
 /// What the loop knows about one input between passes. Its parser state
@@ -36,6 +36,70 @@ pub(crate) struct InputState {
 }
 
 impl InputState {
+    pub(crate) fn new(input_id: String, origin: &'static OriginSpec) -> Self {
+        Self {
+            input_id,
+            origin,
+            facts: None,
+            stored: 0,
+            parsed_upto: 0,
+            parsed: false,
+            waiting: false,
+            parser_state: None,
+            tail: None,
+            chain: None,
+            unread: None,
+            working: None,
+        }
+    }
+
+    /// Adopt committed logical progress. Private custody never supplies a cursor.
+    /// Cached continuation is useful only at the exact same reading checkpoint.
+    pub(crate) fn adopt_confirmed(
+        &mut self,
+        input_id: &str,
+        origin: &'static OriginSpec,
+        facts: Option<FileFacts>,
+        progress: Option<&ChainProgress>,
+    ) {
+        let chain = progress.map(|p| p.chain);
+        let stored = progress.map_or(0, |p| p.length);
+        let parsed_upto = progress.map_or(0, |p| p.parsed_upto);
+        let parsed = progress.is_some_and(|p| p.parsed);
+        let waiting = progress.is_some_and(|p| p.waiting);
+        let same_input = self.input_id == input_id && self.origin.name == origin.name;
+        let same_cursor = same_input
+            && self.chain == chain
+            && self.parsed_upto == parsed_upto
+            && self.parsed == parsed
+            && self.waiting == waiting;
+        if !same_cursor {
+            self.parser_state = None;
+        }
+        if !same_input || self.chain != chain || self.stored != stored {
+            self.tail = None;
+        }
+        if self.facts != facts || !same_cursor {
+            self.unread = None;
+        }
+        if !same_input
+            || self
+                .working
+                .as_ref()
+                .is_some_and(|working| working.facts == facts && working.stored <= stored)
+        {
+            self.working = None;
+        }
+        self.input_id = input_id.into();
+        self.origin = origin;
+        self.facts = facts;
+        self.chain = chain;
+        self.stored = stored;
+        self.parsed_upto = parsed_upto;
+        self.parsed = parsed;
+        self.waiting = waiting;
+    }
+
     pub(crate) fn needs_reading(&self) -> bool {
         (!self.waiting && self.parsed_upto < self.stored) || !self.parsed
     }

@@ -277,6 +277,8 @@ impl Engine {
             && !disappeared
             && !pass.capture_pending
             && !database_changed
+            && !deferred_database
+            && !self.captures.pending()
         {
             pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, HashSet::new()));
@@ -370,9 +372,7 @@ impl Engine {
             // that real work in this batch; a still-pending reading just yields.
             self.capture_databases(&[], false, &mut pass)?;
         }
-        if deferred_database && !pass.errors.is_empty() {
-            pass.capture_pending = self.captures.pending();
-        }
+        pass.capture_pending |= self.captures.pending();
         if !pass.capture_pending {
             pass.sessions_derived = self.derive()?;
         }
@@ -428,81 +428,14 @@ impl Engine {
     /// Reconcile the sampler with confirmed application after a pending capture.
     /// Private raw custody never supplies these logical source coordinates.
     pub(crate) fn refresh_confirmed_input(&mut self, path: &Path) -> Result<(), EngineError> {
-        let Some(known) = self
+        let known = self
             .reads
             .reader()?
-            .known_watched_input_at(&self.config.machine, path.as_os_str().as_encoded_bytes())?
-        else {
-            if let Some(state) = self.inputs.get_mut(path)
-                && (state.facts.is_some() || state.chain.is_some() || state.stored != 0)
-            {
-                state.facts = None;
-                state.chain = None;
-                state.stored = 0;
-                state.parsed_upto = 0;
-                state.parsed = false;
-                state.waiting = false;
-                state.parser_state = None;
-                state.tail = None;
-                state.unread = None;
-            }
-            return Ok(());
-        };
-        let Some(origin) = ORIGINS.iter().find(|origin| origin.name == known.format) else {
-            return Ok(());
-        };
-        if let Some(state) = self.inputs.get_mut(path) {
-            let same_cursor = state.input_id == known.input_id
-                && state.origin.name == known.format
-                && state.chain == known.chain
-                && state.parsed_upto == known.parsed_upto
-                && state.parsed == known.parsed
-                && state.waiting == known.waiting;
-            if !same_cursor {
-                state.parser_state = None;
-            }
-            if state.input_id != known.input_id
-                || state.chain != known.chain
-                || state.stored != known.stored
-            {
-                state.tail = None;
-            }
-            if state.facts != known.facts || !same_cursor {
-                state.unread = None;
-            }
-            if state.input_id != known.input_id
-                || state.working.as_ref().is_some_and(|working| {
-                    working.facts == known.facts && working.stored <= known.stored
-                })
-            {
-                state.working = None;
-            }
-            state.input_id = known.input_id;
-            state.origin = origin;
-            state.facts = known.facts;
-            state.chain = known.chain;
-            state.stored = known.stored;
-            state.parsed_upto = known.parsed_upto;
-            state.parsed = known.parsed;
-            state.waiting = known.waiting;
-        } else {
-            self.inputs.insert(
-                path.to_path_buf(),
-                InputState {
-                    input_id: known.input_id,
-                    origin,
-                    facts: known.facts,
-                    stored: known.stored,
-                    parsed_upto: known.parsed_upto,
-                    parsed: known.parsed,
-                    waiting: known.waiting,
-                    parser_state: None,
-                    tail: None,
-                    chain: known.chain,
-                    unread: None,
-                    working: None,
-                },
-            );
+            .known_watched_input_at(&self.config.machine, path.as_os_str().as_encoded_bytes())?;
+        if let Some(known) = known {
+            self.adopt_watched_input(path, known);
+        } else if let Some(state) = self.inputs.get_mut(path) {
+            state.adopt_confirmed(&state.input_id.clone(), state.origin, None, None);
         }
         Ok(())
     }
@@ -517,23 +450,8 @@ impl Engine {
             return false;
         }
         let id = self.location_id(&f.path);
-        self.inputs.insert(
-            f.path.clone(),
-            InputState {
-                input_id: id,
-                origin: f.origin,
-                facts: None,
-                stored: 0,
-                parsed_upto: 0,
-                parsed: false,
-                waiting: false,
-                parser_state: None,
-                tail: None,
-                chain: None,
-                unread: None,
-                working: None,
-            },
-        );
+        self.inputs
+            .insert(f.path.clone(), InputState::new(id, f.origin));
         true
     }
 
@@ -1312,21 +1230,7 @@ impl Engine {
                     pass.errors.push(error);
                 }
                 if plan.tracked {
-                    let known = self.reads.reader()?.known_watched_input_at(
-                        &self.config.machine,
-                        plan.path.as_os_str().as_encoded_bytes(),
-                    )?;
-                    if let Some(state) = self.inputs.get_mut(&plan.path) {
-                        state.facts = known.as_ref().and_then(|known| known.facts);
-                        state.chain = known.as_ref().and_then(|known| known.chain);
-                        state.stored = known.as_ref().map_or(0, |known| known.stored);
-                        state.parsed_upto = known.as_ref().map_or(0, |known| known.parsed_upto);
-                        state.parsed = known.as_ref().is_some_and(|known| known.parsed);
-                        state.waiting = known.as_ref().is_some_and(|known| known.waiting);
-                        state.parser_state = None;
-                        state.tail = None;
-                        state.unread = None;
-                    }
+                    self.refresh_confirmed_input(&plan.path)?;
                 }
                 continue;
             }
@@ -1343,7 +1247,12 @@ impl Engine {
             let parsed = has_reading(plan.origin);
             plan.apply(d, parsed);
             if plan.finished() {
-                if self.archive.is_primary() && matches!(plan.change, Change::Reparse { .. }) {
+                // A read failure before producing any reading has no external
+                // work to await. Earlier prepared steps still need confirmation.
+                if self.archive.is_primary()
+                    && matches!(plan.change, Change::Reparse { .. })
+                    && (!plan.failed || plan.failure_recorded || plan.checkpoint.is_some())
+                {
                     if self.confirmed_reading(&plan)? {
                         if plan.tracked {
                             self.refresh_confirmed_input(&plan.path)?;

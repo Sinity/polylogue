@@ -394,23 +394,10 @@ impl Engine {
             let Some(progress) = reader.input_progress(&input_id)? else {
                 continue;
             };
-            self.inputs.insert(
-                path.clone(),
-                InputState {
-                    input_id,
-                    origin,
-                    facts: None,
-                    stored: progress.length,
-                    parsed_upto: progress.parsed_upto,
-                    parsed: progress.parsed,
-                    waiting: progress.waiting,
-                    parser_state: None,
-                    tail: None,
-                    chain: Some(progress.chain),
-                    unread: None,
-                    working: None,
-                },
-            );
+            self.inputs
+                .entry(path.clone())
+                .or_insert_with(|| InputState::new(input_id.clone(), origin))
+                .adopt_confirmed(&input_id, origin, None, Some(&progress));
         }
         Ok(())
     }
@@ -513,7 +500,6 @@ impl Engine {
                 self.capture_checked = Some(Instant::now());
             }
         }
-        pass.capture_pending |= self.captures.pending() || deferred_database;
         Ok((deferred_database, completed.changed))
     }
 }
