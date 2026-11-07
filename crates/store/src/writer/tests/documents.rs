@@ -1,6 +1,7 @@
 use super::*;
 use polylogue_model::{Document, DocumentAuthorship, DocumentId, DocumentPurpose, DocumentRow};
 use serde_json::json;
+use std::ops::ControlFlow;
 
 fn document(id: &str, body: &str, time: i64) -> Document {
     let mut doc = Document::new(
@@ -10,13 +11,87 @@ fn document(id: &str, body: &str, time: i64) -> Document {
     doc.blocks = vec![Block::Text { text: body.into() }];
     doc.title = Some(String::new());
     doc.source_time = Timestamp::from_unix_ms(time);
+    doc.source_time_quality = polylogue_model::TimeQuality::Intrinsic;
+    doc.source_time_precision = Some(polylogue_model::Precision::Instant);
     doc.metadata =
         json!({"source_kind":"project_document","supplied":false,"empty":"","opaque":null});
     doc
 }
 
+#[test]
+fn document_block_visitors_seek_original_ordinals_and_stop_before_corrupt_bodies() {
+    let w = test_archive();
+    let mut original = document("lazy-blocks", "first", 1);
+    original.blocks.extend([
+        Block::Text {
+            text: "second".into(),
+        },
+        Block::Text {
+            text: "third".into(),
+        },
+    ]);
+    w.store_reading(
+        doc_batch("lazy-source", original.clone(), true),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    index
+        .execute("UPDATE document_block SET body=x'00' WHERE idx=2", [])
+        .unwrap();
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let selected = reader.select_document(&original.id).unwrap().unwrap();
+    let mut first = Vec::new();
+    selected
+        .visit_blocks_from(0, |ordinal, block| {
+            first.push((ordinal, block));
+            ControlFlow::Break(())
+        })
+        .unwrap();
+    assert_eq!(first, vec![(0, original.blocks[0].clone())]);
+    let mut previous = Vec::new();
+    selected
+        .visit_blocks_before_with_ordinals(Some(2), |ordinal, block| {
+            previous.push((ordinal, block));
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+    assert_eq!(
+        previous,
+        vec![
+            (1, original.blocks[1].clone()),
+            (0, original.blocks[0].clone())
+        ]
+    );
+    assert!(selected.document().is_err());
+    drop(reader);
+    index
+        .execute("UPDATE document_block SET body=x'00' WHERE idx=0", [])
+        .unwrap();
+    let reader = pool.reader().unwrap();
+    let selected = reader.select_document(&original.id).unwrap().unwrap();
+    let mut middle = Vec::new();
+    selected
+        .visit_blocks_from(1, |ordinal, block| {
+            middle.push((ordinal, block));
+            ControlFlow::Break(())
+        })
+        .unwrap();
+    assert_eq!(middle, vec![(1, original.blocks[1].clone())]);
+    let mut reverse = Vec::new();
+    selected
+        .visit_blocks_before_with_ordinals(Some(2), |ordinal, block| {
+            reverse.push((ordinal, block));
+            ControlFlow::Break(())
+        })
+        .unwrap();
+    assert_eq!(reverse, middle);
+}
+
 fn doc_batch(input: &str, doc: Document, prepared: bool) -> Batch {
-    let mut batch = batch(input, 2, 0, Vec::new(), &[]);
+    let mut batch = batch(input, 1, 0, Vec::new(), &[]);
     batch.input.format = "claude-ai".into();
     batch.parse[0].output.documents.push(DocumentRow {
         offset: 11,
@@ -34,11 +109,12 @@ fn doc_batch(input: &str, doc: Document, prepared: bool) -> Batch {
 fn prepared_and_unprepared_documents_keep_values_and_source_versions_without_chat_rows() {
     let w = test_archive();
     let original = document("project:a:doc:native", "Exact document λ🙂\nsecond line", 1);
-    w.writer
-        .send(doc_batch("a", original.clone(), false))
-        .unwrap();
-    w.writer
-        .send(doc_batch("b", original.clone(), true))
+    w.store_reading(
+        doc_batch("a", original.clone(), false),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    w.store_reading(doc_batch("b", original.clone(), true), Some(&SOURCE_RECORD))
         .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
     let pool = ReadPool::open(&w.archive).unwrap();
@@ -72,8 +148,7 @@ fn prepared_and_unprepared_documents_keep_values_and_source_versions_without_cha
     drop(reader);
     drop(pool);
     let changed = document("project:a:doc:native", "Changed supplied text", 2);
-    w.writer
-        .send(doc_batch("c", changed.clone(), true))
+    w.store_reading(doc_batch("c", changed.clone(), true), Some(&SOURCE_RECORD))
         .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
     let pool = ReadPool::open(&w.archive).unwrap();
@@ -101,8 +176,10 @@ fn equal_text_with_distinct_document_ids_keeps_both_records_and_shared_text() {
     let w = test_archive();
     let a = document("project:a:doc:a", "Shared supplied text", 0);
     let b = document("project:a:doc:b", "Shared supplied text", 0);
-    w.writer.send(doc_batch("one", a.clone(), true)).unwrap();
-    w.writer.send(doc_batch("two", b.clone(), true)).unwrap();
+    w.store_reading(doc_batch("one", a.clone(), true), Some(&SOURCE_RECORD))
+        .unwrap();
+    w.store_reading(doc_batch("two", b.clone(), true), Some(&SOURCE_RECORD))
+        .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
@@ -157,8 +234,7 @@ fn a_started_document_read_keeps_one_generation_after_rewrite_and_pool_close() {
     original.blocks.push(Block::Text {
         text: "old second block".into(),
     });
-    w.writer
-        .send(doc_batch("a", original.clone(), true))
+    w.store_reading(doc_batch("a", original.clone(), true), Some(&SOURCE_RECORD))
         .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
     let pool = ReadPool::open(&w.archive).unwrap();
@@ -175,7 +251,8 @@ fn a_started_document_read_keeps_one_generation_after_rewrite_and_pool_close() {
                 changed.blocks = vec![Block::Text {
                     text: "new generation".into(),
                 }];
-                w.writer.send(doc_batch("b", changed, true)).unwrap();
+                w.store_reading(doc_batch("b", changed, true), Some(&SOURCE_RECORD))
+                    .unwrap();
                 assert!(w.writer.flush().unwrap().errors.is_empty());
             }
             ControlFlow::Continue(())
@@ -201,14 +278,14 @@ fn a_started_document_read_keeps_one_generation_after_rewrite_and_pool_close() {
 }
 
 #[test]
-fn shared_message_document_text_keeps_vectors_until_its_last_source_is_removed() {
+fn shared_message_document_text_keeps_vectors_after_both_sources_disappear() {
     let w = test_archive();
     let body = "Shared message and document text λ🙂";
     let message = text_message("m", "s", Role::User, body, None);
-    w.writer
-        .send(batch(
+    w.store_reading(
+        batch(
             "message-input",
-            2,
+            1,
             0,
             vec![MessageRow {
                 offset: 0,
@@ -216,12 +293,16 @@ fn shared_message_document_text_keeps_vectors_until_its_last_source_is_removed()
                 message,
             }],
             &["s"],
-        ))
-        .unwrap();
+        ),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
     let doc = document("kept", body, 1);
-    w.writer
-        .send(doc_batch("document-input", doc.clone(), true))
-        .unwrap();
+    w.store_reading(
+        doc_batch("document-input", doc.clone(), true),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
     let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
     let hash: Vec<u8> = index
@@ -237,43 +318,83 @@ fn shared_message_document_text_keeps_vectors_until_its_last_source_is_removed()
             .unwrap();
     vectors.execute("INSERT INTO embedded(text_hash,model,chunk,dims,vector,embedded_at) VALUES (?1,'synthetic/model/1/document/unit',0,1,?2,1)",rusqlite::params![hash,1.25f32.to_le_bytes().to_vec()]).unwrap();
     drop(vectors);
-    let blobs = std::sync::Arc::new(
-        hashed_blobs::Store::open(w.archive.root.clone(), vec![], 0o600).unwrap(),
-    );
-    for (id, scope, expected) in [
-        ("message", crate::excise::ExciseTarget::Session(sid("s")), 1),
-        (
-            "document",
-            crate::excise::ExciseTarget::Input("document-input".into()),
-            0,
-        ),
-    ] {
-        w.writer
-            .excise(
-                crate::excise::ExciseRequest {
-                    id: id.into(),
-                    target: scope,
-                    reason: None,
-                    dry_run: false,
-                },
-                std::sync::Arc::clone(&blobs),
-            )
-            .unwrap();
-        let vectors = crate::archive::open_read(&w.archive.embeddings_db()).unwrap();
-        assert_eq!(
-            vectors
-                .query_row("SELECT count(*) FROM embedded", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            expected
-        );
-        let pool = ReadPool::open(&w.archive).unwrap();
-        let reader = pool.reader().unwrap();
-        assert_eq!(reader.document(&doc.id).unwrap().is_some(), expected == 1);
+    for input in ["message-input", "document-input"] {
+        let mut gone = batch(input, 1, 0, vec![], &[]);
+        gone.change = Change::Disappeared;
+        gone.parse.clear();
+        w.writer.send(gone).unwrap();
     }
-    w.writer
-        .send(doc_batch("fresh-input", doc.clone(), true))
-        .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
+    let vectors = crate::archive::open_read(&w.archive.embeddings_db()).unwrap();
+    assert_eq!(
+        vectors
+            .query_row("SELECT count(*) FROM embedded", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
     let pool = ReadPool::open(&w.archive).unwrap();
-    assert!(pool.reader().unwrap().document(&doc.id).unwrap().is_none());
+    assert!(pool.reader().unwrap().document(&doc.id).unwrap().is_some());
+}
+
+#[test]
+fn a_same_chain_document_cannot_override_a_newer_source_time() {
+    let w = test_archive();
+    w.store_reading(
+        doc_batch("a", document("ordered", "newer source", 2000), true),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let mut older = doc_batch("a", document("ordered", "older source", 1000), true);
+    older.change = Change::Reparse { chain: 1 };
+    older.parse[0].reset = false;
+    w.store_reading(older, None).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let reads = ReadPool::open(&w.archive).unwrap();
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .document(&DocumentId::parse("claude-ai:ordered").unwrap())
+            .unwrap()
+            .unwrap()
+            .blocks,
+        [Block::Text {
+            text: "newer source".into()
+        }]
+    );
+}
+
+#[test]
+fn a_later_record_of_the_same_chain_can_supply_a_newer_document_time() {
+    let w = test_archive();
+    w.store_reading(
+        doc_batch("a", document("ordered", "older", 1000), true),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let mut newer = doc_batch("a", document("ordered", "newer", 2000), true);
+    newer.change = Change::Appended { from: 100 };
+    newer.parse[0].reset = false;
+    newer.parse[0].start = 100;
+    newer.parse[0].parsed_upto = 200;
+    newer.length = 200;
+    newer.parse[0].output.documents[0].offset = 120;
+    newer.parse[0].output.documents[0].end = 130;
+    w.store_reading(newer, Some(&SOURCE_RECORD)).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let reads = ReadPool::open(&w.archive).unwrap();
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .document(&DocumentId::parse("claude-ai:ordered").unwrap())
+            .unwrap()
+            .unwrap()
+            .blocks,
+        [Block::Text {
+            text: "newer".into()
+        }]
+    );
 }

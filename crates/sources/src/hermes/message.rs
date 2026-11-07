@@ -1,30 +1,32 @@
 use super::{decoded, identity, native, text};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use polylogue_model::{Block, Json, Message, MessageId, PromptKind, Role, SessionId, ToolAction};
 use std::collections::HashSet;
 
 pub(super) static FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read),
-    ("session_id", Rule::Read),
-    ("role", Rule::Read),
-    ("content", Rule::Read),
-    ("platform_message_id", Rule::Read),
-    ("tool_calls", Rule::Read),
-    ("tool_call_id", Rule::Read),
-    ("tool_name", Rule::Read),
-    ("reasoning_content", Rule::Read),
-    ("reasoning", Rule::Read),
-    ("reasoning_details", Rule::Read),
-    ("codex_reasoning_items", Rule::Read),
-    ("codex_message_items", Rule::Read),
-    ("timestamp", Rule::Read),
-    ("active", Rule::Read),
-    ("compacted", Rule::Read),
-    ("observed", Rule::Read),
-    ("token_count", Rule::Read),
-    ("finish_reason", Rule::Read),
-    ("_empty_recovery_synthetic", Rule::Read),
-]);
+    ("id", Rule::Read(T::Number)),
+    ("session_id", Rule::Read(T::String)),
+    ("role", Rule::Read(T::String)),
+    ("content", Rule::Read(T::StringOrArray)),
+    ("platform_message_id", Rule::Read(T::String)),
+    ("tool_calls", Rule::Read(T::Array)),
+    ("tool_call_id", Rule::Read(T::String)),
+    ("tool_name", Rule::Read(T::String)),
+    ("reasoning_content", Rule::Read(T::StringOrArray)),
+    ("reasoning", Rule::Read(T::StringOrArray)),
+    ("reasoning_details", Rule::Read(T::Array)),
+    ("codex_reasoning_items", Rule::Read(T::Array)),
+    ("codex_message_items", Rule::Read(T::Array)),
+    ("timestamp", Rule::Read(T::StringOrNumber)),
+    ("active", Rule::Read(T::Number)),
+    ("compacted", Rule::Read(T::Number)),
+    ("observed", Rule::Read(T::Number)),
+    ("token_count", Rule::Read(T::Number)),
+    ("finish_reason", Rule::Read(T::String)),
+    ("_empty_recovery_synthetic", Rule::Read(T::Number)),
+])
+.for_kind("record");
 
 pub(super) fn active(row: &Json) -> Option<bool> {
     match (
@@ -62,20 +64,27 @@ pub(super) fn seed(row: &Json) -> Option<String> {
 }
 
 pub(super) fn system(id: MessageId, session: SessionId, text: String) -> Message {
-    Message {
-        id,
-        session,
-        parent: None,
-        role: Role::System,
-        at: None,
-        model: None,
-        prompt_kind: Some(PromptKind::Harness),
-        blocks: vec![Block::Text { text }],
-        usage: Default::default(),
-        stop_reason: None,
-        reported_cost_usd: None,
-        duration_ms: None,
-        production: Default::default(),
+    {
+        let (at, time_evidence) = crate::time::parts(None);
+        Message {
+            id,
+            session,
+            parent: None,
+            role: Role::System,
+            at,
+            at_quality: time_evidence.quality,
+            at_precision: time_evidence.precision,
+            at_until: time_evidence.until,
+            model: None,
+            prompt_kind: Some(PromptKind::Harness),
+            blocks: vec![Block::Text { text }],
+            usage: Default::default(),
+            stop_reason: None,
+            reported_cost_usd: None,
+            duration_ms: None,
+            attrs: Default::default(),
+            production: Default::default(),
+        }
     }
 }
 
@@ -282,7 +291,11 @@ pub(super) fn parse(
     } else {
         None
     };
-    message.at = row.get("timestamp").and_then(crate::time::epoch_seconds);
+    let (at, evidence) =
+        crate::time::parts(row.get("timestamp").and_then(crate::time::epoch_seconds));
+    message
+        .set_time(at, evidence)
+        .expect("decoded source time is valid");
     message.model = (role == Role::Assistant && !harness)
         .then_some(model)
         .flatten();

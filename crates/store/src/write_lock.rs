@@ -5,9 +5,7 @@
 //! pair of states that never existed together; an index commit there is
 //! harmless, because the register then reads as it was when the index read
 //! started. So writers hold the lock exclusively only while the register
-//! commits ([`commit`]), and for the few steps that must also keep readers
-//! or each other out for longer: schema setup, replacing the index, an
-//! excision and the embedding check. Index transactions take no lock, so a
+//! commits ([`commit`]) and through schema setup. Index transactions take no lock, so a
 //! reader waits at most for one register commit. The file is stable while
 //! open, so readers need no writable directory or extra lock file.
 use crate::{Archive, Result, StoreError};
@@ -50,16 +48,21 @@ pub(crate) fn hold(conn: &Connection) -> Result<WriteLock> {
         return Ok(WriteLock { file: None });
     };
     let path = Path::new(path);
+    if path.file_name().and_then(|name| name.to_str()) == Some("index.db")
+        && conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='primary_fact')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?
+    {
+        return Ok(WriteLock { file: None });
+    }
     let archive_db = match path.file_name().and_then(|name| name.to_str()) {
-        Some("archive.db" | "sinex.db") => path.to_path_buf(),
-        // The index's register beside it: `sinex.db` in primary mode.
-        Some("index.db") if path.with_file_name("sinex.db").exists() => {
-            path.with_file_name("sinex.db")
-        }
+        Some("archive.db") => path.to_path_buf(),
         Some("index.db") => path.with_file_name("archive.db"),
         _ => {
             return Err(StoreError::Invalid(
-                "the write lock needs an archive or index connection".into(),
+                "the write lock needs a standalone archive or index connection".into(),
             ));
         }
     };
@@ -89,7 +92,13 @@ pub(crate) fn commit(tx: rusqlite::Transaction<'_>) -> Result<()> {
 /// Takes the lock shared for a reader's first read; the caller drops the
 /// returned file once its read transaction has started. `wait` runs the
 /// reader's stop and interrupt checks while a writer holds the lock.
-pub(crate) fn wait_shared(archive: &Archive, mut wait: impl FnMut() -> Result<()>) -> Result<File> {
+pub(crate) fn wait_shared(
+    archive: &Archive,
+    mut wait: impl FnMut() -> Result<()>,
+) -> Result<Option<File>> {
+    if archive.is_primary() {
+        return Ok(None);
+    }
     let file = OpenOptions::new().read(true).open(archive.archive_db())?;
     let key = identity(&file)?;
     if HELD.with(|held| held.get() == Some(key)) {
@@ -99,7 +108,7 @@ pub(crate) fn wait_shared(archive: &Archive, mut wait: impl FnMut() -> Result<()
     }
     loop {
         match file.try_lock_shared() {
-            Ok(()) => return Ok(file),
+            Ok(()) => return Ok(Some(file)),
             Err(TryLockError::WouldBlock) => wait()?,
             Err(TryLockError::Error(error)) if error.kind() == std::io::ErrorKind::Interrupted => {
                 wait()?

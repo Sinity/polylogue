@@ -3,6 +3,7 @@ use super::*;
 /// Records `b`'s observation as a disappearance.
 fn observe(tx: &Transaction<'_>, b: &Batch, seq: i64) {
     let rows = crate::input_rows::InputRows {
+        acquisition: None,
         input: b.input.id.clone(),
         format: b.input.format.clone(),
         revision: None,

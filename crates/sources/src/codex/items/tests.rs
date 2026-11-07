@@ -165,3 +165,26 @@ fn a_multi_file_change_path_projection_does_not_depend_on_json_object_order() {
         assert_eq!(input, &changes);
     }
 }
+
+#[test]
+fn recovered_mcp_result_keeps_media_and_structured_parts() {
+    let raw = serde_json::json!({"type":"McpToolCall","id":"call","server":"files","tool":"read","status":"completed","durationMs":25,"arguments":{},"result":[{"type":"text","text":"two bytes"},{"type":"image","image_url":"data:image/png;base64,AQI="},{"type":"tool_reference","name":"next"}]});
+    let mut blobs = Vec::new();
+    let blocks = recovered_call(&raw, &mut blobs).unwrap();
+    let Block::ToolResult {
+        data,
+        attachments,
+        reported_duration_ms,
+        output,
+        ..
+    } = &blocks[1]
+    else {
+        panic!("result")
+    };
+    assert_eq!(data.as_ref(), raw.get("result"));
+    assert_eq!(*reported_duration_ms, Some(25));
+    assert_eq!(output.as_deref(), Some("two bytes"));
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].blob, Some(BlobHash::of(&[1, 2])));
+    assert_eq!(blobs[0].bytes, [1, 2]);
+}

@@ -17,9 +17,12 @@ fn slow_statement_stops_at_its_deadline_and_the_slot_can_be_reused() {
     let directory = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(directory.path()).unwrap();
     let pool = ReadPool::with_budget(&fixture.archive, 1, 8 << 20).unwrap();
+    // Warm the connection before the statement's deadline starts, then
+    // acquire it within the scope so it installs this request's progress hook.
+    drop(pool.reader().unwrap());
     let limit = ReadLimit::new(Duration::from_millis(50), Default::default());
     let start = Instant::now();
-    let result = limit.scope(|| pool.reader().unwrap().query(SLOW, &[]));
+    let result = limit.scope(|| pool.reader()?.query(SLOW, &[]));
     assert!(matches!(result, Err(StoreError::ReadDeadlineExceeded)));
     assert!(matches!(
         limit.check(),
@@ -40,8 +43,23 @@ fn cancelling_a_running_statement_frees_its_only_slot() {
     let pool = ReadPool::with_budget(&fixture.archive, 1, 8 << 20).unwrap();
     let limit = ReadLimit::new(Duration::from_secs(30), Default::default());
     std::thread::scope(|scope| {
-        let worker = scope.spawn(|| limit.scope(|| pool.reader().unwrap().query(SLOW, &[])));
-        started(&limit);
+        let (ready, acquired) = channel();
+        let worker_limit = &limit;
+        let worker_pool = &pool;
+        let worker = scope.spawn(move || {
+            worker_limit.scope(|| {
+                let reader = worker_pool.reader()?;
+                reader.query("SELECT 1", &[])?;
+                ready.send(worker_limit.sqlite_steps()).unwrap();
+                reader.query(SLOW, &[])
+            })
+        });
+        let before_query = acquired.recv().unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        while limit.sqlite_steps() == before_query {
+            assert!(Instant::now() < until, "SLOW query never reached SQLite");
+            std::thread::yield_now();
+        }
         let start = Instant::now();
         limit.cancellation.cancel();
         assert!(matches!(
@@ -62,17 +80,24 @@ fn concurrent_reads_keep_separate_deadlines_and_cancellation() {
     let short = ReadLimit::new(Duration::from_millis(150), Default::default());
     let long = ReadLimit::new(Duration::from_secs(30), Default::default());
     std::thread::scope(|scope| {
-        let a = scope.spawn(|| short.scope(|| pool.reader().unwrap().query(SLOW, &[])));
-        let b = scope.spawn(|| long.scope(|| pool.reader().unwrap().query(SLOW, &[])));
+        // The short deadline may pass while its reader is still opening; the
+        // law is that it ends that read alone, wherever it is.
+        let a = scope.spawn(|| short.scope(|| pool.reader()?.query(SLOW, &[])));
+        let b = scope.spawn(|| long.scope(|| pool.reader()?.query(SLOW, &[])));
         started(&long);
-        assert!(a.join().unwrap().is_err());
+        assert!(matches!(
+            a.join().unwrap(),
+            Err(StoreError::ReadDeadlineExceeded)
+        ));
         assert!(matches!(
             short.check(),
             Err(StoreError::ReadDeadlineExceeded)
         ));
         assert!(long.check().is_ok());
         long.cancellation.cancel();
-        assert!(b.join().unwrap().is_err());
+        // SQLite steps start while the reader opens its views, so the
+        // cancellation can end the long read before its statement starts.
+        assert!(matches!(b.join().unwrap(), Err(StoreError::ReadCancelled)));
     });
 }
 
@@ -132,7 +157,7 @@ fn a_read_waiting_for_the_write_lock_stops_at_its_deadline() {
         scope
             .spawn(|| {
                 let limit = ReadLimit::new(Duration::from_millis(50), Default::default());
-                let response = limit.scope(|| pool.reader().unwrap().query("SELECT 1", &[]));
+                let response = limit.scope(|| pool.reader()?.query("SELECT 1", &[]));
                 assert!(matches!(response, Err(StoreError::ReadDeadlineExceeded)));
             })
             .join()
@@ -181,4 +206,116 @@ fn finishing_read_preparation_restores_the_enclosing_scope_after_the_write() {
         ));
     });
     assert!(ReadLimit::current().is_none());
+}
+
+#[test]
+fn absolute_deadline_interrupts_sqlite_and_cannot_be_renewed_by_another_scope() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(directory.path()).unwrap();
+    let pool = fixture.reads().unwrap();
+    let deadline = Instant::now() + Duration::from_millis(50);
+    let limit = ReadLimit::at(deadline, Default::default());
+    assert!(matches!(
+        limit.scope(|| pool.reader()?.query(SLOW, &[])),
+        Err(StoreError::ReadDeadlineExceeded)
+    ));
+    assert!(limit.sqlite_steps() > 0);
+    assert!(matches!(
+        limit.scope(|| pool.reader()?.query("SELECT 1", &[])),
+        Err(StoreError::ReadDeadlineExceeded)
+    ));
+    assert!(pool.reader().unwrap().query("SELECT 1", &[]).is_ok());
+}
+
+#[test]
+fn absolute_limit_cancellation_interrupts_a_real_pool_wait_before_releasing_the_slot() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(directory.path()).unwrap();
+    let pool = ReadPool::with_budget(&fixture.archive, 1, 8 << 20).unwrap();
+    let held = pool.reader().unwrap();
+    let cancellation = ReadCancellation::default();
+    let limit = ReadLimit::at(
+        Instant::now() + Duration::from_secs(60),
+        cancellation.clone(),
+    );
+    std::thread::scope(|scope| {
+        let worker = scope.spawn(|| limit.scope(|| pool.reader().map(drop)));
+        let mut state = pool.state.lock().unwrap();
+        while state.waiters == 0 {
+            state = pool.changed.wait(state).unwrap();
+        }
+        drop(state);
+        cancellation.cancel();
+        assert!(matches!(
+            worker.join().unwrap(),
+            Err(StoreError::ReadCancelled)
+        ));
+    });
+    drop(held);
+    assert!(pool.reader().unwrap().query("SELECT 1", &[]).is_ok());
+}
+
+#[test]
+fn absolute_limit_cancellation_stops_sqlite_progress_and_joins_reader_cleanup() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(directory.path()).unwrap();
+    let pool = ReadPool::with_budget(&fixture.archive, 1, 8 << 20).unwrap();
+    let cancellation = ReadCancellation::default();
+    let limit = ReadLimit::at(
+        Instant::now() + Duration::from_secs(60),
+        cancellation.clone(),
+    );
+    std::thread::scope(|scope| {
+        let (before, observed) = channel();
+        let worker_limit = &limit;
+        let worker_pool = &pool;
+        let worker = scope.spawn(move || {
+            worker_limit.scope(|| {
+                let reader = worker_pool.reader()?;
+                reader.query("SELECT 1", &[])?;
+                before.send(worker_limit.sqlite_steps()).unwrap();
+                reader.query(SLOW, &[])
+            })
+        });
+        let previous = observed.recv().unwrap();
+        while limit.sqlite_steps() == previous {
+            assert!(
+                !worker.is_finished(),
+                "statement ended before reaching its progress hook"
+            );
+            std::thread::yield_now();
+        }
+        cancellation.cancel();
+        assert!(matches!(
+            worker.join().unwrap(),
+            Err(StoreError::ReadCancelled)
+        ));
+    });
+    assert!(pool.reader().unwrap().query("SELECT 1", &[]).is_ok());
+}
+
+#[test]
+fn absolute_deadline_stops_an_actual_sqlite_busy_wait() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("busy.db");
+    let writer = Connection::open(&database).unwrap();
+    writer.execute_batch("PRAGMA journal_mode=DELETE; CREATE TABLE sample(value); INSERT INTO sample VALUES(1); BEGIN EXCLUSIVE;").unwrap();
+    let limit = ReadLimit::at(
+        Instant::now() + Duration::from_millis(50),
+        Default::default(),
+    );
+    let result: Result<i64> = limit.scope(|| {
+        let reader = Connection::open(&database)?;
+        limit.install(&reader)?;
+        Ok(reader.query_row("SELECT value FROM sample", [], |row| row.get(0))?)
+    });
+    assert!(matches!(result, Err(StoreError::ReadDeadlineExceeded)));
+    writer.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(
+        Connection::open(&database)
+            .unwrap()
+            .query_row::<i64, _, _>("SELECT value FROM sample", [], |row| row.get(0))
+            .unwrap(),
+        1
+    );
 }

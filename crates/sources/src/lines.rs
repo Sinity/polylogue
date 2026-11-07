@@ -1,6 +1,9 @@
 //! Splitting a line input into records. A record is one complete line; a trailing line without
 //! its newline is not a record yet and is left for the next append.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 /// One line record: its bytes without the line ending, and where they
 /// start in the input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

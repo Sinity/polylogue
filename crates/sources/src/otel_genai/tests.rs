@@ -185,3 +185,48 @@ fn an_out_of_range_numeric_timestamp_stays_unknown_without_dropping_its_span() {
     assert_eq!(step.counts.unreadable.values().sum::<u64>(), 0);
     assert!(step.output.events[0].at.is_none());
 }
+
+#[test]
+fn native_span_bounds_and_message_clock_basis_survive() {
+    use polylogue_model::{Precision, TimeQuality};
+    let doc = wrapped(vec![chat_span(
+        "ns",
+        1767323045123456789,
+        json!([{"role":"user","parts":[{"type":"text","content":"q"}]}]),
+        json!([{"role":"assistant","parts":[{"type":"text","content":"a"}]}]),
+        (1, 1),
+    )]);
+    let step = parse(&serde_json::to_vec(&doc).unwrap());
+    let event = &step.output.events[0];
+    assert_eq!(event.at.unwrap().unix_ns(), 1767323045123456789);
+    assert_eq!(event.at_until.unwrap().unix_ns(), 1767323047123456789);
+    assert_eq!(event.at_quality, TimeQuality::Intrinsic);
+    assert_eq!(event.at_precision, Some(Precision::Bounded));
+    let input = &step.output.messages[0].message;
+    assert!(input.at.is_none());
+    assert_eq!(input.at_quality, TimeQuality::Unknown);
+    let output = &step.output.messages[1].message;
+    assert_eq!(output.at.unwrap().unix_ns(), 1767323045123456789);
+    assert_eq!(output.at_precision, Some(Precision::Instant));
+    assert_eq!(output.attrs["otel_span_clock"]["basis"], "call_start");
+    assert_eq!(
+        output.attrs["otel_span_clock"]["endTimeUnixNano"],
+        "1767323047123456789"
+    );
+}
+
+#[test]
+fn a_span_without_native_clock_does_not_invent_time() {
+    use polylogue_model::TimeQuality;
+    let step = parse(&serde_json::to_vec(&wrapped(vec![named("none", None, "c")])).unwrap());
+    assert!(step.output.sessions[0].started.is_none());
+    assert_eq!(
+        step.output.sessions[0].started_quality,
+        TimeQuality::Unknown
+    );
+    assert!(
+        step.output.events.iter().all(|e| e.at.is_none()
+            && e.at_until.is_none()
+            && e.at_quality == TimeQuality::Unknown)
+    );
+}

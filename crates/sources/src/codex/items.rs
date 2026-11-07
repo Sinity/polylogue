@@ -130,7 +130,7 @@ pub fn reasoning_block(item: &Json) -> Block {
     let encrypted = str_field(item, "encrypted_content").is_some();
     Block::Thinking {
         text: (!parts.is_empty()).then(|| parts.join("\n\n")),
-        signature: None,
+        signature: str_field(item, "encrypted_content").map(str::to_owned),
         redacted: parts.is_empty() && encrypted,
     }
 }
@@ -350,6 +350,23 @@ pub fn output_outcome(tool: &str, output: &str) -> (ToolOutcome, Option<Running>
     }
 }
 
+/// The harness header reports seconds independently of command output.
+pub fn reported_duration(output: &str) -> Option<u64> {
+    output
+        .lines()
+        .take_while(|line| line.trim_end() != "Output:")
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("Wall time: ")
+                .and_then(|s| s.strip_suffix(" seconds"))
+        })
+        .and_then(|seconds| seconds.parse::<f64>().ok())
+        .filter(|seconds| {
+            seconds.is_finite() && *seconds >= 0.0 && *seconds < u64::MAX as f64 / 1000.0
+        })
+        .map(|seconds| (seconds * 1000.0).round() as u64)
+}
+
 fn running() -> ToolOutcome {
     ToolOutcome::Unknown {
         reason: UnknownReason::RunningInBackground,
@@ -490,11 +507,16 @@ pub fn recovered_call(item: &Json, blobs: &mut Vec<ExtractedBlob>) -> Option<Vec
         "McpToolCall" => {
             let server = str_field(item, "server").unwrap_or("mcp");
             let tool = str_field(item, "tool").unwrap_or("?");
-            let output = item
+            let result = item
                 .get("result")
                 .filter(|r| !r.is_null())
-                .or_else(|| item.get("error"))
-                .map(|r| output_parts(r, blobs).0);
+                .or_else(|| item.get("error"));
+            let (output, attachments) = result
+                .map(|raw| {
+                    let (text, attachments) = output_parts(raw, blobs);
+                    (Some(text), attachments)
+                })
+                .unwrap_or_default();
             let input = call_input(item);
             let name = format!("mcp__{server}__{tool}");
             return Some(vec![
@@ -507,7 +529,7 @@ pub fn recovered_call(item: &Json, blobs: &mut Vec<ExtractedBlob>) -> Option<Vec
                     command: None,
                     path: None,
                 },
-                result_block(&id, item, output, Vec::new()),
+                result_block(&id, item, output, attachments),
             ]);
         }
         "WebSearch" => {
@@ -550,10 +572,15 @@ fn result_block(
         |c| c.outcome,
     );
     Block::ToolResult {
+        reported_duration_ms: completed(item).and_then(|c| c.duration_ms),
         call_id: Some(id.to_owned()),
         outcome,
         output,
-        data: None,
+        data: item
+            .get("result")
+            .filter(|value| !value.is_null())
+            .or_else(|| item.get("error"))
+            .cloned(),
         attachments,
     }
 }

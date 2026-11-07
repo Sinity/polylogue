@@ -7,7 +7,7 @@ use std::time::Instant;
 fn sample(server: &Server, path: &str) -> (f64, usize) {
     let started = Instant::now();
     let mut peer = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
-    write!(peer,"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",server.port,server.token).unwrap();
+    write!(peer,"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nAccept: application/json\r\nConnection: close\r\n\r\n",server.port,server.token).unwrap();
     let mut bytes = Vec::new();
     peer.read_to_end(&mut bytes).unwrap();
     assert!(
@@ -46,17 +46,15 @@ fn paged_reader_http_measurements() {
         .collect::<String>();
     std::fs::write(r.w.home.join(".claude/projects/-p/s1.jsonl"), source).unwrap();
     r.w.wait_for(|data| data["store"]["messages"] == 1000 && data["store"]["search_pending"] == 0);
-    let mut server = start_on(Arc::clone(&r.web.daemon), 0).unwrap();
+    let mut server = start_on(Arc::clone(&r.web.daemon), Arc::clone(&r.web.operations), 0).unwrap();
     let report = serde_json::json!({
         "population":{"messages":1000,"characters_per_message":text.chars().count(),"source_text_bytes":text.len()*1000},
         "host_load":std::fs::read_to_string("/proc/loadavg").ok().map(|line|line.split_whitespace().take(3).collect::<Vec<_>>().join(" ")),
         "process_memory":std::fs::read_to_string("/proc/self/status").ok().map(|status|status.lines().filter(|line|line.starts_with("VmRSS:")||line.starts_with("VmHWM:")).collect::<Vec<_>>().join("; ")),
         "budget":8192,"boundary":"authenticated loopback HTTP including socket ownership check; same running daemon and archive",
-        "before_whole_read":repeated(&server,"/api/v1/read?session=claude-code:s1&with_parents=true"),
-        "after_first_page":repeated(&server,"/api/v1/read?session=claude-code:s1&with_parents=true&budget=8192"),
-        "after_middle_page":repeated(&server,"/api/v1/read?session=claude-code:s1&with_parents=true&budget=8192&message=claude-code:bench-500"),
-        "after_latest_page":repeated(&server,"/api/v1/read?session=claude-code:s1&with_parents=true&budget=8192&latest=true"),
-        "after_html_page":repeated(&server,"/s/claude-code:s1"),
+        "default_page":repeated(&server,"/api/v1/read?target=session:claude-code:s1&show=inherited"),
+        "first_page":repeated(&server,"/api/v1/read?target=session:claude-code:s1&show=inherited&budget=8192"),
+        "direct_message":repeated(&server,"/api/v1/read?target=message:claude-code:bench-500&budget=8192"),
     });
     eprintln!("WORKBENCH_HTTP_MEASUREMENTS={report}");
     server.shutdown().unwrap();

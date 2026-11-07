@@ -86,7 +86,7 @@ fn membership_refuses_group_values_of_another_type() {
     let w = morrow();
     let query = "sessions where cwd in (sessions | group by cost)";
     let error = run_q(&w, ask(query)).unwrap_err();
-    assert_eq!(error.kind, "invalid_query");
+    assert_eq!(error.code(), "invalid_query");
     assert!(error.message.contains("same type"), "{}", error.message);
 }
 
@@ -98,8 +98,7 @@ fn saved_relations_bind_defaults_before_the_caller_narrows_them() {
         ("child-ref", "session:claude-code:7f3a2c10-0003"),
         ("abandoned", "messages where active:false"),
     ] {
-        w.fx.note("saved_query", Some(name), Some(text), "repo:synthetic")
-            .unwrap();
+        save_definition(&mut w, name, text);
     }
     for query in [
         "sessions where query:children",
@@ -122,8 +121,7 @@ fn saved_relations_bind_defaults_before_the_caller_narrows_them() {
 }
 
 fn save(w: &mut TestArchive, name: &str, text: &str) {
-    w.fx.note("saved_query", Some(name), Some(text), "repo:synthetic")
-        .unwrap();
+    save_definition(w, name, text);
 }
 
 #[test]
@@ -148,6 +146,7 @@ fn parameterized_saved_references_agree_with_direct_references() {
         for name in ["pick", "forward", "nested"] {
             for query in [
                 format!("query:{name}(id={id})"),
+                format!("query:{name}(id=\"{id}\")"),
                 format!("sessions where query:{name}(id={id})"),
                 format!("sessions where query:{name}(id={id}) origin:claude-code"),
             ] {
@@ -212,25 +211,12 @@ fn saved_references_under_or_and_not_keep_outer_defaults() {
 #[test]
 fn saved_relation_errors_reach_the_query_error_path() {
     let mut w = morrow();
-    for (name, text) in [
-        ("pick", "$id"),
-        ("forward", "query:pick(id=$id)"),
-        ("missing", "query:absent"),
-        ("twice", "origin:codex"),
-        ("twice", "origin:claude-code"),
-        ("ambiguous", "query:twice"),
-        ("cycle", "query:cycle"),
-        ("cycle-a", "query:cycle-b"),
-        ("cycle-b", "query:cycle-a"),
-        ("broken", "sessions where ("),
-        ("invalid-field", "sessions where invented_field:true"),
-        ("invalid-value", "sessions where cost > nonsense"),
-    ] {
-        save(&mut w, name, text);
-    }
+    save(&mut w, "pick", "$id");
+    save(&mut w, "forward", "query:pick(id=$id)");
+    save(&mut w, "twice", "origin:codex");
+    save(&mut w, "twice", "origin:claude-code");
     for (call, kind, message) in [
         ("absent", "invalid_query", "no saved query"),
-        ("missing", "invalid_query", "no saved query"),
         ("pick", "invalid_query", "needs a value"),
         ("forward", "invalid_query", "needs a value"),
         (
@@ -238,25 +224,64 @@ fn saved_relation_errors_reach_the_query_error_path() {
             "invalid_query",
             "has no parameter",
         ),
-        ("twice", "invalid_query", "2 saved queries"),
-        ("ambiguous", "invalid_query", "2 saved queries"),
-        ("cycle", "invalid_query", "refers to itself"),
-        ("cycle-a", "invalid_query", "refers to itself"),
-        ("broken", "invalid_query", ""),
-        ("invalid-field", "unknown_field", "invented_field"),
-        ("invalid-value", "bad_value", "amount in dollars"),
+        ("twice", "ambiguous", "query:twice"),
     ] {
         for query in [
             format!("query:{call}"),
             format!("sessions where query:{call}"),
         ] {
             let failure = run_q(&w, ask(&query)).unwrap_err();
-            assert_eq!(failure.kind, kind, "{query}: {}", failure.message);
-            assert!(
-                failure.message.contains(message),
-                "{query}: {}",
-                failure.message
-            );
+            assert_eq!(failure.code(), kind, "{query}: {}", failure.message);
+            if call == "twice" {
+                let rows = q(&w, "assertions where kind:saved_query key:twice");
+                let expected: std::collections::BTreeSet<_> = rows["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|row| {
+                        polylogue_model::Reference::parse(row["reference"].as_str().unwrap())
+                            .unwrap()
+                            .to_string()
+                    })
+                    .collect();
+                assert_eq!(expected.len(), 2);
+                assert!(
+                    failure.message.starts_with("query:twice "),
+                    "{}",
+                    failure.message
+                );
+                assert_eq!(
+                    failure
+                        .candidates()
+                        .iter()
+                        .cloned()
+                        .collect::<std::collections::BTreeSet<_>>(),
+                    expected
+                );
+            } else {
+                assert!(
+                    failure.message.contains(message),
+                    "{query}: {}",
+                    failure.message
+                );
+            }
         }
+    }
+    // Native diagnostic details remain available before any definition is saved.
+    for (text, kind, message) in [
+        (
+            "sessions where invented_field:true",
+            "unknown_field",
+            "invented_field",
+        ),
+        (
+            "sessions where cost > nonsense",
+            "bad_value",
+            "amount in dollars",
+        ),
+    ] {
+        let failure = run_q(&w, ask(text)).unwrap_err();
+        assert_eq!(failure.code(), kind, "{text}");
+        assert!(failure.message.contains(message), "{}", failure.message);
     }
 }

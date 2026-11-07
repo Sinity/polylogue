@@ -1,6 +1,10 @@
 //! Grok account exports. One stored conversation is decoded at a time;
 //! response order stays as supplied, independently of derived identity hashing.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+use crate::fields::ExpectedType as T;
 mod identity;
 use crate::document::{Sink, first_key, message_id, session_id};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
@@ -8,7 +12,7 @@ use crate::fields::{Fields, Rule};
 use crate::parse::{MessageRow, Output, Parse, Step};
 use crate::{RecordOutcome, Records};
 use polylogue_model::{
-    Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, Timestamp, TitleSource,
+    Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, TitleSource,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -40,27 +44,34 @@ pub struct Export {
     occurrences: HashMap<String, usize>,
 }
 
-static EXPORT_FIELDS: Fields = Fields::new(&[("conversations", Rule::Read)]);
+static EXPORT_FIELDS: Fields =
+    Fields::new(&[("conversations", Rule::Read(T::Array))]).for_kind("export");
 static CONVERSATION_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read),
-    ("conversationId", Rule::Read),
-    ("title", Rule::Read),
-    ("create_time", Rule::Read),
-    ("createTime", Rule::Read),
-]);
+    ("id", Rule::Read(T::String)),
+    ("conversationId", Rule::Read(T::String)),
+    ("title", Rule::Read(T::String)),
+    ("create_time", Rule::Read(T::StringOrNumber)),
+    ("createTime", Rule::Read(T::StringOrNumber)),
+])
+.for_kind("conversation");
 static RESPONSE_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read),
-    ("responseId", Rule::Read),
-    ("sender", Rule::Read),
-    ("message", Rule::Read),
-    ("create_time", Rule::Read),
-    ("createTime", Rule::Read),
-    ("model", Rule::Read),
-    ("parentResponseId", Rule::Read),
-]);
-static WRAPPER_FIELDS: Fields =
-    Fields::new(&[("conversation", Rule::Read), ("responses", Rule::Read)]);
-static RESPONSE_WRAPPER: Fields = Fields::new(&[("response", Rule::Read)]);
+    ("id", Rule::Read(T::String)),
+    ("responseId", Rule::Read(T::String)),
+    ("sender", Rule::Read(T::String)),
+    ("message", Rule::Read(T::String)),
+    ("create_time", Rule::Read(T::StringOrNumber)),
+    ("createTime", Rule::Read(T::StringOrNumber)),
+    ("model", Rule::Read(T::String)),
+    ("parentResponseId", Rule::Read(T::String)),
+])
+.for_kind("response");
+static WRAPPER_FIELDS: Fields = Fields::new(&[
+    ("conversation", Rule::Read(T::Object)),
+    ("responses", Rule::Read(T::Array)),
+])
+.for_kind("wrapper");
+static RESPONSE_WRAPPER: Fields =
+    Fields::new(&[("response", Rule::Read(T::Object))]).for_kind("response_wrapper");
 
 impl ExportParser for Export {
     fn scan(
@@ -131,8 +142,11 @@ impl Export {
             );
             return;
         };
-        sink.records
-            .fields("conversation wrapper", value, &WRAPPER_FIELDS);
+        sink.records.fields(
+            "conversation wrapper",
+            &crate::fields::header(value, &["conversation", "responses"]),
+            &WRAPPER_FIELDS,
+        );
         sink.records
             .fields("conversation", conversation, &CONVERSATION_FIELDS);
         let mut warnings = Vec::new();
@@ -173,14 +187,20 @@ impl Export {
         {
             session.offer_title(title, TitleSource::Generated);
         }
-        session.started = time(conversation, &mut warnings);
+        let (at, evidence) = crate::time::parts(time(conversation, &mut warnings));
+        session
+            .set_time(at, evidence)
+            .expect("decoded source time is valid");
         sink.out.sessions.push(session);
         sink.records.record("conversation", &RecordOutcome::Used);
         let mut occurrences = HashMap::<String, usize>::new();
         for entry in responses {
             let fields = if let Some(response) = entry.get("response") {
-                sink.records
-                    .fields("response wrapper", entry, &RESPONSE_WRAPPER);
+                sink.records.fields(
+                    "response wrapper",
+                    &crate::fields::header(entry, &["response"]),
+                    &RESPONSE_WRAPPER,
+                );
                 response
             } else {
                 entry
@@ -269,26 +289,33 @@ impl Export {
             sink.out.messages.push(MessageRow {
                 offset,
                 end: offset + 1,
-                message: Message {
-                    id,
-                    session: sid.clone(),
-                    parent: fields
-                        .get("parentResponseId")
-                        .and_then(Json::as_str)
-                        .filter(|id| !id.is_empty())
-                        .and_then(|id| message_id(ORIGIN, id)),
-                    role,
-                    at,
-                    model,
-                    prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
-                    blocks: vec![Block::Text {
-                        text: text.to_owned(),
-                    }],
-                    usage: Default::default(),
-                    stop_reason: None,
-                    reported_cost_usd: None,
-                    duration_ms: None,
-                    production: Default::default(),
+                message: {
+                    let (at, time_evidence) = crate::time::parts(at);
+                    Message {
+                        id,
+                        session: sid.clone(),
+                        parent: fields
+                            .get("parentResponseId")
+                            .and_then(Json::as_str)
+                            .filter(|id| !id.is_empty())
+                            .and_then(|id| message_id(ORIGIN, id)),
+                        role,
+                        at,
+                        at_quality: time_evidence.quality,
+                        at_precision: time_evidence.precision,
+                        at_until: time_evidence.until,
+                        model,
+                        prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
+                        blocks: vec![Block::Text {
+                            text: text.to_owned(),
+                        }],
+                        usage: Default::default(),
+                        stop_reason: None,
+                        reported_cost_usd: None,
+                        duration_ms: None,
+                        attrs: Default::default(),
+                        production: Default::default(),
+                    }
                 },
             });
             sink.records.record("response", &RecordOutcome::Used);
@@ -296,19 +323,25 @@ impl Export {
         if !warnings.is_empty() {
             warnings.sort();
             warnings.dedup();
-            sink.out.events.push(Event {
-                session: Some(sid),
-                kind: "grok_import_diagnostic".into(),
-                at: None,
-                after: None,
-                range: None,
-                data: serde_json::json!({"warnings": warnings}),
+            sink.out.events.push({
+                let (at, time_evidence) = crate::time::parts(None);
+                Event {
+                    session: Some(sid),
+                    kind: "grok_import_diagnostic".into(),
+                    at,
+                    at_quality: time_evidence.quality,
+                    at_precision: time_evidence.precision,
+                    at_until: time_evidence.until,
+                    after: None,
+                    range: None,
+                    data: serde_json::json!({"warnings": warnings}),
+                }
             });
         }
     }
 }
 
-fn time(fields: &Json, warnings: &mut Vec<String>) -> Option<Timestamp> {
+fn time(fields: &Json, warnings: &mut Vec<String>) -> Option<crate::time::SourceTime> {
     match identity::time(fields) {
         Ok(time) => time,
         Err(reason) => {

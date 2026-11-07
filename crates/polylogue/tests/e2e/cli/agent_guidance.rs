@@ -47,12 +47,26 @@ fn gemini_hooks_install_and_uninstall_through_the_public_command() {
 fn manual_runs_offline_as_text_and_json() {
     let dir = tempfile::tempdir().unwrap();
     let archive = dir.path().join("absent-archive");
-    let plain = cli(&[("POLYLOGUE_ARCHIVE", &archive)], &["manual"]);
+    let plain = cli(
+        &crate::Fixture::new(
+            &archive,
+            &dir.path().join("home"),
+            &dir.path().join("config"),
+        ),
+        &["manual"],
+    );
     assert!(plain.status.success(), "{plain:?}");
     let text = String::from_utf8(plain.stdout).unwrap();
     assert!(text.contains("polylogue"));
     assert!(text.contains("sessions where"));
-    let structured = cli(&[("POLYLOGUE_ARCHIVE", &archive)], &["--json", "manual"]);
+    let structured = cli(
+        &crate::Fixture::new(
+            &archive,
+            &dir.path().join("home"),
+            &dir.path().join("config"),
+        ),
+        &["--json", "manual"],
+    );
     assert!(structured.status.success(), "{structured:?}");
     assert_eq!(json(&structured)["manual"], text);
     assert!(!archive.exists());
@@ -60,21 +74,22 @@ fn manual_runs_offline_as_text_and_json() {
 
 #[test]
 fn gemini_start_and_prompt_events_request_context_through_respond() {
-    for (event, payload, expected) in [
+    for (event, payload, operation, expected) in [
         (
             "SessionStart",
             json!({"session_id":"current","cwd":"/synthetic/project","source":"resume"}),
-            json!({"ask":"session_start","cwd":"/synthetic/project","session":"gemini-cli:current","source":"resume"}),
+            "brief",
+            json!({"cwd":"/synthetic/project","session":"gemini-cli:current","source":"resume"}),
         ),
         (
             "BeforeAgent",
             json!({"session_id":"current","prompt":"Continue https://chatgpt.com/c/previous"}),
-            json!({"ask":"takeover","session":"chatgpt:previous","for_session":"gemini-cli:current"}),
+            "takeover",
+            json!({"session":"chatgpt:previous","for_session":"gemini-cli:current"}),
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let archive = dir.path().join("archive");
-        let home = dir.path().join("home");
         std::fs::create_dir(&archive).unwrap();
         let listener = UnixListener::bind(polylogue_store::Archive::at(&archive).socket()).unwrap();
         let server = std::thread::spawn(move || {
@@ -82,23 +97,44 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
             let mut line = String::new();
             BufReader::new(&stream).read_line(&mut line).unwrap();
             let request: Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(request["op"], "context");
-            assert_eq!(request["sender"], "hook");
-            assert_eq!(request["ask"], expected);
-            writeln!(stream, "{}", json!({"result":"ok","data":{"delivery":"synthetic-delivery","prepared":{"empty":false,"text":"Synthetic context"}}})).unwrap();
+            assert_eq!(request["operation"], operation);
+            assert_eq!(request["arguments"], expected);
+            assert!(
+                request["request_id"]
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty())
+            );
+            assert_eq!(request["deadline"], 1500);
+            assert!(request.get("op").is_none());
+            let delivery = request["request_id"].as_str().unwrap().to_owned();
+            let prepared = json!({
+                "event": if operation == "brief" { "resume" } else { "takeover" },
+                "empty": false,
+                "text": "Synthetic context",
+                "refs": [],
+                "left_out": [],
+            });
+            let answer = command_surface::Answer::ok(json!({
+                "delivery": delivery,
+                "prepared": prepared,
+            }));
+            writeln!(stream, "{}", serde_json::to_string(&answer).unwrap()).unwrap();
             let (mut stream, _) = listener.accept().unwrap();
             line.clear();
             BufReader::new(&stream).read_line(&mut line).unwrap();
             let request: Value = serde_json::from_str(&line).unwrap();
             assert_eq!(request["op"], "delivery_event");
-            assert_eq!(request["delivery"], "synthetic-delivery");
+            assert_eq!(request["delivery"], delivery);
             assert_eq!(request["what"], "delivered");
-            writeln!(stream, "{}", json!({"result":"ok","data":{}})).unwrap();
+            writeln!(
+                stream,
+                "{}",
+                serde_json::to_string(&command_surface::Answer::ok(json!({}))).unwrap()
+            )
+            .unwrap();
         });
         let mut child = crate::command(dir.path())
             .args(["hook", event, "--harness", "gemini-cli"])
-            .env("POLYLOGUE_ARCHIVE", &archive)
-            .env("POLYLOGUE_HOME", &home)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -113,9 +149,17 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success(), "{out:?}");
         assert_eq!(
-            json(&out),
+            gemini_hook_output(&out),
             json!({"hookSpecificOutput":{"hookEventName":event,"additionalContext":"Synthetic context"}})
         );
         server.join().unwrap();
     }
+}
+
+/// Native harness output is its own protocol, not a command Answer.
+fn gemini_hook_output(output: &Output) -> Value {
+    assert!(output.status.success(), "{output:?}");
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(value.get("hookSpecificOutput").is_some(), "{value}");
+    value
 }

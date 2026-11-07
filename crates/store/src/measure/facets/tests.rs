@@ -2,20 +2,29 @@ use super::*;
 use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 
 fn all(reader: &Reader<'_>, selection: &str, options: &str) -> Vec<Value> {
-    reader
-        .query(
-            &query(
-                selection,
-                "SELECT pk AS _pk FROM session WHERE kind='main' AND stub=0",
-                options,
-                "UTC",
-                0,
-            )
-            .unwrap(),
-            &[],
+    let clock = query_language::time::Clock::new(
+        "2026-10-07T10:00:00Z".parse().unwrap(),
+        query_language::time::DaySetting::new(
+            jiff::tz::TimeZone::UTC,
+            jiff::civil::Time::midnight(),
         )
-        .unwrap()
+        .unwrap(),
+    );
+    reader.with_clock(&clock, || {
+        reader
+            .query(
+                &query(
+                    selection,
+                    "SELECT pk AS _pk FROM session WHERE kind='main' AND stub=0",
+                    options,
+                )
+                .unwrap(),
+                &[],
+            )
+            .unwrap()
+    })
 }
+
 fn find<'a>(rows: &'a [Value], family: &str, value: Option<&str>) -> &'a Value {
     rows.iter()
         .find(|r| r["family"] == family && r["value"].as_str() == value)
@@ -65,12 +74,12 @@ fn facets_group_distinct_sessions_and_compute_idf_and_lift_at_read() {
             )
             .unwrap();
         }
-        f.note("tag", None, Some("common"), &format!("session:{id}"))
+        f.note("tag", Some("common"), None, &format!("session:{id}"))
             .unwrap();
     }
-    f.note("tag", None, Some("Rare"), "session:codex:a")
+    f.note("tag", Some("Rare"), None, "session:codex:a")
         .unwrap();
-    f.note("tag", None, Some("rare"), "session:codex:a")
+    f.note("tag", Some("rare"), None, "session:codex:a")
         .unwrap();
     f.derive().unwrap();
     let pool = f.reads().unwrap();
@@ -126,16 +135,7 @@ fn empty_selection_keeps_global_counts_and_unknowns() {
     assert_eq!(find(&rows, "origins", Some("codex"))["selected_count"], 0);
     assert_eq!(find(&rows, "repositories", None)["global_count"], 1);
     assert!(rows.iter().all(|r| r["lift"].is_null()));
-    assert!(
-        query(
-            "SELECT 1 AS _pk",
-            "SELECT 1 AS _pk",
-            "unsupported",
-            "UTC",
-            0
-        )
-        .is_err()
-    );
+    assert!(query("SELECT 1 AS _pk", "SELECT 1 AS _pk", "unsupported").is_err());
 }
 
 #[test]
@@ -148,15 +148,29 @@ fn withdrawn_and_revised_tags_change_counts_without_derivation() {
     })
     .unwrap();
     let note = f
-        .note("tag", None, Some("old"), "session:codex:tag")
+        .note("tag", Some("old"), None, "session:codex:tag")
         .unwrap();
-    let conn = crate::archive::open_write(&f.archive.archive_db(), 64).unwrap();
-    conn.execute("INSERT INTO note(id,first_note,kind,author,machine,value,created_at,commit_seq) SELECT 'revision',id,kind,author,machine,'new',created_at+1,commit_seq+1 FROM note WHERE id=?1",[&note]).unwrap();
-    conn.execute(
-        "INSERT INTO note_target(note_id,ref) VALUES('revision','session:codex:tag')",
-        [],
-    )
-    .unwrap();
+    use polylogue_model::{
+        Reference, RevisionReference, Timestamp,
+        assertion::{AssertionKind, AssertionLink, LinkRole},
+    };
+    let mut conn = crate::archive::open_write(&f.archive.archive_db(), 64).unwrap();
+    let mut revision = crate::assertions::get(&conn, &note).unwrap().unwrap().fact;
+    revision.id = "revision".into();
+    revision.key = Some("new".into());
+    revision.created_at = Timestamp::from_unix_ms(2).unwrap();
+    revision.links.push(AssertionLink {
+        role: LinkRole::Revises,
+        reference: Reference::Assertion(RevisionReference {
+            root: note.clone(),
+            revision: Some(note.clone()),
+        }),
+        seen_hash: None,
+        quote: None,
+    });
+    let tx = conn.transaction().unwrap();
+    crate::assertions::apply(&tx, std::slice::from_ref(&revision), 2).unwrap();
+    tx.commit().unwrap();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
     let rows = all(&reader, "SELECT pk AS _pk FROM session", "tags");
@@ -164,11 +178,25 @@ fn withdrawn_and_revised_tags_change_counts_without_derivation() {
     assert_eq!(find(&rows, "tags", Some("new"))["selected_count"], 1);
     drop(reader);
     drop(pool);
-    conn.execute(
-        "INSERT INTO note_relation(note_id,kind,other) VALUES('revision','withdraws',?1)",
-        [format!("note:{note}")],
-    )
-    .unwrap();
+    let mut withdrawal = revision;
+    withdrawal.id = "withdrawal".into();
+    withdrawal.root = "withdrawal".into();
+    withdrawal.kind = AssertionKind::Withdrawal;
+    withdrawal.key = None;
+    withdrawal.value = None;
+    withdrawal.created_at = Timestamp::from_unix_ms(3).unwrap();
+    withdrawal.links = vec![AssertionLink {
+        role: LinkRole::Withdraws,
+        reference: Reference::Assertion(RevisionReference {
+            root: note,
+            revision: None,
+        }),
+        seen_hash: None,
+        quote: None,
+    }];
+    let tx = conn.transaction().unwrap();
+    crate::assertions::apply(&tx, &[withdrawal], 3).unwrap();
+    tx.commit().unwrap();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
     assert!(all(&reader, "SELECT pk AS _pk FROM session", "tags").is_empty());

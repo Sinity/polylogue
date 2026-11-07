@@ -4,8 +4,9 @@ use super::*;
 use polylogue_render::html::encode_path_segment as enc;
 use serde_json::{Value, json};
 
+/// The rows of a query that matches something.
 fn data(r: &Reader, text: &str, cursor: Option<String>) -> Value {
-    match handle(
+    crate::test_answers::ok(handle(
         Request::Query {
             text: text.into(),
             cursor,
@@ -15,10 +16,7 @@ fn data(r: &Reader, text: &str, cursor: Option<String>) -> Value {
             fields: vec![],
         },
         &r.web.daemon,
-    ) {
-        Response::Ok { data, .. } => data,
-        other => panic!("{text}: {other:?}"),
-    }
+    ))
 }
 
 #[test]
@@ -86,13 +84,14 @@ fn search_writes_are_available_through_the_command_table() {
             .len(),
         1
     );
-    let kept = crate::mcp::tests::call(
+    let kept = crate::mcp::tests::call_as(
         &polylogue_store::Archive::at(&r.web.daemon.archive.root),
         "keep",
-        json!({"request_id":"mcp-kept","query":"sessions where parser"})
+        json!({"query":"sessions where parser"})
             .as_object()
             .unwrap()
             .clone(),
+        "mcp-kept",
     )
     .unwrap();
     let outcome: Value = serde_json::from_str(&kept).unwrap();
@@ -111,8 +110,8 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
     let provider = r.w.local_embeddings();
     let http = rt();
     for source in [
-        "sessions where -id:claude-code:s1 near:\"parser\"",
-        "sessions where -id:claude-code:s1 parser near:\"parser\"",
+        "sessions where -id:claude-code:s1 similar:\"parser\"",
+        "sessions where -id:claude-code:s1 parser similar:\"parser\"",
     ] {
         let text = format!("{source} origin:claude-code");
         let answer = data(&r, &text, None);
@@ -174,8 +173,8 @@ fn filtered_search_has_the_same_rows_on_every_surface() {
     for text in [
         "messages where (parser OR absent) -role:assistant",
         "sessions where origin:claude-code parser",
-        "messages where origin:claude-code near:\"parser\"",
-        "messages where origin:claude-code parser near:\"parser\"",
+        "messages where origin:claude-code similar:\"parser\"",
+        "messages where origin:claude-code parser similar:\"parser\"",
     ] {
         let request = Request::Query {
             text: text.into(),
@@ -196,8 +195,8 @@ fn filtered_search_has_the_same_rows_on_every_surface() {
             .unwrap(),
         ));
         let api: Value = serde_json::from_str(&raw).unwrap();
-        match socket {
-            Response::Ok { data: answer, .. } => {
+        match crate::protocol::into_value(socket) {
+            Ok(answer) => {
                 assert_eq!(status, StatusCode::OK, "{raw}");
                 assert_eq!(api["rows"], answer["rows"], "{text}");
                 let args = json!({"query":text,"limit":50,"why":true})
@@ -213,9 +212,9 @@ fn filtered_search_has_the_same_rows_on_every_surface() {
                 let mcp: Value = serde_json::from_str(&mcp).unwrap();
                 assert_eq!(api["rows"], mcp["rows"]);
             }
-            Response::Error { kind, .. } => {
+            Err(failure) => {
                 assert_ne!(status, StatusCode::OK, "{raw}");
-                assert_eq!(api["error"], kind);
+                assert_eq!(api["error"]["code"], failure.code.unwrap());
             }
         }
     }

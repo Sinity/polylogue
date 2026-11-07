@@ -3,8 +3,8 @@ use super::*;
 #[test]
 fn punctuation_splits_words_instead_of_failing() {
     assert_eq!(
-        words("/realm/project/polylogue: cargo-nextest!"),
-        ["realm", "project", "polylogue", "cargo", "nextest"]
+        words("/workspace/project/polylogue: cargo-nextest!"),
+        ["workspace", "project", "polylogue", "cargo", "nextest"]
     );
     assert!(words("--- !!").is_empty());
 }
@@ -36,4 +36,4 @@ fn folding_and_prefixes_mark_like_the_index_matches() {
     assert_eq!(&t[marks[0].0..marks[0].1], "weekday");
 }
 
-mod masking;
+mod source_text;

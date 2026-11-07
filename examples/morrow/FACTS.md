@@ -290,6 +290,11 @@ One agent's rubric pass over the Morrow sessions, in its own home
 tests and the story and judging boards load "Morrow plus the annotation set"
 (`spec/user-data.md`, checked claims and annotation passes).
 
+This annotation set records predecessor tool and reference spellings as input
+history. Imports preserve them as declared metadata. Current commands author
+assertions, and runtime lookups use canonical `assertion:` references rather
+than interpreting historical `note:` strings as aliases.
+
 **The rubric** `note:0199f400-0000-7000-8000-000000000400`, revision 1,
 written by the operator at 2026-10-08 09:00: instructions "Mark how each
 Morrow coding session ended"; target query `sessions where tag:project:morrow`;

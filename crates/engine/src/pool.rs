@@ -12,7 +12,7 @@ use polylogue_store::writer::WriterSender;
 use polylogue_store::{Batch, Change, InFlight, InputKey, Observation, ParseStep};
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
@@ -29,6 +29,7 @@ pub struct Job {
     pub input: InputKey,
     pub change: Change,
     pub observation: Option<Observation>,
+    pub(crate) acquisition: Option<crate::acquisition::AcquisitionContext>,
     pub continues: bool,
     /// Where parsing starts: after the last complete record parsed, or 0
     /// when parser state is rebuilt by parsing the input again.
@@ -41,6 +42,7 @@ pub struct Job {
     /// The input's stored length once this job is written.
     pub length: u64,
     pub parser_state: Option<Json>,
+    pub(crate) parser_deferred: bool,
     pub priority: Priority,
     /// Where the bytes come from.
     pub source: Bytes,
@@ -88,6 +90,15 @@ pub struct Done {
     pub tail: Vec<u8>,
     pub stored: u64,
     pub error: Option<String>,
+    pub write_failed: bool,
+    /// The batch carries a step that records the parser's failure.
+    pub failure_recorded: bool,
+    pub continuation_missing: bool,
+    /// Accepted SDK custody; this is neither failure nor confirmed admission.
+    pub pending: Option<String>,
+    pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
+    pub raw_custody: Option<polylogue_store::primary::RawCustodyReceipt>,
+    pub raw_acquisition: Option<polylogue_store::primary::AcquisitionReceipt>,
 }
 
 struct Queue {
@@ -107,6 +118,7 @@ struct Shared {
 pub struct Pool {
     shared: Arc<Shared>,
     workers: Vec<JoinHandle<()>>,
+    acknowledgments: Option<JoinHandle<()>>,
 }
 
 impl Pool {
@@ -114,7 +126,7 @@ impl Pool {
         workers: usize,
         bytes_in_flight: u64,
         writer: WriterSender,
-        blobs: Arc<hashed_blobs::Store>,
+        blobs: Arc<polylogue_store::blobs::Blobs>,
         archive: polylogue_store::Archive,
         done: Sender<Done>,
     ) -> Self {
@@ -129,20 +141,31 @@ impl Pool {
             room: Condvar::new(),
             limit: bytes_in_flight.max(1),
         });
+        let (acknowledge, pending) = channel();
+        let acknowledged = done.clone();
+        let acknowledgments = std::thread::Builder::new()
+            .name("polylogue-acknowledgments".into())
+            .spawn(move || acknowledge_groups(pending, acknowledged))
+            .expect("spawn acknowledgment reader");
         let workers = (0..workers.max(1))
             .map(|i| {
                 let shared = Arc::clone(&shared);
                 let writer = writer.clone();
                 let blobs = Arc::clone(&blobs);
-                let done = done.clone();
                 let archive = archive.clone();
+                let acknowledge = acknowledge.clone();
                 std::thread::Builder::new()
                     .name(format!("polylogue-parse-{i}"))
-                    .spawn(move || work(&shared, &writer, &blobs, &archive, &done))
+                    .spawn(move || work(&shared, &writer, &blobs, &archive, &acknowledge))
                     .expect("spawn a parse worker")
             })
             .collect();
-        Self { shared, workers }
+        drop(acknowledge);
+        Self {
+            shared,
+            workers,
+            acknowledgments: Some(acknowledgments),
+        }
     }
 
     /// Queues a job. Blocks while the bytes already in flight are at the
@@ -152,6 +175,7 @@ impl Pool {
         while q.in_flight > 0 && q.in_flight + job.bytes() > self.shared.limit {
             q = self.shared.room.wait(q).expect("pool lock");
         }
+        polylogue_store::timing::queue(polylogue_store::timing::Queue::Parse, 1);
         q.in_flight += job.bytes();
         match job.priority {
             Priority::Live => q.live.push_back(job),
@@ -169,6 +193,9 @@ impl Drop for Pool {
         self.shared.work.notify_all();
         for w in self.workers.drain(..) {
             let _ = w.join();
+        }
+        if let Some(thread) = self.acknowledgments.take() {
+            let _ = thread.join();
         }
     }
 }
@@ -197,10 +224,11 @@ fn release(shared: &Shared, bytes: u64) {
 fn work(
     shared: &Arc<Shared>,
     writer: &WriterSender,
-    store: &Arc<hashed_blobs::Store>,
+    store: &Arc<polylogue_store::blobs::Blobs>,
     archive: &polylogue_store::Archive,
-    done: &Sender<Done>,
+    acknowledge: &Sender<PendingGroup>,
 ) {
+    let _worker = polylogue_store::timing::worker();
     let mut group = Group {
         waiting: Vec::new(),
         bytes: 0,
@@ -210,6 +238,7 @@ fn work(
             let mut q = shared.queue.lock().expect("pool lock");
             loop {
                 if let Some(j) = q.live.pop_front().or_else(|| q.bulk.pop_front()) {
+                    polylogue_store::timing::queue(polylogue_store::timing::Queue::Parse, -1);
                     break Some(j);
                 }
                 if !group.waiting.is_empty() {
@@ -224,18 +253,82 @@ fn work(
             }
         };
         let Some(job) = job else {
-            if !flush(&mut group, shared, writer, store, done) {
+            if !flush(&mut group, shared, writer, store, acknowledge) {
                 return;
             }
             continue;
         };
         let size = job.bytes();
         let live = job.priority == Priority::Live;
-        let (batch, result) = run(job, archive, store);
+        let (batch, result) = run(job, archive, store, true);
         group.waiting.push((batch, result, size));
         group.bytes += size;
-        if (live || group.bytes >= GROUP_BYTES) && !flush(&mut group, shared, writer, store, done) {
+        if (live || group.bytes >= GROUP_BYTES)
+            && !flush(&mut group, shared, writer, store, acknowledge)
+        {
             return;
+        }
+    }
+}
+
+struct PendingGroup {
+    results: polylogue_store::Result<
+        Receiver<Vec<polylogue_store::Result<polylogue_store::staging::StoredInput>>>,
+    >,
+    waiting: Vec<Done>,
+    queued: Vec<bool>,
+}
+
+fn acknowledge_groups(pending: Receiver<PendingGroup>, done: Sender<Done>) {
+    for mut group in pending {
+        let results = group.results.and_then(|rx| {
+            rx.recv()
+                .map_err(|_| polylogue_store::StoreError::WriterGone)
+        });
+        match results {
+            Ok(results) => {
+                let mut results = results.into_iter();
+                for (result, queued) in group.waiting.iter_mut().zip(group.queued) {
+                    if queued {
+                        match results.next() {
+                            Some(Err(polylogue_store::StoreError::PrimaryPending { identity })) => {
+                                result.pending = Some(identity);
+                            }
+                            Some(Err(polylogue_store::StoreError::UnresolvedBasisConflict {
+                                custody,
+                            })) => {
+                                result.raw_custody = Some(custody);
+                                result.stored = 0;
+                                result.checkpoint = None;
+                                result.parser_state = None;
+                            }
+                            Some(Err(error)) => {
+                                result.error = Some(error.to_string());
+                                result.write_failed = true;
+                                result.stored = 0;
+                            }
+                            Some(Ok(_)) => {}
+                            None => {
+                                result.error = Some("the writer returned no result".into());
+                                result.write_failed = true;
+                                result.stored = 0;
+                            }
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                for result in &mut group.waiting {
+                    result.error.get_or_insert_with(|| error.to_string());
+                    result.write_failed = true;
+                    result.stored = 0;
+                }
+            }
+        }
+        for result in group.waiting {
+            if done.send(result).is_err() {
+                return;
+            }
         }
     }
 }
@@ -245,73 +338,60 @@ fn flush(
     group: &mut Group,
     shared: &Arc<Shared>,
     writer: &WriterSender,
-    store: &Arc<hashed_blobs::Store>,
-    done: &Sender<Done>,
+    store: &Arc<polylogue_store::blobs::Blobs>,
+    acknowledge: &Sender<PendingGroup>,
 ) -> bool {
     let mut waiting = std::mem::take(&mut group.waiting);
-    let durable = waiting
+    let queued: Vec<bool> = waiting
         .iter()
-        .any(|(batch, _, _)| batch.as_ref().is_some_and(|b| !b.files.is_empty()));
-    if durable {
-        let queued: Vec<bool> = waiting
-            .iter()
-            .map(|(batch, _, _)| batch.is_some())
-            .collect();
-        let mut batches = Vec::new();
-        for (batch, _, size) in &mut waiting {
-            if let Some(mut batch) = batch.take() {
-                let owner = Arc::clone(shared);
-                let bytes = *size;
-                batch.batch.release = InFlight::new(move || release(&owner, bytes));
-                batches.push(batch);
-            } else {
-                release(shared, *size);
-            }
-        }
-        let results = writer.store_group(batches, Arc::clone(store));
-        match results {
-            Ok(results) => {
-                let mut results = results.into_iter();
-                for ((_, result, _), queued) in waiting.iter_mut().zip(queued) {
-                    if queued {
-                        match results.next() {
-                            Some(Err(error)) => result.error = Some(error.to_string()),
-                            Some(Ok(_)) => {}
-                            None => result.error = Some("the writer returned no result".into()),
-                        }
-                    }
-                }
-            }
-            Err(error) => {
-                for (_, result, _) in &mut waiting {
-                    result.error.get_or_insert_with(|| error.to_string());
-                }
-            }
-        }
-    } else {
-        for (batch, result, size) in &mut waiting {
-            if let Some(mut batch) = batch.take() {
-                let owner = Arc::clone(shared);
-                let bytes = *size;
-                batch.batch.release = InFlight::new(move || release(&owner, bytes));
-                if let Err(error) = writer.send(batch.batch) {
-                    result.error = Some(error.to_string());
-                }
-            } else {
-                release(shared, *size);
-            }
+        .map(|(batch, _, _)| batch.is_some())
+        .collect();
+    let mut batches = Vec::new();
+    for (batch, _, size) in &mut waiting {
+        if let Some(mut batch) = batch.take() {
+            let owner = Arc::clone(shared);
+            let bytes = *size;
+            batch.batch.release = InFlight::new(move || release(&owner, bytes));
+            batches.push(batch);
+        } else {
+            release(shared, *size);
         }
     }
+    let results = writer.enqueue_group(batches, Arc::clone(store));
     group.bytes = 0;
-    waiting
-        .into_iter()
-        .all(|(_, result, _)| done.send(result).is_ok())
+    let waiting = waiting.into_iter().map(|(_, result, _)| result).collect();
+    acknowledge
+        .send(PendingGroup {
+            results,
+            waiting,
+            queued,
+        })
+        .is_ok()
 }
 
-fn run(
+/// The record of a parse that failed: no rows, and the chain's cursor stays
+/// where this parse began.
+fn failed_step(job: &Job, error: String, prepare: bool) -> ParseStep {
+    let mut failed = ParseStep::new(
+        Default::default(),
+        Default::default(),
+        job.start..job.start,
+        false,
+    );
+    failed.reset = false;
+    failed.progress = polylogue_model::batch::StepProgress::Failed { error };
+    failed.reading_version = job.origin.reading_version();
+    if prepare {
+        failed.prepare();
+    }
+    failed
+}
+
+pub(crate) fn run(
     mut job: Job,
     archive: &polylogue_store::Archive,
-    store: &hashed_blobs::Store,
+    store: &polylogue_store::blobs::Blobs,
+    prepare: bool,
 ) -> (Option<PreparedBatch>, Done) {
     use polylogue_store::timing::{Stage, add, time};
     let mut out = Done {
@@ -323,8 +403,16 @@ fn run(
         tail: Vec::new(),
         stored: 0,
         error: None,
+        write_failed: false,
+        failure_recorded: false,
+        continuation_missing: false,
+        pending: None,
+        checkpoint: None,
+        raw_custody: None,
+        raw_acquisition: None,
     };
     let started = std::time::Instant::now();
+    let mut file_snapshot = None;
     let read = match &job.source {
         Bytes::Import(source) => source
             .lock()
@@ -333,7 +421,14 @@ fn run(
         Bytes::Stored(chain) => chain
             .read_range(store, job.start, job.end)
             .map_err(|e| std::io::Error::other(e.to_string())),
-        Bytes::File => read::read_range(&job.path, job.start, job.end),
+        Bytes::File => match &job.acquisition {
+            Some(context) => read::read_native_range(&job.path, job.start, job.end, context.facts)
+                .map(|(bytes, observed)| {
+                    file_snapshot = Some(observed);
+                    bytes
+                }),
+            None => read::read_range(&job.path, job.start, job.end),
+        },
         Bytes::Unloaded { .. } => Err(std::io::Error::other(
             "stored bytes were not loaded before their job",
         )),
@@ -364,9 +459,43 @@ fn run(
         },
         None => None,
     };
+    let acquisition = new_blob
+        .as_ref()
+        .zip(job.acquisition.as_ref())
+        .map(|(blob, context)| {
+            let range = polylogue_store::primary::RawRange {
+                start: job.store_from.expect("new body has a source interval"),
+                end: job.store_from.expect("new body has a source interval") + blob.size,
+            };
+            match &file_snapshot {
+                Some(observed) => context.finish_file(
+                    range,
+                    blob.hash,
+                    job.input.clone(),
+                    observed.clone(),
+                    polylogue_store::primary::RawStreamRole::ProviderBytes,
+                    polylogue_store::primary::RawRange {
+                        start: 0,
+                        end: observed.size,
+                    },
+                ),
+                None => context.finish(range, blob.hash),
+            }
+        });
+    out.raw_acquisition = acquisition.clone();
     let mut extra = Vec::new();
-    let parse = (job.origin.open)(&job.path)
+    let parser = (job.origin.open)(&job.path).or_else(|| {
+        job.origin
+            .is_row_dump(&job.path)
+            .then(polylogue_sources::row_dump::open)
+    });
+    let parse = parser
         .map(|parser| {
+            if job.origin.support == polylogue_sources::Support::Parsed
+                && (job.parser_deferred || job.start > 0 && out.parser_state.is_none()) {
+                out.continuation_missing = true;
+                return Vec::new();
+            }
             // A parser that panics loses only its own input: the panic
             // becomes this input's failure, and every other input is parsed.
             let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -390,12 +519,17 @@ fn run(
                     out.parser_state = Some(parser_state);
                     let mut parsed = Vec::new();
                     for mut step in steps {
+                        if step.consumed == step.start && !job.at_end {
+                            continue;
+                        }
                         for blob in std::mem::take(&mut step.output.blobs) {
                             match time(Stage::Store, || archive.prepare_decoded(&blob.bytes)) {
                                 Ok((p, file)) => {
                                     if p.hash!=blob.hash || p.size!=blob.size {
-                                        out.error=Some("decoded bytes differ from their declared hash or length".into());
-                                        return Vec::new();
+                                        let error = "decoded bytes differ from their declared hash or length";
+                                        out.error = Some(error.into());
+                                        out.failure_recorded = true;
+                                        return vec![failed_step(&job, error.into(), prepare)];
                                     }
                                     files.extend(file);
                                     extra.push(p);
@@ -411,31 +545,77 @@ fn run(
                             job.at_end,
                         );
                         p.order_from = parser.is_document().then_some(0);
+                        if job.origin.support == polylogue_sources::Support::NoParser {
+                            p.progress = polylogue_model::batch::StepProgress::NoParserYet {
+                                at_end: job.at_end,
+                            };
+                        }
                         p.repeats_whole_conversations = step.repeats_whole_conversations;
+                        if job.origin.is_row_dump(&job.path) {
+                            let start = step.start as usize;
+                            let end = step.consumed as usize;
+                            if let Err(error) = p.compare_records(&bytes[start..end]) {
+                                out.error = Some(error.to_string());
+                                out.failure_recorded = true;
+                                return vec![failed_step(&job, error.to_string(), prepare)];
+                            }
+                        }
                         // Packing for the writer is store work, not parsing.
                         let packed = std::time::Instant::now();
-                        p.prepare();
+                        p.reading_version = job.origin.reading_version();
+                        if prepare { p.prepare(); }
                         add(Stage::Store, packed.elapsed());
                         parsed.push(p);
+                    }
+                    if let Some(last) = parsed.last_mut()
+                        && !matches!(last.progress, polylogue_model::batch::StepProgress::NoParserYet { .. }) {
+                        last.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
+                            last.reading_version.clone(), last.parsed_upto, out.parser_state.clone().filter(|state| !state.is_null())));
                     }
                     parsed
                 }
                 Err(e) => {
                     out.error = Some(format!("parse {}: {e}", job.path.display()));
-                    Vec::new()
+                    out.failure_recorded = true;
+                    vec![failed_step(&job, e, prepare)]
                 }
             }
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            out.parsed_upto = job.end;
+            out.parser_state = None;
+            if !crate::has_reading(job.origin) || job.origin.support != polylogue_sources::Support::NoParser {
+                return Vec::new();
+            }
+            let mut step = ParseStep::new(
+                Default::default(),
+                Default::default(),
+                job.start..job.end,
+                job.at_end,
+            );
+            step.progress = polylogue_model::batch::StepProgress::NoParserYet {
+                at_end: job.at_end,
+            };
+            step.reading_version = job.origin.reading_version();
+            if prepare {
+                step.prepare();
+            }
+            vec![step]
+        });
     if let Bytes::Import(source) = &job.source {
-        let upto = if job.origin.support == polylogue_sources::Support::Parsed {
+        let upto = if job.origin.support != polylogue_sources::Support::Kept {
             out.parsed_upto
         } else {
             job.end
         };
         source.lock().expect("import reader lock").consume(upto);
     }
+    out.checkpoint = parse.last().and_then(|step| step.checkpoint.clone());
     let batch = Batch {
+        required_disposition: job
+            .acquisition
+            .as_ref()
+            .and_then(|context| context.required_disposition),
         input: job.input,
         change: job.change,
         observation: job.observation,
@@ -444,6 +624,11 @@ fn run(
         blobs: extra,
         length: job.length,
         parse,
+        acquisition,
+        basis: job
+            .acquisition
+            .as_ref()
+            .and_then(|context| context.basis.clone()),
         release: InFlight::default(),
     };
     (Some(PreparedBatch { batch, files }), out)

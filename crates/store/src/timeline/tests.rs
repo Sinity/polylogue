@@ -54,7 +54,7 @@ fn a_session_crossing_logical_start_and_dst_uses_each_records_time() {
         .unwrap();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let day = LogicalDay::named("Europe/Warsaw", 240).unwrap();
+    let day = fixture_clock("Europe/Warsaw", "04:00:00");
     let date = "2024-03-31".parse().unwrap();
     let rows = page(&reader, &day, &all(Some(date), false, false), None, 50).unwrap();
     assert_eq!(rows["rows"].as_array().unwrap().len(), 3);
@@ -65,7 +65,7 @@ fn a_session_crossing_logical_start_and_dst_uses_each_records_time() {
         counts.iter().find(|r| r["date"] == "2024-03-31").unwrap()["records"],
         3
     );
-    let bounds = day.day(date);
+    let bounds = crate::calendar::range(&day.day, date).unwrap();
     let selection = crate::measure::Selection {
         since: Some(bounds.0),
         until: Some(bounds.1),
@@ -110,9 +110,11 @@ fn every_leap_year_record_and_undated_record_is_reachable() {
         session,
         "codex:ancient",
         Some(
-            LogicalDay::named("UTC", 240)
-                .unwrap()
-                .start_of(jiff::civil::date(-400, 2, 29))
+            crate::calendar::start(
+                &fixture_clock("UTC", "04:00:00").day,
+                jiff::civil::date(-400, 2, 29),
+            )
+            .unwrap()
                 + 8 * 3_600_000,
         ),
     );
@@ -120,7 +122,7 @@ fn every_leap_year_record_and_undated_record_is_reachable() {
     add(&mut f, session, "codex:a-unrepresentable", Some(i64::MAX));
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let day = LogicalDay::named("UTC", 240).unwrap();
+    let day = fixture_clock("UTC", "04:00:00");
     let selection = all(Some("2024-02-29".parse().unwrap()), true, false);
     let mut after = None;
     let mut ids = Vec::new();
@@ -206,7 +208,7 @@ fn mixed_kinds_and_models_page_once_across_equal_times_and_undated_records() {
     .unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let day = LogicalDay::named("UTC", 240).unwrap();
+    let day = fixture_clock("UTC", "04:00:00");
     let collect = |selection: &Selection<'_>| {
         let mut after = None;
         let mut ids = Vec::new();
@@ -300,14 +302,18 @@ fn response_pages_exclude_only_sessions_with_unknown_boundaries() {
         responses: Some(&usage),
         ..all(None, false, false)
     };
-    let result = page(
-        &r,
-        &LogicalDay::named("UTC", 240).unwrap(),
-        &selection,
-        None,
-        50,
-    )
-    .unwrap();
+    let result = page(&r, &fixture_clock("UTC", "04:00:00"), &selection, None, 50).unwrap();
     assert_eq!(result["rows"].as_array().unwrap().len(), 1);
     assert_eq!(result["rows"][0]["id"], "codex:known-response");
+}
+
+fn fixture_clock(zone: &str, start: &str) -> Clock {
+    Clock::new(
+        "2026-10-07T10:00:00Z".parse().unwrap(),
+        DaySetting::new(
+            jiff::tz::TimeZone::get(zone).unwrap(),
+            start.parse().unwrap(),
+        )
+        .unwrap(),
+    )
 }

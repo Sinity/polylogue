@@ -1,12 +1,5 @@
 use super::*;
-use crate::daemon::{Request, Response, service::handle};
-
-fn data(response: Response) -> Value {
-    match response {
-        Response::Ok { data, .. } => data,
-        other => panic!("{other:?}"),
-    }
-}
+use crate::daemon::{Request, service::handle};
 
 fn explain(expression: Option<&str>) -> Request {
     Request::Explain {
@@ -55,28 +48,25 @@ fn declaration_pages_preserve_every_entry() {
         .filter(|v| v["kind"] == "read_view")
         .map(|v| v["name"].as_str().unwrap())
         .collect();
-    assert_eq!(views, polylogue_render::View::NAMES);
+    assert_eq!(views, polylogue_model::read::View::NAMES);
 }
 
 #[test]
 fn every_grammar_keyword_is_discoverable() {
     let page = answer("syntax", None, None, None, None).unwrap();
     let keywords = page["entries"][0]["keywords"].as_array().unwrap();
-    for line in include_str!("../../../query/src/query.pest")
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("//"))
-    {
-        for (i, text) in line.split('"').enumerate() {
-            if i % 2 == 1
-                && text.chars().any(|c| c.is_ascii_alphabetic())
-                && text
-                    .chars()
-                    .all(|c| c.is_ascii_alphabetic() || c == '_' || c == ':')
-            {
-                assert!(keywords.contains(&json!(text)), "missing {text}");
-            }
-        }
+    for function in [
+        "day",
+        "hour",
+        "week",
+        "weekday",
+        "month",
+        "month_day",
+        "program",
+    ] {
+        assert!(keywords.contains(&json!(function)), "missing {function}");
     }
+    assert!(!keywords.contains(&json!("fingerprint")));
     assert!(
         page["entries"][0]["stages"]
             .as_array()
@@ -93,19 +83,33 @@ fn every_grammar_keyword_is_discoverable() {
 
 #[test]
 fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
-    let w = crate::test_daemon::start("synthetic query explanation");
-    w.set("day.zone", "Pacific/Kiritimati");
-    w.set("day.logical_start", "07:30");
-    data(handle(
-        Request::Save {
-            request_id: "save-explain".into(),
-            name: "mine".into(),
-            text: "self".into(),
-            author: polylogue_model::Author::Operator,
-        },
-        &w.daemon,
+    let day = query_language::time::DaySetting::new(
+        jiff::tz::TimeZone::get("Pacific/Kiritimati").unwrap(),
+        jiff::civil::Time::constant(7, 30, 0, 0),
+    )
+    .unwrap();
+    let w = crate::test_daemon::start_with_clock_and_day(
+        "synthetic query explanation",
+        polylogue_model::WallClock::fixed("2026-10-29T08:00:00Z".parse().unwrap()),
+        day,
+    );
+    let save = Request::Save {
+        request_id: "save-explain".into(),
+        name: "mine".into(),
+        text: "self".into(),
+        denominator: None,
+    };
+    let limit = crate::daemon::execution::limit_for(&save, None, Default::default());
+    let caller = polylogue_model::authorship::Authorship {
+        author: polylogue_model::Author::Agent(Some(
+            polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+        )),
+        via: polylogue_model::authorship::Channel::Mcp,
+    };
+    crate::test_answers::ok(crate::daemon::service::handle_with_caller(
+        save, &w.daemon, &limit, &caller,
     ));
-    let kept = data(handle(
+    let kept = crate::test_answers::ok(handle(
         Request::Keep {
             request_id: "keep-explain".into(),
             text: "sessions".into(),
@@ -124,13 +128,19 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         "query:mine".into(),
         format!("result:{}", kept["id"].as_str().unwrap()),
     ] {
-        let result = data(handle(explain(Some(&expression)), &w.daemon));
+        let result = crate::test_answers::ok(handle(explain(Some(&expression)), &w.daemon));
         let explanation = &result["explanation"];
         let program = &explanation["program"];
         assert!(!program["sql"].as_str().unwrap().is_empty());
         assert!(explanation["parsed"].is_object());
-        assert_eq!(program["zone"], "Pacific/Kiritimati");
-        assert_eq!(program["day_start_minutes"], 450);
+        let clock: query_language::time::ClockWire =
+            serde_json::from_value(program["clock"].clone()).unwrap();
+        assert_eq!(
+            clock.now,
+            "2026-10-29T08:00:00Z".parse::<jiff::Timestamp>().unwrap()
+        );
+        assert_eq!(clock.day.zone, "Pacific/Kiritimati");
+        assert_eq!(clock.day.start, jiff::civil::Time::constant(7, 30, 0, 0));
         assert!(program["incomplete"].is_array());
         assert!(program["params"].is_array());
         if expression == "query:mine" {
@@ -157,7 +167,10 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         assert!(
             matches!(
                 handle(explain(expression), &w.daemon),
-                Response::Error { .. }
+                command_surface::Answer {
+                    outcome: command_surface::Outcome::Error(_),
+                    ..
+                }
             ),
             "{expression:?}"
         );
@@ -180,4 +193,35 @@ fn derived_pages_and_fields_expose_the_same_validity_and_parameters() {
         .find(|e| e["name"] == "clustered_time")
         .unwrap();
     assert_eq!(field["construct"]["catalog"], "K15");
+}
+
+/// law: mcp-detail-on-demand
+#[test]
+fn capabilities_publish_each_operation_with_its_tool_unlisted_arguments_and_answer() {
+    let capabilities = entries("capabilities", None).unwrap();
+    let read = capabilities
+        .iter()
+        .find(|entry| entry["kind"] == "command" && entry["name"] == "read")
+        .unwrap();
+    assert_eq!(read["tool"], "polylogue_read");
+    let unlisted = read["unlisted"].as_array().unwrap();
+    // The fold table's `show` replaces the per-kind flags such as
+    // `thinking`; one argument form, so no `FullArguments` definition.
+    assert!(unlisted.contains(&json!("show")), "{unlisted:?}");
+    assert!(!unlisted.contains(&json!("target")), "{unlisted:?}");
+    assert!(read["arguments"]["properties"]["show"].is_object());
+    assert!(read["answer"].is_object());
+    let list = capabilities
+        .iter()
+        .find(|entry| entry["kind"] == "command" && entry["name"] == "list")
+        .unwrap();
+    assert_eq!(list["tool"], "polylogue_read");
+    let envelope = capabilities
+        .iter()
+        .find(|entry| entry["kind"] == "answer")
+        .unwrap();
+    assert_eq!(
+        envelope["schema"],
+        schemars::schema_for!(command_surface::Answer<Value>).to_value()
+    );
 }

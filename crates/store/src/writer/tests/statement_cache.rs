@@ -50,6 +50,7 @@ fn preparations(messages: usize, tools: bool) -> u64 {
             } else if tools && n % 3 == 2 {
                 message.prompt_kind = None;
                 message.blocks.push(Block::ToolResult {
+                    reported_duration_ms: None,
                     call_id: Some(format!("call-{}", n / 3)),
                     outcome: ToolOutcome::Ok,
                     output: Some("Synthetic tool output".into()),
@@ -62,7 +63,7 @@ fn preparations(messages: usize, tools: bool) -> u64 {
         .collect();
     let batch = batch("input1", 0, 0, rows, &["session1"]);
     assert_eq!(
-        write_rows(&tx, &batch, &batch.parse[0], 1, 1, Some(&first_build)).unwrap(),
+        write_test_rows(&tx, &batch, &batch.parse[0], 1, 1, Some(&first_build)).unwrap(),
         messages as u64
     );
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)

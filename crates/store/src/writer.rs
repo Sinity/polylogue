@@ -12,7 +12,7 @@
 //! upsert, so that changes nothing.
 
 use crate::archive::{Archive, bump_counter, open_write};
-use crate::blobs::{Change, FileFacts, NewBlob, Stored};
+use crate::blobs::{Change, FileFacts, NewBlob};
 use crate::{Result, StoreError};
 use polylogue_model::{
     BlobHash, Block, ErrorReason, Event, Json, Link, Message, MessageRow, Output, RecordCounts,
@@ -24,24 +24,43 @@ use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+mod assertions;
+mod assets;
+mod dispatch;
+pub use dispatch::ParentLifetime;
+#[cfg(any(test, feature = "fixture"))]
+pub use dispatch::{DispatchBarrier, DispatchPhase};
 mod attachments;
+mod authored;
 mod batch;
 mod bytes;
-mod excluded;
+mod chain;
+mod confirmed;
+mod follow;
+mod primary;
+mod primary_capture;
+mod query_objects;
+mod saved;
+mod scoped;
+mod source_snapshot;
+pub(crate) use confirmed::apply_confirmed_readings;
+mod native_hook_fields;
+mod older_archive;
+pub use older_archive::{GroupOutcome, OlderGroup, Restored};
+pub(crate) mod resolve;
 mod rows;
 mod search;
 mod staging;
+pub use chain::ChainReading;
 
 #[cfg(test)]
 use crate::encoding::pack_block;
 use crate::encoding::{PreparedDocument, PreparedMessage};
-use crate::encoding::{block_text, pack_event, unpack_block};
+use crate::encoding::{block_text, unpack_block};
 pub use batch::{
-    Batch, ImportMember, InFlight, InZip, InputKey, Observation, ParseStep, WriteReport,
+    Batch, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep, WriteReport,
 };
-pub(crate) use bytes::observation_id;
 use bytes::*;
-use excluded::*;
 use rows::*;
 use search::*;
 
@@ -53,39 +72,68 @@ enum Msg {
     ),
     StoreGroup(
         Vec<crate::staging::PreparedBatch>,
-        std::sync::Arc<hashed_blobs::Store>,
+        std::sync::Arc<crate::blobs::Blobs>,
         SyncSender<Vec<Result<crate::staging::StoredInput>>>,
-    ),
-    FinishWriting(
-        std::sync::Arc<hashed_blobs::Store>,
-        SyncSender<Result<crate::staging::Finished>>,
     ),
     Assets(
         Box<crate::export_items::ExportItems>,
         SyncSender<Result<()>>,
     ),
+    Coverage(
+        Box<polylogue_model::capture::Coverage>,
+        SyncSender<Result<()>>,
+    ),
+    /// Sessions whose live state changed with the clock alone: each gets a
+    /// new change counter, so the change feed carries the transition.
+    LiveClock(Vec<String>, SyncSender<Result<()>>),
     /// Bytes no input holds (a chat action's attachment), as one blob.
     StoreBlob(
         Box<(crate::NewBlob, Option<crate::staging::PreparedBytes>)>,
         SyncSender<Result<BlobHash>>,
     ),
+    ReplaceChain(InputKey, i64, u64, ChainReading, SyncSender<Result<u64>>),
+    Confirmed(Vec<crate::primary::Confirmed>, SyncSender<Result<i64>>),
+    DrainPrimaryCaptures(SyncSender<Result<()>>),
+    /// The stream follower handled a page, or failed to read one.
+    StreamFollowed(Option<String>),
+    CaptureBody(String, SyncSender<Result<crate::primary::PreparedBody>>),
+    Capture(String, SyncSender<Result<crate::primary::Capture>>),
+    RawAcquisitionCursor(
+        Box<crate::primary::RawAcquisitionQuery>,
+        SyncSender<Result<Option<crate::primary::RawAcquisitionCursor>>>,
+    ),
+    PendingGroupHeaders(
+        String,
+        Option<u64>,
+        usize,
+        SyncSender<Result<crate::primary::PendingGroupPage>>,
+    ),
+    SourceSnapshot(
+        crate::primary::SourceSelector,
+        String,
+        SyncSender<Result<crate::primary::SourceSnapshot>>,
+    ),
+    RestoreAuthored(
+        Box<authored::Restoration>,
+        SyncSender<Result<polylogue_model::user::UserOutcome>>,
+    ),
+    RestoreAssertion(
+        Box<assertions::Restoration>,
+        SyncSender<Result<polylogue_model::user::UserOutcome>>,
+    ),
+    /// Inputs of an archive in the older format, stored as that archive held them.
+    RestoreOlder(
+        Box<older_archive::OlderGroup>,
+        SyncSender<Result<older_archive::GroupOutcome>>,
+    ),
     Stop,
     /// A user write is waiting in its own queue.
     Wake,
     Batch(Box<Batch>),
-    Flush(SyncSender<WriteReport>),
-    /// An excision, with the blob store whose files it changes.
-    Excise(
-        Box<crate::excise::ExciseRequest>,
-        std::sync::Arc<hashed_blobs::Store>,
-        SyncSender<Result<crate::excise::Excised>>,
-    ),
+    Flush(SyncSender<WriteReport>, bool),
     /// Run the derive step over sessions whose derived rows are stale;
     /// answered with the number of sessions derived.
     Derive(SyncSender<Result<u64>>),
-    /// An excision another archive recorded, brought in with its user
-    /// state; answered with whether it was new here.
-    ImportExcision(Box<crate::primary::ExcisionRows>, SyncSender<Result<bool>>),
 }
 
 /// Handle to the writer thread. Dropping it stops the thread after the
@@ -96,6 +144,9 @@ pub struct Writer {
     /// The index was empty when the writer started: its first pass is a
     /// first build.
     started_empty: bool,
+    resolver: Arc<resolve::Resolver>,
+    /// In primary mode, the thread that reads the confirmed stream.
+    follower: Option<follow::Follower>,
 }
 
 /// Orders new work against shutdown. Once the stop message is queued,
@@ -110,32 +161,75 @@ pub struct Writer {
 struct WriterQueue {
     bulk: Arc<Mutex<Option<SyncSender<Msg>>>>,
     users: Arc<Mutex<Option<SyncSender<UserMsg>>>>,
+    resolver: Arc<resolve::Resolver>,
+    commits: crate::completion::CommitEvents,
+    #[cfg(any(test, feature = "fixture"))]
+    dispatch: dispatch::Barriers,
 }
 
-type UserMsg = (
-    Box<crate::user_writes::UserRequest>,
-    SyncSender<Result<crate::user_writes::UserOutcome>>,
-);
+enum UserMsg {
+    Request(
+        Box<polylogue_model::user::UserRequest>,
+        Option<crate::ReadScopeToken>,
+        Option<Box<crate::user_writes::PreparationContext>>,
+        Option<Arc<ParentLifetime>>,
+        SyncSender<Result<polylogue_model::user::UserOutcome>>,
+    ),
+    QueryObject(
+        Box<polylogue_model::query_objects::QueryObject>,
+        Option<Arc<ParentLifetime>>,
+        SyncSender<Result<polylogue_model::query_objects::QueryCustody>>,
+    ),
+    QueryRun(
+        Box<polylogue_model::query_objects::QueryRun>,
+        Option<Arc<ParentLifetime>>,
+        SyncSender<Result<polylogue_model::query_objects::QueryCustody>>,
+    ),
+    QueryRunOutcome(
+        Box<polylogue_model::query_objects::QueryRunOutcome>,
+        SyncSender<Result<polylogue_model::query_objects::QueryCustody>>,
+    ),
+}
 
 /// User writes waiting before their senders block.
 const USER_QUEUE: usize = 64;
 
 impl WriterQueue {
-    fn new(bulk: SyncSender<Msg>, users: SyncSender<UserMsg>) -> Self {
+    fn new(
+        bulk: SyncSender<Msg>,
+        users: SyncSender<UserMsg>,
+        resolver: Arc<resolve::Resolver>,
+        commits: crate::completion::CommitEvents,
+        #[cfg(any(test, feature = "fixture"))] dispatch: dispatch::Barriers,
+    ) -> Self {
         Self {
             bulk: Arc::new(Mutex::new(Some(bulk))),
             users: Arc::new(Mutex::new(Some(users))),
+            resolver,
+            commits,
+            #[cfg(any(test, feature = "fixture"))]
+            dispatch,
         }
     }
 
     fn send(&self, message: Msg) -> std::result::Result<(), ()> {
-        self.bulk
-            .lock()
-            .map_err(|_| ())?
-            .as_ref()
-            .ok_or(())?
-            .send(message)
-            .map_err(|_| ())
+        let counted = matches!(&message, Msg::StoreGroup(..) | Msg::Batch(..));
+        if counted {
+            crate::timing::queue(crate::timing::Queue::Writer, 1);
+        }
+        let result = (|| {
+            self.bulk
+                .lock()
+                .map_err(|_| ())?
+                .as_ref()
+                .ok_or(())?
+                .send(message)
+                .map_err(|_| ())
+        })();
+        if result.is_err() && counted {
+            crate::timing::queue(crate::timing::Queue::Writer, -1);
+        }
+        result
     }
 
     fn send_user(&self, message: UserMsg) -> std::result::Result<(), ()> {
@@ -149,6 +243,27 @@ impl WriterQueue {
         // Wakes an idle writer. While a bulk sender holds the lock the queue
         // is full and the writer busy; it serves user writes before its next
         // bulk message anyway.
+        if let Ok(bulk) = self.bulk.try_lock()
+            && let Some(bulk) = bulk.as_ref()
+        {
+            let _ = bulk.try_send(Msg::Wake);
+        }
+        Ok(())
+    }
+
+    /// As [`Self::send_user`], but a full queue hands the message back
+    /// instead of waiting for room.
+    fn try_send_user(&self, message: UserMsg) -> std::result::Result<(), Option<UserMsg>> {
+        self.users
+            .lock()
+            .map_err(|_| None)?
+            .as_ref()
+            .ok_or(None)?
+            .try_send(message)
+            .map_err(|error| match error {
+                std::sync::mpsc::TrySendError::Full(message) => Some(message),
+                std::sync::mpsc::TrySendError::Disconnected(_) => None,
+            })?;
         if let Ok(bulk) = self.bulk.try_lock()
             && let Some(bulk) = bulk.as_ref()
         {
@@ -200,8 +315,6 @@ const READ_ONLY_INDEXES: &[&str] = &[
     "event_kind",
     "commit_link_hash",
     "pr_link_number",
-    "work_node_session",
-    "work_node_verification",
     "removed_session_changed",
     "message_pem",
 ];
@@ -220,14 +333,14 @@ const QUEUE: usize = 4;
 /// keep parsing while the writer commits, instead of the two alternating.
 const BYTES_PER_TRANSACTION: u64 = 128 << 20;
 
+pub(crate) fn deferred_index_names() -> impl Iterator<Item = &'static str> {
+    KEY_INDEXES.iter().chain(READ_ONLY_INDEXES).copied()
+}
+
 impl Writer {
     /// Starts the writer thread on `archive`, which the caller has locked.
-    /// An empty index is built without syncs: every row in it can be
-    /// recomputed, and syncing a first build of tens of GB through a busy
-    /// drive costs more than the build. The first derive (the end of the
-    /// pass), or an excision, ends the build: it builds what the build
-    /// deferred, syncs the index and clears the mark; an index still marked
-    /// when the archive is next opened is set aside and rebuilt.
+    /// A first build defers search and secondary indexes. Each group commits
+    /// durably, and an interrupted build resumes its saved rows and positions.
     pub fn start(archive: &Archive) -> Result<Self> {
         Self::start_with(archive, None)
     }
@@ -245,36 +358,44 @@ impl Writer {
         archive: &Archive,
         sinex: Option<std::sync::Arc<dyn crate::primary::Sinex>>,
     ) -> Result<Self> {
+        if archive.is_primary() != sinex.is_some() {
+            return Err(StoreError::Invalid(
+                "the writer mode must match its archive".into(),
+            ));
+        }
         let index = open_write(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?;
+        if !archive.is_primary() {
+            let uri = format!("file:{}?mode=ro", archive.archive_db().display());
+            index.execute("ATTACH DATABASE ?1 AS a", [uri])?;
+            crate::source::views(&index)?;
+        }
         let empty: bool =
             index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
                 r.get(0)
             })?;
-        if empty {
-            // Make the rebuild marker durable before unsynchronized writes.
-            // Keep WAL throughout: an open read transaction must not prevent the
-            // first build from finishing or the writer from stopping.
+        let building = crate::schema::building(&index)?;
+        if building {
+            // Parsed rows and their positions survive a lost process or boot.
             index.pragma_update(None, "synchronous", "full")?;
-            index.execute(
-                "INSERT INTO meta(key, value) VALUES ('unsynced', '1')
-                 ON CONFLICT(key) DO UPDATE SET value = '1'",
-                [],
-            )?;
-            index.pragma_update(None, "synchronous", "off")?;
-            // The log is not copied into the database file until the rows
-            // are written: each copy read every page back from the log and
-            // wrote it again, which cost more than writing the rows.
-            index.pragma_update(None, "wal_autocheckpoint", 0)?;
+            index.execute("INSERT INTO meta(key,value) VALUES ('building','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
         }
         // A first build inserts rows without maintaining the indexes only
         // reads use, or the unique indexes on natural keys; each is built
         // once from a sorted scan when the build ends. The writer's other
         // indexes stay, and an index missing from these lists is kept, which
         // is the safe default.
-        let deferred_indexes = if empty {
+        let deferred_indexes = if building {
+            let expected = Connection::open_in_memory()?;
+            expected.execute_batch(crate::schema::INDEX)?;
+            expected.execute_batch(crate::schema::READ_INDEXES)?;
             let mut defs = Vec::new();
-            for name in KEY_INDEXES.iter().chain(READ_ONLY_INDEXES) {
-                let sql: Option<String> = index
+            // One transaction: each drop committed alone cost a full sync.
+            let tx = rusqlite::Transaction::new_unchecked(
+                &index,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            for name in deferred_index_names() {
+                let sql: Option<String> = expected
                     .query_row(
                         "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
                         [name],
@@ -282,29 +403,50 @@ impl Writer {
                     )
                     .optional()?;
                 if let Some(sql) = sql {
-                    index.execute(&format!("DROP INDEX \"{name}\""), [])?;
+                    tx.execute(&format!("DROP INDEX IF EXISTS \"{name}\""), [])?;
                     defs.push(sql);
                 }
             }
+            tx.commit()?;
             defs
         } else {
             Vec::new()
         };
-        let archive_conn = crate::archive::open_archive_writer(archive)?;
-        let excisions = crate::excise::any_excision(&archive_conn)?;
+        let archive_conn = if archive.is_primary() {
+            crate::archive::open_read(&archive.index_db())?
+        } else {
+            crate::archive::open_archive_writer(archive)?
+        };
+        let first_build = building
+            .then(|| crate::first_build::FirstBuild::load(&index).map(Arc::new))
+            .transpose()?;
+        let segment = if sinex.is_none() {
+            Some(crate::blobs::open_writer(&archive_conn, &archive.root)?)
+        } else {
+            None
+        };
+        let resolver = resolve::Resolver::new(archive, &index, first_build.clone())?;
+        let stream_source = sinex.clone();
+        let commits = crate::completion::CommitEvents::default();
+        #[cfg(any(test, feature = "fixture"))]
+        let dispatch = dispatch::Barriers::default();
         let mut inner = Inner {
+            #[cfg(any(test, feature = "fixture"))]
+            dispatch: dispatch.clone(),
+            commits: commits.clone(),
+            resolver: Arc::clone(&resolver),
+            segment,
             archive: archive_conn,
             index,
             report: WriteReport::default(),
-            first_build: empty.then(crate::first_build::FirstBuild::default),
+            first_build,
             deferred_indexes,
             derive_due: true,
             derived_version: None,
-            logs_hold_excised: false,
-            search: Search::start(archive.index_db(), !empty)?,
+            search: Search::start(archive.index_db(), !building)?,
             location: archive.clone(),
-            excisions,
             sinex,
+            stream_error: None,
         };
         // Senders block once a few batches wait. The writer is the slowest
         // stage of a first build, and a parsed batch holds its rows and
@@ -317,11 +459,51 @@ impl Writer {
         let handle = std::thread::Builder::new()
             .name("polylogue-writer".into())
             .spawn(move || inner.run(&rx, &users_rx))?;
+        let queue = WriterQueue::new(
+            tx,
+            users,
+            Arc::clone(&resolver),
+            commits,
+            #[cfg(any(test, feature = "fixture"))]
+            dispatch,
+        );
+        let follower = stream_source
+            .map(|sinex| follow::Follower::start(sinex, queue.clone(), archive))
+            .transpose()?;
         Ok(Self {
-            tx: Some(WriterQueue::new(tx, users)),
+            tx: Some(queue),
             handle: Some(handle),
             started_empty: empty,
+            resolver,
+            follower,
         })
+    }
+
+    pub fn apply_confirmed(&self, events: Vec<crate::primary::Confirmed>) -> Result<i64> {
+        let (reply, wait) = sync_channel(1);
+        self.tx
+            .as_ref()
+            .ok_or(StoreError::WriterGone)?
+            .send(Msg::Confirmed(events, reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+    pub fn synchronize_primary(&self) -> Result<i64> {
+        let follower = self
+            .follower
+            .as_ref()
+            .ok_or_else(|| StoreError::Invalid("this writer is standalone".into()))?;
+        follower.synchronize()?;
+        // Acknowledged material can now produce input/reading events. Wait
+        // outside the writer thread while their owner reads the next page.
+        let (reply, wait) = sync_channel(1);
+        self.tx
+            .as_ref()
+            .ok_or(StoreError::WriterGone)?
+            .send(Msg::DrainPrimaryCaptures(reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)??;
+        follower.synchronize()
     }
 
     /// Whether the index was empty when the writer started.
@@ -331,7 +513,10 @@ impl Writer {
 
     /// Queues one batch. Blocks while the writer is busy and its queue is
     /// full, which is what holds the parse pool back.
-    pub fn send(&self, batch: Batch) -> Result<()> {
+    pub fn send(&self, mut batch: Batch) -> Result<()> {
+        if !self.resolver.location().is_primary() {
+            self.resolver.batches(&mut [&mut batch])?;
+        }
         self.tx
             .as_ref()
             .ok_or(StoreError::WriterGone)?
@@ -344,48 +529,81 @@ impl Writer {
         Ok(WriterSender(self.tx.clone().ok_or(StoreError::WriterGone)?))
     }
 
-    /// Writes one user request (a note, delivery or setting) and waits for
-    /// it to commit. It goes ahead of batches still queued.
-    pub fn user(
+    /// Restores a request a bundle carried without resolving its intent again.
+    pub fn restore_authored(
         &self,
-        request: crate::user_writes::UserRequest,
-    ) -> Result<crate::user_writes::UserOutcome> {
-        user_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, request)
+        prepared: polylogue_model::authored::PreparedRequest,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        authored::restore_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            authored::Restoration { prepared },
+        )
     }
 
-    /// Runs an excision after the batches already queued and waits for it
-    /// to commit ([`crate::excise`]).
-    pub fn excise(
+    /// Restores an assertion a bundle carried, unchanged; it creates no
+    /// request of its own.
+    pub fn restore_assertion(
         &self,
-        request: crate::excise::ExciseRequest,
-        store: std::sync::Arc<hashed_blobs::Store>,
-    ) -> Result<crate::excise::Excised> {
-        let (reply, wait) = sync_channel(1);
-        self.tx
-            .as_ref()
-            .ok_or(StoreError::WriterGone)?
-            .send(Msg::Excise(Box::new(request), store, reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
+        fact: polylogue_model::assertion::AssertionFact,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        assertions::restore_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            assertions::Restoration { fact },
+        )
+    }
+
+    /// Writes one user request and waits for its source commit.
+    /// It goes ahead of batches still queued.
+    pub fn user(
+        &self,
+        request: polylogue_model::user::UserRequest,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        user_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            request,
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Writes an action selected by a pinned read. The writer checks that
+    /// read's archive and generation again before committing its effect.
+    pub fn user_from_read(
+        &self,
+        request: polylogue_model::user::UserRequest,
+        scope: crate::ReadScopeToken,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        user_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            request,
+            Some(scope),
+            None,
+            None,
+        )
+    }
+
+    /// Accepts trusted product catalog context outside the immutable request.
+    /// A read-derived action carries its original scope token through the queue.
+    pub fn user_preparing(
+        &self,
+        request: polylogue_model::user::UserRequest,
+        preparation: crate::user_writes::PreparationContext,
+        scope: Option<crate::ReadScopeToken>,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        user_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            request,
+            scope,
+            Some(preparation),
+            None,
+        )
     }
 
     /// Derives the products of sessions changed since they were last
     /// derived, after the batches already queued.
     pub fn derive(&self) -> Result<u64> {
         derive_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?)
-    }
-
-    /// Records an excision another archive made, so what it removed is
-    /// refused here too ([`Inner::import_excision`]). `false` when this
-    /// archive already holds it.
-    pub fn import_excision(&self, excision: crate::primary::ExcisionRows) -> Result<bool> {
-        let (reply, wait) = sync_channel(1);
-        self.tx
-            .as_ref()
-            .ok_or(StoreError::WriterGone)?
-            .send(Msg::ImportExcision(Box::new(excision), reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
     /// Stores one import's bytes ([`Inner::store_bytes`]). The batch
@@ -402,6 +620,12 @@ impl Writer {
             .send(Msg::StoreBytes(Box::new(prepared), Box::new(batch), reply))
             .map_err(|_| StoreError::WriterGone)?;
         wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
+    /// Stores a group of an older archive's inputs with their rows as that
+    /// archive held them ([`Inner::restore_older`]).
+    pub fn restore_older(&self, group: OlderGroup) -> Result<GroupOutcome> {
+        older_archive::restore_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, group)
     }
 
     /// Stores bytes no input holds as one blob ([`Inner::store_blob`]);
@@ -421,20 +645,59 @@ impl Writer {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
-    /// Completes blobs a stop left `writing` ([`Inner::finish_writing`]).
-    pub fn finish_writing(
-        &self,
-        store: std::sync::Arc<hashed_blobs::Store>,
-    ) -> Result<crate::staging::Finished> {
-        let (reply, wait) = sync_channel(1);
-        self.tx
-            .as_ref()
-            .ok_or(StoreError::WriterGone)?
-            .send(Msg::FinishWriting(store, reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
+    /// Accepts one completed discovery walk. Primary visibility follows its
+    /// confirmed product; standalone visibility follows the index transaction.
+    pub fn coverage(&self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+        coverage_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, coverage)
     }
 
+    /// Hydrates one locally durable acquisition and its complete private facts.
+    pub fn capture(&self, identity: String) -> Result<crate::primary::Capture> {
+        capture_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, identity)
+    }
+
+    /// Pins one locally durable pending source body without network I/O.
+    pub fn capture_body(&self, identity: String) -> Result<crate::primary::PreparedBody> {
+        capture_body_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, identity)
+    }
+
+    /// Reads a local custody cursor for one exact provider generation.
+    pub fn raw_acquisition_cursor(
+        &self,
+        query: crate::primary::RawAcquisitionQuery,
+    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        raw_acquisition_cursor_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, query)
+    }
+
+    /// Pages original group membership without hydrating parsed facts.
+    pub fn pending_group_headers(
+        &self,
+        group: String,
+        after_ordinal: Option<u64>,
+        limit: usize,
+    ) -> Result<crate::primary::PendingGroupPage> {
+        pending_group_headers_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            group,
+            after_ordinal,
+            limit,
+        )
+    }
+
+    /// Reads confirmed identity and local durable pending source evidence in writer order.
+    pub fn source_snapshot(
+        &self,
+        source: crate::primary::SourceSelector,
+        reading_version: &str,
+    ) -> Result<crate::primary::SourceSnapshot> {
+        source_snapshot_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            source,
+            reading_version,
+        )
+    }
+
+    /// Installs export associations derived from committed source observations.
     pub fn import_assets(&self, staged: crate::export_items::ExportItems) -> Result<()> {
         let (reply, wait) = sync_channel(1);
         self.tx
@@ -450,11 +713,20 @@ impl Writer {
     /// Outside a first build what it reports is also derived and searchable;
     /// a first build derives and indexes once, when it ends.
     pub fn flush(&self) -> Result<WriteReport> {
+        self.flush_with_derivation(true)
+    }
+
+    /// Commits queued rows; the engine derives once its round is complete.
+    pub fn flush_rows(&self) -> Result<WriteReport> {
+        self.flush_with_derivation(false)
+    }
+
+    fn flush_with_derivation(&self, derive: bool) -> Result<WriteReport> {
         let (reply, wait) = sync_channel(1);
         self.tx
             .as_ref()
             .ok_or(StoreError::WriterGone)?
-            .send(Msg::Flush(reply))
+            .send(Msg::Flush(reply, derive))
             .map_err(|_| StoreError::WriterGone)?;
         wait.recv().map_err(|_| StoreError::WriterGone)
     }
@@ -462,6 +734,9 @@ impl Writer {
 
 impl Drop for Writer {
     fn drop(&mut self) {
+        if let Some(mut follower) = self.follower.take() {
+            follower.stop();
+        }
         if let Some(queue) = self.tx.take() {
             queue.stop();
         }
@@ -471,35 +746,199 @@ impl Drop for Writer {
     }
 }
 
+/// Where [`WriterSender::try_enqueue_user`] left a request.
+pub enum Queued {
+    /// In the queue; the receiver gets its outcome once committed.
+    Committing(Receiver<Result<polylogue_model::user::UserOutcome>>),
+    /// The queue was full: the request and its read scope, handed back.
+    Full(
+        Box<polylogue_model::user::UserRequest>,
+        Option<crate::ReadScopeToken>,
+    ),
+}
+
 /// A clonable sender into the writer, for worker threads.
 #[derive(Clone)]
 pub struct WriterSender(WriterQueue);
 
 impl WriterSender {
+    /// A parent is checked by the writer at dispatch, after bounded queue waits.
+    pub fn user_with_parent(
+        &self,
+        request: polylogue_model::user::UserRequest,
+        parent: Arc<ParentLifetime>,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        user_via(&self.0, request, None, None, Some(parent))
+    }
+    /// Also preserves the pinned selection's independent generation guard.
+    pub fn user_from_read_with_parent(
+        &self,
+        request: polylogue_model::user::UserRequest,
+        scope: crate::ReadScopeToken,
+        parent: Arc<ParentLifetime>,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        user_via(&self.0, request, Some(scope), None, Some(parent))
+    }
+    pub fn completion_commits(&self) -> crate::completion::CommitSubscription {
+        self.0.commits.subscribe()
+    }
+
     pub fn store_group(
         &self,
         group: Vec<crate::staging::PreparedBatch>,
-        store: std::sync::Arc<hashed_blobs::Store>,
+        store: std::sync::Arc<crate::blobs::Blobs>,
     ) -> Result<Vec<Result<crate::staging::StoredInput>>> {
+        self.enqueue_group(group, store)?
+            .recv()
+            .map_err(|_| StoreError::WriterGone)
+    }
+
+    /// Queue a group; parsing can continue while the writer commits it.
+    pub fn enqueue_group(
+        &self,
+        mut group: Vec<crate::staging::PreparedBatch>,
+        store: std::sync::Arc<crate::blobs::Blobs>,
+    ) -> Result<Receiver<Vec<Result<crate::staging::StoredInput>>>> {
+        let mut batches: Vec<_> = group.iter_mut().map(|item| &mut item.batch).collect();
+        if !self.0.resolver.location().is_primary() {
+            self.0.resolver.batches(&mut batches)?;
+        }
         let (reply, wait) = sync_channel(1);
         self.0
             .send(Msg::StoreGroup(group, store, reply))
             .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)
+        Ok(wait)
     }
 
-    pub fn send(&self, batch: Batch) -> Result<()> {
+    pub fn send(&self, mut batch: Batch) -> Result<()> {
+        if !self.0.resolver.location().is_primary() {
+            self.0.resolver.batches(&mut [&mut batch])?;
+        }
         self.0
             .send(Msg::Batch(Box::new(batch)))
             .map_err(|_| StoreError::WriterGone)
     }
 
+    /// Replaces one chain's parsed rows in one index transaction.
+    pub fn replace_chain(
+        &self,
+        input: InputKey,
+        chain: i64,
+        length: u64,
+        reading: ChainReading,
+    ) -> Result<u64> {
+        self.queue_chain(input, chain, length, reading)?
+            .recv()
+            .map_err(|_| StoreError::WriterGone)?
+    }
+
+    /// Queue a chain without waiting for its transaction to commit.
+    pub fn queue_chain(
+        &self,
+        input: InputKey,
+        chain: i64,
+        length: u64,
+        mut reading: ChainReading,
+    ) -> Result<Receiver<Result<u64>>> {
+        reading.finish()?;
+        if !self.0.resolver.location().is_primary() {
+            reading.resolve(&self.0.resolver, &input, chain, length)?;
+        }
+        let (reply, wait) = sync_channel(1);
+        crate::timing::reading_commit_queue(1);
+        if self
+            .0
+            .send(Msg::ReplaceChain(input, chain, length, reading, reply))
+            .is_err()
+        {
+            crate::timing::reading_commit_queue(-1);
+            return Err(StoreError::WriterGone);
+        }
+        Ok(wait)
+    }
+
+    /// As [`Writer::restore_authored`].
+    pub fn restore_authored(
+        &self,
+        prepared: polylogue_model::authored::PreparedRequest,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        authored::restore_via(&self.0, authored::Restoration { prepared })
+    }
+
+    /// As [`Writer::restore_assertion`].
+    pub fn restore_assertion(
+        &self,
+        fact: polylogue_model::assertion::AssertionFact,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        assertions::restore_via(&self.0, assertions::Restoration { fact })
+    }
+
     /// As [`Writer::user`].
     pub fn user(
         &self,
-        request: crate::user_writes::UserRequest,
-    ) -> Result<crate::user_writes::UserOutcome> {
-        user_via(&self.0, request)
+        request: polylogue_model::user::UserRequest,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        user_via(&self.0, request, None, None, None)
+    }
+
+    /// As [`Writer::user_from_read`].
+    pub fn user_from_read(
+        &self,
+        request: polylogue_model::user::UserRequest,
+        scope: crate::ReadScopeToken,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        user_via(&self.0, request, Some(scope), None, None)
+    }
+
+    /// Queues a user request without waiting for its commit or for room in
+    /// the queue. The writer applies queued requests in order, so a later
+    /// request (a delivery's outcome after the delivery) finds an earlier one.
+    /// [`Queued::Committing`] receives the outcome once committed; when
+    /// nobody waits for it, a failure is kept in the writer's report. A full
+    /// queue hands the request back as [`Queued::Full`].
+    pub fn try_enqueue_user(
+        &self,
+        request: polylogue_model::user::UserRequest,
+        scope: Option<crate::ReadScopeToken>,
+    ) -> Result<Queued> {
+        let (reply, wait) = sync_channel(1);
+        match self.0.try_send_user(UserMsg::Request(
+            Box::new(request),
+            scope,
+            None,
+            None,
+            reply,
+        )) {
+            Ok(()) => Ok(Queued::Committing(wait)),
+            Err(Some(UserMsg::Request(request, scope, ..))) => Ok(Queued::Full(request, scope)),
+            Err(_) => Err(StoreError::WriterGone),
+        }
+    }
+
+    /// As [`Writer::user_preparing`].
+    pub fn user_preparing(
+        &self,
+        request: polylogue_model::user::UserRequest,
+        preparation: crate::user_writes::PreparationContext,
+        scope: Option<crate::ReadScopeToken>,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        user_via(&self.0, request, scope, Some(preparation), None)
+    }
+
+    /// Carries trusted preparation, pinned scope and the producing parent together.
+    pub fn user_preparing_with_parent(
+        &self,
+        request: polylogue_model::user::UserRequest,
+        preparation: crate::user_writes::PreparationContext,
+        scope: Option<crate::ReadScopeToken>,
+        parent: Arc<ParentLifetime>,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        user_via(&self.0, request, scope, Some(preparation), Some(parent))
+    }
+
+    /// As [`Writer::restore_older`].
+    pub fn restore_older(&self, group: OlderGroup) -> Result<GroupOutcome> {
+        older_archive::restore_via(&self.0, group)
     }
 
     /// As [`Writer::store_blob`].
@@ -515,10 +954,120 @@ impl WriterSender {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
+    /// As [`Writer::coverage`].
+    pub fn coverage(&self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+        coverage_via(&self.0, coverage)
+    }
+
+    /// Puts sessions whose live state changed with the clock alone on the
+    /// change feed ([`crate::live`]).
+    pub fn live_clock(&self, sessions: Vec<String>) -> Result<()> {
+        let (reply, wait) = sync_channel(1);
+        self.0
+            .send(Msg::LiveClock(sessions, reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
+    /// As [`Writer::capture`].
+    pub fn capture(&self, identity: String) -> Result<crate::primary::Capture> {
+        capture_via(&self.0, identity)
+    }
+
+    /// As [`Writer::capture_body`].
+    pub fn capture_body(&self, identity: String) -> Result<crate::primary::PreparedBody> {
+        capture_body_via(&self.0, identity)
+    }
+
+    /// As [`Writer::raw_acquisition_cursor`].
+    pub fn raw_acquisition_cursor(
+        &self,
+        query: crate::primary::RawAcquisitionQuery,
+    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        raw_acquisition_cursor_via(&self.0, query)
+    }
+
+    /// As [`Writer::pending_group_headers`].
+    pub fn pending_group_headers(
+        &self,
+        group: String,
+        after_ordinal: Option<u64>,
+        limit: usize,
+    ) -> Result<crate::primary::PendingGroupPage> {
+        pending_group_headers_via(&self.0, group, after_ordinal, limit)
+    }
+
+    /// As [`Writer::source_snapshot`].
+    pub fn source_snapshot(
+        &self,
+        source: crate::primary::SourceSelector,
+        reading_version: &str,
+    ) -> Result<crate::primary::SourceSnapshot> {
+        source_snapshot_via(&self.0, source, reading_version)
+    }
+
     /// As [`Writer::derive`].
     pub fn derive(&self) -> Result<u64> {
         derive_via(&self.0)
     }
+}
+
+fn capture_via(tx: &WriterQueue, identity: String) -> Result<crate::primary::Capture> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::Capture(identity, reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
+}
+
+fn capture_body_via(tx: &WriterQueue, identity: String) -> Result<crate::primary::PreparedBody> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::CaptureBody(identity, reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
+}
+
+fn raw_acquisition_cursor_via(
+    tx: &WriterQueue,
+    query: crate::primary::RawAcquisitionQuery,
+) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::RawAcquisitionCursor(Box::new(query), reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
+}
+
+fn pending_group_headers_via(
+    tx: &WriterQueue,
+    group: String,
+    after_ordinal: Option<u64>,
+    limit: usize,
+) -> Result<crate::primary::PendingGroupPage> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::PendingGroupHeaders(group, after_ordinal, limit, reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
+}
+
+fn source_snapshot_via(
+    tx: &WriterQueue,
+    source: crate::primary::SourceSelector,
+    reading_version: &str,
+) -> Result<crate::primary::SourceSnapshot> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::SourceSnapshot(
+        source,
+        reading_version.to_owned(),
+        reply,
+    ))
+    .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
+}
+
+fn coverage_via(tx: &WriterQueue, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::Coverage(Box::new(coverage), reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
 fn derive_via(tx: &WriterQueue) -> Result<u64> {
@@ -530,21 +1079,35 @@ fn derive_via(tx: &WriterQueue) -> Result<u64> {
 
 fn user_via(
     tx: &WriterQueue,
-    request: crate::user_writes::UserRequest,
-) -> Result<crate::user_writes::UserOutcome> {
+    request: polylogue_model::user::UserRequest,
+    scope: Option<crate::ReadScopeToken>,
+    preparation: Option<crate::user_writes::PreparationContext>,
+    parent: Option<Arc<ParentLifetime>>,
+) -> Result<polylogue_model::user::UserOutcome> {
     let (reply, wait) = sync_channel(1);
-    tx.send_user((Box::new(request), reply))
-        .map_err(|_| StoreError::WriterGone)?;
+    tx.send_user(UserMsg::Request(
+        Box::new(request),
+        scope,
+        preparation.map(Box::new),
+        parent,
+        reply,
+    ))
+    .map_err(|_| StoreError::WriterGone)?;
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
 struct Inner {
+    #[cfg(any(test, feature = "fixture"))]
+    dispatch: dispatch::Barriers,
+    commits: crate::completion::CommitEvents,
+    resolver: Arc<resolve::Resolver>,
+    segment: Option<hashed_blobs::SegmentWriter>,
     archive: Connection,
     index: Connection,
     report: WriteReport,
     /// Set while the index is being built from nothing, without syncs
     /// ([`Writer::start`]).
-    first_build: Option<crate::first_build::FirstBuild>,
+    first_build: Option<Arc<crate::first_build::FirstBuild>>,
     /// Secondary indexes dropped for a first build, recreated when it ends.
     deferred_indexes: Vec<String>,
     /// This writer wrote index rows since the last derive, or none has run
@@ -553,56 +1116,123 @@ struct Inner {
     /// `data_version` of the index when the last derive ended: it moves when
     /// another connection commits.
     derived_version: Option<i64>,
-    /// A write-ahead log may still hold text an excision removed
-    /// ([`Self::empty_logs`]).
-    logs_hold_excised: bool,
     /// The search thread ([`search_thread`]): woken after each commit, and
     /// allowed to write once the index is out of a first build.
     search: Search,
     location: Archive,
-    /// Whether the archive holds an excision, whose sessions, messages and
-    /// bytes are never written again.
-    excisions: bool,
     /// In primary mode, where every register row goes before it commits.
     sinex: Option<std::sync::Arc<dyn crate::primary::Sinex>>,
+    /// The last stream error recorded, so a lasting outage is recorded once.
+    stream_error: Option<String>,
 }
 
 impl Inner {
     /// Writes every waiting user request, each answered once committed.
     fn serve_users(&mut self, users: &Receiver<UserMsg>) {
-        while let Ok((request, reply)) = users.try_recv() {
-            let _ = reply.send(self.write_user(&request));
+        while let Ok(message) = users.try_recv() {
+            match message {
+                UserMsg::Request(request, scope, preparation, parent, reply) => {
+                    let result = self
+                        .admit_user_parent(&request.id, parent.as_deref())
+                        .and_then(|()| {
+                            self.write_user(&request, scope.as_ref(), preparation.as_deref())
+                        });
+                    // A queued request nobody waits for still reports its failure.
+                    if let Err(std::sync::mpsc::SendError(Err(error))) = reply.send(result) {
+                        self.report
+                            .errors
+                            .push(format!("user request {}: {error}", request.id));
+                    }
+                }
+                UserMsg::QueryObject(object, parent, reply) => {
+                    let result = self
+                        .admit_user_parent(&object.id.to_string(), parent.as_deref())
+                        .and_then(|()| self.write_query_object(&object));
+                    let _ = reply.send(result);
+                }
+                UserMsg::QueryRun(run, parent, reply) => {
+                    if let Err(error) = self.admit_user_parent(run.id.as_str(), parent.as_deref()) {
+                        let _ = reply.send(Err(error));
+                        continue;
+                    }
+                    let result = self.write_query_run(&run);
+                    if let Err(error) = &result {
+                        self.report
+                            .errors
+                            .push(format!("query run {}: {error}", run.id));
+                    }
+                    let _ = reply.send(result);
+                }
+                UserMsg::QueryRunOutcome(outcome, reply) => {
+                    let result = self.write_query_run_outcome(&outcome);
+                    if let Err(error) = &result {
+                        self.report
+                            .errors
+                            .push(format!("query run outcome {}: {error}", outcome.run));
+                    }
+                    let _ = reply.send(result);
+                }
+            }
+        }
+    }
+
+    /// The follower's page was handled: record a failed read once per
+    /// distinct error (Sinex's health also shows it in status); after a
+    /// successful one, prepare the facts of captures Sinex confirmed and derive.
+    fn stream_followed(&mut self, error: Option<String>) {
+        let result = match error {
+            Some(error) => Err(StoreError::Sinex(error)),
+            None => self.complete_ready_captures().and_then(|()| {
+                if self.derive_due {
+                    self.derive().map(drop)
+                } else {
+                    Ok(())
+                }
+            }),
+        };
+        match result {
+            Ok(()) => self.stream_error = None,
+            Err(error) => {
+                let position = crate::primary::projection::checkpoint(&self.index)
+                    .map(|position| position.unwrap_or(0).to_string())
+                    .unwrap_or_else(|error| format!("unavailable ({error})"));
+                let error = format!("confirmed stream: after position {position}: {error}");
+                if self.stream_error.as_ref() != Some(&error) {
+                    self.report.errors.push(error.clone());
+                    self.stream_error = Some(error);
+                }
+            }
         }
     }
 
     fn run(&mut self, rx: &Receiver<Msg>, users: &Receiver<UserMsg>) {
+        let _worker = crate::timing::worker();
         let mut flushes = Vec::new();
-        let mut excisions = Vec::new();
-        let mut imported_excisions = Vec::new();
         let mut derives = Vec::new();
         let mut single_files = Vec::new();
         let mut file_groups = Vec::new();
-        let mut finish_writing = Vec::new();
         let mut assets = Vec::new();
+        let mut coverage = Vec::new();
+        let mut live_clock = Vec::new();
+        let mut confirmations = Vec::new();
+        let mut capture_drains = Vec::new();
+        let mut followed = Vec::new();
+        let mut snapshots = Vec::new();
+        let mut pending_bodies = Vec::new();
+        let mut private_captures = Vec::new();
+        let mut raw_cursors = Vec::new();
+        let mut group_pages = Vec::new();
+        let mut restorations = Vec::new();
+        let mut assertion_restorations = Vec::new();
+        let mut replacements = Vec::new();
         let mut blobs = Vec::new();
+        let mut older_groups = Vec::new();
         loop {
-            // While a log still holds excised text, the writer wakes to
-            // empty it even when no work comes.
-            let first = if self.logs_hold_excised {
-                match rx.recv_timeout(std::time::Duration::from_secs(1)) {
-                    Ok(first) => first,
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        self.empty_logs_or_report();
-                        continue;
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                }
-            } else {
-                match rx.recv() {
-                    Ok(first) => first,
-                    Err(_) => break,
-                }
+            let first = match rx.recv() {
+                Ok(first) => first,
+                Err(_) => break,
             };
+            let _busy = crate::timing::writer_started();
             self.serve_users(users);
             let turn = Arc::clone(&self.search.turn);
             let _turn = turn
@@ -619,6 +1249,7 @@ impl Inner {
                         false
                     }
                     Msg::StoreGroup(items, store, reply) => {
+                        crate::timing::queue(crate::timing::Queue::Writer, -1);
                         for item in &items {
                             *rows += weight(&item.batch);
                             *bytes += input_bytes(&item.batch);
@@ -626,16 +1257,68 @@ impl Inner {
                         file_groups.push((items, store, reply));
                         true
                     }
-                    Msg::FinishWriting(store, reply) => {
-                        finish_writing.push((store, reply));
-                        false
-                    }
                     Msg::Assets(staged, reply) => {
                         assets.push((staged, reply));
                         false
                     }
+                    Msg::Coverage(fact, reply) => {
+                        coverage.push((fact, reply));
+                        false
+                    }
+                    Msg::LiveClock(sessions, reply) => {
+                        live_clock.push((sessions, reply));
+                        false
+                    }
                     Msg::StoreBlob(blob, reply) => {
                         blobs.push((blob, reply));
+                        false
+                    }
+                    Msg::ReplaceChain(input, chain, length, reading, reply) => {
+                        replacements.push((input, chain, length, reading, reply));
+                        false
+                    }
+                    Msg::Confirmed(events, reply) => {
+                        confirmations.push((events, reply));
+                        false
+                    }
+                    Msg::RestoreAuthored(restoration, reply) => {
+                        restorations.push((restoration, reply));
+                        false
+                    }
+                    Msg::RestoreAssertion(restoration, reply) => {
+                        assertion_restorations.push((restoration, reply));
+                        false
+                    }
+                    Msg::RestoreOlder(group, reply) => {
+                        older_groups.push((group, reply));
+                        false
+                    }
+                    Msg::RawAcquisitionCursor(generation, reply) => {
+                        raw_cursors.push((generation, reply));
+                        false
+                    }
+                    Msg::PendingGroupHeaders(group, after, limit, reply) => {
+                        group_pages.push((group, after, limit, reply));
+                        false
+                    }
+                    Msg::Capture(identity, reply) => {
+                        private_captures.push((identity, reply));
+                        false
+                    }
+                    Msg::CaptureBody(identity, reply) => {
+                        pending_bodies.push((identity, reply));
+                        false
+                    }
+                    Msg::SourceSnapshot(source, version, reply) => {
+                        snapshots.push((source, version, reply));
+                        false
+                    }
+                    Msg::DrainPrimaryCaptures(reply) => {
+                        capture_drains.push(reply);
+                        false
+                    }
+                    Msg::StreamFollowed(error) => {
+                        followed.push(error);
                         false
                     }
                     Msg::Stop => {
@@ -644,25 +1327,19 @@ impl Inner {
                     }
                     Msg::Wake => false,
                     Msg::Batch(b) => {
+                        crate::timing::queue(crate::timing::Queue::Writer, -1);
                         *rows += weight(&b);
                         *bytes += input_bytes(&b);
                         group.push(b);
                         true
                     }
-                    Msg::Flush(reply) => {
-                        flushes.push(reply);
+                    Msg::Flush(reply, derive) => {
+                        flushes.push((reply, derive));
                         false
                     }
-                    Msg::Excise(request, store, reply) => {
-                        excisions.push((request, store, reply));
-                        false
-                    }
+
                     Msg::Derive(reply) => {
                         derives.push(reply);
-                        false
-                    }
-                    Msg::ImportExcision(excision, reply) => {
-                        imported_excisions.push((excision, reply));
                         false
                     }
                 };
@@ -678,16 +1355,17 @@ impl Inner {
                     }
                 }
             }
-            group.retain(|b| !self.report.failed_inputs.contains(&b.input.id));
+            for (events, reply) in confirmations.drain(..) {
+                let _ = reply.send(self.apply_confirmed(&events));
+            }
+            for reply in capture_drains.drain(..) {
+                let _ = reply.send(self.drain_primary_captures());
+            }
+            for error in followed.drain(..) {
+                self.stream_followed(error);
+            }
             if !group.is_empty() {
                 crate::timing::time(crate::timing::Stage::Rows, || self.write_group(&group));
-                // Derived rows follow every commit; a first build derives
-                // once, after its indexes exist.
-                if self.first_build.is_none()
-                    && let Err(e) = self.derive()
-                {
-                    self.report.errors.push(format!("derive: {e}"));
-                }
             }
             // Later queue replies also observe release of the parsed batches'
             // memory charges, not only their committed database rows.
@@ -696,25 +1374,28 @@ impl Inner {
                 let _ = reply.send(self.store_bytes(*prepared, *batch));
             }
             self.store_groups(std::mem::take(&mut file_groups));
-            for (store, reply) in finish_writing.drain(..) {
-                let _ = reply.send(self.finish_writing(&store));
+            for (input, chain, length, reading, reply) in replacements.drain(..) {
+                let _ = reply.send(crate::timing::time(crate::timing::Stage::Rows, || {
+                    self.replace_chain(input, chain, length, reading)
+                }));
+                crate::timing::reading_commit_queue(-1);
+                self.serve_users(users);
             }
             for (blob, reply) in blobs.drain(..) {
                 let (new_blob, file) = *blob;
                 let _ = reply.send(self.store_blob(new_blob, file));
             }
+            for (restoration, reply) in restorations.drain(..) {
+                let _ = reply.send(self.restore_authored(*restoration));
+            }
+            for (restoration, reply) in assertion_restorations.drain(..) {
+                let _ = reply.send(self.restore_assertion(*restoration));
+            }
+            for (group, reply) in older_groups.drain(..) {
+                let _ = reply.send(self.restore_older(*group));
+            }
             self.serve_users(users);
-            for (request, store, reply) in excisions.drain(..) {
-                let result = self.write_excision(&request, &store);
-                let interrupted = matches!(&result, Err(StoreError::ExcisionInterrupted(_)));
-                let _ = reply.send(result);
-                if interrupted {
-                    return;
-                }
-            }
-            for (excision, reply) in imported_excisions.drain(..) {
-                let _ = reply.send(self.import_excision(&excision));
-            }
+
             if !derives.is_empty() {
                 // A first build's indexes exist before anything is derived
                 // from its rows.
@@ -729,28 +1410,78 @@ impl Inner {
             // Whatever a flush reports written is also derived, except in a
             // first build, which a flush in the middle of a pass (each import
             // item, each run of the parse pool) must not end.
-            let derived_on_flush = !flushes.is_empty() && self.first_build.is_none();
+            let derived_on_flush =
+                flushes.iter().any(|(_, derive)| *derive) && self.first_build.is_none();
             if derived_on_flush && let Err(e) = self.derive() {
                 self.report.errors.push(format!("derive: {e}"));
             }
             for (staged, reply) in assets.drain(..) {
-                let result = crate::assets::install(&mut self.index, &self.archive, *staged);
+                let before = self.index.total_changes();
+                let result = self.install_assets(*staged);
+                if result.is_ok() && self.index.total_changes() != before {
+                    self.commits.committed();
+                }
                 self.derive_due |= result.is_ok();
                 let _ = reply.send(result);
             }
-            // Whatever a flush reports written is also searchable.
-            if derived_on_flush && let Err(e) = crate::text_rows::index_pending(&self.index, || ())
-            {
-                self.report
-                    .errors
-                    .push(format!("write search entries: {e}"));
+            for (fact, reply) in coverage.drain(..) {
+                let _ = reply.send(self.write_coverage(*fact));
             }
-            for reply in flushes.drain(..) {
+            for (sessions, reply) in live_clock.drain(..) {
+                let _ = reply.send(self.write_live_clock(&sessions));
+            }
+            for (query, reply) in raw_cursors.drain(..) {
+                let result = query.validate().and_then(|()| {
+                    self.sinex
+                        .as_ref()
+                        .map_or(Ok(None), |sinex| sinex.raw_acquisition_cursor(&query))
+                });
+                let _ = reply.send(result);
+            }
+            for (group, after, limit, reply) in group_pages.drain(..) {
+                let result = if group.is_empty() || limit == 0 {
+                    Err(StoreError::Invalid(
+                        "group identity and positive page limit are required".into(),
+                    ))
+                } else {
+                    self.sinex.as_ref().map_or_else(
+                        || Ok(crate::primary::PendingGroupPage::default()),
+                        |sinex| sinex.pending_group_headers(&group, after, limit),
+                    )
+                };
+                let _ = reply.send(result);
+            }
+            for (identity, reply) in private_captures.drain(..) {
+                let result = self
+                    .sinex
+                    .as_ref()
+                    .ok_or_else(|| {
+                        StoreError::Invalid(
+                            "private source captures require a primary producer".into(),
+                        )
+                    })
+                    .and_then(|sinex| sinex.capture(&identity));
+                let _ = reply.send(result);
+            }
+            for (identity, reply) in pending_bodies.drain(..) {
+                let result = self
+                    .sinex
+                    .as_ref()
+                    .ok_or_else(|| {
+                        StoreError::Invalid(
+                            "pending source bodies require a primary producer".into(),
+                        )
+                    })
+                    .and_then(|sinex| sinex.capture_body(&identity));
+                let _ = reply.send(result);
+            }
+            for (source, version, reply) in snapshots.drain(..) {
+                let _ = reply.send(self.source_snapshot(source, &version));
+            }
+            for (reply, _) in flushes.drain(..) {
                 let _ = reply.send(std::mem::take(&mut self.report));
             }
-            if self.logs_hold_excised {
-                self.empty_logs_or_report();
-            }
+
             if stopping {
                 break;
             }
@@ -758,12 +1489,47 @@ impl Inner {
         let _ = self.finish_build();
     }
 
-    fn empty_logs_or_report(&mut self) {
-        if let Err(e) = self.empty_logs() {
-            self.report
-                .errors
-                .push(format!("empty the write-ahead logs: {e}"));
+    /// Gives each named session a new live change counter. In primary mode
+    /// the index follows the confirmed stream, which carries no clock
+    /// transitions, so nothing is written there.
+    fn write_live_clock(&mut self, sessions: &[String]) -> Result<()> {
+        if self.sinex.is_some() || sessions.is_empty() {
+            return Ok(());
         }
+        let tx = self.index.transaction()?;
+        let counter = bump_counter(&tx)?;
+        for session in sessions {
+            tx.prepare_cached("UPDATE session SET live_changed = ?2 WHERE id = ?1")?
+                .execute(rusqlite::params![session, counter])?;
+        }
+        crate::write_lock::commit(tx)?;
+        self.commits.committed();
+        self.report.transactions += 1;
+        Ok(())
+    }
+
+    fn write_coverage(&mut self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+        coverage
+            .validate()
+            .map_err(|error| StoreError::Invalid(error.into()))?;
+        if let Some(sinex) = &self.sinex {
+            let machine = coverage.machine.clone();
+            sinex.prepare_products(&[crate::primary::ProductWrite {
+                product: crate::primary::Product::Coverage(coverage),
+                location: None,
+                parents: Vec::new(),
+                machine: Some(machine),
+                output_index: 0,
+            }])?;
+            return Ok(());
+        }
+        let tx = self.index.transaction()?;
+        bump_counter(&tx)?;
+        crate::coverage::apply(&tx, &coverage)?;
+        crate::write_lock::commit(tx)?;
+        self.commits.committed();
+        self.report.transactions += 1;
+        Ok(())
     }
 
     /// Derives from the rows written since the last derive. With nothing
@@ -771,6 +1537,7 @@ impl Inner {
     /// stale, so the scan for stale sessions, which reads every session for
     /// every derivation, is skipped.
     fn derive(&mut self) -> Result<u64> {
+        self.project_variant_text()?;
         // Changes only when another connection commits.
         let version = |index: &Connection| -> Result<i64> {
             Ok(index.pragma_query_value(None, "data_version", |r| r.get(0))?)
@@ -778,47 +1545,54 @@ impl Inner {
         if !self.derive_due && self.derived_version == Some(version(&self.index)?) {
             return Ok(0);
         }
+        if self.first_build.is_none() {
+            crate::text_rows::index_pending(&self.index, || ())?;
+        }
+        crate::versions::remove_unused(&self.index, self.first_build.is_some())?;
+        // A full search batch's deletions get one merge at the end of a round.
+        let deleted:i64=self.index.query_row("SELECT coalesce((SELECT CAST(value AS INTEGER) FROM meta WHERE key='reparse_deletions'),0)",[],|r|r.get(0))?;
+        if self.first_build.is_none() && deleted >= 2_000 {
+            for table in ["text_fts", "output_fts", "tool_call_trigram"] {
+                self.index.execute(
+                    &format!("INSERT INTO {table}({table}) VALUES ('optimize')"),
+                    [],
+                )?;
+            }
+            self.index
+                .execute("DELETE FROM meta WHERE key='reparse_deletions'", [])?;
+        }
         let derived = crate::timing::time(crate::timing::Stage::Derive, || {
-            crate::derive::run(&mut self.index)
+            crate::derive::run(&mut self.index, Some(&self.commits))
         })?;
         self.derive_due = false;
         self.derived_version = Some(version(&self.index)?);
         Ok(derived)
     }
 
-    /// Ends an unsynced build: makes the index durable, then clears the mark
-    /// and returns to normal syncing.
+    /// Clears the build marker only after every deferred index has committed.
+    /// What a finish writes is derived from rows already synced, and the
+    /// marker is cleared last; write-ahead commits survive a crash only in
+    /// order, so a finish lost with the machine is redone at the next start.
+    /// Its commits therefore need no sync of their own, which on a small
+    /// archive were most of the startup's time.
     fn finish_build(&mut self) -> Result<()> {
         if self.first_build.is_none() {
             return Ok(());
         }
-        // The rows' log is copied into the database file once, before the
-        // scans that build the deferred indexes: read through a log of tens
-        // of GB, every page costs a search of the whole log's index. The
-        // usual checkpoints resume for what those builds write.
-        let copied = std::time::Instant::now();
-        self.index
-            .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
-        self.index.pragma_update(
-            None,
-            "wal_autocheckpoint",
-            crate::archive::WAL_AUTOCHECKPOINT,
-        )?;
-        crate::timing::add(crate::timing::Stage::Sync, copied.elapsed());
-        self.build_deferred()?;
-        let synced = std::time::Instant::now();
-        let i = &self.index;
-        i.pragma_update(None, "synchronous", "full")?;
-        // A FULL checkpoint syncs the database file, with every page the
-        // unsynced checkpoints wrote, then the FULL commit syncs the log
-        // with the marker's removal. No journal-mode switch can wait on old
-        // readers.
-        i.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
-        i.execute("UPDATE meta SET value = '0' WHERE key = 'unsynced'", [])?;
-        i.pragma_update(None, "synchronous", "normal")?;
-        crate::timing::add(crate::timing::Stage::Sync, synced.elapsed());
+        self.index.pragma_update(None, "synchronous", "normal")?;
+        let finished = self.build_deferred().and_then(|()| {
+            self.index
+                .execute("UPDATE meta SET value = '0' WHERE key = 'building'", [])?;
+            Ok(())
+        });
+        if let Err(error) = finished {
+            // Rows written while the build continues are synced again.
+            self.index.pragma_update(None, "synchronous", "full")?;
+            return Err(error);
+        }
         self.first_build = None;
         self.search.ready();
+        self.commits.committed();
         Ok(())
     }
 
@@ -840,227 +1614,25 @@ impl Inner {
         )?;
         add(Stage::TrigramIndex, started.elapsed());
         let started = std::time::Instant::now();
-        for sql in std::mem::take(&mut self.deferred_indexes) {
+        for sql in &self.deferred_indexes {
+            let sql = sql
+                .replacen(
+                    "CREATE UNIQUE INDEX ",
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ",
+                    1,
+                )
+                .replacen("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1);
             self.index.execute(&sql, [])?;
+            crate::fault::check("index.deferred", &self.location.root.to_string_lossy())?;
         }
+        self.deferred_indexes.clear();
         add(Stage::SecondaryIndexes, started.elapsed());
         Ok(())
-    }
-
-    /// An excision in one pass ([`crate::excise`]): plan, then one
-    /// transaction per database, committed embeddings, archive, index; a dry
-    /// run plans and rolls back. Deleting vectors first only costs a later
-    /// purchase if a later commit fails. Once the archive commits, the
-    /// excision is in force: an index that missed it is rebuilt when the
-    /// archive is next opened, and the files of blobs marked for deletion go
-    /// after the commits, or when the archive is next opened. Running a
-    /// recorded request again finishes what is left.
-    fn write_excision(
-        &mut self,
-        request: &crate::excise::ExciseRequest,
-        store: &hashed_blobs::Store,
-    ) -> Result<crate::excise::Excised> {
-        if request.dry_run {
-            let _lock = crate::write_lock::hold(&self.archive)?;
-            let plan = crate::excise::plan(&self.archive, &self.index, request)?;
-            if plan.recorded() {
-                return crate::excise::recorded(&self.archive, request);
-            }
-            return self.run_excision(request, &plan);
-        }
-        // An excision is written with WAL syncs even during a first build,
-        // and the archive's rows are durable before blob files are deleted.
-        self.finish_build()?;
-        let previous: i64 = self
-            .archive
-            .pragma_query_value(None, "synchronous", |r| r.get(0))?;
-        self.archive
-            .pragma_update(None, "synchronous", previous.max(2))?;
-        let lock = crate::write_lock::hold(&self.archive)?;
-        // Pages the excision frees are overwritten with zeros, so no removed
-        // content stays readable in the database files.
-        for conn in [&self.archive, &self.index] {
-            conn.pragma_update(None, "secure_delete", true)?;
-        }
-        let result = crate::excise::plan(&self.archive, &self.index, request).and_then(|plan| {
-            if plan.recorded() {
-                crate::excise::recorded(&self.archive, request)
-            } else {
-                self.run_excision(request, &plan)
-            }
-        });
-        drop(lock);
-        // Then the blob files and rows go, and the database files are
-        // scrubbed of every freed page.
-        let result = result.and_then(|done| {
-            let files = self.sinex.is_none().then_some(store);
-            crate::blobs::delete_marked(&self.archive, files)
-                .and_then(|_| {
-                    let _lock = crate::write_lock::hold(&self.archive)?;
-                    self.scrub_after_excision()
-                })
-                .map(|()| done)
-                .map_err(|error| StoreError::ExcisionInterrupted(Box::new(error)))
-        });
-        for conn in [&self.archive, &self.index] {
-            conn.pragma_update(None, "secure_delete", false)
-                .map_err(|e| StoreError::ExcisionInterrupted(Box::new(e.into())))?;
-        }
-        self.archive
-            .pragma_update(None, "synchronous", previous)
-            .map_err(|e| StoreError::ExcisionInterrupted(Box::new(e.into())))?;
-        if result.is_ok() {
-            self.excisions = true;
-            self.derive_due = true;
-        }
-        result
-    }
-
-    /// After an excision commits: the search indexes are merged into one
-    /// segment each, so deleted entries leave the old segments, and both
-    /// write-ahead logs are emptied into the database files, whose freed pages
-    /// `secure_delete` has zeroed ([`Self::empty_logs`]).
-    fn scrub_after_excision(&mut self) -> Result<()> {
-        for table in ["text_fts", "output_fts", "tool_call_trigram"] {
-            self.index.execute(
-                &format!("INSERT INTO {table}({table}) VALUES ('optimize')"),
-                [],
-            )?;
-        }
-        self.logs_hold_excised = true;
-        self.empty_logs()
-    }
-
-    /// Empties both write-ahead logs into the database files and truncates
-    /// them, so excised text leaves them. A read still open on an older
-    /// snapshot keeps its frames; rather than wait for it, the writer tries
-    /// again after its next work, or within a second when idle, until both
-    /// logs are empty.
-    fn empty_logs(&mut self) -> Result<()> {
-        let mut emptied = true;
-        for conn in [&self.index, &self.archive] {
-            conn.busy_timeout(std::time::Duration::ZERO)?;
-            let busy = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
-                r.get::<_, i64>(0)
-            });
-            conn.busy_timeout(std::time::Duration::from_secs(30))?;
-            match busy {
-                Ok(0) => {}
-                Ok(_) => emptied = false,
-                Err(rusqlite::Error::SqliteFailure(e, _))
-                    if e.code == rusqlite::ErrorCode::DatabaseBusy =>
-                {
-                    emptied = false;
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
-        self.logs_hold_excised = !emptied;
-        Ok(())
-    }
-
-    /// One transaction per database, committed in the order
-    /// [`Self::write_excision`] describes, or rolled back for a dry run.
-    fn run_excision(
-        &mut self,
-        request: &crate::excise::ExciseRequest,
-        plan: &crate::excise::Plan,
-    ) -> Result<crate::excise::Excised> {
-        let embeddings = if self.location.embeddings_db().exists() {
-            let e = open_write(&self.location.embeddings_db(), crate::archive::cache::SETUP)?;
-            e.pragma_update(None, "synchronous", "full")?;
-            e.execute_batch("BEGIN IMMEDIATE")?;
-            Some(e)
-        } else {
-            None
-        };
-        let rollback = |embeddings: &Option<rusqlite::Connection>| {
-            if let Some(e) = embeddings {
-                let _ = e.execute_batch("ROLLBACK");
-            }
-        };
-        let atx = self.archive.transaction()?;
-        let itx = self
-            .index
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let seq = bump_counter(&atx)?;
-        let counter = bump_counter(&itx)?;
-        let txs = crate::excise::Transactions {
-            archive: &atx,
-            index: &itx,
-            embeddings: embeddings.as_ref(),
-            seq,
-            counter,
-        };
-        let materials = match &self.sinex {
-            Some(_) => crate::primary::materials_of_inputs(&atx, plan.inputs()),
-            None => Ok(Vec::new()),
-        };
-        let applied = materials.and_then(|materials| {
-            let done = crate::excise::apply(&txs, request, plan)?;
-            if let (Some(sinex), false) = (&self.sinex, request.dry_run) {
-                excise_on_sinex(sinex.as_ref(), &atx, request, plan, &done, materials)?;
-            }
-            Ok(done)
-        });
-        let done = match applied {
-            Ok(done) => done,
-            Err(error) => {
-                rollback(&embeddings);
-                return Err(error);
-            }
-        };
-        if request.dry_run {
-            itx.rollback()?;
-            atx.rollback()?;
-            rollback(&embeddings);
-            return Ok(done);
-        }
-        // A failed commit leaves the databases apart until the archive is
-        // reopened, so this writer stops.
-        let committed: Result<()> = (|| {
-            if let Some(e) = &embeddings {
-                e.execute_batch("COMMIT")?;
-                crate::vectors::wrote();
-            }
-            crate::fault::check("excision.after_embeddings_commit", &request.id)?;
-            atx.commit()?;
-            crate::fault::check("excision.after_archive_commit", &request.id)?;
-            itx.commit()?;
-            crate::fault::check("excision.after_index_commit", &request.id)
-        })();
-        committed.map_err(|error| StoreError::ExcisionInterrupted(Box::new(error)))?;
-        Ok(done)
     }
 
     /// Writes a group in one transaction per database. If it fails, each
     /// batch is retried alone, so one bad batch costs only itself.
     fn write_group(&mut self, group: &[Box<Batch>]) {
-        if self.excisions {
-            let refused = match matching(group, &self.archive) {
-                Ok(refused) => refused,
-                Err(error) => {
-                    for b in group {
-                        self.report.failed_inputs.insert(b.input.id.clone());
-                        self.report
-                            .errors
-                            .push(format!("input {}: {error}", b.input.id));
-                    }
-                    return;
-                }
-            };
-            if !refused.is_empty() {
-                let filtered: Vec<Box<Batch>> = group
-                    .iter()
-                    .map(|b| Box::new(without_refused(b, &refused)))
-                    .collect();
-                return self.write_group_inner(&filtered);
-            }
-        }
-        self.write_group_inner(group);
-    }
-
-    fn write_group_inner(&mut self, group: &[Box<Batch>]) {
         if group.len() > 1 && self.write(group.iter().map(|b| &**b)).is_ok() {
             return;
         }
@@ -1068,11 +1640,7 @@ impl Inner {
             return;
         }
         for b in group {
-            if self.report.failed_inputs.contains(&b.input.id) {
-                continue;
-            }
             if let Err(e) = self.write(std::iter::once(&**b)) {
-                self.report.failed_inputs.insert(b.input.id.clone());
                 self.report
                     .errors
                     .push(format!("input {}: {e}", b.input.id));
@@ -1080,137 +1648,141 @@ impl Inner {
         }
     }
 
-    /// One user request in its own `archive.db` transaction.
-    /// A blob row, then its file, then `present`: a stop between them
-    /// leaves a `writing` row nothing refers to, which opening the archive
-    /// finishes.
+    /// Standalone bytes without an input, such as a chat attachment, follow
+    /// the same append, sync and catalog commit order as captured inputs.
     fn store_blob(
         &mut self,
         new_blob: crate::NewBlob,
         file: Option<crate::staging::PreparedBytes>,
     ) -> Result<BlobHash> {
-        let _write = crate::write_lock::hold(&self.archive)?;
-        let Some(file) = file else {
-            let tx = self.archive.transaction()?;
-            bytes::insert_blob(&tx, &new_blob)?;
-            tx.commit()?;
+        if self.sinex.is_some() {
+            return self.primary_blob(new_blob, file);
+        }
+        if crate::blobs::load_extent(&self.archive, "", &hashed_blobs::Hash(new_blob.hash.0))?
+            .is_some()
+        {
             return Ok(new_blob.hash);
-        };
-        if file.owner != self.location.root || file.hash() != new_blob.hash {
+        }
+        let file =
+            file.ok_or_else(|| StoreError::Invalid("new blob has no prepared bytes".into()))?;
+        if file.owner != self.location.root
+            || file.hash() != new_blob.hash
+            || file.len() != new_blob.size
+        {
             return Err(StoreError::Invalid(
-                "a blob's file is a private file of this archive with its bytes".into(),
+                "prepared bytes do not match the new blob".into(),
             ));
         }
-        self.archive.execute(
-            "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state)
-             VALUES (?1, ?2, 0, 'file', 'plain', 'writing')",
-            params![&new_blob.hash.0[..], new_blob.size as i64],
-        )?;
-        let present: bool = self.archive.query_row(
-            "SELECT state = 'present' FROM blob WHERE hash = ?1",
-            [&new_blob.hash.0[..]],
-            |r| r.get(0),
-        )?;
-        if !present {
-            let crate::staging::Prepared::Local { store, prepared } = file.file else {
-                return Err(StoreError::Invalid(
-                    "bytes for Sinex reached the blob store".into(),
-                ));
-            };
-            prepared.install_checked::<StoreError>(|| Ok(()))?;
-            let size = i64::try_from(store.stored_size(&hashed_blobs::Hash(new_blob.hash.0))?)
-                .map_err(|_| StoreError::Invalid("blob exceeds archive address space".into()))?;
-            self.archive.execute(
-                "UPDATE blob SET state = 'present', stored_size = ?2 WHERE hash = ?1",
-                params![&new_blob.hash.0[..], size],
-            )?;
+        let prepared = file.into_prepared()?;
+        if self.segment.is_none() {
+            self.segment = Some(crate::blobs::open_writer(
+                &self.archive,
+                &self.location.root,
+            )?);
         }
+        let writer = self.segment.as_mut().expect("opened segment writer");
+        let pending = match writer.append_group(std::iter::once(Ok(prepared)), |_| Ok(None)) {
+            Ok(pending) => pending,
+            Err(error) => {
+                self.segment.take();
+                return Err(error.into());
+            }
+        };
+        let synced = match pending.wait() {
+            Ok(synced) => synced,
+            Err(error) => {
+                self.segment.take();
+                return Err(error.into());
+            }
+        };
+        let result = (|| {
+            let tx = self.archive.transaction()?;
+            for extent in &synced.extents {
+                crate::blobs::insert_extent(&tx, extent)?;
+            }
+            tx.execute("INSERT INTO segment(name,committed_end) VALUES (?1,?2) ON CONFLICT(name) DO UPDATE SET committed_end=excluded.committed_end",
+                params!["segments/current.hb",synced.end as i64])?;
+            crate::write_lock::commit(tx)?;
+            self.commits.committed();
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.segment.take();
+            return Err(error);
+        }
+        self.report.segment_syncs += synced.metrics.syncs;
+        self.report.segment_bytes_written += synced.metrics.appended_bytes;
+        self.report.blobs_appended += synced.metrics.appended_materials;
+        self.report.blobs_deduplicated += synced.metrics.deduplicated_materials;
+        self.segment
+            .as_mut()
+            .expect("appended writer")
+            .acknowledge(&synced)?;
         Ok(new_blob.hash)
     }
 
     fn write_user(
         &mut self,
-        request: &crate::user_writes::UserRequest,
-    ) -> Result<crate::user_writes::UserOutcome> {
+        request: &polylogue_model::user::UserRequest,
+        scope: Option<&crate::ReadScopeToken>,
+        preparation: Option<&crate::user_writes::PreparationContext>,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        scoped::require_current(&self.location, scope)?;
+        let prepared_scope = self.preflight_saved(request, preparation, scope)?;
+        let scope = scope.or(prepared_scope.as_ref());
+        if self.sinex.is_some() {
+            return self.primary_request(request, scope, preparation);
+        }
         let tx = self.archive.transaction()?;
-        let seq = bump_counter(&tx)?;
-        let outcome = crate::user_writes::apply(&tx, request, seq)?;
-        if outcome.repeat {
-            // A resent request: nothing to keep, not even the counter bump.
+        scoped::require_current(&self.location, scope)?;
+        let known: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM client_request WHERE id=?1)",
+            [&request.id],
+            |row| row.get(0),
+        )?;
+        let seq = if known {
+            tx.query_row(
+                "SELECT CAST(value AS INTEGER) FROM meta WHERE key='write_counter'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0)
+        } else {
+            bump_counter(&tx)?
+        };
+        let outcome = {
+            let source_snapshot = rusqlite::Transaction::new_unchecked(
+                &self.index,
+                rusqlite::TransactionBehavior::Deferred,
+            )?;
+            crate::user_writes::apply_resolving(
+                &tx,
+                &source_snapshot,
+                request,
+                seq,
+                crate::user_writes::Preparation::native(preparation, None),
+            )?
+        };
+        scoped::require_current(&self.location, scope)?;
+        if known {
             tx.rollback()?;
         } else {
-            if let Some(sinex) = &self.sinex {
-                let change = crate::primary::RegisterChange::Request {
-                    request: Box::new(request.clone()),
-                    first_note: crate::user_writes::first_note_of_request(&tx, request)?,
-                };
-                let material = sinex.send_change(&change)?;
-                crate::primary::change_material(&tx, &change, &material)?;
-            }
             crate::write_lock::commit(tx)?;
+            self.commits.committed();
         }
+        self.project_variant_text()?;
         Ok(outcome)
     }
 
-    /// Records an excision from another archive's user state. What it
-    /// removed is refused from now on; when this archive already holds any
-    /// of it (collected before the import), it is refused instead, because
-    /// recording the excision would not remove it.
-    fn import_excision(&mut self, excision: &crate::primary::ExcisionRows) -> Result<bool> {
-        let tx = self.archive.transaction()?;
-        let known: bool = tx
-            .prepare_cached("SELECT 1 FROM excision WHERE id = ?1")?
-            .exists([&excision.id])?;
-        if known {
-            return Ok(false);
-        }
-        for (kind, value) in &excision.excised {
-            let held = match kind.as_str() {
-                "session" => self
-                    .index
-                    .prepare_cached("SELECT 1 FROM session WHERE id = ?1")?
-                    .exists([value])?,
-                "document" => self
-                    .index
-                    .prepare_cached("SELECT 1 FROM document WHERE id = ?1")?
-                    .exists([value])?,
-                "input" => tx
-                    .prepare_cached("SELECT 1 FROM revision WHERE input = ?1")?
-                    .exists([value])?,
-                "blob" => {
-                    let hash = BlobHash::parse(value)
-                        .map_err(|e| StoreError::Invalid(format!("excised blob {value}: {e}")))?;
-                    tx.prepare_cached("SELECT 1 FROM extent WHERE blob = ?1")?
-                        .exists([&hash.0[..]])?
-                }
-                _ => false,
-            };
-            if held {
-                return Err(StoreError::ExcisionRefused {
-                    target: excision.target.clone(),
-                    reason: format!(
-                        "this archive holds {kind} {value}, which the imported excision removed; excise it here, then import again"
-                    ),
-                });
-            }
-        }
-        let seq = bump_counter(&tx)?;
-        crate::primary::insert_excision(&tx, excision, seq)?;
-        if let Some(sinex) = &self.sinex {
-            let change = crate::primary::RegisterChange::Excision(excision.clone());
-            let material = sinex.send_change(&change)?;
-            crate::primary::change_material(&tx, &change, &material)?;
-        }
-        crate::write_lock::commit(tx)?;
-        self.excisions = true;
-        Ok(true)
-    }
-
     fn write<'a>(&mut self, batches: impl Iterator<Item = &'a Batch> + Clone) -> Result<()> {
+        if self.sinex.is_some() {
+            return self.primary_products(batches);
+        }
         for b in batches.clone() {
-            if crate::zip_members::zip_of(b).is_some() {
+            if crate::container_members::container_of(b).is_some() {
                 return Err(StoreError::Invalid(
-                    "a ZIP member is stored with its ZIP's group".into(),
+                    "a container member is stored with its container's group".into(),
                 ));
             }
             crate::fault::check("write.input", &b.input.id)?;
@@ -1218,23 +1790,78 @@ impl Inner {
                 p.counts.check()?;
             }
         }
-        let atx = self.archive.transaction()?;
-        let seq = bump_counter(&atx)?;
-        let mut chains = Vec::new();
-        for b in batches.clone() {
-            let (chain, rows) = write_bytes(&atx, b, seq)?;
-            if let (Some(sinex), Some(rows)) = (&self.sinex, &rows) {
-                staging::send_to_sinex(sinex.as_ref(), &atx, rows, None, b.new_blob.as_ref())?;
+        let mut parsed_only = true;
+        for batch in batches.clone() {
+            if !matches!(batch.change, Change::Reparse { .. })
+                || batch.new_blob.is_some()
+                || batch.observation.is_some()
+            {
+                parsed_only = false;
+                break;
             }
-            chains.push(chain);
+            for blob in &batch.blobs {
+                let size = i64::try_from(blob.size).map_err(|_| {
+                    StoreError::Invalid("decoded body exceeds the source catalog range".into())
+                })?;
+                if !self.archive.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM blob WHERE hash=?1 AND size=?2)",
+                    params![blob.hash.0.as_slice(), size],
+                    |row| row.get::<_, bool>(0),
+                )? {
+                    parsed_only = false;
+                    break;
+                }
+            }
         }
-        crate::fault::check("write.archive_commit", "")?;
-        crate::write_lock::commit(atx)?;
-        crate::fault::check("write.between_commits", "")?;
+        if parsed_only {
+            let mut has_step = false;
+            let mut all_replayed = true;
+            'batches: for batch in batches.clone() {
+                let Change::Reparse { chain } = batch.change else {
+                    unreachable!()
+                };
+                for step in &batch.parse {
+                    has_step = true;
+                    if step.delivery.is_none()
+                        || crate::wire_shapes::admit_export(
+                            &self.index,
+                            &batch.input.id,
+                            chain,
+                            batch.length,
+                            step,
+                        )?
+                    {
+                        all_replayed = false;
+                        break 'batches;
+                    }
+                }
+            }
+            if has_step && all_replayed {
+                return Ok(());
+            }
+        }
+        let mut chains = Vec::new();
+        if parsed_only {
+            for batch in batches.clone() {
+                let Change::Reparse { chain } = batch.change else {
+                    unreachable!()
+                };
+                chains.push(Some(chain));
+            }
+        } else {
+            let atx = self.archive.transaction()?;
+            let seq = bump_counter(&atx)?;
+            for batch in batches.clone() {
+                let (chain, _) = write_bytes(&atx, batch, seq)?;
+                chains.push(chain);
+            }
+            crate::fault::check("write.archive_commit", "")?;
+            crate::write_lock::commit(atx)?;
+            self.commits.committed();
+            crate::fault::check("write.between_commits", "")?;
+        }
 
-        let indexed = batches
-            .map(|b| attachments::with_stored_blobs(b, &self.archive))
-            .collect::<Result<Vec<_>>>()?;
+        let indexed = batches.collect::<Vec<_>>();
         let itx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1243,13 +1870,32 @@ impl Inner {
         for (b, chain) in indexed.iter().zip(chains) {
             if let Some(chain) = chain {
                 for p in &b.parse {
-                    stats.1 += write_rows(&itx, b, p, chain, counter, self.first_build.as_ref())?;
+                    let receipt = crate::source::Source::reading_receipt(
+                        &itx,
+                        &b.input.id,
+                        chain,
+                        p.parsed_upto,
+                    )?;
+                    stats.1 += write_rows(
+                        &itx,
+                        b,
+                        p,
+                        chain,
+                        counter,
+                        self.first_build.as_deref(),
+                        Some(&receipt),
+                    )?;
+                }
+                if b.parse.iter().any(|p| p.progress.reached_end()) {
+                    rows::prune_sessions(&itx, &b.input.id, chain, counter)?;
                 }
             }
             stats.0 += 1;
         }
+        crate::items::refresh_changed(&itx, counter)?;
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
+        self.commits.committed();
         self.derive_due = true;
         self.search.wake();
         self.report.batches += stats.0;
@@ -1257,32 +1903,6 @@ impl Inner {
         self.report.transactions += 1;
         Ok(())
     }
-}
-
-/// In primary mode, before an excision commits: Sinex excises the parts and
-/// register materials of the removed inputs and the requests of the removed
-/// notes, then
-/// keeps the excision itself, so a rebuild keeps refusing what it removed.
-fn excise_on_sinex(
-    sinex: &dyn crate::primary::Sinex,
-    archive: &Connection,
-    request: &crate::excise::ExciseRequest,
-    plan: &crate::excise::Plan,
-    done: &crate::excise::Excised,
-    mut materials: Vec<String>,
-) -> Result<()> {
-    materials.extend(crate::primary::materials_of_requests(archive, &done.notes)?);
-    if !materials.is_empty() {
-        sinex.excise(&materials)?;
-    }
-    crate::primary::forget_inputs(archive, plan.inputs())?;
-    crate::primary::forget_requests(archive, &done.notes)?;
-    let change = crate::primary::RegisterChange::Excision(crate::primary::excision_rows(
-        archive,
-        &request.id,
-    )?);
-    let material = sinex.send_change(&change)?;
-    crate::primary::change_material(archive, &change, &material)
 }
 
 /// The input bytes a batch was parsed from (or stored, when unparsed).

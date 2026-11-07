@@ -6,96 +6,115 @@ fn read(
     view: &str,
     format: &str,
     budget: Option<usize>,
-    cursor: Option<&str>,
-) -> Response {
-    handle(
+    cursor: Option<&command_surface::RunnableRequest>,
+) -> command_surface::Answer<serde_json::Value> {
+    let Some(view) = polylogue_model::read::View::parse(view) else {
+        return error("bad_request", "unknown reading view");
+    };
+    if polylogue_render::Format::parse(format).is_none() {
+        return error("bad_request", "unknown reading format");
+    }
+    let request = if let Some(resume) = cursor {
+        let mut resume = resume.clone();
+        let mut arguments: crate::protocol::read::Arguments =
+            serde_json::from_value(resume.arguments.clone()).unwrap();
+        arguments.page_tokens =
+            budget.map(|value| std::num::NonZeroU64::new(value as u64).unwrap());
+        resume.arguments = serde_json::to_value(arguments).unwrap();
+        crate::protocol::operations::admit(
+            crate::commands::command("read").unwrap(),
+            &resume,
+            &crate::commands::Caller {
+                surface: crate::commands::Surface::Http,
+                cwd: None,
+                json: true,
+            },
+        )
+        .unwrap()
+    } else {
         Request::Read {
-            slices: true,
-            selection: None,
-            target: crate::daemon::ReadTarget::Session(
-                polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
-            ),
-            view: view.into(),
+            target: "session:claude-code:s1".into(),
+            options: polylogue_model::read::ReadOptions {
+                view,
+                ..Default::default()
+            },
+            delivery: polylogue_model::read::ReadDelivery::Page,
             format: format.into(),
-            with_parents: false,
             budget,
-            cursor: cursor.map(Into::into),
-        },
-        d,
+            with_blobs: false,
+            cursor: None,
+        }
+    };
+    handle(request, d)
+}
+
+fn typed(response: command_surface::Answer<serde_json::Value>) -> polylogue_model::read::ReadPage {
+    let Some(data) = response.value().cloned() else {
+        panic!("{response:?}")
+    };
+    serde_json::from_value(data).unwrap()
+}
+fn encoded(page: &polylogue_model::read::ReadPage, format: polylogue_render::Format) -> String {
+    let mut bytes = Vec::new();
+    polylogue_render::encode_document(
+        &page.document,
+        format,
+        polylogue_render::EncodeOptions::default(),
+        &mut bytes,
     )
+    .unwrap();
+    String::from_utf8(bytes).unwrap()
 }
 
 #[test]
 fn a_read_honours_its_view_format_and_budget() {
+    use polylogue_model::read::{ItemKind, View};
     let w = test_daemon::start("a prompt long enough to need two pages of one token each");
-    let Response::Ok { data, .. } = read(&w.daemon, "full", "markdown", None, None) else {
-        panic!("markdown read failed")
-    };
-    assert_eq!(data["format"], "markdown");
+    let page = typed(read(&w.daemon, "transcript", "markdown", None, None));
+    assert!(encoded(&page, polylogue_render::Format::Markdown).contains("a prompt long enough"));
+    let page = typed(read(&w.daemon, "transcript", "json", None, None));
+    assert!(page.document.items.iter().any(|item| matches!(&item.kind, ItemKind::Text { text } if text.contains("a prompt long enough"))));
+    let changes = typed(read(&w.daemon, "changes", "json", None, None));
+    assert_eq!(changes.document.header.view, View::Changes);
     assert!(
-        data["content"]
-            .as_str()
-            .unwrap()
-            .contains("a prompt long enough")
+        !changes
+            .document
+            .items
+            .iter()
+            .any(|item| matches!(&item.kind, ItemKind::Text { .. }))
     );
-
-    let Response::Ok { data, .. } = read(&w.daemon, "full", "json", None, None) else {
-        panic!("json read failed")
-    };
-    assert_eq!(data["messages"].as_array().unwrap().len(), 1);
-    // A view that keeps no block of the session leaves no message.
-    let Response::Ok { data, .. } = read(&w.daemon, "actions", "json", None, None) else {
-        panic!("json read failed")
-    };
-    assert!(data["messages"].as_array().unwrap().is_empty());
-
-    let Response::Ok { data: first, .. } = read(&w.daemon, "full", "json", Some(5), None) else {
-        panic!("paged read failed")
-    };
-    let next = first["next"].as_str().expect("a second page").to_owned();
-    let Response::Ok { data: second, .. } = read(&w.daemon, "full", "json", Some(5), Some(&next))
-    else {
-        panic!("paged read failed")
-    };
-    assert_ne!(first["text"], second["text"]);
-
-    for (view, format, cursor) in [
-        ("nope", "json", None),
-        ("full", "pdf", None),
-        ("full", "json", Some("m0.b0.c0")),
+    let first = typed(read(&w.daemon, "transcript", "json", Some(1), None));
+    let call = first.document.footer.next.as_ref().expect("a second page");
+    let envelope: command_surface::RunnableRequest =
+        serde_json::from_value(call.http.arguments.clone()).unwrap();
+    let cursor = envelope;
+    let second = typed(read(
+        &w.daemon,
+        "transcript",
+        "json",
+        Some(1),
+        Some(&cursor),
+    ));
+    assert_ne!(first.document.items, second.document.items);
+    let mut malformed = cursor.clone();
+    malformed.cursor = Some("m0.b0.c0".into());
+    for (view, format, cursor, expected) in [
+        ("nope", "json", None, "bad_request"),
+        ("transcript", "pdf", None, "bad_request"),
+        ("transcript", "json", Some(&malformed), "invalid_query"),
     ] {
         assert!(
-            matches!(read(&w.daemon, view, format, None, cursor), Response::Error { ref kind, .. } if kind == "bad_request"),
+            matches!(
+                read(&w.daemon, view, format, None, cursor),
+                command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some(expected)
+            ),
             "{view} {format} {cursor:?}"
         );
     }
 }
 
-#[test]
-fn excision_refusals_have_a_distinct_public_error() {
-    let error = StoreError::ExcisionRefused {
-        target: "input1".into(),
-        reason: "it also holds another session".into(),
-    };
-    assert!(
-        matches!(store_error(&error), Response::Error { kind, detail: Some(detail), .. }
-        if kind == "unsupported_excision" && detail["target"] == "input1")
-    );
-    let error = StoreError::ExcisionInsideZip {
-        input: "input2".into(),
-        file: "/exports/chat.zip".into(),
-    };
-    assert!(
-        matches!(store_error(&error), Response::Error { kind, message, detail: Some(detail) }
-        if kind == "unsupported_excision" && message.starts_with("/exports/chat.zip is an export ZIP")
-            && detail["input"] == "input2" && detail["file"] == "/exports/chat.zip")
-    );
-    let error = StoreError::BlobCorrupt(polylogue_model::BlobHash::of(b"synthetic"));
-    assert!(matches!(store_error(&error), Response::Error { kind, .. } if kind == "store"));
-}
-
 fn config(home: &std::path::Path) -> Config {
-    let mut config = Config::from_env();
+    let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = home.to_owned();
     config.tool_dirs.clear();
     config.workers = 1;
@@ -106,7 +125,8 @@ fn config(home: &std::path::Path) -> Config {
 fn runtime_shutdown_wakes_signals_releases_lock_and_refuses_old_handles() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("archive");
-    let mut runtime = start(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
+    let mut runtime =
+        test_daemon::start_runtime(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
     let daemon = Arc::clone(&runtime.daemon);
     assert!(daemon.archive.lock_held());
     let (done, stopped) = sync_channel(1);
@@ -120,7 +140,7 @@ fn runtime_shutdown_wakes_signals_releases_lock_and_refuses_old_handles() {
         .unwrap();
     thread.join().unwrap();
     assert!(
-        matches!(handle(Request::Status, &daemon), Response::Error { kind, .. } if kind == "daemon_stopping")
+        matches!(handle(Request::Status, &daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
     );
     assert!(
         Archive::open_or_create(&root).is_ok(),
@@ -134,11 +154,18 @@ fn startup_failure_after_workers_start_releases_the_runtime_and_lock() {
     let root = dir.path().join("archive");
     let weak;
     {
-        let runtime = start(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
+        let runtime =
+            test_daemon::start_runtime(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
         weak = Arc::downgrade(&runtime.daemon);
         // A directory cannot be replaced by the Unix socket binder.
         std::fs::create_dir(runtime.daemon.archive.socket()).unwrap();
-        assert!(crate::daemon::server::Server::start(Arc::clone(&runtime.daemon)).is_err());
+        assert!(
+            crate::daemon::server::Server::start(
+                Arc::clone(&runtime.daemon),
+                Arc::clone(&runtime.operations)
+            )
+            .is_err()
+        );
     }
     assert!(weak.upgrade().is_none());
     assert!(Archive::open_or_create(&root).is_ok());
@@ -172,85 +199,46 @@ fn repeated_test_daemon_drops_release_every_shared_daemon_reference() {
 fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("archive");
-    let mut runtime = start(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
+    let mut runtime =
+        test_daemon::start_runtime(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
     let old = Arc::clone(&runtime.daemon);
-    assert!(matches!(handle(Request::Status, &old), Response::Ok { .. }));
+    crate::test_answers::ok(handle(Request::Status, &old));
     runtime.shutdown().unwrap();
     assert!(matches!(
         old.reads.reader(),
         Err(StoreError::ReadPoolClosed)
     ));
-    let mut next = start(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
-    assert!(matches!(
-        handle(Request::Status, &next.daemon),
-        Response::Ok { .. }
-    ));
+    let mut next =
+        test_daemon::start_runtime(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
+    crate::test_answers::ok(handle(Request::Status, &next.daemon));
     next.shutdown().unwrap();
     assert!(
-        matches!(handle(Request::Status, &old), Response::Error { kind, .. } if kind == "daemon_stopping")
+        matches!(handle(Request::Status, &old), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
     );
 }
 
 #[cfg(feature = "sinex")]
 #[test]
 fn standalone_start_does_not_read_the_sinex_configuration() {
-    const CHILD: &str = "POLYLOGUE_TEST_STANDALONE_CHILD";
-    if std::env::var_os(CHILD).is_some() {
-        assert!(
-            matches!(crate::sinex::configured(), ArchiveMode::Primary { .. }),
-            "synthetic primary configuration was not loaded"
-        );
-        let dir = tempfile::tempdir().unwrap();
-        let runtime = start(
-            &dir.path().join("archive"),
-            config(dir.path()),
-            ArchiveMode::Standalone,
-        )
-        .unwrap();
-        assert!(runtime.daemon.archive.archive_db().ends_with("archive.db"));
-        assert!(!runtime.daemon.archive.is_primary());
-        return;
-    }
     let dir = tempfile::tempdir().unwrap();
-    let config = dir.path().join("polylogue");
-    std::fs::create_dir_all(&config).unwrap();
-    // A configured primary is deliberately present in the child process.
-    // Its invalid endpoint cannot contact a real account if isolation fails.
-    std::fs::write(
-        config.join("sinex.toml"),
-        format!(
-            "mode = 'primary'\nnats = 'invalid://'\nstore = {:?}\n",
-            dir.path().join("sinex-store")
-        ),
+    let configuration = dir.path().join(".config/polylogue");
+    std::fs::create_dir_all(&configuration).unwrap();
+    std::fs::write(configuration.join("sinex.toml"), "invalid deployment bytes").unwrap();
+    let mut runtime = test_daemon::start_runtime(
+        &dir.path().join("archive"),
+        config(dir.path()),
+        ArchiveMode::Standalone,
     )
     .unwrap();
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "daemon::service::tests::standalone_start_does_not_read_the_sinex_configuration",
-            "--nocapture",
-        ])
-        .env(CHILD, "1")
-        .env("XDG_CONFIG_HOME", dir.path())
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("1 passed"),
-        "child did not run its test: {stdout}"
-    );
-    assert!(!dir.path().join("sinex-store").exists());
+    assert!(!runtime.daemon.archive.is_primary());
+    assert!(runtime.daemon.archive.archive_db().ends_with("archive.db"));
+    runtime.shutdown().unwrap();
 }
 
 #[test]
 fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_readers_finish() {
     let dir = tempfile::tempdir().unwrap();
-    let mut runtime = start(
+    let mut runtime = test_daemon::start_runtime(
         &dir.path().join("archive"),
         config(dir.path()),
         ArchiveMode::Standalone,
@@ -273,13 +261,13 @@ fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_
     runtime.stop_accepting();
     for request in requests {
         assert!(
-            matches!(request.join().unwrap(), Response::Error { kind, .. } if kind == "daemon_stopping")
+            matches!(request.join().unwrap(), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
         );
     }
     runtime.shutdown().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
     assert!(
-        matches!(handle(Request::Status, &daemon), Response::Error { kind, .. } if kind == "daemon_stopping")
+        matches!(handle(Request::Status, &daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
     );
 }
 
@@ -291,33 +279,82 @@ fn invalid_reader_resource_configuration_refuses_startup_and_releases_the_lock()
         let mut config = config(dir.path());
         config.workers = workers;
         config.reader_memory_bytes = memory;
-        assert!(start(&root, config, ArchiveMode::Standalone).is_err());
+        assert!(test_daemon::start_runtime(&root, config, ArchiveMode::Standalone).is_err());
         assert!(Archive::open_or_create(&root).is_ok());
     }
 }
 
 #[test]
-fn read_and_session_query_share_stored_titles_without_changing_source_or_export() {
-    let prompt = "First human question\nMore details";
-    let w = test_daemon::start(prompt);
+fn read_and_session_query_share_stored_titles_without_changing_source_or_canonical_records() {
+    let w = test_daemon::start("First human question\nMore details");
     let source = w.home.join(".claude/projects/-p/s1.jsonl");
     let original = std::fs::read(&source).unwrap();
-    let id = polylogue_model::SessionId::parse("claude-code:s1").unwrap();
-    let export = || match handle(
-        Request::Export {
-            targets: vec![crate::daemon::ReadTarget::Session(id.clone())],
-            format: "json".into(),
-            user_state: false,
-        },
-        &w.daemon,
-    ) {
-        Response::Ok { data, .. } => data,
-        other => panic!("export failed: {other:?}"),
+    let records = || {
+        let request = Request::Read {
+            target: "session:claude-code:s1".into(),
+            options: polylogue_model::read::ReadOptions::default(),
+            delivery: polylogue_model::read::ReadDelivery::Stream,
+            format: "jsonl".into(),
+            budget: None,
+            with_blobs: false,
+            cursor: None,
+        };
+        let envelope = command_surface::Request {
+            operation: "read".into(),
+            arguments: serde_json::to_value(
+                crate::protocol::read::Arguments::from_request(&request).unwrap(),
+            )
+            .unwrap(),
+            request_id: uuid::Uuid::now_v7().to_string(),
+            deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
+        };
+        let mut socket =
+            std::os::unix::net::UnixStream::connect(w.daemon.archive.socket()).unwrap();
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+            .unwrap();
+        serde_json::to_writer(
+            &mut socket,
+            &crate::protocol::wire::Outgoing {
+                request: &envelope,
+                caller: Default::default(),
+                parent_deadline_ms: None,
+            },
+        )
+        .unwrap();
+        use std::io::Write;
+        socket.write_all(b"\n").unwrap();
+        let mut records = Vec::new();
+        crate::client::stream::receive(socket, |event| {
+            if event.event == "record" {
+                let transfer: polylogue_model::read::ReadRecord =
+                    serde_json::from_str(&event.data).map_err(std::io::Error::other)?;
+                if let Some(record) = transfer.record() {
+                    records.push(record.clone());
+                }
+            }
+            Ok(event.event == "complete")
+        })
+        .unwrap();
+        records
     };
-    let before = export();
-    let document = polylogue_model::export::Document::from_json(&before.to_string()).unwrap();
-    assert!(document.sessions[0].session.title.is_none());
-    let Response::Ok { data: listed, .. } = handle(
+    let before = records();
+    let canonical = before
+        .iter()
+        .find_map(|record| {
+            if let polylogue_model::bundle::Record::Session(record) = record {
+                Some(&record.session)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    assert!(canonical.title.is_none());
+    let response = handle(
         Request::Query {
             text: "sessions".into(),
             cursor: None,
@@ -327,29 +364,23 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_export(
             fields: vec![],
         },
         &w.daemon,
-    ) else {
-        panic!("query failed")
+    );
+    let Some(data) = response.value().cloned() else {
+        panic!("{response:?}")
     };
-    assert_eq!(listed["rows"][0]["title"], "First human question");
-    for budget in [None, Some(4000)] {
-        let Response::Ok { data, .. } = read(&w.daemon, "full", "json", budget, None) else {
-            panic!("read failed")
-        };
-        assert_eq!(data["display_title"], listed["rows"][0]["title"]);
-        assert!(data["session"]["title"].is_null());
-    }
-    for (format, prefix) in [
-        ("markdown", "# First human question"),
-        ("html", "<h1>First human question</h1>"),
-        // The daemon renders plain text; the CLI client adds terminal styling.
-        ("terminal", "First human question\n"),
+    assert_eq!(data["rows"][0]["title"], "First human question");
+    for (format, title) in [
+        (polylogue_render::Format::Markdown, "# First human question"),
+        (
+            polylogue_render::Format::Html,
+            "<h1>First human question</h1>",
+        ),
+        (polylogue_render::Format::Terminal, "First human question\n"),
     ] {
-        let Response::Ok { data, .. } = read(&w.daemon, "full", format, None, None) else {
-            panic!("{format} read failed")
-        };
-        assert!(data["content"].as_str().unwrap().contains(prefix), "{data}");
+        let page = typed(read(&w.daemon, "transcript", format.name(), None, None));
+        assert!(encoded(&page, format).contains(title));
     }
-    assert_eq!(export(), before);
+    assert_eq!(records(), before);
     assert_eq!(std::fs::read(source).unwrap(), original);
 }
 
@@ -357,6 +388,8 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_export(
 mod mode;
 
 mod read_pages;
+
+mod reading_shapes;
 
 mod hook_errors;
 
@@ -369,3 +402,107 @@ mod judgments;
 mod saved;
 
 mod deliveries;
+mod outcomes;
+
+#[test]
+fn an_invalidated_read_phase_does_not_enter_the_authored_writer() {
+    let daemon = crate::test_daemon::start("native write admission scope");
+    let invocation = daemon
+        .daemon
+        .invocation(&crate::operation::Context::worker_authorship(
+            "scope-write-fixture",
+        ));
+    let limit = polylogue_store::read::limit::ReadLimit::without_deadline(Default::default());
+    let response = limit.scope(|| {
+        drop(daemon.daemon.reads.reader().unwrap());
+        daemon.daemon.archive.advance_generation_for_test().unwrap();
+        write(
+            &daemon.daemon,
+            &invocation,
+            "stale-read-write".into(),
+            UserWrite::SetSetting {
+                key: "browser.actions".into(),
+                value: "on".into(),
+                machine: None,
+            },
+        )
+    });
+    assert!(
+        matches!(response,command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("scope_changed")),
+        "{response:?}"
+    );
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let current = reader
+        .setting_current("browser.actions", &invocation.machine)
+        .unwrap();
+    assert!(current.authored.is_none());
+    assert_eq!(
+        current.value,
+        Some(polylogue_model::settings::Value::Boolean(false))
+    );
+}
+
+#[test]
+fn read_derived_write_keeps_its_selected_scope_after_reader_release() {
+    let daemon = crate::test_daemon::start("pinned authored admission");
+    let invocation = daemon
+        .daemon
+        .invocation(&crate::operation::Context::worker_authorship(
+            "pinned-write-fixture",
+        ));
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let selected_scope = reader.scope_token();
+    drop(reader);
+    daemon.daemon.archive.advance_generation_for_test().unwrap();
+    // No active ReadLimit: the queued native token is the authority here.
+    let response = write_from_read(
+        &daemon.daemon,
+        &invocation,
+        "old-generation-write".into(),
+        UserWrite::SetSetting {
+            key: "browser.actions".into(),
+            value: "on".into(),
+            machine: None,
+        },
+        selected_scope,
+    );
+    assert!(
+        matches!(response, command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("scope_changed")),
+        "{response:?}"
+    );
+    let reader = daemon.daemon.reads.reader().unwrap();
+    assert!(
+        reader
+            .user_request("old-generation-write")
+            .unwrap()
+            .is_none()
+    );
+    let current = reader
+        .setting_current("browser.actions", &invocation.machine)
+        .unwrap();
+    assert!(current.authored.is_none());
+    let selected_scope = reader.scope_token();
+    drop(reader);
+    let response = write_from_read(
+        &daemon.daemon,
+        &invocation,
+        "current-generation-write".into(),
+        UserWrite::SetSetting {
+            key: "browser.actions".into(),
+            value: "on".into(),
+            machine: None,
+        },
+        selected_scope,
+    );
+    crate::test_answers::ok(response);
+    assert!(
+        daemon
+            .daemon
+            .reads
+            .reader()
+            .unwrap()
+            .user_request("current-generation-write")
+            .unwrap()
+            .is_some()
+    );
+}

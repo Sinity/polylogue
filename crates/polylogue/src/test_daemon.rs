@@ -2,7 +2,7 @@
 //! its loop reads only the temporary home, and its socket is served on a
 //! thread of its own.
 
-use crate::daemon::{Request, Response};
+use crate::daemon::Request;
 use crate::daemon::{
     server,
     service::{self, Daemon, handle},
@@ -12,9 +12,43 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub(crate) fn engine_config(home: PathBuf) -> Config {
+    Config::new(
+        home,
+        Default::default(),
+        "synthetic-machine".into(),
+        "synthetic-host".into(),
+        2,
+        polylogue_model::WallClock::new(jiff::Timestamp::now),
+    )
+    .expect("valid fixture configuration")
+}
+
+pub(crate) fn start_runtime(
+    root: &std::path::Path,
+    engine: Config,
+    mode: service::ArchiveMode,
+) -> std::io::Result<service::Runtime> {
+    let deployment = crate::config::Config::for_test(&engine, root);
+    service::start(
+        deployment,
+        engine,
+        mode,
+        polylogue_engine::Lifetime::UntilStopped,
+    )
+}
+
 pub(crate) struct ReadObservation {
     pub limit: polylogue_store::read::limit::ReadLimit,
     pub owner: std::thread::ThreadId,
+    /// Checkout evidence survives release before the observing thread runs.
+    pub acquired: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ReadObservation {
+    pub(crate) fn reader_acquired(&self) -> bool {
+        self.acquired.load(std::sync::atomic::Ordering::Acquire)
+    }
 }
 
 impl std::ops::Deref for ReadObservation {
@@ -43,6 +77,32 @@ pub fn start(text: &str) -> TestDaemon {
 }
 
 pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
+    start_with_clock_and_workers(
+        text,
+        workers,
+        polylogue_model::WallClock::new(jiff::Timestamp::now),
+        None,
+    )
+}
+
+pub(crate) fn start_with_clock(text: &str, clock: polylogue_model::WallClock) -> TestDaemon {
+    start_with_clock_and_workers(text, 2, clock, None)
+}
+
+pub(crate) fn start_with_clock_and_day(
+    text: &str,
+    clock: polylogue_model::WallClock,
+    day: query_language::time::DaySetting,
+) -> TestDaemon {
+    start_with_clock_and_workers(text, 2, clock, Some(day))
+}
+
+fn start_with_clock_and_workers(
+    text: &str,
+    workers: usize,
+    clock: polylogue_model::WallClock,
+    day: Option<query_language::time::DaySetting>,
+) -> TestDaemon {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let project = home.join(".claude/projects/-p");
@@ -52,18 +112,26 @@ pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
         polylogue_testkit::claude_user("u1", "s1", text),
     )
     .unwrap();
-    let mut config = Config::from_env();
+    let mut config = engine_config(home.clone());
     config.home = home.clone();
+    config.clock = clock;
     config.tool_dirs.clear();
     config.workers = workers;
+    let root = dir.path().join("archive");
+    let mut deployment = crate::config::Config::for_test(&config, &root);
+    if let Some(day) = day {
+        deployment = deployment.standalone_for_archive(root, day).unwrap();
+    }
     let runtime = service::start(
-        &dir.path().join("archive"),
+        deployment,
         config.clone(),
         service::ArchiveMode::Standalone,
+        polylogue_engine::Lifetime::UntilStopped,
     )
     .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
-    let server = server::Server::start(Arc::clone(&daemon)).unwrap();
+    let server =
+        server::Server::start(Arc::clone(&daemon), Arc::clone(&runtime.operations)).unwrap();
     let daemon = TestDaemon {
         _dir: dir,
         home,
@@ -80,13 +148,17 @@ pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
 }
 
 impl TestDaemon {
+    pub(crate) fn pause_signals(&mut self) {
+        self.runtime.pause_signals().unwrap();
+    }
+
     /// Waits until `status` satisfies `ok` and then until the loop is idle,
     /// so the pass that made `ok` hold has also derived from its rows. A
     /// state that never comes is ended by the test runner's timeout.
     pub fn wait_for(&self, ok: impl Fn(&serde_json::Value) -> bool) {
-        let status = || match handle(Request::Status, &self.daemon) {
-            Response::Ok { data, .. } => data,
-            other => panic!("status failed: {other:?}"),
+        let status = || {
+            crate::protocol::into_value(handle(Request::Status, &self.daemon))
+                .unwrap_or_else(|failure| panic!("status failed: {failure:?}"))
         };
         while !ok(&status()) {
             std::thread::sleep(Duration::from_millis(10));
@@ -100,14 +172,31 @@ impl TestDaemon {
 
     /// Restarts the daemon over the same synthetic archive and home.
     pub fn restart(&mut self) {
-        let root = self.daemon.archive.root.clone();
+        self.restart_after_stop(|| {});
+    }
+
+    fn restart_after_stop(&mut self, reset: impl FnOnce()) {
         self.runtime.stop_accepting();
         self.server.shutdown().unwrap();
         self.runtime.shutdown().unwrap();
-        self.runtime =
-            service::start(&root, self.config.clone(), service::ArchiveMode::Standalone).unwrap();
+        reset();
+        self.runtime = service::start(
+            Arc::clone(&self.daemon.config),
+            self.config.clone(),
+            service::ArchiveMode::Standalone,
+            polylogue_engine::Lifetime::UntilStopped,
+        )
+        .unwrap();
         self.daemon = Arc::clone(&self.runtime.daemon);
-        self.server = server::Server::start(Arc::clone(&self.daemon)).unwrap();
+        self.server = server::Server::start(
+            Arc::clone(&self.daemon),
+            Arc::clone(&self.runtime.operations),
+        )
+        .unwrap();
+    }
+
+    pub fn operations(&self) -> &Arc<command_surface::OperationTable> {
+        &self.runtime.operations
     }
 
     pub(crate) fn watch_reads(&self) -> std::sync::mpsc::Receiver<ReadObservation> {
@@ -152,13 +241,22 @@ impl TestDaemon {
         let r = handle(
             Request::Setting {
                 request_id: None,
-                key: key.into(),
+                key: Some(key.into()),
                 value: Some(value.into()),
-                machine: false,
+                machine: None,
             },
             &self.daemon,
         );
-        assert!(matches!(r, Response::Ok { .. }), "{r:?}");
+        assert!(
+            matches!(
+                r,
+                command_surface::Answer {
+                    outcome: command_surface::Outcome::Ok(_),
+                    ..
+                }
+            ),
+            "{r:?}"
+        );
     }
 }
 

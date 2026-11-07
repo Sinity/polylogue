@@ -27,10 +27,10 @@ fn a_start_names_a_provider_with_a_conversation_list_and_an_optional_date() {
     assert_eq!(new_job("grok", None).unwrap().since, None);
     assert_eq!(
         new_job("gemini", None).unwrap_err(),
-        Refused(400, "unsupported_provider")
+        Refused("unsupported_provider")
     );
     assert_eq!(
         new_job("chatgpt", Some("last week")).unwrap_err(),
-        Refused(400, "since_is_a_date_or_time")
+        Refused("since_is_a_date_or_time")
     );
 }

@@ -8,205 +8,62 @@
 //! same ID with other intent is refused as a conflict.
 
 use crate::{Result, StoreError};
-use polylogue_model::{Author, DeliveryOutcome, NewNote, NoteKind, Timestamp};
-use rusqlite::{OptionalExtension, Transaction, params};
-use serde::{Deserialize, Serialize};
+use rusqlite::{Transaction, params};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "write", rename_all = "snake_case")]
-pub enum UserWrite {
-    AddNote {
-        note: NewNote,
-    },
-    /// A saved query whose previous revision is resolved by name.
-    SaveQuery {
-        note: NewNote,
-    },
-    /// The query intent and its resolved targets, kept together for retries and replay.
-    AnnotateQuery {
-        query: String,
-        note: NewNote,
-    },
-    /// Withdraws a note family: the newest revision and every older one.
-    Withdraw {
-        note: String,
-        author: Author,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        reason: Option<String>,
-    },
-    /// Context prepared for a recipient, with its exact text.
-    Deliver(Delivery),
-    /// Advice already printed by a hook, recorded with its delivered outcome.
-    DeliveredAdvice(Delivery),
-    /// What happened to a prepared delivery.
-    DeliveryEvent {
-        delivery: String,
-        what: DeliveryOutcome,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        detail: Option<String>,
-    },
-    /// The exact rows a query returned, kept to be read back as
-    /// `result:<id>`.
-    KeepResult {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-        query: String,
-        /// The stored rows, match rows and their columns, as JSON.
-        rows_json: String,
-        /// What the query read: its resolved time, as JSON.
-        read_at: String,
-    },
-    SetSetting {
-        key: String,
-        value: String,
-        author: Author,
-        /// `None` for an archive-wide key, otherwise this machine.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        machine: Option<String>,
-    },
-    /// A chat action the operator queued; a resent request finds the
-    /// action it made.
-    ChatEnqueue(crate::chat_actions::NewChatAction),
-    /// The extension instance `by` takes the oldest queued chat action;
-    /// `NotFound` when none is queued or another is out.
-    ChatClaim {
-        by: String,
-    },
-    /// What the instance holding a chat action's claim reports.
-    ChatReport {
-        action: String,
-        by: String,
-        outcome: String,
-        phase: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        detail: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        receipt: Option<serde_json::Value>,
-    },
-    /// The operator approves or declines a held submit.
-    ChatDecide {
-        action: String,
-        approve: bool,
-        by: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        detail: Option<String>,
-    },
-    /// The operator starts a backfill job; the provider's job that has not
-    /// ended is found instead of a second one.
-    BackfillStart(crate::backfill_jobs::NewBackfillJob),
-    /// The extension instance `by` takes the job it holds or the oldest
-    /// waiting one; `NotFound` when there is none.
-    BackfillClaim {
-        by: String,
-    },
-    /// What the instance holding a backfill job's claim reports.
-    BackfillReport {
-        job: String,
-        by: String,
-        report: crate::backfill_jobs::BackfillReport,
-    },
-    /// The operator stops a backfill job.
-    BackfillCancel {
-        job: String,
-    },
+use polylogue_model::user::{UserOutcome, UserRequest, UserWrite};
+
+/// Product catalog captured by trusted acceptance, outside the serialized
+/// request and its retry identity. Saved/kept bindings come from the snapshot.
+/// Authored-origin and execution eligibility remain separate from this catalog.
+#[derive(Debug, Clone)]
+pub struct PreparationContext {
+    bindings: polylogue_query::Bindings,
 }
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Delivery {
-    pub recipient_kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recipient_id: Option<String>,
-    pub sender: String,
-    pub event: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<String>,
-    pub text: String,
-    pub refs: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub left_out: Vec<LeftOut>,
-}
-
-/// A reference or section a delivery did not include, and why.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LeftOut {
-    pub what: String,
-    pub reason: String,
-}
-
-impl UserWrite {
-    /// The caller's content, without data resolved when the write runs.
-    pub fn intent(&self) -> Self {
-        let mut intent = match self {
-            Self::KeepResult { name, query, .. } => Self::KeepResult {
-                name: name.clone(),
-                query: query.clone(),
-                rows_json: String::new(),
-                read_at: String::new(),
-            },
-            _ => self.clone(),
-        };
-        match &mut intent {
-            Self::AnnotateQuery { note, .. } => note.targets.clear(),
-            Self::KeepResult {
-                rows_json, read_at, ..
-            } => {
-                rows_json.clear();
-                read_at.clear();
-            }
-            // An explicit revision in AddNote remains part of the request.
-            Self::SaveQuery { note } => note.revises = None,
-            _ => {}
-        }
-        intent
-    }
-}
-
-/// What a user write created, or found already created by the same
-/// request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UserOutcome {
-    /// The note, delivery or setting row the request wrote.
-    pub id: String,
-    /// The request had already been written; nothing changed.
-    pub repeat: bool,
-}
-
-/// One user write with the request that carries it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UserRequest {
-    pub id: String,
-    pub machine: String,
-    pub at: Timestamp,
-    pub write: UserWrite,
-}
-
-impl UserRequest {
-    /// A request at the current time on this machine.
-    pub fn now(id: String, write: UserWrite) -> Self {
+impl PreparationContext {
+    pub fn new(origins: Vec<String>) -> Self {
         Self {
-            id,
-            machine: machine_id(),
-            at: now(),
-            write,
+            bindings: polylogue_query::Bindings {
+                origins,
+                ..Default::default()
+            },
         }
+    }
+    pub(crate) fn bindings(&self) -> &polylogue_query::Bindings {
+        &self.bindings
     }
 }
 
-pub fn now() -> Timestamp {
-    let ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    Timestamp::from_unix_ns(i128::try_from(ns).unwrap_or(0))
-        .unwrap_or_else(|| Timestamp::from_unix_ms(0).expect("the epoch is a valid timestamp"))
+pub(crate) struct Preparation<'a> {
+    pub context: Option<&'a PreparationContext>,
+    pub pending: Option<&'a dyn crate::primary::Sinex>,
+    pub provisional: Option<&'a mut crate::selection::ProvisionalQueries>,
+    pub owner: Option<polylogue_model::settings::Owner>,
 }
-
-/// `/etc/machine-id`, or `unknown` where there is none.
-pub fn machine_id() -> String {
-    std::fs::read_to_string("/etc/machine-id")
-        .map(|s| s.trim().to_owned())
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".into())
+impl<'a> Preparation<'a> {
+    pub(crate) fn native(
+        context: Option<&'a PreparationContext>,
+        pending: Option<&'a dyn crate::primary::Sinex>,
+    ) -> Self {
+        Self {
+            context,
+            pending,
+            provisional: None,
+            owner: None,
+        }
+    }
+    pub(crate) fn preflight(
+        context: Option<&'a PreparationContext>,
+        pending: Option<&'a dyn crate::primary::Sinex>,
+        owner: polylogue_model::settings::Owner,
+        provisional: &'a mut crate::selection::ProvisionalQueries,
+    ) -> Self {
+        Self {
+            context,
+            pending,
+            provisional: Some(provisional),
+            owner: Some(owner),
+        }
+    }
 }
 
 /// A new UUIDv7 for a request.
@@ -216,74 +73,206 @@ pub fn new_request_id() -> String {
 
 /// Applies one request in `tx`, which the writer commits. `seq` is the
 /// archive's write counter for this transaction.
+#[cfg(test)]
 pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<UserOutcome> {
-    let content = serde_json::to_vec(&r.write.intent())?;
-    let hash = blake3::hash(&content);
-    let seen: Option<Vec<u8>> = tx
-        .query_row(
-            "SELECT content_hash FROM client_request WHERE id = ?1",
-            [&r.id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    match seen {
-        Some(h) if h.as_slice() == hash.as_bytes() => {
-            return Ok(UserOutcome {
-                id: r.id.clone(),
-                repeat: true,
-            });
-        }
-        Some(_) => return Err(StoreError::Conflict(r.id.clone())),
-        None => {}
+    apply_resolving(tx, tx, r, seq, Preparation::native(None, None))
+}
+
+pub(crate) fn apply_resolving(
+    tx: &Transaction<'_>,
+    original: &rusqlite::Connection,
+    r: &UserRequest,
+    seq: i64,
+    preparation: Preparation<'_>,
+) -> Result<UserOutcome> {
+    let source = crate::source::Source::of(tx)?;
+    apply_using(
+        tx,
+        original,
+        r,
+        seq,
+        &|attachment| {
+            Ok(tx
+                .prepare_cached(
+                    &source.sql("SELECT 1 FROM @source.blob WHERE hash=?1 AND size=?2"),
+                )?
+                .exists(params![
+                    &attachment.blob.0[..],
+                    i64::try_from(attachment.size).map_err(|_| StoreError::Invalid(
+                        "attachment size is out of range".into()
+                    ))?
+                ])?)
+        },
+        preparation,
+    )
+}
+
+pub(crate) fn apply_using(
+    tx: &Transaction<'_>,
+    original: &rusqlite::Connection,
+    r: &UserRequest,
+    seq: i64,
+    available: &dyn Fn(&polylogue_model::user::ChatAttachment) -> Result<bool>,
+    preparation: Preparation<'_>,
+) -> Result<UserOutcome> {
+    let source = crate::source::Source::of(tx)?;
+    if let Some(known) = crate::primary::authored::known_request(tx, r)? {
+        let mut outcome = known.outcome;
+        outcome.repeat = true;
+        return Ok(outcome);
     }
+    let hash = crate::primary::authored::request_hash(r)?;
     tx.execute(
-        "INSERT INTO client_request(id, content_hash, created_at, request, commit_seq)
+        &source.sql(
+            "INSERT INTO @source.client_request(id, content_hash, created_at, request, commit_seq)
          VALUES (?1, ?2, ?3, ?4, ?5)",
+        ),
         params![
             r.id,
-            hash.as_bytes().as_slice(),
+            &hash[..],
             r.at.unix_ms(),
             crate::encoding::pack_text(&serde_json::to_string(r)?)?,
             seq
         ],
     )?;
     let at = r.at.unix_ms();
-    match &r.write {
-        UserWrite::AddNote { note } | UserWrite::AnnotateQuery { note, .. } => {
-            add_note(tx, r, note, seq)
+    let owner = preparation.owner.unwrap_or({
+        if matches!(source, crate::source::Source::Cache) {
+            polylogue_model::settings::Owner::Primary
+        } else {
+            polylogue_model::settings::Owner::Standalone
         }
-        UserWrite::SaveQuery { note } => {
-            if note.kind != NoteKind::SavedQuery {
-                return Err(StoreError::Invalid("save needs a saved query note".into()));
-            }
-            add_note(tx, r, note, seq)
+    });
+    let hash = |reference: &polylogue_model::Reference| match reference {
+        polylogue_model::Reference::Session(_)
+        | polylogue_model::Reference::Message(_)
+        | polylogue_model::Reference::Block { .. }
+        | polylogue_model::Reference::Document(_)
+        | polylogue_model::Reference::MessageRange { .. }
+        | polylogue_model::Reference::Span { .. }
+        | polylogue_model::Reference::Assertion(_)
+        | polylogue_model::Reference::Variant { .. } => Ok(
+            match crate::reference::link_hash(original, tx, reference)? {
+                crate::reference::LinkHash::Text(hash) => Some(hash),
+                crate::reference::LinkHash::Missing | crate::reference::LinkHash::NotApplicable => {
+                    None
+                }
+            },
+        ),
+        _ => Ok(None),
+    };
+    let quote = |reference: &polylogue_model::Reference| {
+        crate::reference::link_quote(original, tx, reference)
+    };
+    let mut saved = crate::assertions::SavedPreparation::new(original, tx, r, preparation);
+    let mut resolve_saved = |input: crate::assertions::SavedInput<'_>| saved.resolve(input);
+    let context = crate::assertions::WriteContext {
+        request: r,
+        counter: seq,
+        hash: &hash,
+        quote: &quote,
+        owner,
+    };
+    let outcome = match &r.write {
+        UserWrite::Assert { assertions } => {
+            crate::assertions::write_preparing(tx, assertions, context, &mut resolve_saved)
         }
-        UserWrite::Withdraw {
-            note,
-            author,
-            reason,
+        UserWrite::AssertQuery {
+            assertion,
+            resolved,
+            ..
         } => {
-            let first_note = first_note_of(tx, note)?;
-            tx.execute(
-                "INSERT INTO note(id, first_note, kind, value, author, machine, created_at, commit_seq)
-                 VALUES (?1, ?1, 'withdrawal', ?2, ?3, ?4, ?5, ?6)",
-                params![r.id, reason, author.to_string(), r.machine, at, seq],
-            )?;
-            tx.execute(
-                "INSERT INTO note_relation(note_id, kind, other) VALUES (?1, 'withdraws', ?2)",
-                params![r.id, format!("note:{first_note}")],
-            )?;
-            Ok(UserOutcome {
-                id: r.id.clone(),
-                repeat: false,
-            })
+            use polylogue_model::assertion::{LinkRole, NewAssertionLink};
+            if resolved.is_empty()
+                || assertion
+                    .links
+                    .iter()
+                    .any(|link| link.role == LinkRole::About)
+            {
+                return Err(StoreError::Invalid("a query assertion needs resolved targets and cannot supply its own about links".into()));
+            }
+            // One deliberate write of a single-valued mark revises it; a bulk
+            // write over several rows never does. Systematic labelling goes
+            // through a rubric field, whose slot includes its author.
+            if assertion.kind.spec().single_valued_mark() && resolved.len() > 1 {
+                return Err(StoreError::Invalid(format!(
+                    "single_valued_bulk: `{}` holds one value per target and is not written over {} rows; label rows with a rubric field (annotation) instead",
+                    assertion.kind.as_str(),
+                    resolved.len()
+                )));
+            }
+            let mut targets = std::collections::BTreeSet::new();
+            let mut statements = Vec::with_capacity(resolved.len());
+            for reference in resolved {
+                if !targets.insert(reference) {
+                    return Err(StoreError::Invalid(
+                        "a query assertion contains duplicate resolved targets".into(),
+                    ));
+                }
+                let mut statement = assertion.clone();
+                statement.links.push(NewAssertionLink {
+                    role: LinkRole::About,
+                    reference: reference.clone(),
+                });
+                statements.push(statement);
+            }
+            crate::assertions::write_preparing(tx, &statements, context, &mut resolve_saved)
+        }
+        UserWrite::ReviseAssertions { bases, patch } => {
+            crate::assertions::revise_preparing(tx, bases, patch, context, &mut resolve_saved)
+        }
+        UserWrite::WithdrawAssertions { targets, reason } => {
+            use polylogue_model::assertion::{
+                AssertionKind, LinkRole, NewAssertion, NewAssertionLink,
+            };
+            let statement = NewAssertion {
+                kind: AssertionKind::Withdrawal,
+                key: None,
+                value: reason
+                    .as_ref()
+                    .map(|reason| serde_json::Value::String(reason.clone())),
+                valid_until: None,
+                links: targets
+                    .iter()
+                    .map(|reference| NewAssertionLink {
+                        role: LinkRole::Withdraws,
+                        reference: reference.clone(),
+                    })
+                    .collect(),
+            };
+            crate::assertions::write_preparing(tx, &[statement], context, &mut resolve_saved)
+        }
+        UserWrite::SignalCommit(commit) => crate::signals::write(tx, r, commit, seq),
+        UserWrite::Variant { variant } => crate::variants::write(tx, r, variant, seq),
+        UserWrite::SaveQuery {
+            name,
+            text,
+            denominator,
+        } => {
+            if !polylogue_model::assertion::policy::sayable_query_name(name) {
+                return Err(StoreError::Invalid(format!(
+                    "{name:?} cannot follow `query:`; use letters, digits, `_`, `-` and `.`"
+                )));
+            }
+            let value = resolve_saved(crate::assertions::SavedInput::Native {
+                text,
+                denominator: denominator.as_deref(),
+            })?;
+            let statement = polylogue_model::assertion::NewAssertion {
+                kind: polylogue_model::assertion::AssertionKind::SavedQuery,
+                key: Some(name.clone()),
+                value: Some(serde_json::to_value(value)?),
+                valid_until: None,
+                links: Vec::new(),
+            };
+            crate::assertions::write_preparing(tx, &[statement], context, &mut resolve_saved)
         }
         UserWrite::Deliver(d) | UserWrite::DeliveredAdvice(d) => {
             let body = crate::encoding::pack_text(&d.text)?;
             tx.execute(
-                "INSERT INTO delivery(id, recipient_kind, recipient_id, sender, event, cwd, at,
+                &source.sql("INSERT INTO @source.delivery(id, recipient_kind, recipient_id, sender, event, cwd, at,
                      content_hash, bytes, body, refs_json, left_out_json, commit_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"),
                 params![
                     r.id,
                     d.recipient_kind,
@@ -301,10 +290,11 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                 ],
             )?;
             if matches!(r.write, UserWrite::DeliveredAdvice(_)) {
-                tx.execute("INSERT INTO delivery_event(delivery, what, at, detail, commit_seq) VALUES (?1, 'delivered', ?2, ?3, ?4)",
-                    params![r.id, at, "written to the harness hook output", seq])?;
+                tx.execute(&source.sql("INSERT INTO @source.delivery_event(delivery, what, at, detail, request, commit_seq) VALUES (?1, 'delivered', ?2, ?3, ?4, ?5)"),
+                    params![r.id, at, "written to the harness hook output", r.id, seq])?;
             }
             Ok(UserOutcome {
+                pending: false,
                 id: r.id.clone(),
                 repeat: false,
             })
@@ -315,17 +305,18 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             detail,
         } => {
             let known: bool = tx
-                .prepare_cached("SELECT 1 FROM delivery WHERE id = ?1")?
+                .prepare_cached(&source.sql("SELECT 1 FROM @source.delivery WHERE id = ?1"))?
                 .exists([delivery])?;
             if !known {
                 return Err(StoreError::NotFound(format!("delivery {delivery}")));
             }
             tx.execute(
-                "INSERT OR IGNORE INTO delivery_event(delivery, what, at, detail, commit_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![delivery, what.as_str(), at, detail, seq],
+                &source.sql("INSERT OR IGNORE INTO @source.delivery_event(delivery, what, at, detail, request, commit_seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)"),
+                params![delivery, what.as_str(), at, detail, r.id, seq],
             )?;
             Ok(UserOutcome {
+                pending: false,
                 id: delivery.clone(),
                 repeat: false,
             })
@@ -336,25 +327,34 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             rows_json,
             read_at,
         } => {
-            tx.execute(
-                "INSERT INTO kept_result(id, name, query, ran_at, read_at, rows_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![r.id, name, query, at, read_at, rows_json],
+            crate::primary::authored::insert_kept(
+                tx,
+                &polylogue_model::authored::KeptResult {
+                    id: r.id.clone(),
+                    name: name.clone(),
+                    query: query.clone(),
+                    ran_at: r.at,
+                    read_at: read_at.clone(),
+                    rows_json: rows_json.clone(),
+                },
             )?;
             Ok(UserOutcome {
+                pending: false,
                 id: r.id.clone(),
                 repeat: false,
             })
         }
         UserWrite::ChatEnqueue(new) => {
-            let id = crate::chat_actions::enqueue(tx, new, at, seq)?;
+            let id = crate::chat_actions::enqueue(tx, new, at, seq, &r.id, available)?;
             Ok(UserOutcome {
+                pending: false,
                 repeat: id != new.id,
                 id,
             })
         }
         UserWrite::ChatClaim { by } => Ok(UserOutcome {
-            id: crate::chat_actions::claim(tx, by, at, seq)?,
+            pending: false,
+            id: crate::chat_actions::claim(tx, by, at, seq, &r.id)?,
             repeat: false,
         }),
         UserWrite::ChatReport {
@@ -375,8 +375,10 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                 receipt.as_ref(),
                 at,
                 seq,
+                &r.id,
             )?;
             Ok(UserOutcome {
+                pending: false,
                 id: action.clone(),
                 repeat: false,
             })
@@ -387,33 +389,38 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             by,
             detail,
         } => {
-            crate::chat_actions::decide(tx, action, *approve, by, detail.as_deref(), at, seq)?;
+            crate::chat_actions::decide(tx, action, *approve, by, detail.as_deref(), seq, r)?;
             Ok(UserOutcome {
+                pending: false,
                 id: action.clone(),
                 repeat: false,
             })
         }
         UserWrite::BackfillStart(new) => {
-            let id = crate::backfill_jobs::start(tx, new, at, seq)?;
+            let id = crate::backfill_jobs::start(tx, new, at, seq, &r.id)?;
             Ok(UserOutcome {
+                pending: false,
                 repeat: id != new.id,
                 id,
             })
         }
         UserWrite::BackfillClaim { by } => Ok(UserOutcome {
-            id: crate::backfill_jobs::claim(tx, by, at, seq)?,
+            pending: false,
+            id: crate::backfill_jobs::claim(tx, by, at, seq, &r.id)?,
             repeat: false,
         }),
         UserWrite::BackfillReport { job, by, report } => {
-            crate::backfill_jobs::report(tx, job, by, report, at, seq)?;
+            crate::backfill_jobs::report(tx, job, by, report, at, seq, &r.id)?;
             Ok(UserOutcome {
+                pending: false,
                 id: job.clone(),
                 repeat: false,
             })
         }
         UserWrite::BackfillCancel { job } => {
-            crate::backfill_jobs::cancel(tx, job, at, seq)?;
+            crate::backfill_jobs::cancel(tx, job, at, seq, &r.id)?;
             Ok(UserOutcome {
+                pending: false,
                 id: job.clone(),
                 repeat: false,
             })
@@ -421,109 +428,35 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
         UserWrite::SetSetting {
             key,
             value,
-            author,
             machine,
         } => {
-            tx.execute(
-                "INSERT INTO setting(id, machine, key, value, author, set_at, commit_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    r.id,
-                    machine.as_deref().unwrap_or("*"),
-                    key,
-                    value,
-                    author.to_string(),
-                    at,
-                    seq
-                ],
-            )?;
-            Ok(UserOutcome {
-                id: r.id.clone(),
-                repeat: false,
-            })
+            let value = polylogue_model::settings::parse(key, value, owner)
+                .map_err(|error| StoreError::Invalid(error.to_string()))?;
+            let statement = polylogue_model::assertion::NewAssertion {
+                kind: polylogue_model::assertion::AssertionKind::Setting,
+                key: Some(key.clone()),
+                value: Some(serde_json::to_value(
+                    polylogue_model::assertion::values::Setting {
+                        machine: machine.clone(),
+                        value,
+                    },
+                )?),
+                valid_until: None,
+                links: Vec::new(),
+            };
+            crate::assertions::write_preparing(tx, &[statement], context, &mut resolve_saved)
         }
-    }
-}
-
-/// The first note of the note a request adds or withdraws, once applied in
-/// `tx`.
-pub(crate) fn first_note_of_request(
-    tx: &Transaction<'_>,
-    r: &UserRequest,
-) -> Result<Option<String>> {
-    match &r.write {
-        UserWrite::AddNote { .. }
-        | UserWrite::SaveQuery { .. }
-        | UserWrite::AnnotateQuery { .. } => first_note_of(tx, &r.id).map(Some),
-        UserWrite::Withdraw { note, .. } => first_note_of(tx, note).map(Some),
-        _ => Ok(None),
-    }
-}
-
-fn first_note_of(tx: &Transaction<'_>, note: &str) -> Result<String> {
-    tx.query_row("SELECT first_note FROM note WHERE id = ?1", [note], |r| {
-        r.get(0)
-    })
-    .optional()?
-    .ok_or_else(|| StoreError::NotFound(format!("note {note}")))
-}
-
-fn add_note(
-    tx: &Transaction<'_>,
-    r: &UserRequest,
-    note: &NewNote,
-    seq: i64,
-) -> Result<UserOutcome> {
-    // A saved query or a signal rule is a definition, about nothing in
-    // particular; every other note is about something.
-    let definition = matches!(note.kind, NoteKind::SavedQuery | NoteKind::Signal);
-    if note.targets.is_empty() && !definition {
-        return Err(StoreError::Invalid(
-            "a note needs at least one target".into(),
-        ));
-    }
-    let first_note = match &note.revises {
-        Some(prev) => first_note_of(tx, prev)?,
-        None => r.id.clone(),
-    };
+    }?;
+    let effect = crate::primary::authored::capture(tx, r, seq)?;
     tx.execute(
-        "INSERT INTO note(id, first_note, kind, key, value, author, machine, created_at, valid_until, commit_seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        &source.sql("UPDATE @source.client_request SET outcome=?2,effect=?3 WHERE id=?1"),
         params![
             r.id,
-            first_note,
-            note.kind.as_str(),
-            note.key,
-            note.value,
-            note.author.to_string(),
-            r.machine,
-            r.at.unix_ms(),
-            note.valid_until.map(Timestamp::unix_ms),
-            seq,
+            crate::primary::authored::pack(&outcome)?,
+            crate::primary::authored::pack(&effect)?
         ],
     )?;
-    for target in &note.targets {
-        tx.execute(
-            "INSERT OR IGNORE INTO note_target(note_id, ref) VALUES (?1, ?2)",
-            params![r.id, target.to_string()],
-        )?;
-    }
-    if let Some(prev) = &note.revises {
-        tx.execute(
-            "INSERT INTO note_relation(note_id, kind, other) VALUES (?1, 'revises', ?2)",
-            params![r.id, format!("note:{prev}")],
-        )?;
-    }
-    for (relation, other) in &note.relations {
-        tx.execute(
-            "INSERT OR IGNORE INTO note_relation(note_id, kind, other) VALUES (?1, ?2, ?3)",
-            params![r.id, relation.as_str(), other],
-        )?;
-    }
-    Ok(UserOutcome {
-        id: r.id.clone(),
-        repeat: false,
-    })
+    Ok(outcome)
 }
 
 #[cfg(test)]

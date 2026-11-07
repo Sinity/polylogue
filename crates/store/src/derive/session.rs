@@ -29,7 +29,7 @@ use std::cmp::Ordering;
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "session",
     products: &[],
-    version: Version::Rules(4),
+    version: Version::Rules(6),
     after: &[],
     run: |tx, pk, _| run(tx, pk),
     finish: None,
@@ -57,6 +57,14 @@ fn later(a: Option<i64>, b: Option<i64>) -> Ordering {
 }
 
 fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
+    let reset: bool = tx.query_row(
+        "SELECT live_reparse FROM session WHERE pk=?1",
+        [session_pk],
+        |r| r.get(0),
+    )?;
+    if reset {
+        reset_live(tx, session_pk)?;
+    }
     tx.execute("UPDATE session SET last_activity_at=(SELECT max(at) FROM message WHERE session_pk=?1) WHERE pk=?1",[session_pk])?;
     let mut statement = tx.prepare_cached(
         "SELECT r.input_pk,r.facts,
@@ -91,7 +99,20 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     drop(rows);
     drop(statement);
     if inputs.is_empty() {
-        // Named only by events so far: a stub keeps its placeholder row.
+        if !reset {
+            return Ok(());
+        }
+        let id: String = tx.query_row("SELECT id FROM session WHERE pk=?1", [session_pk], |r| {
+            r.get(0)
+        })?;
+        let id = polylogue_model::SessionId::parse(&id)
+            .map_err(|e| crate::StoreError::Invalid(format!("session id: {e}")))?;
+        crate::session_row::write(
+            tx,
+            session_pk,
+            &Session::new(id, polylogue_model::SessionKind::Main),
+        )?;
+        tx.execute("UPDATE session SET stub=1 WHERE pk=?1", [session_pk])?;
         return Ok(());
     }
     // A fixed order for every later choice: time, then content.
@@ -104,6 +125,13 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     crate::session_row::write(tx, session_pk, &merged)?;
     tx.execute("UPDATE session SET stub = 0 WHERE pk = ?1", [session_pk])?;
     Ok(())
+}
+
+fn reset_live(tx: &Transaction<'_>, pk: i64) -> Result<()> {
+    let counter: i64 = tx.query_row("SELECT changed FROM session WHERE pk=?1", [pk], |r| {
+        r.get(0)
+    })?;
+    crate::live::refold(tx, pk, counter)
 }
 
 /// The session's facts from every input, `inputs` sorted by time then
@@ -137,10 +165,22 @@ fn merge(inputs: &[Input]) -> Session {
             .map(|(v, _)| v.clone())
     };
     s.git_branch = latest(|f| &f.git_branch);
+    s.git_commit = latest(|f| &f.git_commit);
+    s.model_provider = latest(|f| &f.model_provider);
+    s.instructions = latest(|f| &f.instructions);
     s.tool_version = latest(|f| &f.tool_version);
     s.mode = latest(|f| &f.mode);
     s.repo = latest(|f| &f.repo);
-    s.started = inputs.iter().filter_map(|i| i.facts.started).min();
+    if let Some(input) = inputs
+        .iter()
+        .filter(|i| i.facts.started.is_some())
+        .min_by_key(|i| i.facts.started)
+    {
+        s.started = input.facts.started;
+        s.started_quality = input.facts.started_quality;
+        s.started_precision = input.facts.started_precision;
+        s.started_until = input.facts.started_until;
+    }
     s
 }
 

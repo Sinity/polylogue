@@ -17,6 +17,22 @@
     "blobs": [],
     "events": [
       {
+        "session": "codex:tool-call-session-1",
+        "kind": "session_meta",
+        "at": "2025-01-15T11:00:00Z",
+        "range": [
+          0,
+          125
+        ],
+        "data": {
+          "id": "tool-call-session-1",
+          "timestamp": "2025-01-15T11:00:00Z",
+          "instructions": "Use tools."
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "second"
+      },
+      {
         "data": {
           "input_tokens": 42,
           "output_tokens": 18,
@@ -27,12 +43,14 @@
           802,
           896
         ],
-        "session": "codex:tool-call-session-1"
+        "session": "codex:tool-call-session-1",
+        "at_quality": "unknown"
       },
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:tool-call-session-1"
+        "session": "codex:tool-call-session-1",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -50,7 +68,9 @@
           "id": "codex:msg-user-1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "codex:tool-call-session-1"
+          "session": "codex:tool-call-session-1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 126
       },
@@ -74,7 +94,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:tool-call-session-1"
+          "session": "codex:tool-call-session-1",
+          "at_quality": "unknown"
         },
         "offset": 314
       },
@@ -95,7 +116,8 @@
           "id": "codex:tool-call-session-1@466",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:tool-call-session-1"
+          "session": "codex:tool-call-session-1",
+          "at_quality": "unknown"
         },
         "offset": 466
       },
@@ -114,7 +136,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:tool-call-session-1"
+          "session": "codex:tool-call-session-1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 586
       }
@@ -123,7 +147,10 @@
       {
         "id": "codex:tool-call-session-1",
         "kind": "main",
-        "started": "2025-01-15T11:00:00Z"
+        "started": "2025-01-15T11:00:00Z",
+        "instructions": "Use tools.",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

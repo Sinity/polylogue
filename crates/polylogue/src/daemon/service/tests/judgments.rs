@@ -1,28 +1,51 @@
 use super::*;
-use polylogue_model::{Author, NewNote, NoteKind, Target};
+use polylogue_model::{Author, Reference};
 
 fn ok(d: &test_daemon::TestDaemon, request: Request) -> serde_json::Value {
-    match handle(request, &d.daemon) {
-        Response::Ok { data, .. } => data,
-        other => panic!("{other:?}"),
-    }
+    ok_as(d, request, Author::Operator)
 }
 
-fn note(author: Author, targets: Vec<Target>, body: &str) -> NewNote {
-    NewNote {
-        kind: NoteKind::Lesson,
+fn ok_as(d: &test_daemon::TestDaemon, request: Request, author: Author) -> serde_json::Value {
+    crate::test_answers::ok(send_as(d, request, author))
+}
+
+fn send_as(
+    d: &test_daemon::TestDaemon,
+    request: Request,
+    author: Author,
+) -> command_surface::Answer<serde_json::Value> {
+    let limit = crate::daemon::execution::limit(None, Default::default());
+    handle_with_caller(
+        request,
+        &d.daemon,
+        &limit,
+        &polylogue_model::authorship::Authorship {
+            author,
+            via: polylogue_model::authorship::Channel::Cli,
+        },
+    )
+}
+
+fn assertion(targets: Vec<Reference>, body: &str) -> polylogue_model::assertion::NewAssertion {
+    use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+    NewAssertion {
+        kind: AssertionKind::Lesson,
         key: None,
-        value: Some(body.into()),
-        author,
-        targets,
-        relations: vec![],
-        revises: None,
+        value: Some(serde_json::json!(body)),
         valid_until: None,
+        links: targets
+            .into_iter()
+            .map(|reference| NewAssertionLink {
+                role: LinkRole::About,
+                reference,
+            })
+            .collect(),
     }
 }
 
-fn query(d: &test_daemon::TestDaemon, text: &str) -> serde_json::Value {
-    ok(
+/// A query's whole answer; the caller names the outcome it expects.
+fn query(d: &test_daemon::TestDaemon, text: &str) -> command_surface::Answer<serde_json::Value> {
+    send_as(
         d,
         Request::Query {
             text: text.into(),
@@ -32,48 +55,46 @@ fn query(d: &test_daemon::TestDaemon, text: &str) -> serde_json::Value {
             session: None,
             fields: vec![],
         },
+        Author::Operator,
     )
 }
 
 #[test]
 fn the_operator_accepts_or_rejects_an_agents_note() {
     let d = test_daemon::start("first prompt");
-    let session = Target::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
-    let agent = ok(
+    let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
+    let agent = ok_as(
         &d,
-        Request::AddNote {
+        Request::Assert {
             request_id: "r1".into(),
-            note: note(
-                Author::Agent(None),
-                vec![session.clone()],
-                "use the fast path",
-            ),
+            assertions: vec![assertion(vec![session.clone()], "use the fast path")],
         },
+        Author::Agent(None),
     );
-    let agent_id = agent["id"].as_str().unwrap().to_owned();
+    let agent_id = format!("assertion:{}", agent["id"].as_str().unwrap());
     let own = ok(
         &d,
-        Request::AddNote {
+        Request::Assert {
             request_id: "r2".into(),
-            note: note(Author::Operator, vec![session.clone()], "mine"),
+            assertions: vec![assertion(vec![session.clone()], "keep the operator lesson")],
         },
     );
     assert_eq!(
-        query(&d, "notes where agent:true judged:unknown")["count"],
+        crate::test_answers::ok(query(&d, "assertions where agent:true judged:unknown"))["count"],
         1
     );
     // The operator's own notes are revised or withdrawn, not judged.
     let refused = handle(
         Request::Judge {
             request_id: "r3".into(),
-            note: own["id"].as_str().unwrap().into(),
+            note: format!("assertion:{}", own["id"].as_str().unwrap()),
             accepted: true,
             reason: None,
         },
         &d.daemon,
     );
     assert!(
-        matches!(refused, Response::Error { ref kind, .. } if kind == "bad_request"),
+        matches!(refused, command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("bad_request")),
         "{refused:?}"
     );
     ok(
@@ -85,27 +106,47 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
             reason: Some("checked".into()),
         },
     );
-    assert_eq!(query(&d, "notes where judged:accepted")["count"], 1);
     assert_eq!(
-        query(&d, "notes where agent:true judged:unknown")["count"],
+        crate::test_answers::ok(query(&d, "assertions where judged:accepted"))["count"],
+        1
+    );
+    assert_eq!(
+        crate::test_answers::empty(query(&d, "assertions where agent:true judged:unknown"))["count"],
         0
     );
-    // An accepted note reaches the brief as the operator's own.
+    // The brief carries the operator's assertions and the agent assertions
+    // the operator accepted.
+    let operation = d
+        .daemon
+        .operation_context(&polylogue_model::authorship::Authorship {
+            author: Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        })
+        .unwrap();
     let reader = d.daemon.reads.reader().unwrap();
     let brief = crate::briefing::prepare(
         &reader,
+        &d.daemon.scope,
+        None,
         &crate::briefing::Ask::SessionStart {
             cwd: "/nonexistent/dir".into(),
             session: Some(polylogue_model::SessionId::parse("claude-code:s1").unwrap()),
             source: crate::briefing::StartSource::Startup,
         },
         "d1",
-        polylogue_store::user_writes::now(),
+        &operation,
         None,
+        None,
+        Default::default(),
     )
     .unwrap();
     assert!(brief.text.contains("use the fast path"), "{}", brief.text);
-    assert!(brief.text.contains("(accepted)"), "{}", brief.text);
+    assert!(
+        brief.text.contains("keep the operator lesson"),
+        "{}",
+        brief.text
+    );
+    assert!(!brief.text.contains("Assertions held"), "{}", brief.text);
     drop(reader);
     // A later rejection replaces the acceptance.
     ok(
@@ -117,94 +158,202 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
             reason: None,
         },
     );
-    assert_eq!(query(&d, "notes where judged:rejected")["count"], 1);
-    assert_eq!(query(&d, "notes where judged:accepted")["count"], 0);
+    assert_eq!(
+        crate::test_answers::ok(query(&d, "assertions where judged:rejected"))["count"],
+        1
+    );
+    assert_eq!(
+        crate::test_answers::empty(query(&d, "assertions where judged:accepted"))["count"],
+        0
+    );
 }
 
 #[test]
 fn a_note_applies_to_every_row_of_a_query() {
     let d = test_daemon::start("first prompt");
-    let done = ok(
-        &d,
-        Request::AnnotateQuery {
-            request_id: "r1".into(),
-            query: "messages".into(),
-            note: NewNote {
-                kind: NoteKind::Tag,
-                key: Some("reviewed".into()),
-                ..note(Author::Operator, vec![], "")
-            },
+    let intended = Request::AssertQuery {
+        request_id: "r1".into(),
+        query: "messages".into(),
+        assertion: polylogue_model::assertion::NewAssertion {
+            kind: polylogue_model::assertion::AssertionKind::Tag,
+            key: Some("reviewed".into()),
+            value: None,
+            valid_until: None,
+            links: vec![],
         },
-    );
+    };
+    let done = ok(&d, intended.clone());
     assert_eq!(done["targets"], 1, "{done}");
-    assert_eq!(query(&d, "notes where kind:tag key:reviewed")["count"], 1);
+    let repeated = ok(&d, intended);
+    assert_eq!(repeated["repeat"], true);
+    assert_eq!(repeated["targets"], 1);
+    let stored = d
+        .daemon
+        .reads
+        .reader()
+        .unwrap()
+        .user_request("r1")
+        .unwrap()
+        .unwrap();
+    let UserWrite::AssertQuery { resolved, .. } = stored.write else {
+        panic!("the actual query and selection must remain in the frozen request");
+    };
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        crate::test_answers::ok(query(&d, "assertions where kind:tag key:reviewed"))["count"],
+        1
+    );
     let refused = handle(
-        Request::AnnotateQuery {
+        Request::AssertQuery {
             request_id: "r2".into(),
             query: "sessions where origin:codex".into(),
-            note: note(Author::Operator, vec![], "x"),
+            assertion: assertion(vec![], "x"),
         },
         &d.daemon,
     );
     assert!(
-        matches!(refused, Response::Error { ref kind, .. } if kind == "empty"),
+        matches!(refused, command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("empty")),
         "{refused:?}"
     );
     let refused = handle(
-        Request::AnnotateQuery {
+        Request::AssertQuery {
             request_id: "r3".into(),
-            query: "tool_calls".into(),
-            note: note(Author::Operator, vec![], "x"),
+            query: "sessions | agg count".into(),
+            assertion: assertion(vec![], "x"),
         },
         &d.daemon,
     );
     assert!(
-        matches!(refused, Response::Error { ref kind, .. } if kind == "bad_request"),
+        matches!(refused, command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("bad_request")),
         "{refused:?}"
     );
 }
 
-/// `export user-state` carries the agent's note and the operator's judgment
-/// of it, as the requests that wrote them; only as json.
+/// Frozen history keeps the original authors of the claim and its judgment.
 #[test]
-fn user_state_exports_notes_and_judgments_as_their_requests() {
+fn frozen_history_preserves_the_note_and_judgment_authors() {
     let d = test_daemon::start("first prompt");
-    let session = Target::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
-    let agent = ok(
+    let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
+    let agent = ok_as(
         &d,
-        Request::AddNote {
+        Request::Assert {
             request_id: "r1".into(),
-            note: note(Author::Agent(None), vec![session], "use the fast path"),
+            assertions: vec![assertion(vec![session], "use the fast path")],
         },
+        Author::Agent(None),
     );
     ok(
         &d,
         Request::Judge {
             request_id: "r2".into(),
-            note: agent["id"].as_str().unwrap().into(),
+            note: format!("assertion:{}", agent["id"].as_str().unwrap()),
             accepted: true,
             reason: None,
         },
     );
-    let export = |format: &str| {
-        handle(
-            Request::Export {
-                targets: vec![],
-                format: format.into(),
-                user_state: true,
+    let reader = d.daemon.reads.reader().unwrap();
+    let mut requests = Vec::new();
+    reader
+        .visit_authored(&mut |prepared| {
+            if matches!(prepared.request.id.as_str(), "r1" | "r2") {
+                requests.push(prepared.request.clone());
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.id.as_str())
+            .collect::<Vec<_>>(),
+        ["r1", "r2"]
+    );
+    assert_eq!(requests[0].authorship.author, Author::Agent(None));
+    assert_eq!(requests[1].authorship.author, Author::Operator);
+}
+
+#[test]
+fn a_rejudged_revision_reads_its_latest_operator_judgment_everywhere() {
+    let d = test_daemon::start("first prompt");
+    let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
+    let agent = ok_as(
+        &d,
+        Request::Assert {
+            request_id: "lesson".into(),
+            assertions: vec![assertion(vec![session], "prefer the short path")],
+        },
+        Author::Agent(None),
+    );
+    let target = format!("assertion:{}", agent["id"].as_str().unwrap());
+    for (request_id, accepted) in [("j1", true), ("j2", false), ("j3", true)] {
+        ok(
+            &d,
+            Request::Judge {
+                request_id: request_id.into(),
+                note: target.clone(),
+                accepted,
+                reason: None,
             },
-            &d.daemon,
-        )
-    };
-    let Response::Ok { data, .. } = export("json") else {
-        panic!("export failed");
-    };
-    let document = polylogue_model::export::Document::from_json(&data.to_string()).unwrap();
-    let requests: Vec<&str> = document
-        .user_state
-        .iter()
-        .map(|entry| entry["request"]["id"].as_str().unwrap())
-        .collect();
-    assert_eq!(requests, ["r1", "r2"]);
-    assert!(matches!(export("markdown"), Response::Error { .. }));
+        );
+    }
+    assert_eq!(
+        crate::test_answers::ok(query(&d, "assertions where judged:accepted"))["count"],
+        1
+    );
+    assert_eq!(
+        crate::test_answers::empty(query(&d, "assertions where judged:rejected"))["count"],
+        0
+    );
+    assert_eq!(
+        crate::test_answers::empty(query(&d, "assertions where agent:true judged:unknown"))["count"],
+        0
+    );
+    let grouped = crate::test_answers::ok(query(
+        &d,
+        "assertions where agent:true | group by judged | count",
+    ));
+    assert_eq!(grouped["rows"][0]["judged"], "accepted", "{grouped}");
+    assert_eq!(grouped["rows"][0]["count"], 1, "{grouped}");
+}
+
+#[test]
+fn changes_select_assertions_by_their_kind() {
+    let d = test_daemon::start("first prompt");
+    let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
+    ok(
+        &d,
+        Request::Assert {
+            request_id: "lesson".into(),
+            assertions: vec![assertion(vec![session], "a lesson")],
+        },
+    );
+    let lessons = crate::test_answers::ok(query(&d, "changes where assertion_kind:lesson"));
+    assert_eq!(lessons["count"], 1, "{lessons}");
+    assert_eq!(lessons["rows"][0]["kind"], "assertion", "{lessons}");
+    assert_eq!(lessons["rows"][0]["assertion_kind"], "lesson", "{lessons}");
+    assert_eq!(
+        crate::test_answers::empty(query(&d, "changes where assertion_kind:tag"))["count"],
+        0
+    );
+}
+
+#[test]
+fn a_structured_value_matches_by_its_text() {
+    let d = test_daemon::start("first prompt");
+    let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
+    ok(
+        &d,
+        Request::Assert {
+            request_id: "lesson".into(),
+            assertions: vec![assertion(vec![session], "use the fast path")],
+        },
+    );
+    assert_eq!(
+        crate::test_answers::ok(query(&d, "assertions where value:\"use the fast path\""))["count"],
+        1
+    );
+    assert_eq!(
+        crate::test_answers::ok(query(&d, "assertions where value:\"the fast\""))["count"],
+        1
+    );
 }

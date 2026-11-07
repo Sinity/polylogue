@@ -23,7 +23,12 @@ const FORMATTED: &[&str] = &[
 /// The feature set default test builds use, with the Sinex client excluded.
 /// `test`, `scenarios` and `check` reuse these feature-enabled artifacts.
 /// Native package selection limits which test targets Cargo builds.
-const TEST_FEATURES: &str = "polylogue-engine/faults,polylogue-store/faults";
+/// `polylogue-store/fixture` is named although the engine and the daemon
+/// already enable it as a dev-dependency feature, so a selection without them
+/// (`-p polylogue-store`) builds the same store artifact as every other test
+/// build, and the crates above it are not compiled a second time.
+const TEST_FEATURES: &str =
+    "polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture";
 
 #[derive(Parser)]
 #[command(name = "xtask", about = "Polylogue development checks")]
@@ -59,14 +64,14 @@ enum Cli {
     Boundaries,
     /// Offline schema commands from the application's command table.
     Schema {
-        /// The Polylogue binary to run, built by the normal compile operation.
-        #[arg(long, default_value = "target/debug/polylogue")]
-        binary: std::path::PathBuf,
+        /// The Polylogue binary to run, built by the normal compile operation;
+        /// by default `debug/polylogue` in Cargo's target directory.
+        #[arg(long)]
+        binary: Option<std::path::PathBuf>,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Corpus builds and native interactive read measurements.
-    #[command(subcommand)]
     Bench(bench::Bench),
     /// Build against a local checkout of polylogue-sinex-common instead of
     /// the commit Cargo.lock pins.
@@ -86,9 +91,8 @@ enum Cli {
 fn allowed_dependencies(package: &str) -> Option<&'static [&'static str]> {
     Some(match package {
         "polylogue-model" | "xtask" => &[],
-        "polylogue-sources" | "polylogue-query" | "polylogue-store" | "polylogue-render" => {
-            &["polylogue-model"]
-        }
+        "polylogue-sources" | "polylogue-query" | "polylogue-render" => &["polylogue-model"],
+        "polylogue-store" => &["polylogue-model", "polylogue-query"],
         "polylogue-engine" => &["polylogue-model", "polylogue-sources", "polylogue-store"],
         // Test archives: built through the engine, read through the store.
         "polylogue-testkit" => &["polylogue-model", "polylogue-store", "polylogue-engine"],
@@ -254,7 +258,8 @@ fn sinex_client_arguments() -> Vec<String> {
         "-p",
         "polylogue",
         "--features",
-        "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults",
+        "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture",
+        "--tests",
     ]
     .map(String::from)
     .to_vec()
@@ -287,6 +292,20 @@ fn nextest(args: Vec<String>) -> Nextest {
     }
 }
 
+fn selects_test_targets(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--lib" | "--bins" | "--tests" | "--examples" | "--benches" | "--all-targets" | "--doc"
+    ) || ["--bin", "--test", "--example", "--bench"]
+        .iter()
+        .any(|flag| {
+            arg == *flag
+                || arg
+                    .strip_prefix(*flag)
+                    .is_some_and(|rest| rest.starts_with('='))
+        })
+}
+
 /// Native Cargo package selection with nextest filters intersected with
 /// `required` (a changed-package selection, or the scenarios' own).
 /// Feature flags are refused so each mode keeps its fault-enabled build.
@@ -296,6 +315,10 @@ fn test_arguments(
     required: Option<String>,
     mut sinex: bool,
 ) -> Result<Vec<String>, String> {
+    let explicit_targets = args
+        .iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .any(|arg| selects_test_targets(arg));
     let mut packages = Vec::new();
     let mut workspace = false;
     let mut filtersets = Vec::new();
@@ -413,6 +436,9 @@ fn test_arguments(
                 .join(" & "),
         );
     }
+    if !explicit_targets {
+        arguments.push("--tests".into());
+    }
     arguments.extend(rest);
     Ok(arguments)
 }
@@ -507,6 +533,11 @@ fn main() -> ExitCode {
             })
         }
         Cli::Schema { binary, args } => {
+            let binary = binary.unwrap_or_else(|| {
+                std::env::var_os("CARGO_TARGET_DIR")
+                    .map_or_else(|| "target".into(), std::path::PathBuf::from)
+                    .join("debug/polylogue")
+            });
             match std::process::Command::new(binary)
                 .arg("schema")
                 .args(args)

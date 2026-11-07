@@ -6,7 +6,10 @@ The generic mechanics (the `Operation` trait, the failure-to-exit-and-HTTP table
 
 ## Command table
 
-- **One typed operation table** drives every surface. Each row declares the operation's arguments, answer type, latency class, failure kinds, one-sentence help, its reason for existing ([below](#discipline)) and one to four examples on the Morrow archive. The CLI, socket, HTTP and MCP (with `outputSchema`) are generated from it; a new operation is a row, not code on each surface.
+- **One typed operation table** drives every surface. Each row declares the operation's arguments, answer type, latency class, failure kinds, one-sentence help, its reason for existing ([below](#discipline)) and one to four examples on the Morrow archive. The CLI, socket, HTTP and MCP are generated from it; a new operation is a row, not code on each surface.
+- **Ready calls are complete requests.** The CLI form of a row is its command words, with `--request JSON` for a complete argument object (not mixed with operation flags), `--request-id ID` and `--deadline MS|none`; `find` is the explicit query form. MCP groups the rows into five tools ([agents.md](agents.md#mcp-server)), and a call takes `{operation, arguments, request_id, deadline}`, `operation` being the row's command name. HTTP takes `{operation, arguments, request_id, deadline}` on the row's route; GET encodes `arguments` and `deadline` as JSON query values. Named context operations also take optional envelope `budget_tokens` (`--budget N`), as described in [Budgets](agents.md#budgets). Every surface checks the same typed arguments. On the read route, `Accept: text/html` renders the same typed page and its ready calls.
+- **Finite transfers use the shared server-sent-event framing** on the socket and HTTP: a begin event, record events and a completion event from one read. A failure before HTTP headers uses the shared failure status; a later failure ends with an error event and no completion. A client writes a directory bundle into place, and `changes` advances its saved position, only after the completion event.
+- **Access belongs to the request.** The declared operation determines access from its typed arguments. MCP tool-family hints describe the family; the same operation and arguments have the same access on every surface.
 - **Answers are typed** and rendered from their types ([reading.md](reading.md)); each has one terminal printer and one JSON form, and no surface has features the others cannot reach.
 - **The daemon is required.** The command line is a thin client: it never opens archive files, and the daemon is the only writer. Ruling, 2026-10-27: "the CLI is supposed to be thin client for the daemon, which is supposed to have advanced caching, indexing whatnot to enalbe the CLI to be snappy" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:dad489d4-a1b8-48bd-bbc0-26262f34b262). Ruling, 2026-09-14: "there is no requirement or need for CLI to ever work 'standalone'. Daemon is the standard, not some sort of optional addon" (cc:652ae14f-a036-496b-abfa-42e7574c9ec9:b8a68d64-772f-4d8c-8e95-435ce601d245). Ruling, 2026-05-03: "we do not do non-daemonic writes" (cc-queued:d227b344-a871-4be1-bdf0-30c59ff1db7d@2026-05-03T18:55).
 - **No refusal depends on who the caller is.** No act is refused because the caller is an agent or has no terminal; the only terminal-dependent behaviours are the picker-based ones, and each names its non-interactive form ([Picker](#picker)).
@@ -61,7 +64,7 @@ Verbs act on a query's rows.
 | `save NAME` | label the query's hash with a name | [query.md](query.md#query-objects) |
 | `watch` | write a watch rule over the query | [query.md](query.md#watches) |
 | `pack [NAME]` | build a pack under a budget and record a delivery | [agents.md](agents.md#packs) |
-| `ping TEXT`, `send TEXT`, `approve`, `deny`, `interrupt`, `resume` | address a session, or act on a live one through its harness | [agents.md](agents.md#live-sessions) |
+| `ping TEXT [--live]`, `answer approve\|deny [--standing]`, `interrupt`, `continue` | address a session, or act on a live one through its harness; `send` is `ping --live` | [agents.md](agents.md#live-session-control) |
 | `pick` | open the picker over the rows and print the chosen references, one per line | [below](#picker) |
 | `compare DIMENSION` | a comparison of the matched references | [assertions.md](assertions.md#judgment) |
 | `variant` | write a variant of a reference | [assertions.md](assertions.md#variants) |
@@ -83,14 +86,16 @@ Commands are not about a query's rows.
 | `next` | the following page of the last list here ([Addressing](#addressing)) |
 | `web [PATH]` | opens the workbench at a view that is not a reference |
 | `auth drive` | a credential flow, not rows |
-| `daemon [--until-idle] [--json]`, `mcp`, `hook EVENT`, `hooks print\|status`, `install-agent HARNESS [--remove]`, `browser-host`, `completions SHELL`, `demo` | local process entry points and installers ([operations.md](operations.md#installing-into-harnesses)) |
+| `daemon [--until-idle] [--no-sources] [--json]`, `mcp`, `hook EVENT`, `hooks print\|status`, `install-agent HARNESS [--remove]`, `browser-host`, `completions SHELL`, `demo` | local process entry points and installers ([operations.md](operations.md#installing-into-harnesses)) |
 | `schema infer\|unread` | daemon requests over stored inputs ([archive.md](archive.md#format-drift)) |
-| `verify` | the on-demand read-only check ([operations.md](operations.md)) |
+| `verify [--manifest FILE]` | the on-demand read-only check ([operations.md](operations.md#verification)) |
 | `sinex cutover` | the one mode transition ([primary-mode.md](primary-mode.md#cutover)) |
 
 ## Latency classes
 
 Each table row declares a latency class, and the class applies on every surface (CLI, MCP, HTTP, web). Budgets are end to end (process start to the last byte of the first screen, through the real binary and socket), with a warm daemon and a real-shaped archive under ordinary load, at p95. The deadline each request carries comes from its class, in the `command-surface` request envelope.
+
+An MCP `_meta.deadline_ms` absolute bound travels separately from the unchanged shared request as native transport `parent_deadline_ms`; the daemon intersects it with the operation lifetime. An HTTP `x-polylogue-deadline-ms` header bounds the whole request; a stream ends at the earlier of that bound and its operation's deadline, and without the header a `null` deadline has no limit. A request already past its bound starts no new write; a write the writer has accepted keeps its effects and acknowledgement.
 
 | Class | Members | Budget (p95) | Deadline sent |
 |---|---|---|---|
@@ -102,6 +107,8 @@ Each table row declares a latency class, and the class applies on every surface 
 | **aggregate** | `group by`, `| measure`, `| agg`, facet counts, `explain QUERY` with clause counts | ≤ 400 ms | 400 ms |
 
 Ruling, 2026-05-12: "I expect invocation of something so trivial as help to be IDK 100ms … querying also should be subsecond" (cc-queued:64f29439-f42d-4128-88d5-1bc327cfdbf4@2026-05-12T01:49). A missed budget is a defect in the code, not a reason to relax the number. Budgets are measured as paired benchmark runs ([testing.md](testing.md#benchmarks)); no test asserts elapsed time.
+
+Pure writes, including imports, await their durable result without a read deadline. Mixed operations retain deadlines for their read preparation; classification follows the admitted arguments, so reading a setting remains bounded while writing it keeps its result. The HTTP admission header above still applies.
 
 **Deadlines are interactive defaults.** The CLI's socket timeout is the deadline plus 50 ms, so a hung daemon never hangs a shell. Any caller lifts a deadline (`--deadline MS`, `--deadline none`; `deadline: null` over MCP and HTTP); deadline behaviour and cancellation are in [query.md](query.md#deadlines). A timed-out aggregate prints the narrower query the planner can serve and the same query with the deadline lifted:
 
@@ -143,7 +150,7 @@ The daemon keeps derived state warm so the classes hold. Each item is keyed by w
 
 Completion is advanced and works with the daemon down. Ruling, 2026-05-01: "CLI in particular _CERTAINLY_ requires advanced autocomplete, otherwise it is going to be ~pointless. Ideally that includes integrated fuzzyfinding somehow" (chatgpt:69f4b473-d540-83eb-b0ad-ad26c9ea32b1:06788182-5f1d-4763-9ee8-139dad3aed1e). Ruling, 2026-09-14, on completion with the daemon down: "yes. everything is supposed to be usable." (cc:652ae14f-a036-496b-abfa-42e7574c9ec9:473cc86c-de9a-40aa-bd32-30659f66bd71).
 
-- **It runs in the CLI process,** against a catalog file the daemon publishes, so it never waits on the daemon. The socket `complete` request serves MCP `completion/complete`, HTTP and the web query box from the same catalog in the daemon's memory.
+- **It runs in the CLI process,** against a catalog file the daemon publishes, so it never waits on the daemon. The `complete` operation serves MCP `completion/complete`, HTTP and the web query box from the same catalog. MCP supplies the whole query in `argument.value`, with an optional UTF-8 byte offset in `_meta["polylogue/position"]` (the end by default); each completion value is the whole query with the replacement applied, and `_meta["polylogue/completions"]` keeps the typed replacement range, kind and help.
 - **The grammar-position completer** is the shared `query-language` function: it takes the whole query text and a cursor offset and returns candidates with their replace range. Polylogue supplies the catalog.
 - **Never** does completion run a search, open the archive or write.
 
@@ -171,8 +178,8 @@ Completion is advanced and works with the daemon down. Ruling, 2026-05-01: "CLI 
 
 - **Location:** `$XDG_CACHE_HOME/polylogue/<archive key>/catalog`, so it survives a reboot before the daemon starts.
 - **Contents:** a header (format version, archive key, write position, time written); values with counts per completable field; saved query names with parameters and help; kept results (ID, name, unit, row count); settings keys and values; sessions (full ID, shortest unique prefix, title, origin, repository, last activity, first prompt), sorted by ID with a second order by last activity.
-- **Format:** versioned binary with a fixed header and offset tables, memory-mapped. A catalog of another format version is ignored, leaving grammar-only completion.
-- **Freshness:** updated incrementally from each committed batch, written by temporary file, sync and rename, at most every 2 s while writes continue. Candidates may trail by that interval; query answers never do.
+- **Format:** a private, versioned SQLite derived catalog with indexed values and typed metadata, opened read-only with memory mapping. The publisher owns its WAL and shared-memory files and preserves them for offline readers; a daemon-down read changes none of the cache files. Concurrent readers retain a committed SQL snapshot while publication continues. SQLite may coordinate shared-memory read marks inside the live owner process. The catalog path selects a uniquely named physical database through an atomically published pointer. Rebuilding the same source generation uses fresh database and journal names so pinned old snapshots cannot mix with the rebuild. Activation retires the previous pointer-owned cache namespace. Missing, wrong-archive, obsolete or corrupt catalogs leave grammar-only completion.
+- **Freshness:** a startup or generation rebuild writes a private database, syncs and renames it, then activates its pointer under the source scope fence. Ordinary committed batches publish values and their position together in one catalog transaction. Candidates target at most 2 s of lag while writes continue; query answers read the authoritative store rather than this cache.
 - It is derived and harmless to delete.
 
 ### Registration
@@ -247,14 +254,15 @@ One declared **affordance table** per verb lists the next actions offered after 
 
 ## Output
 
-- **Machine formats:** `--json` (one document, the answer envelope of [query.md](query.md#answers)) and `--jsonl` (header, rows, then `{"next_cursor": …}`) on every command; `--fields a,b` selects columns; `--page-size N`, `--cursor C`. A command's JSON schema is generated from its answer type (MCP `outputSchema` uses the same) and published by `explain capabilities --json`.
+- **Machine formats:** `--json` (one document, the answer envelope of [query.md](query.md#answers)) and `--jsonl` (header, rows, then `{"next_cursor": …}`) on every command; `--fields a,b` selects columns; `--page-size N`, `--cursor C`. A command's JSON schema is generated from its answer type and published by `explain capabilities --json`; MCP tools carry no output schema.
+- **Outcome and notes:** the operation that assembles an answer decides its outcome (`ok`, `empty`, `degraded`, `error`) and its notes; every surface carries both unchanged, and no surface infers an outcome from the value. On a terminal the notes go to stderr after the value.
 - **Colour and decoration** only when stdout is a terminal, `NO_COLOR` is unset and `TERM` is not `dumb`; stderr is judged on its own. There is no `--plain` flag, because detection decides. Only the 16 ANSI colours are used, so the terminal's palette applies.
 - **Width:** the terminal's; 100 columns for pipes, so piped columns are stable.
 - **Tables:** columns sized by display width; numbers right-aligned; unknown shown as `—`, never `0`. When a table is wider than the terminal, columns drop in a declared order per unit (for sessions: cwd, origin, message count; row number, time, short ID, title and cost stay), then the title is cut with `…`. Row numbers are plain and dimmed.
 - **Values:** times local to the logical day's zone, with the year omitted in the current year; durations `3m 43s`; costs `$2.85`, unknown `—`.
 - **Pager:** on a terminal, output longer than the screen goes to `$PAGER` (default `less -FRX`). The first page is written as soon as it arrives, later pages are requested only as the pager consumes earlier ones, and quitting the pager cancels the rest.
 - **Archived text:** C0 and C1 control characters other than tab and newline, and bidirectional overrides, are shown escaped (`\x1b`) in every terminal output, the picker preview included. This protects the terminal and alters no stored text.
-- **Errors:** one printer for every failure: kind, position with a caret when there is one, and a runnable `try:` line, shell-quoted, with archived IDs quoted so a pasted ID cannot inject. With `--json` the error is `{"error":{"kind","message","position","suggestion","retryable"}}` on stdout and nothing on stderr.
+- **Errors:** one printer for every failure: kind, position with a caret when there is one, and a runnable `try:` line, shell-quoted, with archived IDs quoted so a pasted ID cannot inject. With `--json` the error is `{"error":{"kind","message","position","suggestion","candidates","retryable"}}` on stdout and nothing on stderr; `candidates` lists what an ambiguous reference matched, each on its own line for a person.
 
 ```console
 $ polylogue 'sessions | grup by origin'
@@ -275,8 +283,8 @@ The exit and HTTP table is the common `command-surface`'s, shared with Sinex; ea
 | 2 | `invalid_query`, `unknown_field`, `bad_value`, `not_a_query`, `bad_request`, `ambiguous`, `stale_cursor`, `not_built` |
 | 3 | `refused`, with the operation's stated reason |
 | 4 | `not_found`, `conflict`, `io` |
-| 5 | `degraded`: an `incomplete` answer, rows printed, part of what was needed missing |
-| 6 | `not_running`: the daemon is down |
+| 5 | `degraded`: an `incomplete` answer (rows printed, part of what was needed missing), an operation that stopped early, or a write pending in primary mode |
+| 6 | `not_running`: the daemon is down, or it answered in a shape this build does not read (`daemon_protocol_mismatch`: a daemon from another build; restart it) |
 | 7 | `timeout`, `cancelled` |
 
 Exit 78 is used only by the daemon process itself, when it refuses to open an archive whose stored format it does not read.

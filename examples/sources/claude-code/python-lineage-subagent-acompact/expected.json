@@ -9,7 +9,15 @@
     "skipped": {
       "summary: no summary": 1
     },
-    "unread_fields": {}
+    "unread_fields": {
+      "summary.isSidechain": 1,
+      "summary.message.content": 1,
+      "summary.message.role": 1,
+      "summary.parentUuid": 1,
+      "summary.uuid": 1,
+      "user.promptId": 1,
+      "user.userType": 1
+    }
   },
   "output": {
     "background": [],
@@ -37,7 +45,9 @@
           "id": "claude-code:task-compact-u",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "claude-code:agent-task-agent-12-change-check"
+          "session": "claude-code:agent-task-agent-12-change-check",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 0
       },
@@ -55,7 +65,9 @@
           "model": "claude-sonnet-4-5-20250929",
           "parent": "claude-code:task-compact-u",
           "role": "assistant",
-          "session": "claude-code:agent-task-agent-12-change-check"
+          "session": "claude-code:agent-task-agent-12-change-check",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 371
       }
@@ -64,7 +76,9 @@
       {
         "id": "claude-code:agent-task-agent-12-change-check",
         "kind": "subagent",
-        "started": "2026-07-01T12:10:00Z"
+        "started": "2026-07-01T12:10:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

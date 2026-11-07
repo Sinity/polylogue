@@ -11,9 +11,13 @@
 //! the same message. `parts` split a model chunk into thoughts and answer
 //! text; joined, they equal the chunk's `text`.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::parse::{ExtractedBlob, MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
@@ -115,30 +119,75 @@ struct PromptState {
 }
 
 static DOCUMENT_FIELDS: Fields = Fields::new(&[
-    ("runSettings", Rule::Read),
-    ("systemInstruction", Rule::Read),
-    ("chunkedPrompt", Rule::Read),
-    ("chunkedPrompt.chunks", Rule::Read),
+    ("runSettings", Rule::Kept("complete run settings event")),
+    ("runSettings.model", Rule::Read(T::String)),
+    ("systemInstruction", Rule::Read(T::StringOrObject)),
+    ("systemInstruction.text", Rule::Read(T::String)),
+    ("systemInstruction.parts[].text", Rule::Read(T::String)),
+    ("chunkedPrompt", Rule::Read(T::Object)),
+    ("chunkedPrompt.chunks", Rule::Read(T::Array)),
     (
         "chunkedPrompt.pendingInputs",
         Rule::Kept("the unsent draft in the input box"),
     ),
     ("citations", Rule::Kept("sources the replies cited")),
-]);
+])
+.for_kind("document");
 
 static CHUNK_FIELDS: Fields = Fields::new(&[
-    ("role", Rule::Read),
-    ("author", Rule::Read),
-    ("id", Rule::Read),
-    ("text", Rule::Read),
-    ("parts", Rule::Read),
-    ("parts[].text", Rule::Read),
-    ("parts[].thought", Rule::Read),
-    ("parts[].thoughtSignature", Rule::Read),
-    ("parts[].executableCode", Rule::Read),
-    ("parts[].codeExecutionResult", Rule::Read),
-    ("parts[].inlineData", Rule::Read),
-    ("parts[].fileData", Rule::Read),
+    ("inlineData.mimeType", Rule::Read(T::String)),
+    ("inlineData.data", Rule::Read(T::String)),
+    ("fileData.mimeType", Rule::Read(T::String)),
+    ("fileData.fileUri", Rule::Read(T::String)),
+    ("parts[].inlineData.mimeType", Rule::Read(T::String)),
+    ("parts[].inlineData.data", Rule::Read(T::String)),
+    ("parts[].fileData.mimeType", Rule::Read(T::String)),
+    ("parts[].fileData.fileUri", Rule::Read(T::String)),
+    ("driveDocument.id", Rule::Read(T::String)),
+    ("driveDocument.fileId", Rule::Read(T::String)),
+    ("driveDocument.name", Rule::Read(T::String)),
+    ("driveDocument.title", Rule::Read(T::String)),
+    ("driveDocument.mimeType", Rule::Read(T::String)),
+    ("driveImage.id", Rule::Read(T::String)),
+    ("driveImage.fileId", Rule::Read(T::String)),
+    ("driveImage.name", Rule::Read(T::String)),
+    ("driveImage.title", Rule::Read(T::String)),
+    ("driveImage.mimeType", Rule::Read(T::String)),
+    ("driveAudio.id", Rule::Read(T::String)),
+    ("driveAudio.fileId", Rule::Read(T::String)),
+    ("driveAudio.name", Rule::Read(T::String)),
+    ("driveAudio.title", Rule::Read(T::String)),
+    ("driveAudio.mimeType", Rule::Read(T::String)),
+    ("driveVideo.id", Rule::Read(T::String)),
+    ("driveVideo.fileId", Rule::Read(T::String)),
+    ("driveVideo.name", Rule::Read(T::String)),
+    ("driveVideo.title", Rule::Read(T::String)),
+    ("driveVideo.mimeType", Rule::Read(T::String)),
+    ("inlineImage.data", Rule::Read(T::String)),
+    ("inlineImage.mimeType", Rule::Read(T::String)),
+    ("inlineImage.name", Rule::Read(T::String)),
+    ("inlineFile.data", Rule::Read(T::String)),
+    ("inlineFile.mimeType", Rule::Read(T::String)),
+    ("inlineFile.name", Rule::Read(T::String)),
+    ("youtubeVideo.id", Rule::Read(T::String)),
+    ("role", Rule::Read(T::String)),
+    ("author", Rule::Read(T::String)),
+    ("id", Rule::Read(T::String)),
+    ("text", Rule::Read(T::String)),
+    ("parts", Rule::Read(T::Array)),
+    ("parts[].text", Rule::Read(T::String)),
+    ("parts[].thought", Rule::Read(T::Boolean)),
+    ("parts[].thoughtSignature", Rule::Read(T::String)),
+    (
+        "parts[].executableCode",
+        Rule::Kept("complete code input in tool block"),
+    ),
+    (
+        "parts[].codeExecutionResult",
+        Rule::Kept("complete code result in tool block"),
+    ),
+    ("parts[].inlineData", Rule::Read(T::Object)),
+    ("parts[].fileData", Rule::Read(T::Object)),
     (
         "thoughtSignatures",
         Rule::Kept("the thoughts' signatures, also read from their parts"),
@@ -152,10 +201,10 @@ static CHUNK_FIELDS: Fields = Fields::new(&[
         "videoMetadata",
         Rule::Kept("the clip range of an attached video"),
     ),
-    ("isThought", Rule::Read),
-    ("tokenCount", Rule::Read),
-    ("finishReason", Rule::Read),
-    ("createTime", Rule::Read),
+    ("isThought", Rule::Read(T::Boolean)),
+    ("tokenCount", Rule::Read(T::Number)),
+    ("finishReason", Rule::Read(T::String)),
+    ("createTime", Rule::Read(T::StringOrNumber)),
     (
         "updateTime",
         Rule::Excluded("edit time; the creation time orders chunks"),
@@ -164,23 +213,34 @@ static CHUNK_FIELDS: Fields = Fields::new(&[
         "thinkingBudget",
         Rule::Kept("the request's reasoning budget, kept with the run settings"),
     ),
-    ("driveDocument", Rule::Read),
-    ("driveImage", Rule::Read),
-    ("driveAudio", Rule::Read),
-    ("driveVideo", Rule::Read),
-    ("inlineImage", Rule::Read),
-    ("inlineFile", Rule::Read),
-    ("youtubeVideo", Rule::Read),
-    ("executableCode", Rule::Read),
-    ("codeExecutionResult", Rule::Read),
-    ("errorMessage", Rule::Read),
+    ("driveDocument", Rule::Read(T::Object)),
+    ("driveImage", Rule::Read(T::Object)),
+    ("driveAudio", Rule::Read(T::Object)),
+    ("driveVideo", Rule::Read(T::Object)),
+    ("inlineImage", Rule::Read(T::Object)),
+    ("inlineFile", Rule::Read(T::Object)),
+    ("youtubeVideo", Rule::Read(T::Object)),
+    (
+        "executableCode",
+        Rule::Kept("complete code input in tool block"),
+    ),
+    (
+        "codeExecutionResult",
+        Rule::Kept("complete code result in tool block"),
+    ),
+    ("errorMessage", Rule::Read(T::String)),
     ("grounding", Rule::Kept("search grounding sources")),
-    ("branchParent", Rule::Read),
+    (
+        "branchParent",
+        Rule::Kept("native branch marker in message attributes"),
+    ),
+    ("branchParent.promptId", Rule::Read(T::String)),
     (
         "branchChildren",
         Rule::Kept("other prompts branched from here"),
     ),
-]);
+])
+.for_kind("chunk");
 
 impl ExportParser for AiStudio {
     fn message_range(&self, message: &Message) -> Option<std::ops::Range<u64>> {
@@ -283,14 +343,38 @@ impl ExportParser for AiStudio {
                         session.offer_title(title, TitleSource::FileName);
                     }
                     sink.out.sessions.push(session);
-                    sink.out.events.push(Event {
-                        session: Some(sid.clone()),
-                        kind: "run_settings".into(),
-                        at: None,
-                        after: None,
-                        range: Some((0, self.state.length)),
-                        data: doc.get("runSettings").cloned().unwrap_or(Json::Null),
+                    sink.out.events.push({
+                        let (at, time_evidence) = crate::time::parts(None);
+                        Event {
+                            session: Some(sid.clone()),
+                            kind: "run_settings".into(),
+                            at,
+                            at_quality: time_evidence.quality,
+                            at_precision: time_evidence.precision,
+                            at_until: time_evidence.until,
+                            after: None,
+                            range: Some((0, self.state.length)),
+                            data: doc.get("runSettings").cloned().unwrap_or(Json::Null),
+                        }
                     });
+                    let mut attrs = crate::fields::attributes(&doc, &DOCUMENT_FIELDS);
+                    attrs.remove("runSettings");
+                    if !attrs.is_empty() {
+                        sink.out.events.push({
+                            let (at, time_evidence) = crate::time::parts(None);
+                            Event {
+                                session: Some(sid.clone()),
+                                kind: "prompt_metadata".into(),
+                                at,
+                                at_quality: time_evidence.quality,
+                                at_precision: time_evidence.precision,
+                                at_until: time_evidence.until,
+                                after: None,
+                                range: Some((0, self.state.length)),
+                                data: Json::Object(attrs),
+                            }
+                        });
+                    }
                     if let Some(text) = system_text(doc.get("systemInstruction")) {
                         let id = message_id(ORIGIN, &message_key(&self.native, "system", ""))
                             .ok_or("unusable system id")?;
@@ -314,7 +398,9 @@ impl ExportParser for AiStudio {
                     && let Some(at) = chunk.get("createTime").and_then(time_of)
                 {
                     let mut session = Session::new(sid.clone(), SessionKind::Main);
-                    session.offer_start(at);
+                    session
+                        .offer_start(at.timestamp(), at.evidence())
+                        .expect("decoded source time is valid");
                     sink.out.sessions.push(session);
                     self.state.started = true;
                 }
@@ -363,6 +449,9 @@ fn chunk_role(chunk: &Json) -> Option<&str> {
 /// `{"parts": [{"text": …}]}`.
 fn system_text(value: Option<&Json>) -> Option<String> {
     let v = value?;
+    if let Some(text) = v.as_str() {
+        return Some(text.to_owned());
+    }
     if let Some(t) = str_of(v, "text") {
         return Some(t.to_owned());
     }
@@ -448,6 +537,7 @@ impl AiStudio {
                     },
                 };
                 blocks.push(Block::ToolResult {
+                    reported_duration_ms: None,
                     call_id,
                     outcome,
                     output: string_of(result, "output"),
@@ -483,8 +573,15 @@ impl AiStudio {
         }
 
         let mut message = plain(id, sid.clone(), role, blocks);
+        message.attrs = crate::fields::attributes(chunk, &CHUNK_FIELDS);
+        for field in ["executableCode", "codeExecutionResult"] {
+            message.attrs.remove(field);
+        }
         message.parent = self.state.previous.clone();
-        message.at = chunk.get("createTime").and_then(time_of);
+        let (at, evidence) = crate::time::parts(chunk.get("createTime").and_then(time_of));
+        message
+            .set_time(at, evidence)
+            .expect("decoded source time is valid");
         if role == Role::Assistant {
             message.model = self.state.model.clone();
             message.stop_reason = string_of(chunk, "finishReason");
@@ -520,20 +617,27 @@ fn plain(
     role: Role,
     blocks: Vec<Block>,
 ) -> Message {
-    Message {
-        id,
-        session,
-        parent: None,
-        role,
-        at: None,
-        model: None,
-        prompt_kind: None,
-        blocks,
-        usage: Usage::default(),
-        stop_reason: None,
-        reported_cost_usd: None,
-        duration_ms: None,
-        production: Default::default(),
+    {
+        let (at, time_evidence) = crate::time::parts(None);
+        Message {
+            id,
+            session,
+            parent: None,
+            role,
+            at,
+            at_quality: time_evidence.quality,
+            at_precision: time_evidence.precision,
+            at_until: time_evidence.until,
+            model: None,
+            prompt_kind: None,
+            blocks,
+            usage: Usage::default(),
+            stop_reason: None,
+            reported_cost_usd: None,
+            duration_ms: None,
+            attrs: Default::default(),
+            production: Default::default(),
+        }
     }
 }
 
@@ -705,9 +809,9 @@ pub struct Listing {
 }
 
 static LISTING_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read),
-    ("name", Rule::Read),
-    ("createdTime", Rule::Read),
+    ("id", Rule::Read(T::String)),
+    ("name", Rule::Read(T::String)),
+    ("createdTime", Rule::Read(T::String)),
     (
         "modifiedTime",
         Rule::Excluded("the revisions carry when the prompt changed"),
@@ -721,7 +825,8 @@ static LISTING_FIELDS: Fields = Fields::new(&[
         Rule::Excluded("the collector's own bookkeeping"),
     ),
     ("size", Rule::Excluded("each stored revision has its size")),
-]);
+])
+.for_kind("listing");
 
 impl ExportParser for Listing {
     fn scan(
@@ -772,8 +877,14 @@ impl ExportParser for Listing {
         if let Some(name) = str_of(f, "name") {
             session.offer_title(name, TitleSource::Generated);
         }
-        if let Some(at) = f.get("createdTime").and_then(time_of) {
-            session.offer_start(at);
+        if let Some(at) = f
+            .get("createdTime")
+            .and_then(time_of)
+            .map(crate::time::SourceTime::file_mtime)
+        {
+            session
+                .offer_start(at.timestamp(), at.evidence())
+                .expect("decoded source time is valid");
         }
         sink.out.sessions.push(session);
         sink.records.record("file", &RecordOutcome::Used);

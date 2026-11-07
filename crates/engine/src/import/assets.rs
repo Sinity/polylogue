@@ -44,11 +44,7 @@ impl Engine {
                 .asset_source(&input)?
                 .ok_or_else(|| std::io::Error::other("a stored sidecar has no current revision"))?;
             // Bytes still being written are read in a later pass.
-            let chain = match reader.stored_chain(&input, progress.chain, progress.length) {
-                Ok(chain) => chain,
-                Err(polylogue_store::StoreError::InputPending { .. }) => continue,
-                Err(error) => return Err(error.into()),
-            };
+            let chain = reader.stored_chain(&input, progress.chain, progress.length)?;
             let mut staged = ExportItems::new()?;
             stage(
                 &mut staged,

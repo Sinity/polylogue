@@ -1,7 +1,7 @@
 use crate::{Block, MessageId, SessionId, Timestamp, Usage};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     User,
@@ -18,7 +18,9 @@ stored_names!(Role {
 /// A user prompt's category. `Harness` also marks runtime-written notices
 /// carried under another native role; the other kinds remain user categories.
 /// This keeps harness material out of counts of what a person or model wrote.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptKind {
     /// Prose a person typed.
@@ -42,7 +44,7 @@ stored_names!(PromptKind {
 });
 
 /// Who wrote a message's text, from its role and prompt kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WrittenBy {
     Human,
@@ -70,7 +72,7 @@ impl WrittenBy {
 }
 
 /// One message, stored once, in the session where it originated.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Message {
     pub id: MessageId,
     pub session: SessionId,
@@ -80,6 +82,12 @@ pub struct Message {
     pub role: Role,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Timestamp>,
+    #[serde(default = "crate::time::unknown_quality")]
+    pub at_quality: crate::TimeQuality,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_precision: Option<crate::Precision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_until: Option<Timestamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -98,13 +106,33 @@ pub struct Message {
     /// How the harness produced the message, beyond its content.
     #[serde(default, skip_serializing_if = "Production::is_empty")]
     pub production: Production,
+    /// Provider fields indexed as given, including nested citations and content details.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub attrs: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Server tools are billed separately from model tokens.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ServerToolUse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search_requests: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_fetch_requests: Option<u64>,
 }
 
 /// What the harness recorded about producing a message: the settings it
 /// ran with, who asked for it, and the API's own diagnostics. Measurement
 /// reads these; none of it is content.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Production {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_tool_use: Option<ServerToolUse>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iterations: Option<u64>,
+    /// Provider response channel, such as commentary or final.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+
     /// These recorded items have no evidenced model-response grouping.
     /// None is an absent update; a supplied false remains distinct.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -174,6 +202,15 @@ impl Production {
             &mut self.response_boundary_unknown,
             later.response_boundary_unknown,
         );
+        if let Some(server) = later.server_tool_use {
+            let current = self
+                .server_tool_use
+                .get_or_insert_with(ServerToolUse::default);
+            take(&mut current.web_search_requests, server.web_search_requests);
+            take(&mut current.web_fetch_requests, server.web_fetch_requests);
+        }
+        take(&mut self.iterations, later.iterations);
+        take(&mut self.phase, later.phase);
         take(&mut self.effort, later.effort);
         take(&mut self.requested_model, later.requested_model);
         take(&mut self.advisor_model, later.advisor_model);
@@ -197,7 +234,7 @@ impl Production {
 }
 
 /// Which agent, skill, plugin or MCP tool the work was done for.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Attribution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
@@ -217,7 +254,7 @@ impl Attribution {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ApiError {
     /// The harness's label (`rate_limit`, `invalid_request`).
     pub kind: String,
@@ -226,6 +263,35 @@ pub struct ApiError {
 }
 
 impl Message {
+    /// BLAKE3 of the source value's sorted canonical JSON, the message
+    /// version identity used by storage. Projection never redefines it.
+    pub fn content_hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
+        let mut value = serde_json::to_value(self)?;
+        value.sort_all_objects();
+        Ok(crate::BlobHash::of(&serde_json::to_vec(&value)?))
+    }
+
+    pub fn time_evidence(&self) -> crate::TimeEvidence {
+        crate::TimeEvidence {
+            quality: self.at_quality,
+            precision: self.at_precision,
+            until: self.at_until,
+        }
+    }
+
+    pub fn set_time(
+        &mut self,
+        at: Option<Timestamp>,
+        evidence: crate::TimeEvidence,
+    ) -> Result<(), crate::TimeEvidenceError> {
+        evidence.validate(at)?;
+        self.at = at;
+        self.at_quality = evidence.quality;
+        self.at_precision = evidence.precision;
+        self.at_until = evidence.until;
+        Ok(())
+    }
+
     /// Prose text of the message, blocks joined by blank lines.
     pub fn text(&self) -> String {
         let parts: Vec<&str> = self.blocks.iter().filter_map(|b| b.text()).collect();

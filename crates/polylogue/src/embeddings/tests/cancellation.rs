@@ -13,6 +13,7 @@ fn stalled_provider(cancel: bool) {
         endpoint: format!("http://{}", listener.local_addr().unwrap()),
         model: "synthetic".into(),
         price_per_mtok: Some(0.0),
+        credentials: Credentials::new(None),
     };
     let limit = polylogue_store::read::limit::ReadLimit::new(
         if cancel {

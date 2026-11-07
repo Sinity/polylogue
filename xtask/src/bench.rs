@@ -3,7 +3,7 @@
 //!
 //! `bench sample` draws the sample (devkit's stratified draw: by origin and
 //! file kind, by year for session files, with each stratum's size spread)
-//! and writes its manifest under `analysis/bench/` of the project home.
+//! and writes its manifest under the configured benchmark root.
 //! `bench run` copies the sample into the bench directory once, runs the
 //! release `first_build` over it under the real-data lock, records the
 //! per-stage result with periodic host-load observations, and prints an
@@ -35,12 +35,27 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-/// The project home's bench files: manifests here, sample copies and
-/// archives beside them. Operator data stays on this machine, outside Git.
-fn bench_home() -> PathBuf {
-    env::var_os("POLYLOGUE_BENCH_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/realm/project/polylogue/bench"))
+/// One root for manifests, copies, reports and the benchmark lock.
+fn bench_root(explicit: Option<PathBuf>) -> PathBuf {
+    explicit
+        .or_else(|| env::var_os("POLYLOGUE_BENCH_HOME").map(PathBuf::from))
+        .unwrap_or_else(|| {
+            env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home().join(".local/share"))
+                .join("polylogue-bench")
+        })
+}
+
+fn sample_name(value: &str) -> Result<String, String> {
+    let mut components = Path::new(value).components();
+    if matches!(components.next(), Some(std::path::Component::Normal(name)) if name == std::ffi::OsStr::new(value))
+        && components.next().is_none()
+    {
+        Ok(value.to_owned())
+    } else {
+        Err("a sample name must be one directory name".into())
+    }
 }
 
 /// What a bench runs over.
@@ -75,32 +90,44 @@ impl Target {
 /// under (the target's name unless several sizes are kept).
 #[derive(Debug, Clone)]
 struct Drawn {
+    root: PathBuf,
     target: Target,
     name: String,
 }
 
 impl Drawn {
-    fn new(target: Target, name: Option<String>) -> Self {
+    fn new(root: &Path, target: Target, name: Option<String>) -> Self {
         let name = name.unwrap_or_else(|| target.name().to_owned());
-        Self { target, name }
+        Self {
+            root: root.to_owned(),
+            target,
+            name,
+        }
     }
 
     fn dir(&self) -> PathBuf {
-        bench_home().join(&self.name)
+        self.root.join(&self.name)
     }
 
     fn manifest(&self) -> PathBuf {
-        PathBuf::from(format!(
-            "/realm/project/polylogue/analysis/bench/polylogue-{}.json",
-            self.name
-        ))
+        self.root
+            .join("manifests")
+            .join(format!("polylogue-{}.json", self.name))
     }
 }
 
-const LOCK: &str = "/realm/tmp/work/realdata.lock";
+#[derive(Debug, clap::Args)]
+pub struct Bench {
+    /// Root for benchmark manifests, copies, reports and the lock.
+    /// Defaults to POLYLOGUE_BENCH_HOME, then XDG_DATA_HOME/polylogue-bench.
+    #[arg(long, global = true)]
+    root: Option<PathBuf>,
+    #[command(subcommand)]
+    command: BenchCommand,
+}
 
 #[derive(Debug, clap::Subcommand)]
-pub enum Bench {
+pub enum BenchCommand {
     /// Draw a representative sample of the corpus and write its manifest.
     Sample {
         #[arg(long, value_enum, default_value = "sample")]
@@ -108,6 +135,7 @@ pub enum Bench {
         /// The sample's name, for keeping samples of several sizes
         /// (default: the target's name).
         #[arg(long)]
+        #[arg(value_parser = sample_name)]
         name: Option<String>,
         /// Target size of the sample, in MB.
         #[arg(long, default_value_t = 3000)]
@@ -124,6 +152,7 @@ pub enum Bench {
         #[arg(long, value_enum, default_value = "sample")]
         target: Target,
         #[arg(long)]
+        #[arg(value_parser = sample_name)]
         name: Option<String>,
         /// A `first_build` built elsewhere, instead of this checkout's.
         #[arg(long, requires = "build")]
@@ -132,7 +161,7 @@ pub enum Bench {
         /// the checkout's commit).
         #[arg(long)]
         build: Option<String>,
-        /// `disk` keeps the archive on /realm like the real one; `memory`
+        /// `disk` keeps the archive under the benchmark root; `memory`
         /// puts it in /dev/shm and measures the pipeline alone.
         #[arg(long, default_value = "disk")]
         storage: String,
@@ -145,6 +174,7 @@ pub enum Bench {
     /// load; records both and prints their differences per stage.
     Pair {
         #[arg(long)]
+        #[arg(value_parser = sample_name)]
         name: Option<String>,
         /// `LABEL=PATH` of the first `first_build`.
         #[arg(long)]
@@ -164,6 +194,7 @@ pub enum Bench {
     /// sessions and of any named ones, through the daemon and CLI.
     Tails {
         #[arg(long)]
+        #[arg(value_parser = sample_name)]
         name: Option<String>,
         /// Largest sessions by message count to read.
         #[arg(long, default_value_t = 5)]
@@ -199,16 +230,23 @@ pub enum Bench {
     Shared(devkit::cli::Bench),
 }
 
-pub fn execute(command: Bench) -> ExitCode {
-    let result = match command {
-        Bench::Sample {
+pub fn execute(options: Bench) -> ExitCode {
+    let root = match std::path::absolute(bench_root(options.root)) {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("bench root: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let result = match options.command {
+        BenchCommand::Sample {
             target,
             name,
             mb,
             seed,
             cut,
-        } => sample(&Drawn::new(target, name), mb * 1_000_000, seed, cut),
-        Bench::Run {
+        } => sample(&Drawn::new(&root, target, name), mb * 1_000_000, seed, cut),
+        BenchCommand::Run {
             target,
             name,
             binary,
@@ -216,26 +254,31 @@ pub fn execute(command: Bench) -> ExitCode {
             storage,
             incremental,
         } => run(
-            &Drawn::new(target, name),
+            &Drawn::new(&root, target, name),
             binary,
             build,
             &storage,
             incremental,
         ),
-        Bench::Pair { name, a, b } => pair(&Drawn::new(Target::Sample, name), &a, &b),
-        Bench::Estimate { build } => fit::estimate(build),
-        Bench::Tails {
+        BenchCommand::Pair { name, a, b } => pair(&Drawn::new(&root, Target::Sample, name), &a, &b),
+        BenchCommand::Estimate { build } => fit::estimate(build),
+        BenchCommand::Tails {
             name,
             largest,
             session,
             binary,
-        } => tails::run(&Drawn::new(Target::Sample, name), largest, &session, binary),
-        Bench::Reads {
+        } => tails::run(
+            &Drawn::new(&root, Target::Sample, name),
+            largest,
+            &session,
+            binary,
+        ),
+        BenchCommand::Reads {
             repetitions,
             full_walk,
-        } => return reads::execute(repetitions, full_walk),
-        Bench::Validate { result, build } => fit::validate(&result, build),
-        Bench::Shared(b) => return devkit::cli::bench("polylogue", b),
+        } => return reads::execute(&root, repetitions, full_walk),
+        BenchCommand::Validate { result, build } => fit::validate(&result, build),
+        BenchCommand::Shared(b) => return devkit::cli::bench("polylogue", b),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -384,6 +427,9 @@ fn sample(drawn: &Drawn, bytes: u64, seed: u64, cut: f64) -> Result<(), String> 
         Target::Sample => bench::select(&all, bytes, seed),
         Target::Largest => largest(&all),
     };
+    // Hash copies, so a session that keeps growing cannot invalidate the
+    // sample between drawing it and starting the measured build.
+    let chosen = copy_sample(&drawn.dir().join("source"), &chosen)?;
     let manifest = Manifest::build("polylogue", &all, &chosen, bytes, seed, cut)
         .map_err(|e| format!("hash the sample: {e}"))?;
     let path = drawn.manifest();
@@ -400,6 +446,55 @@ fn sample(drawn: &Drawn, bytes: u64, seed: u64, cut: f64) -> Result<(), String> 
         }))
         .unwrap_or_default()
     );
+    Ok(())
+}
+
+/// Copies the selected files before the manifest hashes them. Its source
+/// paths then name these fixed bytes, rather than files writers still change.
+fn copy_sample(directory: &Path, chosen: &[SampleFile]) -> Result<Vec<SampleFile>, String> {
+    chosen
+        .iter()
+        .map(|file| {
+            let path = directory.join(&file.rel);
+            fs::create_dir_all(path.parent().unwrap_or(directory)).map_err(|e| e.to_string())?;
+            copy_input(&file.path, &path, file.stratum == "codex/database")?;
+            let mut file = file.clone();
+            file.size = fs::metadata(&path).map_err(|e| e.to_string())?.len();
+            file.path = path;
+            Ok(file)
+        })
+        .collect()
+}
+
+/// A database copy must include committed WAL rows from one read transaction.
+fn copy_input(source: &Path, destination: &Path, database: bool) -> Result<(), String> {
+    let copied = if database {
+        match fs::remove_file(destination) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        let destination_sql = destination.to_string_lossy().replace('\'', "''");
+        Command::new("sqlite3")
+            .arg("-readonly")
+            .arg(source)
+            .arg(format!("VACUUM INTO '{destination_sql}'"))
+            .output()
+    } else {
+        Command::new("cp")
+            .args(["--reflink=auto", "--preserve=timestamps"])
+            .arg(source)
+            .arg(destination)
+            .output()
+    }
+    .map_err(|error| error.to_string())?;
+    if !copied.status.success() {
+        return Err(format!(
+            "copy {}: {}",
+            source.display(),
+            String::from_utf8_lossy(&copied.stderr)
+        ));
+    }
     Ok(())
 }
 
@@ -433,13 +528,19 @@ fn first_build(
     home: &Path,
     out: &Path,
     messages_required: bool,
+    lock: &Path,
 ) -> Result<Value, String> {
-    first_build_locked(binary, home, out, messages_required, false)
+    first_build_locked(binary, home, out, messages_required, false, lock)
 }
 
 /// As [`first_build`], sharing the lock with the other run of a pair.
-fn first_build_shared(binary: &Path, home: &Path, out: &Path) -> Result<Value, String> {
-    first_build_locked(binary, home, out, true, true)
+fn first_build_shared(
+    binary: &Path,
+    home: &Path,
+    out: &Path,
+    lock: &Path,
+) -> Result<Value, String> {
+    first_build_locked(binary, home, out, true, true, lock)
 }
 
 fn first_build_locked(
@@ -448,16 +549,16 @@ fn first_build_locked(
     out: &Path,
     messages_required: bool,
     shared: bool,
+    lock: &Path,
 ) -> Result<Value, String> {
-    // AgentCTL queues the outer benchmark job; the lock excludes other
-    // benchmarks over real data without queueing nested work.
+    // Runs sharing a benchmark root exclude one another; a paired run shares its lock.
     let output = Command::new("flock")
         .args(if shared {
             ["-s", "-o"].as_slice()
         } else {
             ["-o"].as_slice()
         })
-        .arg(LOCK)
+        .arg(lock)
         .arg(binary)
         .arg("--home")
         .arg(home)
@@ -629,7 +730,13 @@ fn run(
         None => head()?,
     };
     let load = LoadMonitor::start()?;
-    let result = first_build(&binary, &sample_home, &out, true)?;
+    let result = first_build(
+        &binary,
+        &sample_home,
+        &out,
+        true,
+        &drawn.root.join("bench.lock"),
+    )?;
     let load = load.finish()?;
     let metrics = run_metrics(drawn, &manifest, &build, &result);
     let store = Store::open().map_err(|e| e.to_string())?;
@@ -656,7 +763,13 @@ fn run(
             .grow(&sample_home)
             .map_err(|e| format!("append: {e}"))?;
         let load = LoadMonitor::start()?;
-        let result = first_build(&binary, &sample_home, &out, false)?;
+        let result = first_build(
+            &binary,
+            &sample_home,
+            &out,
+            false,
+            &drawn.root.join("bench.lock"),
+        )?;
         let load = load.finish()?;
         let seconds = result["seconds"]
             .as_f64()
@@ -694,7 +807,7 @@ fn labelled(spec: &str) -> Result<(String, PathBuf), String> {
         .split_once('=')
         .filter(|(label, path)| !label.is_empty() && !path.is_empty())
         .ok_or_else(|| format!("{spec:?} is not LABEL=PATH"))?;
-    Ok((label.to_owned(), PathBuf::from(path)))
+    Ok((sample_name(label)?, PathBuf::from(path)))
 }
 
 /// Both builds' first builds at once over one sample, on disk.
@@ -716,13 +829,15 @@ fn pair(drawn: &Drawn, a: &str, b: &str) -> Result<(), String> {
     let load = LoadMonitor::start()?;
     // Both run at once, so both see the same host load; the real-data lock
     // is shared between them.
+    let lock = drawn.root.join("bench.lock");
     let results: Vec<Result<Value, String>> = std::thread::scope(|scope| {
         let runs: Vec<_> = builds
             .iter()
             .zip(&outs)
             .map(|((_, binary), out)| {
                 let home = &sample_home;
-                scope.spawn(move || first_build_shared(binary, home, out))
+                let lock = &lock;
+                scope.spawn(move || first_build_shared(binary, home, out, lock))
             })
             .collect();
         runs.into_iter()

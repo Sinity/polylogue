@@ -22,17 +22,30 @@ fn terminal_printers_escape_archived_text() {
         "harness_command":{"program":HOSTILE,"args":[HOSTILE],"cwd":HOSTILE},
         "context_assisted":{"program":HOSTILE,"args":[HOSTILE],"cwd":HOSTILE}
     });
-    for printer in [read, context, resume, chat_actions, backfill_jobs] {
-        let text = printer(&data);
+    for printer in [context, resume, chat_actions, backfill_jobs] {
+        let text = printer(&data, false);
         safe(&text);
         assert!(text.contains("\\x1b"), "{text:?}");
     }
-    safe(&read(&json!({"text":HOSTILE,"next":HOSTILE})));
+    let page = json!({
+        "format":"markdown",
+        "snapshot":{"query":"query:synthetic","ran_at":"2026-03-01T12:00:00Z","read_at":{"generation":"synthetic","index":0,"archive":0},"caught_up":true,"currency":{"mode":"standalone"}},
+        "records":[],
+        "document":{
+            "header":{"target":"event:synthetic","view":"transcript","title":{"state":"value","value":HOSTILE},"kind":{"kind":"event","event_type":"synthetic"}},
+            "items":[{"source":{"ref":"event:synthetic"},"kind":{"kind":"text","text":HOSTILE}}],
+            "footer":{"referenced_by":[],"shown":1,"count":{"state":"value","value":1}}
+        }
+    });
+    let text = read(&page, false);
+    safe(&text);
+    assert!(text.contains("\\x1b"));
     safe(&resume(
         &json!([{"session":{"title":HOSTILE,"id":HOSTILE},"open":{"todo":HOSTILE,"waiting_on":HOSTILE},"follow_ups":[HOSTILE]}]),
+        false,
     ));
     let status = json!({"notices":[HOSTILE], "errors":[HOSTILE]});
-    let text = super::json(&status);
+    let text = super::json(&status, false);
     safe(&text);
     assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), status);
 }

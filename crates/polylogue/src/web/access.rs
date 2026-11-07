@@ -14,27 +14,6 @@ use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-/// The default port of an archive's daemon.
-pub const DEFAULT_PORT: u16 = 8765;
-
-/// The port to listen on: `POLYLOGUE_HTTP_PORT` when set; a port the
-/// system assigns for an archive moved with `POLYLOGUE_ARCHIVE` (tests,
-/// demos, measurements), so it never takes the operator's 8765; otherwise
-/// 8765. Clients read the port from the `port` file either way.
-pub fn wanted_port() -> u16 {
-    if let Some(p) = std::env::var("POLYLOGUE_HTTP_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-    {
-        return p;
-    }
-    if std::env::var_os("POLYLOGUE_ARCHIVE").is_some() {
-        0
-    } else {
-        DEFAULT_PORT
-    }
-}
-
 /// A fresh random token, 32 bytes as hex.
 pub fn new_token() -> io::Result<String> {
     let mut bytes = [0u8; 32];
@@ -210,6 +189,35 @@ pub fn scrub(text: &str, root: &Path) -> String {
         return text.to_owned();
     }
     text.replace(root.as_ref(), "[archive]")
+}
+
+/// HTTP hides this host path even when it occurs in a stored value or key.
+pub(super) fn scrub_value(value: &mut serde_json::Value, root: &Path) {
+    match value {
+        serde_json::Value::String(text) => *text = scrub(text, root),
+        serde_json::Value::Array(values) => {
+            values.iter_mut().for_each(|value| scrub_value(value, root))
+        }
+        serde_json::Value::Object(object) => {
+            let original = std::mem::take(object);
+            // Original keys keep their names when a transformed key collides.
+            let (unchanged, changed): (Vec<_>, Vec<_>) = original
+                .into_iter()
+                .partition(|(key, _)| scrub(key, root) == *key);
+            for (key, mut value) in unchanged.into_iter().chain(changed) {
+                scrub_value(&mut value, root);
+                let base = scrub(&key, root);
+                let mut key = base.clone();
+                let mut ordinal = 2;
+                while object.contains_key(&key) {
+                    key = format!("{base} #{ordinal}");
+                    ordinal += 1;
+                }
+                object.insert(key, value);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Only one declared media type is accepted; parameters such as UTF-8 do

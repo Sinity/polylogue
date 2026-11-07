@@ -31,8 +31,10 @@ const CODEX_EVENTS: &[&str] = &[
 ];
 
 /// The harness's hook settings file in its configured directory.
-pub fn settings_path(harness: Harness) -> Result<PathBuf, String> {
-    let config = polylogue_engine::Config::from_env();
+pub fn settings_path(
+    harness: Harness,
+    config: &polylogue_engine::Config,
+) -> Result<PathBuf, String> {
     match harness {
         Harness::ClaudeCode => Ok(config
             .root(polylogue_sources::claude_code::ROOT)
@@ -46,11 +48,80 @@ pub fn settings_path(harness: Harness) -> Result<PathBuf, String> {
     }
 }
 
-fn harness_events(harness: Harness) -> &'static [&'static str] {
+/// Claude Code events registered only from the version a probe confirmed
+/// them in: a harness older than that may not know them, and they carry
+/// the waits and stalls the live fold reads (permission requests, failed
+/// stops, subagent starts, questions).
+pub const CONFIRMED_FROM: &[(&str, &str)] = &[
+    ("PermissionRequest", "2.1.316"),
+    ("PermissionDenied", "2.1.316"),
+    ("StopFailure", "2.1.316"),
+    ("SubagentStart", "2.1.316"),
+    ("Elicitation", "2.1.316"),
+];
+
+/// An installed harness's version, as `--version` prints it: dotted
+/// numbers compared part by part.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct HarnessVersion(Vec<u64>);
+
+impl HarnessVersion {
+    /// The first word of `text` made of dotted numbers (`2.1.316 (Claude
+    /// Code)`, `codex-cli 0.164.0`).
+    pub fn parse(text: &str) -> Option<Self> {
+        text.split_whitespace().find_map(|word| {
+            let parts: Option<Vec<u64>> = word.split('.').map(|p| p.parse().ok()).collect();
+            parts.filter(|p| p.len() >= 2).map(Self)
+        })
+    }
+}
+
+/// Asks the installed harness for its version; `None` when it is not
+/// installed or prints none.
+pub fn probe_version(harness: Harness) -> Option<HarnessVersion> {
+    let program = match harness {
+        Harness::ClaudeCode => "claude",
+        Harness::Codex => "codex",
+        Harness::GeminiCli => "gemini",
+        Harness::Hermes => "hermes",
+    };
+    let output = std::process::Command::new(program)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    HarnessVersion::parse(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The events to register for `harness` at `version`: an event of
+/// [`CONFIRMED_FROM`] only when the version is known and not older.
+fn harness_events(harness: Harness, version: Option<&HarnessVersion>) -> Vec<&'static str> {
     match harness {
-        Harness::Codex => CODEX_EVENTS,
-        Harness::GeminiCli => GEMINI_EVENTS,
-        _ => EVENTS,
+        Harness::Codex => CODEX_EVENTS.to_vec(),
+        Harness::GeminiCli => GEMINI_EVENTS.to_vec(),
+        _ => EVENTS
+            .iter()
+            .copied()
+            .chain(CONFIRMED_FROM.iter().filter_map(|(event, from)| {
+                version
+                    .zip(HarnessVersion::parse(from))
+                    .is_some_and(|(v, from)| *v >= from)
+                    .then_some(*event)
+            }))
+            .collect(),
+    }
+}
+
+/// Every event an install may have registered for `harness`, for removal.
+fn every_event(harness: Harness) -> Vec<&'static str> {
+    match harness {
+        Harness::Codex | Harness::GeminiCli => harness_events(harness, None),
+        _ => EVENTS
+            .iter()
+            .chain(CONFIRMED_FROM.iter().map(|(event, _)| event))
+            .copied()
+            .collect(),
     }
 }
 
@@ -127,15 +198,20 @@ fn ours(hook: &Value) -> bool {
         _ => false,
     };
     hook["type"] == "command"
-        && (EVENTS.contains(&event) || GEMINI_EVENTS.contains(&event))
+        && (EVENTS.contains(&event)
+            || GEMINI_EVENTS.contains(&event)
+            || CONFIRMED_FROM.iter().any(|(known, _)| *known == event))
         && harness_ok
 }
 
 /// Merge Polylogue's commands, keeping other hooks and entry metadata.
 /// Refuse invalid containers instead of replacing their contents.
+/// `version` is the installed harness's, which decides the events of
+/// [`CONFIRMED_FROM`]; removal covers every event an install may have added.
 pub(super) fn merge_hooks(
     mut settings: Value,
     harness: Harness,
+    version: Option<&HarnessVersion>,
     install: bool,
 ) -> io::Result<Value> {
     validate(&settings)?;
@@ -148,7 +224,9 @@ pub(super) fn merge_hooks(
         .or_insert_with(|| json!({}))
         .as_object_mut()
         .expect("validated hooks object");
-    for event in harness_events(harness) {
+    let wanted = harness_events(harness, version);
+    for event in &every_event(harness) {
+        let install = install && wanted.contains(event);
         if let Some(entries) = events.get_mut(*event) {
             let entries = entries.as_array_mut().expect("validated event array");
             let had_entries = !entries.is_empty();
@@ -177,8 +255,14 @@ pub(super) fn merge_hooks(
 
 /// Installs or removes the hooks in a settings file, atomically. A file
 /// that is a symlink (managed by Home Manager or similar) is refused: the
-/// hooks belong in the file's declared source.
-pub fn install(path: &Path, harness: Harness, install: bool) -> std::io::Result<()> {
+/// hooks belong in the file's declared source. The version provider runs only
+/// for an install after the existing file has passed structural validation.
+pub fn install(
+    path: &Path,
+    harness: Harness,
+    version: impl FnOnce() -> Option<HarnessVersion>,
+    install: bool,
+) -> std::io::Result<()> {
     if path.is_symlink() {
         return Err(std::io::Error::other(format!(
             "{} is a symlink to a managed file; add the hooks in its source instead",
@@ -190,7 +274,10 @@ pub fn install(path: &Path, harness: Harness, install: bool) -> std::io::Result<
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
         Err(e) => return Err(e),
     };
-    let merged = merge_hooks(current, harness, install)?;
+    // Refuse the settings before consulting an external harness launcher.
+    validate(&current)?;
+    let version = install.then(version).flatten();
+    let merged = merge_hooks(current, harness, version.as_ref(), install)?;
     let mut text = serde_json::to_string_pretty(&merged).map_err(std::io::Error::other)?;
     text.push('\n');
     let dir = path

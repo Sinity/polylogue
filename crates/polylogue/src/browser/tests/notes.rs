@@ -1,16 +1,19 @@
 use super::*;
-use crate::daemon::{Request, Response, server, service};
+use crate::daemon::{Request, server, service};
 
-/// Every note, as the `notes` query lists them.
+/// Every current note assertion.
 fn notes(host: &BrowserHost) -> Vec<Value> {
-    let Some(Response::Ok { data, .. }) = host.ask(&Request::Query {
-        text: "notes".into(),
-        cursor: None,
-        page_size: None,
-        why: false,
-        session: None,
-        fields: vec![],
-    }) else {
+    let Some(Ok(data)) = host
+        .ask(&Request::Query {
+            text: "assertions where kind:note".into(),
+            cursor: None,
+            page_size: None,
+            why: false,
+            session: None,
+            fields: vec![],
+        })
+        .map(crate::protocol::into_value)
+    else {
         panic!("notes unavailable")
     };
     data["rows"].as_array().unwrap().clone()
@@ -29,15 +32,18 @@ fn selection() -> Value {
 #[test]
 fn selected_passage_notes_survive_restart_and_identical_retries() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = Config::from_env();
+    let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = dir.path().join("home");
     config.tool_dirs.clear();
     config.workers = 1;
     let root = dir.path().join("archive");
     let mut runtime =
-        service::start(&root, config.clone(), service::ArchiveMode::Standalone).unwrap();
+        crate::test_daemon::start_runtime(&root, config.clone(), service::ArchiveMode::Standalone)
+            .unwrap();
     let host = Arc::new(BrowserHost::at(&config, &runtime.daemon.archive).unwrap());
-    let mut socket = server::Server::start(Arc::clone(&runtime.daemon)).unwrap();
+    let mut socket =
+        server::Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))
+            .unwrap();
     assert_eq!(
         exchange(
             &host,
@@ -49,7 +55,7 @@ fn selected_passage_notes_survive_restart_and_identical_retries() {
         200
     );
     loop {
-        if matches!(service::handle(Request::Status, &runtime.daemon), Response::Ok { data, .. } if data["store"]["messages"] == 1 && data["busy"] == false)
+        if matches!(crate::protocol::into_value(service::handle(Request::Status, &runtime.daemon)), Ok(data) if data["store"]["messages"] == 1 && data["busy"] == false)
         {
             break;
         }
@@ -64,23 +70,38 @@ fn selected_passage_notes_survive_restart_and_identical_retries() {
     socket.shutdown().unwrap();
     runtime.shutdown().unwrap();
     drop(runtime);
-    let mut runtime = service::start(&root, config, service::ArchiveMode::Standalone).unwrap();
-    let mut socket = server::Server::start(Arc::clone(&runtime.daemon)).unwrap();
+    let mut runtime =
+        crate::test_daemon::start_runtime(&root, config, service::ArchiveMode::Standalone).unwrap();
+    let mut socket =
+        server::Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))
+            .unwrap();
     let retry = exchange(&host, "POST", "/v1/notes", input.to_string().as_bytes());
     assert_eq!(retry.status, 200, "{}", retry.json());
     assert_eq!(retry.json()["note"]["id"], input["request_id"]);
     assert_eq!(retry.json()["note"]["repeat"], true);
     let data = notes(&host);
     assert_eq!(data.len(), 1);
-    assert_eq!(data[0]["author"], "operator");
+    // This in-process host uses the actual test process socket identity.
+    // The external browser-host law checks Extension -> Operator attribution.
+    let request = runtime
+        .daemon
+        .reads
+        .reader()
+        .unwrap()
+        .user_request(input["request_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(data[0]["author"], request.authorship.author.to_string());
     assert_eq!(
-        data[0]["target"],
+        data[0]["about"],
         "message:chatgpt:t1 session:chatgpt:selection-session"
     );
-    let value: Value = serde_json::from_str(data[0]["value"].as_str().unwrap()).unwrap();
-    assert_eq!(value["body"], input["body"]);
-    assert_eq!(value["quote"], input["quote"]);
-    assert_eq!(value["source"], input["source"]);
+    assert_eq!(
+        data[0]["value"],
+        json!(
+            "My own reading of the passage\n\nQuoted selection:\nExact  provider\npassage\n\nSource: https://chatgpt.com/c/selection-session\nSelected at: 2026-10-24T00:00:00Z"
+        )
+    );
     let mut changed = input;
     changed["body"] = "An edit needs a new note ID".into();
     let conflict = exchange(&host, "POST", "/v1/notes", changed.to_string().as_bytes());

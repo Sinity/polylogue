@@ -6,7 +6,7 @@
 use crate::Result;
 use crate::read::Reader;
 use polylogue_model::export::SessionExport;
-use polylogue_model::{Event, Json, Link, LinkKind, MessageId, SessionId, Timestamp};
+use polylogue_model::{Event, Link, LinkKind, MessageId, SessionId};
 use rusqlite::OptionalExtension;
 
 impl Reader<'_> {
@@ -35,50 +35,56 @@ impl Reader<'_> {
         let Some(pk) = pk else {
             return Ok(Vec::new());
         };
-        let mut stmt = self.conn()?.prepare_cached(
-            "SELECT e.kind, e.at, m.id, e.source_start, e.source_end, e.data
-             FROM event e LEFT JOIN message m ON m.pk = e.after_message_pk
-             -- Events at the same position (each file's own byte 0, from
-             -- different inputs) sort by their content-derived ID, not by
-             -- which file was read first.
-             WHERE e.session_pk = ?1 ORDER BY e.seq, e.id",
-        )?;
-        let rows = stmt.query_map([pk], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Option<i64>>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, Option<i64>>(3)?,
-                r.get::<_, Option<i64>>(4)?,
-                r.get::<_, Vec<u8>>(5)?,
-            ))
+        let mut statement = self
+            .conn()?
+            .prepare_cached("SELECT fields,data FROM event WHERE session_pk=?1 ORDER BY seq,id")?;
+        let rows = statement.query_map([pk], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
         })?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (kind, at, after, start, end, data) = row?;
-            let data: Json = crate::encoding::unpack_json(&data)?;
-            out.push(Event {
-                session: Some(id.clone()),
-                kind,
-                at: at.and_then(Timestamp::from_unix_ms),
-                after: after.and_then(|a| MessageId::parse(&a).ok()),
-                range: start.zip(end).map(|(s, e)| (s as u64, e as u64)),
-                data,
-            });
-        }
-        Ok(out)
+        rows.map(|row| {
+            let (fields, data) = row?;
+            crate::events::canonical_event(&fields, &data)
+        })
+        .collect()
     }
 
     /// Links where the session is the parent or the child, in an order fixed
     /// by their content: the order inputs arrived in never changes the view
     ///.
     pub fn links(&self, id: &SessionId) -> Result<Vec<Link>> {
+        let mut links = Vec::new();
+        self.visit_links(id, |link| {
+            links.push(link);
+            std::ops::ControlFlow::Continue(())
+        })?;
+        Ok(links)
+    }
+
+    /// Visit links in content order, stopping before later payloads are decoded.
+    pub fn visit_links(
+        &self,
+        id: &SessionId,
+        visit: impl FnMut(Link) -> std::ops::ControlFlow<()>,
+    ) -> Result<()> {
+        self.visit_links_from_ordinal(id, 0, visit)
+    }
+
+    /// Seek within the physical session's canonical link order before decoding.
+    pub fn visit_links_from_ordinal(
+        &self,
+        id: &SessionId,
+        ordinal: u64,
+        mut visit: impl FnMut(Link) -> std::ops::ControlFlow<()>,
+    ) -> Result<()> {
+        let Ok(ordinal) = i64::try_from(ordinal) else {
+            return Ok(());
+        };
         let mut stmt = self.conn()?.prepare_cached(
             "SELECT kind, how, parent_id, child_id, branch_point, spawning_call, evidence
              FROM link WHERE parent_id = ?1 OR child_id = ?1
-             ORDER BY parent_id, child_id, kind, how",
+             ORDER BY parent_id, child_id, kind, how LIMIT -1 OFFSET ?2",
         )?;
-        let rows = stmt.query_map([id.to_string()], |r| {
+        let rows = stmt.query_map(rusqlite::params![id.to_string(), ordinal], |r| {
             Ok((
                 (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
                 r.get::<_, String>(2)?,
@@ -88,7 +94,6 @@ impl Reader<'_> {
                 r.get::<_, String>(6)?,
             ))
         })?;
-        let mut out = Vec::new();
         for row in rows {
             let ((kind, how), parent, child, at, call_id, evidence) = row?;
             let (Some(kind), Ok(parent), Ok(child)) = (
@@ -98,15 +103,18 @@ impl Reader<'_> {
             ) else {
                 continue;
             };
-            out.push(Link {
+            let link = Link {
                 kind,
                 parent,
                 child,
                 at: at.and_then(|a| MessageId::parse(&a).ok()),
                 call_id,
                 evidence,
-            });
+            };
+            if visit(link).is_break() {
+                break;
+            }
         }
-        Ok(out)
+        Ok(())
     }
 }

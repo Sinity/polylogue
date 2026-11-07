@@ -3,6 +3,7 @@ use super::*;
 #[test]
 fn blocks_serialize_with_a_type_tag() {
     let b = Block::ToolResult {
+        reported_duration_ms: None,
         call_id: Some("t1".into()),
         outcome: ToolOutcome::Error {
             reason: Some(ErrorReason::ExitCode(2)),

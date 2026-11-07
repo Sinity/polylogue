@@ -4,7 +4,7 @@ use super::*;
 fn every_schema_applies_to_an_empty_database() {
     for (name, create) in [
         ("archive", ensure_archive as fn(&Connection) -> Result<()>),
-        ("sinex", ensure_sinex),
+        ("primary", ensure_primary_index),
         ("index", ensure_index),
         ("embeddings", ensure_embeddings),
     ] {
@@ -14,160 +14,65 @@ fn every_schema_applies_to_an_empty_database() {
     }
 }
 
-/// `archive.sql` as version 1 declared it. The archive's migrations start
-/// from these tables.
-const ARCHIVE_1: &str = include_str!("tests/archive_1.sql");
+/// law: one-baseline
+#[test]
+fn every_database_starts_at_its_current_version() {
+    assert_eq!(ARCHIVE_VERSION, 3);
+    assert_eq!(INDEX_VERSION, 3);
+    assert_eq!(ARCHIVE_MIGRATIONS.len(), 2);
+    for (create, expected) in [
+        (
+            ensure_archive as fn(&Connection) -> Result<()>,
+            ARCHIVE_VERSION,
+        ),
+        (ensure_index, INDEX_VERSION),
+        (ensure_primary_index, INDEX_VERSION),
+        (ensure_embeddings, 1),
+    ] {
+        let conn = Connection::open_in_memory().unwrap();
+        create(&conn).unwrap();
+        assert_eq!(version(&conn).unwrap(), expected);
+    }
+}
 
-/// An archive at `version`: version 1's tables and the migrations after it.
-/// A test for a migration fills an archive at the version before, migrates
-/// it and checks that every row is still there.
-pub(crate) fn archive_at(version: u32) -> Connection {
+/// law: one-baseline
+#[test]
+fn an_index_at_another_version_is_refused_without_removing_rows() {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(ARCHIVE_1).unwrap();
-    for step in &ARCHIVE_MIGRATIONS[..version as usize - 1] {
-        conn.execute_batch(step).unwrap();
-    }
-    set_version(&conn, version).unwrap();
-    conn
-}
-
-#[test]
-fn version_1_and_the_migrations_give_the_declared_archive() {
-    for from in 1..=ARCHIVE_VERSION {
-        let conn = archive_at(from);
-        ensure_archive(&conn).unwrap_or_else(|e| panic!("from version {from}: {e}"));
-        assert_eq!(version(&conn).unwrap(), ARCHIVE_VERSION);
-        assert!(
-            same_schema(&conn, &[ARCHIVE]).unwrap(),
-            "from version {from}"
-        );
-    }
-}
-
-#[test]
-fn migration_2_adds_backfill_jobs_and_keeps_every_row() {
-    let conn = archive_at(1);
-    conn.execute_batch(
-        "INSERT INTO setting(id, machine, key, value, author, set_at, commit_seq)
-             VALUES ('s1', '*', 'browser.actions', 'on', 'operator', 1, 1);
-         INSERT INTO chat_action(id, request_key, request_hash, request_json, stage_only,
-             needs_approval, created_at, commit_seq)
-             VALUES ('a1', 'k1', x'00', '{}', 1, 0, 2, 2);
-         INSERT INTO chat_action_event(action, n, at, kind, phase, commit_seq)
-             VALUES ('a1', 1, 2, 'queued', 'queued', 2);",
-    )
-    .unwrap();
-    let rows = |conn: &Connection| -> Vec<String> {
-        ["setting", "chat_action", "chat_action_event"]
-            .iter()
-            .flat_map(|table| {
-                conn.prepare(&format!("SELECT * FROM {table}"))
-                    .unwrap()
-                    .query_map([], |r| {
-                        Ok((0..r.as_ref().column_count())
-                            .map(|i| format!("{:?}", r.get_ref(i).unwrap()))
-                            .collect::<Vec<_>>()
-                            .join("|"))
-                    })
-                    .unwrap()
-                    .collect::<rusqlite::Result<Vec<_>>>()
-                    .unwrap()
-            })
-            .collect()
-    };
-    let before = rows(&conn);
-    ensure_archive(&conn).unwrap();
-    assert!(version(&conn).unwrap() >= 2);
-    assert_eq!(rows(&conn), before);
-    conn.execute_batch(
-        "INSERT INTO backfill_job(id, provider, since, created_at, commit_seq)
-             VALUES ('j1', 'chatgpt', NULL, 3, 3);",
-    )
-    .unwrap();
-}
-
-#[test]
-fn migration_3_keeps_every_request_and_leaves_old_ones_without_their_content() {
-    let conn = archive_at(2);
-    conn.execute_batch(
-        "INSERT INTO client_request(id, content_hash, created_at) VALUES ('r1', x'01', 5);",
-    )
-    .unwrap();
-    ensure_archive(&conn).unwrap();
-    assert!(version(&conn).unwrap() >= 3);
-    let row: (String, Vec<u8>, i64, Option<Vec<u8>>, i64) = conn
-        .query_row(
-            "SELECT id, content_hash, created_at, request, commit_seq FROM client_request",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        )
+    ensure_index(&conn).unwrap();
+    conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
         .unwrap();
-    assert_eq!(row, ("r1".into(), vec![1], 5, None, 0));
-}
-
-#[test]
-fn migration_4_counts_the_rows_it_finds_and_keeps_every_row() {
-    let conn = archive_at(3);
+    // An index written by an older build of another lineage.
+    set_version(&conn, 17).unwrap();
+    assert!(matches!(
+        ensure_index(&conn),
+        Err(StoreError::IndexVersion {
+            found: 17,
+            wanted: INDEX_VERSION
+        })
+    ));
+    let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(
-        "INSERT INTO input(id, format) VALUES ('i1', 'f'), ('i2', 'f');
-         INSERT INTO revision(input, number, produced, chain, length, commit_seq)
-             VALUES ('i1', 1, 'first', 1, 10, 1), ('i1', 2, 'appended', 1, 20, 2),
-                    ('i2', 1, 'imported', 1, 5, 3);
-         INSERT INTO blob(hash, size, stored_size, place, encoding, state)
-             VALUES (x'01', 100, 50, 'file', 'plain', 'present'),
-                    (x'02', 7, 7, 'file', 'plain', 'writing');",
+        "CREATE TABLE input_ref(pk INTEGER PRIMARY KEY, id TEXT) STRICT;
+         INSERT INTO input_ref(id) VALUES ('synthetic');
+         PRAGMA user_version = 1;",
     )
     .unwrap();
-    let rows = |conn: &Connection| -> Vec<String> {
-        ["input", "revision", "blob"]
-            .iter()
-            .flat_map(|table| {
-                conn.prepare(&format!("SELECT * FROM {table}"))
-                    .unwrap()
-                    .query_map([], |r| {
-                        Ok((0..r.as_ref().column_count())
-                            .map(|i| format!("{:?}", r.get_ref(i).unwrap()))
-                            .collect::<Vec<_>>()
-                            .join("|"))
-                    })
-                    .unwrap()
-                    .collect::<rusqlite::Result<Vec<_>>>()
-                    .unwrap()
-            })
-            .collect()
-    };
-    let before = rows(&conn);
-    ensure_archive(&conn).unwrap();
-    assert!(version(&conn).unwrap() >= 4);
-    assert_eq!(rows(&conn), before);
-    let counts = |conn: &Connection| -> Vec<(String, i64)> {
-        conn.prepare("SELECT name, n FROM row_count ORDER BY name")
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    };
-    let expect = |input: i64, revision: i64, stored: i64| {
-        vec![
-            ("input".to_owned(), input),
-            ("revision".to_owned(), revision),
-            ("stored_bytes".to_owned(), stored),
-        ]
-    };
-    assert_eq!(counts(&conn), expect(2, 3, 100));
-    // The triggers keep the counts from here on.
-    conn.execute_batch(
-        "UPDATE blob SET state = 'present' WHERE hash = x'02';
-         INSERT INTO input(id, format) VALUES ('i3', 'f');
-         DELETE FROM revision WHERE input = 'i2';
-         UPDATE blob SET state = 'deleting' WHERE hash = x'01';",
-    )
-    .unwrap();
-    assert_eq!(counts(&conn), expect(3, 2, 7));
-    conn.execute_batch("DELETE FROM blob WHERE hash = x'02';")
-        .unwrap();
-    assert_eq!(counts(&conn), expect(3, 2, 0));
+    // No baseline format identity: an index written by an earlier Polylogue.
+    assert!(matches!(
+        ensure_index(&conn),
+        Err(StoreError::OlderFormat { database: "index" })
+    ));
+    assert_eq!(
+        ensure_index(&conn).unwrap_err().to_string(),
+        "older format: import with `polylogue import --from-archive PATH`"
+    );
+    assert_eq!(
+        conn.query_row("SELECT id FROM input_ref", [], |row| row
+            .get::<_, String>(0))
+            .unwrap(),
+        "synthetic"
+    );
 }
 
 const TWO_TABLES: &str = "CREATE TABLE kept(value TEXT NOT NULL) STRICT;
@@ -196,7 +101,9 @@ fn rows(conn: &Connection) -> Vec<String> {
 #[test]
 fn migrations_bring_an_older_database_forward_and_keep_its_rows() {
     let conn = version_1_with_rows();
-    let steps = ["CREATE TABLE added(value TEXT NOT NULL) STRICT;"];
+    let steps = [Migration::Sql(
+        "CREATE TABLE added(value TEXT NOT NULL) STRICT;",
+    )];
     ensure(&conn, "archive", &[TWO_TABLES], &steps).unwrap();
     assert_eq!(version(&conn).unwrap(), 2);
     assert_eq!(rows(&conn), ["one", "two"]);
@@ -204,11 +111,13 @@ fn migrations_bring_an_older_database_forward_and_keep_its_rows() {
     // A table rebuilt under a new name compares as declared: SQLite quotes
     // the renamed table's name in its declaration.
     let conn = version_1_with_rows();
-    let steps = ["CREATE TABLE added(value TEXT NOT NULL) STRICT;
+    let steps = [Migration::Sql(
+        "CREATE TABLE added(value TEXT NOT NULL) STRICT;
         CREATE TABLE kept_new(value TEXT NOT NULL) STRICT;
         INSERT INTO kept_new SELECT value FROM kept;
         DROP TABLE kept;
-        ALTER TABLE kept_new RENAME TO kept;"];
+        ALTER TABLE kept_new RENAME TO kept;",
+    )];
     ensure(&conn, "archive", &[TWO_TABLES], &steps).unwrap();
     assert_eq!(rows(&conn), ["one", "two"]);
 }
@@ -226,7 +135,7 @@ fn a_failed_or_wrong_migration_changes_nothing() {
         ),
     ] {
         let conn = version_1_with_rows();
-        let result = ensure(&conn, "archive", &[TWO_TABLES], &[step]);
+        let result = ensure(&conn, "archive", &[TWO_TABLES], &[Migration::Sql(step)]);
         if wrong_tables {
             assert!(matches!(
                 result,
@@ -267,8 +176,8 @@ fn a_newer_database_or_one_with_unknown_tables_is_refused() {
     // The current version with a table missing, as an archive written by a
     // build that declared the same version with other tables.
     for change in [
-        "DROP TABLE excised",
-        "ALTER TABLE note ADD COLUMN synthetic TEXT",
+        "DROP TABLE revision",
+        "ALTER TABLE assertion ADD COLUMN synthetic TEXT",
     ] {
         let conn = Connection::open_in_memory().unwrap();
         ensure_archive(&conn).unwrap();
@@ -300,54 +209,46 @@ fn comments_and_spacing_in_the_declarations_do_not_change_the_schema() {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(&respaced).unwrap();
     set_version(&conn, ARCHIVE_VERSION).unwrap();
+    conn.pragma_update(None, "application_id", FORMAT_ID)
+        .unwrap();
     ensure_archive(&conn).unwrap();
-}
-
-#[test]
-fn index_format_changes_require_a_version_and_digest_update() {
-    assert_eq!(
-        (
-            INDEX_VERSION,
-            blake3::hash(INDEX.as_bytes()).to_hex().to_string(),
-            blake3::hash(include_bytes!("../encoding/rows.dict"))
-                .to_hex()
-                .to_string()
-        ),
-        (
-            52,
-            "5c4ccbd763a4443e606e3b90373f869f93e36cf0581cd3bdab25f9503d69e5e1".to_owned(),
-            "e27529a9578815c3ee02058decc971ecf7c7125774a6d0e9b885eddd8a928490".to_owned()
-        ),
-        "record current source digests; bump INDEX_VERSION for schema or row-format changes, not comments"
-    );
 }
 
 #[test]
 fn read_indexes_are_added_in_place_and_survive_reopen() {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(INDEX).unwrap();
+    base_index(&conn).unwrap();
     set_version(&conn, INDEX_VERSION).unwrap();
+    conn.pragma_update(None, "application_id", FORMAT_ID)
+        .unwrap();
     conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
         .unwrap();
-    assert!(same_index_schema(&conn).unwrap());
+    // Read views are part of the schema; only read indexes may be absent.
+    conn.execute_batch(READ_INDEXES).unwrap();
+    assert!(same_index_schema_in(&conn, false).unwrap());
     ensure_index(&conn).unwrap();
     let base = Connection::open_in_memory().unwrap();
-    base.execute_batch(INDEX).unwrap();
-    let base = shape(&base).unwrap();
+    base_index(&base).unwrap();
+    let base_shape = shape(&base).unwrap();
+    base.execute_batch(READ_INDEXES).unwrap();
+    let expected = shape(&base).unwrap();
     let read_indexes: Vec<_> = shape(&conn)
         .unwrap()
         .into_iter()
-        .filter(|item| item.0 == "index" && !base.contains(item))
+        .filter(|item| item.0 == "index" && !base_shape.contains(item))
         .map(|item| item.1)
         .collect();
     assert!(!read_indexes.is_empty());
     for name in read_indexes {
         conn.execute_batch(&format!("DROP INDEX {name}")).unwrap();
-        assert!(same_index_schema(&conn).unwrap(), "missing {name}");
+        assert!(
+            same_index_schema_in(&conn, false).unwrap(),
+            "missing {name}"
+        );
         ensure_index(&conn).unwrap();
-        assert!(same_schema(&conn, &[INDEX, READ_INDEXES]).unwrap());
+        assert_eq!(shape(&conn).unwrap(), expected);
     }
-    assert!(same_schema(&conn, &[INDEX, READ_INDEXES]).unwrap());
+    assert_eq!(shape(&conn).unwrap(), expected);
     assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
     assert_eq!(
         conn.query_row("SELECT id FROM input_ref", [], |row| row
@@ -357,5 +258,205 @@ fn read_indexes_are_added_in_place_and_survive_reopen() {
     );
     conn.execute_batch("DROP INDEX event_at; CREATE INDEX event_at ON event(kind)")
         .unwrap();
-    assert!(!same_index_schema(&conn).unwrap());
+    assert!(!same_index_schema_in(&conn, false).unwrap());
+}
+
+/// law: one-baseline
+#[test]
+fn an_archive_written_before_the_baseline_is_an_older_format_and_stays_as_it_is() {
+    // An archive with tables and a version but no format identity, as every
+    // earlier Polylogue wrote it (master's archives are at version 4).
+    for found in [1, 4] {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE input(id TEXT PRIMARY KEY) STRICT;
+             INSERT INTO input VALUES ('synthetic');
+             PRAGMA user_version = {found};"
+        ))
+        .unwrap();
+        let error = ensure_archive(&conn).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                StoreError::OlderFormat {
+                    database: "archive"
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "older format: import with `polylogue import --from-archive PATH`"
+        );
+        assert_eq!(version(&conn).unwrap(), found);
+        assert_eq!(
+            conn.query_row("SELECT id FROM input", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "synthetic"
+        );
+    }
+    let conn = Connection::open_in_memory().unwrap();
+    ensure_archive(&conn).unwrap();
+    assert_eq!(format_id(&conn).unwrap(), FORMAT_ID);
+}
+
+/// An unversioned file that already holds tables is not ours to create into:
+/// it is refused before it takes the format identity or any table.
+#[test]
+fn an_unversioned_file_with_tables_is_refused_unchanged() {
+    for (name, create) in [
+        ("archive", ensure_archive as fn(&Connection) -> Result<()>),
+        ("index", ensure_index),
+    ] {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE unrelated(x INTEGER) STRICT; INSERT INTO unrelated VALUES (1);",
+        )
+        .unwrap();
+        let error = create(&conn).unwrap_err();
+        assert!(
+            matches!(error, StoreError::NoMigration { found: 0, .. }),
+            "{name}: {error}"
+        );
+        assert_eq!(format_id(&conn).unwrap(), 0, "{name}");
+        assert_eq!(version(&conn).unwrap(), 0, "{name}");
+        assert_eq!(
+            shape(&conn).unwrap(),
+            vec![(
+                "table".to_owned(),
+                "unrelated".to_owned(),
+                statement("CREATE TABLE unrelated(x INTEGER) STRICT")
+            )],
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn parse_standings_require_their_length_and_reason() {
+    let conn = Connection::open_in_memory().unwrap();
+    ensure_index(&conn).unwrap();
+    conn.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(1,'waiting','synthetic'),(2,'done','synthetic'),(3,'collected','synthetic');
+        INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto,at_length) VALUES
+          (1,1,'v1','waiting',40,100),(2,1,'v1','done',90,NULL),(3,1,'v1','no_parser_yet',30,NULL);").unwrap();
+    assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
+    let rows: Vec<(String, i64, Option<i64>)> = conn
+        .prepare("SELECT status,parsed_upto,at_length FROM parse_state ORDER BY input_pk")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        [
+            ("waiting".to_owned(), 40, Some(100)),
+            ("done".to_owned(), 90, None),
+            ("no_parser_yet".to_owned(), 30, None),
+        ]
+    );
+    let detail: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('parse_state') WHERE name='detail')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!detail);
+    // A waiting status always names its length.
+    assert!(
+        conn.execute("UPDATE parse_state SET at_length=NULL WHERE input_pk=1", [])
+            .is_err()
+    );
+    // Every designed standing is storable, and a refusal or failure keeps its reason.
+    for (status, reason) in [
+        ("refused", "synthetic reason"),
+        ("failed", "synthetic error"),
+    ] {
+        conn.execute(
+            "UPDATE parse_state SET status=?1,reason=?2,at_length=90 WHERE input_pk=2",
+            [status, reason],
+        )
+        .unwrap();
+        assert!(
+            conn.execute("UPDATE parse_state SET reason=NULL WHERE input_pk=2", [])
+                .is_err()
+        );
+    }
+    assert!(
+        conn.execute(
+            "UPDATE parse_state SET status='done',reason='stray',at_length=NULL WHERE input_pk=2",
+            []
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn old_kept_output_upgrade_marks_missing_policy_without_changing_stored_values() {
+    let conn = Connection::open_in_memory().unwrap();
+    ensure_archive(&conn).unwrap();
+    let raw = r#"{ "unit":"sessions", "columns":[], "rows":[{"text":"\u03bb","value":1.00}] }"#;
+    let evolved = polylogue_model::kept::evolve_body(raw).unwrap();
+    assert!(evolved.contains(r#""rows":[{"text":"\u03bb","value":1.00}]"#));
+    assert_eq!(
+        polylogue_model::kept::evolve_body(&evolved).unwrap(),
+        evolved
+    );
+    let original = serde_json::json!({"unit":"sessions","shape":"rows","columns":[{"name":"cwd","kind":"text"}],"rows":[{"cwd":"/work/module"}],"identities":[["test:one"]]});
+    conn.execute("INSERT INTO kept_result(id,query,ran_at,read_at,rows_json) VALUES ('old','sessions',0,'{}',?1)", [original.to_string()]).unwrap();
+    set_version(&conn, 2).unwrap();
+    ensure_archive(&conn).unwrap();
+    let stored: String = conn
+        .query_row(
+            "SELECT rows_json FROM kept_result WHERE id='old'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut upgraded: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    let metadata = upgraded
+        .as_object_mut()
+        .unwrap()
+        .remove("output_metadata")
+        .unwrap();
+    assert_eq!(metadata["version"], 2);
+    assert_eq!(metadata["rows"]["kind"], "unproven");
+    assert_eq!(upgraded, original);
+    ensure_archive(&conn).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT rows_json FROM kept_result WHERE id='old'",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        stored
+    );
+}
+
+#[test]
+fn primary_kept_output_upgrade_preserves_stored_values() {
+    let conn = Connection::open_in_memory().unwrap();
+    ensure_primary_index(&conn).unwrap();
+    let original = serde_json::json!({"unit":"sessions","columns":[{"name":"cwd","kind":"text"}],"rows":[{"cwd":"/work/module"}]});
+    conn.execute("INSERT INTO source_kept_result(id,query,ran_at,read_at,rows_json) VALUES ('old','sessions',0,'{}',?1)", [original.to_string()]).unwrap();
+    set_version(&conn, 2).unwrap();
+    ensure_primary_index(&conn).unwrap();
+    assert_eq!(version(&conn).unwrap(), 3);
+    let body: String = conn
+        .query_row(
+            "SELECT rows_json FROM source_kept_result WHERE id='old'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut body: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let metadata = body
+        .as_object_mut()
+        .unwrap()
+        .remove("output_metadata")
+        .unwrap();
+    assert_eq!(metadata["rows"]["kind"], "unproven");
+    assert_eq!(body, original);
 }

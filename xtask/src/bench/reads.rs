@@ -6,7 +6,7 @@ use devkit::{Nextest, Run};
 const SCENARIO: &str = "cli::read_bench::read_benchmark";
 const POPULATION: &str = "native-reads-v1";
 
-pub(super) fn execute(repetitions: u32, full_walk: bool) -> ExitCode {
+pub(super) fn execute(root: &Path, repetitions: u32, full_walk: bool) -> ExitCode {
     let mut args = vec!["--repetitions".to_owned(), repetitions.to_string()];
     if full_walk {
         args.push("--full-walk".into());
@@ -17,7 +17,7 @@ pub(super) fn execute(repetitions: u32, full_walk: bool) -> ExitCode {
             return Err("native read measurements require Linux process RSS counters".into());
         }
         let id = run.id().ok_or("benchmark history is unavailable")?;
-        let out = run.root.join(bench_home()).join("reads");
+        let out = run.root.join(root).join("reads");
         fs::create_dir_all(&out).map_err(|e|e.to_string())?;
         let report = out.join(format!("run-{id}.json"));
         if report.exists() {

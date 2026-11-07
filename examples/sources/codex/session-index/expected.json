@@ -6,7 +6,9 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "thread_name.updated_at": 2
+    }
   },
   "output": {
     "background": [],
@@ -21,7 +23,8 @@
         "title": {
           "source": "generated",
           "text": "Fix undefined x"
-        }
+        },
+        "started_quality": "unknown"
       }
     ]
   }

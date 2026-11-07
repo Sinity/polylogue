@@ -95,6 +95,7 @@ impl Morrow {
     /// Settings that read only this archive's home.
     pub fn config(&self) -> Config {
         Config {
+            clock: polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
             home: self.home.clone(),
             tool_dirs: Default::default(),
             workers: 3,
@@ -105,6 +106,7 @@ impl Morrow {
             chunk: 64 << 20,
             rescan_every: std::time::Duration::from_secs(60),
             live_every: std::time::Duration::from_secs(2),
+            reads_sources: true,
         }
     }
 
@@ -176,7 +178,8 @@ impl Morrow {
         let stored = r
             .stored_chain(&input.input_id, chain, input.stored)
             .map_err(|e| e.to_string())?;
-        let store = hashed_blobs::Store::open(self.root.clone(), vec![], 0o600)
+        let store = polylogue_store::Archive::at(&self.root)
+            .blobs()
             .map_err(|e| e.to_string())?;
         stored
             .read_range(&store, 0, input.stored)

@@ -1,23 +1,23 @@
 use super::*;
+use polylogue_model::read::{ItemKind, ReadPage};
 
 #[test]
 fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
-    let w = test_daemon::start("independent ordinary conversation");
-    let source = w.home.join("synthetic.atof.jsonl");
-    std::fs::write(&source,format!("{}\n",json!({"atof_version":"0.1","kind":"mark","uuid":"synthetic","name":"neutral","data":{"text":" exact MCP λ🙂 evidence ","credential":"--secret=\"unfinished --token=\"synthetic-later-value\" tail"}}))).unwrap();
-    let result = crate::daemon::service::handle(
-        crate::daemon::request::Request::Import {
+    let daemon = test_daemon::start("independent ordinary conversation");
+    let source = daemon.home.join("synthetic.atof.jsonl");
+    let text = " exact MCP λ🙂 evidence ".repeat(500);
+    let credential = "--secret=\"unfinished --token=\"synthetic-later-value\" tail";
+    std::fs::write(&source,format!("{}\n",json!({"atof_version":"0.1","kind":"mark","uuid":"synthetic","name":"neutral","data":{"text":text,"credential":credential}}))).unwrap();
+    let imported = crate::daemon::service::handle(
+        crate::daemon::Request::Import {
             request_id: "mcp-event-fixture".into(),
             paths: vec![source],
         },
-        &w.daemon,
+        &daemon.daemon,
     );
-    assert!(
-        matches!(result, crate::daemon::Response::Ok { .. }),
-        "{result:?}"
-    );
-    let archive = Archive::at(&w.daemon.archive.root);
-    let listed: serde_json::Value = serde_json::from_str(
+    crate::test_answers::ok(imported);
+    let archive = Archive::at(&daemon.daemon.archive.root);
+    let listed: Value = serde_json::from_str(
         &call(
             &archive,
             "query",
@@ -28,45 +28,60 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
     .unwrap();
     assert_eq!(listed["count"], 1);
     let reference = format!("event:{}", listed["rows"][0]["id"].as_str().unwrap());
-    let ordinary = call(
-        &archive,
-        "read",
-        args(json!({"session":reference,"format":"json"})),
+    let ordinary: ReadPage = serde_json::from_str(
+        &super::read_pages::read_without_deadline(
+            &archive,
+            json!({"target":reference,"format":"json"}),
+        )
+        .unwrap(),
     )
     .unwrap();
-    assert!(!ordinary.contains("synthetic-later-value"));
-    let ordinary: serde_json::Value = serde_json::from_str(&ordinary).unwrap();
-    assert!(ordinary["event"].get("session").is_none());
-    assert_eq!(
-        ordinary["event"]["data"]["data"]["text"],
-        " exact MCP λ🙂 evidence "
+    let (ordinary, _) = super::read_pages::collect(
+        &daemon,
+        ordinary,
+        None,
+        None,
+        command_surface::Deadline::None,
     );
-    let first: serde_json::Value = serde_json::from_str(
-        &call(
+    let item = ordinary
+        .values
+        .iter()
+        .find(|item| matches!(item.kind, ItemKind::Other { .. }))
+        .expect("event layout item");
+    let ItemKind::Other { data, .. } = &item.kind else {
+        unreachable!()
+    };
+    assert_eq!(data["event"]["data"]["data"]["text"], text);
+    assert_eq!(data["event"]["data"]["data"]["credential"], credential);
+    let page: ReadPage = serde_json::from_str(
+        &super::read_pages::read_without_deadline(
             &archive,
-            "read",
-            args(json!({"session":reference,"budget":2})),
+            json!({"target":reference,"page_tokens":128}),
         )
         .unwrap(),
     )
     .unwrap();
-    let cursor = first["next"].as_str().unwrap();
-    assert!(!cursor.contains("evidence"));
-    let next: serde_json::Value = serde_json::from_str(
-        &call(
-            &archive,
-            "read",
-            args(json!({"session":reference,"budget":3,"cursor":cursor})),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_ne!(next["text"], first["text"]);
-    let wrong = call(
-        &archive,
-        "read",
-        args(json!({"session":reference,"view":"dialogue","budget":2,"cursor":cursor})),
-    )
-    .unwrap_err();
-    assert!(wrong.starts_with("error (bad_request)"), "{wrong}");
+    let next = page
+        .document
+        .footer
+        .next
+        .clone()
+        .expect("structured event is paged");
+    let token = next.mcp["arguments"]["cursor"].as_str().unwrap();
+    assert!(!token.contains("synthetic-later-value"));
+    let mut wrong = next.clone();
+    wrong.mcp["arguments"]["arguments"]["view"] = json!("dialogue");
+    let error = super::read_pages::execute_ready(&archive, &wrong).unwrap_err();
+    // docs/query.md: "a cursor from another question is `invalid_query`";
+    // a read continuation with other arguments is refused the same way.
+    assert!(error.contains("invalid_query"), "{error}");
+    let (reconstructed, pages) =
+        super::read_pages::collect(&daemon, page, None, None, command_surface::Deadline::None);
+    let actual = reconstructed
+        .values
+        .iter()
+        .find(|item| matches!(item.kind, ItemKind::Other { .. }))
+        .expect("complete structured event survived paging");
+    assert_eq!(actual, item);
+    assert!(pages > 1);
 }

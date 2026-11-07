@@ -1,29 +1,30 @@
+use super::claude_account_text::{
+    document, import_report, joined_items, joined_items_with_options, portable, reading, records,
+};
 use super::*;
+use polylogue_model::bundle::Record;
 use serde_json::json;
 
 #[test]
-fn hermes_observer_public_query_masks_evidence_and_rebuilds_without_conversations() {
+fn hermes_observer_preserves_exact_evidence_and_rebuilds_without_conversations() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let archive = dir.path().join("archive");
     let config = dir.path().join("config");
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let source = dir.path().join("synthetic.atof.jsonl");
+    let display = "<script>synthetic()</script>\u{1b}[2J";
     let credential = "--secret=\"unfinished --token=\"synthetic-later-value\" tail";
     let raw = format!(
         "{}\n",
-        json!({"atof_version":"0.1","kind":"mark","uuid":"synthetic-native-observation","name":"hermes.approval.response","timestamp":"2026-01-02T03:04:05Z","metadata":{"session_id":"default"},"data":{"approved":false,"optional":null,"text":" exact λ🙂 ","credential":credential}})
+        json!({"atof_version":"0.1","kind":"mark","uuid":"synthetic-native-observation","name":"hermes.approval.response","timestamp":"2026-01-02T03:04:05Z","metadata":{"session_id":"default"},"data":{"approved":false,"optional":null,"text":" exact λ🙂 ","credential":credential,"display":display}})
     );
     std::fs::write(&source, &raw).unwrap();
     let first = {
         let _daemon = start_daemon(&env);
-        let imported = cli(&env, &["import", source.to_str().unwrap()]);
-        assert!(imported.status.success(), "{imported:?}");
+        let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
+        let _ = import_report(&imported);
         let out = cli(
             &env,
             &[
@@ -34,9 +35,6 @@ fn hermes_observer_public_query_masks_evidence_and_rebuilds_without_conversation
             ],
         );
         assert!(out.status.success(), "{out:?}");
-        let text = String::from_utf8(out.stdout.clone()).unwrap();
-        assert!(!text.contains("synthetic-later-value"));
-        assert!(text.contains("tail"));
         let first = json(&out);
         assert_eq!(first["count"], 1);
         let row = &first["rows"][0];
@@ -44,95 +42,169 @@ fn hermes_observer_public_query_masks_evidence_and_rebuilds_without_conversation
         assert_eq!(row["source"], "hermes");
         assert_eq!(row["source_start"], 0);
         assert_eq!(row["source_end"], raw.len() as u64);
+        assert_eq!(row["data"]["uuid"], "synthetic-native-observation");
         assert_eq!(row["data"]["data"]["approved"], false);
         assert!(row["data"]["data"]["optional"].is_null());
         assert_eq!(row["data"]["data"]["text"], " exact λ🙂 ");
+        assert_eq!(row["data"]["data"]["credential"], credential);
+        assert_eq!(row["data"]["data"]["display"], display);
         let exact = format!("events where id:{}", row["id"].as_str().unwrap());
         let lookup = cli(&env, &["--json", &exact]);
         assert!(lookup.status.success(), "{lookup:?}");
         assert_eq!(json(&lookup)["count"], 1);
         let reference = format!("event:{}", row["id"].as_str().unwrap());
-        for args in [
-            vec!["--json", "read", &reference],
-            vec!["read", &reference],
-            vec!["read", &reference, "--format", "html"],
-            vec!["read", &reference, "--format", "markdown"],
-            vec!["export", &reference, "--format", "json"],
-        ] {
-            let result = cli(&env, &args);
-            assert!(result.status.success(), "{args:?}: {result:?}");
+        let page = reading(&env, &reference, &[]);
+        assert!(!page.document.items.is_empty());
+        for format in ["terminal", "html", "markdown"] {
+            let result = cli(&env, &["read", &reference, "--format", format]);
+            assert!(result.status.success(), "{format}: {result:?}");
+            let rendered = String::from_utf8(result.stdout).unwrap();
+            assert!(rendered.contains("synthetic-later-value"), "{rendered}");
             assert!(
-                !String::from_utf8(result.stdout)
-                    .unwrap()
-                    .contains("synthetic-later-value")
+                !rendered.contains('\u{1b}'),
+                "raw terminal control: {rendered:?}"
             );
+            if format == "html" {
+                assert!(!rendered.contains("<script>synthetic()</script>"));
+                assert!(rendered.contains("&lt;script&gt;"), "{rendered}");
+            }
         }
-        let portable = cli(&env, &["export", &reference, "--format", "json"]);
-        assert!(portable.status.success(), "{portable:?}");
-        let envelope = json(&portable);
-        assert_eq!(envelope["version"], 3);
-        assert_eq!(envelope["events"][0]["input"], row["input"]);
-        let imported_path = dir.path().join("portable-event.json");
-        // Root field order is irrelevant, including a discriminator beyond
-        // the import sniff prefix and beyond a large preceding value.
-        let mut reordered = envelope.as_object().unwrap().clone();
-        let format = reordered.remove("format").unwrap();
-        let leading = serde_json::to_string(&"neutral padding ".repeat(10_000)).unwrap();
-        let mut transfer = serde_json::to_string(&reordered).unwrap();
-        transfer.pop();
-        transfer.push_str(&format!(",\"padding\":{leading},\"format\":{format}}}"));
-        std::fs::write(&imported_path, transfer).unwrap();
+        let imported_path = dir.path().join("portable-event");
+        let bundle = portable(&env, &reference, &imported_path);
+        let Record::Manifest(manifest) = &bundle[0] else {
+            unreachable!()
+        };
+        assert_eq!(manifest.version, polylogue_model::bundle::VERSION);
+        let events: Vec<_> = bundle
+            .iter()
+            .filter_map(|record| match record {
+                Record::Event(event) => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(events.len(), 1);
+        let event = events[0];
+        assert_eq!(event.identity.id, row["id"].as_str().unwrap());
+        assert_eq!(
+            serde_json::to_value(&event.event.data).unwrap(),
+            row["data"]
+        );
+        assert!(event.identity.sources.iter().any(|claim| {
+            claim.input == row["input"].as_str().unwrap()
+                && claim.source == "hermes"
+                && claim.source_chain == row["source_chain"].as_i64().unwrap()
+                && claim.source_start == Some(0)
+                && claim.source_end == Some(raw.len() as u64)
+        }));
         let second_archive = dir.path().join("second-archive");
-        let second_env = [
-            ("POLYLOGUE_HOME", home.as_path()),
-            ("POLYLOGUE_ARCHIVE", second_archive.as_path()),
-            ("XDG_CONFIG_HOME", config.as_path()),
-        ];
+        let second_env =
+            crate::Fixture::new(second_archive.as_path(), home.as_path(), config.as_path());
         {
             let _second = start_daemon(&second_env);
-            let result = cli(&second_env, &["import", imported_path.to_str().unwrap()]);
-            assert!(result.status.success(), "{result:?}");
-            let imported = cli(&second_env, &["--json", "events"]);
+            let result = cli(
+                &second_env,
+                &["--json", "import", imported_path.to_str().unwrap()],
+            );
+            let _ = import_report(&result);
+            let imported = cli(
+                &second_env,
+                &[
+                    "--json",
+                    "--fields",
+                    "id,input,source,source_chain,source_start,source_end,session,data",
+                    "events",
+                ],
+            );
             assert!(imported.status.success(), "{imported:?}");
             let imported = json(&imported);
             assert_eq!(imported["count"], 1);
             assert_ne!(imported["rows"][0]["input"], row["input"]);
-            assert_eq!(imported["rows"][0]["source"], "polylogue-export");
-            assert_ne!(
-                imported["rows"][0]["id"], row["id"],
-                "an imported sender ID is what the export says, not this machine's provider ID"
-            );
+            assert_eq!(imported["rows"][0]["source"], "polylogue-bundle");
+            assert_eq!(imported["rows"][0]["id"], row["id"]);
+            assert_eq!(imported["rows"][0]["data"], row["data"]);
             assert!(imported["rows"][0]["session"].is_null());
-        }
-        let mut cursor: Option<String> = None;
-        let mut joined = String::new();
-        loop {
-            let mut args = vec!["--json", "read", reference.as_str(), "--budget", "16"];
-            if let Some(c) = cursor.as_deref() {
-                args.extend(["--cursor", c]);
+            let received = records(&second_env, &reference);
+            let received = received
+                .iter()
+                .find_map(|record| match record {
+                    Record::Event(event) => Some(event),
+                    _ => None,
+                })
+                .unwrap();
+            // The receiving bundle has its own record coordinates; the
+            // supplied native identity and source claims remain unchanged.
+            let mut expected_event = event.event.clone();
+            assert_eq!(received.event.range, Some((0, 0)));
+            let receiving = &imported["rows"][0];
+            assert!(received.identity.sources.iter().any(|claim| {
+                claim.input == receiving["input"].as_str().unwrap()
+                    && claim.source == "polylogue-bundle"
+                    && claim.source_chain == receiving["source_chain"].as_i64().unwrap()
+                    && claim.source_start == receiving["source_start"].as_u64()
+                    && claim.source_end == receiving["source_end"].as_u64()
+            }));
+            // The current importer marks this Event's semantic position as
+            // a point; physical evidence is the actual retained JSONL item.
+            let bytes = std::fs::read(imported_path.join("records.jsonl")).unwrap();
+            let mut offset = 0;
+            let mut item_range = None;
+            for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+                let record: Record = serde_json::from_slice(line).unwrap();
+                if matches!(&record, Record::Event(record) if record.identity.id == event.identity.id)
+                {
+                    assert_eq!(record, Record::Event(event.clone()));
+                    item_range = Some((offset, offset + line.len()));
+                }
+                offset += line.len();
             }
-            let page = cli(&env, &args);
-            assert!(page.status.success(), "{page:?}");
-            let page = json(&page);
-            joined.push_str(page["text"].as_str().unwrap());
-            cursor = page["next"].as_str().map(str::to_owned);
-            if cursor.is_none() {
-                break;
-            }
+            let (start, end) = item_range.unwrap();
+            assert!(start < end);
+            let pool =
+                polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&second_archive))
+                    .unwrap();
+            let reader = pool.reader().unwrap();
+            let retained = reader
+                .stored_range(
+                    receiving["input"].as_str().unwrap(),
+                    receiving["source_chain"].as_i64().unwrap(),
+                    start as u64,
+                    end as u64,
+                    &reader.blob_reader().unwrap(),
+                )
+                .unwrap();
+            assert_eq!(retained, bytes[start..end]);
+            let retained: Record = serde_json::from_slice(&retained).unwrap();
+            assert_eq!(retained, Record::Event(event.clone()));
+            expected_event.range = received.event.range;
+            assert_eq!(received.event, expected_event);
+            assert!(
+                event
+                    .identity
+                    .sources
+                    .iter()
+                    .all(|claim| received.identity.sources.contains(claim))
+            );
         }
+        let joined = joined_items(&env, &reference, "16");
+        assert_eq!(
+            joined,
+            reading(&env, &reference, &["--page-tokens", "100000"])
+                .document
+                .items
+        );
+        let joined = serde_json::to_string(&joined).unwrap();
         assert!(joined.contains("exact λ🙂"));
-        assert!(!joined.contains("synthetic-later-value"));
+        assert!(joined.contains("synthetic-later-value"));
         let rendered = cli(&env, &["events where text:λ🙂"]);
         assert!(rendered.status.success(), "{rendered:?}");
         assert!(
-            !String::from_utf8(rendered.stdout)
+            String::from_utf8(rendered.stdout)
                 .unwrap()
                 .contains("synthetic-later-value")
         );
         for unit in ["sessions", "messages"] {
             let out = cli(&env, &["--json", unit]);
-            assert!(out.status.success(), "{out:?}");
-            assert_eq!(json(&out)["count"], 0);
+            assert_eq!(query_rows(&out)["count"], 0);
         }
         assert_eq!(std::fs::read_to_string(&source).unwrap(), raw);
         let pool =
@@ -163,18 +235,35 @@ fn hermes_observer_public_query_masks_evidence_and_rebuilds_without_conversation
     );
     assert!(out.status.success(), "{out:?}");
     assert_eq!(json(&out)["rows"], first["rows"]);
-    let target = format!("input:{}", first["rows"][0]["input"].as_str().unwrap());
-    let excised = cli(&env, &["--json", "excise", &target, "--yes"]);
-    assert!(excised.status.success(), "{excised:?}");
-    let remaining = cli(&env, &["--json", "events"]);
-    assert!(remaining.status.success(), "{remaining:?}");
-    assert_eq!(json(&remaining)["count"], 0);
 }
 
-fn ledger_rows(env: &[(&str, &Path)]) -> serde_json::Value {
+pub(super) fn query_rows(out: &Output) -> serde_json::Value {
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&out.stdout).unwrap();
+    match answer {
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Ok(value),
+            ..
+        } => {
+            assert!(out.status.success(), "{out:?}");
+            value
+        }
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Empty(value),
+            ..
+        } => {
+            assert_eq!(out.status.code(), Some(1), "{out:?}");
+            assert_eq!(value["count"], 0, "{value}");
+            assert_eq!(value["rows"], json!([]), "{value}");
+            value
+        }
+        answer => panic!("expected rows or typed empty query: {answer:?}; {out:?}"),
+    }
+}
+
+fn ledger_rows(env: &crate::Fixture) -> serde_json::Value {
     let out = cli(env, &["--json", "events where source:hermes | sort by id"]);
-    assert!(out.status.success(), "{out:?}");
-    json(&out)
+    query_rows(&out)
 }
 fn ledger_count(rows: &serde_json::Value, kind: &str) -> usize {
     rows["rows"]
@@ -185,7 +274,7 @@ fn ledger_count(rows: &serde_json::Value, kind: &str) -> usize {
         .count()
 }
 fn wait_ledger(
-    env: &[(&str, &Path)],
+    env: &crate::Fixture,
     ready: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
     loop {
@@ -213,11 +302,7 @@ fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_obs
     drop(db);
     let archive = dir.path().join("archive");
     let config = dir.path().join("config");
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let before_rebuild = {
         let daemon = start_daemon(&env);
         let initial = wait_ledger(&env, |rows| {
@@ -281,8 +366,7 @@ fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_obs
         assert!(!observations.contains(&2));
         for unit in ["sessions", "messages"] {
             let out = cli(&env, &["--json", unit]);
-            assert!(out.status.success(), "{out:?}");
-            assert_eq!(json(&out)["count"], 0);
+            assert_eq!(query_rows(&out)["count"], 0);
         }
         final_rows
     };
@@ -298,17 +382,13 @@ fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_obs
 }
 
 #[test]
-fn hermes_atif_documents_preserve_roles_unknown_media_and_mask_ordered_parts() {
+fn hermes_atif_documents_preserve_roles_unknown_media_and_exact_ordered_parts() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let archive = dir.path().join("archive");
     let config = dir.path().join("config");
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let value = json!({"schema_version":"ATIF-v1.7","trajectory_id":"native-trajectory","session_id":"default","agent":{"name":"synthetic","version":"1"},"steps":[
         {"step_id":1,"source":"user","message":[{"type":"text","text":" exact user λ🙂 "},{"type":"image","source":{"media_type":"image/png","path":"images/input.png"}}]},
         {"step_id":2,"source":"agent","llm_call_count":0,"message":[{"type":"text","text":"-----BEGIN PRIVATE KEY-----\n"},{"type":"text","text":"synthetic-atif-message-tail\n-----END PRIVATE KEY-----"}],"tool_calls":[{"tool_call_id":"native-call","function_name":"terminal","arguments":{"command":"printf synthetic"}}],"observation":{"results":[{"source_call_id":"native-call","content":[{"type":"text","text":"-----BEGIN PRIVATE KEY-----\n"},{"type":"image","source":{"media_type":"image/png","path":"images/result.png"}},{"type":"text","text":"synthetic-atif-result-tail\n-----END PRIVATE KEY-----"}]}]}}
@@ -317,8 +397,8 @@ fn hermes_atif_documents_preserve_roles_unknown_media_and_mask_ordered_parts() {
     let source = dir.path().join("trajectory-synthetic.json");
     std::fs::write(&source, &raw).unwrap();
     let _daemon = start_daemon(&env);
-    let imported = cli(&env, &["import", source.to_str().unwrap()]);
-    assert!(imported.status.success(), "{imported:?}");
+    let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
+    let _ = import_report(&imported);
     let listed = cli(
         &env,
         &["--json", "documents where origin:hermes | sort by id"],
@@ -334,14 +414,7 @@ fn hermes_atif_documents_preserve_roles_unknown_media_and_mask_ordered_parts() {
             row["title"].is_null(),
             "Polylogue's rendering label is not a native title"
         );
-        let read = cli(&env, &["--json", "read", &reference]);
-        assert!(read.status.success(), "{read:?}");
-        let text = String::from_utf8(read.stdout.clone()).unwrap();
-        assert!(
-            !text.contains("synthetic-atif-message-tail")
-                && !text.contains("synthetic-atif-result-tail")
-        );
-        let doc = json(&read)["document"].clone();
+        let doc = document(&env, &reference);
         if doc["metadata"]["source"] == "user" {
             assert_eq!(doc["blocks"][0]["text"], " exact user λ🙂 ");
             assert_eq!(doc["blocks"][1]["direction"], "unknown");
@@ -351,38 +424,46 @@ fn hermes_atif_documents_preserve_roles_unknown_media_and_mask_ordered_parts() {
             assert_eq!(doc["metadata"]["llm_call_count"], 0);
             assert_eq!(doc["blocks"][3]["call_id"], "native-call");
             assert_eq!(doc["blocks"][3]["outcome"]["kind"], "unknown");
-            let mut cursor: Option<String> = None;
-            let mut joined = String::new();
-            loop {
-                let mut args = vec!["--json", "read", reference.as_str(), "--budget", "24"];
-                if let Some(c) = cursor.as_deref() {
-                    args.extend(["--cursor", c]);
-                }
-                let page = cli(&env, &args);
-                assert!(page.status.success(), "{page:?}");
-                let page = json(&page);
-                joined.push_str(page["text"].as_str().unwrap());
-                cursor = page["next"].as_str().map(str::to_owned);
-                if cursor.is_none() {
-                    break;
-                }
-            }
-            assert!(
-                !joined.contains("synthetic-atif-message-tail")
-                    && !joined.contains("synthetic-atif-result-tail")
+            // Tool output is shown in full only with `--tools full`
+            // (docs/reading.md, tools).
+            let joined =
+                joined_items_with_options(&env, &reference, "24", &["--show", "tools:full"]);
+            assert_eq!(
+                joined,
+                reading(
+                    &env,
+                    &reference,
+                    &["--show", "tools:full", "--page-tokens", "100000"]
+                )
+                .document
+                .items
             );
+            let joined = serde_json::to_string(&joined).unwrap();
+            assert!(joined.contains("synthetic-atif-message-tail"));
+            assert!(joined.contains("synthetic-atif-result-tail"));
         }
-        let out = cli(&env, &["export", &reference, "--format", "json"]);
-        assert!(out.status.success(), "{out:?}");
-        let exported = json(&out);
-        assert_eq!(exported["version"], 3);
-        assert_eq!(exported["sessions"], json!([]));
-        assert_eq!(exported["documents"][0]["purpose"], "transcript");
+        let exported = records(&env, &reference);
+        assert!(
+            !exported
+                .iter()
+                .any(|r| matches!(r, Record::Session(_) | Record::Message(_)))
+        );
+        let documents: Vec<_> = exported
+            .iter()
+            .filter_map(|r| match r {
+                Record::Document(record) => Some(&record.document),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(documents.len(), 1);
+        assert_eq!(
+            serde_json::to_value(documents[0]).unwrap()["purpose"],
+            "transcript"
+        );
     }
     for unit in ["sessions", "messages", "tool_calls"] {
         let out = cli(&env, &["--json", unit]);
-        assert!(out.status.success(), "{out:?}");
-        assert_eq!(json(&out)["count"], 0);
+        assert_eq!(query_rows(&out)["count"], 0);
     }
     assert_eq!(std::fs::read(&source).unwrap(), raw);
     let pool = polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive)).unwrap();

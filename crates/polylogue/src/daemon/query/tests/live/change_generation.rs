@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_store::{UserRequest, UserWrite};
+use polylogue_model::user::{UserRequest, UserWrite};
 use polylogue_testkit::{ClaudeHome, claude_user, delete_index};
 
 #[test]
@@ -20,10 +20,28 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
         run(&pool.reader().unwrap(), ask("sessions", T0)).unwrap()
     };
     let cursor = initial["read_at"]["cursor"].as_str().unwrap();
-    engine.writer().unwrap().user(UserRequest {
-        id: "saved-feed".into(), machine: "synthetic".into(), at: Timestamp::from_unix_ms(T0).unwrap(),
-        write: UserWrite::AddNote { note: serde_json::from_value(json!({"kind":"saved_query","key":"old-feed","value":format!("changes where after:{cursor}"),"author":"operator","targets":["repo:synthetic"]})).unwrap() },
-    }).unwrap();
+    engine
+        .writer()
+        .unwrap()
+        .user_preparing(
+            UserRequest {
+                authorship: polylogue_model::authorship::Authorship {
+                    author: polylogue_model::Author::Operator,
+                    via: polylogue_model::authorship::Channel::Cli,
+                },
+                id: "saved-feed".into(),
+                machine: "synthetic".into(),
+                at: Timestamp::from_unix_ms(T0).unwrap(),
+                write: UserWrite::SaveQuery {
+                    name: "old-feed".into(),
+                    text: format!("changes where after:{cursor}"),
+                    denominator: None,
+                },
+            },
+            polylogue_store::user_writes::PreparationContext::new(vec!["claude-code".into()]),
+            None,
+        )
+        .unwrap();
     drop(engine);
     drop(lock);
     delete_index(&home.root);
@@ -42,17 +60,18 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
         format!("changes where after:{cursor} | limit 1"),
         format!("changes where after:{cursor} | group by kind | count"),
         format!("sessions where exists change(after:{cursor}) | count"),
-        format!("changes where NOT after:{cursor} OR kind:note"),
+        format!("changes where NOT after:{cursor} OR kind:assertion"),
         "query:old-feed".into(),
     ] {
         let error = run(&reader, ask(&query, T0)).unwrap_err();
-        assert_eq!(error.kind, "resync_required", "{query}: {error:?}");
-        assert_eq!(
-            error.detail.unwrap()["excisions_query"],
-            "changes where kind:excision"
+        assert_eq!(error.code(), "resync_required", "{query}: {error:?}");
+        assert!(
+            error.message.starts_with("the index generation changed"),
+            "{query}: {}",
+            error.message
         );
         assert_eq!(
-            keep(&reader, ask(&query, T0)).unwrap_err().kind,
+            keep(&reader, ask(&query, T0)).unwrap_err().code(),
             "resync_required",
             "keep {query}"
         );
@@ -70,7 +89,7 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
 }
 
 #[test]
-fn fresh_change_cursors_keep_two_counters_and_include_late_notes_and_excisions() {
+fn fresh_change_cursors_keep_two_counters_and_include_late_notes() {
     let home = ClaudeHome::new();
     home.append(
         "gone.jsonl",
@@ -93,14 +112,15 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes_and_excisions()
         .writer()
         .unwrap()
         .user(UserRequest {
+    authorship: polylogue_model::authorship::Authorship {
+        author: polylogue_model::Author::Operator,
+        via: polylogue_model::authorship::Channel::Cli,
+    },
             id: "000-late-note".into(),
             machine: "synthetic".into(),
             at: Timestamp::from_unix_ms(T0 - 86_400_000).unwrap(),
-            write: UserWrite::AddNote {
-                note: serde_json::from_value(
-                    json!({"kind":"note","value":"late arrival","author":"operator","targets":["repo:synthetic"]}),
-                )
-                .unwrap(),
+            write: UserWrite::Assert {
+                assertions: vec![serde_json::from_value(json!({"kind":"note","key":null,"value":"late arrival","links":[{"role":"about","reference":"repo:synthetic"}],"valid_until":null})).unwrap()],
             },
         })
         .unwrap();
@@ -111,14 +131,8 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes_and_excisions()
     );
     drop(pinned);
     drop(pool);
-    engine
-        .excise(polylogue_store::excise::ExciseRequest {
-            id: "remove-gone".into(),
-            target: polylogue_store::excise::ExciseTarget::Session(sid("gone")),
-            reason: None,
-            dry_run: false,
-        })
-        .unwrap();
+    home.append("kept.jsonl", &claude_user("k2", "kept", "a later message"));
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     let pool = home.reads();
     let reader = pool.reader().unwrap();
     let changes = run(&reader, ask(&after, T0)).unwrap();
@@ -137,25 +151,8 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes_and_excisions()
     let rows = changes["rows"].as_array().unwrap();
     assert!(
         rows.iter()
-            .any(|r| r["kind"] == "note" && r["ref"] == "000-late-note")
+            .any(|r| r["kind"] == "assertion" && r["ref"] == "000-late-note")
     );
-    assert!(
-        rows.iter()
-            .any(|r| r["kind"] == "removed" && r["ref"] == "claude-code:gone")
-    );
-    let excision = rows.iter().find(|r| r["kind"] == "excision").unwrap();
-    assert_eq!(excision["ref"], "remove-gone");
-    assert_eq!(excision["target"], "session:claude-code:gone");
-    assert_eq!(excision["sessions"], json!(["claude-code:gone"]));
-    assert!(
-        excision["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(Value::is_string)
-    );
-    let replay = run(&reader, ask("changes where kind:excision", T0)).unwrap();
-    assert_eq!(replay["rows"], json!([excision]));
     let after = format!(
         "changes where after:{}",
         changes["read_at"]["cursor"].as_str().unwrap()
@@ -177,7 +174,7 @@ fn selection_output_preserves_unknown_and_empty_and_refuses_scalars() {
     for text in ["true", "1", "\"bad\"", "[1]", "{}", "["] {
         let mut value = json!(text);
         assert_eq!(
-            shape_value(ColKind::Ids, &mut value).unwrap_err().kind,
+            shape_value(ColKind::Ids, &mut value).unwrap_err().code(),
             "store"
         );
     }
@@ -193,41 +190,15 @@ fn scalar_sqlite_selection_values_are_not_treated_as_missing() {
         json!([""]),
     ] {
         assert_eq!(
-            shape_value(ColKind::Ids, &mut value).unwrap_err().kind,
+            shape_value(ColKind::Ids, &mut value).unwrap_err().code(),
             "store"
         );
     }
 }
 
 #[test]
-fn excision_changes_list_the_removed_sessions_and_messages() {
-    use polylogue_store::fixture::Fixture;
-    for (sessions, messages) in [
-        (&[][..], &[][..]),
-        (
-            &["claude-code:a"][..],
-            &["claude-code:a1", "claude-code:a2"][..],
-        ),
-    ] {
-        let dir = tempfile::tempdir().unwrap();
-        let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-        fixture
-            .excision("remove", "session:claude-code:a", sessions, messages)
-            .unwrap();
-        let pool = fixture.reads().unwrap();
-        let result = run(
-            &pool.reader().unwrap(),
-            ask("changes where kind:excision", T0),
-        )
-        .unwrap();
-        assert_eq!(result["rows"][0]["sessions"], json!(sessions));
-        assert_eq!(result["rows"][0]["messages"], json!(messages));
-    }
-}
-
-#[test]
 fn public_keep_refuses_a_stale_change_cursor_without_keeping_a_result() {
-    use crate::daemon::{Request, Response, service::handle};
+    use crate::daemon::{Request, service::handle};
     let daemon = crate::test_daemon::start("synthetic source");
     let result = handle(
         Request::Keep {
@@ -237,7 +208,9 @@ fn public_keep_refuses_a_stale_change_cursor_without_keeping_a_result() {
         },
         &daemon.daemon,
     );
-    assert!(matches!(result, Response::Error { kind, .. } if kind == "resync_required"));
+    assert!(
+        matches!(result, command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("resync_required"))
+    );
     let pool = polylogue_store::ReadPool::open(&daemon.daemon.archive).unwrap();
     assert_eq!(
         pool.reader()
@@ -248,45 +221,5 @@ fn public_keep_refuses_a_stale_change_cursor_without_keeping_a_result() {
             )
             .unwrap()[0]["n"],
         0
-    );
-}
-
-#[test]
-fn kept_change_selections_preserve_their_json_type_when_read_back() {
-    use polylogue_store::fixture::Fixture;
-    let dir = tempfile::tempdir().unwrap();
-    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-    fixture
-        .excision("remove", "input:synthetic", &["claude-code:a"], &[])
-        .unwrap();
-    let pool = fixture.reads().unwrap();
-    let mut kept = keep(
-        &pool.reader().unwrap(),
-        ask("changes where kind:excision", T0),
-    )
-    .unwrap();
-    fixture
-        .kept_result(
-            "valid-ids",
-            "changes where kind:excision",
-            &kept.to_string(),
-        )
-        .unwrap();
-    let result = run(&pool.reader().unwrap(), ask("result:valid-ids", T0)).unwrap();
-    assert_eq!(result["rows"][0]["sessions"], json!(["claude-code:a"]));
-    assert_eq!(result["rows"][0]["messages"], json!([]));
-    kept["rows"][0]["sessions"] = json!("[\"claude-code:a\"]");
-    fixture
-        .kept_result(
-            "invalid-ids",
-            "changes where kind:excision",
-            &kept.to_string(),
-        )
-        .unwrap();
-    assert_eq!(
-        run(&pool.reader().unwrap(), ask("result:invalid-ids", T0))
-            .unwrap_err()
-            .kind,
-        "store"
     );
 }

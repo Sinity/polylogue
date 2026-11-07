@@ -22,7 +22,7 @@ fn body(n: usize) -> String {
     text
 }
 
-fn request(env: &[(&str, &Path)], args: &[&str]) -> (Value, f64) {
+fn request(env: &crate::Fixture, args: &[&str]) -> (Value, f64) {
     let began = Instant::now();
     let output = cli(env, args);
     let seconds = began.elapsed().as_secs_f64();
@@ -108,7 +108,7 @@ fn verify_text(text: &str, expected: &[String]) {
     );
 }
 
-fn walk(env: &[(&str, &Path)], expected: &[String]) -> (Value, String) {
+fn walk(env: &crate::Fixture, expected: &[String]) -> (Value, String) {
     let began = Instant::now();
     let mut cursor = None;
     let mut seen = HashSet::new();
@@ -118,7 +118,7 @@ fn walk(env: &[(&str, &Path)], expected: &[String]) -> (Value, String) {
     // A page limit from this fixed population, so a broken cursor cannot loop.
     let max_pages = expected.iter().map(String::len).sum::<usize>() / PAGE_BUDGET + MAIN_MESSAGES;
     for _ in 0..max_pages {
-        let mut args = vec!["--json", "read", LARGE, "--budget", &budget];
+        let mut args = vec!["--json", "read", LARGE, "--page-tokens", &budget];
         if let Some(token) = cursor.as_deref() {
             args.extend(["--cursor", token]);
         }
@@ -161,14 +161,11 @@ struct WindowStart {
     cursor: Option<String>,
 }
 
-fn reference_windows(
-    env: &[(&str, &Path)],
-    bodies: &[String],
-) -> (String, Vec<WindowStart>, Value) {
+fn reference_windows(env: &crate::Fixture, bodies: &[String]) -> (String, Vec<WindowStart>, Value) {
     let began = Instant::now();
     let budget = bodies.iter().map(String::len).sum::<usize>().to_string();
     eprintln!("native read bench: starting complete reference read");
-    let (whole, seconds) = request(env, &["--json", "read", LARGE, "--budget", &budget]);
+    let (whole, seconds) = request(env, &["--json", "read", LARGE, "--page-tokens", &budget]);
     assert!(
         whole["next"].is_null(),
         "reference read must include the whole declared population"
@@ -190,7 +187,7 @@ fn reference_windows(
         } else {
             eprintln!("native read bench: preparing {name} reference cursor");
             let budget = (page * PAGE_BUDGET).to_string();
-            let (prefix, _) = request(env, &["--json", "read", LARGE, "--budget", &budget]);
+            let (prefix, _) = request(env, &["--json", "read", LARGE, "--page-tokens", &budget]);
             assert_eq!(prefix["text"].as_str().unwrap(), &reference[..byte]);
             Some(
                 prefix["next"]
@@ -205,14 +202,14 @@ fn reference_windows(
     (reference, starts, facts)
 }
 
-fn window(env: &[(&str, &Path)], start: &WindowStart, reference: &str) -> Value {
+fn window(env: &crate::Fixture, start: &WindowStart, reference: &str) -> Value {
     let began = Instant::now();
     let mut cursor = start.cursor.clone();
     let mut text = String::new();
     let mut samples = Vec::new();
     let budget = PAGE_BUDGET.to_string();
     for _ in 0..WINDOW_PAGES {
-        let mut args = vec!["--json", "read", LARGE, "--budget", &budget];
+        let mut args = vec!["--json", "read", LARGE, "--page-tokens", &budget];
         if let Some(token) = cursor.as_deref() {
             args.extend(["--cursor", token]);
         }
@@ -245,16 +242,13 @@ fn window(env: &[(&str, &Path)], start: &WindowStart, reference: &str) -> Value 
     json!({"seconds":seconds,"first_page_seconds":samples[0],"page_seconds":summary(&samples),"pages":samples.len(),"rendered_bytes":text.len(),"rendered_blake3":blake3::hash(text.as_bytes()).to_hex().to_string(),"reference_slice_verified":true,"reached_end":reached_end,"complete_session_walk":false})
 }
 
-fn cancelled_client(env: &[(&str, &Path)]) {
+fn cancelled_client(env: &crate::Fixture) {
     let budget = PAGE_BUDGET.to_string();
     let mut command = super::command(env);
     command
-        .args(["--json", "read", LARGE, "--budget", &budget])
+        .args(["--json", "read", LARGE, "--page-tokens", &budget])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for (key, value) in env {
-        command.env(key, value);
-    }
     let mut child = Daemon(polylogue_testkit::spawn_daemon(&mut command).unwrap());
     let mut first = [0];
     child
@@ -275,7 +269,7 @@ fn cancelled_client(env: &[(&str, &Path)]) {
     assert_status(&status);
 }
 
-fn check_cancelled_client(env: &[(&str, &Path)], daemon: &Daemon, expected: &[String]) -> Value {
+fn check_cancelled_client(env: &crate::Fixture, daemon: &Daemon, expected: &[String]) -> Value {
     eprintln!("native read bench: starting client abandonment");
     cancelled_client(env);
     eprintln!("native read bench: abandoned client and status verified");
@@ -285,7 +279,7 @@ fn check_cancelled_client(env: &[(&str, &Path)], daemon: &Daemon, expected: &[St
             "--json",
             "read",
             LARGE,
-            "--budget",
+            "--page-tokens",
             &PAGE_BUDGET.to_string(),
         ],
     );
@@ -308,11 +302,7 @@ fn read_benchmark() {
     let setup = Instant::now();
     let home = polylogue_testkit::ClaudeHome::new();
     let config = home.dir.path().join("config");
-    let env = [
-        ("POLYLOGUE_HOME", home.home.as_path()),
-        ("POLYLOGUE_ARCHIVE", home.root.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(home.root.as_path(), home.home.as_path(), config.as_path());
     let expected: Vec<_> = (0..MAIN_MESSAGES).map(body).collect();
     let mut input_bytes = 0;
     let mut identity = blake3::Hasher::new();

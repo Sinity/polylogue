@@ -1,10 +1,9 @@
 //! The daemon request each command sends, built from its checked values.
 
-use super::{Caller, Command, LIVE, NOTICES, Values};
+use super::{Caller, Command, LIVE, NOTICES, Values, WAITING};
 use crate::briefing::{Ask, StartSource};
 use crate::browser::actions::{ChatFile, ChatRequest};
-use crate::daemon::{ReadTarget, Request};
-use polylogue_model::{Author, NewNote, NoteKind, Target};
+use crate::daemon::Request;
 use std::path::PathBuf;
 
 type Built = Result<Request, String>;
@@ -15,7 +14,7 @@ fn query_request(text: String, page_size: Option<u64>, v: &Values) -> Request {
         cursor: v.text("cursor"),
         page_size,
         why: v.flag("why"),
-        session: None,
+        session: v.text("session"),
         fields: v.list("fields"),
     }
 }
@@ -32,17 +31,6 @@ fn cwd(v: &Values, caller: &Caller) -> Result<PathBuf, String> {
     }
 }
 
-fn targets(texts: &[String]) -> Result<Vec<Target>, String> {
-    texts
-        .iter()
-        .map(|t| Target::parse(t).map_err(|e| e.to_string()))
-        .collect()
-}
-
-fn note_kind(text: &str) -> Result<NoteKind, String> {
-    NoteKind::parse(text).ok_or_else(|| format!("unknown note kind {text:?}"))
-}
-
 pub fn query(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(query_request(
         v.text("query").unwrap_or_default(),
@@ -56,21 +44,20 @@ pub fn status(_: &Command, _: &Values, _: &Caller) -> Built {
 }
 
 pub fn complete(_: &Command, v: &Values, _: &Caller) -> Built {
-    Ok(Request::Complete {
-        word: v.text("word").unwrap_or_default(),
-    })
+    let text = v.text("text").unwrap_or_default();
+    let position = v
+        .integer("position")
+        .map(usize::try_from)
+        .transpose()
+        .map_err(|_| "completion position cannot be represented on this host".to_owned())?
+        .unwrap_or(text.len());
+    if position > text.len() || !text.is_char_boundary(position) {
+        return Err("completion position must be a UTF-8 byte boundary within the query".into());
+    }
+    Ok(Request::Complete { text, position })
 }
 
-pub fn attachment(_: &Command, v: &Values, caller: &Caller) -> Built {
-    let reveal = v.flag("reveal");
-    if reveal {
-        if caller.surface != super::Surface::Cli || v.text("out").is_none() {
-            return Err("exact attachment output requires the CLI with --reveal --out FILE".into());
-        }
-        crate::daemon::attachment::check_cli()?;
-    } else if v.text("out").is_some() || v.text("input").is_some() {
-        return Err("--out and --input require --reveal".into());
-    }
+pub fn attachment(_: &Command, v: &Values, _: &Caller) -> Built {
     let index = |key: &str, default: u64| {
         usize::try_from(v.integer(key).unwrap_or(default))
             .map_err(|_| format!("{key} exceeds address space"))
@@ -84,18 +71,61 @@ pub fn attachment(_: &Command, v: &Values, caller: &Caller) -> Built {
         block: index("block", 0)?,
         attachment: index("attachment", 0)?,
         input: v.text("input"),
-        reveal,
         length: index("length", 65536)?,
-        cursor: None,
+        cursor: v.text("cursor"),
     })
 }
 
 pub fn import(_: &Command, v: &Values, caller: &Caller) -> Built {
-    let base = caller.cwd.clone().unwrap_or_default();
+    let absolute = |path: String| {
+        let path = PathBuf::from(path);
+        if path.is_absolute() {
+            Ok(path)
+        } else {
+            caller.cwd.as_ref().map(|base| base.join(path)).ok_or_else(||
+            "relative import paths require a native caller working directory; supply an absolute path".to_string())
+        }
+    };
+    let paths = v
+        .list("paths")
+        .into_iter()
+        .map(absolute)
+        .collect::<Result<Vec<_>, String>>()?;
+    if let Some(archive) = v.text("from_archive") {
+        if !paths.is_empty() {
+            return Err("--from-archive names one archive and takes no other paths".into());
+        }
+        return Ok(Request::ImportArchive {
+            request_id: v.request_id(),
+            path: absolute(archive)?,
+            dry_run: v.flag("dry_run"),
+        });
+    }
+    if v.flag("dry_run") {
+        return Err("--dry-run applies to --from-archive".into());
+    }
     Ok(Request::Import {
         request_id: v.request_id(),
-        paths: v.list("paths").into_iter().map(|p| base.join(p)).collect(),
+        paths,
     })
+}
+
+/// A relative manifest path names a file in the caller's directory.
+pub fn verify(_: &Command, v: &Values, caller: &Caller) -> Built {
+    let manifest = v
+        .text("manifest")
+        .map(|path| {
+            let path = PathBuf::from(path);
+            if path.is_absolute() {
+                Ok(path)
+            } else {
+                caller.cwd.as_ref().map(|base| base.join(path)).ok_or_else(|| {
+                    "a relative manifest path requires a native caller working directory; supply an absolute path".to_string()
+                })
+            }
+        })
+        .transpose()?;
+    Ok(Request::Verify { manifest })
 }
 
 /// The query; without one, the `sessions` unit with its defaults.
@@ -108,222 +138,125 @@ pub fn list(_: &Command, v: &Values, _: &Caller) -> Built {
 }
 
 pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
-    let target = ReadTarget::parse(&v.text("session").ok_or("`session` is required")?)?;
-    let with_parents = v.flag("with_parents");
-    match target {
-        ReadTarget::Event(_) if with_parents => {
-            return Err("an event has no conversation parents".into());
-        }
-        ReadTarget::Document(_) if with_parents => {
-            return Err("documents have no conversation parents".into());
-        }
-        _ => {}
+    if v.integer("page_tokens") == Some(0) {
+        return Err("page_tokens must be positive".into());
     }
-    let message = v.text("message");
-    if message.is_some() && v.flag("latest") {
-        return Err("choose either message or latest".into());
-    }
-    let start = if let Some(message) = message {
-        Some(crate::daemon::PageSelection::Message(
-            polylogue_model::MessageId::parse(message.strip_prefix("message:").unwrap_or(&message))
-                .map_err(|e| e.to_string())?,
-        ))
+    use polylogue_model::read::{ReadDelivery, ReadOptions};
+    let directory = v.text("to").is_some();
+    let mut options = ReadOptions {
+        view: v
+            .text("view")
+            .unwrap_or_else(|| "transcript".into())
+            .parse()
+            .map_err(|error: polylogue_model::read::ReadError| error.to_string())?,
+        output_lines: v.integer("output_lines").unwrap_or(100),
+        // A bundle carries inherited prefixes unless they are hidden.
+        inherited: directory,
+        for_others: v.flag("for_others"),
+        variants: v.list("variant"),
+        at: v
+            .text("at")
+            .map(|at| polylogue_model::MessageId::parse(&at))
+            .transpose()
+            .map_err(|error| error.to_string())?,
+        diff: v.text("diff"),
+        around: v.integer("around"),
+        latest: v.flag("latest"),
+        physical: v.flag("physical"),
+        ..ReadOptions::default()
+    };
+    options
+        .apply_fold(&v.list("show"), &v.list("hide"))
+        .map_err(|error| error.to_string())?;
+    options.validate().map_err(|error| error.to_string())?;
+    let delivery = if directory {
+        ReadDelivery::Stream
     } else {
-        v.flag("latest")
-            .then_some(crate::daemon::PageSelection::Latest)
+        v.text("delivery")
+            .map(|value| serde_json::from_value(serde_json::Value::String(value)))
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default()
     };
     Ok(Request::Read {
-        slices: v.flag("slices"),
-        selection: start,
-        target,
-        view: v.text("view").unwrap_or_else(|| "full".into()),
+        target: v.text("target").ok_or("target is required")?,
+        options,
+        delivery,
         format: v
             .text("format")
             .unwrap_or_else(|| if caller.json { "json" } else { "terminal" }.into()),
-        with_parents,
         budget: v
-            .integer("budget")
-            .map(|b| usize::try_from(b).unwrap_or(usize::MAX)),
+            .integer("page_tokens")
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| "page_tokens exceeds address space")?,
+        with_blobs: v.flag("with_blobs"),
         cursor: v.text("cursor"),
     })
 }
 
-pub fn export(_: &Command, v: &Values, _: &Caller) -> Built {
-    let names = v.list("sessions");
-    let user_state = names.iter().any(|text| text == "user-state");
-    let targets = names
-        .iter()
-        .filter(|text| *text != "user-state")
-        .map(|text| ReadTarget::parse(text))
-        .collect::<Result<Vec<_>, _>>()?;
-    if targets.is_empty() && !user_state {
-        return Err("name at least one session, document or event, or user-state".into());
+/// Typed operation decoding precedes this builder; decode again at the direct
+/// CLI boundary so a structural value cannot become an unchecked write.
+/// Only the operation's declared arguments reach the decoder; output options
+/// such as `json` and the request ID are not part of the operation.
+fn assertion_arguments<T: serde::de::DeserializeOwned>(
+    command: &Command,
+    v: &Values,
+) -> Result<T, String> {
+    let declared =
+        v.0.iter()
+            .filter(|(name, _)| command.args.iter().any(|argument| argument.name == *name))
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+    serde_json::from_value(serde_json::Value::Object(declared)).map_err(|error| error.to_string())
+}
+pub fn assert(command: &Command, v: &Values, _: &Caller) -> Built {
+    let args: crate::protocol::assertion::Assert = assertion_arguments(command, v)?;
+    if args.assertions.is_empty() {
+        return Err("assertions must not be empty".into());
     }
-    Ok(Request::Export {
-        targets,
-        format: v.text("format").unwrap_or_else(|| "json".into()),
-        user_state,
-    })
-}
-
-/// The author: over MCP always the calling agent; elsewhere the operator
-/// unless `agent` is given.
-pub fn note_add(_: &Command, v: &Values, caller: &Caller) -> Built {
-    let session = || match v.0.get("agent").and_then(|a| a.as_str()) {
-        Some(s) => polylogue_model::SessionId::parse(s)
-            .map(Some)
-            .map_err(|e| e.to_string()),
-        None => Ok(None),
-    };
-    let author = if caller.surface == super::Surface::Mcp || v.0.contains_key("agent") {
-        Author::Agent(session()?)
-    } else {
-        Author::Operator
-    };
-    noted(
-        v,
-        NewNote {
-            kind: note_kind(&v.text("kind").unwrap_or_else(|| "note".into()))?,
-            key: v.text("key"),
-            value: v.text("body"),
-            author,
-            targets: targets(&v.list("targets"))?,
-            relations: v
-                .text("relations")
-                .map(|text| {
-                    serde_json::from_str(&text)
-                        .map_err(|error| format!("invalid note relations: {error}"))
-                })
-                .transpose()?
-                .unwrap_or_default(),
-            revises: v.text("revises"),
-            valid_until: v
-                .text("valid_until")
-                .map(|text| {
-                    polylogue_model::Timestamp::parse_rfc3339(&text)
-                        .ok_or_else(|| "valid_until needs a time with a UTC offset".to_owned())
-                })
-                .transpose()?,
-        },
-    )
-}
-
-/// A note on its targets, or on every row of `--query`; one of the two.
-fn noted(v: &Values, note: NewNote) -> Built {
-    match (v.text("query"), note.targets.is_empty()) {
-        (Some(_), false) => Err("give targets or `--query`, not both".into()),
-        (None, true) if matches!(note.kind, NoteKind::SavedQuery | NoteKind::Signal) => {
-            Ok(Request::AddNote {
-                request_id: v.request_id(),
-                note,
-            })
-        }
-        (None, true) => Err("give the targets, or `--query` for every row of a query".into()),
-        (Some(query), true) => Ok(Request::AnnotateQuery {
-            request_id: v.request_id(),
-            query,
-            note,
-        }),
-        (None, false) => Ok(Request::AddNote {
-            request_id: v.request_id(),
-            note,
-        }),
-    }
-}
-
-/// `note accept` and `note reject`: the operator's judgment of an agent's
-/// note.
-pub fn note_accept(_: &Command, v: &Values, _: &Caller) -> Built {
-    judge(v, true)
-}
-
-pub fn note_reject(_: &Command, v: &Values, _: &Caller) -> Built {
-    judge(v, false)
-}
-
-fn judge(v: &Values, accepted: bool) -> Built {
-    Ok(Request::Judge {
+    Ok(Request::Assert {
         request_id: v.request_id(),
-        note: v.text("note").unwrap_or_default(),
-        accepted,
-        reason: v.text("reason"),
+        assertions: args.assertions,
     })
 }
-
-pub fn note_tag(_: &Command, v: &Values, _: &Caller) -> Built {
-    noted(
-        v,
-        NewNote {
-            kind: NoteKind::Tag,
-            key: v.text("tag"),
-            value: v.text("value"),
-            author: Author::Operator,
-            targets: targets(&v.list("targets"))?,
-            relations: vec![],
-            revises: None,
-            valid_until: None,
-        },
-    )
+pub fn assert_query(command: &Command, v: &Values, _: &Caller) -> Built {
+    let args: crate::protocol::assertion::AssertQuery = assertion_arguments(command, v)?;
+    if args.query.trim().is_empty() {
+        return Err("query must not be empty".into());
+    }
+    Ok(Request::AssertQuery {
+        request_id: v.request_id(),
+        query: args.query,
+        assertion: args.assertion,
+    })
 }
-
-pub fn note_withdraw(_: &Command, v: &Values, _: &Caller) -> Built {
+pub fn revise(command: &Command, v: &Values, _: &Caller) -> Built {
+    let args: crate::protocol::assertion::Revise = assertion_arguments(command, v)?;
+    if args.bases.is_empty() {
+        return Err("bases must not be empty".into());
+    }
+    Ok(Request::Revise {
+        request_id: v.request_id(),
+        bases: args.bases,
+        patch: args.patch,
+    })
+}
+pub fn withdraw(command: &Command, v: &Values, _: &Caller) -> Built {
+    let args: crate::protocol::assertion::Withdraw = assertion_arguments(command, v)?;
+    if args.targets.is_empty() {
+        return Err("targets must not be empty".into());
+    }
     Ok(Request::Withdraw {
         request_id: v.request_id(),
-        note: v.text("note").unwrap_or_default(),
-        author: Author::Operator,
-        reason: v.text("reason"),
+        targets: args.targets,
+        reason: args.reason,
     })
-}
-
-/// `note list`: a `notes` query over the given targets and kinds.
-pub fn note_list(_: &Command, v: &Values, caller: &Caller) -> Built {
-    use crate::daemon::query::notes;
-    let mut t = targets(&v.list("targets"))?;
-    if v.0.contains_key("cwd") {
-        let dir = cwd(v, caller)?;
-        for d in crate::briefing::scope_dirs(&dir) {
-            t.push(Target::Cwd(d));
-        }
-        if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
-            t.push(Target::Repo(name.to_owned()));
-        }
-    }
-    let mut conditions = Vec::new();
-    if !t.is_empty() {
-        conditions.push(notes::about(&t));
-    }
-    let kinds = v
-        .list("kind")
-        .iter()
-        .map(|k| note_kind(k).map(|k| format!("kind:{}", k.as_str())))
-        .collect::<Result<Vec<_>, _>>()?;
-    if !kinds.is_empty() {
-        conditions.push(format!("({})", kinds.join(" OR ")));
-    }
-    if v.flag("agents") {
-        conditions.push("agent:true".into());
-    }
-    match v.text("judged").as_deref() {
-        Some("none") => conditions.push("judged:unknown".into()),
-        Some(j) => conditions.push(format!("judged:{j}")),
-        None => {}
-    }
-    if v.flag("history") {
-        conditions.push("current:*".into());
-    }
-    if v.flag("withdrawn") {
-        conditions.push("withdrawn:*".into());
-    }
-    let text = if conditions.is_empty() {
-        "notes".to_owned()
-    } else {
-        format!("notes where {}", conditions.join(" "))
-    };
-    Ok(query_request(text, v.integer("limit"), v))
 }
 
 pub fn brief(_: &Command, v: &Values, caller: &Caller) -> Built {
     Ok(Request::Context {
+        budget_tokens: Default::default(),
         request_id: v.request_id(),
         ask: Ask::SessionStart {
             cwd: cwd(v, caller)?,
@@ -336,10 +269,11 @@ pub fn brief(_: &Command, v: &Values, caller: &Caller) -> Built {
 
 pub fn takeover(_: &Command, v: &Values, caller: &Caller) -> Built {
     Ok(Request::Context {
+        budget_tokens: Default::default(),
         request_id: v.request_id(),
         ask: Ask::Takeover {
             session: v.session("session")?.ok_or("`session` is required")?,
-            for_session: None,
+            for_session: v.session("for_session")?,
         },
         sender: caller.sender(),
     })
@@ -359,11 +293,12 @@ pub fn resume(_: &Command, v: &Values, caller: &Caller) -> Built {
 
 pub fn recall(_: &Command, v: &Values, caller: &Caller) -> Built {
     Ok(Request::Context {
+        budget_tokens: Default::default(),
         request_id: v.request_id(),
         ask: Ask::Recall {
             text: v.text("query").unwrap_or_default(),
             cwd: cwd(v, caller).ok(),
-            for_session: None,
+            for_session: v.session("for_session")?,
             cursor: v.text("cursor"),
         },
         sender: caller.sender(),
@@ -373,11 +308,15 @@ pub fn recall(_: &Command, v: &Values, caller: &Caller) -> Built {
 /// A read without a value, a write with one.
 pub fn setting(_: &Command, v: &Values, _: &Caller) -> Built {
     let value = v.text("value");
+    let key = v.text("key");
+    if value.is_some() && key.is_none() {
+        return Err("a value requires a setting key".into());
+    }
     Ok(Request::Setting {
         request_id: value.as_ref().map(|_| v.request_id()),
-        key: v.text("key").unwrap_or_default(),
+        key,
         value,
-        machine: v.flag("machine"),
+        machine: v.text("machine"),
     })
 }
 
@@ -388,6 +327,7 @@ pub fn measure(c: &Command, v: &Values, _: &Caller) -> Built {
         Some(metric) => format!("{name}:{metric}"),
         None => name.to_owned(),
     };
+    let what = polylogue_query::quoted(&what);
     let text = match v.text("query").filter(|q| !q.trim().is_empty()) {
         Some(q) => format!("{q} | measure {what}"),
         None => format!("sessions | measure {what}"),
@@ -395,16 +335,12 @@ pub fn measure(c: &Command, v: &Values, _: &Caller) -> Built {
     Ok(query_request(text, v.integer("limit"), v))
 }
 
-pub fn work(_: &Command, v: &Values, _: &Caller) -> Built {
-    let text = match v.text("query").filter(|q| !q.trim().is_empty()) {
-        Some(q) => format!("work where {q}"),
-        None => "work".into(),
-    };
-    Ok(query_request(text, v.integer("limit"), v))
-}
-
 pub fn live(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(query_request(LIVE.into(), None, v))
+}
+
+pub fn waiting(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(query_request(WAITING.into(), None, v))
 }
 
 pub fn notices(_: &Command, v: &Values, _: &Caller) -> Built {
@@ -415,33 +351,24 @@ pub fn notices(_: &Command, v: &Values, _: &Caller) -> Built {
     ))
 }
 
-/// `save NAME QUERY`. Over MCP the author is the calling agent.
-pub fn save(_: &Command, v: &Values, caller: &Caller) -> Built {
+/// `save NAME QUERY`.
+pub fn save(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(Request::Save {
         request_id: v.request_id(),
         name: v.text("name").unwrap_or_default(),
         text: v.text("query").unwrap_or_default(),
-        author: if caller.surface == super::Surface::Mcp {
-            Author::Agent(None)
-        } else {
-            Author::Operator
-        },
+        denominator: v.text("denominator"),
     })
 }
 
-/// `watch QUERY`. Over MCP the author is the calling agent.
-pub fn watch(_: &Command, v: &Values, caller: &Caller) -> Built {
+/// `watch QUERY`.
+pub fn watch(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(Request::Watch {
         request_id: v.request_id(),
         query: v.text("query").unwrap_or_default(),
         name: v.text("name"),
         hold: v.text("for"),
         notify: v.flag("notify"),
-        author: if caller.surface == super::Surface::Mcp {
-            Author::Agent(None)
-        } else {
-            Author::Operator
-        },
     })
 }
 
@@ -456,15 +383,6 @@ pub fn keep(_: &Command, v: &Values, _: &Caller) -> Built {
 pub fn sql(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(Request::Sql {
         statement: v.text("statement").unwrap_or_default(),
-    })
-}
-
-pub fn excise(_: &Command, v: &Values, _: &Caller) -> Built {
-    Ok(Request::Excise {
-        request_id: v.request_id(),
-        target: v.text("target").unwrap_or_default(),
-        reason: v.text("reason"),
-        dry_run: !v.flag("yes"),
     })
 }
 
@@ -564,19 +482,6 @@ pub fn backfill_cancel(_: &Command, v: &Values, _: &Caller) -> Built {
     })
 }
 
-pub fn outline(_: &Command, v: &Values, _: &Caller) -> Built {
-    Ok(Request::Outline {
-        session: polylogue_model::SessionId::parse(
-            &v.text("session").ok_or("session is required")?,
-        )
-        .map_err(|e| e.to_string())?,
-        with_parents: v.flag("with_parents"),
-        page_size: usize::try_from(v.integer("page_size").unwrap_or(50))
-            .map_err(|_| "page_size exceeds address space")?,
-        cursor: v.text("cursor"),
-    })
-}
-
 pub fn changes(_: &Command, v: &Values, _: &Caller) -> Built {
     if v.text("cursor").is_some() || v.0.contains_key("fields") || v.0.contains_key("why") {
         return Err("the change feed takes --since; use a changes query for filtering, fields or ordinary pages".into());
@@ -586,9 +491,77 @@ pub fn changes(_: &Command, v: &Values, _: &Caller) -> Built {
     })
 }
 
-pub fn note_read(_: &Command, v: &Values, _: &Caller) -> Built {
-    Ok(Request::Note {
-        id: v.text("id").ok_or("id is required")?,
+fn session_arg(v: &Values) -> Result<polylogue_model::SessionId, String> {
+    polylogue_model::SessionId::parse(&v.text("session").ok_or("a session reference is required")?)
+        .map_err(|e| e.to_string())
+}
+
+pub fn ping(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Ping {
+        request_id: v.request_id(),
+        target: v
+            .text("target")
+            .ok_or("a session reference or @[query] is required")?,
+        text: v.text("text").ok_or("a ping needs text")?,
+        live: v.flag("live"),
+        about: v.text("about"),
+    })
+}
+
+pub fn answer(_: &Command, v: &Values, _: &Caller) -> Built {
+    let approve = match v.text("decision").as_deref() {
+        Some("approve") => true,
+        Some("deny") => false,
+        _ => return Err("answer takes approve or deny".into()),
+    };
+    Ok(Request::Answer {
+        request_id: v.request_id(),
+        session: session_arg(v)?,
+        approve,
+        text: v.text("text"),
+        standing: v.flag("standing"),
+    })
+}
+
+pub fn interrupt(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Interrupt {
+        request_id: v.request_id(),
+        session: session_arg(v)?,
+    })
+}
+
+pub fn start(_: &Command, v: &Values, _: &Caller) -> Built {
+    let (harness, role) = (v.text("harness"), v.text("role"));
+    if harness.is_none() && role.is_none() {
+        return Err("start takes --harness or --role".into());
+    }
+    Ok(Request::Start {
+        request_id: v.request_id(),
+        harness,
+        role,
+        cwd: std::path::PathBuf::from(v.text("cwd").ok_or("start takes --cwd")?),
+        text: v.text("text").ok_or("start needs the first turn's text")?,
+    })
+}
+
+pub fn hand_off(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::HandOff {
+        request_id: v.request_id(),
+        session: session_arg(v)?,
+        to: v.text("to").ok_or("hand-off takes --to")?,
+        cwd: v.text("cwd").map(std::path::PathBuf::from),
+        at: v.text("at"),
+        stop_source: v.flag("stop_source"),
+        print: v.flag("print"),
+    })
+}
+
+pub fn follow(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Follow {
+        query: v
+            .text("target")
+            .ok_or("follow takes a session reference or a sessions query")?,
+        marks: None,
     })
 }
 
@@ -622,5 +595,36 @@ pub fn cost(_: &Command, v: &Values, _: &Caller) -> Built {
         model: v.text("model").filter(|s| !s.is_empty()),
         cursor: v.text("cursor"),
         page_size: v.integer("limit"),
+    })
+}
+
+fn schema_origin(v: &Values) -> Result<Option<String>, String> {
+    let origin = v.text("origin");
+    if origin.is_some() && v.flag("all") {
+        return Err("choose an origin or --all".into());
+    }
+    Ok(origin)
+}
+
+pub fn schema_infer(_: &Command, v: &Values, _: &Caller) -> Built {
+    let revision = v
+        .integer("revision")
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| "revision exceeds signed range")?;
+    let request = crate::daemon::schema::Infer {
+        origin: schema_origin(v)?,
+        inputs: v.list("input").into_iter().collect(),
+        revision,
+        since: v.text("since"),
+        fields: v.list("field").into_iter().collect(),
+    };
+    request.validate()?;
+    Ok(Request::SchemaInfer { selection: request })
+}
+
+pub fn schema_unread(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::SchemaUnread {
+        origin: schema_origin(v)?,
     })
 }

@@ -8,7 +8,7 @@ What Polylogue stores and how it reads it: stored inputs and their chains, why n
 - **Blobs** are content-addressed and live in the shared segment container: one sync per write group, extents committed in the same transaction as the rows that cite them, a torn tail truncated on open. The blob store is the durable record of every acquired input, not a cache of bytes that still exist at the source, because tools prune and rewrite their own files. Ruling, 2026-10-11: "blob store is supposed to hold session logs … this is THE REASAON TO HAVE BLOBSTOER" (cc-queued:56c7f026-fd50-4480-b484-72f1299a534c@2026-10-11T12:58:04.056Z).
 - **Observations** record each time an input was seen, with the machine and path: `seen`, `changed`, `renamed`, `gone`, `back`. **A file that disappears is an observation, never a deletion.**
 - **Currency is local receipt order** (`commit_seq`), never wall-clock time.
-- **Export containers are kept whole.** A ZIP or tar import stores the container exactly as given as one input and each member as its own input, addressed `container!/member`; identical member bytes are stored once with every observation kept.
+- **Export containers are kept whole.** A ZIP or tar import stores the container exactly as given as one input and each member as its own input, addressed `container!/member`; identical member bytes are stored once with every observation kept. An exact retry at the same receiving location, with the same machine, author and member bytes, keeps its import namespace and adds no observation; a change to any of those establishes a new namespace.
 - **Tool databases** are inputs of row dumps ([capture.md](capture.md#tool-databases)).
 - **The archive is complete.** It holds every original input the user has, including the predecessor's hook spools, browser captures and their attachments, imported as declared older formats ([capture.md](capture.md#import)). Ruling, 2026-07-22: "WE ARE SUPPOSED TO KEEP ALL DATA." (cc-queued:0398d7a3-0d3d-42e4-acd7-bca417e0c481@2026-07-22T12:20:09.836Z).
 
@@ -23,13 +23,15 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 
 - **Every version of a parsed row is stored**, and the shown versions form a total order. A growing file read again adds versions in receipt order.
 - **Reading the same bytes again changes nothing**: a row version's hash is a function of the bytes and the reading version.
+- **Times keep their source precision.** A parsed time keeps the precision, quality and bounds the source gave it ([capture.md](capture.md#source-clocks)); millisecond columns used by queries are an index over it and never replace it.
 - **Message IDs are stable across re-parse.** A source without native message IDs gets a fallback ID from the input and record position (`<stem>@<offset>`), stable for the same bytes.
 - Which route's reading of a conversation is shown, field by field, is in [sessions.md](sessions.md#one-conversation-through-several-routes).
 
 ## Evolution
 
-- **Stored formats evolve in place.** Schema changes are numbered in-place migrations, each with a test that an archive at the previous version keeps every row; a reading-version change re-parses exactly the chains it affects ([Parsing](#parsing)).
-- **No code path deletes the index.** An index whose schema does not match is migrated, or refused with an error naming the rebuild command. A full rebuild from the archive is a rare, deliberate act of the user ([operations.md](operations.md)).
+- **One baseline.** The segment format and the index schema reset once to version 1, with the earlier migrations collapsed; the live archive's inputs, authored state and vectors are kept across that reset. An archive written before the baseline is a declared older input format, imported once into a fresh archive with `polylogue import --from-archive PATH` ([capture.md](capture.md#an-archive-from-before-the-baseline)), never migrated in place.
+- **Stored formats evolve in place.** After the baseline, schema changes are numbered in-place migrations, each with a test that an archive at the previous version keeps every row; a reading-version change re-parses exactly the chains it affects ([Parsing](#parsing)).
+- **No code path deletes the index.** An index whose schema does not match is migrated, or refused with an error that says how to rebuild it deliberately (moving `index.db` aside). A full rebuild from the archive is a rare, deliberate act of the user ([operations.md](operations.md)).
 
 ## Parsing
 
@@ -43,6 +45,8 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 ### Reading versions
 
 - **Each parser module declares its reading version.** A chain is re-parsed when the reading version of the module that parsed it changes, and nothing else triggers a re-parse; there is no index-wide version that rebuilds everything.
+- A re-parse prepares the new reading aside, then retracts and replaces one chain in one transaction; other chains stay readable throughout.
+- An incomplete suffix, refusal or failure waits at its recorded byte length. Changed bytes or a new reading version make it eligible again; a daemon also offers a stopped chain one retry when it starts.
 - Derivations carry their own versions ([measures.md](measures.md#rules)).
 
 ### Independent goldens
@@ -55,7 +59,7 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 - **Every leaf is accounted for, at any depth.** Each origin declares the paths it reads and the paths it keeps verbatim. Every leaf of a record, including leaves below a declared path, is one of: read into a column, kept verbatim in the row's attributes, or counted as `unused` with its full path. Declaring a parent path never hides its children.
 - Fields that are read, not merely kept, include: Claude `thinking_tokens`, `server_tool_use`, `iterations`, every `tool_result` content part including `tool_reference`, `toolUseResult` for multi-result records, subagent messages present only inside `agent_progress`, signature-only thinking, exit codes, `structuredPatch` edits; Codex `base_instructions.text`, `git.commit_hash`, `originator`, `model_provider`, workspace roots, `context_window`, `agent_role` and `agent_path`, `phase`, `encrypted_content` as bytes, every `turn_context`; every column of Hermes `sessions`; ChatGPT citations, `content_references`, `search_result_groups`, canvas, search queries, selected sources, image results, async tasks, `weight`, inline cite marks; claude.ai `token_budget`, non-text tool results, per-block citations and timestamps, thinking summaries.
 - **Record outcomes per input:** `used`, `skipped` (with a declared reason) and `unreadable` (with the reason). They sum to the records read.
-- **Parse state per input:** `parsed`, `partial`, `refused` (with the reason), `no_parser_yet`, `failed` (with the error). A failure is a parse-state fact of its input; there is no separate failure table.
+- **Parse state per input chain:** parsed, as `parsing` (stored bytes remain), `waiting` (with the stored length it waits at, while a record is still being written) or `done`; `partial`; `refused` (with the reason); `no_parser_yet`; `failed` (with the error). A failure is a parse-state fact of its input; there is no separate failure table. A refused or failed chain records the stored length it was read at and is read again when its bytes change or its reading version does, and once more when the daemon starts, since a failure may have been transient.
 
 ## Format drift
 
@@ -73,16 +77,19 @@ The schema tools describe the real shape of an origin's stored inputs without in
 
 | Command | Does |
 |---|---|
-| `schema infer ORIGIN [--input ID…] [--since TIME]` | the structure of the selected stored inputs (all of the origin's by default): field paths, types, presence and counts, streamed, with coverage (inputs and bytes read, what was unreadable) |
+| `schema infer [ORIGIN \| --all] [--input ID…] [--since TIME] [--revision N]` | the structure of the selected stored inputs (all of the origin's by default, every origin with `--all`): field paths, types, presence and counts, streamed, with coverage (inputs and bytes read, what was unreadable) |
 | `schema diff BEFORE AFTER` | added and removed paths, changed type sets, changed requiredness |
-| `schema unread ORIGIN` | paths stored inputs carry that the parser neither reads nor declares kept, at any depth |
+| `schema unread [ORIGIN \| --all]` | paths stored inputs carry that the parser neither reads nor declares kept, at any depth |
 
 - **No values.** Values never appear as examples, lists or enums. Object member names do, except identifier-shaped keys (UUIDs, long hexadecimal hashes, long numerals, dates and timestamps, paths), which are grouped under `*`, as are members of maps with many distinct sibling names. `--field NAME` keeps a name ungrouped.
 - **Paths** start at the root and use `/` between components; `[]` is an array element and `*` an unnamed member; literal `~`, `/`, `*` and `[]` in names are escaped as `~0`, `~1`, `~2`, `~3`.
 - **Counts per path:** `types` (values of each JSON type), `occurrences` (all values), `present` (parents with at least one value there), `parents` (eligible parents), `missing` (`parents - present`) and `required` (every eligible parent had it). These are observations of the sample, not a guarantee about future inputs.
+- **Selection.** Inference reads each input's latest revision, or the exact `--revision N`, reporting an absent revision. `--input` makes the report a sample. `--since` selects by the time an input was received; inputs whose time is unknown are left out and counted. The answer groups schemas by origin and reports the inputs selected, the bytes stored and the bytes read.
+- **Background work.** One inference runs at a time and gives way to ordinary daemon requests. There is no per-input size cutoff and no default deadline; cancellation and an explicit `--timeout` apply.
+- **Output.** CLI, MCP and HTTP send the same daemon requests. `--output FILE` writes in the CLI process, and `schema diff` reads those files locally.
 - **A diff** reports each kind of change separately, ordered by path, and labels populations as incomparable when their origins, revisions or reads differ, while still showing what differs.
 - Observation streams records and discards scalar bodies. Memory follows schema shape and nesting depth rather than record count or scalar length; deep JSON is read without a fixed depth cutoff. Malformed input, including an unfinished array or trailing content, is refused.
-- Tool databases contribute their row dumps' column shapes and table structure; SQL text stays out. Browser captures are Polylogue's own format and have no inferred schema.
+- Tool databases contribute their row dumps' column shapes and table structure, reported per table: the declared column types, nullability, primary key, hidden or generated columns and `WITHOUT ROWID` ([capture.md](capture.md#tool-databases)) separately from the JSON types observed in rows, with empty tables and never-filled columns listed. SQL text and default expressions stay out. Browser captures are Polylogue's own format and have no inferred schema.
 
 ## Laws
 
@@ -90,9 +97,10 @@ The schema tools describe the real shape of an origin's stored inputs without in
 - **crash-leaves-normal-state**: a crash at every point between append, sync and commit leaves a state that the ordinary open path accepts, with no repair step.
 - **reparse-idempotent**: parsing the same bytes twice under one reading version yields identical rows.
 - **reading-version-scope**: raising one module's reading version re-parses exactly the chains that module parsed.
-- **index-never-deleted**: opening an index with a mismatched schema migrates it or refuses with an error naming the rebuild command; it never deletes the index.
+- **index-never-deleted**: opening an index with a mismatched schema migrates it or refuses with an error naming the deliberate rebuild; it never deletes the index.
 - **inputs-never-rewritten**: no code path deletes or rewrites stored inputs or blobs.
 - **migration-keeps-rows**: an archive at the previous version keeps every row through each migration.
+- **one-baseline**: an empty archive and index are created at version 1 with exactly the declared tables; a file at another version or with other tables is refused unchanged.
 - **goldens-hand-written**: there is a hand-written golden for each format era of each origin, and the test harness has no mode that writes expected files.
 - **unused-leaf-counted**: an unknown leaf below a declared path is counted as `unused` with its full path.
 - **outcomes-sum**: malformed lines are counted `unreadable` with a reason, and record outcomes sum to the records read.

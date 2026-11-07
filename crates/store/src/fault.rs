@@ -10,6 +10,8 @@ pub enum Action {
     /// Panic, as a bug would, or as the process dying at that step would
     /// look to the transaction it leaves open.
     Panic,
+    /// Stop a subprocess at the boundary so its test parent can kill it.
+    StopProcess,
 }
 
 #[cfg(feature = "faults")]
@@ -69,8 +71,21 @@ pub fn check(point: &str, subject: &str) -> crate::Result<()> {
             )));
         }
         Some(Action::Panic) => panic!("injected panic at {point} ({subject})"),
+        Some(Action::StopProcess) => {
+            stop_process();
+        }
         None => {}
     }
     let _ = (point, subject);
     Ok(())
+}
+
+#[cfg(feature = "faults")]
+#[allow(unsafe_code)]
+fn stop_process() {
+    // SIGSTOP has no memory preconditions. The test parent owns this process
+    // and kills it without running Rust destructors.
+    unsafe {
+        libc::raise(libc::SIGSTOP);
+    }
 }

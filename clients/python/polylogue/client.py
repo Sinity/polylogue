@@ -16,7 +16,7 @@ class Refused(RuntimeError):
     def __init__(self, answer, returncode):
         self.answer = Answer(answer)
         self.returncode = returncode
-        error = answer.get("error", answer if answer.get("result") == "error" else {})
+        error = answer["error"]
         self.kind = error.get("kind", "client")
         super().__init__(error.get("message", str(answer)))
 
@@ -32,24 +32,32 @@ class Client:
         self.executable = os.fspath(executable)
         self.archive = None if archive is None else str(Path(archive).expanduser().resolve())
 
-    def _environment(self):
-        env = os.environ.copy()
+    def _arguments(self, *arguments):
+        command = [self.executable]
         if self.archive is not None:
-            env["POLYLOGUE_ARCHIVE"] = self.archive
-        return env
+            command.extend(["--archive", self.archive])
+        return [*command, "--json", *arguments]
 
     def call(self, *arguments):
         """One declared command, with the same arguments and answer as CLI JSON."""
         result = subprocess.run(
-            [self.executable, "--json", *arguments], env=self._environment(),
+            self._arguments(*arguments),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         try:
             answer = json.loads(result.stdout)
         except (ValueError, UnicodeDecodeError) as error:
             raise RuntimeError(f"Polylogue returned no JSON answer (exit {result.returncode})") from error
-        if result.returncode:
+        outcome = answer.get("outcome") if isinstance(answer, dict) else None
+        if outcome == "error":
+            if result.returncode == 0:
+                raise RuntimeError("Polylogue returned an error with a successful exit status")
             raise Refused(answer, result.returncode)
+        if outcome not in {"ok", "empty", "degraded"}:
+            raise RuntimeError("Polylogue returned an invalid shared answer")
+        expected = {"ok": 0, "empty": 1, "degraded": 5}[outcome]
+        if result.returncode != expected:
+            raise RuntimeError(f"Polylogue's {outcome} answer disagrees with exit {result.returncode}")
         return Answer(answer)
 
     def status(self):
@@ -63,12 +71,10 @@ class Client:
             arguments.extend(["--limit", str(page_size)])
         return self.call(*arguments, "--", text)
 
-    def read(self, identity, *, view="full", budget=None, cursor=None):
+    def read(self, identity, *, view="transcript", page_tokens=None):
         arguments = ["read", identity, "--view", view]
-        if budget is not None:
-            arguments.extend(["--budget", str(budget)])
-        if cursor is not None:
-            arguments.extend(["--cursor", cursor])
+        if page_tokens is not None:
+            arguments.extend(["--page-tokens", str(page_tokens)])
         return self.call(*arguments)
 
     def changes(self, since=None):
@@ -77,14 +83,14 @@ class Client:
         The CLI validates framing and counts before forwarding completion.
         Closing the iterator early terminates and reaps the child process.
         """
-        arguments = [self.executable, "--json", "changes"]
+        arguments = self._arguments("changes")
         if since is not None:
             arguments.extend(["--since", since])
-        with subprocess.Popen(arguments, env=self._environment(), stdout=subprocess.PIPE) as process:
+        with subprocess.Popen(arguments, stdout=subprocess.PIPE) as process:
             try:
                 for line in process.stdout:
                     answer = json.loads(line)
-                    if "error" in answer or answer.get("result") == "error":
+                    if answer.get("outcome") == "error":
                         raise Refused(answer, process.wait())
                     yield Answer(answer)
                 if process.wait():

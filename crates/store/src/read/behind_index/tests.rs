@@ -14,6 +14,7 @@ fn expected(
     BehindChain {
         input: input.into(),
         current,
+        reading_changed: false,
         imported: imported.map(|(format, path)| ImportedAs {
             format: format.into(),
             path: path.map(str::to_owned),
@@ -44,7 +45,6 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
            ('b',1,'first',1,10,1),('c',1,'imported',1,10,1),
            ('z',1,'imported',1,10,1);
          INSERT INTO observation(id,input,machine,path,class,details_json,polylogue_version,seen_at) VALUES
-           ('excised','z','m','/home/op/excised','excised','{}','test',0),
            ('first','z','m','/home/op/first','first','{}','test',99),
            ('later','z','m','/home/op/later','first','{}','test',1),
            ('invalid','z','m','/home/op/invalid','imported','invalid','test',2),
@@ -60,16 +60,29 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
             "INSERT INTO input_ref(id) VALUES ('a');
          INSERT INTO parse_state(input_pk,chain,status,parsed_upto)
          SELECT pk,2,'parsing',12 FROM input_ref WHERE id='a';
-         INSERT INTO parse_state(input_pk,chain,status,parsed_upto)
-         SELECT pk,3,'waiting',2 FROM input_ref WHERE id='a';
+         INSERT INTO parse_state(input_pk,chain,status,parsed_upto,at_length)
+         SELECT pk,3,'waiting',2,30 FROM input_ref WHERE id='a';
          INSERT INTO parse_state(input_pk,chain,status,parsed_upto)
          SELECT pk,5,'done',50 FROM input_ref WHERE id='a';",
         )
         .unwrap();
     let pool = fixture.reads().unwrap();
     assert_eq!(
-        pool.reader().unwrap().chains_behind_index().unwrap(),
+        pool.reader()
+            .unwrap()
+            .chains_behind_index(&[], crate::StoppedChains::Settled)
+            .unwrap(),
         vec![
+            // Live inputs first, then most recently observed inputs and newest chains.
+            expected("b", 1, 10, true, None, None),
+            expected(
+                "a",
+                2,
+                90,
+                false,
+                Some(("codex-rollout", Some("/home/op/format"))),
+                Some(12)
+            ),
             expected(
                 "a",
                 1,
@@ -79,28 +92,19 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
                 None
             ),
             expected(
-                "a",
-                2,
-                90,
-                false,
-                Some(("codex-rollout", Some("/home/op/format"))),
-                Some(12)
+                "z",
+                1,
+                10,
+                true,
+                Some(("fallback", Some("/home/op/first"))),
+                None
             ),
-            expected("b", 1, 10, true, None, None),
             expected(
                 "c",
                 1,
                 10,
                 true,
                 Some(("export-file", Some("/home/op/export-only"))),
-                None
-            ),
-            expected(
-                "z",
-                1,
-                10,
-                true,
-                Some(("fallback", Some("/home/op/first"))),
                 None
             ),
         ]
@@ -144,13 +148,16 @@ fn history_work(revisions: usize) -> usize {
             }),
         )
         .unwrap();
-    let found = reader.chains_behind_index().unwrap();
+    let found = reader
+        .chains_behind_index(&[], crate::StoppedChains::Settled)
+        .unwrap();
     reader
         .conn()
         .unwrap()
         .progress_handler(0, None::<fn() -> bool>)
         .unwrap();
     let rows: Vec<_> = (1..=chains)
+        .rev()
         .map(|chain| {
             expected(
                 "synthetic",
@@ -174,4 +181,61 @@ fn behind_chains_work_scales_with_revision_and_observation_history() {
         large <= small * 6,
         "128 revisions: {small} VM steps; 512 revisions: {large}"
     );
+}
+
+#[test]
+fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let archive = Connection::open(fixture.archive.archive_db()).unwrap();
+    archive
+        .execute_batch(
+            "INSERT INTO input VALUES ('metadata','no-parser');
+        INSERT INTO revision VALUES ('metadata',1,'first',1,100,1);",
+        )
+        .unwrap();
+    let index = Connection::open(fixture.archive.index_db()).unwrap();
+    index
+        .execute_batch(
+            "INSERT INTO input_ref(id) VALUES ('metadata');
+        INSERT INTO parse_state(input_pk,chain,status,parsed_upto,at_length,reading_version)
+        SELECT pk,1,'waiting',40,100,'metadata=1' FROM input_ref;",
+        )
+        .unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    assert!(
+        reader
+            .chains_behind_index(&[], crate::StoppedChains::Settled)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(reader.input_progress("metadata").unwrap().unwrap().waiting);
+    archive
+        .execute(
+            "INSERT INTO revision VALUES ('metadata',2,'appended',1,140,2)",
+            [],
+        )
+        .unwrap();
+    assert!(
+        reader
+            .chains_behind_index(&[], crate::StoppedChains::Settled)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(reader.input_progress("metadata").unwrap().unwrap().waiting);
+    let fresh = pool.reader().unwrap();
+    let behind = fresh
+        .chains_behind_index(&[], crate::StoppedChains::Settled)
+        .unwrap();
+    assert_eq!(behind.len(), 1);
+    assert_eq!(
+        (
+            behind[0].progress.parsed_upto,
+            behind[0].progress.length,
+            behind[0].progress.waiting
+        ),
+        (40, 140, false)
+    );
+    assert!(!fresh.input_progress("metadata").unwrap().unwrap().waiting);
 }

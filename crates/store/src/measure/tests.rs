@@ -101,7 +101,7 @@ fn usage_counts_each_response_once() {
     model_message(
         &mut f,
         parent,
-        "a",
+        "claude-code:a",
         "claude-opus-4-1",
         T0,
         &tokens(10, 100, Some(5), 20),
@@ -109,7 +109,7 @@ fn usage_counts_each_response_once() {
     model_message(
         &mut f,
         child,
-        "b",
+        "claude-code:b",
         "claude-opus-4-1",
         T0 + 1,
         &tokens(1, 2, Some(3), 4),
@@ -159,7 +159,7 @@ fn unpriced_models_stay_unknown_and_credits_stay_apart() {
     model_message(
         &mut f,
         priced,
-        "p1",
+        "claude-code:p1",
         "claude-opus-4-1",
         T0,
         &tokens(1_000_000, 0, Some(0), 0),
@@ -170,7 +170,7 @@ fn unpriced_models_stay_unknown_and_credits_stay_apart() {
     let pk = model_message(
         &mut f,
         unpriced,
-        "u1",
+        "codex:u1",
         "gpt-9-imaginary",
         T0,
         &tokens(5, 0, None, 5),
@@ -180,7 +180,7 @@ fn unpriced_models_stay_unknown_and_credits_stay_apart() {
     model_message(
         &mut f,
         mixed,
-        "m1",
+        "claude-code:m1",
         "claude-opus-4-1",
         T0,
         &tokens(1_000_000, 0, Some(0), 0),
@@ -188,7 +188,7 @@ fn unpriced_models_stay_unknown_and_credits_stay_apart() {
     model_message(
         &mut f,
         mixed,
-        "m2",
+        "claude-code:m2",
         "gpt-9-imaginary",
         T0,
         &tokens(1, 0, None, 1),
@@ -237,7 +237,7 @@ fn hiding_never_changes_a_usage_figure() {
     model_message(
         &mut f,
         a,
-        "a1",
+        "claude-code:a1",
         "claude-opus-4-1",
         T0,
         &tokens(100, 0, Some(0), 10),
@@ -245,7 +245,7 @@ fn hiding_never_changes_a_usage_figure() {
     model_message(
         &mut f,
         b,
-        "b1",
+        "claude-code:b1",
         "claude-opus-4-1",
         T0 + 60_000,
         &tokens(200, 0, Some(0), 20),
@@ -294,7 +294,7 @@ fn quota_reads_reported_windows_and_projects_exhaustion() {
         let pk = model_message(
             &mut f,
             codex,
-            &format!("c{i}"),
+            &format!("codex:c{i}"),
             "gpt-5",
             at,
             &tokens(10, 0, None, 10),
@@ -315,7 +315,7 @@ fn quota_reads_reported_windows_and_projects_exhaustion() {
     let pk = model_message(
         &mut f,
         claude,
-        "x",
+        "claude-code:x",
         "claude-opus-4-1",
         T0,
         &tokens(1, 0, Some(0), 1),
@@ -366,7 +366,7 @@ fn process_keeps_transcript_order_and_outcomes_apart() {
         .message(
             s,
             MessageFacts {
-                id: "m",
+                id: "claude-code:m",
                 role: "assistant",
                 written_by: "model",
                 at: Some(T0),
@@ -418,7 +418,7 @@ fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
     model_message(
         &mut f,
         parent,
-        "a",
+        "claude-code:a",
         "claude-opus-5-5",
         T0,
         &tokens(10, 0, None, 1),
@@ -426,7 +426,7 @@ fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
     model_message(
         &mut f,
         parent,
-        "b",
+        "claude-code:b",
         "claude-opus-5-5",
         T0 + 1,
         &tokens(20, 0, None, 2),
@@ -434,7 +434,7 @@ fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
     model_message(
         &mut f,
         child,
-        "d",
+        "claude-code:d",
         "claude-opus-5-5",
         T0 + 2,
         &tokens(40, 0, None, 4),
@@ -444,7 +444,7 @@ fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
     crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP)
         .unwrap()
         .execute(
-            "UPDATE link SET branch_point='b' WHERE parent_id='claude-code:p' AND child_id='claude-code:c'",
+            "UPDATE link SET branch_point='claude-code:b' WHERE parent_id='claude-code:p' AND child_id='claude-code:c'",
             [],
         )
         .unwrap();
@@ -519,9 +519,9 @@ fn failing_holds_commands_whose_latest_run_failed() {
         model_message(f, s, id, "claude-opus-5-5", at, &tokens(1, 0, None, 1))
     };
     let (ma1, ma2, mb1) = (
-        m(&mut f, a1, "m1", T0),
-        m(&mut f, a2, "m2", T0 + DAY),
-        m(&mut f, b1, "m3", T0),
+        m(&mut f, a1, "claude-code:m1", T0),
+        m(&mut f, a2, "claude-code:m2", T0 + DAY),
+        m(&mut f, b1, "claude-code:m3", T0),
     );
     shell(&mut f, a1, ma1, "cargo test", "error", T0);
     shell(&mut f, a2, ma2, "cargo test", "ok", T0 + DAY);
@@ -577,34 +577,34 @@ fn an_unanswered_last_prompt_ends_a_session_only_after_it_goes_quiet() {
         .unwrap();
     };
     let answered = session(&mut f, "claude-code:answered");
-    human(&mut f, answered, "h1", T0);
+    human(&mut f, answered, "claude-code:h1", T0);
     model_message(
         &mut f,
         answered,
-        "a1",
+        "claude-code:a1",
         "claude-opus-5-5",
         T0 + 60_000,
         &tokens(1, 0, None, 1),
     );
     let left = session(&mut f, "claude-code:left");
-    human(&mut f, left, "h2", T0);
+    human(&mut f, left, "claude-code:h2", T0);
     model_message(
         &mut f,
         left,
-        "a2",
+        "claude-code:a2",
         "claude-opus-5-5",
         T0 + 60_000,
         &tokens(1, 0, None, 1),
     );
-    human(&mut f, left, "h3", T0 + 120_000);
+    human(&mut f, left, "claude-code:h3", T0 + 120_000);
     let recent = session(&mut f, "claude-code:recent");
     let now = T0 + 10 * DAY;
-    human(&mut f, recent, "h4", now - 60_000);
+    human(&mut f, recent, "claude-code:h4", now - 60_000);
     let sub = session(&mut f, "claude-code:sub");
     model_message(
         &mut f,
         sub,
-        "a4",
+        "claude-code:a4",
         "claude-opus-5-5",
         T0,
         &tokens(1, 0, None, 1),

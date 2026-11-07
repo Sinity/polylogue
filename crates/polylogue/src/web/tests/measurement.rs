@@ -60,13 +60,6 @@ fn hundred_thousand_message_html_cost() {
             .unwrap()
             .replace("&amp;", "&");
         measure(&r, "previous-from-latest", &previous, 100000).await;
-        measure(
-            &r,
-            "outline",
-            "/api/v1/outline?session=claude-code%3As1&page_size=50",
-            100000,
-        )
-        .await;
     });
 }
 
@@ -78,15 +71,12 @@ fn document_previous_cost() {
     let source = r.w._dir.path().join("measured-document");
     std::fs::create_dir_all(source.join("projects")).unwrap();
     std::fs::write(source.join("projects/project.json"),serde_json::json!({"uuid":"measured","name":"Synthetic project","docs":[{"uuid":"doc","filename":"Synthetic document","content":"synthetic paragraph λ🙂 "}]}).to_string()).unwrap();
-    assert!(matches!(
-        handle(
-            Request::Import {
-                request_id: "measure-document".into(),
-                paths: vec![source]
-            },
-            &r.web.daemon
-        ),
-        Response::Ok { .. }
+    crate::test_answers::ok(handle(
+        Request::Import {
+            request_id: "measure-document".into(),
+            paths: vec![source],
+        },
+        &r.web.daemon,
     ));
     r.w.wait_for(|s| s["store"]["documents"].as_u64().is_some_and(|n| n > 0));
     let id = "claude-ai:project:measured:doc:doc";

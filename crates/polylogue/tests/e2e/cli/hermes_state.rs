@@ -1,4 +1,7 @@
+use super::claude_account_text::{messages, reading, records};
+use super::hermes_events::query_rows;
 use super::*;
+use polylogue_model::bundle::Record;
 use serde_json::json;
 
 #[test]
@@ -24,16 +27,15 @@ fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_p
     drop(db);
     let archive = dir.path().join("archive");
     let config = dir.path().join("config");
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     wait_status(&env, |status| {
         status["store"]["messages"].as_u64() == Some(3)
     });
-    let query = cli(&env, &["--json", "origin:hermes | sort by id"]);
+    let query = cli(
+        &env,
+        &["--json", "sessions where origin:hermes | sort by id"],
+    );
     assert!(query.status.success(), "{query:?}");
     let query = json(&query);
     assert_eq!(query["count"], 2);
@@ -46,10 +48,8 @@ fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_p
         .as_str()
         .unwrap();
     assert!(child.starts_with("hermes:child@profile-"));
-    let read = cli(&env, &["--json", "read", child]);
-    assert!(read.status.success(), "{read:?}");
-    let read = json(&read);
-    let messages = read["messages"].as_array().unwrap();
+    let child_messages = messages(&env, child);
+    let messages = &child_messages;
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0]["role"], "assistant");
     assert_eq!(messages[0]["model"], "supplied-model");
@@ -69,17 +69,57 @@ fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_p
     assert_eq!(messages[1]["role"], "system");
     assert_eq!(messages[1]["prompt_kind"], "harness");
     assert_eq!(messages[1]["blocks"][0]["data"], result);
-    let with_parents = cli(&env, &["--json", "read", child, "--with-parents"]);
-    assert!(with_parents.status.success(), "{with_parents:?}");
-    let with_parents = json(&with_parents);
-    assert_eq!(with_parents["messages"].as_array().unwrap().len(), 2);
-    let exported = cli(&env, &["export", child, "--format", "json"]);
-    assert!(exported.status.success(), "{exported:?}");
-    let document =
-        polylogue_model::export::Document::from_json(&String::from_utf8(exported.stdout).unwrap())
-            .unwrap();
-    assert_eq!(document.sessions[0].messages.len(), 2);
-    let link = &document.sessions[0].links[0];
+    let inherited = reading(&env, child, &["--show", "inherited"]);
+    // A supplied compression predecessor is retained as a link, rather than
+    // a fork whose messages are prepended to the child's active reading.
+    let own = reading(&env, child, &[]);
+    // Only the session card differs: reading the parent prefix reports whether
+    // the lineage was complete (docs/reading.md, lineage).
+    let mut inherited_items = inherited.document.items.clone();
+    let mut own_items = own.document.items.clone();
+    for (items, expected) in [
+        (
+            &mut inherited_items,
+            polylogue_model::read::ValueState::known(true),
+        ),
+        (
+            &mut own_items,
+            polylogue_model::read::ValueState::NotApplicable,
+        ),
+    ] {
+        match &mut items[0].kind {
+            polylogue_model::read::ItemKind::Card { card } => match card.as_mut() {
+                polylogue_model::read::Card::Session {
+                    lineage_complete, ..
+                } => {
+                    assert_eq!(*lineage_complete, expected);
+                    *lineage_complete = polylogue_model::read::ValueState::NotApplicable;
+                }
+                other => panic!("first item is a session card, not {other:?}"),
+            },
+            other => panic!("first item is a card, not {other:?}"),
+        }
+    }
+    assert_eq!(inherited_items, own_items);
+    let exported = records(&env, child);
+    let mut exported_messages: Vec<_> = exported
+        .iter()
+        .filter_map(|record| match record {
+            Record::Message(record) => Some(record),
+            _ => None,
+        })
+        .collect();
+    exported_messages.sort_by_key(|record| record.order);
+    assert_eq!(exported_messages.len(), 2);
+    let links: Vec<_> = exported
+        .iter()
+        .filter_map(|record| match record {
+            Record::Link(record) => Some(&record.link),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(links.len(), 1);
+    let link = links[0];
     assert_eq!(link.kind, polylogue_model::LinkKind::Continuation);
     assert!(link.parent.native().as_str().starts_with("parent@profile-"));
     assert!(
@@ -90,19 +130,11 @@ fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_p
             .as_str()
             .starts_with("parent@profile-")
     );
-    let parent = cli(&env, &["--json", "read", &link.parent.to_string()]);
-    assert!(parent.status.success(), "{parent:?}");
-    let parent = json(&parent);
-    assert_eq!(
-        parent["messages"][0]["blocks"][0]["text"],
-        "stored ancestor Ω"
-    );
-    assert_eq!(
-        parent["messages"][0]["id"],
-        link.at.as_ref().unwrap().to_string()
-    );
+    let parent = super::claude_account_text::messages(&env, &link.parent.to_string());
+    assert_eq!(parent[0]["blocks"][0]["text"], "stored ancestor Ω");
+    assert_eq!(parent[0]["id"], link.at.as_ref().unwrap().to_string());
     assert!(matches!(
-        &document.sessions[0].messages[1].blocks[0],
+        &exported_messages[1].message.blocks[0],
         polylogue_model::Block::ToolResult {
             outcome: polylogue_model::ToolOutcome::Error {
                 reason: Some(polylogue_model::ErrorReason::ExitCode(7))
@@ -129,14 +161,10 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
     drop(db);
     let archive = dir.path().join("archive");
     let config = dir.path().join("config");
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let daemon = start_daemon(&env);
     wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(7));
-    let listed = cli(&env, &["--json", "origin:hermes"]);
+    let listed = cli(&env, &["--json", "sessions where origin:hermes"]);
     assert!(listed.status.success(), "{listed:?}");
     let listed = json(&listed);
     let mut states = Vec::new();
@@ -153,14 +181,11 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
             .unwrap()["id"]
             .as_str()
             .unwrap();
-        let read = cli(&env, &["--json", "read", sid]);
-        assert!(read.status.success(), "{read:?}");
-        assert_eq!(json(&read)["messages"].as_array().unwrap().len(), stored);
+        assert_eq!(messages(&env, sid).len(), stored);
         let query = format!("messages where session.title:\"{title}\"");
         let visible = cli(&env, &["--json", &query]);
-        assert!(visible.status.success(), "{visible:?}");
         assert_eq!(
-            json(&visible)["count"],
+            query_rows(&visible)["count"],
             active,
             "{title}: default active-path query"
         );
@@ -175,32 +200,43 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
                 &format!("events where session:{sid} kind:active_path_empty"),
             ],
         );
-        assert!(markers.status.success(), "{markers:?}");
-        assert_eq!(json(&markers)["count"], u64::from(title == "All inactive"));
-        let exported = cli(&env, &["export", sid, "--format", "json"]);
-        assert!(exported.status.success(), "{exported:?}");
-        let export = json(&exported);
-        for event in export["sessions"][0]["events"]
-            .as_array()
-            .unwrap()
+        assert_eq!(
+            query_rows(&markers)["count"],
+            u64::from(title == "All inactive")
+        );
+        let export = records(&env, sid);
+        let events: Vec<_> = export
             .iter()
-            .filter(|e| e["kind"] == "hermes_message_state")
-        {
+            .filter_map(|record| match record {
+                Record::Event(record) => Some(&record.event),
+                _ => None,
+            })
+            .collect();
+        let message_states: Vec<_> = events
+            .iter()
+            .filter(|event| event.kind == "hermes_message_state")
+            .collect();
+        assert_eq!(message_states.len(), stored);
+        for event in message_states {
             if title == "All inactive" {
-                assert_eq!(event["data"], json!({"active":0,"compacted":0}));
+                assert_eq!(
+                    serde_json::to_value(&event.data).unwrap(),
+                    json!({"active":0,"compacted":0})
+                );
             }
             if title == "Unknown activity" {
-                assert_eq!(event["data"], json!({"active":null,"compacted":null}));
+                assert_eq!(
+                    serde_json::to_value(&event.data).unwrap(),
+                    json!({"active":null,"compacted":null})
+                );
             }
         }
         if title == "All inactive" {
-            let marker = export["sessions"][0]["events"]
-                .as_array()
-                .unwrap()
+            let marker = events
                 .iter()
-                .find(|e| e["kind"] == "active_path_empty")
+                .find(|e| e.kind == "active_path_empty")
                 .unwrap();
-            assert!(marker.get("after").is_none());
+            assert!(marker.after.is_none());
         }
         states.push((sid.to_owned(), json(&all), active));
     }
@@ -234,14 +270,11 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
                     &format!("messages where session:{empty} active:true"),
                 ],
             );
-            assert!(out.status.success(), "{out:?}");
-            if json(&out)["count"] == expected {
+            if query_rows(&out)["count"] == expected {
                 break;
             }
         }
-        let read = cli(&env, &["--json", "read", &empty]);
-        assert!(read.status.success(), "{read:?}");
-        assert_eq!(json(&read)["messages"].as_array().unwrap().len(), 2);
+        assert_eq!(messages(&env, &empty).len(), 2);
         drop(daemon);
     }
     std::fs::remove_file(&native).unwrap();
@@ -263,7 +296,6 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
                 &format!("messages where session:{sid} active:true"),
             ],
         );
-        assert!(visible.status.success(), "{visible:?}");
-        assert_eq!(json(&visible)["count"], active);
+        assert_eq!(query_rows(&visible)["count"], active);
     }
 }

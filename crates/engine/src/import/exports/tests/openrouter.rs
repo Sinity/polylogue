@@ -69,7 +69,8 @@ fn a_bad_room_suffix_refuses_before_any_header_or_message_is_committed() {
     fs::write(&path, format!("{ROOM} false")).unwrap();
     let (mut e, _lock) = engine(&w, 16);
     let report = e.import(&[path]).unwrap();
-    assert!(report.pass.errors.is_empty());
+    assert!(report.refused.is_empty(), "{report:?}");
+    assert!(report.pass.errors.is_empty(), "{report:?}");
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 0);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM session"), 0);
     assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 1);

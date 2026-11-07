@@ -39,6 +39,67 @@ fn fork(f: &mut Fixture, parent: &str, child: &str, anchor: Option<&str>) {
         .unwrap();
 }
 
+fn recorded_messages(
+    writer: &mut crate::fixture::writer::WriterArchive,
+    session: &str,
+    bodies: &[&str],
+    copied: &[polylogue_model::Message],
+) -> Vec<polylogue_model::Message> {
+    let messages: Vec<_> = bodies
+        .iter()
+        .enumerate()
+        .map(|(ordinal, body)| {
+            crate::fixture::writer::message(
+                &ordinal.to_string(),
+                session,
+                polylogue_model::Role::User,
+                0,
+                vec![polylogue_model::Block::Text {
+                    text: (*body).into(),
+                }],
+            )
+        })
+        .collect();
+    writer.write(session, copied.iter().chain(&messages).cloned().collect());
+    messages
+}
+
+fn recorded_link(
+    kind: polylogue_model::LinkKind,
+    parent: &str,
+    child: &str,
+) -> polylogue_model::Link {
+    polylogue_model::Link {
+        kind,
+        parent: crate::fixture::writer::sid(parent),
+        child: crate::fixture::writer::sid(child),
+        at: None,
+        call_id: None,
+        evidence: "recorded source relation".into(),
+    }
+}
+
+fn copied_source(
+    writer: &mut crate::fixture::writer::WriterArchive,
+    child: &str,
+    parents: &[&str],
+    messages: Vec<polylogue_model::Message>,
+) {
+    writer.links.extend(
+        parents
+            .iter()
+            .map(|parent| recorded_link(polylogue_model::LinkKind::Copy, parent, child)),
+    );
+    writer.write_from(
+        &format!("copied-{child}"),
+        polylogue_model::Session::new(
+            crate::fixture::writer::sid(child),
+            polylogue_model::SessionKind::Main,
+        ),
+        messages,
+    );
+}
+
 fn texts(selected: &MessageSelection<'_, '_>) -> Vec<String> {
     let mut out = Vec::new();
     selected
@@ -77,10 +138,6 @@ fn a_1030_session_chain_has_no_depth_or_call_stack_cutoff() {
             .collect::<Vec<_>>()
     );
     assert_eq!(r.message_keys_with_parents(&id).unwrap().len(), 1030);
-    assert_eq!(
-        selected.fingerprint().unwrap(),
-        r.message_fingerprint(&id, true).unwrap()
-    );
 }
 
 #[test]
@@ -160,46 +217,49 @@ fn missing_parents_and_session_cycles_report_their_actual_boundary() {
 }
 
 #[test]
-fn changed_missing_anchor_changes_fingerprint_even_when_available_messages_do_not() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
-    session(&mut f, "a", &["a"]);
-    session(&mut f, "b", &["b"]);
-    fork(&mut f, "a", "b", Some("claude-code:missing-one"));
-    let pool = f.reads().unwrap();
-    let id = SessionId::parse("claude-code:b").unwrap();
-    let before = {
-        let r = pool.reader().unwrap();
-        r.select_messages(&id, true).unwrap().fingerprint().unwrap()
-    };
-    crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP)
-        .unwrap()
-        .execute("UPDATE link SET branch_point='claude-code:missing-two'", [])
-        .unwrap();
-    let r = pool.reader().unwrap();
-    let selected = r.select_messages(&id, true).unwrap();
-    assert_eq!(texts(&selected), ["b"]);
-    assert_ne!(before, selected.fingerprint().unwrap());
-}
-
-#[test]
 fn a_shared_ancestor_is_deduplicated_without_becoming_a_session_cycle() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
-    for name in ["p", "a", "b", "child"] {
-        session(&mut f, name, &[name]);
-    }
-    fork(&mut f, "p", "a", Some("claude-code:p-0"));
-    fork(&mut f, "p", "b", Some("claude-code:p-0"));
-    fork(&mut f, "a", "child", Some("claude-code:a-0"));
-    fork(&mut f, "b", "child", Some("claude-code:b-0"));
-    let pool = f.reads().unwrap();
+    let mut writer = crate::fixture::writer::WriterArchive::new();
+    let p = recorded_messages(&mut writer, "p", &["p"], &[]);
+    writer
+        .links
+        .push(recorded_link(polylogue_model::LinkKind::Copy, "p", "a"));
+    let a = recorded_messages(&mut writer, "a", &["a"], &p);
+    writer
+        .links
+        .push(recorded_link(polylogue_model::LinkKind::Copy, "p", "b"));
+    let b = recorded_messages(&mut writer, "b", &["b"], &p);
+    let child = crate::fixture::writer::message(
+        "0",
+        "child",
+        polylogue_model::Role::User,
+        0,
+        vec![polylogue_model::Block::Text {
+            text: "child".into(),
+        }],
+    );
+    // The child really repeats the common ancestor and both branches in this
+    // source order. Links alone do not supply an ordering between the branches.
+    copied_source(
+        &mut writer,
+        "child",
+        &["p", "a", "b"],
+        vec![p[0].clone(), a[0].clone(), b[0].clone(), child],
+    );
+    let pool = ReadPool::open(&writer.archive).unwrap();
     let r = pool.reader().unwrap();
     let selected = r
         .select_messages(&SessionId::parse("claude-code:child").unwrap(), true)
         .unwrap();
     assert!(selected.parents().complete);
     assert_eq!(texts(&selected), ["p", "a", "b", "child"]);
+    assert_eq!(
+        r.query(
+            "SELECT COUNT(*) AS n FROM message WHERE id='claude-code:p-0'",
+            &[]
+        )
+        .unwrap()[0]["n"],
+        1
+    );
 }
 
 #[test]
@@ -250,124 +310,6 @@ fn source_checkpoint_skips_prefix_hydration_in_physical_and_logical_order() {
 }
 
 #[test]
-fn a_read_starts_anywhere_with_the_masking_state_masking_from_the_start_reaches() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
-    session(
-        &mut f,
-        "keyed",
-        &[
-            "ordinary",
-            "closed -----BEGIN RSA PRIVATE KEY-----x-----END RSA PRIVATE KEY----- block",
-            "left open -----BEGIN RSA PRIVATE KEY-----",
-            "inside the open key",
-            "still inside",
-            "closes -----END RSA PRIVATE KEY----- shown",
-            "after the key",
-            "a second -----BEGIN EC PRIVATE KEY----- never closed",
-            "hidden to the end",
-        ],
-    );
-    session(&mut f, "plain", &["one", "two", "three"]);
-    let pool = f.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    let plain = reader
-        .select_messages(&SessionId::parse("claude-code:plain").unwrap(), false)
-        .unwrap();
-    assert!(plain.masking_before(2).unwrap().is_none());
-    let keyed = reader
-        .select_messages(&SessionId::parse("claude-code:keyed").unwrap(), false)
-        .unwrap();
-    let mut messages = Vec::new();
-    keyed
-        .visit(|message| {
-            messages.push(message);
-            ControlFlow::Continue(())
-        })
-        .unwrap();
-    let shown = |mut masker: polylogue_model::masking::MessageMasker, from: usize| {
-        messages[from..]
-            .iter()
-            .map(|message| {
-                let mut message = message.clone();
-                masker.message_text(&mut message);
-                message.text()
-            })
-            .collect::<Vec<_>>()
-    };
-    for at in 0..messages.len() {
-        let mut from_start = polylogue_model::masking::MessageMasker::default();
-        for message in &messages[..at] {
-            from_start.message_text(&mut message.clone());
-        }
-        let resumed = keyed.masking_before(at).unwrap();
-        assert_eq!(resumed.is_none(), at <= 2, "at {at}");
-        assert_eq!(
-            shown(resumed.unwrap_or_default(), at),
-            shown(from_start, at),
-            "at {at}"
-        );
-    }
-}
-
-#[test]
-fn outline_and_anchors_keep_shared_ancestry_in_selected_order() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-    session(&mut fixture, "a", &["shared first", "shared second"]);
-    session(&mut fixture, "b", &["branch b"]);
-    session(&mut fixture, "c", &["branch c"]);
-    session(&mut fixture, "d", &["joint session"]);
-    fork(&mut fixture, "a", "b", Some("claude-code:a-0"));
-    fork(&mut fixture, "a", "c", Some("claude-code:a-1"));
-    fork(&mut fixture, "b", "d", Some("claude-code:b-0"));
-    fork(&mut fixture, "c", "d", Some("claude-code:c-0"));
-    let pool = fixture.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    let id = SessionId::parse("claude-code:d").unwrap();
-    let selected = reader.select_messages(&id, true).unwrap();
-    let expected = [
-        "claude-code:a-0",
-        "claude-code:b-0",
-        "claude-code:a-1",
-        "claude-code:c-0",
-        "claude-code:d-0",
-    ];
-    let entries = selected.outline(None, 100).unwrap();
-    assert_eq!(
-        entries
-            .iter()
-            .map(|entry| entry.message.to_string())
-            .collect::<Vec<_>>(),
-        expected
-    );
-    assert_eq!(
-        selected
-            .outline(Some(entries[1].key), 2)
-            .unwrap()
-            .iter()
-            .map(|entry| entry.message.to_string())
-            .collect::<Vec<_>>(),
-        expected[2..4]
-    );
-    let anchor = polylogue_model::MessageId::parse("claude-code:a-1").unwrap();
-    assert_eq!(selected.locate(Some(&anchor)).unwrap().unwrap().message, 2);
-    assert!(
-        reader
-            .select_messages(&id, false)
-            .unwrap()
-            .locate(Some(&anchor))
-            .unwrap()
-            .is_none()
-    );
-    let last = selected
-        .latest(&[polylogue_model::BlockKind::Text], true)
-        .unwrap()
-        .unwrap();
-    assert_eq!(last.message, 4);
-}
-
-#[test]
 fn previous_indices_include_hidden_messages_in_own_and_parent_selections() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
@@ -410,45 +352,23 @@ fn previous_indices_include_hidden_messages_in_own_and_parent_selections() {
 }
 
 #[test]
-fn outline_includes_microcompactions_and_seeks_indexed_branch_points() {
+fn incompatible_recorded_forks_report_both_exact_references_without_choosing_a_prefix() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
-    session(&mut f, "a", &["prompt", "context change"]);
-    let conn =
-        crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP).unwrap();
-    conn.execute(
-        "UPDATE message SET written_by='model' WHERE id='claude-code:a-1'",
-        [],
-    )
-    .unwrap();
-    let pk = conn
-        .query_row(
-            "SELECT pk FROM session WHERE id='claude-code:a'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap();
-    f.event(pk, "microcompaction", None).unwrap();
-    conn.execute(
-        "UPDATE event SET after_message_pk=(SELECT pk FROM message WHERE id='claude-code:a-1')",
-        [],
-    )
-    .unwrap();
+    session(&mut f, "a", &["left parent"]);
+    session(&mut f, "b", &["right parent"]);
+    session(&mut f, "child", &["own child"]);
+    fork(&mut f, "a", "child", Some("claude-code:a-0"));
+    fork(&mut f, "b", "child", Some("claude-code:b-0"));
     let pool = f.reads().unwrap();
-    let r = pool.reader().unwrap();
-    let selected = r
-        .select_messages(&SessionId::parse("claude-code:a").unwrap(), false)
+    let reader = pool.reader().unwrap();
+    let selected = reader
+        .select_messages(&SessionId::parse("claude-code:child").unwrap(), true)
         .unwrap();
-    let entries = selected.outline(None, 10).unwrap();
-    assert_eq!(entries.len(), 2);
-    assert_eq!(entries[1].events.len(), 1);
-    assert!(entries[1].kinds.iter().any(|kind| kind == "compaction"));
-    let plan: String = conn
-        .query_row(
-            "EXPLAIN QUERY PLAN SELECT 1 FROM link WHERE branch_point='claude-code:a-1'",
-            [],
-            |row| row.get(3),
-        )
-        .unwrap();
-    assert!(plan.contains("link_branch_point"), "{plan}");
+    assert!(!selected.parents().complete);
+    assert!(
+        matches!(&selected.parents().issues[..], [ParentIssue::ConflictingParents { child, first, first_anchor, second, second_anchor }]
+        if child.to_string() == "claude-code:child" && first.to_string() == "claude-code:a" && first_anchor == "claude-code:a-0" && second.to_string() == "claude-code:b" && second_anchor == "claude-code:b-0")
+    );
+    assert_eq!(texts(&selected), ["own child"]);
 }

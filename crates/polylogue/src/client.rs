@@ -1,6 +1,9 @@
 //! One socket client for CLI, MCP, browser-host and hook requests.
-use crate::daemon::{Request, Response};
+pub mod stream;
+use crate::daemon::Request;
+use command_surface::Answer;
 use polylogue_store::Archive;
+use serde_json::Value;
 use std::io;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -22,7 +25,7 @@ fn runtime() -> io::Result<&'static tokio::runtime::Runtime> {
         .map_err(|error| io::Error::other(error.clone()))
 }
 
-pub fn send(socket: &Path, request: &Request) -> io::Result<Response> {
+pub fn send(socket: &Path, request: &Request) -> io::Result<Answer<Value>> {
     let deadline = crate::daemon::execution::request_deadline(request, None);
     runtime()?.block_on(async {
         if let Some(deadline_ms) = deadline {
@@ -49,7 +52,7 @@ pub fn send_with_budget(
     socket: &Path,
     request: &Request,
     budget: Duration,
-) -> io::Result<Response> {
+) -> io::Result<Answer<Value>> {
     let deadline = Instant::now()
         .checked_add(budget)
         .ok_or_else(|| io::Error::other("socket deadline is out of range"))?;
@@ -73,7 +76,7 @@ pub fn send_when_ready(
     archive: &Archive,
     request: &Request,
     deadline_ms: Option<i64>,
-) -> io::Result<Response> {
+) -> io::Result<Answer<Value>> {
     runtime()?.block_on(send_ready(
         archive,
         request,
@@ -88,14 +91,31 @@ pub(crate) async fn send_ready(
     request: &Request,
     deadline_ms: Option<i64>,
     cancelled: &CancellationToken,
-) -> io::Result<Response> {
+) -> io::Result<Answer<Value>> {
+    send_ready_as(
+        archive,
+        request,
+        deadline_ms,
+        cancelled,
+        crate::protocol::caller::evidence(),
+    )
+    .await
+}
+
+pub(crate) async fn send_ready_as(
+    archive: &Archive,
+    request: &Request,
+    deadline_ms: Option<i64>,
+    cancelled: &CancellationToken,
+    caller: polylogue_model::authorship::CallerEvidence,
+) -> io::Result<Answer<Value>> {
     let deadline_ms = crate::daemon::execution::request_deadline(request, deadline_ms);
     let exchange = async {
         let stream = crate::cli::when_ready(archive, deadline_ms, || {
             tokio::net::UnixStream::connect(archive.socket())
         })
         .await?;
-        exchange_stream(stream, request, deadline_ms).await
+        exchange_stream(stream, request, deadline_ms, caller).await
     };
     let work = async {
         if let Some(deadline_ms) = deadline_ms {
@@ -125,28 +145,160 @@ async fn exchange(
     socket: &Path,
     request: &Request,
     deadline_ms: Option<i64>,
-) -> io::Result<Response> {
+) -> io::Result<Answer<Value>> {
     exchange_stream(
         tokio::net::UnixStream::connect(socket).await?,
         request,
         deadline_ms,
+        crate::protocol::caller::evidence(),
     )
     .await
 }
 
 async fn exchange_stream(
-    mut stream: tokio::net::UnixStream,
+    stream: tokio::net::UnixStream,
     request: &Request,
     deadline_ms: Option<i64>,
-) -> io::Result<Response> {
+    caller: polylogue_model::authorship::CallerEvidence,
+) -> io::Result<Answer<Value>> {
     let outgoing = crate::daemon::execution::Outgoing {
         request,
         deadline_ms,
+        caller,
     };
+    exchange_message(stream, &outgoing).await
+}
+
+async fn exchange_message<T: serde::de::DeserializeOwned>(
+    mut stream: tokio::net::UnixStream,
+    outgoing: &impl serde::Serialize,
+) -> io::Result<T> {
     let mut line = serde_json::to_vec(&outgoing).map_err(io::Error::other)?;
     line.push(b'\n');
     stream.write_all(&line).await?;
     let mut reply = String::new();
     BufReader::new(stream).read_line(&mut reply).await?;
+    if !reply.ends_with('\n') {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "the operation answer ended before its line boundary",
+        ));
+    }
     serde_json::from_str(&reply).map_err(io::Error::other)
+}
+
+/// A hook uses the existing daemon only; its budget covers the entire exchange.
+pub(crate) fn call_with_budget(
+    socket: &Path,
+    request: &command_surface::RunnableRequest,
+    budget: Duration,
+) -> io::Result<Answer<Value>> {
+    let outgoing = crate::protocol::wire::Outgoing {
+        request,
+        caller: crate::protocol::caller::evidence(),
+        parent_deadline_ms: None,
+    };
+    runtime()?.block_on(async {
+        tokio::time::timeout(budget, async {
+            let stream = tokio::net::UnixStream::connect(socket).await?;
+            exchange_message(stream, &outgoing).await
+        })
+        .await
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "daemon did not answer before the deadline",
+            )
+        })?
+    })
+}
+
+/// Executes a declared typed operation and retains its entire shared answer.
+pub(crate) async fn call_ready_as(
+    archive: &Archive,
+    request: &command_surface::RunnableRequest,
+    cancelled: &CancellationToken,
+    caller: polylogue_model::authorship::CallerEvidence,
+) -> io::Result<command_surface::Answer<serde_json::Value>> {
+    call_ready_as_bounded(archive, request, cancelled, caller, None).await
+}
+
+pub(crate) async fn call_ready_as_bounded(
+    archive: &Archive,
+    request: &command_surface::RunnableRequest,
+    cancelled: &CancellationToken,
+    caller: polylogue_model::authorship::CallerEvidence,
+    parent_deadline_ms: Option<i64>,
+) -> io::Result<Answer<Value>> {
+    let command = crate::commands::command(&request.operation);
+    let class = command
+        .map(|command| command.latency)
+        .unwrap_or(command_surface::LatencyClass::Local);
+    let admitted = command.and_then(|command| {
+        crate::protocol::operations::admit(
+            command,
+            request,
+            &crate::commands::Caller {
+                surface: crate::commands::Surface::Cli,
+                cwd: std::env::current_dir().ok(),
+                json: true,
+            },
+        )
+        .ok()
+    });
+    let budget = crate::protocol::operations::admitted_deadline(
+        command,
+        admitted.as_ref(),
+        request.deadline,
+    )
+    .socket_timeout(crate::protocol::operations::deadlines().get(class));
+    let budget = match (
+        budget,
+        parent_deadline_ms.map(|deadline| crate::daemon::execution::remaining(Some(deadline))),
+    ) {
+        (Some(request), Some(parent)) => Some(request.min(parent)),
+        (request, parent) => request.or(parent),
+    };
+    let ready_deadline = budget.map(crate::daemon::execution::deadline);
+    let outgoing = crate::protocol::wire::Outgoing {
+        request,
+        caller,
+        parent_deadline_ms,
+    };
+    let work = async {
+        let stream = crate::cli::when_ready(archive, ready_deadline, || {
+            tokio::net::UnixStream::connect(archive.socket())
+        })
+        .await?;
+        exchange_message(stream, &outgoing).await
+    };
+    let work = async {
+        if let Some(budget) = budget {
+            match tokio::time::timeout(budget, work).await {
+                Ok(result) => result,
+                Err(_) => Ok(command_surface::Answer::error(crate::protocol::failure(
+                    "deadline_exceeded",
+                    "the daemon did not answer before the deadline",
+                ))),
+            }
+        } else {
+            work.await
+        }
+    };
+    tokio::select! {
+        answer = work => answer,
+        _ = cancelled.cancelled() => Ok(command_surface::Answer::error(crate::protocol::failure("cancelled", "the request was cancelled"))),
+    }
+}
+
+pub(crate) fn call_ready(
+    archive: &Archive,
+    request: &command_surface::RunnableRequest,
+) -> io::Result<command_surface::Answer<serde_json::Value>> {
+    runtime()?.block_on(call_ready_as(
+        archive,
+        request,
+        &CancellationToken::new(),
+        crate::protocol::caller::evidence(),
+    ))
 }

@@ -9,23 +9,75 @@
 //! - `pl_key(text)`: [`polylogue_model::text::key`], for case- and
 //!   accent-blind substring tests;
 //! - `pl_random(text_key, decimal_seed)`: a seeded integer order value;
-//! - `pl_day(ms, zone, start_minutes)`, `pl_week(…)`, `pl_month(…)`: the
+//! - `pl_day(ms)`, `pl_week(ms)`, `pl_month(ms)`: the
 //!   logical date, ISO week or month label of an instant;
+//! - `pl_live(live_facts, grew_at, now, part)`: one part of a session's live
+//!   view at `now` ([`polylogue_model::live::view`]): `state`, `until`,
+//!   `since`, `waiting_on`, `stall`, `process_alive` or `rank`;
 //! - `pl_similarity(text_hash)`: the text's similarity to the query text of
 //!   a `near:` ranking ([`with_similarity`]), NULL for a text with no
 //!   vector or outside such a query.
 //!
-//! All but `pl_similarity` are deterministic, so SQLite may use them in
-//! indexes and caches.
+//! Calendar labels and similarities depend on the explicit operation scope.
+//! The remaining functions are deterministic.
 
-use polylogue_model::LogicalDay;
+use query_language::time::{Clock, DaySetting};
 use rusqlite::Connection;
 use rusqlite::functions::{Context, FunctionFlags};
 use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 
 const FLAGS: FunctionFlags = FunctionFlags::SQLITE_UTF8.union(FunctionFlags::SQLITE_DETERMINISTIC);
 
 pub fn register(conn: &Connection) -> rusqlite::Result<()> {
+    temporal::register(conn)?;
+    conn.create_scalar_function("pl_glob", 2, FLAGS, |ctx| {
+        let text: Option<String> = ctx.get(0)?;
+        let pattern: Option<String> = ctx.get(1)?;
+        Ok(text
+            .zip(pattern)
+            .map(|(text, pattern)| query_language::glob::matches(&text, &pattern)))
+    })?;
+    aggregates::register(conn)?;
+    conn.create_scalar_function("pl_live", 4, FLAGS, |ctx| {
+        use polylogue_model::live::{LiveFacts, view};
+        use rusqlite::types::Value;
+        let facts: Option<LiveFacts> = ctx
+            .get::<Option<String>>(0)?
+            .map(|text| serde_json::from_str(&text))
+            .transpose()
+            .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+        let grew_at: Option<i64> = ctx.get(1)?;
+        let now: i64 = ctx.get(2)?;
+        let part: String = ctx.get(3)?;
+        let v = view(facts.as_ref(), grew_at, now);
+        let text = |t: Option<&'static str>| t.map_or(Value::Null, |t| Value::Text(t.into()));
+        let int = |n: Option<i64>| n.map_or(Value::Null, Value::Integer);
+        Ok(match part.as_str() {
+            "state" => text(Some(v.state.as_str())),
+            "until" => int(v.until),
+            "since" => int(v.since),
+            "waiting_on" => text(v.waiting_on.map(|w| w.as_str())),
+            "stall" => text(v.stall.map(|s| s.as_str())),
+            "process_alive" => int(v.process_alive.map(i64::from)),
+            "rank" => Value::Integer(i64::from(v.state.rank())),
+            other => {
+                return Err(rusqlite::Error::UserFunctionError(
+                    format!("pl_live has no part {other:?}").into(),
+                ));
+            }
+        })
+    })?;
+    conn.create_scalar_function("pl_assertion_ref", 2, FLAGS, |ctx| {
+        let root: String = ctx.get(0)?;
+        let id: String = ctx.get(1)?;
+        Ok(
+            polylogue_model::Reference::Assertion(polylogue_model::RevisionReference::exact(
+                root, id,
+            ))
+            .to_string(),
+        )
+    })?;
     let versions = crate::derive::current_versions()
         .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
     conn.create_scalar_function("pl_derived_current", 2, FLAGS, move |ctx| {
@@ -78,13 +130,6 @@ pub fn register(conn: &Connection) -> rusqlite::Result<()> {
         Ok(i64::from_le_bytes(bytes))
     })?;
     conn.create_aggregate_function("pl_percentile", 2, FLAGS, Percentile)?;
-    conn.create_scalar_function("pl_day", 3, FLAGS, |ctx| label(ctx, LogicalDay::day_label))?;
-    conn.create_scalar_function("pl_week", 3, FLAGS, |ctx| {
-        label(ctx, LogicalDay::week_label)
-    })?;
-    conn.create_scalar_function("pl_month", 3, FLAGS, |ctx| {
-        label(ctx, LogicalDay::month_label)
-    })?;
     conn.create_scalar_function("pl_similarity", 1, FunctionFlags::SQLITE_UTF8, |ctx| {
         let Some(hash) = ctx.get::<Option<Vec<u8>>>(0)? else {
             return Ok(None);
@@ -161,31 +206,98 @@ fn decompress(ctx: &Context<'_>, i: usize) -> rusqlite::Result<Option<Vec<u8>>> 
         .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))
 }
 
-thread_local! {
-    /// The last zone looked up: every row of one query names the same one.
-    static ZONE: RefCell<Option<(String, u16, LogicalDay)>> = const { RefCell::new(None) };
-}
-
-fn label(ctx: &Context<'_>, f: fn(&LogicalDay, i64) -> String) -> rusqlite::Result<Option<String>> {
-    let Some(ms) = ctx.get::<Option<i64>>(0)? else {
-        return Ok(None);
-    };
-    let zone: String = ctx.get(1)?;
-    let start: i64 = ctx.get(2)?;
-    let start = u16::try_from(start.clamp(0, 1439)).unwrap_or(0);
-    ZONE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let hit = matches!(&*cache, Some((z, s, _)) if *z == zone && *s == start);
-        if !hit {
-            let day = LogicalDay::named(&zone, start).ok_or_else(|| {
-                rusqlite::Error::UserFunctionError(format!("unknown time zone {zone:?}").into())
-            })?;
-            *cache = Some((zone.clone(), start, day));
+/// One connection's calendar scope. Cached statements consult this scope at
+/// execution, and nested reads restore the preceding resolved setting.
+#[derive(Clone)]
+pub(crate) struct CalendarContext(Arc<Mutex<Vec<DaySetting>>>);
+impl CalendarContext {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(Mutex::new(Vec::new())))
+    }
+    pub(crate) fn with_clock<T>(&self, clock: &Clock, f: impl FnOnce() -> T) -> T {
+        struct Restore(CalendarContext);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                self.0.0.lock().expect("calendar scope lock").pop();
+            }
         }
-        let (_, _, day) = cache.as_ref().expect("filled above");
-        Ok(Some(f(day, ms)))
-    })
+        self.0
+            .lock()
+            .expect("calendar scope lock")
+            .push(clock.day.clone());
+        let _restore = Restore(self.clone());
+        f()
+    }
+}
+pub(crate) fn register_calendar(
+    conn: &Connection,
+    context: &CalendarContext,
+) -> rusqlite::Result<()> {
+    for (name, label) in [
+        (
+            "pl_day",
+            crate::calendar::day_label as fn(&DaySetting, i64) -> crate::Result<String>,
+        ),
+        ("pl_week", crate::calendar::week_label),
+        ("pl_month", crate::calendar::month_label),
+        ("pl_weekday", crate::calendar::weekday_label),
+        ("pl_month_day", crate::calendar::month_day_label),
+    ] {
+        let context = context.clone();
+        conn.create_scalar_function(name, 1, FunctionFlags::SQLITE_UTF8, move |ctx| {
+            let Some(ms) = ctx.get::<Option<i64>>(0)? else {
+                return Ok(None);
+            };
+            let day = context
+                .0
+                .lock()
+                .expect("calendar scope lock")
+                .last()
+                .cloned()
+                .ok_or_else(|| {
+                    rusqlite::Error::UserFunctionError(
+                        "calendar labels require an explicit owner clock".into(),
+                    )
+                })?;
+            label(&day, ms)
+                .map(Some)
+                .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))
+        })?;
+    }
+    for (name, number) in [
+        (
+            "pl_hour",
+            crate::calendar::hour_number as fn(&DaySetting, i64) -> crate::Result<i64>,
+        ),
+        ("pl_year", crate::calendar::year_number),
+    ] {
+        let context = context.clone();
+        conn.create_scalar_function(name, 1, FunctionFlags::SQLITE_UTF8, move |ctx| {
+            let Some(ms) = ctx.get::<Option<i64>>(0)? else {
+                return Ok(None);
+            };
+            let day = context
+                .0
+                .lock()
+                .expect("calendar scope lock")
+                .last()
+                .cloned()
+                .ok_or_else(|| {
+                    rusqlite::Error::UserFunctionError(
+                        "calendar values require an explicit owner clock".into(),
+                    )
+                })?;
+            number(&day, ms)
+                .map(Some)
+                .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))
+        })?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests;
+
+mod aggregates;
+mod temporal;

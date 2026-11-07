@@ -4,6 +4,8 @@ Everything Polylogue computes from parsed sessions: the rules every derived prod
 
 Measurement answers four questions for someone who runs many agents on subscriptions: how much of the subscription is left and when it runs out; what something cost, and would have cost at API prices; where an agent's time went and how agents behave; what one set of sessions looks like beside another. Every figure is computed from records, never guessed from prose, and says what it counts and what it could not count.
 
+Measurement options are one query scalar. Quote an option containing commas, for example `sessions | measure "compare:origin,words"`. The `measure` CLI builds the same literal.
+
 ## Principles
 
 - **The outlook leads for a subscription user.** The current window, its burn and when it runs out come first in status, the overview, the cost page and `analyze --cost`. API-equivalent money follows, labelled as a comparison.
@@ -247,7 +249,7 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 
 ### Plans and billing cycles
 
-- **Plan setting** `plan.<provider>`: the plan name in the provider's terms (`pro`, `max-5x`, `max-20x`; `plus`, `pro`; a bare `max` is refused as ambiguous), an optional monthly price (else the shipped plan table, with its source), the cycle anchor day and an optional budget, dated from when it was set; a new value starts a new span. The plan table never states allowances the provider does not publish.
+- **Plan setting** `plan.<provider>` (archive scope, shared across hosts): the plan name in the provider's terms (`pro`, `max-5x`, `max-20x`; `plus`, `pro`; a bare `max` is refused as ambiguous), an optional monthly price (else the shipped plan table, with its source), the cycle anchor day and an optional budget, dated from when it was set; a new value starts a new span. The plan table never states allowances the provider does not publish.
 - A session counts against a subscription only with evidence: a quota reading in its files, or the plan setting in force at its time; otherwise its billing is `unknown`.
 - **Cycle outlook:** a calendar month from the anchor day (days 29–31 clamp to the month's end; UTC dates). Projections per unit (API-equivalent, provider-reported, each lane), each method named: `linear` (used ÷ elapsed × total) and `trailing-7d-mean`. Each carries coverage, missing days and untimed or incomplete usage. Observations after the as-of instant are excluded, so the outlook is reproducible.
 - **Subscription value:** per cycle, API-equivalent cost against the plan price, as a ratio; `subscription_share` derives from it. An optional user budget gives used and projected ratios, a breach day and overage at a user rate, labelled "your budget". A plan changed mid-cycle splits the cycle.

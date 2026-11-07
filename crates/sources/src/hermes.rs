@@ -1,5 +1,9 @@
 //! Hermes state rows, read from one stored row dump. Session facts
 //! and record identities are metadata; message bodies are decoded one at a time.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+use crate::fields::ExpectedType as T;
 mod identity;
 mod message;
 mod observer;
@@ -46,13 +50,31 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
             .is_none_or(|byte| *byte == b'{')
 }
 
+pub fn is_database(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| {
+        matches!(
+            name.to_str(),
+            Some(
+                "state.db"
+                    | "state.db.jsonl"
+                    | "verification_evidence.db"
+                    | "verification_evidence.db.jsonl"
+            )
+        )
+    })
+}
+
 pub fn open(path: &Path) -> Option<Parse> {
     if path
         .file_name()
-        .is_some_and(|name| name == "state.db.jsonl")
+        .is_some_and(|name| name == "state.db.jsonl" || name == "state.db")
     {
         Some(Parse::Export(Box::new(Database::default())))
-    } else if verification::recognize(path) {
+    } else if verification::recognize(path)
+        || path
+            .file_name()
+            .is_some_and(|name| name == "verification_evidence.db")
+    {
         Some(verification::open())
     } else if path.extension().is_some_and(|s| s == "json") {
         Some(trajectory::open())
@@ -95,20 +117,21 @@ struct Selected {
 }
 
 static SESSION_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read),
-    ("source", Rule::Read),
-    ("model", Rule::Read),
-    ("model_config", Rule::Read),
-    ("parent_session_id", Rule::Read),
-    ("title", Rule::Read),
-    ("cwd", Rule::Read),
-    ("git_branch", Rule::Read),
-    ("git_remote", Rule::Read),
-    ("started_at", Rule::Read),
-    ("ended_at", Rule::Read),
-    ("end_reason", Rule::Read),
-    ("system_prompt", Rule::Read),
-]);
+    ("id", Rule::Read(T::String)),
+    ("source", Rule::Read(T::String)),
+    ("model", Rule::Read(T::String)),
+    ("model_config", Rule::Read(T::StringOrObject)),
+    ("parent_session_id", Rule::Read(T::String)),
+    ("title", Rule::Read(T::String)),
+    ("cwd", Rule::Read(T::String)),
+    ("git_branch", Rule::Read(T::String)),
+    ("git_remote", Rule::Read(T::String)),
+    ("started_at", Rule::Read(T::StringOrNumber)),
+    ("ended_at", Rule::Read(T::StringOrNumber)),
+    ("end_reason", Rule::Read(T::String)),
+    ("system_prompt", Rule::Read(T::String)),
+])
+.for_kind("session");
 
 fn lines(
     reader: &mut dyn Input,
@@ -482,22 +505,46 @@ impl ExportParser for Database {
                 }
                 session.git_branch = text(row, "git_branch");
                 session.repo = text(row, "git_remote");
-                session.started = row.get("started_at").and_then(crate::time::epoch_seconds);
+                let (at, evidence) =
+                    crate::time::parts(row.get("started_at").and_then(crate::time::epoch_seconds));
+                session
+                    .set_time(at, evidence)
+                    .expect("decoded source time is valid");
                 sink.out.sessions.push(session);
-                let mut limits = Vec::new();
-                if facts.messages && (!facts.activity_known || facts.leaf.is_none()) {
-                    sink.out.events.push(Event {
+                sink.out.events.push({
+                    let (at, time_evidence) = crate::time::parts(None);
+                    Event {
                         session: Some(id.clone()),
-                        kind: if facts.activity_known {
-                            "active_path_empty"
-                        } else {
-                            "active_path_unknown"
-                        }
-                        .into(),
-                        at: None,
+                        kind: "session_metadata".into(),
+                        at,
+                        at_quality: time_evidence.quality,
+                        at_precision: time_evidence.precision,
+                        at_until: time_evidence.until,
                         after: None,
                         range: None,
-                        data: Json::Null,
+                        data: row.clone(),
+                    }
+                });
+                let mut limits = Vec::new();
+                if facts.messages && (!facts.activity_known || facts.leaf.is_none()) {
+                    sink.out.events.push({
+                        let (at, time_evidence) = crate::time::parts(None);
+                        Event {
+                            session: Some(id.clone()),
+                            kind: if facts.activity_known {
+                                "active_path_empty"
+                            } else {
+                                "active_path_unknown"
+                            }
+                            .into(),
+                            at,
+                            at_quality: time_evidence.quality,
+                            at_precision: time_evidence.precision,
+                            at_until: time_evidence.until,
+                            after: None,
+                            range: None,
+                            data: Json::Null,
+                        }
                     });
                 }
                 if row.get("source").is_some_and(|value| {
@@ -523,13 +570,19 @@ impl ExportParser for Database {
                     }
                 }
                 if !limits.is_empty() {
-                    sink.out.events.push(Event {
-                        session: Some(id.clone()),
-                        kind: "hermes_session_diagnostic".into(),
-                        at: None,
-                        after: None,
-                        range: None,
-                        data: serde_json::json!({"reason":limits}),
+                    sink.out.events.push({
+                        let (at, time_evidence) = crate::time::parts(None);
+                        Event {
+                            session: Some(id.clone()),
+                            kind: "hermes_session_diagnostic".into(),
+                            at,
+                            at_quality: time_evidence.quality,
+                            at_precision: time_evidence.precision,
+                            at_until: time_evidence.until,
+                            after: None,
+                            range: None,
+                            data: serde_json::json!({"reason":limits}),
+                        }
                     });
                 }
                 if let Some((parent, kind)) = self.parent(&raw)
@@ -568,13 +621,21 @@ impl ExportParser for Database {
                     });
                 }
                 if let Some(end) = text(row, "end_reason") {
-                    sink.out.events.push(Event {
-                        session: Some(id),
-                        kind: "session_end".into(),
-                        at: row.get("ended_at").and_then(crate::time::epoch_seconds),
-                        after: facts.leaf.clone(),
-                        range: None,
-                        data: serde_json::json!({"end_reason":end}),
+                    sink.out.events.push({
+                        let (at, time_evidence) = crate::time::parts(
+                            row.get("ended_at").and_then(crate::time::epoch_seconds),
+                        );
+                        Event {
+                            session: Some(id),
+                            kind: "session_end".into(),
+                            at,
+                            at_quality: time_evidence.quality,
+                            at_precision: time_evidence.precision,
+                            at_until: time_evidence.until,
+                            after: facts.leaf.clone(),
+                            range: None,
+                            data: serde_json::json!({"end_reason":end}),
+                        }
                     });
                 }
                 sink.records.record(table, &RecordOutcome::Used);
@@ -622,13 +683,19 @@ impl ExportParser for Database {
                             .clone()
                             .or_else(|| facts.system.then(|| self.mid(raw, "system")).flatten());
                         for (kind, data) in diagnostics {
-                            sink.out.events.push(Event {
-                                session: Some(sid.clone()),
-                                kind,
-                                at: message.at,
-                                after: Some(id.clone()),
-                                range: None,
-                                data,
+                            sink.out.events.push({
+                                let (at, time_evidence) = (message.at, message.time_evidence());
+                                Event {
+                                    session: Some(sid.clone()),
+                                    kind,
+                                    at,
+                                    at_quality: time_evidence.quality,
+                                    at_precision: time_evidence.precision,
+                                    at_until: time_evidence.until,
+                                    after: Some(id.clone()),
+                                    range: None,
+                                    data,
+                                }
                             });
                         }
                         let offset = sink.position();
@@ -638,13 +705,19 @@ impl ExportParser for Database {
                             message,
                         });
                         if facts.activity_known && facts.leaf.as_ref() == Some(id) {
-                            sink.out.events.push(Event {
-                                session: Some(sid),
-                                kind: "active_leaf".into(),
-                                at: None,
-                                after: Some(id.clone()),
-                                range: None,
-                                data: Json::Null,
+                            sink.out.events.push({
+                                let (at, time_evidence) = crate::time::parts(None);
+                                Event {
+                                    session: Some(sid),
+                                    kind: "active_leaf".into(),
+                                    at,
+                                    at_quality: time_evidence.quality,
+                                    at_precision: time_evidence.precision,
+                                    at_until: time_evidence.until,
+                                    after: Some(id.clone()),
+                                    range: None,
+                                    data: Json::Null,
+                                }
                             });
                         }
                         sink.records.record(table, &RecordOutcome::Used);
@@ -653,10 +726,13 @@ impl ExportParser for Database {
                 }
             }
             "schema_version" => sink.records.record(table, &RecordOutcome::Used),
-            _ => sink.records.record(
-                table,
-                &RecordOutcome::skipped("Hermes auxiliary row stays in the stored input"),
-            ),
+            _ => {
+                sink.records.unknown_table(table, table, row);
+                sink.records.record(
+                    table,
+                    &RecordOutcome::skipped("Hermes auxiliary row stays in the stored input"),
+                );
+            }
         }
         Ok(())
     }

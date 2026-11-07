@@ -1,7 +1,7 @@
 //! Introspection from the declarations used by commands and query execution.
 
 use crate::commands::{self, COMMANDS};
-use crate::daemon::query::Failure;
+use crate::daemon::Failure;
 use polylogue_query::{ast::Unit, fields, units};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -34,11 +34,8 @@ pub fn answer(
     page_size: Option<u64>,
     cursor: Option<&str>,
 ) -> Result<Value, Failure> {
-    declarations(subject, expression, unit, page_size, cursor).map_err(|message| Failure {
-        kind: "bad_request".into(),
-        message,
-        detail: None,
-    })
+    declarations(subject, expression, unit, page_size, cursor)
+        .map_err(|message| Failure::new("bad_request", message))
 }
 
 fn declarations(
@@ -97,10 +94,16 @@ fn declarations(
 fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
     Ok(match subject {
         "derived" => polylogue_model::derived::all().into_iter().map(|p|json!(p)).collect(),
-        "syntax" => vec![json!({"syntax": SYNTAX, "stages": polylogue_query::syntax::STAGES, "aggregates": polylogue_query::syntax::AGGREGATES, "keywords": polylogue_query::syntax::KEYWORDS})],
+        "syntax" => {
+            let catalog = polylogue_query::catalog::catalog(&[]);
+            let keywords: Vec<_> = polylogue_query::catalog::FUNCTIONS.iter().copied()
+                .chain(catalog.functions.iter().map(|function| function.name.as_str()))
+                .collect();
+            vec![json!({"syntax": SYNTAX, "stages": polylogue_query::catalog::TRANSFORMS.iter().map(|s| s.completion).collect::<Vec<_>>(), "aggregates": polylogue_query::catalog::AGGREGATES, "keywords": keywords})]
+        },
         "units" => units::UNITS.iter().map(|u| json!({
             "name": u.name, "singular": u.singular,
-            "columns": u.columns.iter().map(|c| c.0).collect::<Vec<_>>(),
+            "columns": u.columns.iter().map(|c| c.name).collect::<Vec<_>>(),
             "session_fields": u.in_session,
             "relations": u.relations.iter().map(|r| json!({"prefix": r.prefix, "unit": r.target})).collect::<Vec<_>>(),
         })).collect(),
@@ -108,14 +111,19 @@ fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
             "unit": f.unit, "name": f.name, "kind": f.kind, "values": f.values, "help": f.help,
             "construct": fields::construct(f),
         })).collect(),
-        "operators" => polylogue_query::ast::Op::TABLE.iter().map(|(op, _)| json!({"name": op.name(), "operation": op})).collect(),
+        "operators" => [polylogue_query::ast::Op::Eq, polylogue_query::ast::Op::Ne, polylogue_query::ast::Op::Lt, polylogue_query::ast::Op::Le, polylogue_query::ast::Op::Gt, polylogue_query::ast::Op::Ge, polylogue_query::ast::Op::Contains, polylogue_query::ast::Op::Prefix].into_iter().map(|op| json!({"name": op.symbol(), "operation": op})).collect(),
         "capabilities" => {
+            // MCP tools list only their operations' common arguments and
+            // carry no answer schema; both are published here in full.
             let mut entries: Vec<_> = COMMANDS.iter().map(|c| json!({
                 "kind": "command", "name": c.name, "help": c.help,
-                "mcp": c.mcp, "http": c.http, "writes": c.writes,
+                "tool": c.tool.map(commands::Tool::name), "http": c.http, "writes": c.writes,
                 "arguments": commands::schema(c),
+                "unlisted": c.args_for(commands::Surface::Mcp).filter(|a| a.unlisted).map(|a| a.name).collect::<Vec<_>>(),
+                "answer": c.typed_schemas.map(|schemas| schemas().1),
             })).collect();
-            entries.extend(polylogue_render::View::NAMES.iter().map(|name| json!({"kind": "read_view", "name": name})));
+            entries.push(json!({"kind": "answer", "schema": schemars::schema_for!(command_surface::Answer<Value>).to_value()}));
+            entries.extend(polylogue_model::read::View::NAMES.iter().map(|name| json!({"kind": "read_view", "name": name})));
             entries.extend(polylogue_render::Format::NAMES.iter().map(|name| json!({"kind": "format", "name": name})));
             entries
         }

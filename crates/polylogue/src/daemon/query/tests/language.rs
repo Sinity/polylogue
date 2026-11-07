@@ -1,6 +1,5 @@
 //! Query-language behavior over the archive built through the real loop.
-use polylogue_model::LogicalDay;
-use polylogue_query::{Clock, Options, Param, QueryError, compile};
+use polylogue_store::query::{Options, Param, QueryError, compile};
 use polylogue_store::{Reader, SqlValue};
 use polylogue_testkit::{Morrow, Set, short};
 use serde_json::{Value, json};
@@ -8,15 +7,18 @@ use std::collections::BTreeSet;
 
 fn options() -> Options {
     Options {
-        clock: Clock::new(
-            1_791_453_600_000,
-            LogicalDay::named("Europe/Warsaw", 240).unwrap(),
+        clock: query_language::time::Clock::new(
+            jiff::Timestamp::from_millisecond(1_791_453_600_000).unwrap(),
+            query_language::time::DaySetting::new(
+                jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(),
+                jiff::civil::Time::constant(4, 0, 0, 0),
+            )
+            .unwrap(),
         ),
         origins: polylogue_sources::origin::ORIGINS
             .iter()
             .map(|origin| origin.name.to_owned())
             .collect(),
-        command_words: crate::commands::command_words(),
         page_size: None,
         random_seed: Some(7),
         embeddings: false,
@@ -40,12 +42,11 @@ fn values(params: &[Param]) -> Vec<SqlValue> {
 fn run(reader: &Reader<'_>, text: &str) -> Result<Value, QueryError> {
     let program = compile(text, &options())?;
     let mut rows = reader
-        .query(&program.sql, &values(&program.params))
+        .query_rows(&program)
         .unwrap_or_else(|e| panic!("{text}: {e}"));
     for row in &mut rows {
-        row.as_object_mut()
-            .unwrap()
-            .retain(|name, _| !name.starts_with('_'));
+        polylogue_store::query::execute::present(&program, row)
+            .unwrap_or_else(|error| panic!("{text}: {error}"));
     }
     Ok(json!({"rows": rows, "outcome": if rows.is_empty() {"empty"} else {"rows"}}))
 }
@@ -221,28 +222,65 @@ fn a_value_outside_a_closed_set_is_refused() {
     let w = Morrow::build(Set::Main);
     let pool = w.reads();
     let r = pool.reader().unwrap();
+    let options = options();
+    let catalog = polylogue_query::catalog::catalog(&options.origins);
     // A value of another unit's field of the same name, and the unit that has it.
-    for (bad, elsewhere) in [
-        ("sessions where outcome:error", Some("tool_calls")),
-        ("tool_calls where outcome:solved", Some("sessions")),
-        ("deliveries where outcome:ok", Some("tool_calls")),
-        ("messages where role:asistant", None),
-        ("kind:continuation", Some("links")),
-        ("kind:mian", None),
+    for (bad, unit, field, elsewhere) in [
+        (
+            "sessions where outcome:error",
+            "sessions",
+            "outcome",
+            Some("tool_calls"),
+        ),
+        (
+            "tool_calls where outcome:solved",
+            "tool_calls",
+            "outcome",
+            Some("sessions"),
+        ),
+        (
+            "deliveries where outcome:ok",
+            "deliveries",
+            "outcome",
+            Some("tool_calls"),
+        ),
+        ("messages where role:asistant", "messages", "role", None),
+        ("kind:continuation", "sessions", "kind", Some("links")),
+        ("kind:mian", "sessions", "kind", None),
     ] {
         let f = run(&r, bad)
             .map(|v| panic!("{bad} was answered ({}) instead of refused", v["outcome"]))
             .unwrap_err();
-        assert!(
-            f.to_string().contains(" is one of ") && f.to_string().contains(", "),
-            "{bad}: the refusal does not name the set: {}",
-            f
+        assert_eq!(
+            f.kind(),
+            query_language::ErrorKind::BadValue.code(),
+            "{bad}"
         );
-        if let Some(unit) = elsewhere {
+        let detail = f.detail().unwrap();
+        assert_eq!(detail["kind"], "bad_value");
+        assert_eq!(detail["position"], bad.rfind(':').unwrap() + 1);
+        let values = &catalog.field(unit, field).unwrap().values;
+        assert!(
+            !values.is_empty(),
+            "{unit}.{field} has a closed declaration"
+        );
+        let value = bad.rsplit_once(':').unwrap().1;
+        let accepting = catalog.units_accepting(value);
+        let mut message = format!("`{field}` on `{unit}` is one of: {}", values.join(", "));
+        if !accepting.is_empty() {
+            message.push_str(&format!(
+                "; `{value}` is a value of {}",
+                accepting.join(", ")
+            ));
+        }
+        assert_eq!(
+            detail["message"], message,
+            "{bad}: complete closed set and qualified value locations"
+        );
+        if let Some(elsewhere) = elsewhere {
             assert!(
-                f.to_string().contains(&format!(" of {unit}")),
-                "{bad}: the refusal does not name {unit}: {}",
-                f
+                accepting.contains(&format!("{elsewhere}.{field}")),
+                "{bad}: missing {elsewhere}.{field}"
             );
         }
     }
@@ -316,13 +354,13 @@ fn no_sort_key_holds_bytes() {
     let mut checked = 0;
     for unit in polylogue_query::units::UNITS {
         let questions = std::iter::once(unit.name.to_owned()).chain(
-            polylogue_query::fields::FIELDS
+            polylogue_store::query::fields::FIELDS
                 .iter()
                 .filter(|f| f.unit == unit.unit && f.sql.is_some())
                 .map(|f| format!("{} | sort by {}", unit.name, f.name)),
         );
         for question in questions {
-            let Ok(program) = polylogue_query::compile(&question, &opts) else {
+            let Ok(program) = polylogue_store::query::compile(&question, &opts) else {
                 continue;
             };
             if program.order.is_empty() {
@@ -351,4 +389,52 @@ fn no_sort_key_holds_bytes() {
         }
     }
     assert!(checked > 100, "{checked}");
+}
+
+#[test]
+fn shared_prefix_text_mode_selects_prefixes_while_a_word_stays_exact() {
+    use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "claude-code:prefix",
+            ..Default::default()
+        })
+        .unwrap();
+    for (id, text) in [
+        ("exact", "parse"),
+        ("prefix", "parser"),
+        ("other", "paring"),
+    ] {
+        fixture
+            .message(
+                session,
+                MessageFacts {
+                    id,
+                    text: Some(text),
+                    role: "user",
+                    written_by: "human",
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    fixture.commit_search().unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    for (text, expected) in [
+        ("messages where parse | sort by id", vec!["exact"]),
+        (
+            "messages where parse* | sort by id",
+            vec!["exact", "prefix"],
+        ),
+    ] {
+        let answer = q(&reader, text);
+        let actual: Vec<&str> = rows(&answer)
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(actual, expected, "{text}");
+    }
 }

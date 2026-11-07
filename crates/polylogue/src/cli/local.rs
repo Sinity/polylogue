@@ -6,13 +6,37 @@ use super::fail;
 use crate::commands::{Command, Values};
 use std::process::ExitCode;
 
-pub fn daemon(_: &Command, _: &Values, _: bool) -> ExitCode {
-    match crate::daemon::server::serve() {
-        Ok(()) => ExitCode::SUCCESS,
+pub fn daemon(_: &Command, v: &Values, startup: &crate::config::Startup, json: bool) -> ExitCode {
+    let run = crate::daemon::server::Run {
+        reads_sources: !v.flag("no_sources"),
+        lifetime: if v.flag("until_idle") {
+            polylogue_engine::Lifetime::UntilIdle
+        } else {
+            polylogue_engine::Lifetime::UntilStopped
+        },
+    };
+    match crate::daemon::server::serve(startup, run) {
+        Ok(None) => ExitCode::SUCCESS,
+        Ok(Some(summary)) => {
+            if json {
+                match serde_json::to_string(&summary) {
+                    Ok(text) => println!("{text}"),
+                    Err(error) => eprintln!("polylogue: the run summary: {error}"),
+                }
+            } else {
+                print!("{}", super::print::idle_summary(&summary));
+            }
+            // A run that met errors did not process everything it was given.
+            if summary.work.errors.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
         Err(e) => {
-            eprintln!(
+            eprint!(
                 "{}",
-                polylogue_render::terminal::escape(&format!("polylogue: {e}"))
+                super::print::diagnostic("", &e.to_string(), None, startup.output.stderr_color())
             );
             let refused = e
                 .get_ref()
@@ -22,6 +46,8 @@ pub fn daemon(_: &Command, _: &Values, _: bool) -> ExitCode {
                         inner,
                         polylogue_store::StoreError::NewerSchema { .. }
                             | polylogue_store::StoreError::NoMigration { .. }
+                            | polylogue_store::StoreError::OlderFormat { .. }
+                            | polylogue_store::StoreError::IndexVersion { .. }
                     )
                 });
             if refused {
@@ -33,73 +59,128 @@ pub fn daemon(_: &Command, _: &Values, _: bool) -> ExitCode {
     }
 }
 
-pub fn mcp(_: &Command, _: &Values, _: bool) -> ExitCode {
-    match crate::mcp::serve_stdio() {
+pub fn mcp(_: &Command, _: &Values, startup: &crate::config::Startup, _: bool) -> ExitCode {
+    match crate::mcp::serve_stdio(&polylogue_store::Archive::at(&startup.config.archive)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!(
+            eprint!(
                 "{}",
-                polylogue_render::terminal::escape(&format!("polylogue mcp: {e}"))
+                super::print::diagnostic(
+                    "",
+                    &format!("mcp: {e}"),
+                    None,
+                    startup.output.stderr_color()
+                )
             );
             ExitCode::FAILURE
         }
     }
 }
 
-pub fn hook(_: &Command, v: &Values, json: bool) -> ExitCode {
+pub fn hook(_: &Command, v: &Values, startup: &crate::config::Startup, json: bool) -> ExitCode {
     let name = v.text("harness").unwrap_or_else(|| "claude-code".into());
     let Some(harness) = crate::hook::Harness::parse(&name) else {
-        return fail(json, "bad_request", &format!("unknown harness {name:?}"), 2);
+        return fail(
+            startup.output,
+            json,
+            "bad_request",
+            &format!("unknown harness {name:?}"),
+            2,
+        );
     };
-    crate::hook::run(harness, &v.text("event").unwrap_or_default())
+    crate::hook::run(harness, &v.text("event").unwrap_or_default(), startup)
 }
 
-pub fn web(_: &Command, _: &Values, json: bool) -> ExitCode {
-    open_reader(json)
+pub fn web(_: &Command, _: &Values, startup: &crate::config::Startup, json: bool) -> ExitCode {
+    open_reader(startup, json)
 }
 
-pub fn browser_host(_: &Command, _: &Values, _: bool) -> ExitCode {
-    crate::browser::native::run()
+pub fn browser_host(
+    _: &Command,
+    _: &Values,
+    startup: &crate::config::Startup,
+    _: bool,
+) -> ExitCode {
+    crate::browser::native::run(
+        &startup.engine,
+        &polylogue_store::Archive::at(&startup.config.archive),
+    )
 }
 
 /// Prints what `COMPLETE=<shell> polylogue` prints: shell code that asks
 /// this binary for completions as the operator types.
-pub fn completions(_: &Command, v: &Values, _: bool) -> ExitCode {
+pub fn completions(
+    _: &Command,
+    v: &Values,
+    output: crate::config::OutputConfig,
+    _: bool,
+) -> ExitCode {
     let shell = v.text("shell").unwrap_or_default();
     let shells = clap_complete::env::Shells::builtins();
     let Some(completer) = shells.completer(&shell) else {
-        return fail(false, "bad_request", &format!("unknown shell {shell:?}"), 2);
+        return fail(
+            output,
+            false,
+            "bad_request",
+            &format!("unknown shell {shell:?}"),
+            2,
+        );
     };
     // A wrapper on PATH that runs this binary (Sinnix's `polylogue-live`)
     // is completed and asked under its own name, so it keeps its archive.
     let name = v.text("program").unwrap_or_else(|| "polylogue".into());
-    match completer.write_registration("COMPLETE", &name, &name, &name, &mut std::io::stdout()) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => fail(false, "io", &e.to_string(), 1),
+    let mut registration = Vec::new();
+    match completer.write_registration("COMPLETE", &name, &name, &name, &mut registration) {
+        Ok(()) => {
+            let registration = String::from_utf8_lossy(&registration);
+            let registration = registration.replace(
+                "COMPLETE=\"zsh\"",
+                "_POLYLOGUE_COMPLETE_PREFIX=\"$PREFIX\" COMPLETE=\"zsh\"",
+            );
+            print!("{registration}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(output, false, "io", &e.to_string(), 1),
     }
 }
 
-pub fn hooks_install(_: &Command, v: &Values, json: bool) -> ExitCode {
-    hooks(v, json, true)
+pub fn hooks_install(
+    _: &Command,
+    v: &Values,
+    startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
+    hooks(v, startup, json, true)
 }
 
-pub fn hooks_uninstall(_: &Command, v: &Values, json: bool) -> ExitCode {
-    hooks(v, json, false)
+pub fn hooks_uninstall(
+    _: &Command,
+    v: &Values,
+    startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
+    hooks(v, startup, json, false)
 }
 
-fn hooks(v: &Values, json: bool, on: bool) -> ExitCode {
+fn hooks(v: &Values, startup: &crate::config::Startup, json: bool, on: bool) -> ExitCode {
     let name = v.text("harness").unwrap_or_else(|| "claude-code".into());
     let Some(harness) = crate::hook::Harness::parse(&name) else {
-        return fail(json, "bad_request", &format!("unknown harness {name:?}"), 2);
+        return fail(
+            startup.output,
+            json,
+            "bad_request",
+            &format!("unknown harness {name:?}"),
+            2,
+        );
     };
     let path = match v.text("settings") {
         Some(path) => std::path::PathBuf::from(path),
-        None => match crate::hook::settings_path(harness) {
+        None => match crate::hook::settings_path(harness, &startup.engine) {
             Ok(path) => path,
-            Err(message) => return fail(json, "bad_request", &message, 2),
+            Err(message) => return fail(startup.output, json, "bad_request", &message, 2),
         },
     };
-    match crate::hook::install(&path, harness, on) {
+    match crate::hook::install(&path, harness, || crate::hook::probe_version(harness), on) {
         Ok(()) => {
             println!(
                 "{} Polylogue's hooks {} {}",
@@ -109,13 +190,19 @@ fn hooks(v: &Values, json: bool, on: bool) -> ExitCode {
             );
             ExitCode::SUCCESS
         }
-        Err(e) => fail(json, "io", &e.to_string(), 1),
+        Err(e) => fail(startup.output, json, "io", &e.to_string(), 1),
     }
 }
 
 /// A command declared but not built: a typed refusal.
-pub fn not_built(c: &Command, _: &Values, json: bool) -> ExitCode {
+pub fn not_built(
+    c: &Command,
+    _: &Values,
+    output: crate::config::OutputConfig,
+    json: bool,
+) -> ExitCode {
     fail(
+        output,
         json,
         "not_built",
         &format!("`{}` is not built yet", c.name),
@@ -123,8 +210,14 @@ pub fn not_built(c: &Command, _: &Values, json: bool) -> ExitCode {
     )
 }
 
-pub fn install_agent(_: &Command, v: &Values, json: bool) -> ExitCode {
+pub fn install_agent(
+    _: &Command,
+    v: &Values,
+    startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
     install_chrome(
+        startup,
         json,
         &v.text("harness").unwrap_or_default(),
         v.text("extension_id").as_deref(),
@@ -151,9 +244,16 @@ pub fn host_manifest_dirs(config: &std::path::Path) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-fn install_chrome(json: bool, harness: &str, extension_id: Option<&str>, remove: bool) -> ExitCode {
+fn install_chrome(
+    startup: &crate::config::Startup,
+    json: bool,
+    harness: &str,
+    extension_id: Option<&str>,
+    remove: bool,
+) -> ExitCode {
     if harness != "chrome" {
         return fail(
+            startup.output,
             json,
             "not_built",
             &format!(
@@ -162,10 +262,7 @@ fn install_chrome(json: bool, harness: &str, extension_id: Option<&str>, remove:
             1,
         );
     }
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let config = startup.config.paths.config.clone();
     let file = format!("{}.json", crate::browser::HOST_NAME);
     let mut changed = Vec::new();
     for dir in host_manifest_dirs(&config) {
@@ -180,6 +277,7 @@ fn install_chrome(json: bool, harness: &str, extension_id: Option<&str>, remove:
                 .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase()))
             else {
                 return fail(
+                    startup.output,
                     json,
                     "bad_request",
                     "`--extension-id` (the ID chrome://extensions shows) is required",
@@ -188,7 +286,13 @@ fn install_chrome(json: bool, harness: &str, extension_id: Option<&str>, remove:
             };
             let binary = std::env::current_exe().and_then(std::fs::canonicalize);
             let Ok(binary) = binary else {
-                return fail(json, "io", "cannot resolve this binary's path", 1);
+                return fail(
+                    startup.output,
+                    json,
+                    "io",
+                    "cannot resolve this binary's path",
+                    1,
+                );
             };
             let manifest = crate::browser::native::manifest(&binary, id);
             std::fs::create_dir_all(&dir).and_then(|()| {
@@ -199,7 +303,13 @@ fn install_chrome(json: bool, harness: &str, extension_id: Option<&str>, remove:
             })
         };
         if let Err(e) = result {
-            return fail(json, "io", &format!("{}: {e}", path.display()), 1);
+            return fail(
+                startup.output,
+                json,
+                "io",
+                &format!("{}: {e}", path.display()),
+                1,
+            );
         }
         changed.push(path);
     }
@@ -226,13 +336,14 @@ fn install_chrome(json: bool, harness: &str, extension_id: Option<&str>, remove:
 /// Opens the web reader: reads the running daemon's port and token, checks
 /// that the port's listener is this user's, and opens `/auth#<token>` in
 /// the browser. The fragment never reaches a server log or history.
-fn open_reader(json: bool) -> ExitCode {
+fn open_reader(startup: &crate::config::Startup, json: bool) -> ExitCode {
     use crate::web::access;
-    let root = polylogue_store::Archive::default_root();
+    let root = startup.config.archive.clone();
     let auth = match access::reader_url(&root) {
         Ok(url) => url,
         Err(error) => {
             return fail(
+                startup.output,
                 json,
                 "reader_unavailable",
                 &error.to_string(),
@@ -253,23 +364,80 @@ fn open_reader(json: bool) -> ExitCode {
         println!("opened {url}");
     } else {
         // The operator's own terminal: the sign-in link may be shown here.
-        eprintln!(
+        eprint!(
             "{}",
-            polylogue_render::terminal::escape(&format!(
-                "polylogue: could not start a browser; open {auth}"
-            ))
+            super::print::diagnostic(
+                "",
+                &format!("could not start a browser; open {auth}"),
+                None,
+                startup.output.stderr_color()
+            )
         );
     }
     ExitCode::SUCCESS
 }
 
 /// The same standing instructions the MCP server supplies at initialization.
-pub fn manual(_: &Command, _: &Values, json: bool) -> ExitCode {
+pub fn manual(
+    _: &Command,
+    _: &Values,
+    _output: crate::config::OutputConfig,
+    json: bool,
+) -> ExitCode {
     let text = crate::manual::text();
     if json {
-        println!("{}", serde_json::json!({"manual": text}));
+        println!(
+            "{}",
+            serde_json::to_string(&command_surface::Answer::ok(
+                serde_json::json!({"manual": text})
+            ))
+            .expect("manual is serializable")
+        );
     } else {
         print!("{text}");
     }
     ExitCode::SUCCESS
+}
+
+/// `polylogue host`: holds a hosted agent's stdio for the daemon until the
+/// agent exits (`crate::hosting`).
+pub fn host(_: &Command, v: &Values, output: crate::config::OutputConfig, json: bool) -> ExitCode {
+    let harness = v.text("harness").unwrap_or_default();
+    let session_id = v.text("session_id");
+    let (Some(argv), Ok(protocol)) = (
+        crate::hosting::agent_command(&harness, session_id.as_deref()),
+        polylogue_model::live::channel::host_channel(&harness),
+    ) else {
+        return fail(
+            output,
+            json,
+            "bad_request",
+            &format!("{harness} is not a harness Polylogue hosts over stdio"),
+            2,
+        );
+    };
+    let path = |name: &str| v.text(name).map(std::path::PathBuf::from);
+    let (Some(socket), Some(cwd), Some(spool)) = (path("socket"), path("cwd"), path("spool"))
+    else {
+        return fail(
+            output,
+            json,
+            "bad_request",
+            "host takes --socket, --cwd and --spool",
+            2,
+        );
+    };
+    let config = crate::hosting::HostConfig {
+        harness,
+        protocol,
+        argv,
+        cwd,
+        socket,
+        spool,
+        session_id,
+    };
+    match crate::hosting::serve(&config) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => fail(output, json, "io", &e.to_string(), 1),
+    }
 }

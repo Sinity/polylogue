@@ -14,23 +14,27 @@ fn the_python_client_reads_and_continues_the_real_daemons_answers() {
         polylogue_testkit::claude_user("u1", "python", "a synthetic Python client session"),
     )
     .unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    std::fs::write(
+        project.join("python-pages.jsonl"),
+        polylogue_testkit::claude_user(
+            "u-pages",
+            "python-pages",
+            &"Python λ🙂 continuation. ".repeat(300),
+        ),
+    )
+    .unwrap();
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
-    wait_status(&env, |s| s["store"]["messages"].as_u64() >= Some(1));
+    wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(2));
     let python = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../clients/python");
     let mut command = Command::new("python3");
+    env.environment(&mut command);
     command
         .arg(python.join("tests/integration.py"))
+        .arg(&archive)
+        .arg(crate::BIN)
         .env("PYTHONPATH", &python)
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .env("POLYLOGUE_BIN", crate::BIN);
-    for (key, value) in env {
-        command.env(key, value);
-    }
+        .env("PYTHONDONTWRITEBYTECODE", "1");
     let result = command.output().unwrap();
     assert!(result.status.success(), "{result:?}");
 }

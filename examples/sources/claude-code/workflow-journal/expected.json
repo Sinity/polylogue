@@ -25,7 +25,8 @@
           0,
           48
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "unknown"
       },
       {
         "data": {
@@ -40,7 +41,8 @@
           49,
           138
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "unknown"
       },
       {
         "data": {
@@ -55,7 +57,8 @@
           139,
           228
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "unknown"
       },
       {
         "data": {
@@ -71,7 +74,8 @@
           229,
           302
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "unknown"
       },
       {
         "data": {
@@ -87,7 +91,8 @@
           303,
           376
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "unknown"
       }
     ],
     "links": [
@@ -112,7 +117,8 @@
         "title": {
           "source": "agent_name",
           "text": "review a.rs"
-        }
+        },
+        "started_quality": "unknown"
       },
       {
         "id": "claude-code:agent-w2",
@@ -120,11 +126,13 @@
         "title": {
           "source": "agent_name",
           "text": "review b.rs"
-        }
+        },
+        "started_quality": "unknown"
       },
       {
         "id": "claude-code:s1",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       }
     ]
   }

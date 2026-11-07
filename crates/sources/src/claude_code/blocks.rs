@@ -13,7 +13,7 @@ pub fn blocks(record: &Json, content: &Json, blobs: &mut Vec<ExtractedBlob>) -> 
     match content {
         Json::String(text) => vec![Block::Text { text: text.clone() }],
         Json::Array(items) => {
-            let results = items.iter().filter(|i| ty(i) == "tool_result").count();
+            let results = items.iter().filter(|i| is_result(ty(i))).count();
             items
                 .iter()
                 .map(|item| block(record, item, results == 1, blobs))
@@ -25,6 +25,19 @@ pub fn blocks(record: &Json, content: &Json, blobs: &mut Vec<ExtractedBlob>) -> 
 
 fn ty(item: &Json) -> &str {
     item.get("type").and_then(Json::as_str).unwrap_or("")
+}
+
+fn is_result(kind: &str) -> bool {
+    matches!(
+        kind,
+        "tool_result"
+            | "web_search_tool_result"
+            | "web_fetch_tool_result"
+            | "code_execution_tool_result"
+            | "bash_code_execution_tool_result"
+            | "text_editor_code_execution_tool_result"
+            | "tool_search_tool_result"
+    )
 }
 
 fn string(v: &Json, key: &str) -> Option<String> {
@@ -78,7 +91,7 @@ fn block(record: &Json, item: &Json, sole_result: bool, blobs: &mut Vec<Extracte
                 input,
             }
         }
-        "tool_result" => tool_result(record, item, sole_result, blobs),
+        kind if is_result(kind) => tool_result(record, item, sole_result, blobs),
         "image" => Block::Image(image(item, AttachmentDirection::Input, blobs)),
         "document" => Block::File(image(item, AttachmentDirection::Input, blobs)),
         other => Block::Other {
@@ -123,17 +136,15 @@ fn tool_result(
     sole_result: bool,
     blobs: &mut Vec<ExtractedBlob>,
 ) -> Block {
-    // `toolUseResult` describes the record's result only when there is
-    // exactly one.
-    let meta = record
-        .get("toolUseResult")
-        .filter(|_| sole_result)
-        .filter(|m| m.is_object());
+    let meta = result_metadata(record, item, sole_result);
     let mut attachments = Vec::new();
     let output = match item.get("content") {
         Some(Json::String(s)) => Some(s.clone()),
         Some(Json::Array(parts)) => {
-            for part in parts.iter().filter(|p| ty(p) == "image") {
+            for part in parts
+                .iter()
+                .filter(|p| matches!(ty(p), "image" | "document"))
+            {
                 attachments.push(image(part, AttachmentDirection::Output, blobs));
             }
             let texts: Vec<&str> = parts
@@ -142,15 +153,66 @@ fn tool_result(
                 .collect();
             Some(texts.join("\n"))
         }
+        Some(Json::Object(content)) => {
+            let streams: Vec<&str> = ["stdout", "stderr"]
+                .iter()
+                .filter_map(|key| content.get(*key).and_then(Json::as_str))
+                .filter(|text| !text.is_empty())
+                .collect();
+            (!streams.is_empty()).then(|| streams.join("\n"))
+        }
         _ => None,
     };
     Block::ToolResult {
+        reported_duration_ms: meta
+            .and_then(|m| m.get("durationMs").or_else(|| m.get("duration_ms")))
+            .and_then(Json::as_u64),
         call_id: string(item, "tool_use_id"),
         outcome: outcome(record, item, meta, output.as_deref()),
         output,
-        data: meta.cloned(),
+        data: match item.get("content") {
+            Some(content) if !content.is_string() => {
+                Some(serde_json::json!({"toolUseResult":meta,"content":content}))
+            }
+            _ => meta.cloned(),
+        },
         attachments,
     }
+}
+
+/// Multi-result records associate metadata by native call identity. An
+/// unkeyed result belongs to a block only when the record has one result.
+fn result_metadata<'a>(record: &'a Json, item: &Json, sole: bool) -> Option<&'a Json> {
+    let result = record.get("toolUseResult")?;
+    let id = item.get("tool_use_id").and_then(Json::as_str);
+    let matches = |value: &&Json| {
+        id.is_some_and(|id| {
+            ["tool_use_id", "toolUseId", "call_id", "id"]
+                .iter()
+                .any(|key| value.get(key).and_then(Json::as_str) == Some(id))
+        })
+    };
+    if let Some(items) = result.as_array() {
+        return items.iter().find(matches);
+    }
+    if let Some(id) = id {
+        if let Some(value) = result.get(id).filter(|v| v.is_object()) {
+            return Some(value);
+        }
+        for key in ["results", "toolResults"] {
+            if let Some(value) = result
+                .get(key)
+                .and_then(Json::as_array)
+                .and_then(|list| list.iter().find(matches))
+            {
+                return Some(value);
+            }
+        }
+        if matches(&result) {
+            return Some(result);
+        }
+    }
+    sole.then_some(result).filter(|value| value.is_object())
 }
 
 /// The result's outcome, from the most specific evidence present: a denial,
@@ -191,6 +253,38 @@ pub fn outcome(
         return ToolOutcome::Unknown {
             reason: UnknownReason::RunningInBackground,
         };
+    }
+    if let Some(code) = meta
+        .and_then(|m| m.get("exitCode").or_else(|| m.get("exit_code")))
+        .or_else(|| {
+            item.get("content").and_then(|content| {
+                content
+                    .get("return_code")
+                    .or_else(|| content.get("exit_code"))
+            })
+        })
+        .and_then(Json::as_i64)
+    {
+        return if code == 0 {
+            ToolOutcome::Ok
+        } else {
+            ToolOutcome::Error {
+                reason: Some(ErrorReason::ExitCode(code)),
+            }
+        };
+    }
+    if meta_bool("isError").or_else(|| meta_bool("is_error")) == Some(true) {
+        return ToolOutcome::Error { reason: None };
+    }
+    let server_error = item.get("content").is_some_and(|content| {
+        if let Some(parts) = content.as_array() {
+            parts.iter().any(|part| ty(part).ends_with("_error"))
+        } else {
+            ty(content).ends_with("_error")
+        }
+    });
+    if server_error {
+        return ToolOutcome::Error { reason: None };
     }
     match item.get("is_error") {
         None | Some(Json::Null) => ToolOutcome::Ok,

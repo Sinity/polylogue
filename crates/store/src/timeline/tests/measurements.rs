@@ -51,38 +51,37 @@ fn million_message_measurements() {
     conn.execute(
         &format!(
             "WITH RECURSIVE n(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i<99999)
-        INSERT INTO event(id,session_pk,seq,kind,at,input_pk,data)
-        SELECT printf('event:%07d',i),{session}+(i%1000),i,'synthetic',?1+(i%5844)*86400000,1,?2 FROM n"
+        INSERT INTO event(id,session_pk,seq,kind,at,input_pk,data,fields)
+        SELECT printf('event:%07d',i),{session}+(i%1000),i,'synthetic',?1+(i%5844)*86400000,1,?2,X'00' FROM n"
         ),
         rusqlite::params![start, crate::encoding::pack_json(&json!({})).unwrap()],
     )
     .unwrap();
     let setup_ms = setup.elapsed().as_secs_f64() * 1000.0;
     eprintln!("synthetic archive: {setup_ms:.1} ms");
-    let day = LogicalDay::named("Europe/Warsaw", 240).unwrap();
+    let day = fixture_clock("Europe/Warsaw", "04:00:00");
     let date = "2024-03-31".parse().unwrap();
     let baseline = {
         let pool = f.reads().unwrap();
         let r = pool.reader().unwrap();
-        dates(&r, &day).unwrap();
         // The reviewed page queries, before per-source ranges and time indexes.
-        let source = "SELECT m.at, 'message' AS kind,m.id FROM message m UNION ALL SELECT e.at,'event',e.id FROM event e UNION ALL SELECT n.created_at,'note',n.id FROM a.note n";
-        let (since, until) = day.day(date);
-        let (month_since, month_until) = day.month(date);
+        let source = "SELECT m.at, 'message' AS kind,m.id FROM message m UNION ALL SELECT e.at,'event',e.id FROM event e UNION ALL SELECT n.created_at,'assertion',n.id FROM source_assertion n";
+        let (since, until) = crate::calendar::range(&day.day, date).unwrap();
+        let (month_since, month_until) = crate::calendar::month(&day.day, date).unwrap();
         let page_sql = format!(
-            "WITH activity AS ({source}),dated AS (SELECT *,pl_timeline_date(at) AS date FROM activity) SELECT at,kind,id,date FROM dated WHERE date IS NOT NULL AND at >= {since} AND at < {until} AND date='2024-03-31' ORDER BY date IS NULL,CASE WHEN date IS NULL THEN 0 ELSE at END,kind,id LIMIT 51"
+            "WITH activity AS ({source}),dated AS (SELECT *,pl_day(at) AS date FROM activity) SELECT at,kind,id,date FROM dated WHERE date IS NOT NULL AND at >= {since} AND at < {until} AND date='2024-03-31' ORDER BY date IS NULL,CASE WHEN date IS NULL THEN 0 ELSE at END,kind,id LIMIT 51"
         );
         let years_sql = format!(
-            "WITH activity AS ({source}),dated AS (SELECT *,pl_timeline_date(at) AS date FROM activity) SELECT at,kind,id,date FROM dated WHERE date IS NOT NULL AND substr(date,-5)='03-31' AND at < {until} ORDER BY date IS NULL,CASE WHEN date IS NULL THEN 0 ELSE at END,kind,id LIMIT 51"
+            "WITH activity AS ({source}),dated AS (SELECT *,pl_day(at) AS date FROM activity) SELECT at,kind,id,date FROM dated WHERE date IS NOT NULL AND substr(date,-5)='03-31' AND at < {until} ORDER BY date IS NULL,CASE WHEN date IS NULL THEN 0 ELSE at END,kind,id LIMIT 51"
         );
         let calendar_sql = format!(
-            "WITH activity AS ({source}) SELECT pl_timeline_date(at) AS date,count(*) AS records FROM activity WHERE at >= {month_since} AND at < {month_until} GROUP BY date ORDER BY date"
+            "WITH activity AS ({source}) SELECT pl_day(at) AS date,count(*) AS records FROM activity WHERE at >= {month_since} AND at < {month_until} GROUP BY date ORDER BY date"
         );
         let cost_sql = format!(
-            "WITH activity AS (SELECT m.at,'message' AS kind,m.id FROM message m WHERE {}),dated AS (SELECT *,pl_timeline_date(at) AS date FROM activity) SELECT at,kind,id,date FROM dated ORDER BY date IS NULL,CASE WHEN date IS NULL THEN 0 ELSE at END,kind,id LIMIT 51",
+            "WITH activity AS (SELECT m.at,'message' AS kind,m.id FROM message m WHERE {}),dated AS (SELECT *,pl_day(at) AS date FROM activity) SELECT at,kind,id,date FROM dated ORDER BY date IS NULL,CASE WHEN date IS NULL THEN 0 ELSE at END,kind,id LIMIT 51",
             "m.role='assistant' AND m.written_by='model' AND coalesce(json_extract(m.attrs_json,'$.production.response_boundary_unknown'),0)=0 AND NOT EXISTS(SELECT 1 FROM event e WHERE e.session_pk=m.session_pk AND e.kind='response_boundaries_unknown')"
         );
-        json!({"day":sample("before day",||r.query(&page_sql,&[]).unwrap().len()),"across_years":sample("before across years",||r.query(&years_sql,&[]).unwrap().len()),"calendar":sample("before calendar",||r.query(&calendar_sql,&[]).unwrap().len()),"cost_page":sample("before cost page",||r.query(&cost_sql,&[]).unwrap().len()),"plans":{"day":r.query(&format!("EXPLAIN QUERY PLAN {page_sql}"),&[]).unwrap(),"cost_page":r.query(&format!("EXPLAIN QUERY PLAN {cost_sql}"),&[]).unwrap()}})
+        r.with_clock(&day,||json!({"day":sample("before day",||r.query(&page_sql,&[]).unwrap().len()),"across_years":sample("before across years",||r.query(&years_sql,&[]).unwrap().len()),"calendar":sample("before calendar",||r.query(&calendar_sql,&[]).unwrap().len()),"cost_page":sample("before cost page",||r.query(&cost_sql,&[]).unwrap().len()),"plans":{"day":r.query(&format!("EXPLAIN QUERY PLAN {page_sql}"),&[]).unwrap(),"cost_page":r.query(&format!("EXPLAIN QUERY PLAN {cost_sql}"),&[]).unwrap()}}))
     };
     let late_session = crate::measure::Selection {
         sessions: Some(vec![session + 999]),
@@ -161,8 +160,11 @@ fn million_message_measurements() {
             .collect::<Vec<_>>()
     };
     let response_plan = plans(&selected_cost, None);
-    let day_plans = plans(&all(Some(date), false, false), Some(day.day(date)));
-    let after = json!({"day":sample("after day",||page(&r,&day,&all(Some(date),false,false),None,50).unwrap()["rows"].as_array().unwrap().len()),"across_years":sample("after across years",||page(&r,&day,&all(Some(date),true,false),None,50).unwrap()["rows"].as_array().unwrap().len()),"calendar":sample("after calendar",||calendar(&r,&day,date).unwrap().len()),"cost_page":sample("after cost page",||page(&r,&day,&cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"selected_cost_page":sample("after selected cost page",||page(&r,&day,&selected_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"late_session":sample("after late session",||page(&r,&day,&late_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"rare_model":sample("after rare model",||page(&r,&day,&rare_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"selected_rare_model":sample("after selected rare model",||page(&r,&day,&selected_rare_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"plans":{"selected_rare_model":plans(&selected_rare_cost,None),"late_session":plans(&late_cost,None),"rare_model":plans(&rare_cost,None),"selected_cost_page":response_plan,"day_sources":day_plans,"message":r.query("EXPLAIN QUERY PLAN SELECT at,id FROM message WHERE at>=?1 AND at<?2 ORDER BY at,id LIMIT 51",&[SqlValue::Int(day.day(date).0),SqlValue::Int(day.day(date).1)]).unwrap(),"event":r.query("EXPLAIN QUERY PLAN SELECT at,id FROM event WHERE at>=?1 AND at<?2 ORDER BY at,id LIMIT 51",&[SqlValue::Int(day.day(date).0),SqlValue::Int(day.day(date).1)]).unwrap()}});
+    let day_plans = plans(
+        &all(Some(date), false, false),
+        Some(crate::calendar::range(&day.day, date).unwrap()),
+    );
+    let after = json!({"day":sample("after day",||page(&r,&day,&all(Some(date),false,false),None,50).unwrap()["rows"].as_array().unwrap().len()),"across_years":sample("after across years",||page(&r,&day,&all(Some(date),true,false),None,50).unwrap()["rows"].as_array().unwrap().len()),"calendar":sample("after calendar",||calendar(&r,&day,date).unwrap().len()),"cost_page":sample("after cost page",||page(&r,&day,&cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"selected_cost_page":sample("after selected cost page",||page(&r,&day,&selected_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"late_session":sample("after late session",||page(&r,&day,&late_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"rare_model":sample("after rare model",||page(&r,&day,&rare_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"selected_rare_model":sample("after selected rare model",||page(&r,&day,&selected_rare_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"plans":{"selected_rare_model":plans(&selected_rare_cost,None),"late_session":plans(&late_cost,None),"rare_model":plans(&rare_cost,None),"selected_cost_page":response_plan,"day_sources":day_plans,"message":r.query("EXPLAIN QUERY PLAN SELECT at,id FROM message WHERE at>=?1 AND at<?2 ORDER BY at,id LIMIT 51",&[SqlValue::Int(crate::calendar::range(&day.day,date).unwrap().0),SqlValue::Int(crate::calendar::range(&day.day,date).unwrap().1)]).unwrap(),"event":r.query("EXPLAIN QUERY PLAN SELECT at,id FROM event WHERE at>=?1 AND at<?2 ORDER BY at,id LIMIT 51",&[SqlValue::Int(crate::calendar::range(&day.day,date).unwrap().0),SqlValue::Int(crate::calendar::range(&day.day,date).unwrap().1)]).unwrap()}});
     let report = json!({"messages":1000000,"events":100000,"sessions":1000,"years":16,"page_size":50,"samples_per_action":5,"setup_ms":setup_ms,"index_ms":global_index_ms+index_ms,"global_time_indexes_ms":global_index_ms,"selection_time_indexes_ms":index_ms,"before":baseline,"sparse_before":sparse_before,"late_session_messages":1000,"rare_model_messages":100,"after":after,"load":std::fs::read_to_string("/proc/loadavg").ok(),"memory":std::fs::read_to_string("/proc/self/status").ok().map(|s|s.lines().filter(|l|l.starts_with("VmRSS:")||l.starts_with("VmHWM:")).collect::<Vec<_>>().join("; "))});
     let path = std::env::var_os("POLYLOGUE_TIMELINE_REPORT")
         .map(std::path::PathBuf::from)
@@ -170,6 +172,7 @@ fn million_message_measurements() {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../target/timeline-million.json")
         });
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     eprintln!("TIMELINE_MEASUREMENTS={report}");
 }

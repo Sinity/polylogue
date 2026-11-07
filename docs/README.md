@@ -9,8 +9,9 @@ tracked outside the repository. How work is done in this repository is in
 [`AGENTS.md`](../AGENTS.md).
 
 Two current-build artifacts also live here: the embedded
-[agent manual](agent-manual.md), whose command reference is appended at run
-time, and the generated [derived-data reference](derived.md). Their current
+[agent manual](agent-manual.md), the card MCP sends as its instructions, to
+which `polylogue manual` appends the [agent guide](agent-guide.md) and the
+generated operation reference, and the generated [derived-data reference](derived.md). Their current
 locations are inputs to the runtime and its tests.
 
 ## Pages

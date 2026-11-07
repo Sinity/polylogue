@@ -1,25 +1,19 @@
 //! Warm state: what the daemon keeps between requests so common answers
 //! come without reloading or recomputing.
 //!
-//! - **Vectors**: every vector of the embedding key `near:` ranks by, in
+//! - **Vectors**: every vector of the embedding key `similar:` ranks by, in
 //!   memory, reloaded after a commit stored or removed vectors.
-//! - **Query vectors**: the provider's vector for each recent `near:` text,
+//! - **Query vectors**: the provider's vector for each recent `similar:` text,
 //!   so a repeated or paged query neither pays nor waits for the provider
 //!   again, and ranks by the same values.
-//! - **Answers**: recent query pages, by request and read position. A page
-//!   continuing a cursor is fixed by the cursor's clock and is good until
-//!   the next write; a first page also reads the clock (`since:2h`, live
-//!   states), so it is good for [`FIRST_PAGE_FOR`] at most.
-//! - **Completion data**: unit and field names, values seen and recent
-//!   session IDs, rebuilt on the first request after a write.
 //! - **Archive counts** for `status`: counted by a worker of their own when
-//!   the daemon starts and whenever a `status` finds them older than its
-//!   read, while `status` answers from memory (no counts until the first
-//!   count ends), so it stays fast during a long pass. Counts that take
-//!   under 50 ms are simply taken again inside the request. A count of a large
-//!   archive under load takes seconds; the worker leaves at least four
-//!   times as long between counts, and `status` says which read position
-//!   its counts are from.
+//!   the daemon starts and after the writer commits, while `status` answers
+//!   from memory (no counts until the first count ends), so it stays fast
+//!   during a long pass. Counts that take under 50 ms are simply taken again
+//!   inside the request. One count runs at a time: commits made while it
+//!   runs are counted once it ends, so the counts reach the writer's last
+//!   commit one count after it, and `status` says which read position its
+//!   counts are from.
 //!
 //! Every entry is checked against the read position (or the vector write
 //! count) of the request that uses it, so a write is never answered from
@@ -28,19 +22,13 @@
 use crate::embeddings::Provider;
 use polylogue_store::Reader;
 use polylogue_store::vectors::{self, Loaded, Similarity};
-use serde::Serialize;
-use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// How long a first page is answered again from memory.
-pub const FIRST_PAGE_FOR: Duration = Duration::from_secs(5);
-/// Recent `near:` texts whose query vectors are kept.
+/// Recent `similar:` texts whose query vectors are kept.
 const QUERY_VECTORS: usize = 256;
-/// Recent answers kept.
-const ANSWERS: usize = 128;
 /// A count this quick is repeated inside the `status` request.
 const QUICK_COUNT: Duration = Duration::from_millis(50);
 
@@ -79,33 +67,9 @@ impl<V: Clone> Recent<V> {
     }
 }
 
-#[derive(Clone)]
-struct Answer {
-    position: String,
-    made: Instant,
-    /// A first page, which read the clock.
-    clocked: bool,
-    value: Value,
-}
-
-/// Values completion offers for a query being typed.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct Completion {
-    pub units: Vec<String>,
-    /// `name:` for every field of every unit.
-    pub fields: Vec<String>,
-    /// `field:value` for the values seen: repositories, origins,
-    /// harnesses, tags, saved queries.
-    pub values: Vec<String>,
-    /// The most recently active sessions, newest first, with titles.
-    pub sessions: Vec<(String, String)>,
-}
-
 /// Hits and misses since the daemon started, for `status`.
 #[derive(Default)]
 struct Counts {
-    answers_reused: AtomicU64,
-    answers_computed: AtomicU64,
     vector_loads: AtomicU64,
     query_vectors_reused: AtomicU64,
 }
@@ -122,14 +86,18 @@ pub struct Counted {
 pub struct Warm {
     vectors: Mutex<Option<Arc<Loaded>>>,
     archive_counts: Mutex<Option<Counted>>,
+    /// Whether the index had caught up, with the change position it was read at.
+    caught_up: Mutex<Option<(String, bool)>>,
     count_error: Mutex<Option<String>>,
-    /// Wakes the count worker: a request saw counts older than its read.
+    /// Wakes the count worker: the writer committed, or a request saw
+    /// counts older than its read.
     recount: std::sync::Condvar,
     recount_wanted: std::sync::atomic::AtomicBool,
+    counting_stopped: std::sync::atomic::AtomicBool,
     query_vectors: Mutex<Recent<Arc<Vec<f32>>>>,
-    answers: Mutex<Recent<Answer>>,
-    completion: Mutex<Option<(String, Arc<Completion>)>>,
     counts: Counts,
+    /// Session item indexes read by recent reads.
+    pub(crate) items: super::items::ItemCache,
 }
 
 impl Default for Warm {
@@ -137,14 +105,15 @@ impl Default for Warm {
         Self {
             vectors: Mutex::new(None),
             archive_counts: Mutex::new(None),
+            caught_up: Mutex::new(None),
             count_error: Mutex::new(None),
             recount: std::sync::Condvar::new(),
             // The first count starts with the daemon.
             recount_wanted: std::sync::atomic::AtomicBool::new(true),
+            counting_stopped: std::sync::atomic::AtomicBool::new(false),
             query_vectors: Mutex::new(Recent::new(QUERY_VECTORS)),
-            answers: Mutex::new(Recent::new(ANSWERS)),
-            completion: Mutex::new(None),
             counts: Counts::default(),
+            items: super::items::ItemCache::default(),
         }
     }
 }
@@ -166,7 +135,7 @@ fn read_lock<'a, T>(
 }
 
 impl Warm {
-    /// The loaded vectors of the embedding key `near:` ranks by, loading
+    /// The loaded vectors of the embedding key `similar:` ranks by, loading
     /// them when absent or stale. `None`: no vectors for this provider.
     pub fn vectors(
         &self,
@@ -192,7 +161,7 @@ impl Warm {
         Ok(Some(loaded))
     }
 
-    /// Every stored text's similarity to `text`, for `near:`.
+    /// Every stored text's similarity to `text`, for `similar:`.
     pub fn similarity(
         &self,
         reader: &Reader<'_>,
@@ -232,52 +201,6 @@ impl Warm {
             .map_err(|e| e.to_string())
     }
 
-    /// A recent answer to the same request at the same read position.
-    pub fn answer(&self, request: &str, position: &str) -> Option<Value> {
-        let found = self.answers.lock().ok()?.get(request)?;
-        let fresh =
-            found.position == position && (!found.clocked || found.made.elapsed() < FIRST_PAGE_FOR);
-        if fresh {
-            self.counts.answers_reused.fetch_add(1, Ordering::Relaxed);
-            Some(found.value)
-        } else {
-            None
-        }
-    }
-
-    pub fn keep_answer(&self, request: String, position: String, clocked: bool, value: &Value) {
-        self.counts.answers_computed.fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut answers) = self.answers.lock() {
-            answers.put(
-                request,
-                Answer {
-                    position,
-                    made: Instant::now(),
-                    clocked,
-                    value: value.clone(),
-                },
-            );
-        }
-    }
-
-    /// Completion data for the read position `position`, built on first
-    /// use after a write.
-    pub fn completion(
-        &self,
-        reader: &Reader<'_>,
-        position: &str,
-    ) -> Result<Arc<Completion>, String> {
-        let mut held = read_lock(&self.completion, reader)?;
-        if let Some((at, data)) = held.as_ref()
-            && at == position
-        {
-            return Ok(Arc::clone(data));
-        }
-        let data = Arc::new(completion(reader).map_err(|e| e.to_string())?);
-        *held = Some((position.to_owned(), Arc::clone(&data)));
-        Ok(data)
-    }
-
     /// The archive counts for `status`. When the last count was quick
     /// (under [`QUICK_COUNT`]) and is older than `position`, it counts again
     /// now, so a small archive's status is exact; otherwise it answers from
@@ -303,52 +226,116 @@ impl Warm {
         }
     }
 
+    /// Whether the index has caught up at `position`. The answer is computed
+    /// once per change position, by the count worker or by the first read at
+    /// a new position; later pages and reads at that position reuse it.
+    pub fn caught_up(&self, reader: &Reader<'_>, position: &str) -> polylogue_store::Result<bool> {
+        if let Some((known, caught_up)) = self
+            .caught_up
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            && known == position
+        {
+            return Ok(*caught_up);
+        }
+        let caught_up = reader
+            .completeness(&polylogue_engine::reading_contracts())?
+            .caught_up();
+        *self
+            .caught_up
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some((position.to_owned(), caught_up));
+        Ok(caught_up)
+    }
+
+    /// Whether the index had caught up, as the count worker last found it.
+    /// A read never scans for this: when the position moved since, the
+    /// worker is asked to count again and the read reports the last answer.
+    /// Before the first count it is computed once.
+    pub fn caught_up_for_read(
+        &self,
+        reader: &Reader<'_>,
+        position: &str,
+    ) -> polylogue_store::Result<bool> {
+        let known = self
+            .caught_up
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        match known {
+            Some((at, caught_up)) => {
+                if at != position {
+                    self.request_count();
+                }
+                Ok(caught_up)
+            }
+            None => self.caught_up(reader, position),
+        }
+    }
+
     fn request_count(&self) {
         self.recount_wanted.store(true, Ordering::Release);
+        // Under the worker's lock, so the wake cannot fall between its check
+        // and its wait.
+        let _guard = self.archive_counts.lock();
         self.recount.notify_one();
     }
 
-    /// The count worker: counts again when a `status` asked for newer
-    /// counts, leaving at least four times the last count's duration
-    /// between counts, until `stop` says so.
+    /// The count worker: counts whenever the writer committed (`commits`)
+    /// or a `status` asked for newer counts, one count at a time, until
+    /// [`Warm::stop_counting`].
     pub fn count_worker(
         &self,
         reads: &polylogue_store::ReadPool,
-        stop: &std::sync::mpsc::Receiver<()>,
+        commits: Option<polylogue_store::completion::CommitSubscription>,
     ) {
-        loop {
-            match stop.try_recv() {
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                _ => return,
-            }
-            let gap = {
-                let Ok(held) = self.archive_counts.lock() else {
-                    return;
-                };
-                let gap = held.as_ref().map_or(Duration::ZERO, |c| {
-                    (c.took * 4)
-                        .max(Duration::from_millis(200))
-                        .saturating_sub(c.at.elapsed())
+        let wake = commits
+            .as_ref()
+            .map(polylogue_store::completion::CommitSubscription::wake_handle);
+        std::thread::scope(|scope| {
+            if let Some(commits) = commits {
+                scope.spawn(move || {
+                    while commits.recv().is_ok() && !self.counting_stopped() {
+                        self.request_count();
+                    }
                 });
-                let wanted = self.recount_wanted.load(Ordering::Acquire);
-                let wait = if gap.is_zero() && wanted {
-                    Duration::ZERO
-                } else if gap.is_zero() {
-                    Duration::from_secs(1)
-                } else {
-                    gap
-                };
-                let Ok((held, _)) = self.recount.wait_timeout(held, wait) else {
-                    return;
-                };
-                drop(held);
-                gap
-            };
-            if !gap.is_zero() || !self.recount_wanted.swap(false, Ordering::AcqRel) {
-                continue;
             }
-            self.refresh_counts(reads);
-        }
+            loop {
+                {
+                    let Ok(held) = self.archive_counts.lock() else {
+                        break;
+                    };
+                    let Ok(held) = self.recount.wait_while(held, |_| {
+                        !self.counting_stopped() && !self.recount_wanted.load(Ordering::Acquire)
+                    }) else {
+                        break;
+                    };
+                    drop(held);
+                }
+                if self.counting_stopped() {
+                    break;
+                }
+                self.recount_wanted.store(false, Ordering::Release);
+                self.refresh_counts(reads);
+            }
+            self.counting_stopped.store(true, Ordering::Release);
+            if let Some(wake) = wake {
+                // The relay sees the stop on its next wake.
+                let _ = wake.try_send(());
+            }
+        });
+    }
+
+    /// Ends [`Warm::count_worker`].
+    pub fn stop_counting(&self) {
+        self.counting_stopped.store(true, Ordering::Release);
+        let _guard = self.archive_counts.lock();
+        self.recount.notify_all();
+    }
+
+    fn counting_stopped(&self) -> bool {
+        self.counting_stopped.load(Ordering::Acquire)
     }
 
     fn refresh_counts(&self, reads: &polylogue_store::ReadPool) {
@@ -357,7 +344,10 @@ impl Warm {
             let position = reader
                 .change_position()
                 .map_err(|error| error.to_string())?;
-            count(&reader, &position.to_string())
+            let position = position.to_string();
+            self.caught_up(&reader, &position)
+                .map_err(|error| error.to_string())?;
+            count(&reader, &position)
         })();
         self.record_count(result);
     }
@@ -400,31 +390,29 @@ impl Warm {
         if let Ok(mut q) = self.query_vectors.lock() {
             q.clear();
         }
-        if let Ok(mut a) = self.answers.lock() {
-            a.clear();
-        }
-        if let Ok(mut c) = self.completion.lock() {
+        if let Ok(mut c) = self.archive_counts.lock() {
             *c = None;
         }
-        if let Ok(mut c) = self.archive_counts.lock() {
+        if let Ok(mut c) = self.caught_up.lock() {
             *c = None;
         }
         self.recount.notify_all();
     }
 
     /// What `status` shows.
-    pub fn summary(&self) -> Value {
-        let vectors = self.vectors.lock().ok().and_then(|v| {
-            v.as_ref()
-                .map(|l| serde_json::json!({"key": l.key, "vectors": l.vectors()}))
+    pub fn summary(&self) -> crate::protocol::status::Warm {
+        use crate::protocol::status::{Vectors, Warm};
+        let vectors = self.vectors.lock().ok().and_then(|vectors| {
+            vectors.as_ref().map(|loaded| Vectors {
+                key: loaded.key.clone(),
+                vectors: loaded.vectors(),
+            })
         });
-        serde_json::json!({
-            "vectors": vectors,
-            "vector_loads": self.counts.vector_loads.load(Ordering::Relaxed),
-            "query_vectors_reused": self.counts.query_vectors_reused.load(Ordering::Relaxed),
-            "answers_reused": self.counts.answers_reused.load(Ordering::Relaxed),
-            "answers_computed": self.counts.answers_computed.load(Ordering::Relaxed),
-        })
+        Warm {
+            vectors,
+            vector_loads: self.counts.vector_loads.load(Ordering::Relaxed),
+            query_vectors_reused: self.counts.query_vectors_reused.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -437,163 +425,6 @@ fn count(reader: &Reader<'_>, position: &str) -> Result<Counted, String> {
         took: started.elapsed(),
         status,
     })
-}
-
-/// Values completion offers, read from the index and the archive.
-fn completion(reader: &Reader<'_>) -> Result<Completion, polylogue_store::StoreError> {
-    use polylogue_query::ast::Unit;
-    let mut data = Completion {
-        units: Unit::all().map(|u| u.name().to_owned()).collect(),
-        ..Completion::default()
-    };
-    for unit in Unit::all() {
-        for name in polylogue_query::fields::names(unit) {
-            let field = format!("{name}:");
-            if !data.fields.contains(&field) {
-                data.fields.push(field);
-            }
-        }
-    }
-    data.fields.sort();
-    let column = |sql: &str,
-                  field: &str,
-                  out: &mut Vec<String>|
-     -> Result<(), polylogue_store::StoreError> {
-        for row in reader.query(sql, &[])? {
-            if let Some(v) = row["v"].as_str().filter(|v| !v.is_empty()) {
-                out.push(format!("{field}:{}", quoted(v)));
-            }
-        }
-        Ok(())
-    };
-    let mut values = Vec::new();
-    for field in polylogue_query::fields::FIELDS {
-        for value in field.values.into_iter().flatten() {
-            values.push(format!("{}:{}", field.name, quoted(value)));
-        }
-    }
-    column(
-        "SELECT DISTINCT model AS v FROM message WHERE model IS NOT NULL ORDER BY model",
-        "model",
-        &mut values,
-    )?;
-    column(
-        "SELECT DISTINCT repo AS v FROM session WHERE repo IS NOT NULL ORDER BY repo",
-        "repo",
-        &mut values,
-    )?;
-    column(
-        "SELECT DISTINCT harness AS v FROM session WHERE harness IS NOT NULL ORDER BY harness",
-        "harness",
-        &mut values,
-    )?;
-    column(
-        &format!(
-            "SELECT DISTINCT n.key AS v FROM a.note n WHERE n.kind = 'tag' AND n.key IS NOT NULL \
-             AND {} AND NOT {} ORDER BY n.key",
-            polylogue_query::fields::current_note("n"),
-            polylogue_query::fields::withdrawn_note("n"),
-        ),
-        "tag",
-        &mut values,
-    )?;
-    column(
-        &format!(
-            "SELECT DISTINCT n.key AS v FROM a.note n WHERE n.kind = 'saved_query' AND n.key IS NOT NULL \
-             AND {} AND NOT {} ORDER BY n.key",
-            polylogue_query::fields::current_note("n"),
-            polylogue_query::fields::withdrawn_note("n"),
-        ),
-        "query",
-        &mut values,
-    )?;
-    for origin in polylogue_sources::origin::ORIGINS {
-        values.push(format!("origin:{}", origin.name));
-    }
-    data.values = values;
-    for row in reader.query(
-        "SELECT id, coalesce(title, derived_title, '') AS title FROM session \
-         WHERE kind = 'main' AND stub = 0 \
-         ORDER BY last_activity_at IS NULL, last_activity_at DESC LIMIT 50",
-        &[],
-    )? {
-        if let Some(id) = row["id"].as_str() {
-            data.sessions.push((
-                id.to_owned(),
-                row["title"].as_str().unwrap_or("").to_owned(),
-            ));
-        }
-    }
-    Ok(data)
-}
-
-/// A value as the query language reads it back: bare when it is one plain
-/// word, else in double quotes.
-fn quoted(v: &str) -> String {
-    if v.chars()
-        .all(|c| c.is_alphanumeric() || "-_./@".contains(c))
-    {
-        v.to_owned()
-    } else {
-        format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
-    }
-}
-
-/// The completions of the word being typed: field names, values of the
-/// field it names, unit names and session IDs, each starting with it.
-pub fn completions(data: &Completion, word: &str) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    let mut add = |value: &str, help: &str| {
-        let literal_match = value.split_once(':').zip(word.split_once(':')).is_some_and(
-            |((field, value), (wanted, prefix))| {
-                field == wanted
-                    && !prefix.starts_with('"')
-                    && value
-                        .strip_prefix('"')
-                        .and_then(|v| v.strip_suffix('"'))
-                        .is_some_and(|literal| {
-                            let mut chars = literal.chars();
-                            let mut decoded = String::new();
-                            while let Some(c) = chars.next() {
-                                if c == '\\' {
-                                    if let Some(c) = chars.next() {
-                                        decoded.push(c);
-                                    }
-                                } else {
-                                    decoded.push(c);
-                                }
-                            }
-                            decoded.starts_with(prefix)
-                        })
-            },
-        );
-        if (value.starts_with(word) || literal_match)
-            && !value.chars().any(char::is_control)
-            && polylogue_render::terminal::escape(value) == value
-            && !out.iter().any(|(v, _)| v == value)
-        {
-            out.push((value.to_owned(), polylogue_render::terminal::escape(help)));
-        }
-    };
-    if word.contains(':') {
-        for v in &data.values {
-            add(v, "");
-        }
-        for (id, title) in &data.sessions {
-            add(id, title);
-        }
-    } else {
-        for u in &data.units {
-            add(u, "unit");
-        }
-        for f in &data.fields {
-            add(f, "field");
-        }
-        for (id, title) in &data.sessions {
-            add(id, title);
-        }
-    }
-    out
 }
 
 #[cfg(test)]

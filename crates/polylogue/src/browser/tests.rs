@@ -158,7 +158,7 @@ fn a_capture_is_stored_durably_and_archived_by_the_loop() {
 
 /// Settings that read only a home under `dir`.
 fn config_at(dir: &std::path::Path) -> polylogue_engine::Config {
-    let mut c = polylogue_engine::Config::from_env();
+    let mut c = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     c.home = dir.join("home");
     c.tool_dirs.clear();
     c
@@ -263,8 +263,15 @@ fn send(
         files,
     };
     match crate::daemon::service::handle(request, &w.daemon) {
-        crate::daemon::Response::Ok { data, .. } => Ok(data["action"].clone()),
-        crate::daemon::Response::Error { kind, .. } => Err(kind),
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Ok(data),
+            ..
+        } => Ok(data["action"].clone()),
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Error(error),
+            ..
+        } => Err(error.code.unwrap_or_default()),
+        other => panic!("a queued action is ok or refused, got {other:?}"),
     }
 }
 
@@ -391,7 +398,7 @@ fn a_backfill_job_runs_through_the_daemon_and_survives_an_extension_restart() {
             &w.daemon,
         )
     };
-    let crate::daemon::Response::Ok { data, .. } = start("chatgpt") else {
+    let Some(data) = start("chatgpt").value().cloned() else {
         panic!("the job did not start")
     };
     let id = data["job"]["id"].as_str().unwrap().to_owned();
@@ -441,10 +448,14 @@ fn a_backfill_job_runs_through_the_daemon_and_survives_an_extension_restart() {
         || conversations(&host, &["listed-1"]),
         |v| v["conversations"][0]["state"] == "archived",
     );
-    let crate::daemon::Response::Error { kind, .. } = start("gemini") else {
+    let command_surface::Answer {
+        outcome: command_surface::Outcome::Error(error),
+        ..
+    } = start("gemini")
+    else {
         panic!("gemini has no conversation list")
     };
-    assert_eq!(kind, "unsupported_provider");
+    assert_eq!(error.code.as_deref(), Some("unsupported_provider"));
 }
 
 #[test]
@@ -512,16 +523,27 @@ fn grok_file_blobs(
     let session = polylogue_model::SessionId::parse("grok:grok-raw").unwrap();
     until(
         || match host.ask(&crate::daemon::Request::Read {
-            slices: true,
-            selection: None,
-            target: crate::daemon::ReadTarget::Session(session.clone()),
-            view: "full".into(),
+            target: format!("session:{session}"),
+            options: polylogue_model::read::ReadOptions::default(),
+            delivery: polylogue_model::read::ReadDelivery::Page,
             format: "markdown".into(),
-            with_parents: false,
             budget: None,
+            with_blobs: false,
             cursor: None,
         }) {
-            Some(crate::daemon::Response::Ok { data, .. }) => data["content"].clone(),
+            Some(answer) if answer.value().is_some() => {
+                let data = crate::protocol::into_value(answer).unwrap();
+                let page: polylogue_model::read::ReadPage = serde_json::from_value(data).unwrap();
+                let mut output = Vec::new();
+                polylogue_render::encode_document(
+                    &page.document,
+                    polylogue_render::Format::Markdown,
+                    polylogue_render::EncodeOptions::default(),
+                    &mut output,
+                )
+                .unwrap();
+                Value::String(String::from_utf8(output).unwrap())
+            }
             _ => Value::Null,
         },
         |content| content.as_str().is_some_and(|t| t.contains(text)),

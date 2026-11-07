@@ -23,7 +23,8 @@ A golden is the expected parse of an input, written by hand from knowledge of th
 ## Test layout
 
 - A module's unit tests are in `name/tests.rs` (more files in `name/tests/`), declared last with `#[cfg(test)] mod tests;`.
-- Integration tests are one binary per area: `crates/<crate>/tests/<area>/main.rs`, with the area's other files beside it. For example the engine's `passes` (the loop over files a test writes), `properties` (properties every archive keeps, as property tests over generated archives and Morrow) and `faults`; the sources' `formats`; the daemon's `e2e`.
+- Integration tests share one binary per crate, with areas as modules so the dependency graph links once. The engine's `tests/engine/main.rs` contains `passes`, `properties` and `faults`; the application's `tests/e2e/main.rs` contains CLI, browser-host, onboarding, deadline and completion cases. Each area's other files stay beside its module; the sources use `tests/formats/main.rs`.
+- Examples with unit tests set `test = true` in their Cargo manifest. Native test commands select runnable test targets by default; examples without tests are compiled by Clippy.
 - Helpers that need a crate's private items stay in that crate behind its test feature. CLI and MCP behaviour is tested through the public commands.
 
 **Waiting, never timing.** No test asserts elapsed time. A test of a deadline makes the peer stay silent until the client gives up, so only the deadline can end the wait; other tests wait for an event (a reply, a file, a closed connection). A test that waits for the daemon to read a change waits until `status` shows it up to date. nextest's slow timeout ends a hung test.
@@ -33,8 +34,8 @@ A golden is the expected parse of an input, written by hand from knowledge of th
 Every area page ends with its laws. Each law has a stable key unique in its page, and its full name is `<page>/<key>`, for example `operations/open-never-deletes`.
 
 - **A test that checks a law carries the key in its name,** in snake case: `open_never_deletes`, with a suffix when several tests check one law. Finding a law's tests is a name search; no table maps them by hand.
-- Integration test binaries are already one per area, so a law's tests sit in the binary of the area that owns it.
-- **Shared laws live with the shared code:** the query-language law suite is in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md) and runs against Polylogue's catalog; the signal evaluator's conformance cases are in common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/signals.md) and run against Polylogue's occurrence keys.
+- A law's tests sit in the module of the area that owns it.
+- **Shared laws live with the shared code:** the query-language law suite is in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md) and runs against Polylogue's catalog; the signal evaluator's conformance cases are in common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) and run against Polylogue's occurrence keys.
 - **Coverage is a report:** `cargo xtask laws` (devkit) lists each law key with the tests whose names carry it, and the laws that have none. It fails nothing; a law without a test is a gap for the area's owner.
 - Cross-cutting laws (crash states, parity across CLI, socket, HTTP and MCP) are in [architecture.md](architecture.md) and [interfaces.md](interfaces.md).
 
@@ -57,6 +58,8 @@ Fuzzing runs as tests. Ruling, 2026-03-12: fuzzing "MUST NOT be a separate comma
 ## Benchmarks
 
 Performance is measured by paired `bench` runs: the base and the change built and run together over one sample on the same host, so host load affects both alike. A change is judged by the pair, never by comparing runs from different times.
+
+`cargo xtask bench --root PATH ...` keeps manifests, sample copies, archives, reports and the benchmark lock under one directory; without the flag it uses `POLYLOGUE_BENCH_HOME`, then `$XDG_DATA_HOME/polylogue-bench`. Selected inputs are copied under that root before the manifest hashes them, and SQLite samples are read in one read transaction, so later changes at the source do not alter a sample. A corpus estimate that predicts a negative or non-finite duration is refused.
 
 What is measured: the first build per stage; incremental updates; interactive reads; the CLI latency classes end to end ([interfaces.md#latency-classes](interfaces.md#latency-classes)); daemon start and restart; idle I/O over 10 minutes; the append-to-view latency of live sessions.
 

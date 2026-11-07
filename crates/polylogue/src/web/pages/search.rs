@@ -3,7 +3,7 @@ use super::*;
 pub fn search(
     query: &str,
     data: Option<&Value>,
-    error: Option<&Value>,
+    error: Option<&command_surface::Failure>,
     cursor: Option<&str>,
 ) -> String {
     let mut cli = format!("polylogue list {}", shell_quote(query));
@@ -15,9 +15,9 @@ pub fn search(
         let _ = write!(
             body,
             "<div class=\"error\" role=\"alert\"><p>{}</p>",
-            esc(e["message"].as_str().unwrap_or("the query failed"))
+            esc(&e.message)
         );
-        if let Some(fix) = e["detail"]["corrected"].as_str() {
+        if let Some(fix) = crate::protocol::suggestion_text(e).as_deref() {
             let _ = write!(
                 body,
                 "<p>Try <a href=\"/search?q={}\"><code>{}</code></a></p>",

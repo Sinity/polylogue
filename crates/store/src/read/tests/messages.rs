@@ -58,14 +58,10 @@ fn breaking_message_visit_does_not_decode_later_bodies() {
         reader.messages(&id, false).is_err(),
         "the reference case must decode the corrupt later record"
     );
-    assert!(
-        reader.message_fingerprint(&id, false).is_ok(),
-        "fingerprinting does not decode packed bodies"
-    );
 }
 
 #[test]
-fn message_visits_and_fingerprints_include_the_same_logical_history() {
+fn message_visits_include_the_same_logical_history() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let parent = fixture
@@ -121,8 +117,6 @@ fn message_visits_and_fingerprints_include_the_same_logical_history() {
     let pool = fixture.reads().unwrap();
     let id = SessionId::parse("claude-code:child").unwrap();
     let reader = pool.reader().unwrap();
-    let own = reader.message_fingerprint(&id, false).unwrap();
-    let with_parents = reader.message_fingerprint(&id, true).unwrap();
     let mut messages = Vec::new();
     reader
         .visit_messages(&id, true, |m| {
@@ -144,16 +138,16 @@ fn message_visits_and_fingerprints_include_the_same_logical_history() {
             },
         )
         .unwrap();
+    // A parent's message after the branch point is not inherited.
     let reader = pool.reader().unwrap();
-    assert_eq!(reader.message_fingerprint(&id, false).unwrap(), own);
-    assert_eq!(reader.message_fingerprint(&id, true).unwrap(), with_parents);
-    drop(reader);
-    crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
-        .unwrap()
-        .execute("UPDATE link SET branch_point='claude-code:p2'", [])
+    let mut messages = Vec::new();
+    reader
+        .visit_messages(&id, true, |m| {
+            messages.push(m.text());
+            ControlFlow::Continue(())
+        })
         .unwrap();
-    let reader = pool.reader().unwrap();
-    assert_ne!(reader.message_fingerprint(&id, true).unwrap(), with_parents);
+    assert_eq!(messages, ["inherited", "own"]);
 }
 
 #[test]
@@ -205,11 +199,16 @@ fn visible_tool_outcomes_use_original_source_block_indices() {
         reader.tool_outcomes(&id).unwrap(),
         vec![(1, polylogue_model::CallOutcome::Error)]
     );
-    let selected = reader
-        .select_messages(&SessionId::parse("claude-code:outcome").unwrap(), false)
+    // The compaction event is one entry of the session's item index, after
+    // the message it follows.
+    let items = reader
+        .item_index(&SessionId::parse("claude-code:outcome").unwrap())
+        .unwrap()
         .unwrap();
-    let outline = selected.outline(None, 10).unwrap();
-    assert_eq!(outline.len(), 1);
-    assert_eq!(outline[0].kinds, vec!["tool failure", "compaction"]);
-    assert_eq!(outline[0].events.len(), 1);
+    let events: Vec<_> = items
+        .entries
+        .iter()
+        .filter_map(|entry| entry.event_kind.as_deref())
+        .collect();
+    assert_eq!(events, ["compaction"]);
 }

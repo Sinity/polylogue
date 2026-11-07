@@ -1,6 +1,7 @@
 //! ATIF trajectory files: each becomes a transcript document and a
 //! `hermes_trajectory` event. Its run ID is not a session ID, and a step's
 //! role does not say who wrote it.
+use crate::fields::ExpectedType as T;
 mod step;
 
 use super::{Event, Json, Parse, Sink, identity};
@@ -49,35 +50,37 @@ struct Item {
 }
 
 static ROOT: Fields = Fields::new(&[
-    ("schema_version", Rule::Read),
-    ("session_id", Rule::Read),
-    ("trajectory_id", Rule::Read),
+    ("schema_version", Rule::Read(T::StringOrNumber)),
+    ("session_id", Rule::Read(T::String)),
+    ("trajectory_id", Rule::Read(T::String)),
     (
         "agent",
         Rule::Kept("native agent configuration; only name/version/model descriptors are projected"),
     ),
-    ("steps", Rule::Read),
-    ("subagent_trajectories", Rule::Read),
+    ("steps", Rule::Read(T::Array)),
+    ("subagent_trajectories", Rule::Read(T::Array)),
     ("notes", Rule::Kept("native annotation")),
-    ("final_metrics", Rule::Read),
-    ("continued_trajectory_ref", Rule::Read),
+    ("final_metrics", Rule::Read(T::Object)),
+    ("continued_trajectory_ref", Rule::Read(T::String)),
     ("extra", Rule::Kept("native trajectory metadata")),
-]);
+])
+.for_kind("root");
 static STEP: Fields = Fields::new(&[
-    ("step_id", Rule::Read),
-    ("timestamp", Rule::Read),
-    ("source", Rule::Read),
-    ("message", Rule::Read),
-    ("model_name", Rule::Read),
-    ("reasoning_effort", Rule::Read),
-    ("reasoning_content", Rule::Read),
-    ("tool_calls", Rule::Read),
-    ("observation", Rule::Read),
-    ("metrics", Rule::Read),
-    ("llm_call_count", Rule::Read),
-    ("is_copied_context", Rule::Read),
+    ("step_id", Rule::Read(T::String)),
+    ("timestamp", Rule::Read(T::StringOrNumber)),
+    ("source", Rule::Read(T::String)),
+    ("message", Rule::Read(T::String)),
+    ("model_name", Rule::Read(T::String)),
+    ("reasoning_effort", Rule::Read(T::String)),
+    ("reasoning_content", Rule::Read(T::StringOrArray)),
+    ("tool_calls", Rule::Read(T::Array)),
+    ("observation", Rule::Read(T::Object)),
+    ("metrics", Rule::Read(T::Object)),
+    ("llm_call_count", Rule::Read(T::Number)),
+    ("is_copied_context", Rule::Read(T::Boolean)),
     ("extra", Rule::Kept("native step extensions")),
-]);
+])
+.for_kind("step");
 
 fn selected(value: &Json, names: &[&str]) -> Json {
     Json::Object(
@@ -194,13 +197,19 @@ impl ExportParser for Trajectory {
                 if let Some(metrics) = facts.fields.get("final_metrics") {
                     data["final_metrics"] = metrics.clone();
                 }
-                output.events.push(Event {
-                    session: None,
-                    kind: "hermes_trajectory".into(),
-                    at: None,
-                    after: None,
-                    range: Some((facts.start, facts.end)),
-                    data,
+                output.events.push({
+                    let (at, time_evidence) = crate::time::parts(None);
+                    Event {
+                        session: None,
+                        kind: "hermes_trajectory".into(),
+                        at,
+                        at_quality: time_evidence.quality,
+                        at_precision: time_evidence.precision,
+                        at_until: time_evidence.until,
+                        after: None,
+                        range: Some((facts.start, facts.end)),
+                        data,
+                    }
                 });
                 records.record("atif_trajectory", &RecordOutcome::Used);
             } else {
@@ -305,7 +314,11 @@ impl ExportParser for Trajectory {
             .map_err(|e| e.to_string())?,
         );
         let mut document = Document::new(id, DocumentPurpose::Transcript);
-        document.source_time = value.get("timestamp").and_then(crate::time::rfc3339);
+        let (at, evidence) =
+            crate::time::parts(value.get("timestamp").and_then(crate::time::rfc3339));
+        document
+            .set_time(at, evidence)
+            .expect("decoded source time is valid");
         if value.get("timestamp").is_some_and(|v| !v.is_null()) && document.source_time.is_none() {
             limits.push("ATIF RFC3339 time unreadable; time remains unknown");
         }
@@ -367,13 +380,19 @@ impl ExportParser for Trajectory {
             document,
         });
         if !limits.is_empty() {
-            sink.out.events.push(Event {
-                session: None,
-                kind: "hermes_import_diagnostic".into(),
-                at: None,
-                after: None,
-                range: None,
-                data: serde_json::json!({"reason":limits}),
+            sink.out.events.push({
+                let (at, time_evidence) = crate::time::parts(None);
+                Event {
+                    session: None,
+                    kind: "hermes_import_diagnostic".into(),
+                    at,
+                    at_quality: time_evidence.quality,
+                    at_precision: time_evidence.precision,
+                    at_until: time_evidence.until,
+                    after: None,
+                    range: None,
+                    data: serde_json::json!({"reason":limits}),
+                }
             });
         }
         let outcome = if limits.is_empty() {

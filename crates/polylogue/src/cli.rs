@@ -4,24 +4,35 @@
 
 pub(crate) mod attachment;
 pub mod changes;
+pub(crate) mod completion;
+pub(crate) mod follow;
 pub mod local;
 pub mod print;
 pub(crate) mod schema;
+pub(crate) mod staged_file;
+pub(crate) mod write_out;
 
 use crate::commands::{Action, COMMANDS, Caller, Cli, Command, GROUPS, Kind, Surface, Values};
-use crate::daemon::{Request, Response};
+use crate::daemon::Request;
 use clap::ArgAction;
 use clap::parser::{ArgMatches, ValueSource};
+use command_surface::Answer;
 use polylogue_store::Archive;
 use serde_json::Value;
-use std::path::PathBuf;
 use std::process::ExitCode;
+
+fn version() -> String {
+    let revision = option_env!("POLYLOGUE_REVISION").unwrap_or("unavailable");
+    format!("{} (revision {revision})", env!("CARGO_PKG_VERSION"))
+}
 
 /// The clap command tree: one subcommand per table command, grouped by
 /// their first word, and the bare query as the root's own arguments.
 pub fn command() -> clap::Command {
     let mut root = clap::Command::new("polylogue")
-        .version(env!("CARGO_PKG_VERSION"))
+        .color(clap::ColorChoice::Never)
+        .styles(clap::builder::Styles::plain())
+        .version(version())
         .about("Search, read and measure your AI sessions")
         .arg(
             clap::Arg::new("json")
@@ -30,16 +41,28 @@ pub fn command() -> clap::Command {
                 .action(ArgAction::SetTrue)
                 .help("Machine-readable output"),
         );
-    root = root.arg(
-        clap::Arg::new("timeout")
-            .long("timeout")
-            .global(true)
-            .value_name("SECONDS")
-            .value_parser(clap::value_parser!(u64).range(1..))
-            .help(
-                "Daemon read timeout in seconds (default: 30, or POLYLOGUE_READ_TIMEOUT_MS; export: none)",
-            ),
-    );
+    root = root
+        .arg(
+            clap::Arg::new("request")
+                .long("request")
+                .global(true)
+                .value_name("JSON")
+                .help("The operation's complete typed argument object"),
+        )
+        .arg(
+            clap::Arg::new("request_id")
+                .long("request-id")
+                .global(true)
+                .value_name("ID")
+                .help("The durable request identity"),
+        )
+        .arg(
+            clap::Arg::new("deadline")
+                .long("deadline")
+                .global(true)
+                .value_name("MS|none")
+                .help("Milliseconds from admission, or none to lift the deadline"),
+        );
     let mut globals: Vec<&str> = Vec::new();
     for a in COMMANDS.iter().flat_map(|c| c.args).filter(|a| a.global) {
         if !globals.contains(&a.name) {
@@ -53,6 +76,7 @@ pub fn command() -> clap::Command {
                 for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
                     root = root.arg(clap_arg(a));
                 }
+                root = root.subcommand(subcommand(c).name("find"));
             }
             Cli::Subcommand | Cli::Hidden => {
                 let sub = subcommand(c);
@@ -83,7 +107,7 @@ pub fn command() -> clap::Command {
             }
         }
     }
-    root
+    crate::config::augment_command(root)
 }
 
 fn subcommand(c: &Command) -> clap::Command {
@@ -92,7 +116,15 @@ fn subcommand(c: &Command) -> clap::Command {
         .about(c.help)
         .hide(c.cli == Cli::Hidden);
     for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
-        sub = sub.arg(clap_arg(a));
+        let mut arg = clap_arg(a);
+        if c.name == "setting" && matches!(a.name, "key" | "value") {
+            arg = arg.add(clap_complete::engine::ArgValueCompleter::new(
+                completion::Setting {
+                    key: a.name == "key",
+                },
+            ));
+        }
+        sub = sub.arg(arg);
     }
     sub
 }
@@ -111,22 +143,35 @@ fn clap_arg(a: &crate::commands::Arg) -> clap::Arg {
         Kind::Bool => arg.action(ArgAction::SetTrue),
         Kind::Integer => arg.value_parser(clap::value_parser!(u64)),
         Kind::Text => arg,
+        Kind::Json => {
+            arg.value_parser(|text: &str| serde_json::from_str::<serde_json::Value>(text))
+        }
         Kind::Choice(choices) => arg.value_parser(clap::builder::PossibleValuesParser::new(
             choices.iter().copied(),
         )),
         Kind::Words => arg.num_args(1..),
-        Kind::Rest => arg.num_args(1..).trailing_var_arg(true),
+        Kind::Rest => arg.num_args(1..),
         Kind::List if a.positional => arg.num_args(1..),
         Kind::List => arg.action(ArgAction::Append).value_delimiter(','),
-        Kind::FlagOrText => arg.num_args(0..=1),
     };
+    if a.name == "budget" {
+        arg = arg.value_parser(|value: &str| {
+            crate::protocol::operations::parse_budget(Some(value)).map(|_| value.to_owned())
+        });
+    }
     if a.name == "query" && matches!(a.kind, Kind::Words | Kind::Rest) {
-        arg = arg.add(clap_complete::engine::ArgValueCompleter::new(query_word));
+        arg = arg.add(clap_complete::engine::ArgValueCompleter::new(
+            completion::Query,
+        ));
     }
     if let Some(d) = a.default {
         arg = arg.default_value(d);
     }
-    arg.required(a.required && a.default.is_none() && a.kind != Kind::Bool)
+    if a.required && a.default.is_none() && a.kind != Kind::Bool {
+        arg.required_unless_present("request")
+    } else {
+        arg
+    }
 }
 
 /// The table command the matches chose, and the matches holding its
@@ -138,6 +183,9 @@ fn chosen(matches: &ArgMatches) -> Option<(&'static Command, &ArgMatches)> {
             .find(|c| c.cli == Cli::NoSubcommand)
             .map(|c| (c, matches));
     };
+    if word == "find" {
+        return crate::commands::command("query").map(|command| (command, sub));
+    }
     let (name, leaf) = match sub.subcommand() {
         Some((second, leaf)) => (format!("{word} {second}"), leaf),
         None => (word.to_owned(), sub),
@@ -152,6 +200,7 @@ fn values(c: &Command, m: &ArgMatches) -> Values {
         let value = match a.kind {
             Kind::Bool => m.get_flag(a.name).then_some(Value::Bool(true)),
             Kind::Integer => m.get_one::<u64>(a.name).map(|n| Value::from(*n)),
+            Kind::Json => m.get_one::<Value>(a.name).cloned(),
             Kind::Text | Kind::Choice(_) => m.get_one::<String>(a.name).cloned().map(Value::String),
             Kind::Words | Kind::Rest => m
                 .get_many::<String>(a.name)
@@ -159,19 +208,15 @@ fn values(c: &Command, m: &ArgMatches) -> Values {
             Kind::List => m
                 .get_many::<String>(a.name)
                 .map(|vs| Value::Array(vs.cloned().map(Value::String).collect())),
-            Kind::FlagOrText => {
-                (m.value_source(a.name) == Some(ValueSource::CommandLine)).then(|| {
-                    m.get_one::<String>(a.name)
-                        .map_or(Value::Bool(true), |s| Value::String(s.clone()))
-                })
-            }
         };
         if let Some(v) = value {
             out.insert(a.name.to_owned(), v);
         }
     }
-    if let Some(seconds) = m.get_one::<u64>("timeout") {
-        out.insert("timeout".into(), Value::from(*seconds));
+    if c.writes
+        && let Some(id) = m.get_one::<String>("request_id")
+    {
+        out.insert("request_id".into(), Value::String(id.clone()));
     }
     Values(out)
 }
@@ -186,37 +231,187 @@ pub fn parse(argv: &[&str]) -> Result<(&'static Command, Values), String> {
     Ok((c, values(c, m)))
 }
 
-pub fn run(matches: &ArgMatches) -> ExitCode {
+fn parse_text(error: &clap::Error, output: crate::config::OutputConfig) -> String {
+    let color = if error.use_stderr() {
+        output.stderr_color()
+    } else {
+        output.stdout_color()
+    };
+    polylogue_render::terminal::heading(&error.render().to_string(), color)
+}
+
+pub(crate) fn parse_error(error: clap::Error, output: crate::config::OutputConfig) -> ExitCode {
+    let text = parse_text(&error, output);
+    if error.use_stderr() {
+        eprint!("{text}");
+    } else {
+        print!("{text}");
+    }
+    ExitCode::from(u8::try_from(error.exit_code()).expect("Clap exit code fits u8"))
+}
+
+pub fn run_local(matches: &ArgMatches, output: crate::config::OutputConfig) -> Option<ExitCode> {
+    let (command, matches) = chosen(matches)?;
+    let Action::Local(run) = command.action else {
+        return None;
+    };
+    Some(run(
+        command,
+        &values(command, matches),
+        output,
+        matches.get_flag("json"),
+    ))
+}
+
+pub fn run(
+    matches: &ArgMatches,
+    startup: &crate::config::Startup,
+    cwd: &std::path::Path,
+) -> ExitCode {
+    let policy = startup.output;
     let json = matches.get_flag("json");
     let Some((cmd, m)) = chosen(matches) else {
-        return fail(json, "bad_request", "no such command", 2);
+        return fail(policy, json, "bad_request", "no such command", 2);
     };
-    let values = values(cmd, m);
-    let build = match cmd.action {
-        Action::Local(f) => return f(cmd, &values, json),
-        Action::Request(build) | Action::Stream { build, .. } => build,
-    };
+    let mut values = values(cmd, m);
+    values.0.insert("json".into(), Value::Bool(json));
     let caller = Caller {
         surface: Surface::Cli,
-        cwd: Some(current_dir()),
+        cwd: Some(cwd.to_owned()),
         json,
     };
-    let request = match build(cmd, &values, &caller) {
-        Ok(r) => r,
-        Err(message) => return fail(json, "bad_request", &message, 2),
-    };
-    let timeout = matches
-        .get_one::<u64>("timeout")
-        .copied()
-        .map(std::time::Duration::from_secs);
-    if let Action::Stream { cli, .. } = cmd.action {
-        return cli(&request, timeout);
+    let raw = m.get_one::<String>("request");
+    if raw.is_some()
+        && cmd.args_for(Surface::Cli).any(|argument| {
+            !matches!(argument.name, "cursor" | "budget")
+                && m.value_source(argument.name) == Some(ValueSource::CommandLine)
+        })
+    {
+        return fail(
+            policy,
+            json,
+            "bad_request",
+            "--request cannot be mixed with operation arguments",
+            2,
+        );
     }
-    let root = Archive::default_root();
-    let response = match send_with_timeout(&Archive::at(&root), &request, timeout) {
+    let deadline = match m.get_one::<String>("deadline").map(String::as_str) {
+        None => command_surface::Deadline::Default,
+        Some("none") => command_surface::Deadline::None,
+        Some(value) => match value.parse() {
+            Ok(milliseconds) => command_surface::Deadline::Milliseconds(milliseconds),
+            Err(_) => {
+                return fail(
+                    policy,
+                    json,
+                    "bad_request",
+                    "deadline must be milliseconds or none",
+                    2,
+                );
+            }
+        },
+    };
+    let request_id = m
+        .get_one::<String>("request_id")
+        .cloned()
+        .unwrap_or_else(|| values.request_id());
+    let budget_tokens = match crate::protocol::operations::parse_budget(
+        m.get_one::<String>("budget").map(String::as_str),
+    ) {
+        Ok(tokens) => tokens,
+        Err(error) => return fail(policy, json, "bad_request", &error, 2),
+    };
+    if !budget_tokens.is_default() && !matches!(cmd.name, "brief" | "takeover" | "recall") {
+        return fail(
+            policy,
+            json,
+            "bad_request",
+            "operation does not prepare budgeted context",
+            2,
+        );
+    }
+    let cursor = values.text("cursor");
+    let mut literal_arguments = None;
+    let request = if let Some(raw) = raw {
+        let Some(build) = cmd.build_typed else {
+            return fail(
+                policy,
+                json,
+                "bad_request",
+                "this operation has no typed argument adapter",
+                2,
+            );
+        };
+        let arguments = match serde_json::from_str::<Value>(raw) {
+            Ok(arguments) => arguments,
+            Err(error) => return fail(policy, json, "bad_request", &error.to_string(), 2),
+        };
+        let request = match build(arguments.clone(), &caller, &request_id).and_then(|request| {
+            crate::protocol::operations::with_cursor(request, cursor.as_deref())
+        }) {
+            Ok(request) => request,
+            Err(error) => return fail(policy, json, "bad_request", &error.message, 2),
+        };
+        let Some(object) = arguments.as_object() else {
+            return fail(
+                policy,
+                json,
+                "bad_request",
+                "operation arguments must be an object",
+                2,
+            );
+        };
+        // The typed adapter validated the arguments. Output options may read
+        // them, but the accepted envelope retains exactly what the caller sent.
+        values = Values(object.clone().into_iter().collect());
+        values.0.insert("json".into(), Value::Bool(json));
+        literal_arguments = Some(arguments);
+        request
+    } else {
+        let build = match cmd.action {
+            Action::Local(run) => return run(cmd, &values, policy, json),
+            Action::ConfiguredLocal(run) => return run(cmd, &values, startup, json),
+            Action::Request(build) | Action::Stream { build, .. } => build,
+        };
+        match build(cmd, &values, &caller) {
+            Ok(request) => request,
+            Err(message) => return fail(policy, json, "bad_request", &message, 2),
+        }
+    };
+    let call = match literal_arguments {
+        Some(arguments) => command_surface::Request {
+            operation: cmd.name.into(),
+            arguments,
+            request_id,
+            deadline,
+            budget_tokens,
+            cursor,
+            fresh: false,
+            format: Default::default(),
+        },
+        None => {
+            let mut explicit = values.clone();
+            explicit
+                .0
+                .retain(|name, _| m.value_source(name) == Some(ValueSource::CommandLine));
+            crate::protocol::operations::request(cmd, explicit, request_id, deadline)
+        }
+    };
+    if let Action::Stream { cli, .. } = cmd.action {
+        return cli(&values, &request, startup, &call);
+    }
+    let root = startup.config.archive.clone();
+    let result = if cmd.register.is_some() {
+        crate::client::call_ready(&Archive::at(&root), &call)
+    } else {
+        let timeout = deadline.duration(Some(crate::daemon::execution::timeout()));
+        send_with_timeout(&Archive::at(&root), &request, timeout)
+    };
+    let answer = match result {
         Ok(r) => r,
         Err(e) if is_down(&e) => {
             return fail(
+                policy,
                 json,
                 "daemon_required",
                 &format!(
@@ -232,90 +427,144 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
                 std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
             ) =>
         {
-            return fail(json, "deadline_exceeded", &e.to_string(), 7);
+            return fail(policy, json, "deadline_exceeded", &e.to_string(), 7);
         }
-        Err(e) => return fail(json, "io", &e.to_string(), 1),
+        Err(e) => return fail(policy, json, "io", &e.to_string(), 1),
     };
-    match response {
-        Response::Ok { data, .. } => {
-            if !json && matches!(data["shape"].as_str(), Some("rows" | "matches")) {
-                crate::row_numbers::remember(&root, &crate::row_numbers::row_ids(&data["rows"]));
-            }
-            match cmd.output {
-                Some(output) => output(&values, &data, json),
-                None => {
-                    if json {
-                        println!("{}", polylogue_render::terminal::json(&data, false));
-                    } else {
-                        print!("{}", (cmd.print)(&data));
-                    }
-                    ExitCode::SUCCESS
-                }
-            }
-        }
-        Response::Error {
-            kind,
-            message,
-            detail,
-        } => {
-            let code = crate::daemon::execution::exit_code(&kind);
-            fail_detail(json, &kind, &message, detail, code)
-        }
+    let outcome_code = answer.exit_code();
+    if json && cmd.output.is_none() {
+        println!(
+            "{}",
+            polylogue_render::terminal::json(
+                &serde_json::to_value(&answer).expect("answer serializes"),
+                false
+            )
+        );
+        return ExitCode::from(outcome_code);
     }
-}
-
-/// `export`: the document written to `--out`, or to standard output.
-pub fn write_export(values: &Values, data: &Value, json: bool) -> ExitCode {
-    let out = values.text("out").map(PathBuf::from);
-    let out = out.as_deref();
-    let text = match data.get("content").and_then(|c| c.as_str()) {
-        Some(content) => content.to_owned(),
-        None => polylogue_render::terminal::json(data, true),
-    };
-    match out {
-        Some(path) => match std::fs::write(path, text.as_bytes()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => fail(json, "io", &format!("{}: {e}", path.display()), 1),
-        },
+    if let command_surface::Answer {
+        outcome: command_surface::Outcome::Error(error),
+        envelope: command_surface::Envelope { notes, .. },
+        ..
+    } = &answer
+    {
+        return fail_with(policy, json, error, notes);
+    }
+    // JSON passes the answer through as received; anything that reads the
+    // value first checks it is the operation's declared type.
+    if let Err(failure) = decoded(cmd, &answer) {
+        return fail_with(policy, json, &failure, &[]);
+    }
+    let data = answer.value().expect("a non-error answer has a value");
+    if !json && matches!(data["shape"].as_str(), Some("rows" | "matches")) {
+        crate::row_numbers::remember(&root, &crate::row_numbers::row_ids(&data["rows"]));
+    }
+    match cmd.output {
+        Some(output) => output(&values, &answer, startup, json),
         None => {
-            print!("{}", polylogue_render::terminal::stdout_text(&text));
-            ExitCode::SUCCESS
+            print!("{}", (cmd.print)(data, policy.stdout_color()));
+            notes(
+                &crate::protocol::notes(&answer).cloned().collect::<Vec<_>>(),
+                policy,
+            );
+            ExitCode::from(outcome_code)
         }
     }
 }
 
-fn current_dir() -> PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
+/// Notes go to standard error, so standard output stays the value alone.
+fn notes(notes: &[String], output: crate::config::OutputConfig) {
+    for note in notes {
+        eprint!(
+            "{}",
+            print::diagnostic("note", note, None, output.stderr_color())
+        );
+    }
+}
+
+/// `status`: the whole answer, or with `--line` the one line a status bar
+/// shows (`3 running · 1 waiting 7m`).
+pub fn status_output(
+    values: &Values,
+    answer: &Answer<Value>,
+    startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
+    let data = answer
+        .value()
+        .expect("output handlers receive answers with values");
+    if !values.flag("line") {
+        if json {
+            println!(
+                "{}",
+                polylogue_render::terminal::json(
+                    &serde_json::to_value(answer).expect("answer serializes"),
+                    false
+                )
+            );
+        } else {
+            print!("{}", print::json(data, startup.output.stdout_color()));
+        }
+        return ExitCode::SUCCESS;
+    }
+    let running: crate::protocol::status::Running =
+        match serde_json::from_value(data["running"].clone()) {
+            Ok(running) => running,
+            Err(error) => {
+                return fail(startup.output, json, "internal", &error.to_string(), 1);
+            }
+        };
+    let line = running.line(startup.clock.now().as_millisecond());
+    if json {
+        println!("{}", serde_json::json!({ "line": line }));
+    } else {
+        println!("{line}");
+    }
+    ExitCode::SUCCESS
 }
 
 /// `continue --exec`: replaces this process with the session's native
 /// resume command; without `--exec`, the plan is printed.
-pub fn resume_output(values: &Values, data: &Value, json: bool) -> ExitCode {
+pub fn resume_output(
+    values: &Values,
+    answer: &Answer<Value>,
+    startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
+    let data = answer
+        .value()
+        .expect("output handlers receive answers with values");
     if !values.flag("exec") {
         if json {
             println!("{}", polylogue_render::terminal::json(data, false));
         } else {
-            print!("{}", print::resume(data));
+            print!("{}", print::resume(data, startup.output.stdout_color()));
         }
         return ExitCode::SUCCESS;
     }
-    exec_plan(data)
+    exec_plan(data, startup.output)
 }
 
-fn exec_plan(data: &Value) -> ExitCode {
+fn exec_plan(data: &Value, output: crate::config::OutputConfig) -> ExitCode {
     use std::os::unix::process::CommandExt;
     let Some(native) = data.get("harness_command").filter(|n| !n.is_null()) else {
-        eprintln!(
+        eprint!(
             "{}",
-            polylogue_render::terminal::escape(&format!(
-                "polylogue: this session has no native resume; continue with context instead: {}",
-                data["context_assisted"]["program"]
-                    .as_str()
-                    .map_or_else(String::new, |_| format!(
-                        "polylogue takeover {}",
-                        data["session"].as_str().unwrap_or("")
-                    ))
-            ))
+            print::diagnostic(
+                "",
+                &format!(
+                    "this session has no native resume; continue with context instead: {}",
+                    data["context_assisted"]["program"].as_str().map_or_else(
+                        String::new,
+                        |_| format!(
+                            "polylogue takeover {}",
+                            data["session"].as_str().unwrap_or("")
+                        )
+                    )
+                ),
+                None,
+                output.stderr_color()
+            )
         );
         return ExitCode::from(1);
     };
@@ -332,9 +581,14 @@ fn exec_plan(data: &Value) -> ExitCode {
         cmd.current_dir(dir);
     }
     let err = cmd.exec();
-    eprintln!(
+    eprint!(
         "{}",
-        polylogue_render::terminal::escape(&format!("polylogue: could not run {program}: {err}"))
+        print::diagnostic(
+            "",
+            &format!("could not run {program}: {err}"),
+            None,
+            output.stderr_color()
+        )
     );
     ExitCode::FAILURE
 }
@@ -354,7 +608,7 @@ fn send_with_timeout(
     archive: &Archive,
     request: &Request,
     timeout: Option<std::time::Duration>,
-) -> std::io::Result<Response> {
+) -> std::io::Result<Answer<Value>> {
     let deadline_ms = crate::daemon::execution::request_deadline(
         request,
         timeout.map(crate::daemon::execution::deadline),
@@ -362,7 +616,7 @@ fn send_with_timeout(
     crate::client::send_when_ready(archive, request, deadline_ms)
 }
 
-fn wait_for_ready<T>(
+pub(crate) fn wait_for_ready<T>(
     archive: &Archive,
     deadline_ms: Option<i64>,
     mut call: impl FnMut() -> std::io::Result<T>,
@@ -406,92 +660,76 @@ pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Resul
     }
 }
 
-/// Completions for a query word, from the daemon; none when it
-/// does not answer within a moment, so a shell never hangs on a tab.
-fn query_word(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandidate> {
-    let Some(word) = current.to_str() else {
-        return Vec::new();
-    };
-    let socket = Archive::at(&Archive::default_root()).socket();
-    let request = Request::Complete {
-        word: word.to_owned(),
-    };
-    let Ok(Response::Ok { data, .. }) =
-        crate::client::send_with_budget(&socket, &request, std::time::Duration::from_millis(500))
-    else {
-        return Vec::new();
-    };
-    completion_candidates(&data)
-}
-
-fn completion_candidates(data: &Value) -> Vec<clap_complete::CompletionCandidate> {
-    data.as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|c| {
-            let value = c["value"].as_str()?;
-            if value.chars().any(char::is_control)
-                || polylogue_render::terminal::escape(value) != value
-            {
-                return None;
-            }
-            let help = c["help"].as_str().filter(|h| !h.is_empty());
-            Some(
-                clap_complete::CompletionCandidate::new(value)
-                    .help(help.map(|h| polylogue_render::terminal::escape(h).into())),
-            )
-        })
-        .collect()
-}
-
-pub(crate) fn fail(json: bool, kind: &str, message: &str, code: u8) -> ExitCode {
-    if json {
-        println!(
-            "{}",
-            polylogue_render::terminal::json(
-                &serde_json::json!({ "error": { "kind": kind, "message": message } }),
-                false
-            )
-        );
-    } else {
-        eprintln!(
-            "{}",
-            polylogue_render::terminal::escape(&format!("polylogue: {kind}: {message}"))
-        );
+/// A failure made here, before or instead of a daemon answer.
+/// Refuses an answer whose value is not its operation's declared type, the
+/// same way for every operation, before any printer or output handler reads it.
+pub(crate) fn decoded(
+    cmd: &Command,
+    answer: &Answer<Value>,
+) -> Result<(), command_surface::Failure> {
+    match (cmd.decode_answer, answer.value()) {
+        (Some(decode), Some(value)) => {
+            decode(value).map_err(|error| crate::protocol::protocol_mismatch(cmd.name, error))
+        }
+        _ => Ok(()),
     }
-    ExitCode::from(code)
 }
 
-/// An error with structured detail: printed whole for programs; for a
-/// person, the message and the corrected query when there is one.
-fn fail_detail(
+pub(crate) fn fail(
+    output: crate::config::OutputConfig,
     json: bool,
-    kind: &str,
+    code: &str,
     message: &str,
-    detail: Option<serde_json::Value>,
-    code: u8,
+    _exit: u8,
+) -> ExitCode {
+    fail_with(output, json, &crate::protocol::failure(code, message), &[])
+}
+
+/// One printer for every failure: the whole answer for programs; for a
+/// person, the code, the message, the corrected query and the notes.
+fn fail_with(
+    output: crate::config::OutputConfig,
+    json: bool,
+    failure: &command_surface::Failure,
+    notes: &[String],
 ) -> ExitCode {
     if json {
+        let answer = command_surface::Answer::<Value> {
+            outcome: command_surface::Outcome::Error(failure.clone()),
+            envelope: command_surface::Envelope {
+                notes: notes.to_vec(),
+                ..Default::default()
+            },
+        };
         println!(
             "{}",
             polylogue_render::terminal::json(
-                &serde_json::json!({ "error": { "kind": kind, "message": message, "detail": detail } }),
+                &serde_json::to_value(answer).expect("failure serializes"),
                 false
             )
         );
     } else {
-        eprintln!(
+        let code = failure.code.clone().unwrap_or_else(|| {
+            serde_json::to_value(failure.kind)
+                .ok()
+                .and_then(|kind| kind.as_str().map(str::to_owned))
+                .unwrap_or_default()
+        });
+        eprint!(
             "{}",
-            polylogue_render::terminal::escape(&format!("polylogue: {kind}: {message}"))
+            print::diagnostic(
+                &code,
+                &failure.message,
+                crate::protocol::suggestion_text(failure).as_deref(),
+                output.stderr_color()
+            )
         );
-        if let Some(s) = detail.as_ref().and_then(|d| d["suggestion"].as_str()) {
-            eprintln!(
-                "{}",
-                polylogue_render::terminal::escape(&format!("polylogue: try: {s}"))
-            );
+        for candidate in failure.candidates() {
+            eprintln!("  {}", polylogue_render::terminal::escape(candidate));
         }
+        self::notes(notes, output);
     }
-    ExitCode::from(code)
+    ExitCode::from(failure.kind.exit_code())
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
 /// One of a subscription's usage limits: a window of fixed length.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct QuotaLimit {
     /// The tool's name for the limit (`codex`, `five_hour`, `seven_day`).
     pub limit: Cow<'static, str>,
@@ -15,7 +15,7 @@ pub struct QuotaLimit {
 }
 
 /// The state of one limit as the tool reported it with a response.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct QuotaWindow {
     #[serde(flatten)]
     pub limit: QuotaLimit,
@@ -30,7 +30,7 @@ pub struct QuotaWindow {
 
 /// The subscription quota a tool reported with a response, read from its
 /// own wire format by the origin's parser.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct QuotaReading {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,

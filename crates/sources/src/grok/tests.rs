@@ -47,21 +47,26 @@ fn nested_flat_and_equivalent_declared_time_forms_keep_ids_and_supplied_content(
         for entry in flat["responses"].as_array_mut().unwrap() {
             *entry = entry["response"].take();
         }
-        flat["responses"][0]["create_time"] = time;
+        flat["responses"][0]["create_time"] = time.clone();
         let next = parse(json!({"conversations":[flat]}));
         assert_eq!(next.output.sessions[0].id, first.output.sessions[0].id);
+        for (next, original) in next.output.messages.iter().zip(&first.output.messages) {
+            assert_eq!(next.message.id, original.message.id);
+            assert_eq!(next.message.at, original.message.at);
+            assert_eq!(next.message.blocks, original.message.blocks);
+            assert_eq!(next.message.role, original.message.role);
+            assert_eq!(
+                next.message.at_quality,
+                polylogue_model::TimeQuality::Intrinsic
+            );
+        }
         assert_eq!(
-            next.output
-                .messages
-                .iter()
-                .map(|row| &row.message)
-                .collect::<Vec<_>>(),
-            first
-                .output
-                .messages
-                .iter()
-                .map(|row| &row.message)
-                .collect::<Vec<_>>()
+            next.output.messages[0].message.at_precision,
+            Some(if time.is_number() || time.is_string() {
+                polylogue_model::Precision::Second
+            } else {
+                polylogue_model::Precision::Instant
+            })
         );
     }
 }

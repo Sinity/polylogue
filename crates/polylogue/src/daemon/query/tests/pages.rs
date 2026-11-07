@@ -7,8 +7,8 @@ fn counting_ranked_rows_does_not_sort_or_project_the_answer() {
     let pool = w.fx.reads().unwrap();
     let reader = pool.reader().unwrap();
     let request = ask("messages where parser");
-    let opts = options(&reader, &request, request.now, 1).unwrap();
-    let program = polylogue_query::compile(request.text, &opts).unwrap();
+    let opts = options(&reader, &request, 1).unwrap();
+    let program = polylogue_store::query::compile(request.text, &opts).unwrap();
     let params = values(&program.params);
     let count_sql = program.count_sql();
     let (count, without) = reader.query_counts(&count_sql, &params).unwrap();
@@ -29,22 +29,29 @@ fn counting_fused_rows_does_not_rank_or_sort_the_answer() {
     let w = morrow();
     let pool = w.fx.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let request = ask(
-        "messages where parser | union (messages where done) | fuse (messages where cwd:/home/op/morrow)",
-    );
-    let opts = options(&reader, &request, request.now, 1).unwrap();
-    let program = polylogue_query::compile(request.text, &opts).unwrap();
-    let params = values(&program.params);
-    let count_sql = program.count_sql();
-    let (count, without) = reader.query_counts(&count_sql, &params).unwrap();
-    let rows = reader.query(&program.sql, &params).unwrap();
-    assert!(!rows.is_empty());
-    assert_eq!(count, rows.len() as u64);
-    assert_eq!(without, 0);
-    let operations = reader
-        .query(&format!("EXPLAIN {count_sql}"), &params)
-        .unwrap();
-    assert!(operations.iter().all(|op| op["opcode"] != "SorterOpen"));
+    let fused = "messages where parser | union (messages where done) | fuse (messages where cwd:/home/op/morrow)";
+    for text in [
+        fused.to_owned(),
+        format!("{fused} | fields id | sort by id"),
+    ] {
+        let request = ask(&text);
+        let opts = options(&reader, &request, 1).unwrap();
+        let program = polylogue_store::query::compile(request.text, &opts).unwrap();
+        let params = values(&program.params);
+        let count_sql = program.count_sql();
+        let (count, without) = reader.query_counts(&count_sql, &params).unwrap();
+        let rows = reader.query(&program.sql, &params).unwrap();
+        assert!(!rows.is_empty());
+        assert_eq!(count, rows.len() as u64);
+        assert_eq!(without, 0);
+        let operations = reader
+            .query(&format!("EXPLAIN {count_sql}"), &params)
+            .unwrap();
+        assert!(
+            operations.iter().all(|op| op["opcode"] != "SorterOpen"),
+            "{text}\ncount SQL: {count_sql}\noperations: {operations:#?}"
+        );
+    }
 }
 
 #[test]
@@ -55,29 +62,37 @@ fn count_execution_plans_do_not_change_page_cursor_binding() {
     let first = run_q(&w, request).unwrap();
     let mut request = ask("messages where parser");
     request.page_size = Some(1);
-    let cursor = Cursor::decode(first["next"].as_str().unwrap()).unwrap();
     let pool = w.fx.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let opts = options(&reader, &request, cursor.now, cursor.seed).unwrap();
-    let mut program = polylogue_query::compile(request.text, &opts).unwrap();
-    assert!(
-        cursor
-            .check(&program, &page::question(&program, &opts, false).unwrap())
-            .is_ok()
-    );
+    let mut opts = options(&reader, &request, 1).unwrap();
+    let question = reader
+        .prepare_query_plan(request.text, &opts)
+        .unwrap()
+        .question_id();
+    let seal = CursorSeal::new(reader.cursor_key().unwrap());
+    let cursor = page::open(
+        first["next"].as_str().unwrap(),
+        &seal,
+        question,
+        &reader.change_position().unwrap(),
+        reader.index_identity().unwrap(),
+        &opts,
+    )
+    .unwrap();
+    opts.clock = cursor.context.clock.clone();
+    opts.random_seed = Some(cursor.context.random_seed);
+    let mut program = polylogue_store::query::compile(request.text, &opts).unwrap();
+    page::check(&cursor, &program, &opts, false).unwrap();
     program.row_count_sql = None;
     program.row_membership_sql = None;
-    assert!(
-        cursor
-            .check(&program, &page::question(&program, &opts, false).unwrap())
-            .is_ok()
-    );
+    page::check(&cursor, &program, &opts, false).unwrap();
+    // Execution-plan spelling does not define semantic query identity.
     program.sql = format!("SELECT * FROM ({}) WHERE 0", program.sql);
-    assert!(
-        cursor
-            .check(&program, &page::question(&program, &opts, false).unwrap())
-            .is_err()
-    );
+    page::check(&cursor, &program, &opts, false).unwrap();
+    let other = reader
+        .prepare_query_plan("messages where parser | limit 1", &opts)
+        .unwrap();
+    assert_ne!(question, other.question_id());
 }
 
 #[test]
@@ -102,8 +117,8 @@ fn counts_preserve_selected_rows_across_limits_offsets_and_shapes() {
         "messages where parser | union (messages where done) | fuse (messages where cwd:/home/op/morrow) | limit 2",
     ] {
         let request = ask(query);
-        let opts = options(&reader, &request, request.now, 1).unwrap();
-        let program = polylogue_query::compile(query, &opts).unwrap();
+        let opts = options(&reader, &request, 1).unwrap();
+        let program = polylogue_store::query::compile(query, &opts).unwrap();
         let params = values(&program.params);
         let rows = reader.query(&program.sql, &params).unwrap();
         let (count, without) = reader.query_counts(&program.count_sql(), &params).unwrap();
@@ -163,7 +178,7 @@ fn pages_cover_every_shape_and_allow_new_page_sizes_and_the_original_clock() {
         "messages | distinct",
         "tool_calls | group by action | count",
         "sessions where exists tool_call(action:shell) | matches",
-        "sessions where exists tool_call(action:shell) | matches | sort by command desc",
+        "sessions where exists tool_call(action:shell) | matches | sort by step.command desc",
         "sessions where seq(action:shell -> action:shell) | matches",
     ] {
         let mut request = ask(query);
@@ -178,7 +193,12 @@ fn pages_cover_every_shape_and_allow_new_page_sizes_and_the_original_clock() {
             request.cursor = Some(&next);
             request.page_size = Some(size);
             size += 1;
-            request.now += DAY;
+            std::sync::Arc::make_mut(&mut request.context).clock.now = request
+                .context
+                .clock
+                .now
+                .checked_add(jiff::SignedDuration::from_millis(DAY))
+                .unwrap();
             let page = run_q(&w, request).unwrap();
             assert_eq!(page["count"], count, "{query}");
             assert_eq!(page["resolved"], first["resolved"], "{query}");
@@ -216,11 +236,16 @@ fn continuation_binds_fields_caller_zone_day_and_semantic_options() {
         match changed {
             "fields" => request.fields = &fields,
             "caller" => request.session = Some("claude-code:different-caller".into()),
-            "zone" => request.day = Some(LogicalDay::named("Europe/Warsaw", 0).unwrap()),
+            "zone" => {
+                std::sync::Arc::make_mut(&mut request.context).clock.day =
+                    fixture_clock(0, "Europe/Warsaw", 0).day
+            }
             "day-start" => {
-                if let Some(day) = &mut request.day {
-                    day.start_minutes = 240;
-                }
+                std::sync::Arc::make_mut(&mut request.context).clock.day = DaySetting::new(
+                    request.context.clock.day.zone().clone(),
+                    jiff::civil::Time::constant(4, 0, 0, 0),
+                )
+                .unwrap();
             }
             "embeddings" => request.embeddings = true,
             "why" => request.why = true,
@@ -228,15 +253,19 @@ fn continuation_binds_fields_caller_zone_day_and_semantic_options() {
             _ => unreachable!(),
         }
         assert_eq!(
-            run_q(&w, request).unwrap_err().kind,
-            "bad_request",
+            run_q(&w, request).unwrap_err().code(),
+            if matches!(changed, "zone" | "day-start") {
+                "stale_cursor"
+            } else {
+                "invalid_query"
+            },
             "{changed}"
         );
     }
 }
 
 #[test]
-fn edits_and_rebuilds_between_pages_continue_after_the_last_row() {
+fn edits_continue_after_the_last_row_and_rebuilds_retire_the_cursor() {
     for rebuild in [false, true] {
         let home = ClaudeHome::new();
         for session in ["a", "b", "c"] {
@@ -255,10 +284,13 @@ fn edits_and_rebuilds_between_pages_continue_after_the_last_row() {
             polylogue_testkit::delete_index(&home.root);
             let (mut reopened, _lock) = home.engine(64 << 20);
             assert!(reopened.run_pass().unwrap().errors.is_empty());
+            // A cursor from an earlier index generation is `stale_cursor`
+            // (docs/query.md, Paging, Refusals).
             assert_eq!(
-                page(&home, Some(cursor)).unwrap()["rows"][0]["id"],
-                "claude-code:c"
+                page(&home, Some(cursor)).unwrap_err().code(),
+                "stale_cursor"
             );
+            assert_eq!(page(&home, None).unwrap()["rows"][0]["id"], "claude-code:a");
         } else {
             std::fs::write(
                 home.file("b.jsonl"),
@@ -272,6 +304,29 @@ fn edits_and_rebuilds_between_pages_continue_after_the_last_row() {
             );
         }
     }
+}
+
+#[test]
+fn daemon_reopen_preserves_cursor_key_and_continues_the_page() {
+    let home = ClaudeHome::new();
+    for session in ["a", "b", "c"] {
+        home.append(
+            &format!("{session}.jsonl"),
+            &claude_user(&format!("{session}1"), session, "synthetic prompt"),
+        );
+    }
+    let (mut engine, lock) = home.engine(64 << 20);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    let first = page(&home, None).unwrap();
+    let cursor = first["next"].as_str().unwrap();
+    drop(engine);
+    drop(lock);
+    let (mut reopened, _lock) = home.engine(64 << 20);
+    assert!(reopened.run_pass().unwrap().errors.is_empty());
+    assert_eq!(
+        page(&home, Some(cursor)).unwrap()["rows"][0]["id"],
+        "claude-code:c"
+    );
 }
 
 fn fixture_query(
@@ -406,9 +461,23 @@ fn random_selection_count_rows_and_pages_use_one_resolved_seed() {
         let mut request = ask(query);
         request.page_size = Some(1);
         let first = run_q(&w, request).unwrap();
-        let seed = Cursor::decode(first["next"].as_str().unwrap())
-            .unwrap()
-            .seed;
+        let pool = w.fx.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        let request = ask(query);
+        let options = options(&reader, &request, 0).unwrap();
+        let question = page::identity(query, &options).unwrap();
+        let seal = CursorSeal::new(reader.cursor_key().unwrap());
+        let seed = page::open(
+            first["next"].as_str().unwrap(),
+            &seal,
+            question,
+            &reader.change_position().unwrap(),
+            reader.index_identity().unwrap(),
+            &options,
+        )
+        .unwrap()
+        .context
+        .random_seed;
         let reference = query.replace("random", &format!("random({seed})"));
         let expected = q(&w, &reference);
         assert_eq!(first["count"], expected["count"], "{query}");
@@ -436,7 +505,7 @@ fn near_ranked_pages_continue_like_any_other() {
     let w = morrow();
     let s = similarity(&w, "%0003-4000%");
     let near = |_: &str| Ok(std::sync::Arc::clone(&s));
-    let text = "kind:* near:\"synthetic ranking\"";
+    let text = "kind:* similar:\"synthetic ranking\"";
     let mut whole = ask(text);
     whole.page_size = Some(100);
     whole.embeddings = true;
@@ -473,10 +542,14 @@ fn page_cursor_carries_no_query_or_caller_text_and_rejects_other_shapes() {
     request.session = Some("claude-code:private-caller-marker".into());
     let first = run_q(&w, request).unwrap();
     let cursor = first["next"].as_str().unwrap();
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(cursor)
-        .unwrap();
-    let encoded = String::from_utf8(bytes).unwrap();
+    let bytes: Vec<u8> = cursor
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    let encoded = String::from_utf8_lossy(&bytes);
     assert!(!encoded.contains(text));
     assert!(!encoded.contains("private marker"));
     assert!(!encoded.contains("private-caller-marker"));
@@ -484,7 +557,7 @@ fn page_cursor_carries_no_query_or_caller_text_and_rejects_other_shapes() {
         .encode(br#"{"offset":1,"now":0,"query":"old"}"#);
     let mut request = ask("sessions");
     request.cursor = Some(&old);
-    assert_eq!(run_q(&w, request).unwrap_err().kind, "bad_request");
+    assert_eq!(run_q(&w, request).unwrap_err().code(), "invalid_query");
 }
 
 #[test]
@@ -555,7 +628,7 @@ fn next_page(w: &TestArchive, text: &str, size: u64, cursor: Option<&str>) -> Va
     let mut request = ask(text);
     request.page_size = Some(size);
     request.cursor = cursor;
-    run_q(w, request).unwrap_or_else(|f| panic!("{text}: {} {}", f.kind, f.message))
+    run_q(w, request).unwrap_or_else(|f| panic!("{text}: {} {}", f.code(), f.message))
 }
 
 /// The `id` of each row: a session's or a message's.
@@ -648,7 +721,8 @@ fn pages_of_relative_times_keep_the_first_pages_clock() {
         "tool_calls where since:7d",
     ] {
         let mut whole = ask(text);
-        whole.now = first_now;
+        std::sync::Arc::make_mut(&mut whole.context).clock.now =
+            jiff::Timestamp::from_millisecond(first_now).unwrap();
         whole.page_size = Some(1000);
         let whole = run_q(&w, whole).unwrap();
         let mut rows = vec![];
@@ -656,7 +730,8 @@ fn pages_of_relative_times_keep_the_first_pages_clock() {
         let mut now = first_now;
         loop {
             let mut request = ask(text);
-            request.now = now;
+            std::sync::Arc::make_mut(&mut request.context).clock.now =
+                jiff::Timestamp::from_millisecond(now).unwrap();
             request.page_size = Some(1);
             request.cursor = cursor.as_deref();
             let page = run_q(&w, request).unwrap();
@@ -670,4 +745,24 @@ fn pages_of_relative_times_keep_the_first_pages_clock() {
         }
         assert_eq!(&rows, whole["rows"].as_array().unwrap(), "{text}");
     }
+}
+
+#[test]
+fn continuation_refuses_a_changed_captured_ranking_basis() {
+    let w = morrow();
+    let mut request = ask("messages | sort by id");
+    request.page_size = Some(1);
+    request.ranking_identity = Some("synthetic-provider:vectors-a".into());
+    let first = run_q(&w, request).unwrap();
+    let cursor = first["next"].as_str().unwrap();
+    let mut same = ask("messages | sort by id");
+    same.page_size = Some(1);
+    same.cursor = Some(cursor);
+    same.ranking_identity = Some("synthetic-provider:vectors-a".into());
+    assert!(run_q(&w, same).is_ok());
+    let mut changed = ask("messages | sort by id");
+    changed.page_size = Some(1);
+    changed.cursor = Some(cursor);
+    changed.ranking_identity = Some("synthetic-provider:vectors-b".into());
+    assert_eq!(run_q(&w, changed).unwrap_err().code(), "stale_cursor");
 }

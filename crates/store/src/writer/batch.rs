@@ -4,7 +4,9 @@
 use super::*;
 
 /// The input a batch belongs to, as `archive.db` names it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct InputKey {
     /// `archive.db` input id: a location's stable id, or the BLAKE3 of an
     /// imported file's bytes.
@@ -22,10 +24,14 @@ pub struct Observation {
     pub machine: String,
     pub host: String,
     pub path: String,
+    /// Exact acquired location bytes; `path` is only its display label.
+    pub path_bytes: Vec<u8>,
     pub facts: Option<FileFacts>,
     pub seen_at_ms: i64,
     /// Membership established by this explicit import, independent of byte deduplication.
     pub import: Option<ImportMember>,
+    /// Exact membership in original container bytes, independent of imports.
+    pub container: Option<InContainer>,
 }
 
 /// Engine-authored membership of one import. It does not assert that
@@ -36,25 +42,42 @@ pub struct ImportMember {
     pub version: u8,
     pub import_id: String,
     pub member: String,
+    /// Receiver-computed import context, independent of claims in the bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorship: Option<polylogue_model::authorship::Authorship>,
     /// The format chosen for this import, separate from the input's own metadata.
     #[serde(skip)]
     pub format: Option<String>,
-    /// Persisted by the Writer in observation_zip, not ignorable JSON metadata.
-    #[serde(skip)]
-    pub zip: Option<InZip>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InZip {
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct InContainer {
     pub input: String,
     pub member_index: u64,
+    pub kind: String,
+    pub path_bytes: Vec<u8>,
 }
 
 /// One parse step's rows and where they sit in the input's chain.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ParseStep {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<polylogue_model::batch::ExportDelivery>,
     /// Message positions in reading order for array records, apart from byte ranges.
     pub order_from: Option<u64>,
+    pub reading_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
+    #[serde(default)]
+    pub(crate) receipt: Option<crate::wire_shapes::ReadingReceipt>,
+    /// Confirmed surviving facts can omit source ranges despite a scratch reset.
+    #[serde(default)]
+    pub(crate) source_prefix_missing: bool,
+    /// IDs from admitted products, separate from the explicit map in a sealed callback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) confirmed_event_ids: Option<Vec<String>>,
     /// Replaces accounting from an earlier parse of this chain.
     pub reset: bool,
     pub(crate) output: Output,
@@ -67,17 +90,38 @@ pub struct ParseStep {
     pub start: u64,
     /// Offset after the last complete record parsed.
     pub parsed_upto: u64,
-    /// The parse observed source EOF; an unconsumed suffix waits for growth.
-    pub at_end: bool,
+    /// How far the step read the stored bytes.
+    pub progress: polylogue_model::batch::StepProgress,
     /// Packed message, text and event rows produced together on the parse pool.
     /// Default leaves the complete parsed values available for writer fallback.
+    #[serde(skip)]
     pub(crate) prepared: PreparedRows,
+    pub(crate) comparison: Option<crate::tool_databases::Comparison>,
 }
 
+mod export;
 mod prepared;
 pub(crate) use prepared::PreparedRows;
 
 impl ParseStep {
+    /// The comparison hashes of the row-dump records parsed in this step.
+    pub fn compare_records(&mut self, bytes: &[u8]) -> crate::Result<()> {
+        let mut update = crate::tool_databases::Comparison::records(bytes)?;
+        update.from = self.start;
+        update.length = self.parsed_upto;
+        self.comparison = Some(update);
+        Ok(())
+    }
+
+    /// Whole row-dump parsers commit their comparison with completion.
+    pub fn compare_reader(&mut self, reader: impl std::io::BufRead) -> crate::Result<()> {
+        let mut update = crate::tool_databases::Comparison::read(reader)?;
+        update.from = self.start;
+        update.length = self.parsed_upto;
+        self.comparison = Some(update);
+        Ok(())
+    }
+
     /// An unprepared parse over this byte range. A range beginning at zero
     /// replaces the record counts; row dumps may set `reset` independently.
     pub fn new(
@@ -87,15 +131,22 @@ impl ParseStep {
         at_end: bool,
     ) -> Self {
         Self {
+            delivery: None,
             order_from: None,
+            reading_version: String::new(),
+            checkpoint: None,
+            receipt: None,
+            source_prefix_missing: false,
+            confirmed_event_ids: None,
             reset: range.start == 0,
             repeats_whole_conversations: false,
             output,
             counts,
             start: range.start,
             parsed_upto: range.end,
-            at_end,
+            progress: polylogue_model::batch::StepProgress::parsed(at_end),
             prepared: PreparedRows::default(),
+            comparison: None,
         }
     }
 }
@@ -124,6 +175,14 @@ pub struct Batch {
     /// commits (the writer keeps a transaction's batches to retry them one
     /// at a time), or when a batch is dropped unsent.
     pub release: InFlight,
+    /// Receiver-minted evidence of the body acquisition, not parsed payload data.
+    pub acquisition: Option<crate::primary::AcquisitionReceipt>,
+    /// Actual source precondition sampled before provider IO. It has no
+    /// authority to assign the resulting native chain or revision.
+    pub basis: Option<crate::primary::SourceBasis>,
+    /// Restricts this new acquisition to physical custody; it cannot request
+    /// source acceptance or promote a previously unresolved receipt.
+    pub required_disposition: Option<crate::primary::CaptureDisposition>,
 }
 
 /// A callback that runs once, when the value holding it is dropped. The
@@ -175,10 +234,22 @@ pub struct WriteReport {
     pub batches: u64,
     pub messages: u64,
     pub transactions: u64,
+    pub segment_syncs: u64,
+    pub segment_bytes_written: u64,
+    pub blobs_appended: u64,
+    pub blobs_deduplicated: u64,
     /// Batches the writer could not store, with the reason. The rest of
     /// their transaction was retried one batch at a time.
     pub errors: Vec<String>,
-    /// Inputs whose progress must be reloaded from committed checkpoints.
-    /// Later batches for these inputs are held out until this report is taken.
-    pub failed_inputs: std::collections::BTreeSet<String>,
+}
+
+impl InContainer {
+    pub fn display_path(&self) -> String {
+        String::from_utf8(self.path_bytes.clone()).unwrap_or_else(|_| {
+            self.path_bytes
+                .iter()
+                .map(|byte| format!("%{byte:02X}"))
+                .collect()
+        })
+    }
 }

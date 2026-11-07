@@ -1,6 +1,19 @@
 use super::settings::merge_hooks;
 use super::*;
 
+pub(super) fn startup() -> Startup {
+    let engine = polylogue_engine::Config::new(
+        PathBuf::from("/synthetic/home"),
+        Default::default(),
+        "synthetic-machine".into(),
+        "synthetic-host".into(),
+        1,
+        polylogue_model::WallClock::fixed("2026-01-01T00:00:00Z".parse().unwrap()),
+    )
+    .unwrap();
+    Startup::for_test(engine, Path::new("/synthetic/archive"))
+}
+
 #[test]
 fn hook_spool_files_get_one_line_per_event() {
     let dir = tempfile::tempdir().unwrap();
@@ -9,6 +22,8 @@ fn hook_spool_files_get_one_line_per_event() {
         Harness::ClaudeCode,
         "Stop",
         &json!({"session_id": "a"}),
+        &json!({}),
+        &startup(),
     )
     .unwrap();
     append_to_spool(
@@ -16,6 +31,8 @@ fn hook_spool_files_get_one_line_per_event() {
         Harness::Codex,
         "SessionEnd",
         &json!({"session_id": "b"}),
+        &json!({}),
+        &startup(),
     )
     .unwrap();
     let file = dir
@@ -28,6 +45,7 @@ fn hook_spool_files_get_one_line_per_event() {
         .collect();
     assert_eq!(lines.len(), 2);
     assert!(lines[0]["event_id"].is_string());
+    assert_eq!(lines[0]["at_ns"], "1767225600000000000");
     assert_ne!(lines[0]["event_id"], lines[1]["event_id"]);
     assert_eq!(lines[0]["provider"], "claude-code");
     assert_eq!(lines[0]["session_id"], "a");
@@ -45,7 +63,15 @@ fn a_hermes_turn_keeps_its_event_without_the_conversation() {
         "cwd": "/tmp",
         "extra": {"is_first_turn": true, "user_message": "hi", "conversation_history": [{"role": "user"}]},
     });
-    append_to_spool(dir.path(), Harness::Hermes, "pre_llm_call", &payload).unwrap();
+    append_to_spool(
+        dir.path(),
+        Harness::Hermes,
+        "pre_llm_call",
+        &payload,
+        &json!({}),
+        &startup(),
+    )
+    .unwrap();
     let file = dir
         .path()
         .join(format!("{}.ndjson", std::os::unix::process::parent_id()));
@@ -65,11 +91,82 @@ fn a_hermes_turn_keeps_its_event_without_the_conversation() {
 }
 
 #[test]
+fn hermes_session_uses_the_resolved_source_profile_and_machine() {
+    let mut startup = startup();
+    startup.engine.tool_dirs.insert(
+        "HERMES_HOME".into(),
+        PathBuf::from("/synthetic/other-hermes"),
+    );
+    let expected = polylogue_sources::hermes::session_at(
+        "synthetic-machine",
+        Path::new("/synthetic/other-hermes/state.db"),
+        "turn-1",
+    )
+    .unwrap();
+    assert_eq!(
+        session_of(Harness::Hermes, &json!({"session_id":"turn-1"}), &startup),
+        Some(expected)
+    );
+}
+
+#[test]
+fn context_uses_the_configured_archive_socket_and_clock() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    let dir = tempfile::tempdir().unwrap();
+    let startup = Startup::for_test(startup().engine, dir.path());
+    let listener = UnixListener::bind(Archive::at(dir.path()).socket()).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let peer = std::thread::spawn(move || {
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < until =>
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("configured archive was not contacted: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = String::new();
+        BufReader::new(&stream).read_line(&mut request).unwrap();
+        let request: Value = serde_json::from_str(&request).unwrap();
+        assert_eq!(request["operation"], "brief");
+        assert_eq!(request["arguments"]["cwd"], "/synthetic/project");
+        assert_eq!(request["deadline"], 1500);
+        assert!(request.get("budget_tokens").is_none());
+        let id = uuid::Uuid::parse_str(request["request_id"].as_str().unwrap()).unwrap();
+        assert_eq!(id.get_timestamp().unwrap().to_unix().0, 1767225600);
+        let response = command_surface::Answer::ok(
+            json!({"delivery":"context-1", "prepared":{"event":"session_start","empty":false,"text":"configured archive","refs":[],"left_out":[]}}),
+        );
+        writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+    });
+    let reply = respond(
+        Harness::Codex,
+        "SessionStart",
+        &json!({"session_id":"turn-1","cwd":"/synthetic/project"}),
+        &startup,
+    );
+    peer.join().unwrap();
+    assert_eq!(
+        reply,
+        Some(("context-1".into(), "configured archive".into()))
+    );
+}
+
+#[test]
 fn each_harness_gets_context_in_its_own_shape() {
     // Without a daemon the hooks fail open: no context, no output.
     let start = json!({"session_id": "a", "cwd": "/nonexistent", "source": "startup"});
-    assert!(respond(Harness::Codex, "Stop", &start).is_none());
-    assert!(respond(Harness::Hermes, "SessionStart", &start).is_none());
+    assert!(respond(Harness::Codex, "Stop", &start, &startup()).is_none());
+    assert!(respond(Harness::Hermes, "SessionStart", &start, &startup()).is_none());
 }
 
 #[test]
@@ -98,14 +195,14 @@ fn hook_install_merges_and_is_idempotent() {
             "Stop": [{"hooks": [{"type": "command", "command": "notify-send done"}]}]
         }
     });
-    let once = merge_hooks(other.clone(), Harness::ClaudeCode, true).unwrap();
-    let twice = merge_hooks(once.clone(), Harness::ClaudeCode, true).unwrap();
+    let once = merge_hooks(other.clone(), Harness::ClaudeCode, None, true).unwrap();
+    let twice = merge_hooks(once.clone(), Harness::ClaudeCode, None, true).unwrap();
     assert_eq!(once, twice);
     assert_eq!(once["model"], "opus");
     let stop = once["hooks"]["Stop"].as_array().unwrap();
     assert_eq!(stop.len(), 2);
     assert_eq!(stop[0]["hooks"][0]["command"], "notify-send done");
-    let removed = merge_hooks(once, Harness::ClaudeCode, false).unwrap();
+    let removed = merge_hooks(once, Harness::ClaudeCode, None, false).unwrap();
     assert_eq!(removed["hooks"]["Stop"].as_array().unwrap().len(), 1);
     assert!(removed["hooks"].get("SessionStart").is_none());
 }
@@ -114,26 +211,26 @@ fn hook_install_merges_and_is_idempotent() {
 fn install_writes_a_file_and_refuses_symlinks() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.json");
-    install(&path, Harness::ClaudeCode, true).unwrap();
+    install(&path, Harness::ClaudeCode, || None, true).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("polylogue hook SessionStart"));
     let link = dir.path().join("linked.json");
     std::os::unix::fs::symlink(&path, &link).unwrap();
-    assert!(install(&link, Harness::ClaudeCode, true).is_err());
+    assert!(install(&link, Harness::ClaudeCode, || None, true).is_err());
 }
 
 #[test]
 fn codex_hooks_name_the_harness_and_replace_their_own() {
-    let once = merge_hooks(json!({}), Harness::Codex, true).unwrap();
+    let once = merge_hooks(json!({}), Harness::Codex, None, true).unwrap();
     let start = &once["hooks"]["SessionStart"][0]["hooks"][0]["command"];
     assert_eq!(start, "polylogue hook SessionStart --harness codex");
     assert!(
         once["hooks"].get("Notification").is_none(),
         "Codex has no such event"
     );
-    let twice = merge_hooks(once.clone(), Harness::Codex, true).unwrap();
+    let twice = merge_hooks(once.clone(), Harness::Codex, None, true).unwrap();
     assert_eq!(once, twice);
-    let removed = merge_hooks(twice, Harness::Codex, false).unwrap();
+    let removed = merge_hooks(twice, Harness::Codex, None, false).unwrap();
     assert!(removed["hooks"].as_object().unwrap().is_empty());
 }
 
@@ -150,7 +247,7 @@ fn install_preserves_permissions_and_ignores_an_old_temporary_name() {
         .path()
         .join(format!(".settings.json.polylogue-{}", std::process::id()));
     std::os::unix::fs::symlink(&other, stale).unwrap();
-    install(&path, Harness::ClaudeCode, true).unwrap();
+    install(&path, Harness::ClaudeCode, || None, true).unwrap();
     assert_eq!(std::fs::read(&other).unwrap(), b"unchanged");
     assert!(!path.is_symlink());
     assert_eq!(
@@ -162,6 +259,7 @@ fn install_preserves_permissions_and_ignores_an_old_temporary_name() {
     assert!(settings["hooks"]["SessionStart"].is_array());
 }
 
+mod rollback;
 mod settings;
 
 #[test]
@@ -178,60 +276,8 @@ fn a_silent_daemon_cannot_hold_a_hook_past_its_deadline() {
         stream.read_to_end(&mut request).unwrap();
         assert!(!request.is_empty());
     });
-    assert!(exchange(&socket, &Request::Status, ADVICE_BUDGET).is_none());
+    assert!(exchange(&socket, &Request::Status, Duration::from_millis(20)).is_none());
     peer.join().unwrap();
-}
-
-#[test]
-fn advice_is_read_only_until_printed_and_recording_has_its_own_budget() {
-    use std::cell::Cell;
-    for printed in [false, true] {
-        let output_called = Cell::new(false);
-        let mut calls = 0;
-        tool_advice(
-            Harness::ClaudeCode,
-            &json!({"session_id":"next", "cwd":"/work/proj", "tool_input":{"command":"cargo test"}}),
-            |request, budget| {
-                calls += 1;
-                match request {
-                    Request::Context { sender, .. } => {
-                        assert!(sender.is_none());
-                        assert_eq!(budget, ADVICE_BUDGET);
-                        Some(Response::Ok {
-                            data: json!({"delivery":"advice:one", "prepared":{"empty":false, "text":"try this"}}),
-                            references: Default::default(),
-                        })
-                    }
-                    Request::AdviceDelivered {
-                        request_id, text, ..
-                    } => {
-                        assert!(output_called.get());
-                        assert_eq!(budget, ADVICE_DELIVERY_BUDGET);
-                        assert_eq!(request_id, "advice:one");
-                        assert_eq!(text, "try this");
-                        None
-                    }
-                    _ => panic!("unexpected request"),
-                }
-            },
-            |_, _, text| {
-                assert_eq!(text, "try this");
-                output_called.set(true);
-                printed
-            },
-        );
-        assert_eq!(calls, if printed { 2 } else { 1 });
-    }
-}
-
-#[test]
-fn hermes_tool_events_do_not_request_or_print_advice() {
-    tool_advice(
-        Harness::Hermes,
-        &json!({"session_id":"next", "cwd":"/work/proj", "tool_input":{"command":"cargo test"}}),
-        |_, _| panic!("a Hermes tool event requested advice"),
-        |_, _, _| panic!("a Hermes tool event printed advice"),
-    );
 }
 
 #[test]
@@ -279,9 +325,9 @@ fn web_links_resolve_to_the_same_sessions_as_captures() {
 fn gemini_hooks_use_the_documented_events_and_millisecond_timeouts() {
     let settings =
         json!({"hooks":{"BeforeAgent":[{"hooks":[{"type":"command", "command":"other"}]}]}});
-    let once = merge_hooks(settings.clone(), Harness::GeminiCli, true).unwrap();
+    let once = merge_hooks(settings.clone(), Harness::GeminiCli, None, true).unwrap();
     assert_eq!(
-        merge_hooks(once.clone(), Harness::GeminiCli, true).unwrap(),
+        merge_hooks(once.clone(), Harness::GeminiCli, None, true).unwrap(),
         once
     );
     assert_eq!(
@@ -294,13 +340,17 @@ fn gemini_hooks_use_the_documented_events_and_millisecond_timeouts() {
         "polylogue hook BeforeAgent --harness gemini-cli"
     );
     assert_eq!(
-        merge_hooks(once, Harness::GeminiCli, false).unwrap(),
+        merge_hooks(once, Harness::GeminiCli, None, false).unwrap(),
         settings
     );
     assert_eq!(
-        session_of(Harness::GeminiCli, &json!({"session_id":"test"}))
-            .unwrap()
-            .to_string(),
+        session_of(
+            Harness::GeminiCli,
+            &json!({"session_id":"test"}),
+            &startup()
+        )
+        .unwrap()
+        .to_string(),
         "gemini-cli:test"
     );
 }
@@ -335,4 +385,248 @@ fn decoded_hook_context_has_visible_terminal_controls() {
         };
         assert_eq!(context, &polylogue_render::terminal::escape(text));
     }
+}
+
+#[test]
+fn successful_native_context_output_produces_a_distinct_parsable_emission_receipt() {
+    for printed in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let startup = startup();
+        let payload = json!({"session_id":"emission-session","cwd":"/synthetic/project"});
+        let native = json!({"boot_id":"synthetic-boot"});
+        let invocation = append_to_spool(
+            dir.path(),
+            Harness::ClaudeCode,
+            "SessionStart",
+            &payload,
+            &native,
+            &startup,
+        )
+        .unwrap();
+        let recorder = EmissionRecorder {
+            dir: dir.path(),
+            harness: Harness::ClaudeCode,
+            event: "SessionStart",
+            invocation: Some(&invocation),
+            session: session_of(Harness::ClaudeCode, &payload, &startup),
+            native: &native,
+            startup: &startup,
+        };
+        let emitted = recorder.emit(
+            &["first-receipt".into(), "second:receipt".into()],
+            "context text is not an attribution marker",
+            |harness, event, text| {
+                assert_eq!(harness, Harness::ClaudeCode);
+                assert_eq!(event, "SessionStart");
+                assert_eq!(text, "context text is not an attribution marker");
+                let path = std::fs::read_dir(dir.path())
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .path();
+                assert_eq!(
+                    std::fs::read_to_string(path).unwrap().lines().count(),
+                    1,
+                    "emission was recorded before output succeeded"
+                );
+                printed
+            },
+        );
+        assert_eq!(emitted, printed);
+        let path = std::fs::read_dir(dir.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(polylogue_sources::hook_spool::open(&path).is_some());
+        let step = polylogue_sources::parse::run(
+            &polylogue_sources::hook_spool::HookSpool,
+            &mut polylogue_sources::hook_spool::ParserState::default(),
+            &bytes,
+            0,
+        )
+        .unwrap();
+        assert_eq!(step.output.events.len(), if printed { 2 } else { 1 });
+        assert!(step.output.messages.is_empty());
+        let claims = step
+            .output
+            .events
+            .iter()
+            .filter_map(polylogue_sources::hook_spool::context_emission)
+            .collect::<Vec<_>>();
+        if printed {
+            assert_eq!(claims.len(), 1);
+            assert_eq!(claims[0].invocation, invocation);
+            assert_eq!(
+                claims[0].session.to_string(),
+                "claude-code:emission-session"
+            );
+            assert_eq!(claims[0].hook_event, "SessionStart");
+            assert_eq!(
+                claims[0].deliveries,
+                ["delivery:first-receipt", "delivery:second:receipt"]
+            );
+            assert_ne!(step.output.events[1].data["event_id"], invocation);
+        } else {
+            assert!(claims.is_empty());
+        }
+    }
+}
+
+/// The newer Claude Code events (permission requests, failed stops,
+/// subagent starts, questions) are registered only for a version a probe
+/// confirmed; an unknown or older version gets the base events, and
+/// removal takes them out whatever version installed them.
+#[test]
+fn newer_events_are_registered_only_for_a_confirmed_version() {
+    use super::settings::HarnessVersion;
+    let newer = |settings: &Value| {
+        [
+            "PermissionRequest",
+            "StopFailure",
+            "SubagentStart",
+            "Elicitation",
+        ]
+        .iter()
+        .filter(|e| settings["hooks"].get(**e).is_some())
+        .count()
+    };
+    assert_eq!(
+        HarnessVersion::parse("2.1.316 (Claude Code)"),
+        HarnessVersion::parse("x 2.1.316")
+    );
+    assert!(HarnessVersion::parse("2.1.40") < HarnessVersion::parse("2.1.316"));
+    assert_eq!(HarnessVersion::parse("no version"), None);
+    let unknown = merge_hooks(json!({}), Harness::ClaudeCode, None, true).unwrap();
+    assert_eq!(newer(&unknown), 0);
+    let older = HarnessVersion::parse("2.1.40").unwrap();
+    let old = merge_hooks(json!({}), Harness::ClaudeCode, Some(&older), true).unwrap();
+    assert_eq!(newer(&old), 0);
+    assert!(old["hooks"].get("SessionStart").is_some());
+    let current = HarnessVersion::parse("2.1.316").unwrap();
+    let new = merge_hooks(json!({}), Harness::ClaudeCode, Some(&current), true).unwrap();
+    assert_eq!(newer(&new), 4);
+    assert_eq!(
+        new["hooks"]["PermissionRequest"][0]["hooks"][0]["command"],
+        "polylogue hook PermissionRequest"
+    );
+    // Installing again for an older version takes the newer events out.
+    let downgraded = merge_hooks(new.clone(), Harness::ClaudeCode, Some(&older), true).unwrap();
+    assert_eq!(newer(&downgraded), 0);
+    let removed = merge_hooks(new, Harness::ClaudeCode, None, false).unwrap();
+    assert!(removed["hooks"].as_object().unwrap().is_empty());
+}
+
+/// law: pl.live.never-mid-tool
+/// Pings and notices are claimed only after a tool result or at a prompt,
+/// never before a tool runs.
+#[test]
+fn the_mailbox_is_claimed_only_between_steps() {
+    for harness in [Harness::ClaudeCode, Harness::Codex] {
+        assert!(accepts_mail(harness, "PostToolUse"));
+        assert!(accepts_mail(harness, "UserPromptSubmit"));
+        assert!(!accepts_mail(harness, "PreToolUse"));
+        assert!(!accepts_mail(harness, "SessionStart"));
+        assert!(!accepts_mail(harness, "PermissionRequest"));
+    }
+    assert!(accepts_mail(Harness::GeminiCli, "AfterTool"));
+    assert!(!accepts_mail(Harness::GeminiCli, "BeforeTool"));
+    assert!(accepts_mail(Harness::Hermes, "pre_llm_call"));
+}
+
+/// A decision given ahead becomes Claude Code's permission decision; no
+/// decision prints nothing, so the harness's own prompt stands.
+#[test]
+fn a_standing_answer_becomes_the_permission_decision() {
+    assert_eq!(permission_output(&json!({"decision": null})), None);
+    assert_eq!(
+        permission_output(&json!({"decision": "approve", "text": null, "delivery": "d"})),
+        Some(
+            json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+            "decision": {"behavior": "allow"}}})
+        )
+    );
+    assert_eq!(
+        permission_output(&json!({"decision": "deny", "text": "not on main"})),
+        Some(
+            json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+            "decision": {"behavior": "deny", "message": "not on main"}}})
+        )
+    );
+}
+
+#[test]
+fn a_context_timeout_emits_an_unreferenced_notice_and_names_only_the_original_prepare() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    let dir = tempfile::tempdir().unwrap();
+    let startup = Startup::for_test(startup().engine, dir.path());
+    let listener = UnixListener::bind(Archive::at(dir.path()).socket()).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let peer = std::thread::spawn(move || {
+        let accept = || {
+            let until = std::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < until =>
+                    {
+                        std::thread::sleep(Duration::from_millis(1))
+                    }
+                    Err(error) => panic!("context exchange was not contacted: {error}"),
+                }
+            }
+        };
+        let mut stream = accept();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(&stream).read_line(&mut line).unwrap();
+        let prepare: Value = serde_json::from_str(&line).unwrap();
+        let failure = command_surface::Answer::<Value>::error(crate::protocol::failure(
+            "deadline_exceeded",
+            "fixture timeout",
+        ));
+        writeln!(stream, "{}", serde_json::to_string(&failure).unwrap()).unwrap();
+        let mut stream = accept();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        line.clear();
+        BufReader::new(&stream).read_line(&mut line).unwrap();
+        let outcome: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(outcome["op"], "delivery_event");
+        assert_eq!(outcome["delivery"], prepare["request_id"]);
+        assert_eq!(outcome["what"], "not_sent");
+        assert_eq!(outcome["detail"], "timeout");
+        writeln!(
+            stream,
+            "{}",
+            serde_json::to_string(&command_surface::Answer::ok(
+                json!({"queued":false,"preparation":"unconfirmed"})
+            ))
+            .unwrap()
+        )
+        .unwrap();
+    });
+    let (deliveries, text) = context(
+        &startup,
+        Ask::SessionStart {
+            cwd: "/synthetic/project".into(),
+            session: None,
+            source: StartSource::Startup,
+        },
+        None,
+    )
+    .unwrap();
+    peer.join().unwrap();
+    assert!(deliveries.is_empty());
+    assert!(text.contains("timed out"));
+    assert!(!text.contains("delivery:"));
 }

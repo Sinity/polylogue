@@ -1,7 +1,6 @@
 use super::*;
 
-/// Index text rows for `hashes`: vectors are stored only for texts the
-/// index holds.
+/// Index text rows for `hashes`.
 fn texts(archive: &Archive, hashes: &[&[u8]]) {
     let index =
         crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
@@ -212,4 +211,26 @@ fn pl_similarity_answers_only_inside_its_query() {
     assert!(rows[1]["s"].is_null());
     let outside = reader.query(sql, &[]).unwrap();
     assert!(outside[0]["s"].is_null());
+}
+
+#[test]
+fn purchased_vectors_are_kept_when_their_text_has_no_current_index_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let mut vectors = reader.vectors_writer().unwrap();
+    let key = "paid/synthetic/1/document/unit";
+    vectors
+        .put(
+            key,
+            &[Vector {
+                text_hash: vec![9; 32],
+                chunk: 0,
+                values: vec![1.0],
+            }],
+        )
+        .unwrap();
+    assert!(vectors.done(key).unwrap().contains(&vec![9; 32]));
+    assert_eq!(vectors.load(key).unwrap().vectors(), 1);
 }

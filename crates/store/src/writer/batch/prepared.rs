@@ -6,60 +6,128 @@ use super::*;
 pub(crate) struct PreparedRows {
     pub(in crate::writer) messages: Vec<PreparedMessage>,
     pub(in crate::writer) documents: Vec<PreparedDocument>,
+    pub(in crate::writer) fragments: crate::fragment::PreparedFragments,
     pub(in crate::writer) texts: HashMap<[u8; 32], Vec<u8>>,
     pub(in crate::writer) events: Vec<(String, Vec<u8>)>,
-    released: bool,
+    pub(in crate::writer) released: bool,
+    pub(in crate::writer) keys: Option<Arc<super::super::resolve::ResolvedKeys>>,
+    pub(in crate::writer) chain: Option<i64>,
+    pub(in crate::writer) choices: Option<super::super::resolve::versions::Choices>,
 }
 
 impl PreparedRows {
     pub(in crate::writer) fn validate(&self, output: &Output) -> Result<()> {
-        if !self.released
-            && (!self.messages.is_empty()
-                || !self.documents.is_empty()
-                || !self.events.is_empty()
-                || !self.texts.is_empty())
-        {
-            return Err(StoreError::Invalid("prepared rows are incomplete".into()));
+        self.fragments.validate(output)?;
+        for (&index, &receipt) in &output.message_receipts {
+            if index >= output.messages.len() || receipt == 0 || i64::try_from(receipt).is_err() {
+                return Err(StoreError::Invalid(
+                    "invalid message admission receipt".into(),
+                ));
+            }
         }
-        if self.released
-            && (self.messages.len() != output.messages.len()
-                || self.documents.len() != output.documents.len()
-                || self.documents.iter().zip(&output.documents).any(|(p, r)| {
-                    p.id != r.document.id || p.blocks.len() != r.document.blocks.len()
-                })
-                || self.events.len() != output.events.len()
-                || self
-                    .messages
-                    .iter()
-                    .zip(&output.messages)
-                    .any(|(p, r)| p.id != r.message.id || p.blocks.len() != r.message.blocks.len()))
+        if !self.released {
+            return Err(StoreError::Invalid("reading rows were not prepared".into()));
+        }
+        for (&index, projection) in &output.message_projections {
+            let row = output
+                .messages
+                .get(index)
+                .ok_or(polylogue_model::bundle::BundleError::InvalidBlockSelection)?;
+            projection.validate(row.message.blocks.len())?;
+        }
+        for (&index, identity) in &output.imported_events {
+            if index >= output.events.len() {
+                return Err(StoreError::Invalid("imported identity has no event".into()));
+            }
+            if output.events[index].session.is_none() && output.events[index].after.is_some() {
+                return Err(StoreError::Invalid(
+                    "an imported input event cannot follow a message".into(),
+                ));
+            }
+            identity
+                .validate()
+                .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        }
+        for (&index, id) in &output.event_ids {
+            if index >= output.events.len()
+                || id.is_empty()
+                || output
+                    .imported_events
+                    .get(&index)
+                    .is_some_and(|identity| &identity.id != id)
+            {
+                return Err(StoreError::Invalid(
+                    "event identity does not match its canonical fact".into(),
+                ));
+            }
+        }
+        for (receipts, length) in [
+            (&output.session_receipts, output.sessions.len()),
+            (&output.document_receipts, output.documents.len()),
+            (&output.link_receipts, output.links.len()),
+        ] {
+            for (&index, &receipt) in receipts {
+                if index >= length || receipt == 0 || i64::try_from(receipt).is_err() {
+                    return Err(StoreError::Invalid(
+                        "invalid canonical admission receipt".into(),
+                    ));
+                }
+            }
+        }
+        for (&index, &receipt) in &output.event_receipts {
+            if index >= output.events.len() || receipt == 0 || i64::try_from(receipt).is_err() {
+                return Err(StoreError::Invalid(
+                    "invalid canonical event admission receipt".into(),
+                ));
+            }
+        }
+        for (&index, &order) in &output.message_order {
+            if index >= output.messages.len() || i64::try_from(order).is_err() {
+                return Err(StoreError::Invalid("invalid imported message order".into()));
+            }
+        }
+        if self.messages.len() != output.messages.len()
+            || self.documents.len() != output.documents.len()
+            || self
+                .documents
+                .iter()
+                .zip(&output.documents)
+                .any(|(p, r)| p.id != r.document.id || p.blocks.len() != r.document.blocks.len())
+            || self.events.len() != output.events.len()
+            || self
+                .messages
+                .iter()
+                .zip(&output.messages)
+                .any(|(p, r)| p.id != r.message.id || p.blocks.len() != r.message.blocks.len())
         {
             return Err(StoreError::Invalid(
                 "prepared rows no longer match their parsed records".into(),
             ));
         }
+        for (index, prepared) in self.messages.iter().enumerate() {
+            prepared.projection.validate(prepared.blocks.len())?;
+            if prepared.projection.source_version.0 != prepared.hash {
+                return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
+            }
+            match output.message_projections.get(&index) {
+                Some(projection) if projection != &prepared.projection => {
+                    return Err(polylogue_model::bundle::BundleError::ProjectionConflict.into());
+                }
+                None if prepared.projection.block_count != prepared.blocks.len() as u64
+                    || prepared
+                        .projection
+                        .block_ordinals
+                        .iter()
+                        .copied()
+                        .ne(0..prepared.blocks.len() as u64) =>
+                {
+                    return Err(polylogue_model::bundle::BundleError::InvalidBlockSelection.into());
+                }
+                _ => {}
+            }
+        }
+        super::super::native_hook_fields::validate(output, &self.messages)?;
         Ok(())
-    }
-
-    pub(in crate::writer) fn keep_messages(&mut self, keep: &[bool]) {
-        keep_flagged(&mut self.messages, keep);
-    }
-
-    pub(in crate::writer) fn keep_documents(&mut self, keep: &[bool]) {
-        keep_flagged(&mut self.documents, keep);
-    }
-
-    pub(in crate::writer) fn keep_events(&mut self, keep: &[bool]) {
-        keep_flagged(&mut self.events, keep);
-    }
-}
-
-fn keep_flagged<T>(rows: &mut Vec<T>, keep: &[bool]) {
-    if rows.len() == keep.len() {
-        let mut positions = keep.iter();
-        rows.retain(|_| *positions.next().expect("one flag per row"));
-    } else {
-        rows.clear();
     }
 }
 
@@ -77,7 +145,13 @@ impl ParseStep {
             .output
             .messages
             .iter()
-            .map(|r| packer.pack_message(&r.message))
+            .enumerate()
+            .map(
+                |(index, r)| match self.output.message_projections.get(&index) {
+                    Some(projection) => packer.pack_projected_message(&r.message, projection),
+                    None => packer.pack_message(&r.message),
+                },
+            )
             .collect::<Result<Vec<_>>>()
         else {
             return;
@@ -98,6 +172,9 @@ impl ParseStep {
             .map(|event| packer.pack_event(event))
             .collect::<Result<Vec<_>>>()
         else {
+            return;
+        };
+        let Ok(fragments) = crate::fragment::PreparedFragments::prepare(&self.output) else {
             return;
         };
         let mut texts = HashMap::new();
@@ -128,9 +205,13 @@ impl ParseStep {
         self.prepared = PreparedRows {
             messages,
             documents,
+            fragments,
             texts,
             events,
             released: true,
+            keys: None,
+            chain: None,
+            choices: None,
         };
         for blocks in self
             .output
@@ -159,5 +240,106 @@ impl ParseStep {
         for event in &mut self.output.events {
             event.data = Json::Null;
         }
+    }
+}
+impl ParseStep {
+    pub(in crate::writer) fn message_position(&self, index: usize) -> Result<Option<i64>> {
+        let order =
+            match self.output.message_order.get(&index) {
+                Some(&order) => Some(order),
+                None => match self.order_from {
+                    Some(from) => Some(from.checked_add(index as u64).ok_or_else(|| {
+                        StoreError::Invalid("message reading order overflow".into())
+                    })?),
+                    None => self.repeats_whole_conversations.then_some(index as u64),
+                },
+            };
+        order
+            .map(|order| {
+                i64::try_from(order).map_err(|_| {
+                    StoreError::Invalid(
+                        "message reading order is outside the stored integer range".into(),
+                    )
+                })
+            })
+            .transpose()
+    }
+}
+
+impl ParseStep {
+    /// Restores complete domain facts for the primary producer from the worker's codecs.
+    pub fn complete_output(&self) -> Result<Output> {
+        self.prepared.validate(&self.output)?;
+        let mut output = self.output.clone();
+        for (row, prepared) in output.messages.iter_mut().zip(&self.prepared.messages) {
+            crate::writer::attachments::restore_values(&mut row.message.blocks, prepared)?;
+        }
+        for (row, prepared) in output.documents.iter_mut().zip(&self.prepared.documents) {
+            let mut blocks = std::mem::take(&mut row.document.blocks);
+            crate::writer::attachments::restore_values(&mut blocks, prepared)?;
+            row.document = crate::encoding::unpack_json(&prepared.fields)?;
+            row.document.blocks = blocks;
+        }
+        for (event, (_, data)) in output.events.iter_mut().zip(&self.prepared.events) {
+            event.data = crate::encoding::unpack_json(data)?;
+        }
+        Ok(output)
+    }
+}
+impl ParseStep {
+    /// Native identities are derived once from the complete reading. Confirmed
+    /// fact subsets and portable imports retain their supplied canonical IDs.
+    pub(crate) fn event_identities(&self, input: &str, chain: i64) -> Result<Vec<String>> {
+        self.prepared.validate(&self.output)?;
+        if let Some(ids) = &self.confirmed_event_ids {
+            if ids.len() != self.output.events.len()
+                || ids.iter().any(String::is_empty)
+                || self
+                    .output
+                    .event_ids
+                    .iter()
+                    .any(|(&index, id)| ids.get(index) != Some(id))
+                || self
+                    .output
+                    .imported_events
+                    .iter()
+                    .any(|(&index, identity)| ids.get(index) != Some(&identity.id))
+            {
+                return Err(StoreError::Invalid(
+                    "confirmed event identities do not match their canonical facts".into(),
+                ));
+            }
+            return Ok(ids.clone());
+        }
+        let mut occurrences = std::collections::BTreeMap::<(u64, u64), u64>::new();
+        self.output
+            .events
+            .iter()
+            .zip(&self.prepared.events)
+            .enumerate()
+            .map(|(index, (event, packed))| {
+                let occurrence = if event.session.is_none() {
+                    let next = occurrences
+                        .entry(event.range.unwrap_or_default())
+                        .or_default();
+                    let current = *next;
+                    *next = next.checked_add(1).ok_or_else(|| {
+                        StoreError::Invalid(
+                            "event occurrence is outside the stored integer range".into(),
+                        )
+                    })?;
+                    current
+                } else {
+                    0
+                };
+                if let Some(id) = self.output.event_ids.get(&index) {
+                    return Ok(id.clone());
+                }
+                if let Some(identity) = self.output.imported_events.get(&index) {
+                    return Ok(identity.id.clone());
+                }
+                super::super::resolve::event_id(input, chain, event, &packed.0, occurrence)
+            })
+            .collect()
     }
 }

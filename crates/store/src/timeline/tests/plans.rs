@@ -43,8 +43,8 @@ fn dated_pages_seek_time_session_and_model_indexes_without_sorting_the_selection
     }
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let day = LogicalDay::named("UTC", 240).unwrap();
-    let bounds = Some(day.day("2024-03-31".parse().unwrap()));
+    let day = fixture_clock("UTC", "04:00:00");
+    let bounds = Some(crate::calendar::range(&day.day, "2024-03-31".parse().unwrap()).unwrap());
     let plans = plan(&r, &all(None, false, false), bounds, None);
     assert_eq!(plans.len(), 3);
     for (plan, index) in plans.iter().zip(["message_at", "event_at"]) {
@@ -139,7 +139,7 @@ fn selected_session_pages_merge_equal_times_and_continue_through_undated_rows() 
     }
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let day = LogicalDay::named("UTC", 240).unwrap();
+    let day = fixture_clock("UTC", "04:00:00");
     for usage in [
         crate::measure::Selection {
             sessions: Some(vec![sessions[1], sessions[0], sessions[1]]),
@@ -246,7 +246,7 @@ fn combined_response_pages_work_while_the_index_is_deferred() {
         model: Some("synthetic"),
         ..all(None, false, false)
     };
-    let day = LogicalDay::named("UTC", 240).unwrap();
+    let day = fixture_clock("UTC", "04:00:00");
     let result = page(&r, &day, &selection, None, 50).unwrap();
     assert_eq!(result["rows"].as_array().unwrap().len(), 1);
     assert_eq!(result["rows"][0]["id"], "codex:selected:response");

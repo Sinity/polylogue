@@ -6,6 +6,8 @@
 //! a listed example that starts to match fails the test, so the list is
 //! removed from as features land.
 
+use super::fixture_context;
+use super::run;
 use crate::daemon::query::*;
 use polylogue_testkit::{Morrow, Set, morrow_dir, short};
 use std::collections::BTreeMap;
@@ -29,8 +31,9 @@ const GAPS: &[(&str, &str)] = &[
 
 fn archive_with_notes() -> Morrow {
     use crate::daemon::service::ArchiveMode;
-    use crate::daemon::{Request, Response, service};
-    use polylogue_model::{Author, Block, NewNote, NoteKind, Target};
+    use crate::daemon::{Request, service};
+    use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+    use polylogue_model::{Block, Reference};
     use polylogue_testkit::session;
 
     let archive = Morrow::build(Set::Main);
@@ -51,50 +54,54 @@ fn archive_with_notes() -> Morrow {
             .id
     };
     let mut runtime =
-        service::start(&archive.root, archive.config(), ArchiveMode::Standalone).unwrap();
+        crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
+            .unwrap();
     for (id, kind, key, value, targets) in [
         (
             "morrow-project",
-            NoteKind::Tag,
+            AssertionKind::Tag,
             Some("project:morrow"),
             None,
             [1, 2, 4, 5, 6]
                 .into_iter()
-                .map(|n| Target::Session(session(n)))
+                .map(|n| Reference::Session(session(n)))
                 .collect(),
         ),
         (
             "morrow-research",
-            NoteKind::Tag,
+            AssertionKind::Tag,
             Some("research"),
             None,
-            vec![Target::Session(session(7))],
+            vec![Reference::Session(session(7))],
         ),
         (
             "morrow-decision",
-            NoteKind::Decision,
+            AssertionKind::Decision,
             None,
             Some("decided: chrono, not time"),
-            vec![Target::Message(decision)],
+            vec![Reference::Message(decision)],
         ),
     ] {
         let response = service::handle(
-            Request::AddNote {
+            Request::Assert {
                 request_id: id.into(),
-                note: NewNote {
+                assertions: vec![NewAssertion {
                     kind,
                     key: key.map(Into::into),
-                    value: value.map(Into::into),
-                    author: Author::Operator,
-                    targets,
-                    relations: vec![],
-                    revises: None,
+                    value: value.map(|value| serde_json::json!(value)),
+                    links: targets
+                        .into_iter()
+                        .map(|reference| NewAssertionLink {
+                            role: LinkRole::About,
+                            reference,
+                        })
+                        .collect(),
                     valid_until: None,
-                },
+                }],
             },
             &runtime.daemon,
         );
-        assert!(matches!(response, Response::Ok { .. }), "{response:?}");
+        crate::test_answers::ok(response);
     }
     runtime.shutdown().unwrap();
     archive
@@ -107,9 +114,9 @@ fn ask(text: &str) -> Ask<'_> {
         page_size: Some(1000),
         why: false,
         session: None,
-        now: NOW,
-        day: Some(LogicalDay::named("Europe/Warsaw", 240).unwrap()),
+        context: fixture_context(NOW, "Europe/Warsaw", 240),
         embeddings: false,
+        ranking_identity: None,
         near: None,
         fields: &[],
     }
@@ -150,10 +157,14 @@ fn compare(
 ) -> Result<(), String> {
     let v = match (got, want) {
         (Err(f), _) if want.get("outcome") == Some(&json!("error")) => {
-            let _ = f;
+            if number == "35" {
+                let detail =
+                    super::query_failure_detail(f, query_language::ErrorKind::UnknownField, 0);
+                super::assert_same_question(detail["suggestion"].as_str().unwrap(), "repo:morrow");
+            }
             return Ok(());
         }
-        (Err(f), _) => return Err(format!("error {} {}", f.kind, f.message)),
+        (Err(f), _) => return Err(format!("error {} {}", f.code(), f.message)),
         (Ok(v), _) => v,
     };
     let differ = |got: String, want: String| {
@@ -172,10 +183,10 @@ fn compare(
             n.to_string(),
         ),
         Value::Array(items) if number == "31" => {
-            use polylogue_model::{Block, Target};
+            use polylogue_model::{Block, Reference};
             let mut got: Vec<_> = rows(v)
                 .iter()
-                .map(|note| json!([note["value"], note["target"]]).to_string())
+                .map(|note| json!([note["value"], note["about"]]).to_string())
                 .collect();
             let mut wanted = Vec::new();
             for item in items {
@@ -198,7 +209,8 @@ fn compare(
                         })
                     })
                     .ok_or_else(|| format!("decision target prompt missing in #{number}"))?;
-                wanted.push(json!([item[0], Target::Message(message.id).to_string()]).to_string());
+                wanted
+                    .push(json!([item[0], Reference::Message(message.id).to_string()]).to_string());
             }
             got.sort();
             wanted.sort();
@@ -327,6 +339,21 @@ fn codex_message_counts_include_script_commands() {
     );
 }
 
+fn example_cases(number: &str, text: &str, want: &Value) -> Vec<(String, Value)> {
+    match (number, want) {
+        // The published model example also specifies two alternate scopes.
+        ("29", Value::Object(outcomes)) => vec![
+            (text.to_owned(), outcomes["default"].clone()),
+            (format!("{text} kind:*"), outcomes["kind:*"].clone()),
+            (
+                "model:unknown".to_owned(),
+                outcomes["model:unknown"].clone(),
+            ),
+        ],
+        _ => vec![(text.to_owned(), want.clone())],
+    }
+}
+
 #[test]
 fn the_query_examples_match_on_the_real_archive() {
     let w = archive_with_notes();
@@ -339,15 +366,7 @@ fn the_query_examples_match_on_the_real_archive() {
     let mut wrong = Vec::new();
     for (key, want) in expected["queries"].as_object().unwrap() {
         let (number, text) = key.split_once(' ').unwrap();
-        // 29 lists its variants: the example, with `kind:*`, and `model:unknown`.
-        let cases: Vec<(String, Value)> = match (number, want) {
-            ("29", Value::Object(o)) => vec![
-                (text.to_owned(), o["default"].clone()),
-                (format!("{text} kind:*"), o["kind:*"].clone()),
-                ("model:unknown".to_owned(), o["model:unknown"].clone()),
-            ],
-            _ => vec![(text.to_owned(), want.clone())],
-        };
+        let cases = example_cases(number, text, want);
         let mut failures = Vec::new();
         for (q, want) in &cases {
             if let Err(why) = compare(&r, number, &run(&r, ask(q)), want) {
@@ -379,44 +398,66 @@ fn pages_of_every_size_concatenate_to_the_whole_answer() {
     )
     .unwrap();
     let mut wrong = Vec::new();
-    let mut paged = 0;
-    for key in expected["queries"].as_object().unwrap().keys() {
-        let text = key.split_once(' ').unwrap().1;
-        let Ok(whole) = run(&r, ask(text)) else {
-            continue;
-        };
-        let want = rows(&whole);
-        for size in 1..=want.len() as u64 + 1 {
-            let mut got = Vec::new();
-            let mut cursor: Option<String> = None;
-            loop {
-                let page = run(
-                    &r,
-                    Ask {
-                        page_size: Some(size),
-                        cursor: cursor.as_deref(),
-                        ..ask(text)
-                    },
-                )
-                .unwrap_or_else(|f| panic!("{key} by {size}: {} {}", f.kind, f.message));
-                if page["count"] != whole["count"] {
-                    wrong.push(format!(
-                        "{key} by {size}: count {} of {}",
-                        page["count"], whole["count"]
-                    ));
+    for (key, expected) in expected["queries"].as_object().unwrap() {
+        let (number, text) = key.split_once(' ').unwrap();
+        for (text, expected) in example_cases(number, text, expected) {
+            let whole = match run(&r, ask(&text)) {
+                Err(failure) if expected.get("outcome") == Some(&json!("error")) => {
+                    compare(&r, number, &Err(failure), &expected)
+                        .unwrap_or_else(|why| panic!("{key}: {why}"));
+                    continue;
                 }
-                got.extend(rows(&page).iter().cloned());
-                cursor = page["next"].as_str().map(str::to_owned);
-                if cursor.is_none() {
-                    break;
+                // GAPS documents example 21's unsupported sequence search words.
+                // Its syntax has no executable answer to page yet.
+                Err(failure) if number == "21" && GAPS.iter().any(|(gap, _)| *gap == number) => {
+                    assert_eq!(failure.code(), "invalid_query", "{key}: {failure:?}");
+                    assert!(
+                        failure.message.contains("for tool calls use"),
+                        "{key}: {failure:?}"
+                    );
+                    continue;
                 }
-            }
-            if got != want {
-                wrong.push(format!("{key} by {size}: the pages differ from the rows"));
+                Err(failure) => panic!("{key}: {} {}", failure.code(), failure.message),
+                Ok(whole) => {
+                    assert_ne!(
+                        expected.get("outcome"),
+                        Some(&json!("error")),
+                        "{key}: the published refusal unexpectedly succeeded"
+                    );
+                    whole
+                }
+            };
+            let want = rows(&whole);
+            for size in 1..=want.len() as u64 + 1 {
+                let mut got = Vec::new();
+                let mut cursor: Option<String> = None;
+                loop {
+                    let page = run(
+                        &r,
+                        Ask {
+                            page_size: Some(size),
+                            cursor: cursor.as_deref(),
+                            ..ask(&text)
+                        },
+                    )
+                    .unwrap_or_else(|f| panic!("{key} by {size}: {} {}", f.code(), f.message));
+                    if page["count"] != whole["count"] {
+                        wrong.push(format!(
+                            "{key} by {size}: count {} of {}",
+                            page["count"], whole["count"]
+                        ));
+                    }
+                    got.extend(rows(&page).iter().cloned());
+                    cursor = page["next"].as_str().map(str::to_owned);
+                    if cursor.is_none() {
+                        break;
+                    }
+                }
+                if got != want {
+                    wrong.push(format!("{key} by {size}: the pages differ from the rows"));
+                }
             }
         }
-        paged += 1;
     }
-    assert!(paged > 30, "{paged} examples paged");
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }

@@ -21,15 +21,16 @@
     "events": [
       {
         "data": {
-          "name": "Synthetic rich blocks",
-          "uuid": "native-rich-blocks"
+          "uuid": "native-rich-blocks",
+          "name": "Synthetic rich blocks"
         },
         "kind": "conversation_settings",
         "range": [
           3,
           1768
         ],
-        "session": "claude-ai:native-rich-blocks"
+        "session": "claude-ai:native-rich-blocks",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -60,7 +61,20 @@
           ],
           "id": "claude-ai:assistant-1",
           "role": "assistant",
-          "session": "claude-ai:native-rich-blocks"
+          "session": "claude-ai:native-rich-blocks",
+          "attrs": {
+            "content": [
+              {
+                "position": 2,
+                "fields": {
+                  "id": "toolu-1",
+                  "name": "web_search"
+                }
+              }
+            ]
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -83,13 +97,47 @@
                 "kind": "error"
               },
               "output": "first line\nsecond line",
-              "type": "tool_result"
+              "type": "tool_result",
+              "data": {
+                "structured_content": null,
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "first line"
+                  },
+                  {
+                    "type": "image",
+                    "source": {
+                      "type": "base64",
+                      "media_type": "image/png",
+                      "data": "aW1hZ2U="
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "second line"
+                  }
+                ]
+              }
             }
           ],
           "id": "claude-ai:result-1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-ai:native-rich-blocks"
+          "session": "claude-ai:native-rich-blocks",
+          "attrs": {
+            "content": [
+              {
+                "position": 0,
+                "fields": {
+                  "tool_use_id": "toolu-1",
+                  "is_error": true
+                }
+              }
+            ]
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -112,13 +160,38 @@
                 "kind": "ok"
               },
               "output": null,
-              "type": "tool_result"
+              "type": "tool_result",
+              "data": {
+                "structured_content": null,
+                "content": [
+                  {
+                    "type": "image",
+                    "source": {
+                      "type": "base64",
+                      "media_type": "image/png",
+                      "data": "aW1hZ2U="
+                    }
+                  }
+                ]
+              }
             }
           ],
           "id": "claude-ai:result-2",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-ai:native-rich-blocks"
+          "session": "claude-ai:native-rich-blocks",
+          "attrs": {
+            "content": [
+              {
+                "position": 0,
+                "fields": {
+                  "tool_use_id": "toolu-2"
+                }
+              }
+            ]
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -130,11 +203,31 @@
             {
               "text": "Complete.",
               "type": "text"
+            },
+            {
+              "type": "other",
+              "type_name": "token_budget",
+              "data": {
+                "type": "token_budget",
+                "remaining": 5
+              }
             }
           ],
           "id": "claude-ai:assistant-2",
           "role": "assistant",
-          "session": "claude-ai:native-rich-blocks"
+          "session": "claude-ai:native-rich-blocks",
+          "attrs": {
+            "content": [
+              {
+                "position": 1,
+                "fields": {
+                  "remaining": 5
+                }
+              }
+            ]
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       }
@@ -146,7 +239,8 @@
         "title": {
           "source": "generated",
           "text": "Synthetic rich blocks"
-        }
+        },
+        "started_quality": "unknown"
       }
     ]
   }

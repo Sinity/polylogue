@@ -1,30 +1,23 @@
-//! Polylogue on Sinex. In `standalone` mode, the default, this crate is not
-//! used. In `primary` mode Sinex holds the archive and Polylogue is one of its
-//! producers:
-//!
-//! - each step of a captured file's appended bytes is a part: a material of
-//!   its real input (origin, path, host), a growing file a chain of parts,
-//!   named with the Polylogue parser that reads it ([`parts`]);
-//! - a look at a file that found no new bytes, each request a person or agent
-//!   makes and each excision is a small register material, with a typed event
-//!   for notes, settings, kept results, deliveries and excisions
-//!   ([`register`]);
-//! - parsed sessions, messages, tool calls and turns are events keyed by
-//!   Polylogue's IDs and anchored at their records ([`sessions`]).
-//!
-//! The local register and index are written only after Sinex acknowledged
-//! what they describe, and are rebuilt from what Sinex holds.
+//! Primary mode: captured bytes and complete product facts go to Sinex
+//! through its ingress, and one confirmed-stream consumer writes the local
+//! index. Captures and authored writes wait in the producer spool through
+//! outages and retries, under their original identities.
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 mod client;
+mod context;
+pub use context::{ContextFailure, ContextFailureKind, ResolvedContext};
+pub use sinex_protocol::PublicInterruptBudget;
 pub mod kinds;
-mod parts;
-mod register;
-mod replay;
-pub use replay::Replay;
-mod sessions;
+mod material;
+pub(crate) mod native;
+mod producer;
+mod products;
+mod spool;
+mod status;
+pub use status::Status;
 
 use client::Client;
 
@@ -34,6 +27,12 @@ pub enum Error {
     Unreachable(String),
     #[error("Sinex refused {name}: {reason}")]
     Refused { name: String, reason: String },
+    #[error("Sinex recorded different logical bytes for {frame}")]
+    ReceiptConflict {
+        frame: String,
+        offered_hash: String,
+        receipt: Box<sinex_protocol::Acknowledgment>,
+    },
     #[error("{0}")]
     Invalid(String),
     #[error(transparent)]
@@ -47,6 +46,15 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// This adapter declaration is installed by the owner, never self-registered
+/// from a producer's requested permissions.
+pub fn source_reference() -> sinex_protocol::SourceRef {
+    sinex_protocol::SourceRef {
+        name: "polylogue".into(),
+        version: 5,
+    }
+}
 
 impl From<Error> for polylogue_store::StoreError {
     fn from(error: Error) -> Self {
@@ -96,38 +104,35 @@ fn default_producer() -> String {
     "polylogue".into()
 }
 
-impl Config {
-    pub fn path() -> PathBuf {
-        let config = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-            .unwrap_or_else(|| PathBuf::from("."));
-        config.join("polylogue/sinex.toml")
-    }
-
-    /// The configuration, or `None` when there is no file (standalone). A
-    /// file that does not parse is an error the caller shows; it never
-    /// switches the mode silently.
-    pub fn load() -> Result<Option<Self>> {
-        Self::load_from(&Self::path())
-    }
-
-    /// Reads one explicitly selected configuration file.
-    pub fn load_from(path: &Path) -> Result<Option<Self>> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => {
-                let config: Self = toml::from_str(&text)
-                    .map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))?;
-                config
-                    .check()
-                    .map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))?;
-                Ok(Some(config))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(std::io::Error::new(e.kind(), format!("{}: {e}", path.display())).into()),
+/// Authentication resolved once by the binary's configuration loader. This
+/// value never reads the password file or environment during connection.
+#[derive(Clone)]
+pub enum Authentication {
+    Anonymous,
+    Password(String),
+    Unavailable { reason: String },
+}
+impl std::fmt::Debug for Authentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Anonymous => f.write_str("Anonymous"),
+            Self::Password(_) => f.write_str("Password([redacted])"),
+            Self::Unavailable { reason } => f
+                .debug_struct("Unavailable")
+                .field("reason", reason)
+                .finish(),
         }
     }
-
+}
+impl Config {
+    /// Parse and validate supplied bytes. File selection and credential reads
+    /// belong to the startup boundary.
+    pub fn parse(text: &str) -> Result<Self> {
+        let config: Self =
+            toml::from_str(text).map_err(|error| Error::Invalid(error.to_string()))?;
+        config.check().map_err(Error::Invalid)?;
+        Ok(config)
+    }
     /// A password in the URL would sit in the configuration file, and the
     /// NATS client ignores it there, so it is refused.
     fn check(&self) -> std::result::Result<(), String> {
@@ -143,73 +148,114 @@ impl Config {
         }
         Ok(())
     }
-
-    /// The NATS user and password, read from `password_file` when one is set.
-    /// The file's trailing whitespace is not part of the password.
-    pub(crate) fn credentials(&self) -> Result<Option<(String, String)>> {
-        let Some(path) = &self.password_file else {
-            return Ok(None);
-        };
-        let password = std::fs::read_to_string(path)
-            .map_err(|e| Error::Invalid(format!("password file {}: {e}", path.display())))?;
-        Ok(Some((
-            self.producer.clone(),
-            password.trim_end().to_owned(),
-        )))
-    }
 }
 
 /// A connection to Sinex as the producer `config.producer`, used by the
 /// writer thread and the loop. One frame is in flight at a time.
 pub struct Sinex {
+    config: Config,
+    authentication: Authentication,
+    health: Arc<Mutex<status::Health>>,
+    spool: Arc<Mutex<spool::Spool>>,
     runtime: tokio::runtime::Runtime,
     /// `None` only while dropping.
     client: Mutex<Option<Client>>,
     /// This host's name, for the register materials of requests.
     host: String,
-    /// Where the sessions last sent stand, beside the index they were read
-    /// from ([`sessions`]).
-    sent: PathBuf,
 }
 
 impl Sinex {
-    /// Connects to Sinex for the archive at `root`.
-    pub fn connect(config: &Config, root: &Path) -> Result<Self> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
+    /// Opens the durable producer spool before making any network connection.
+    /// Capture can prepare writes while Sinex is unavailable.
+    pub fn open(config: &Config, authentication: &Authentication, host: &str) -> Result<Self> {
+        if host.trim().is_empty() {
+            return Err(Error::Invalid(
+                "a configured host identity is required".into(),
+            ));
+        }
+        // Backup control must remain responsive while the synchronous archive
+        // loop is idle. One runtime worker also drives the NATS connection.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
             .enable_all()
             .build()?;
-        let client = runtime.block_on(Client::connect(config))?;
-        let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
-            .map(|h| h.trim().to_owned())
-            .unwrap_or_default();
+        let spool = Arc::new(Mutex::new(spool::Spool::open(
+            &config.store,
+            &config.producer,
+        )?));
         Ok(Self {
+            config: config.clone(),
+            authentication: authentication.clone(),
+            health: Arc::new(Mutex::new(status::Health::default())),
+            spool,
             runtime,
-            client: Mutex::new(Some(client)),
-            host,
-            sent: root.join("sinex-sent.json"),
+            client: Mutex::new(None),
+            host: host.to_owned(),
         })
     }
 
-    /// Runs `work` on the connection; frames never interleave.
-    fn with<T>(&self, work: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
+    /// Opens this producer and requires Sinex to answer immediately.
+    pub fn connect(config: &Config, authentication: &Authentication, host: &str) -> Result<Self> {
+        let sinex = Self::open(config, authentication, host)?;
+        sinex.read_client(async |_client| Ok(()))?;
+        Ok(sinex)
+    }
+
+    /// Reads and connection checks own their outcome independently of publication.
+    fn read_client<T>(&self, work: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
+        let result = self.client_operation(work);
+        if let Ok(mut health) = self.health.lock() {
+            health.error = result.as_ref().err().map(ToString::to_string);
+        }
+        result
+    }
+
+    /// Executes one client operation under the connection lock; frames never interleave.
+    fn client_operation<T>(&self, work: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
         let mut client = self
             .client
             .lock()
             .map_err(|_| Error::Invalid("the Sinex connection panicked".into()))?;
-        let client = client
-            .as_mut()
-            .ok_or_else(|| Error::Invalid("the Sinex connection is closed".into()))?;
-        self.runtime.block_on(work(client))
+        if client.is_none() {
+            let connected = self.runtime.block_on(Client::connect(
+                &self.config,
+                &self.authentication,
+                Arc::clone(&self.spool),
+                Arc::clone(&self.health),
+            ));
+            match connected {
+                Ok(connected) => *client = Some(connected),
+                Err(error) => {
+                    if let Ok(mut health) = self.health.lock() {
+                        health.reachable = Some(!matches!(error, Error::Unreachable(_)));
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        let result = self
+            .runtime
+            .block_on(work(client.as_mut().expect("connected client")));
+        if let Ok(mut health) = self.health.lock() {
+            health.reachable = Some(!matches!(result, Err(Error::Unreachable(_))));
+        }
+        if matches!(result, Err(Error::Unreachable(_))) {
+            // The immutable spool keeps every unacknowledged frame. A fresh
+            // connection retries those identities after the next successful hello.
+            let _inside = self.runtime.enter();
+            client.take();
+        }
+        result
     }
 
     /// Sinex's store root.
     pub fn store_root(&self) -> Result<PathBuf> {
-        self.with(async |client| Ok(client.store_root.clone()))
+        Ok(self.config.store.clone())
     }
 
     /// Whether Sinex answers.
     pub fn reachable(&self) -> Result<()> {
-        self.with(async |client| {
+        self.read_client(async |client| {
             client
                 .recorded(&["polylogue-reachable".into()])
                 .await
@@ -230,39 +276,167 @@ impl Drop for Sinex {
 }
 
 impl polylogue_store::primary::Sinex for Sinex {
-    fn send_part(
+    fn raw_acquisition_cursor(
         &self,
-        part: &polylogue_store::primary::Part,
-        bytes: &mut dyn std::io::Read,
-    ) -> polylogue_store::Result<String> {
-        Ok(self.with(async |client| parts::send(client, part, bytes).await)?)
+        query: &polylogue_store::primary::RawAcquisitionQuery,
+    ) -> polylogue_store::Result<Option<polylogue_store::primary::RawAcquisitionCursor>> {
+        Ok(self.raw_acquisition_cursor(query)?)
     }
-
-    fn send_change(
+    fn prepare_input_group(
         &self,
-        change: &polylogue_store::primary::RegisterChange,
-    ) -> polylogue_store::Result<String> {
-        Ok(self.with(async |client| register::send(client, &self.host, change).await)?)
+        plan: &polylogue_store::primary::CapturePlan,
+        members: &mut polylogue_store::primary::CaptureMembers<'_>,
+    ) -> polylogue_store::Result<polylogue_store::primary::CaptureReceipt> {
+        Ok(self.prepare_input_group(plan, members)?)
     }
-
-    fn excise(&self, materials: &[String]) -> polylogue_store::Result<()> {
-        Ok(self.with(async |client| client.excise(materials).await)?)
+    fn pending_source(
+        &self,
+        source: &polylogue_store::primary::SourceSelector,
+        reading_version: &str,
+    ) -> polylogue_store::Result<polylogue_store::primary::PendingSource> {
+        Ok(self.pending_source(source, reading_version)?)
     }
-
-    fn held(&self, after: i64) -> polylogue_store::Result<Vec<polylogue_store::primary::Held>> {
-        Ok(self.with(async |client| {
-            let page = client.materials(after).await?;
-            let store = hashed_blobs::Reader::new(client.store_root.clone(), vec![]);
-            page.into_iter()
-                .map(|held| parts::held(&store, held))
-                .collect::<Result<Vec<_>>>()
-        })?)
+    fn capture_body(
+        &self,
+        identity: &str,
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedBody> {
+        Ok(self.capture_body(identity)?)
     }
-
-    fn send_sessions(&self, reads: &polylogue_store::ReadPool) -> polylogue_store::Result<()> {
-        Ok(sessions::send(self, reads)?)
+    fn prepare_input(
+        &self,
+        captured: &polylogue_store::primary::CapturedInput,
+        body: polylogue_store::primary::PreparedBody,
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedInput> {
+        Ok(self.prepare_input(captured, body)?)
+    }
+    fn prepare_blob(
+        &self,
+        hash: polylogue_model::BlobHash,
+        length: u64,
+        body: polylogue_store::primary::PreparedBody,
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+        Ok(self.prepare_blob(hash, length, body)?)
+    }
+    fn pending_group_headers(
+        &self,
+        group: &str,
+        after: Option<u64>,
+        limit: usize,
+    ) -> polylogue_store::Result<polylogue_store::primary::PendingGroupPage> {
+        Ok(self.pending_group_headers(group, after, limit)?)
+    }
+    fn pending_captures(
+        &self,
+    ) -> polylogue_store::Result<Vec<polylogue_store::primary::PendingCapture>> {
+        Ok(self.pending_captures()?)
+    }
+    fn capture(
+        &self,
+        identity: &str,
+    ) -> polylogue_store::Result<polylogue_store::primary::Capture> {
+        Ok(self.capture(identity)?)
+    }
+    fn complete_captures(
+        &self,
+        identities: &[String],
+        products: &[polylogue_store::primary::ProductWrite],
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+        Ok(self.complete_captures(identities, products)?)
+    }
+    fn prepare_products(
+        &self,
+        products: &[polylogue_store::primary::ProductWrite],
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+        Ok(self.prepare_products(products)?)
+    }
+    fn prepare_export_products(
+        &self,
+        key: &polylogue_store::primary::ExportReadingKey,
+        products: &[polylogue_store::primary::ProductWrite],
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+        Ok(self.prepare_export_products(key, products)?)
+    }
+    fn visit_pending_export_readings(
+        &self,
+        key: &polylogue_store::primary::ExportReadingKey,
+        visit: &mut dyn FnMut(
+            &polylogue_store::primary::CapturedReading,
+        ) -> polylogue_store::Result<()>,
+    ) -> polylogue_store::Result<()> {
+        Ok(self.visit_pending_export_readings(key, visit)?)
+    }
+    fn prepare_request(
+        &self,
+        request: &polylogue_model::authored::PreparedRequest,
+    ) -> polylogue_store::Result<polylogue_model::user::UserOutcome> {
+        Ok(self.prepare_request(request)?)
+    }
+    fn visit_pending_requests(
+        &self,
+        visit: &mut dyn FnMut(
+            &polylogue_model::authored::PendingAuthored,
+        ) -> polylogue_store::Result<()>,
+    ) -> polylogue_store::Result<()> {
+        self.visit_pending_requests(visit)
+    }
+    fn visit_pending_blobs(
+        &self,
+        visit: &mut dyn FnMut(&polylogue_store::NewBlob) -> polylogue_store::Result<()>,
+    ) -> polylogue_store::Result<()> {
+        self.visit_pending_blobs(visit)
+    }
+    fn visit_named_products(
+        &self,
+        selector: &polylogue_store::primary::NamedProductSelector,
+        visit: &mut dyn FnMut(&polylogue_store::primary::Product) -> polylogue_store::Result<()>,
+    ) -> polylogue_store::Result<()> {
+        Ok(self.visit_named_products(selector, visit)?)
+    }
+    fn prepare_named_products(
+        &self,
+        identity: &str,
+        products: &[polylogue_store::primary::ProductWrite],
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+        Ok(self.prepare_named_products(identity, products)?)
+    }
+    fn prepare_reading(
+        &self,
+        root: &str,
+        key: &polylogue_store::primary::ExportReadingKey,
+        visit: &mut polylogue_store::primary::ReadingProducts<'_>,
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+        self.prepare_reading(root, key, visit)
+    }
+    fn confirmed(
+        &self,
+        state: &polylogue_store::primary::ReplayState,
+        cache: &str,
+    ) -> polylogue_store::Result<Vec<polylogue_store::primary::Confirmed>> {
+        // Send durable preparations before reading the page that can confirm
+        // them. The follower owns both this read and its later acknowledgment.
+        self.send_pending();
+        Ok(self.read_client(async |client| client.confirmed(state, cache).await)?)
+    }
+    fn acknowledge(
+        &self,
+        state: &polylogue_store::primary::ReplayState,
+    ) -> polylogue_store::Result<()> {
+        Ok(self.read_client(async |client| client.acknowledge(state).await)?)
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+/// Source-copy custody is scoped to the authenticated receiving producer.
+fn material_id(producer: &str, frame: &str) -> sinex_model::MaterialId {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"polylogue-material-1\0");
+    hash.update(&(producer.len() as u64).to_le_bytes());
+    hash.update(producer.as_bytes());
+    hash.update(frame.as_bytes());
+    let hash = hash.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash.as_bytes()[..16]);
+    sinex_model::MaterialId(uuid::Uuid::from_bytes(bytes))
+}

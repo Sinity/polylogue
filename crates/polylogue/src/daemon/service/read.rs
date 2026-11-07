@@ -1,1064 +1,954 @@
-//! Reading a session, document or event, in pages on one Reader. Masking
-//! state at page ends is cached (`page_ends`) so a later page need not
-//! replay the messages before it.
-use super::{Response, error, store_error};
-use crate::daemon::request::References;
-use base64::Engine as _;
-use polylogue_model::SessionId;
-use polylogue_render::model_pages::{PageEnd, Pager, Position};
-use polylogue_store::Reader;
-use serde::{Deserialize, Serialize};
-use std::ops::ControlFlow;
+//! Paged reads. A session, a message or a message range is read over the
+//! session item index (`session`); documents, events, authored records
+//! and query rows are read row by row, resumed by a row's order values.
+//! Session and query pages queue their first-page run without waiting for a write.
+//! Exact request and raw run reads retain the execution before exposing its reference.
+use super::{Daemon, Failure, error};
+use crate::daemon::Request;
+use command_surface::Answer;
+use polylogue_model::{bundle::ReadSnapshot, read::*};
+use polylogue_render::pager::{PageBuilder, PageError, Push};
+use polylogue_store::{Reader, selection::PreparedSelection};
+use query_language::cursor::OrderPosition;
+use serde_json::Value;
+use std::{collections::BTreeMap, io::Write, num::NonZeroU64, ops::ControlFlow, sync::Arc};
 
-const CURSOR_VERSION: u8 = 6;
+mod attachment_evidence;
+mod authored;
+mod backward;
+mod before;
+mod blobs;
+mod documents;
+mod evidence;
+mod live;
+mod object;
+mod output;
+mod records;
+mod session;
 
-mod attachments;
-pub(crate) mod page_ends;
-
-pub(super) struct Options<'a> {
-    pub slices: bool,
-    pub view: &'a str,
-    pub format: &'a str,
-    pub with_parents: bool,
-    pub budget: Option<usize>,
-    pub cursor: Option<&'a str>,
-    pub selection: Option<&'a crate::daemon::PageSelection>,
+/// What read cursors are sealed with: this index generation's key and the
+/// generation.
+fn cursor_seal(reader: &polylogue_store::Reader<'_>) -> Result<CursorSeal, Failure> {
+    Ok(CursorSeal {
+        key: reader.cursor_key()?,
+        generation: reader.change_position()?.generation,
+    })
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Cursor {
-    version: u8,
-    binding: String,
-    content: String,
-    generation: String,
-    position: [usize; 3],
-    /// The selected count is bound to the same content as the cursor.
-    total_messages: Option<usize>,
-    /// The key of the message the position is in, so the next read starts
-    /// there without reading the messages before it. Absent for documents
-    /// and events.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    message_key: Option<i64>,
-    /// Read the page before this exclusive position.
-    #[serde(default)]
-    reverse: bool,
-    /// A keyed hash of the rest, using the index generation's cursor key.
-    seal: String,
-}
-
-impl Cursor {
-    fn seal(mut self, key: &[u8; 32]) -> Result<String, serde_json::Error> {
-        self.seal = String::new();
-        self.seal = blake3::keyed_hash(key, &serde_json::to_vec(&self)?)
-            .to_hex()
-            .to_string();
-        Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&self)?))
-    }
-
-    /// The cursor in `token`, when this index generation sealed it. One
-    /// from an earlier generation is stale (its key is gone); anything else
-    /// that does not open is invalid.
-    fn open(token: &str, key: &[u8; 32], generation: &str) -> Result<Self, Response> {
-        let invalid = || {
-            error(
-                "bad_request",
-                "the read cursor is invalid or from an unsupported version",
-            )
-        };
-        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(token)
-            .map_err(|_| invalid())?;
-        let mut cursor: Self = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
-        if cursor.version != CURSOR_VERSION {
-            return Err(invalid());
-        }
-        let seal =
-            blake3::Hash::from_hex(std::mem::take(&mut cursor.seal)).map_err(|_| invalid())?;
-        let body = serde_json::to_vec(&cursor).map_err(|_| invalid())?;
-        if seal == blake3::keyed_hash(key, &body) {
-            Ok(cursor)
-        } else if cursor.generation != generation {
-            Err(error(
-                "stale_cursor",
-                "the index was rebuilt; start the read again",
-            ))
-        } else {
-            Err(invalid())
-        }
+/// A cursor of an earlier generation is `stale_cursor`; a broken one, or
+/// one of another reading, is `invalid_query` (docs/query.md, Paging).
+fn cursor_failure(error: CursorError) -> Failure {
+    match error {
+        CursorError::Stale => Failure::new("stale_cursor", error),
+        CursorError::Invalid | CursorError::OtherReading(_) => Failure::new("invalid_query", error),
     }
 }
 
-pub(super) fn run(
-    reader: &Reader<'_>,
-    id: &SessionId,
-    options: Options<'_>,
-    cache: &page_ends::Cache,
-    epoch: u64,
-) -> Response {
-    if options.selection.is_some() && (options.cursor.is_some() || options.budget.is_none()) {
-        return error(
+fn page_error(error: PageError) -> Failure {
+    let kind = if matches!(error, PageError::ItemChanged | PageError::InvalidPosition) {
+        "stale_cursor"
+    } else {
+        "bad_request"
+    };
+    Failure::new(kind, error)
+}
+
+/// The order values of each row a page visited, by the row's number on
+/// that page, so a cursor names its row by key.
+#[derive(Default)]
+struct RowKeys {
+    keys: BTreeMap<u64, OrderPosition>,
+}
+
+/// The resolved reading of a row-path request.
+struct Reading {
+    options: ReadOptions,
+    format: Format,
+    budget: Option<PageBudget>,
+    target: String,
+    digest: String,
+}
+
+fn reading(request: &Request) -> Result<(Reading, Option<&str>), Failure> {
+    let Request::Read {
+        target,
+        options,
+        delivery,
+        format,
+        budget,
+        cursor,
+        ..
+    } = request
+    else {
+        return Err(Failure::new("bad_request", "a read request is required"));
+    };
+    options
+        .validate()
+        .map_err(|e| Failure::new("bad_request", e))?;
+    let format =
+        Format::parse(format).ok_or_else(|| Failure::new("bad_request", "unknown read format"))?;
+    let budget = if *delivery == ReadDelivery::Page {
+        let mut resolved = PageBudget::default();
+        if let Some(tokens) = budget {
+            resolved.tokens = NonZeroU64::new(*tokens as u64)
+                .ok_or_else(|| Failure::new("bad_request", "read budget must be positive"))?;
+        }
+        Some(resolved)
+    } else {
+        None
+    };
+    if cursor.is_some() && budget.is_none() {
+        return Err(Failure::new(
             "bad_request",
-            "a message or latest selection requires a budget and cannot be combined with a cursor",
-        );
+            "streaming reads do not have paged continuations",
+        ));
     }
-    let Some(view) = polylogue_render::View::parse(options.view) else {
-        return error("bad_request", format!("unknown view {:?}", options.view));
-    };
-    let session = match reader.session(id) {
-        Ok(Some(session)) => session,
-        Ok(None) => return error("not_found", format!("no session {id}")),
-        Err(e) => return store_error(&e),
-    };
-    let title = match reader.display_title(id) {
-        Ok(title) => title,
-        Err(e) => return store_error(&e),
-    };
-    let selected = match reader.select_messages(id, options.with_parents) {
-        Ok(selected) => selected,
-        Err(e) => return store_error(&e),
-    };
-    let mut references = References::default();
-    references.observe("/session", &session);
-    references.observe("/parents", selected.parents());
-    let notices: Vec<String> = selected
-        .parents()
-        .issues
-        .iter()
-        .map(|issue| format!("Parents incomplete: {issue}"))
-        .collect();
-    let Some(budget) = options.budget else {
-        if options.cursor.is_some() {
-            return error("bad_request", "a cursor continues a read with a budget");
-        }
-        let Some(format) = polylogue_render::Format::parse(options.format) else {
-            return error(
-                "bad_request",
-                format!("unknown format {:?}", options.format),
-            );
-        };
-        let mut messages = Vec::new();
-        if let Err(e) = selected.visit(|message| {
-            messages.push(message);
-            ControlFlow::Continue(())
-        }) {
-            return store_error(&e);
-        }
-        references.observe("/messages", &messages);
-        let mut descriptors = Vec::new();
-        let mut attachment_error = None;
-        let rendered = polylogue_render::session_with_attachments(
-            &session,
-            title.as_deref(),
-            messages,
-            view,
+    Ok((
+        Reading {
+            digest: options_digest(&(options, format)),
+            options: options.clone(),
             format,
-            &notices,
-            |message| match attachments::labels(reader, message, view) {
-                Ok((labels, mut found)) => {
-                    descriptors.append(&mut found);
-                    labels
-                }
-                Err(error) => {
-                    attachment_error = Some(error);
-                    Vec::new()
-                }
-            },
-        );
-        if let Some(error) = attachment_error {
-            return store_error(&error);
-        }
-        return match rendered {
-            Ok(mut value) => {
-                references.observe("/attachments", &descriptors);
-                if !descriptors.is_empty() {
-                    value["attachments"] = serde_json::json!(descriptors);
-                }
-                if options.with_parents {
-                    value["parents"] =
-                        serde_json::to_value(selected.parents()).expect("parents are serializable");
-                }
-                references.response(value)
-            }
-            Err(e) => error("internal", e),
-        };
-    };
-    let digest = |value: &serde_json::Value| {
-        blake3::hash(value.to_string().as_bytes())
-            .to_hex()
-            .to_string()
-    };
-    // Tokens contain hashes and numeric positions, never private source text or
-    // the masking state reconstructed by replay below.
-    let binding = digest(&serde_json::json!([id, options.with_parents, options.view]));
-    let facts = match selected.fingerprint() {
-        Ok(facts) => facts,
-        Err(e) => return store_error(&e),
-    };
-    let associations = match selected.attachment_fingerprint() {
-        Ok(value) => value,
-        Err(error) => return store_error(&error),
-    };
-    let content = digest(&serde_json::json!([facts, associations, session, title]));
-    let generation = match reader.change_position() {
-        Ok(position) => position.generation,
-        Err(e) => return store_error(&e),
-    };
-    let cursor_key = match reader.cursor_key() {
-        Ok(key) => key,
-        Err(e) => return store_error(&e),
-    };
-    let mut reverse = false;
-    let mut total_messages = None;
-    let position = if let Some(text) = options.cursor {
-        let cursor = match Cursor::open(text, &cursor_key, &generation) {
-            Ok(cursor) => cursor,
-            Err(response) => return response,
-        };
-        if cursor.binding != binding {
-            return error(
-                "bad_request",
-                "the read cursor belongs to a different session, with_parents mode or view",
-            );
-        }
-        if cursor.content != content || cursor.generation != generation {
-            return error(
-                "stale_cursor",
-                "the session read changed; start the read again",
-            );
-        }
-        reverse = cursor.reverse;
-        total_messages = cursor.total_messages;
-        Some((
-            Position {
-                message: cursor.position[0],
-                block: cursor.position[1],
-                character: cursor.position[2],
-            },
-            cursor.message_key,
-        ))
-    } else {
-        None
-    };
-    let count = match total_messages.map(Ok).unwrap_or_else(|| selected.len()) {
-        Ok(count) => count,
-        Err(e) => return store_error(&e),
-    };
-    let latest = matches!(
-        options.selection,
-        Some(crate::daemon::PageSelection::Latest)
-    );
-    let position = match (position, options.selection) {
-        (None, Some(start)) => {
-            let located = match start {
-                crate::daemon::PageSelection::Message(message) => selected.locate(Some(message)),
-                crate::daemon::PageSelection::Latest => {
-                    selected.latest(view.block_kinds(), view.prompts_only())
-                }
-            };
-            match located {
-                Ok(Some(at)) => Some((
-                    Position {
-                        message: at.message,
-                        block: 0,
-                        character: 0,
-                    },
-                    at.key,
-                )),
-                Ok(None) if latest => {
-                    let mut value = serde_json::json!({"session":session,"display_title":title,"text":"","slices":[],"next":null,"cursor":null,"content_version":content,"generation":generation,"position":{"message":0,"total_messages":count}});
-                    if options.with_parents {
-                        value["parents"] = serde_json::json!(selected.parents());
-                    }
-                    representation(&mut value, options.slices);
-                    return references.response(value);
-                }
-                Ok(None) => {
-                    return error(
-                        "not_found",
-                        "the message is not in the selected session and parent view",
-                    );
-                }
-                Err(e) => return store_error(&e),
-            }
-        }
-        (position, _) => position,
-    };
-    let (mut position, mut message_key) = match position {
-        Some((position, key)) => (Some(position), key),
-        None => (None, None),
-    };
-    let index = match reader.index_identity() {
-        Ok(index) => index,
-        Err(error) => return store_error(&error),
-    };
-    let key = page_ends::Key {
-        binding: binding.clone(),
-        content: content.clone(),
-        generation: generation.clone(),
-        index,
-    };
-    let selected = if view == polylogue_render::View::Full {
-        selected.for_text()
-    } else {
-        selected.for_blocks(view.block_kinds(), view.prompts_only())
-    };
-    let states = if reverse {
-        match selected.masking_states() {
-            Ok(states) => Some(states),
-            Err(e) => return store_error(&e),
-        }
-    } else {
-        None
-    };
-    let until = if reverse {
-        let end = position.expect("a reverse cursor has a position");
-        let mut from = polylogue_store::read::VisitStart {
-            message: end.message,
-            key: message_key,
-        };
-        let mut remaining = polylogue_render::model_pages::budget_characters(budget);
-        let mut start = None;
-        loop {
-            let mut message = None;
-            if let Err(e) = selected.visit_from(from, |found| {
-                message = Some(found);
-                ControlFlow::Break(())
-            }) {
-                return store_error(&e);
-            }
-            let Some(message) = message else {
-                break;
-            };
-            let masker = states
-                .as_ref()
-                .expect("backward states")
-                .before(from.message)
-                .unwrap_or_default();
-            let mut failure = None;
-            let (at, used) = polylogue_render::model_pages::previous_start(
-                message,
-                view,
-                from.message,
-                (from.message == end.message).then_some(end),
-                remaining,
-                masker,
-                |message| match attachments::labels(reader, message, view) {
-                    Ok((labels, _)) => labels,
-                    Err(e) => {
-                        failure = Some(e);
-                        Vec::new()
-                    }
-                },
-            );
-            if let Some(e) = failure {
-                return store_error(&e);
-            }
-            if let Some(at) = at {
-                start = Some((at, from.key));
-            }
-            remaining -= used;
-            if remaining == 0 {
-                break;
-            }
-            if from.key.is_none() {
-                break;
-            }
-            from = match selected.previous(from, view.block_kinds(), view.prompts_only()) {
-                Ok(Some(previous)) => previous,
-                Ok(None) => break,
-                Err(e) => return store_error(&e),
-            };
-        }
-        if let Some((at, key)) = start {
-            position = Some(at);
-            message_key = key;
-        }
-        Some(end)
-    } else {
-        None
-    };
-    // A read resumes at its cursor's message, from the masking state
-    // remembered at that page end or else the state the selection gives
-    // there. The epoch taken when the read began stops a read that overlaps
-    // a write from restoring or saving cached state after that write clears it.
-    let page_end = match position {
-        Some(at) => match cache.get(&key, epoch, at.message) {
-            Some(cached) => Some(cached),
-            None => match states
-                .as_ref()
-                .map(|states| Ok(states.before(at.message)))
-                .unwrap_or_else(|| selected.masking_before(at.message))
-            {
-                Ok(masker) => Some(PageEnd::new(at.message, masker.unwrap_or_default())),
-                Err(e) => return store_error(&e),
-            },
+            budget,
+            target: target.clone(),
         },
-        None => None,
-    };
-    let from = polylogue_store::read::VisitStart {
-        message: position.map_or(0, |at| at.message),
-        key: message_key,
-    };
-    let mut pager = match (position, page_end) {
-        (Some(at), Some(page_end)) => Pager::resume(view, budget, at, page_end),
-        _ => Pager::new(view, budget, position),
-    };
-    if let Some(end) = until {
-        pager = pager.until(end);
-    }
-    if latest {
-        pager = pager.at_latest();
-    } else if options.selection.is_some() {
-        pager = pager.at_anchor();
-    }
-    let mut failure = None;
-    let mut attachment_error = None;
-    let mut shown = std::collections::HashMap::new();
-    let result = selected.visit_from(from, |message| {
-        let mut found = Vec::new();
-        let result = pager.push_with_attachments(message, |message| {
-            match attachments::labels(reader, message, view) {
-                Ok((labels, descriptors)) => {
-                    found = descriptors;
-                    labels
-                }
-                Err(error) => {
-                    attachment_error = Some(error);
-                    Vec::new()
-                }
-            }
-        });
-        for descriptor in found {
-            let reference = polylogue_render::AttachmentRef {
-                message: descriptor.message.clone(),
-                block: descriptor.block,
-                attachment: descriptor.attachment_index,
-            };
-            if pager.visible_attachments().contains(&reference) {
-                shown.insert(reference, descriptor);
-            }
-        }
-        if attachment_error.is_some() {
-            return ControlFlow::Break(());
-        }
-        match result {
-            Ok(_) if latest => ControlFlow::Break(()),
-            Ok(flow) => flow,
-            Err(error) => {
-                failure = Some(error);
-                ControlFlow::Break(())
-            }
-        }
-    });
-    let last_key = match result {
-        Ok(last_key) => last_key,
-        Err(e) => return store_error(&e),
-    };
-    if let Some(error) = attachment_error {
-        return store_error(&error);
-    }
-    if let Some(e) = failure {
-        return error("bad_request", e);
-    }
-    let page_end = pager.page_end();
-    let first = pager.first_position();
-    let mut page = match pager.finish() {
-        Ok(page) => page,
-        Err(e) => return error("bad_request", e),
-    };
-    if let Some(page_end) = page_end {
-        cache.put(key, epoch, page_end);
-    }
-    let mut outcomes = std::collections::HashMap::new();
-    for slice in page
-        .slices
-        .iter_mut()
-        .filter(|slice| slice.kind == "tool_call")
-    {
-        if let Some(message) = &slice.message {
-            if let std::collections::hash_map::Entry::Vacant(entry) =
-                outcomes.entry(message.id.clone())
-            {
-                match reader.tool_outcomes(&message.id) {
-                    Ok(found) => {
-                        entry.insert(found);
-                    }
-                    Err(e) => return store_error(&e),
-                }
-            }
-            slice.outcome = outcomes[&message.id]
-                .iter()
-                .find(|(block, _)| *block == slice.block)
-                .map(|(_, outcome)| *outcome);
-        }
-    }
-    let mut descriptors = Vec::new();
-    for reference in &page.attachments {
-        if let Some(descriptor) = shown.remove(reference) {
-            descriptors.push(descriptor);
-        }
-    }
-    let current = match (
-        first,
-        page.slices.first().and_then(|slice| slice.message.as_ref()),
-    ) {
-        (Some(at), Some(message)) => {
-            let message_key = match selected.message_key(&message.id) {
-                Ok(key) => key,
-                Err(e) => return store_error(&e),
-            };
-            let cursor = Cursor {
-                version: CURSOR_VERSION,
-                total_messages: Some(count),
-                binding: binding.clone(),
-                content: content.clone(),
-                generation: generation.clone(),
-                position: [at.message, at.block, at.character],
-                message_key,
-                reverse: false,
-                seal: String::new(),
-            };
-            match cursor.seal(&cursor_key) {
-                Ok(token) => Some(token),
-                Err(e) => return error("internal", e),
-            }
-        }
-        _ => None,
-    };
-    let previous = if let (Some(at), Some(message)) = (
-        first,
-        page.slices.first().and_then(|slice| slice.message.as_ref()),
-    ) {
-        let message_key = match selected.message_key(&message.id) {
-            Ok(key) => key,
-            Err(e) => return store_error(&e),
-        };
-        let exists = if at.character > 0 || at.block > 0 {
-            true
-        } else if message_key.is_some() {
-            match selected.previous(
-                polylogue_store::read::VisitStart {
-                    message: at.message,
-                    key: message_key,
-                },
-                view.block_kinds(),
-                view.prompts_only(),
-            ) {
-                Ok(previous) => previous.is_some(),
-                Err(e) => return store_error(&e),
-            }
-        } else {
-            false
-        };
-        exists.then(|| {
-            Cursor {
-                version: CURSOR_VERSION,
-                total_messages: Some(count),
-                binding: binding.clone(),
-                content: content.clone(),
-                generation: generation.clone(),
-                position: [at.message, at.block, at.character],
-                message_key,
-                reverse: true,
-                seal: String::new(),
-            }
-            .seal(&cursor_key)
-            .expect("cursor")
-        })
-    } else {
-        None
-    };
-    let next = match page.next {
-        Some(position) => {
-            // A page breaks in the last message it visited.
-            let cursor = Cursor {
-                version: CURSOR_VERSION,
-                total_messages: Some(count),
-                binding: binding.clone(),
-                content: content.clone(),
-                generation: generation.clone(),
-                position: [position.message, position.block, position.character],
-                message_key: last_key,
-                reverse: false,
-                seal: String::new(),
-            };
-            match cursor.seal(&cursor_key) {
-                Ok(token) => Some(token),
-                Err(e) => return error("internal", e),
-            }
-        }
-        None => None,
-    };
-    references.observe("/slices", &page.slices);
-    references.observe("/attachments", &descriptors);
-    references.add("/next", &next);
-    references.add("/cursor", &current);
-    references.add("/previous", &previous);
-    let mut value = serde_json::json!({"session": session, "display_title": title, "text": page.text, "slices": page.slices, "next": next, "cursor":current,"previous":previous,
-        "position": {"message": first.or(position).map_or(0, |at| at.message), "total_messages": count},
-        "content_version": content, "generation": generation});
-    if !descriptors.is_empty() {
-        value["attachments"] = serde_json::json!(descriptors);
-    }
-    if options.with_parents {
-        value["parents"] =
-            serde_json::to_value(selected.parents()).expect("parents are serializable");
-    }
-    representation(&mut value, options.slices);
-    references.response(value)
+        cursor.as_deref(),
+    ))
 }
 
-/// A document page holds only metadata, one decoded block and the output
-/// page in memory.
-pub(super) fn document(
+/// Prepare a row reading: compile the target against this reader and run
+/// `run` over the selection. The seed is the target's, so a sampled or
+/// shuffled reading keeps its order across pages.
+fn prepared<T>(
     reader: &Reader<'_>,
-    id: &polylogue_model::DocumentId,
-    options: Options<'_>,
-) -> Response {
-    if options.selection.is_some() {
-        return error("bad_request", "documents have no message starting point");
-    }
-    let Some(view) = polylogue_render::View::parse(options.view) else {
-        return error("bad_request", "unknown document view");
-    };
-    if matches!(
-        view,
-        polylogue_render::View::Prompts | polylogue_render::View::Actions
-    ) {
-        return error(
-            "bad_request",
-            "documents support the full and dialogue views",
-        );
-    }
-    let selected = match reader.select_document(id) {
-        Ok(Some(selected)) => selected,
-        Ok(None) => return error("not_found", format!("no document {id}")),
-        Err(e) => return store_error(&e),
-    };
-    let Some(budget) = options.budget else {
-        if options.cursor.is_some() {
-            return error("bad_request", "a cursor continues a read with a budget");
-        }
-        let Some(format) = polylogue_render::Format::parse(options.format) else {
-            return error("bad_request", "unknown document format");
-        };
-        let mut references = References::default();
-        return match selected.document().and_then(|doc| {
-            references.observe("/document", &doc);
-            polylogue_render::documents::document(doc, view, format).map_err(Into::into)
-        }) {
-            Ok(mut value) => {
-                match selected.sources() {
-                    Ok(sources) => value["sources"] = serde_json::json!(sources),
-                    Err(e) => return store_error(&e),
-                };
-                references.response(value)
-            }
-            Err(e) => store_error(&e),
-        };
-    };
-    let digest = |value: &serde_json::Value| {
-        blake3::hash(value.to_string().as_bytes())
-            .to_hex()
-            .to_string()
-    };
-    let binding = digest(&serde_json::json!(["document", id, options.view]));
-    let content = selected.version();
-    let generation = match reader.change_position() {
-        Ok(position) => position.generation,
-        Err(e) => return store_error(&e),
-    };
-    let cursor_key = match reader.cursor_key() {
-        Ok(key) => key,
-        Err(e) => return store_error(&e),
-    };
-    let cursor = match content_cursor(&options, &cursor_key, &binding, &content, &generation) {
-        Ok(cursor) => cursor,
-        Err(e) => return e,
-    };
-    let mut position = cursor.as_ref().map(|cursor| Position {
-        message: cursor.position[0],
-        block: cursor.position[1],
-        character: cursor.position[2],
-    });
-    let heading = format!("[document:{} {}]\n", id, selected.purpose().as_str());
-    let until = if cursor.as_ref().is_some_and(|cursor| cursor.reverse) {
-        let end = position.expect("a reverse cursor has a position");
-        let characters = polylogue_render::model_pages::budget_characters(budget);
-        let mut starts = std::collections::VecDeque::<(Position, usize)>::new();
-        let mut used = 0;
-        let mut index = 0;
-        let mut heading_emitted = false;
-        let mut masker = polylogue_model::masking::MessageMasker::default();
-        // Documents replay the prefix once to recover ordered masking. Keep
-        // only the positions fitting the output budget, never earlier bodies.
-        if let Err(e) = selected.visit_blocks_before(end.message.saturating_add(1), |block| {
-            let visible = view.block_kinds().contains(&block.kind());
-            let (at, size) = polylogue_render::model_pages::previous_block_start(
-                block,
-                view,
-                index,
-                (index == end.message).then_some(end.character),
-                characters,
-                &mut masker,
-                if heading_emitted { "" } else { &heading },
-            );
-            heading_emitted |= visible;
-            index += 1;
-            if let Some(at) = at {
-                starts.push_back((at, size));
-                used += size;
-                while used > characters {
-                    let excess = used - characters;
-                    let (at, size) = starts.front_mut().expect("the page has a start");
-                    let removed = excess.min(*size);
-                    at.character += removed;
-                    *size -= removed;
-                    used -= removed;
-                    if *size == 0 {
-                        starts.pop_front();
-                    }
-                }
-            }
-            ControlFlow::Continue(())
-        }) {
-            return store_error(&e);
-        }
-        if let Some((start, _)) = starts.front() {
-            position = Some(*start);
-        }
-        Some(end)
-    } else {
-        None
-    };
-    let mut pager = polylogue_render::model_pages::BlockPager::new(view, budget, position, heading);
-    if let Some(end) = until {
-        pager = pager.until(end);
-    }
-    let mut failure = None;
-    if let Err(e) = selected.visit_blocks(|block| match pager.push(block) {
-        Ok(flow) => flow,
-        Err(e) => {
-            failure = Some(e);
-            ControlFlow::Break(())
-        }
-    }) {
-        return store_error(&e);
-    }
-    if let Some(e) = failure {
-        return error("bad_request", e);
-    }
-    let first = pager.first_position();
-    let page = match pager.finish() {
-        Ok(page) => page,
-        Err(e) => return error("bad_request", e),
-    };
-    let current = content_next(
-        first,
-        &cursor_key,
-        binding.clone(),
-        content.clone(),
-        generation.clone(),
-    );
-    let previous = if let Some(at) = first {
-        let exists = at.character > 0
-            || match selected.previous_block(at.message, view.block_kinds()) {
-                Ok(previous) => previous.is_some(),
-                Err(e) => return store_error(&e),
+    d: &Daemon,
+    operation: &Arc<crate::operation::Context>,
+    reading: &Reading,
+    run: impl FnOnce(
+        &PreparedSelection,
+        ReadSnapshot,
+        ReadHeader,
+        Option<&polylogue_store::selection::NearFn<'_>>,
+    ) -> Result<T, Failure>,
+) -> Result<T, Failure> {
+    crate::daemon::query::with_ranking(
+        reader,
+        &d.warm,
+        &d.config,
+        |embeddings, ranking_identity, near| {
+            polylogue_store::read::limit::ReadLimit::set_stage("read preparation");
+            let ask = crate::daemon::query::Ask {
+                text: &reading.target,
+                cursor: None,
+                page_size: None,
+                why: false,
+                session: None,
+                context: Arc::clone(operation),
+                embeddings,
+                ranking_identity,
+                near: Some(near),
+                fields: &[],
             };
-        exists.then(|| {
-            Cursor {
-                version: CURSOR_VERSION,
-                total_messages: None,
-                binding: binding.clone(),
-                content: content.clone(),
-                generation: generation.clone(),
-                position: [at.message, at.block, at.character],
-                message_key: None,
-                reverse: true,
-                seal: String::new(),
-            }
-            .seal(&cursor_key)
-            .expect("cursor")
-        })
-    } else {
-        None
-    };
-    let next = content_next(page.next, &cursor_key, binding, content, generation);
-    let mut references = References::default();
-    references.observe("/document/id", selected.id());
-    references.add("/cursor", &current);
-    references.add("/previous", &previous);
-    references.add("/next", &next);
-    let metadata = match selected.metadata() {
-        Ok(value) => value,
-        Err(e) => return store_error(&e),
-    };
-    let sources = match selected.sources() {
-        Ok(sources) => sources,
-        Err(e) => return store_error(&e),
-    };
-    let mut value = serde_json::json!({"document":metadata,"sources":sources,"text":page.text,"slices":page.slices,"next":next,"cursor":current,"previous":previous});
-    representation(&mut value, options.slices);
-    references.response(value)
-}
-
-fn content_cursor(
-    options: &Options<'_>,
-    key: &[u8; 32],
-    binding: &str,
-    content: &str,
-    generation: &str,
-) -> Result<Option<Cursor>, Response> {
-    let Some(text) = options.cursor else {
-        return Ok(None);
-    };
-    let cursor = Cursor::open(text, key, generation)?;
-    if cursor.binding != binding {
-        return Err(error(
-            "bad_request",
-            "the read cursor belongs to another content or view",
-        ));
-    }
-    if cursor.content != content || cursor.generation != generation {
-        return Err(error(
-            "stale_cursor",
-            "the content read changed; start the read again",
-        ));
-    }
-    Ok(Some(cursor))
-}
-
-fn content_position(
-    options: &Options<'_>,
-    key: &[u8; 32],
-    binding: &str,
-    content: &str,
-    generation: &str,
-) -> Result<Option<Position>, Response> {
-    content_cursor(options, key, binding, content, generation).map(|cursor| {
-        cursor.map(|cursor| Position {
-            message: cursor.position[0],
-            block: cursor.position[1],
-            character: cursor.position[2],
-        })
-    })
-}
-fn content_next(
-    next: Option<Position>,
-    key: &[u8; 32],
-    binding: String,
-    content: String,
-    generation: String,
-) -> Option<String> {
-    next.map(|p| {
-        Cursor {
-            version: CURSOR_VERSION,
-            total_messages: None,
-            binding,
-            content,
-            generation,
-            position: [p.message, p.block, p.character],
-            message_key: None,
-            reverse: false,
-            seal: String::new(),
-        }
-        .seal(key)
-        .expect("cursor is serializable")
-    })
-}
-
-pub(super) fn event(reader: &Reader<'_>, id: &str, options: Options<'_>) -> Response {
-    if options.selection.is_some() {
-        return error("bad_request", "events have no message starting point");
-    }
-    let Some(view) = polylogue_render::View::parse(options.view) else {
-        return error("bad_request", "unknown event view");
-    };
-    if matches!(
-        view,
-        polylogue_render::View::Prompts | polylogue_render::View::Actions
-    ) {
-        return error("bad_request", "events support the full and dialogue views");
-    }
-    let Some(format) = polylogue_render::Format::parse(options.format) else {
-        return error("bad_request", "unknown event format");
-    };
-    let exported = match reader.event_export(id) {
-        Ok(Some(event)) => event,
-        Ok(None) => {
-            return if options.cursor.is_some() {
-                error("stale_cursor", "the event is no longer available")
+            let compile = crate::daemon::query::options(reader, &ask, seed(&reading.target))?;
+            let selection = reader.prepare_selection(&reading.target, &compile)?;
+            let positions = reader.change_position()?;
+            // A stream (a bundle) states a consistent snapshot, so it asks
+            // at its own position, counted once per position; a page reports
+            // what the count worker last found, without a scan.
+            let caught_up = if reading.budget.is_none() {
+                d.warm.caught_up(reader, &positions.to_string())?
             } else {
-                error("not_found", format!("no event {id}"))
+                d.warm.caught_up_for_read(reader, &positions.to_string())?
             };
-        }
-        Err(e) => return store_error(&e),
-    };
-    let sources = match reader.event_sources(id) {
-        Ok(s) => s,
-        Err(e) => return store_error(&e),
-    };
-    let mut references = References::default();
-    let prefix = if options.budget.is_some() {
-        "/event"
-    } else {
-        "/reference"
-    };
-    references.add(format!("{prefix}/id"), &exported.id);
-    references.observe(&format!("{prefix}/session"), &exported.event.session);
-    references.observe(&format!("{prefix}/after"), &exported.event.after);
-    let metadata = serde_json::json!({"id":exported.id,"input":exported.input,"source":exported.source,"source_chain":exported.source_chain,"source_start":exported.source_start,"source_end":exported.source_end,
-        "session":exported.event.session,"kind":exported.event.kind,"at":exported.event.at,"after":exported.event.after});
-    let Some(budget) = options.budget else {
-        if options.cursor.is_some() {
-            return error("bad_request", "a cursor continues a read with a budget");
-        }
-        references.observe("/event", &exported.event);
-        return match polylogue_render::events::event(exported.event, format) {
-            Ok(mut value) => {
-                value["reference"] = metadata;
-                value["sources"] = serde_json::json!(sources);
-                references.response(value)
-            }
-            Err(e) => error("internal", e),
-        };
-    };
-    let digest = |value: &serde_json::Value| {
-        blake3::hash(value.to_string().as_bytes())
-            .to_hex()
-            .to_string()
-    };
-    let binding = digest(&serde_json::json!(["event", id, options.view]));
-    let content = digest(&serde_json::json!([metadata, sources]));
-    let generation = match reader.change_position() {
-        Ok(p) => p.generation,
-        Err(e) => return store_error(&e),
-    };
-    let cursor_key = match reader.cursor_key() {
-        Ok(key) => key,
-        Err(e) => return store_error(&e),
-    };
-    let position = match content_position(&options, &cursor_key, &binding, &content, &generation) {
-        Ok(p) => p,
-        Err(e) => return e,
-    };
-    let heading = format!(
-        "[event:{id} {}]\n",
-        polylogue_model::masking::mask(&exported.event.kind)
-    );
-    let mut pager = polylogue_render::model_pages::BlockPager::new(view, budget, position, heading);
-    if let Err(e) = pager.push(polylogue_model::Block::Text {
-        text: polylogue_render::events::text(&exported.event),
-    }) {
-        return error("bad_request", e);
-    }
-    let page = match pager.finish() {
-        Ok(p) => p,
-        Err(e) => return error("bad_request", e),
-    };
-    let next = content_next(page.next, &cursor_key, binding, content, generation);
-    references.add("/next", &next);
-    references.response(
-        serde_json::json!({"event":metadata,"sources":sources,"text":page.text,"next":next}),
+            let snapshot = ReadSnapshot {
+                query: format!("query:{}", selection.question_id()),
+                query_text: reading.target.clone(),
+                ran_at: operation.ran_at,
+                caught_up,
+                read_at: positions,
+                currency: d.currency(reader)?,
+                enabled_variants: reading.options.variants.clone(),
+                author: operation.authorship.author.clone(),
+                notes: selection.program().notes.clone(),
+                incomplete: selection.program().incomplete.clone(),
+            };
+            let (title, kind) = match selection.direct_target() {
+                Some(ReadTarget::Session(id)) => {
+                    let session = reader
+                        .session(id)?
+                        .ok_or_else(|| Failure::new("not_found", format!("no session {id}")))?;
+                    let title = reader
+                        .display_title(id)?
+                        .map(ValueState::known)
+                        .unwrap_or_default();
+                    (
+                        title,
+                        HeaderKind::Session {
+                            session: Box::new(session),
+                        },
+                    )
+                }
+                Some(target) => (
+                    ValueState::NotApplicable,
+                    HeaderKind::Record {
+                        record_type: target
+                            .to_string()
+                            .split_once(':')
+                            .map_or("record", |(kind, _)| kind)
+                            .into(),
+                    },
+                ),
+                None => (
+                    ValueState::NotApplicable,
+                    HeaderKind::Record {
+                        record_type: "query".into(),
+                    },
+                ),
+            };
+            // A direct read names what it reads; a query read names its question.
+            let header = ReadHeader {
+                target: selection
+                    .direct_target()
+                    .map_or_else(|| snapshot.query.clone(), ToString::to_string),
+                view: reading.options.view,
+                title,
+                kind,
+                figures: Vec::new(),
+            };
+            polylogue_store::read::limit::ReadLimit::set_stage("read records");
+            run(&selection, snapshot, header, Some(near))
+        },
     )
 }
 
-/// The outline's cursor binds its metadata continuation to the same selected
-/// session content as a read. It carries no transcript text or private state.
-pub(super) fn outline(
+type Emit<'a> = dyn FnMut(&ReadRecord, SelectionLocator, Option<u64>) -> Result<bool, Failure> + 'a;
+
+fn selected_source(
     reader: &Reader<'_>,
-    id: &SessionId,
-    with_parents: bool,
-    size: usize,
-    cursor: Option<&str>,
-) -> Response {
-    if size == 0 {
-        return error("bad_request", "outline page size must be positive");
+    selection: &PreparedSelection<'_>,
+    target: Option<&ReadTarget>,
+    options: &ReadOptions,
+    near: Option<&polylogue_store::selection::NearFn<'_>>,
+    source: &Source,
+) -> Result<bool, Failure> {
+    if let (Some(ReadTarget::Session(session)), Some(message)) = (target, &source.message) {
+        return Ok(reader
+            .select_messages(session, options.inherited)?
+            .locate(Some(message))?
+            .is_some());
     }
-    match reader.session(id) {
-        Ok(Some(_)) => {}
-        Ok(None) => return error("not_found", "the session is not available"),
-        Err(e) => return store_error(&e),
-    }
-    let selected = match reader.select_messages(id, with_parents) {
-        Ok(s) => s,
-        Err(e) => return store_error(&e),
-    };
-    let content = match selected.fingerprint() {
-        Ok(s) => s,
-        Err(e) => return store_error(&e),
-    };
-    let key = match reader.cursor_key() {
-        Ok(s) => s,
-        Err(e) => return store_error(&e),
-    };
-    let generation = match reader.change_position() {
-        Ok(s) => s.generation,
-        Err(e) => return store_error(&e),
-    };
-    let binding = blake3::hash(
-        serde_json::json!(["outline", id, with_parents])
-            .to_string()
-            .as_bytes(),
-    )
-    .to_hex()
-    .to_string();
-    let from = if let Some(token) = cursor {
-        let cursor = match Cursor::open(token, &key, &generation) {
-            Ok(c) => c,
-            Err(e) => return e,
-        };
-        if cursor.binding != binding {
-            return error(
-                "bad_request",
-                "the outline cursor belongs to another selection",
-            );
-        }
-        if cursor.content != content {
-            return error("stale_cursor", "the outline changed; open it again");
-        }
-        cursor.message_key
-    } else {
-        None
-    };
-    let mut entries = match selected.outline(from, size.saturating_add(1)) {
-        Ok(s) => s,
-        Err(e) => return store_error(&e),
-    };
-    let more = entries.len() > size;
-    if more {
-        entries.pop();
-    }
-    let next = if more {
-        Some(
-            Cursor {
-                version: CURSOR_VERSION,
-                total_messages: None,
-                binding,
-                content,
-                generation,
-                position: [0; 3],
-                message_key: entries.last().map(|entry| entry.key),
-                seal: String::new(),
-                reverse: false,
-            }
-            .seal(&key)
-            .expect("cursor"),
-        )
-    } else {
-        None
-    };
-    let mut references = References::default();
-    let entries = references.value("/entries", &entries);
-    let parents = references.value("/parents", selected.parents());
-    references.add("/next", &next);
-    references.response(serde_json::json!({"entries":entries,"next":next,"parents":parents}))
+    let reference = polylogue_model::Reference::parse(&source.reference)
+        .map_err(|e| Failure::new("not_yet_available", e))?;
+    reader
+        .selection_contains(selection, &reference, near)
+        .map_err(Failure::from)
 }
 
-fn representation(value: &mut serde_json::Value, slices: bool) {
-    if !slices && let Some(fields) = value.as_object_mut() {
-        fields.remove("slices");
+struct Rendering<'a> {
+    options: &'a ReadOptions,
+    near: Option<&'a polylogue_store::selection::NearFn<'a>>,
+    ready_attachment: &'a attachment_evidence::ReadyAttachment<'a>,
+    page: bool,
+}
+
+fn visit(
+    reader: &Reader<'_>,
+    selection: &PreparedSelection,
+    rendering: &Rendering<'_>,
+    from: Option<(&OrderPosition, ItemPlace)>,
+    rows: &mut RowKeys,
+    footer: &mut ReadFooter,
+    mut emit: impl FnMut(&ReadRecord, SelectionLocator, Option<u64>) -> Result<bool, Failure>,
+) -> Result<(), Failure> {
+    let start = from.map(|(_, place)| place);
+    let options = rendering.options;
+    let near = rendering.near;
+    let mixed = selection.direct_target().is_none();
+    let mut pending = start.map(|p| p.selection);
+    let mut row_number = 0u64;
+    reader.visit_selection_from_row::<Failure>(
+        selection,
+        from.map(|(row, _)| row),
+        near,
+        |row| {
+            let row_number = {
+                let at = row_number;
+                row_number += 1;
+                rows.keys.insert(at, row.position.clone());
+                at
+            };
+            let record_start = pending.filter(|p| p.row == row_number).map(|p| p.record);
+            let keep = if let Some(target) = row.target {
+                if rendering.page
+                    && let ReadTarget::Document(id) = &target
+                {
+                    let selected = |_: &Source| Ok(false);
+                    let evidence = ProjectionEvidence::default();
+                    let layout = evidence::Layout {
+                        options,
+                        evidence: &evidence,
+                        selected: &selected,
+                        ready_attachment: rendering.ready_attachment,
+                        backwards: false,
+                        anchor: None,
+                    };
+                    let position = start.filter(|start| start.selection.row == row_number);
+                    let keep = if let Some(record) =
+                        output::document_omission(&target.to_string(), options, mixed, footer)?
+                    {
+                        let at = SelectionLocator {
+                            row: row_number,
+                            record: ReadRecordLocator {
+                                kind: ReadRecordKind::Presentation,
+                                ordinal: 0,
+                            },
+                        };
+                        if position
+                            .is_some_and(|position| position.selection != at || position.item != 0)
+                        {
+                            return Err(Failure::new(
+                                "stale_cursor",
+                                "the continued document omission changed",
+                            ));
+                        }
+                        emit(&record, at, Some(0))?
+                    } else {
+                        documents::visit(reader, id, row_number, position, &layout, &mut emit)?
+                    };
+                    pending = None;
+                    return Ok(if keep {
+                        ControlFlow::Continue(())
+                    } else {
+                        ControlFlow::Break(())
+                    });
+                }
+                records::reference(
+                    reader,
+                    &target,
+                    options.inherited,
+                    record_start.as_ref(),
+                    &mut |record, mut evidence, record_position| {
+                        if options.view == View::Live
+                            && let records::SelectedRecord::Canonical(canonical) = &record
+                            && let polylogue_model::bundle::Record::Session(row) =
+                                canonical.as_ref()
+                        {
+                            let now = selection.cursor_context().clock.now.as_millisecond();
+                            evidence.cards.push(live::card(
+                                reader,
+                                &row.session.id.to_string(),
+                                now,
+                            )?);
+                        }
+                        polylogue_store::read::limit::ReadLimit::set_stage("read layout");
+                        let at = SelectionLocator {
+                            row: row_number,
+                            record: record_position,
+                        };
+                        if let Some(expected) = pending {
+                            if expected != at {
+                                return Err(Failure::new(
+                                    "stale_cursor",
+                                    "the continued record coordinate changed",
+                                ));
+                            }
+                            pending = None;
+                        }
+                        let Some(record) =
+                            output::project(record, options, &evidence, mixed, footer)?
+                        else {
+                            return Ok(true);
+                        };
+                        let selected = |source: &Source| {
+                            selected_source(reader, selection, Some(&target), options, near, source)
+                        };
+                        let layout = evidence::Layout {
+                            options,
+                            evidence: &evidence,
+                            selected: &selected,
+                            ready_attachment: rendering.ready_attachment,
+                            backwards: false,
+                            anchor: start
+                                .filter(|start| start.selection == at)
+                                .map(|start| start.item),
+                        };
+                        output::emit_record(reader, &record, at, &layout, &mut emit)
+                    },
+                )?
+            } else {
+                let at = SelectionLocator {
+                    row: row_number,
+                    record: ReadRecordLocator {
+                        kind: ReadRecordKind::Presentation,
+                        ordinal: 0,
+                    },
+                };
+                if pending.is_some_and(|expected| expected != at) {
+                    return Err(Failure::new(
+                        "stale_cursor",
+                        "the continued result row changed",
+                    ));
+                }
+                pending = None;
+                emit(&presentation(selection, &row.values), at, Some(0))?
+            };
+            Ok(if keep {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            })
+        },
+    )?;
+    if pending.is_some() {
+        return Err(Failure::new(
+            "stale_cursor",
+            "the continued record is no longer selected",
+        ));
     }
+    Ok(())
+}
+fn presentation(selection: &PreparedSelection, values: &serde_json::Value) -> ReadRecord {
+    ReadRecord::Presentation {
+        parts: vec![ReadPart::Item(ReadItem {
+            source: Source::record(format!("query:{}", selection.question_id())),
+            kind: ItemKind::Card {
+                card: Box::new(Card::Fields {
+                    title: "Query result".into(),
+                    figures: values
+                        .as_object()
+                        .into_iter()
+                        .flat_map(|object| object.iter())
+                        .map(|(name, value)| Figure {
+                            name: name.clone(),
+                            value: ValueState::known(value.clone()),
+                            unit: None,
+                        })
+                        .collect(),
+                }),
+            },
+        })],
+    }
+}
+
+fn attachment_call(
+    d: &Daemon,
+    message: &polylogue_model::MessageId,
+    block: u64,
+    attachment: u64,
+    input: Option<&str>,
+) -> Result<ReadyCall, Failure> {
+    let arguments = serde_json::to_value(crate::protocol::attachment::Arguments {
+        message: message.to_string(),
+        block,
+        attachment,
+        input: input.map(str::to_owned),
+        length: crate::daemon::attachment::PAGE_BYTES as u64,
+    })
+    .map_err(|e| Failure::new("internal", e))?;
+    let identity = blake3::hash(arguments.to_string().as_bytes());
+    d.ready_call(&command_surface::RunnableRequest {
+        operation: "attachment".into(),
+        arguments,
+        request_id: format!("read-attachment-{}", identity.to_hex()),
+        deadline: command_surface::Deadline::Default,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
+    })
+    .map_err(Failure::from)
+}
+
+/// Record the reading's question and run after the answer, as the
+/// operations log does for every query: the records are handed to the
+/// writer without waiting, so nothing on the answer path writes. Only the
+/// first page of a reading is a run; continuations are pages of it.
+fn record_run(
+    reader: &Reader<'_>,
+    d: &Daemon,
+    operation: &Arc<crate::operation::Context>,
+    request: &Request,
+    reading: &Reading,
+) -> Result<(), Failure> {
+    use polylogue_model::query_objects::{
+        ExecutionPresentation, QueryRun, QueryRunOutcome, RunBinding, RunOutcome,
+    };
+    let Request::Read { delivery, .. } = request else {
+        return Ok(());
+    };
+    let Some(writer) = d.writes.as_ref() else {
+        return Ok(());
+    };
+    crate::daemon::query::with_ranking(
+        reader,
+        &d.warm,
+        &d.config,
+        |embeddings, ranking_identity, near| {
+            let ask = crate::daemon::query::Ask {
+                text: &reading.target,
+                cursor: None,
+                page_size: None,
+                why: false,
+                session: None,
+                context: Arc::clone(operation),
+                embeddings,
+                ranking_identity: ranking_identity.clone(),
+                near: Some(near),
+                fields: &[],
+            };
+            let compile = crate::daemon::query::options(reader, &ask, seed(&reading.target))?;
+            let target = reading
+                .target
+                .strip_prefix("root:")
+                .unwrap_or(&reading.target);
+            let selection = reader.prepare_selection(target, &compile)?;
+            let object = selection.query_object()?;
+            let query_options = polylogue_store::query::execute::options_snapshot(
+                &compile,
+                false,
+                ranking_identity,
+            )?;
+            let accepted = operation
+                .accepted_request()
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|e| Failure::new("internal", e))?;
+            let mut binding = selection.execution_binding(
+                query_options,
+                ExecutionPresentation::Read {
+                    options: reading.options.clone(),
+                    delivery: *delivery,
+                    format: reading.format,
+                    page_budget: reading.budget,
+                    direct_source: None,
+                },
+                accepted,
+            )?;
+            binding
+                .replay
+                .context
+                .versions
+                .extend(operation.cursor_versions());
+            let run = QueryRun {
+                historical_source: None,
+                id: crate::operation::new_run_id(),
+                question: Some(selection.question_id()),
+                at: operation.ran_at,
+                read_at: reader.change_position()?,
+                machine: operation.machine.clone(),
+                authorship: operation.authorship.clone(),
+                binding: RunBinding::Original {
+                    execution: Box::new(binding),
+                },
+            };
+            let outcome = QueryRunOutcome {
+                run: run.id.clone(),
+                binding_hash: run
+                    .binding_hash()
+                    .map_err(|e| Failure::new("internal", e))?,
+                run_hash: run.record_hash().map_err(|e| Failure::new("internal", e))?,
+                at: d.config.requests.now(),
+                outcome: RunOutcome::Ok,
+                count: None,
+                exact: false,
+                next: None,
+            };
+            // The writer's queue can be full while it works through a batch;
+            // the read does not wait for room.
+            let writer = writer.clone();
+            std::thread::spawn(move || writer.record_after_answer(object, run, outcome));
+            Ok(())
+        },
+    )
+}
+
+/// A reading's seed is its target's, so a sampled or shuffled reading
+/// keeps its order across pages.
+fn seed(target: &str) -> u64 {
+    u64::from_le_bytes(
+        blake3::hash(target.as_bytes()).as_bytes()[..8]
+            .try_into()
+            .expect("eight bytes"),
+    )
+}
+
+/// The deadline the caller asked for, carried to every continuation.
+fn deadline(operation: &crate::operation::Context) -> command_surface::Deadline {
+    operation
+        .accepted_request()
+        .map_or(command_surface::Deadline::Default, |request| {
+            request.deadline
+        })
+}
+
+/// The ready call that continues this reading at `cursor`.
+fn next_call(
+    d: &Daemon,
+    request: &Request,
+    cursor: String,
+    deadline: command_surface::Deadline,
+) -> Result<ReadyCall, Failure> {
+    let Request::Read {
+        target,
+        options,
+        delivery,
+        format,
+        budget,
+        with_blobs,
+        ..
+    } = request
+    else {
+        return Err(Failure::new("internal", "a read request is required"));
+    };
+    let continued = Request::Read {
+        target: target.clone(),
+        options: options.clone(),
+        delivery: *delivery,
+        format: format.clone(),
+        budget: *budget,
+        with_blobs: *with_blobs,
+        cursor: Some(cursor),
+    };
+    let arguments = crate::protocol::read::Arguments::from_request(&continued)
+        .map_err(|e| Failure::new("internal", e))?;
+    let arguments = serde_json::to_value(arguments).map_err(|e| Failure::new("internal", e))?;
+    let cursor = crate::protocol::operations::cursor(&continued).map(str::to_owned);
+    let identity =
+        blake3::hash(&serde_json::to_vec(&(&arguments, &cursor)).expect("continuation serializes"));
+    d.ready_call(&command_surface::RunnableRequest {
+        operation: "read".into(),
+        arguments,
+        request_id: format!("read-page-{}", identity.to_hex()),
+        deadline,
+        budget_tokens: Default::default(),
+        cursor,
+        fresh: false,
+        format: Default::default(),
+    })
+    .map_err(Failure::from)
+}
+
+pub(super) fn page(
+    reader: &Reader<'_>,
+    d: &Daemon,
+    request: &Request,
+    operation: &Arc<crate::operation::Context>,
+) -> Answer<Value> {
+    if matches!(
+        request,
+        Request::Read {
+            with_blobs: true,
+            ..
+        }
+    ) {
+        return error("bad_request", "with_blobs requires streaming delivery");
+    }
+    if let Some(response) = self::object::page(reader, d, request, operation) {
+        return response;
+    }
+    let result = (|| {
+        let (reading, cursor) = reading(request)?;
+        if reading.budget.is_none() {
+            return Err(Failure::new(
+                "bad_request",
+                "streaming reads require stream delivery",
+            ));
+        }
+        let page = match session::scope(reader, &reading.target)? {
+            Some(scope)
+                if matches!(
+                    reading.options.view,
+                    View::Transcript | View::Dialogue | View::Context | View::Raw | View::Changes
+                ) =>
+            {
+                session::page(reader, d, request, operation, scope)?
+            }
+            Some(scope) if reading.options.view == View::Links => {
+                session::links_page(reader, d, request, operation, scope)?
+            }
+            _ => rows_page(reader, d, request, operation, &reading, cursor)?,
+        };
+        if cursor.is_none() {
+            // The answer stands whatever happens to its run record;
+            // building it needs this reader, storing it happens after.
+            let _ = record_run(reader, d, operation, request, &reading);
+        }
+        Ok(page)
+    })();
+    match result {
+        Ok(page) => match serde_json::to_value(&page) {
+            Ok(value) => crate::protocol::read(value, &page.snapshot.currency),
+            Err(problem) => error("internal", problem),
+        },
+        Err(failure) => failure.answer(),
+    }
+}
+
+/// The base row number of a backward page's anchor row: rows before it count
+/// down from here, so every row of the page has its own number.
+const BACKWARD_ANCHOR_ROW: u64 = 1 << 32;
+
+fn rows_page(
+    reader: &Reader<'_>,
+    d: &Daemon,
+    request: &Request,
+    operation: &Arc<crate::operation::Context>,
+    reading: &Reading,
+    cursor: Option<&str>,
+) -> Result<ReadPage, Failure> {
+    let key = cursor_seal(reader)?;
+    let opened = cursor
+        .map(|text| {
+            let opened = PageCursor::open(text, &key).map_err(cursor_failure)?;
+            opened
+                .check(&reading.target, &reading.digest)
+                .map_err(cursor_failure)?;
+            if opened.direction == ReadDirection::Past {
+                return Err(Failure::new(
+                    "invalid_query",
+                    "a row reading continues forward or backward only",
+                ));
+            }
+            match opened.position {
+                PagePosition::Record { anchor_row, place } => {
+                    Ok::<_, Failure>((anchor_row, place, opened.direction))
+                }
+                PagePosition::Entry { .. } | PagePosition::Node { .. } => Err(Failure::new(
+                    "invalid_query",
+                    "the cursor names a session place, not a row position",
+                )),
+            }
+        })
+        .transpose()?;
+    prepared(
+        reader,
+        d,
+        operation,
+        reading,
+        |selection, snapshot, header, near| {
+            let ready_attachment =
+                |message: &polylogue_model::MessageId, block, index, input: Option<&str>| {
+                    attachment_call(d, message, block, index, input)
+                };
+            let rendering = Rendering {
+                options: &reading.options,
+                near,
+                ready_attachment: &ready_attachment,
+                page: true,
+            };
+            let scope = selection.scope_token();
+            let mut budget = reading.budget.expect("a paged reading has a budget");
+            let snapshot_bytes = serde_json::to_vec(&ReadPageSnapshot::from(&snapshot))
+                .map_err(|e| Failure::new("internal", e))?
+                .len();
+            budget.bytes =
+                std::num::NonZeroUsize::new(budget.bytes.get().saturating_sub(snapshot_bytes))
+                    .ok_or_else(|| {
+                        Failure::new("bad_request", "reading metadata exceeds page framing")
+                    })?;
+            let framing = ReadFraming::Query {
+                question: selection.question_id(),
+            };
+            let backwards = opened
+                .as_ref()
+                .is_some_and(|(_, _, direction)| *direction == ReadDirection::Before);
+            // The anchor place, numbered as this page numbers its rows.
+            let anchor = opened.as_ref().map(|(_, place, _)| {
+                let mut place = *place;
+                place.selection.row = if backwards { BACKWARD_ANCHOR_ROW } else { 0 };
+                place
+            });
+            let mut pager = if backwards {
+                PageBuilder::new_before(
+                    header,
+                    budget,
+                    anchor.expect("Before has an anchor"),
+                    framing,
+                )
+            } else {
+                PageBuilder::new(header, budget, anchor, framing)
+            }
+            .map_err(page_error)?;
+            let mut footer = ReadFooter::default();
+            let mut rows = RowKeys::default();
+            let mut emit = |record: &ReadRecord, at: SelectionLocator, ordinal: Option<u64>| {
+                let Some(ordinal) = ordinal else {
+                    return Ok(true);
+                };
+                let Some(ReadPart::Item(item)) = record.parts().first() else {
+                    return Err(Failure::new(
+                        "stale_cursor",
+                        "continued layout item is unavailable",
+                    ));
+                };
+                Ok(pager
+                    .push_at(at, ordinal, item.clone())
+                    .map_err(page_error)?
+                    != Push::Full)
+            };
+            let anchor_row = opened.as_ref().and_then(|(row, _, _)| row.clone());
+            if backwards {
+                before::visit(
+                    reader,
+                    selection,
+                    &rendering,
+                    anchor.expect("Before has an anchor"),
+                    anchor_row.as_ref(),
+                    &mut rows,
+                    &mut footer,
+                    &mut emit,
+                )?;
+            } else {
+                visit(
+                    reader,
+                    selection,
+                    &rendering,
+                    anchor_row.as_ref().zip(anchor),
+                    &mut rows,
+                    &mut footer,
+                    &mut emit,
+                )?;
+            }
+            scope.check()?;
+            polylogue_store::read::limit::ReadLimit::set_stage("read page footer");
+            let upper = pager.upper_position().copied();
+            // A backward page numbers its rows down from the anchor; its
+            // fragments are renumbered from the page's first row, as a forward
+            // page numbers them, so the same row gives the same positions.
+            let first_row = backwards
+                .then(|| pager.first_position().map(|place| place.selection.row))
+                .flatten();
+            let seal = |place: &ItemPlace, direction| -> Result<ReadyCall, PageError> {
+                let row = rows.keys.get(&place.selection.row).cloned();
+                let mut place = *place;
+                place.selection.row = 0;
+                let cursor = PageCursor {
+                    target: reading.target.clone(),
+                    options: reading.digest.clone(),
+                    versions: PageCursor::version(&[]),
+                    position: PagePosition::Record {
+                        anchor_row: row,
+                        place,
+                    },
+                    direction,
+                };
+                next_call(d, request, cursor.seal(&key), deadline(operation))
+                    .map_err(|e| PageError::Serialization(format!("{e:?}")))
+            };
+            let document = pager
+                .finish_with(|position| {
+                    let mut footer = footer.clone();
+                    if let Some(upper) = upper {
+                        footer.next = Some(seal(&upper, ReadDirection::After)?);
+                        footer.previous = position
+                            .map(|position| seal(position, ReadDirection::Before))
+                            .transpose()?;
+                    } else {
+                        footer.next = position
+                            .map(|position| seal(position, ReadDirection::After))
+                            .transpose()?;
+                        footer.previous = anchor
+                            .map(|anchor| seal(&anchor, ReadDirection::Before))
+                            .transpose()?;
+                    }
+                    Ok(footer)
+                })
+                .map_err(page_error)?;
+            let mut document = document;
+            if let Some(first_row) = first_row {
+                for item in &mut document.items {
+                    if let ItemKind::Fragment { position, .. } = &mut item.kind {
+                        position.selection.row -= first_row;
+                    }
+                }
+            }
+            scope.check()?;
+            Ok(ReadPage {
+                format: reading.format,
+                snapshot: ReadPageSnapshot::from(&snapshot),
+                records: vec![],
+                document,
+            })
+        },
+    )
+}
+
+pub(crate) fn produce(
+    request: &Request,
+    d: &Daemon,
+    operation: &Arc<crate::operation::Context>,
+    output: &mut dyn Write,
+) -> Option<Result<(), Failure>> {
+    if let Some(result) = self::object::produce(request, d, operation, output) {
+        return Some(result);
+    }
+    let Request::Read {
+        delivery: ReadDelivery::Stream,
+        with_blobs,
+        ..
+    } = request
+    else {
+        return None;
+    };
+    Some(super::accepting(d).and_then(|()| {
+        let reader = d.reads.reader()?;
+        let (reading, _) = reading(request)?;
+        prepared(
+            &reader,
+            d,
+            operation,
+            &reading,
+            |selection, snapshot, header, near| {
+                let ready_attachment =
+                    |message: &polylogue_model::MessageId, block, index, input: Option<&str>| {
+                        attachment_call(d, message, block, index, input)
+                    };
+                let rendering = Rendering {
+                    options: &reading.options,
+                    near,
+                    ready_attachment: &ready_attachment,
+                    page: false,
+                };
+                let scope = selection.scope_token();
+                let check = || {
+                    scope.check()?;
+                    if let Some(limit) = polylogue_store::read::limit::ReadLimit::current() {
+                        limit.check()?;
+                    }
+                    Ok(())
+                };
+                let begin = ReadBegin {
+                    format: reading.format,
+                    snapshot,
+                    header,
+                    options: reading.options.clone(),
+                };
+                let mut stream = output::Stream::begin(output, &check, &begin)?;
+                let mut blobs = if *with_blobs {
+                    Some(blobs::Blobs::new(&reader)?)
+                } else {
+                    None
+                };
+                let mut footer = ReadFooter::default();
+                let mut rows = RowKeys::default();
+                visit(
+                    &reader,
+                    selection,
+                    &rendering,
+                    None,
+                    &mut rows,
+                    &mut footer,
+                    |record, _, _| {
+                        stream.record(record)?;
+                        if let Some(blobs) = &mut blobs {
+                            blobs.record(record, &mut stream, &check)?;
+                        }
+                        Ok(true)
+                    },
+                )?;
+                check()?;
+                stream.finish(footer)?;
+                Ok(())
+            },
+        )
+    }))
 }

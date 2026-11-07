@@ -10,21 +10,24 @@ mod connection;
 pub mod pages;
 mod reader;
 
+use crate::daemon::Request;
 use crate::daemon::service::Daemon;
-use crate::daemon::{Request, Response};
 use axum::Router;
 use axum::extract::{Path as UrlPath, Query, Request as HttpRequest, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response as HttpResponse};
 use axum::routing::get;
+use command_surface::Answer;
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 /// What every handler shares.
 pub struct Web {
     pub daemon: Arc<Daemon>,
+    pub operations: Arc<command_surface::OperationTable>,
     pub key: String,
     pub token: String,
     pub port: u16,
@@ -73,14 +76,25 @@ impl Drop for Server {
 
 /// Binds the port and returns the owner of the HTTP worker. Socket serving
 /// can continue independently if HTTP startup fails.
-pub fn start(daemon: Arc<Daemon>) -> std::io::Result<Server> {
-    start_on(daemon, access::wanted_port())
+pub fn start(
+    daemon: Arc<Daemon>,
+    operations: Arc<command_surface::OperationTable>,
+) -> std::io::Result<Server> {
+    let port = daemon.config.http.listen.port();
+    start_on(daemon, operations, port)
 }
 
-fn start_on(daemon: Arc<Daemon>, port: u16) -> std::io::Result<Server> {
+fn start_on(
+    daemon: Arc<Daemon>,
+    operations: Arc<command_surface::OperationTable>,
+    port: u16,
+) -> std::io::Result<Server> {
     use std::future::IntoFuture;
     let key = crate::runtime_dir::archive_key(&daemon.archive.root);
-    let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
+    let listener = std::net::TcpListener::bind(std::net::SocketAddr::new(
+        daemon.config.http.listen.ip(),
+        port,
+    ))?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -91,11 +105,15 @@ fn start_on(daemon: Arc<Daemon>, port: u16) -> std::io::Result<Server> {
         let _entered = runtime.enter();
         tokio::net::TcpListener::from_std(listener)?
     };
-    let token = access::new_token()?;
-    let directory = crate::runtime_dir::runtime_dir(&key);
+    let token = match &daemon.config.http.token {
+        Some(token) => token.expose().to_owned(),
+        None => access::new_token()?,
+    };
+    let directory = daemon.config.paths.runtime_dir(&daemon.archive.root);
     let uid = access::my_uid().ok_or_else(|| std::io::Error::other("cannot read this uid"))?;
     let web = Arc::new(Web {
         daemon,
+        operations,
         key,
         token: token.clone(),
         port,
@@ -164,10 +182,10 @@ pub fn router(web: Arc<Web>) -> Router {
         .route("/s/{id}", get(reader::session))
         .route("/d/{id}", get(reader::document))
         .route("/m/{id}", get(reader::message))
-        .route("/n/{id}", get(reader::note))
+        .route("/a/{reference}", get(reader::assertion))
         .route("/auth", get(auth_page).post(auth_exchange))
-        .route("/assets/reader.css", get(css))
-        .route("/assets/reader.js", get(js))
+        .route("/assets/auth.js", get(auth_js))
+        .route("/assets/{*path}", get(asset))
         .route("/assets/live.js", get(live_js))
         .nest("/api/v1", api::routes())
         .layer(middleware::from_fn_with_state(Arc::clone(&web), guard))
@@ -234,7 +252,7 @@ async fn guarded(web: Arc<Web>, req: HttpRequest, next: Next) -> HttpResponse {
 }
 
 tokio::task_local! {
-    static READ_LIMIT: (Option<i64>, polylogue_store::read::limit::ReadCancellation);
+    static READ_LIMIT: (Option<std::time::Instant>, polylogue_store::read::limit::ReadCancellation);
 }
 
 async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> HttpResponse {
@@ -251,60 +269,89 @@ async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> Htt
         {
             Some(value) => Some(value),
             None => {
-                return json_answer(
+                return web_shell::assets::secure(json_answer(
                     &web,
                     crate::daemon::service::error(
                         "bad_request",
                         "x-polylogue-deadline-ms must be Unix milliseconds",
                     ),
-                );
+                ));
             }
         },
         None => None,
     };
+    // Convert the outer wall-clock header once; later phases share this instant.
+    let parent_deadline = deadline_ms.and_then(|deadline| {
+        std::time::Instant::now().checked_add(crate::daemon::execution::remaining(Some(deadline)))
+    });
+    let is_asset = req.uri().path().starts_with("/assets/");
     let mut response = READ_LIMIT
-        .scope((deadline_ms, cancellation), guarded(web, req, next))
+        .scope((parent_deadline, cancellation), guarded(web, req, next))
         .await;
-    let h = response.headers_mut();
-    h.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-        ),
-    );
-    h.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    h.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+    if !is_asset {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    web_shell::assets::secure(response)
 }
 
 /// Runs a request on a blocking thread, as the socket would.
-pub async fn ask(web: &Arc<Web>, request: Request) -> Response {
+pub async fn ask(web: &Arc<Web>, request: Request) -> Answer<Value> {
+    let scope = if request.read_only() {
+        match web.daemon.reads.scope_token() {
+            Ok(scope) => Some(scope),
+            Err(error) => return crate::daemon::service::store_error(&error),
+        }
+    } else {
+        None
+    };
     let d = Arc::clone(&web.daemon);
-    let (deadline_ms, cancellation) = READ_LIMIT.try_with(Clone::clone).unwrap_or_default();
-    let limit = crate::daemon::execution::limit_for(&request, deadline_ms, cancellation);
+    let limit = request_limit();
+    let parent = parent_lifetime();
     let mut cancel = CancelRead(Some(limit.cancellation.clone()));
-    let response = tokio::task::spawn_blocking(move || {
-        crate::daemon::service::handle_with_limit(request, &d, &limit)
+    let authorship = polylogue_model::authorship::compute_authorship(
+        polylogue_model::authorship::Channel::Web,
+        &Default::default(),
+        None,
+    );
+    let answer = tokio::task::spawn_blocking(move || {
+        let invocation = d.invocation(&authorship).with_parent(parent);
+        crate::daemon::service::handle_with_invocation(request, &d, &limit, &invocation)
     })
     .await
     .unwrap_or_else(|error| crate::daemon::service::error("internal", error));
     cancel.0.take();
-    browser_response(response, &web.daemon.archive.root)
+    let publication = crate::protocol::ReadScopes::single(scope);
+    let answer = crate::protocol::scope_answer(answer, &publication);
+    browser_response(answer, &web.daemon.archive.root)
 }
 
 pub(super) fn request_limit() -> polylogue_store::read::limit::ReadLimit {
     READ_LIMIT
-        .try_with(|(deadline_ms, cancellation)| {
-            crate::daemon::execution::limit(*deadline_ms, cancellation.clone())
+        .try_with(|(deadline, cancellation)| match deadline {
+            Some(deadline) => {
+                polylogue_store::read::limit::ReadLimit::at(*deadline, cancellation.clone())
+            }
+            None => crate::daemon::execution::limit(None, cancellation.clone()),
         })
         .unwrap_or_else(|_| crate::daemon::execution::limit(None, Default::default()))
+}
+
+/// Only an explicit outer header supplies a parent; no implicit read default.
+pub(super) fn parent_deadline() -> Option<std::time::Instant> {
+    READ_LIMIT
+        .try_with(|(deadline, _)| *deadline)
+        .ok()
+        .flatten()
+}
+
+pub(super) fn parent_lifetime() -> Option<Arc<crate::operation::ParentLifetime>> {
+    READ_LIMIT
+        .try_with(|(deadline, cancellation)| {
+            crate::operation::ParentLifetime::capture(*deadline, cancellation.clone())
+        })
+        .ok()
 }
 
 pub(super) struct CancelRead(Option<polylogue_store::read::limit::ReadCancellation>);
@@ -316,25 +363,49 @@ impl Drop for CancelRead {
     }
 }
 
-fn browser_response(response: Response, root: &std::path::Path) -> Response {
-    let mut response = response.clean(|text| access::scrub(text, root));
-    if let Response::Ok { data, .. } = &mut response
-        && let Some(data) = data.as_object_mut()
-    {
-        data.remove("archive");
-    }
-    response
-}
-
-/// A response's data with the archive directory's path taken out.
-pub fn scrubbed(web: &Web, mut value: serde_json::Value) -> serde_json::Value {
-    if let Some(o) = value.as_object_mut() {
-        o.remove("archive");
-    }
-    polylogue_model::masking::mask_json_values(&mut value, |text| {
-        access::scrub(text, &web.daemon.archive.root)
+/// Archive paths never reach a browser, in values, failures or notes.
+fn browser_response(answer: Answer<Value>, root: &std::path::Path) -> Answer<Value> {
+    let mut answer = answer.map(|mut value| {
+        access::scrub_value(&mut value, root);
+        if let Some(value) = value.as_object_mut() {
+            value.remove("archive");
+        }
+        value
     });
-    value
+    let notes = match &mut answer {
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Error(error),
+            envelope: command_surface::Envelope { notes, .. },
+            ..
+        } => {
+            error.message = access::scrub(&error.message, root);
+            error.hint = error.hint.as_deref().map(|hint| access::scrub(hint, root));
+            notes
+        }
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Ok(_),
+            envelope: command_surface::Envelope { notes, .. },
+            ..
+        }
+        | command_surface::Answer {
+            outcome: command_surface::Outcome::Empty(_),
+            envelope: command_surface::Envelope { notes, .. },
+            ..
+        }
+        | command_surface::Answer {
+            outcome:
+                command_surface::Outcome::Degraded {
+                    value: _,
+                    missing: notes,
+                    ..
+                },
+            ..
+        } => notes,
+    };
+    for note in notes {
+        *note = access::scrub(note, root);
+    }
+    answer
 }
 
 fn page(html: String) -> HttpResponse {
@@ -346,11 +417,9 @@ fn failed(status: StatusCode, kind: &str, message: &str) -> HttpResponse {
 }
 
 async fn home(State(web): State<Arc<Web>>) -> HttpResponse {
-    let status = match ask(&web, Request::Status).await {
-        Response::Ok { data, .. } => data,
-        Response::Error { kind, message, .. } => {
-            return failed(error_status(&kind), &kind, &message);
-        }
+    let status = match crate::protocol::into_value(ask(&web, Request::Status).await) {
+        Ok(status) => status,
+        Err(failure) => return failed_with(&failure),
     };
     let sessions = match ask(
         &web,
@@ -364,9 +433,10 @@ async fn home(State(web): State<Arc<Web>>) -> HttpResponse {
         },
     )
     .await
+    .value()
     {
-        Response::Ok { data, .. } => data,
-        _ => serde_json::Value::Null,
+        Some(sessions) => sessions.clone(),
+        None => serde_json::Value::Null,
     };
     page(pages::home(&status, &sessions))
 }
@@ -390,18 +460,14 @@ async fn search(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Ht
         session: None,
         fields: vec![],
     };
-    match ask(&web, request).await {
-        Response::Ok { data, .. } => {
-            page(pages::search(&p.q, Some(&data), None, p.cursor.as_deref()))
-        }
-        Response::Error {
-            kind,
-            message,
-            detail,
-        } => {
-            let e = serde_json::json!({ "kind": kind, "message": access::scrub(&message, &web.daemon.archive.root), "detail": detail });
-            page(pages::search(&p.q, None, Some(&e), p.cursor.as_deref()))
-        }
+    match crate::protocol::into_value(ask(&web, request).await) {
+        Ok(data) => page(pages::search(&p.q, Some(&data), None, p.cursor.as_deref())),
+        Err(failure) => page(pages::search(
+            &p.q,
+            None,
+            Some(&failure),
+            p.cursor.as_deref(),
+        )),
     }
 }
 
@@ -413,7 +479,7 @@ async fn cost(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Http
         p.q.trim()
     };
     let text = format!("{scope} | measure usage");
-    match ask(
+    let answer = ask(
         &web,
         Request::Query {
             text,
@@ -424,14 +490,10 @@ async fn cost(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Http
             fields: vec![],
         },
     )
-    .await
-    {
-        Response::Ok { data, .. } => page(pages::cost(scope, &data["data"])),
-        Response::Error { kind, message, .. } => failed(
-            error_status(&kind),
-            &kind,
-            &access::scrub(&message, &web.daemon.archive.root),
-        ),
+    .await;
+    match crate::protocol::into_value(answer) {
+        Ok(data) => page(pages::cost(scope, &data["data"])),
+        Err(failure) => failed_with(&failure),
     }
 }
 
@@ -507,18 +569,22 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-async fn css() -> HttpResponse {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        include_str!("web/assets/reader.css"),
-    )
-        .into_response()
+async fn asset(request: HttpRequest) -> HttpResponse {
+    let (parts, _) = request.into_parts();
+    let request = axum::http::Request::from_parts(parts, ());
+    let theme = web_shell::theme::Theme {
+        stylesheet: Some(include_str!("web/assets/theme.css").into()),
+        fallback_reason: None,
+    };
+    web_shell::assets::serve_with_theme(&request, Some(&theme)).map(axum::body::Body::from)
 }
-
-async fn js() -> HttpResponse {
+async fn auth_js() -> HttpResponse {
     (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        include_str!("web/assets/reader.js"),
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        include_str!("web/assets/auth.js"),
     )
         .into_response()
 }
@@ -531,45 +597,56 @@ async fn live_js() -> HttpResponse {
         .into_response()
 }
 
-fn error_status(kind: &str) -> StatusCode {
-    match kind {
-        "deadline_exceeded" => StatusCode::GATEWAY_TIMEOUT,
-        "cancelled" => StatusCode::REQUEST_TIMEOUT,
-        "not_found" => StatusCode::NOT_FOUND,
-        "bad_request" | "query" | "sql" | "invalid_query" | "unknown_field" | "bad_value"
-        | "not_a_query" => StatusCode::BAD_REQUEST,
-        "conflict" | "resync_required" | "stale_cursor" => StatusCode::CONFLICT,
-        "not_built" => StatusCode::NOT_IMPLEMENTED,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
-    }
+/// An HTML failure page with the failure's shared HTTP status. The message
+/// was already scrubbed of archive paths by `ask`.
+fn failed_with(failure: &command_surface::Failure) -> HttpResponse {
+    let status = failure
+        .kind
+        .http_status()
+        .and_then(|status| StatusCode::from_u16(status).ok())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    failed(
+        status,
+        failure.code.as_deref().unwrap_or_default(),
+        &failure.message,
+    )
 }
 
 /// The data as the socket gives it, or a typed error with its HTTP status.
-pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
-    match browser_response(response, &web.daemon.archive.root) {
-        Response::Ok { data, .. } => axum::Json(data).into_response(),
-        Response::Error {
-            kind,
-            message,
-            detail,
-        } => {
-            // A browser request's refusal names its own status.
-            let named = detail
-                .as_ref()
-                .and_then(|d| d["http_status"].as_u64())
-                .and_then(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok());
-            let status = named.unwrap_or_else(|| error_status(&kind));
-            let message = access::scrub(&message, &web.daemon.archive.root);
-            (
-                status,
-                axum::Json(scrubbed(
-                    web,
-                    serde_json::json!({ "error": kind, "message": message, "detail": detail }),
-                )),
-            )
-                .into_response()
-        }
+pub(crate) fn prepare_json_answer(
+    web: &Web,
+    response: impl Into<command_surface::Answer<serde_json::Value>>,
+) -> (StatusCode, Vec<u8>) {
+    let answer = response.into();
+    let status = answer
+        .http_status()
+        .and_then(|status| StatusCode::from_u16(status).ok())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut value = serde_json::to_value(answer).expect("answer serializes");
+    if let Some(data) = value
+        .get_mut("value")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        data.remove("archive");
     }
+    access::scrub_value(&mut value, &web.daemon.archive.root);
+    (
+        status,
+        serde_json::to_vec(&value).expect("answer serializes"),
+    )
+}
+
+pub fn json_answer(
+    web: &Web,
+    response: impl Into<command_surface::Answer<serde_json::Value>>,
+) -> HttpResponse {
+    let (status, bytes) = prepare_json_answer(web, response);
+    (
+        status,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        bytes,
+    )
+        .into_response()
 }
 
 #[cfg(test)]

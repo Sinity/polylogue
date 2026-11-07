@@ -10,8 +10,7 @@
 //! call's normalized command), which it writes with the row by the same
 //! function so that a first build's derive does not rewrite those rows.
 //! A first build and an incremental one derive the same rows from the same
-//! records. Excision needs nothing per derivation: a
-//! removed session takes its rows with it.
+//! records. Replacing a reading recomputes the derived rows it changes.
 
 use crate::{Result, StoreError};
 use polylogue_model::Catalog;
@@ -19,17 +18,16 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use std::collections::BTreeMap;
 
 mod active_path;
+pub(crate) mod brief;
 mod cost;
 pub(crate) mod counts;
 mod duplicates;
+mod links;
 mod repository;
 mod session;
 mod session_span;
 mod title;
 mod tool_calls;
-mod work;
-
-pub use work::verification_title;
 
 /// Sessions derived per transaction, so a long derive never holds the
 /// writer for minutes.
@@ -80,10 +78,11 @@ const ALL: &[Derivation] = &[
     active_path::DERIVATION,
     repository::DERIVATION,
     title::DERIVATION,
-    work::DERIVATION,
+    links::DERIVATION,
     cost::DERIVATION,
     counts::DERIVATION,
     session_span::DERIVATION,
+    brief::DERIVATION,
 ];
 
 /// Declared stored products, in their derivation order.
@@ -107,15 +106,24 @@ pub(crate) fn is_current(conn: &Connection, name: &str, pk: i64) -> Result<bool>
 
 /// Runs every derivation over the sessions it has not derived at their
 /// current state; returns the number of (derivation, session) pairs done.
-pub fn run(index: &mut Connection) -> Result<u64> {
-    run_with_catalog(index, Catalog::builtin())
+pub fn run(
+    index: &mut Connection,
+    commits: Option<&crate::completion::CommitEvents>,
+) -> Result<u64> {
+    run_all(index, Catalog::builtin(), ALL, commits)
 }
 
-fn run_with_catalog(index: &mut Connection, catalog: &Catalog) -> Result<u64> {
-    run_all(index, catalog, ALL)
+#[cfg(test)]
+pub(crate) fn run_with_catalog(index: &mut Connection, catalog: &Catalog) -> Result<u64> {
+    run_all(index, catalog, ALL, None)
 }
 
-fn run_all(index: &mut Connection, catalog: &Catalog, derivations: &[Derivation]) -> Result<u64> {
+fn run_all(
+    index: &mut Connection,
+    catalog: &Catalog,
+    derivations: &[Derivation],
+    commits: Option<&crate::completion::CommitEvents>,
+) -> Result<u64> {
     // Resolve the whole declaration before writing any rows. Dependency rule
     // changes invalidate consumers even when their source session is unchanged.
     let versions = versions(derivations, catalog)?;
@@ -129,17 +137,26 @@ fn run_all(index: &mut Connection, catalog: &Catalog, derivations: &[Derivation]
         for &pk in sessions {
             done += derive_session(&tx, pk, derivations, &versions, catalog, counter)?;
         }
+        crate::items::refresh_changed(&tx, counter)?;
         tx.commit()?;
+        if let Some(events) = commits {
+            events.committed();
+        }
     }
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let before = tx.total_changes();
     for finish in derivations.iter().filter_map(|d| d.finish) {
         finish(&tx)?;
     }
-    if tx.total_changes() != before {
-        crate::archive::bump_counter(&tx)?;
+    let changed = tx.total_changes() != before;
+    if changed {
+        let counter = crate::archive::bump_counter(&tx)?;
+        crate::items::refresh_changed(&tx, counter)?;
     }
     tx.commit()?;
+    if changed && let Some(events) = commits {
+        events.committed();
+    }
     Ok(done)
 }
 

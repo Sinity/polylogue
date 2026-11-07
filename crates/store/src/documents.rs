@@ -1,9 +1,8 @@
-//! Text documents: one shown version each, chosen like a message's, and
-//! reads in the reader's read transaction.
+//! Text documents: one shown version each, with source time before arrival
+//! rank, and reads in the reader's read transaction.
 use crate::encoding::hex;
-use crate::encoding::{
-    PreparedDocument, block_text, restore_text, unpack_block, unpack_json, unpack_text,
-};
+use crate::encoding::{PreparedDocument, restore_text, unpack_block, unpack_json, unpack_text};
+use crate::versions::VersionKind;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{Block, Document, DocumentId, DocumentRow, Json};
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -13,38 +12,13 @@ use std::ops::ControlFlow;
 
 pub(crate) struct Source<'a> {
     pub input_pk: i64,
-    pub input_id: &'a str,
     pub chain: i64,
-    /// Later records of the chain restate earlier ones.
-    pub repeats_whole_conversations: bool,
     pub rank: i64,
     pub counter: i64,
     pub packed: &'a HashMap<[u8; 32], Vec<u8>>,
     /// Set during a first build ([`crate::first_build`]).
     pub first_build: Option<&'a crate::first_build::FirstBuild>,
-}
-
-/// What decides the shown version: a known source time first, then the
-/// newest, then the more faithful arrival, then the larger content hash, then
-/// the smaller input ID and the newer chain, so arrival order never decides.
-type Rank = (bool, Option<i64>, i64, Vec<u8>, String, i64);
-
-fn better(new: &Rank, cur: &Rank) -> bool {
-    (
-        !new.0,
-        std::cmp::Reverse(new.1),
-        new.2,
-        std::cmp::Reverse(&new.3),
-        &new.4,
-        std::cmp::Reverse(new.5),
-    ) < (
-        !cur.0,
-        std::cmp::Reverse(cur.1),
-        cur.2,
-        std::cmp::Reverse(&cur.3),
-        &cur.4,
-        std::cmp::Reverse(cur.5),
-    )
+    pub keys: Option<&'a crate::writer::resolve::ResolvedKeys>,
 }
 
 pub(crate) fn write(
@@ -52,6 +26,7 @@ pub(crate) fn write(
     source: &Source<'_>,
     row: &DocumentRow,
     prepared: &PreparedDocument,
+    admitted: Option<i64>,
 ) -> Result<()> {
     if prepared.id != row.document.id || prepared.blocks.len() != row.document.blocks.len() {
         return Err(StoreError::Invalid(
@@ -60,71 +35,90 @@ pub(crate) fn write(
     }
     let doc = &row.document;
     let time = doc.source_time.map(|t| t.unix_ms());
-    let new: Rank = (
-        time.is_some(),
-        time,
-        source.rank,
-        prepared.hash.to_vec(),
-        source.input_id.to_owned(),
-        source.chain,
-    );
-    let existing: Option<i64> = tx
-        .query_row(
-            "SELECT pk FROM document WHERE id=?1",
-            [doc.id.to_string()],
-            |r| r.get(0),
-        )
+    let keys = source
+        .keys
+        .ok_or_else(|| StoreError::Invalid("document reading has no resolved key".into()))?;
+    let reserved = keys.get(
+        crate::writer::resolve::Kind::Document,
+        doc.id.to_string().as_bytes(),
+    )?;
+    let existing = tx
+        .prepare_cached("SELECT pk FROM document WHERE pk=?1")?
+        .query_row([reserved.pk], |row| row.get::<_, i64>(0))
         .optional()?;
-    if let Some(pk) = existing {
-        // Within one chain the earliest record wins, or the latest in a repeating whole conversations chain.
-        let earlier: Option<i64> = tx
-            .query_row(
-                "SELECT source_start FROM document_source WHERE document_pk=?1 AND input_pk=?2 AND chain=?3",
-                params![pk, source.input_pk, source.chain],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let start = row.offset as i64;
-        if earlier.is_some_and(|earlier| {
-            if source.repeats_whole_conversations {
-                start < earlier
-            } else {
-                start > earlier
-            }
-        }) {
-            return Ok(());
+    crate::versions::store(
+        tx,
+        VersionKind::Document,
+        &prepared.hash,
+        &prepared.body,
+        &doc.blocks,
+        &prepared.texts,
+        crate::versions::TextRows {
+            packed: source.packed,
+            first_build: source.first_build,
+            keys,
+        },
+    )?;
+    let pk = match existing {
+        Some(pk) => pk,
+        None => {
+            tx.execute("INSERT INTO document(pk,id,origin,native_id,purpose,title,source_time,authorship,version_hash,input_pk,source_chain,source_start,source_end,changed,fields)
+                VALUES (?15,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![doc.id.to_string(),doc.id.origin().as_str(),doc.id.native().as_str(),doc.purpose.as_str(),doc.title,time,doc.authorship.as_str(),&prepared.hash[..],source.input_pk,source.chain,row.offset as i64,row.end as i64,source.counter,prepared.fields,Some(reserved.pk)])?;
+            tx.last_insert_rowid()
         }
-        let shown: Option<Rank> = tx
-            .query_row(
-                "SELECT s.source_time,s.arrival_rank,s.version_hash,r.id,s.chain FROM document_source s
-                 JOIN input_ref r ON r.pk=s.input_pk WHERE s.document_pk=?1 AND s.shown=1",
-                [pk],
-                |r| {
-                    let time: Option<i64> = r.get(0)?;
-                    Ok((time.is_some(), time, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-                },
-            )
-            .optional()?;
-        let wins = shown
-            .as_ref()
-            .is_none_or(|shown| better(&new, shown) || (shown.4 == new.4 && shown.5 == new.5));
-        if wins {
-            tx.execute(
-                "UPDATE document_source SET shown=0 WHERE document_pk=?1",
-                [pk],
-            )?;
-        }
-        set_source(tx, pk, source, row, time, &prepared.hash, wins)?;
-        if wins {
-            show(tx, pk, source, row, prepared)?;
+    };
+    set_source(tx, pk, source, row, time, prepared, admitted)?;
+    Ok(())
+}
+
+pub(crate) fn apply_choice(
+    tx: &Transaction<'_>,
+    pk: i64,
+    choice: Option<&crate::writer::resolve::versions::DocumentChoice>,
+    counter: i64,
+    first_build: Option<&crate::first_build::FirstBuild>,
+    keys: &crate::writer::resolve::ResolvedKeys,
+) -> Result<()> {
+    let Some(choice) = choice else {
+        let texts=tx.prepare("SELECT DISTINCT text_id FROM document_block WHERE document_pk=?1 AND text_id IS NOT NULL")?.query_map([pk],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        tx.execute("DELETE FROM document WHERE pk=?1", [pk])?;
+        for text in texts {
+            crate::text_rows::unindex_unused(tx, text, first_build.is_some())?;
         }
         return Ok(());
+    };
+    let packed = HashMap::new();
+    let source = Source {
+        input_pk: choice.input,
+        chain: choice.chain,
+        rank: choice.rank,
+        counter,
+        packed: &packed,
+        first_build,
+        keys: Some(keys),
+    };
+    if choice.changed {
+        let document = choice.document.as_ref().ok_or_else(|| {
+            StoreError::Invalid("a changed document has no prepared value".into())
+        })?;
+        let prepared = choice
+            .prepared
+            .as_ref()
+            .ok_or_else(|| StoreError::Invalid("a changed document has no prepared body".into()))?;
+        let row = DocumentRow {
+            offset: choice.start as u64,
+            end: choice.end as u64,
+            document: document.clone(),
+        };
+        show(tx, pk, &source, &row, prepared)?;
+    } else {
+        tx.prepare_cached("UPDATE document SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,changed=?6 WHERE pk=?1")?.execute(params![pk,choice.input,choice.chain,choice.start,choice.end,counter])?;
     }
-    tx.execute("INSERT INTO document(id,origin,native_id,purpose,title,source_time,authorship,version_hash,input_pk,source_chain,source_start,source_end,changed,fields)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![doc.id.to_string(),doc.id.origin().as_str(),doc.id.native().as_str(),doc.purpose.as_str(),doc.title,time,doc.authorship.as_str(),&prepared.hash[..],source.input_pk,source.chain,row.offset as i64,row.end as i64,source.counter,prepared.fields])?;
-    let pk = tx.last_insert_rowid();
-    set_source(tx, pk, source, row, time, &prepared.hash, true)?;
-    insert_blocks(tx, pk, source, doc, prepared)
+    tx.execute(
+        "UPDATE document_source SET shown=(input_pk=?2 AND chain=?3) WHERE document_pk=?1",
+        params![pk, choice.input, choice.chain],
+    )?;
+    Ok(())
 }
 
 fn set_source(
@@ -133,14 +127,14 @@ fn set_source(
     source: &Source<'_>,
     row: &DocumentRow,
     time: Option<i64>,
-    hash: &[u8; 32],
-    shown: bool,
+    prepared: &PreparedDocument,
+    admitted: Option<i64>,
 ) -> Result<()> {
-    tx.execute("INSERT INTO document_source(document_pk,input_pk,chain,source_start,source_end,arrival_rank,source_time,version_hash,shown)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+    tx.execute("INSERT INTO document_source(document_pk,input_pk,chain,source_start,source_end,arrival_rank,source_time,version_hash,shown,time,admitted)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
         ON CONFLICT(document_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,source_end=excluded.source_end,
-            arrival_rank=excluded.arrival_rank,source_time=excluded.source_time,version_hash=excluded.version_hash,shown=excluded.shown",
-        params![pk,source.input_pk,source.chain,row.offset as i64,row.end as i64,source.rank,time,&hash[..],shown])?;
+            arrival_rank=excluded.arrival_rank,source_time=excluded.source_time,version_hash=excluded.version_hash,shown=excluded.shown,time=excluded.time,admitted=excluded.admitted",
+        params![pk,source.input_pk,source.chain,row.offset as i64,row.end as i64,source.rank,time,&prepared.hash[..],false,prepared.time,admitted])?;
     Ok(())
 }
 
@@ -179,11 +173,19 @@ fn insert_blocks(
         .zip(&prepared.data)
         .enumerate()
     {
-        let text = block_text(block)
-            .map(|text| {
-                crate::text_rows::intern(tx, text, 1, Some(source.packed), source.first_build)
+        let keys = source.keys.ok_or_else(|| {
+            StoreError::Invalid("document blocks have no resolved text keys".into())
+        })?;
+        let text = prepared.texts[idx]
+            .as_ref()
+            .map(|hash| {
+                keys.get(crate::writer::resolve::Kind::Text, hash)
+                    .map(|key| key.pk)
             })
             .transpose()?;
+        if let Some(id) = text {
+            crate::text_rows::activate(tx, id, 1, source.first_build.is_some())?;
+        }
         let blob = match block {
             Block::Image(a) | Block::File(a) => a.blob.map(|h| h.0.to_vec()),
             _ => None,
@@ -263,27 +265,78 @@ impl DocumentRead<'_, '_> {
         self.visit_blocks_until(None, visit)
     }
 
+    /// Original source ordinals are retained while a caller stops after one
+    /// block or resumes without decoding earlier bodies.
+    pub fn visit_blocks_from(
+        &self,
+        from: u64,
+        visit: impl FnMut(u64, Block) -> ControlFlow<()>,
+    ) -> Result<()> {
+        self.visit_blocks_selected_from(from, None, false, visit)
+    }
+
+    /// Descend from an exclusive original ordinal, or from the last block.
+    /// Returning Break prevents the next body from being decoded.
+    pub fn visit_blocks_before_with_ordinals(
+        &self,
+        before: Option<u64>,
+        visit: impl FnMut(u64, Block) -> ControlFlow<()>,
+    ) -> Result<()> {
+        visit_blocks_selected_from(
+            (self.reader.conn()?, Some(self.reader)),
+            self.pk,
+            0,
+            before.and_then(|before| usize::try_from(before).ok()),
+            false,
+            true,
+            visit,
+        )
+    }
+
+    pub fn has_block(&self, ordinal: u64) -> Result<bool> {
+        let Ok(ordinal) = i64::try_from(ordinal) else {
+            return Ok(false);
+        };
+        Ok(self.reader.conn()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM document_block WHERE document_pk=?1 AND idx=?2)",
+            params![self.pk, ordinal],
+            |row| row.get(0),
+        )?)
+    }
+
     fn visit_blocks_until(
         &self,
         end: Option<usize>,
+        visit: impl FnMut(Block) -> ControlFlow<()>,
+    ) -> Result<()> {
+        self.visit_blocks_selected(end, false, visit)
+    }
+
+    fn visit_blocks_selected(
+        &self,
+        end: Option<usize>,
+        text_only: bool,
         mut visit: impl FnMut(Block) -> ControlFlow<()>,
     ) -> Result<()> {
-        let bound = if end.is_some() { "AND b.idx<?2" } else { "" };
-        let sql = format!(
-            "SELECT b.body,t.body,b.data FROM document_block b LEFT JOIN text t ON t.id=b.text_id WHERE b.document_pk=?1 {bound} ORDER BY b.idx"
-        );
-        let mut statement = self.reader.conn()?.prepare_cached(&sql)?;
-        let mut rows = if let Some(end) = end {
-            statement.query(params![self.pk, end as i64])?
-        } else {
-            statement.query([self.pk])?
-        };
-        while let Some(row) = rows.next()? {
-            if visit(decoded_block(row)?).is_break() {
-                break;
-            }
-        }
-        Ok(())
+        self.visit_blocks_selected_from(0, end, text_only, |_, block| visit(block))
+    }
+
+    fn visit_blocks_selected_from(
+        &self,
+        from: u64,
+        end: Option<usize>,
+        text_only: bool,
+        visit: impl FnMut(u64, Block) -> ControlFlow<()>,
+    ) -> Result<()> {
+        visit_blocks_selected_from(
+            (self.reader.conn()?, Some(self.reader)),
+            self.pk,
+            from,
+            end,
+            text_only,
+            false,
+            visit,
+        )
     }
 
     pub fn visit_blocks_before(
@@ -328,7 +381,7 @@ impl DocumentRead<'_, '_> {
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             let input: String = row.get(0)?;
-            let locations=self.reader.conn()?.prepare("SELECT machine,path,seen_at FROM a.observation WHERE input=?1 ORDER BY seen_at,machine,path")?.query_map([&input],|r|Ok(serde_json::json!({"machine":r.get::<_,String>(0)?,"path":r.get::<_,String>(1)?,"seen_at_ms":r.get::<_,i64>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let locations=self.reader.conn()?.prepare("SELECT machine,path,seen_at FROM source_observation WHERE input=?1 ORDER BY seen_at,machine,path")?.query_map([&input],|r|Ok(serde_json::json!({"machine":r.get::<_,String>(0)?,"path":r.get::<_,String>(1)?,"seen_at_ms":r.get::<_,i64>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
             out.push(DocumentSource {
                 input,
                 chain: row.get(1)?,
@@ -363,4 +416,81 @@ pub struct DocumentSource {
     pub version: String,
     pub shown: bool,
     pub locations: Vec<Json>,
+}
+
+/// A borrowed view used by the original native walker during preparation.
+/// DocumentRead and this view share the same indexed block codec.
+pub(crate) struct TextRead<'a> {
+    conn: &'a rusqlite::Connection,
+    pk: i64,
+}
+pub(crate) fn text_read<'a>(
+    conn: &'a rusqlite::Connection,
+    id: &DocumentId,
+) -> Result<Option<TextRead<'a>>> {
+    let pk = conn
+        .query_row(
+            "SELECT pk FROM document WHERE id=?1",
+            [id.to_string()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    Ok(pk.map(|pk| TextRead { conn, pk }))
+}
+impl TextRead<'_> {
+    pub(crate) fn visit_text_blocks_from(
+        &self,
+        from: u64,
+        visit: impl FnMut(u64, Block) -> ControlFlow<()>,
+    ) -> Result<()> {
+        visit_blocks_selected_from((self.conn, None), self.pk, from, None, true, false, visit)
+    }
+}
+
+fn visit_blocks_selected_from(
+    (conn, reader): (&rusqlite::Connection, Option<&Reader<'_>>),
+    pk: i64,
+    from: u64,
+    end: Option<usize>,
+    text_only: bool,
+    backwards: bool,
+    mut visit: impl FnMut(u64, Block) -> ControlFlow<()>,
+) -> Result<()> {
+    let Ok(from) = i64::try_from(from) else {
+        return Ok(());
+    };
+    // Every stored ordinal is a nonnegative SQLite integer. A larger
+    // upper bound includes every row rather than wrapping or refusing it.
+    let end = end.and_then(|end| i64::try_from(end).ok());
+    let bound = if end.is_some() { "AND b.idx<?3" } else { "" };
+    let kinds = if text_only {
+        "AND b.kind IN ('text','thinking','tool_result')"
+    } else {
+        ""
+    };
+    let data = if text_only { "NULL" } else { "b.data" };
+    let order = if backwards { "DESC" } else { "ASC" };
+    let sql = format!(
+        "SELECT b.body,t.body,{data},b.idx FROM document_block b LEFT JOIN text t ON t.id=b.text_id WHERE b.document_pk=?1 AND b.idx>=?2 {bound} {kinds} ORDER BY b.idx {order}"
+    );
+    let mut statement = conn.prepare_cached(&sql)?;
+    let mut rows = if let Some(end) = end {
+        statement.query(params![pk, from, end])?
+    } else {
+        statement.query(params![pk, from])?
+    };
+    while let Some(row) = rows.next()? {
+        if let Some(reader) = reader {
+            reader.check()?;
+        }
+        if let Some(limit) = crate::read::limit::ReadLimit::current() {
+            limit.check()?;
+        }
+        let ordinal = u64::try_from(row.get::<_, i64>(3)?)
+            .map_err(|_| StoreError::Invalid("negative document block ordinal".into()))?;
+        if visit(ordinal, decoded_block(row)?).is_break() {
+            break;
+        }
+    }
+    Ok(())
 }

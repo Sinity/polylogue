@@ -7,11 +7,15 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+shared-signals.workspace = true
+query-language.workspace = true
+historical-query-format-v1.workspace = true
+schemars = "1"
 tempfile.workspace = true
-credential-masking.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+authored.workspace = true
 jiff.workspace = true
 blake3.workspace = true
 unicode-normalization.workspace = true

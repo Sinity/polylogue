@@ -1,0 +1,663 @@
+//! Compiler tests: the SQL a query produces, checked by its shape here and by running it in the daemon tests.
+
+use super::*;
+
+fn opts(saved: &[(&str, &str)]) -> Options {
+    Options {
+        clock: query_language::time::Clock::new(
+            jiff::Timestamp::from_millisecond(1_790_000_000_000).unwrap(),
+            query_language::time::DaySetting::new(
+                jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(),
+                jiff::civil::Time::constant(4, 0, 0, 0),
+            )
+            .unwrap(),
+        ),
+        origins: vec!["claude-code".into(), "codex".into()],
+        page_size: None,
+        random_seed: None,
+        embeddings: false,
+        self_session: None,
+        saved: saved_bindings(saved),
+        kept: Default::default(),
+        fields: vec![],
+        chat_pages: vec![ChatPage {
+            origin: "chatgpt".into(),
+            hosts: vec!["chatgpt.com".into(), "chat.openai.com".into()],
+            path: "c".into(),
+        }],
+    }
+}
+
+// Invalid/cyclic definitions deliberately carry a mismatched declared identity;
+// valid definitions below are frozen through the production Plan factory.
+fn saved_bindings(
+    definitions: &[(&str, &str)],
+) -> std::collections::BTreeMap<String, Vec<SavedQuery>> {
+    let mut bindings = polylogue_query::Bindings::default();
+    for (name, text) in definitions {
+        bindings.saved.insert(
+            (*name).into(),
+            vec![SavedQuery {
+                text: (*text).into(),
+                revision: format!("{name}-revision"),
+                root: format!("{name}-first"),
+                hash: query_language::identity::QuestionId([0; 32]),
+                denominator: None,
+                conflicts: vec![],
+                body: polylogue_query::SavedQueryBody::Frozen {
+                    object: None,
+                    syntax: (*text).into(),
+                },
+            }],
+        );
+    }
+    for _ in 0..definitions.len() {
+        for (name, text) in definitions {
+            if let Ok(plan) = polylogue_query::plan::prepare(text, &bindings, |_| Ok(())) {
+                bindings.saved.remove(*name);
+                bindings
+                    .add_saved(
+                        name,
+                        &plan,
+                        &format!("{name}-revision"),
+                        &format!("{name}-first"),
+                    )
+                    .unwrap();
+            }
+        }
+    }
+    bindings.saved
+}
+
+#[test]
+fn a_conversation_url_names_its_session_by_the_chat_pages() {
+    for url in [
+        "https://chatgpt.com/c/abc",
+        "https://www.chat.openai.com/c/abc?model=x",
+    ] {
+        let p = c(url);
+        assert!(
+            p.params.contains(&Param::Text("chatgpt:abc".into())),
+            "{url}: {:?}",
+            p.params
+        );
+    }
+    assert!(compile_err("https://claude.ai/chat/abc").contains("not a conversation URL"));
+}
+
+fn c(text: &str) -> Program {
+    compile(text, &opts(&[])).unwrap_or_else(|e| panic!("{text}: {e}"))
+}
+
+fn compile_err(text: &str) -> String {
+    compile(text, &opts(&[])).unwrap_err().to_string()
+}
+
+fn same(a: &str, b: &str, o: &Options) {
+    let (pa, pb) = (compile(a, o).unwrap(), compile(b, o).unwrap());
+    assert_eq!(pa.unit, pb.unit, "{a} / {b}");
+    // The saved condition keeps its own parentheses; the meaning is equal.
+    let flat = |s: &str| s.replace(['(', ')'], "");
+    assert_eq!(flat(&pa.sql), flat(&pb.sql), "{a} / {b}");
+    assert_eq!(pa.params, pb.params, "{a} / {b}");
+}
+
+/// A saved query selects the same rows used inline or by name.
+#[test]
+fn a_saved_query_selects_what_it_says_inline_or_by_name() {
+    let o = opts(&[
+        ("failing", "tool_calls where outcome:error"),
+        ("morrow", "tag:project:morrow"),
+        ("by-action", "tool_calls | group by action | count"),
+    ]);
+    // As the source, narrowed by the rest.
+    same(
+        "query:failing session.repo:morrow",
+        "tool_calls where (outcome:error) session.repo:morrow",
+        &o,
+    );
+    // As a condition over the same unit.
+    same(
+        "tool_calls where query:failing action:shell",
+        "tool_calls where (outcome:error) action:shell",
+        &o,
+    );
+    same("query:morrow", "sessions where (tag:project:morrow)", &o);
+    // A shaped result is read, then further staged.
+    same(
+        "query:by-action | limit 2",
+        "tool_calls | group by action | count | limit 2",
+        &o,
+    );
+}
+
+#[test]
+fn a_saved_query_that_cannot_stand_there_is_refused() {
+    let o = opts(&[
+        ("failing", "tool_calls where outcome:error"),
+        ("by-action", "tool_calls | group by action | count"),
+        ("loop", "sessions where query:loop"),
+    ]);
+    for bad in [
+        "tool_calls where query:by-action",
+        "messages where query:failing",
+        "query:by-action outcome:error",
+        "query:nope",
+        "query:loop",
+    ] {
+        assert!(compile(bad, &o).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn sort_takes_tie_breaking_keys() {
+    use crate::fixture::{Fixture, SessionFacts};
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(directory.path()).unwrap();
+    let now = opts(&[]).clock.now.as_millisecond();
+    for (id, elapsed, wait) in [
+        ("claude-code:d", 3000, None),
+        ("claude-code:c", 2000, Some("permission")),
+        ("claude-code:b", 1000, None),
+        ("claude-code:a", 1000, None),
+    ] {
+        let session = fixture
+            .session(SessionFacts {
+                id,
+                ..Default::default()
+            })
+            .unwrap();
+        fixture
+            .live(session, "hook_stop", now - elapsed, wait, None)
+            .unwrap();
+    }
+    let program = c("sessions | sort by live_rank, last_event_at desc | fields id");
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut rows = reader.query_rows(&program).unwrap();
+    for row in &mut rows {
+        crate::query::execute::present(&program, row).unwrap();
+    }
+    let ids: Vec<_> = rows.iter().map(|row| row["id"].as_str().unwrap()).collect();
+    assert_eq!(
+        ids,
+        [
+            "claude-code:c",
+            "claude-code:a",
+            "claude-code:b",
+            "claude-code:d"
+        ]
+    );
+    c("sessions | group by repo | sort by count, repo");
+}
+
+#[test]
+fn measure_ends_a_session_query() {
+    let p = c("repo:polylogue | measure usage");
+    let m = p.measure.expect("measure");
+    assert_eq!(m.what, "usage");
+    assert!(!m.everything);
+    assert!(
+        c("sessions | measure daily:tokens")
+            .measure
+            .unwrap()
+            .everything
+    );
+    assert!(compile_err("messages | measure usage").contains("session query"));
+    assert!(compile_err("sessions | measure usage | sort by cost").contains("last stage"));
+}
+
+#[test]
+fn fields_choose_the_columns() {
+    let p = compile(
+        "sessions",
+        &Options {
+            fields: vec!["id".into(), "cost".into(), "repo".into()],
+            ..opts(&[])
+        },
+    )
+    .unwrap();
+    let names: Vec<&str> = p.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["id", "cost", "repo"]);
+}
+
+#[test]
+fn changes_continue_from_a_cursor() {
+    let p = c("changes where after:generation:12:3");
+    assert!(p.sql.contains("> 12") && p.sql.contains("> 3"), "{}", p.sql);
+    assert!(compile_err("changes where after:12").contains("GEN:COUNTER:ARCHIVE"));
+}
+
+#[test]
+fn deliveries_take_their_outcome_from_the_latest_event() {
+    let p = c("deliveries where sender:signal | sort by at desc");
+    assert!(p.sql.contains("delivery_event"), "{}", p.sql);
+    assert!(!p.sql.contains(".outcome"), "{}", p.sql);
+}
+
+#[test]
+fn every_stored_value_can_be_queried() {
+    use polylogue_model::{
+        BlockKind, LINK_HOW_NAMES, LINK_KIND_NAMES, LinkKind, PromptKind, Role, SessionKind,
+    };
+    let closed: &[(&str, &[&str])] = &[
+        ("sessions where kind:", SessionKind::NAMES),
+        ("messages where role:", Role::NAMES),
+        ("messages where prompt_kind:", PromptKind::NAMES),
+        ("blocks where kind:", BlockKind::NAMES),
+        ("links where kind:", LINK_KIND_NAMES),
+        ("links where how:", LINK_HOW_NAMES),
+    ];
+    for (query, names) in closed {
+        for name in *names {
+            c(&format!("{query}{name}"));
+        }
+        let (unit, field) = query.trim_end_matches(':').split_once(" where ").unwrap();
+        let unit = crate::query::ast::Unit::from_name(unit).unwrap();
+        let offered = crate::query::fields::lookup(unit, field)
+            .unwrap()
+            .values
+            .unwrap();
+        assert_eq!(offered, *names, "{query}");
+    }
+    for k in LinkKind::ALL {
+        let (kind, _) = k.columns();
+        c(&format!("sessions where link:{kind}"));
+    }
+    c("sessions where link:fork");
+    c("sessions where link:resume");
+    let refusal = compile("sessions where kind:chat", &opts(&[])).unwrap_err();
+    assert_eq!(refusal.kind(), "bad_value");
+    for known in ["chat", "sessions", "main"] {
+        assert!(refusal.to_string().contains(known), "{refusal}");
+    }
+    assert!(compile_err("sessions where link:reference").contains("link is one of"));
+}
+
+#[test]
+fn change_selections_are_output_arrays_not_scalar_operands() {
+    for text in [
+        "changes where sessions:x",
+        "changes where messages > 0",
+        "changes | sort by sessions",
+        "changes | group by messages | count",
+        "changes | agg sum(messages)",
+    ] {
+        assert!(compile_err(text).contains("selection array"), "{text}");
+    }
+    let generations = c("changes where after:generation:1:2 | limit 1").change_generations;
+    assert!(!generations.is_empty());
+    assert!(
+        generations
+            .iter()
+            .all(|generation| generation == "generation")
+    );
+}
+
+mod documents;
+
+#[test]
+fn column_references_follow_fields_and_projection_owners() {
+    let kinds = |program: Program| {
+        program
+            .columns
+            .into_iter()
+            .map(|c| (c.name, c.reference))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    assert_eq!(kinds(c("sessions"))["id"], Some(ColumnReference::Session));
+    assert_eq!(kinds(c("documents"))["id"], Some(ColumnReference::Document));
+    assert_eq!(kinds(c("messages"))["id"], Some(ColumnReference::Message));
+    assert_eq!(
+        kinds(c("messages"))["session"],
+        Some(ColumnReference::Session)
+    );
+    let assertions = kinds(c("assertions"));
+    assert_eq!(assertions["id"], None);
+    assert_eq!(assertions["root"], None);
+    assert_eq!(assertions["reference"], Some(ColumnReference::Assertion));
+    let mut options = opts(&[]);
+    options.fields = vec!["id".into(), "root".into(), "reference".into()];
+    assert_eq!(
+        kinds(compile("assertions", &options).unwrap()),
+        std::collections::BTreeMap::from([
+            ("id".into(), None),
+            ("root".into(), None),
+            ("reference".into(), Some(ColumnReference::Assertion)),
+        ])
+    );
+    options.fields = vec!["id".into(), "session.id".into(), "session.title".into()];
+    let projected = kinds(compile("messages", &options).unwrap());
+    assert_eq!(projected["id"], Some(ColumnReference::Message));
+    assert_eq!(projected["session_id"], Some(ColumnReference::Session));
+    assert_eq!(projected["session_title"], None);
+    for (query, field, reference) in [
+        ("sessions | group by id", "id", ColumnReference::Session),
+        ("documents | group by id", "id", ColumnReference::Document),
+        ("sessions | agg min(id)", "min_id", ColumnReference::Session),
+    ] {
+        let program = c(query);
+        assert_eq!(kinds(program.clone())[field], Some(reference), "{query}");
+        assert!(
+            matches!(
+                program.row_basis,
+                RowBasis::Group { .. } | RowBasis::Summary
+            ),
+            "{query}"
+        );
+    }
+}
+
+#[test]
+fn kept_rows_preserve_only_recorded_reference_metadata() {
+    let mut options = opts(&[]);
+    options.kept.insert(
+        "docs".into(),
+        Kept {
+            output_metadata: Default::default(),
+            shape: None,
+            native_identity: false,
+            unit: "documents".into(),
+            columns: c("documents").columns,
+            match_columns: vec![],
+        },
+    );
+    assert_eq!(
+        compile("result:docs | sort by title", &options)
+            .unwrap()
+            .columns[0]
+            .reference,
+        Some(ColumnReference::Document)
+    );
+    let grouped = compile("result:docs | group by id", &options).unwrap();
+    assert_eq!(
+        grouped.columns[0].reference,
+        Some(ColumnReference::Document)
+    );
+    assert!(matches!(grouped.row_basis, RowBasis::Group { .. }));
+    let fields = [("name", "id"), ("kind", "text")].into_iter();
+    let without_reference: Column =
+        serde::Deserialize::deserialize(serde::de::value::MapDeserializer::<
+            _,
+            serde::de::value::Error,
+        >::new(fields))
+        .unwrap();
+    options.kept.insert(
+        "plain".into(),
+        Kept {
+            output_metadata: Default::default(),
+            shape: None,
+            native_identity: false,
+            unit: "sessions".into(),
+            columns: vec![without_reference],
+            match_columns: vec![],
+        },
+    );
+    assert_eq!(
+        compile("result:plain", &options).unwrap().columns[0].reference,
+        None
+    );
+    options.kept.insert(
+        "group".into(),
+        Kept {
+            output_metadata: Default::default(),
+            shape: None,
+            native_identity: false,
+            unit: "sessions".into(),
+            columns: c("sessions | group by id").columns,
+            match_columns: vec![],
+        },
+    );
+    assert_eq!(
+        compile("result:group", &options).unwrap().columns[0].reference,
+        Some(ColumnReference::Session)
+    );
+}
+
+#[test]
+fn near_builds_only_when_an_answer_needs_ranking() {
+    for embeddings in [false, true] {
+        let mut options = opts(&[]);
+        options.embeddings = embeddings;
+        for text in [
+            "similar:dates | count",
+            "similar:dates | group by origin",
+            "similar:dates | agg sum(cost)",
+            "similar:dates | measure activity",
+            "similar:dates | messages",
+            "similar:dates | sort by started | limit 1 | count",
+        ] {
+            let program = compile(text, &options).unwrap();
+            assert!(program.near.is_none(), "{text}");
+            assert!(program.incomplete.is_empty(), "{text}");
+            assert!(!program.sql.contains("pl_similarity"), "{text}");
+        }
+        for text in [
+            "similar:dates",
+            "similar:dates | limit 1 | count",
+            "similar:dates | limit 1 | measure sessions",
+            "similar:dates | limit 1 | messages",
+            "similar:dates | union (origin:codex)",
+            "similar:dates | group by origin | first 1 | count",
+        ] {
+            let program = compile(text, &options).unwrap();
+            assert_eq!(program.near.is_some(), embeddings, "{text}");
+            assert_eq!(program.incomplete.is_empty(), embeddings, "{text}");
+        }
+        for text in [
+            "sessions | where similar:dates",
+            "sessions | messages where similar:dates",
+            "similar:dates similar:times",
+            "sessions where NOT similar:dates",
+        ] {
+            assert!(compile(text, &options).is_err(), "{text}");
+        }
+        if embeddings {
+            assert!(compile("similar:dates | union (similar:times)", &options).is_err());
+        } else {
+            let counted =
+                compile("similar:dates | union (origin:codex) | count", &options).unwrap();
+            assert!(counted.incomplete.is_empty());
+        }
+    }
+    let text = "sessions | messages where similar:dates";
+    let QueryError::Invalid { position, .. } = compile(text, &opts(&[])).unwrap_err() else {
+        panic!("expected invalid query")
+    };
+    assert_eq!(position, text.find("similar:").unwrap());
+}
+
+#[test]
+fn explicit_identity_equality_keeps_case_and_does_not_expand_a_prefix() {
+    let exact = c("assertions where root = \"Root:Case\" current:true");
+    assert!(exact.params.contains(&Param::Text("Root:Case".into())));
+    assert!(!exact.sql.contains("root LIKE"));
+    let prefix = c("assertions where root:Root");
+    assert!(prefix.sql.contains("root LIKE"));
+}
+
+#[test]
+fn kept_references_use_query_literals_without_splitting_their_ids() {
+    let mut options = opts(&[]);
+    let id = "source:λ | \"reader\".matches";
+    let columns = c("sessions").columns;
+    options.kept.insert(
+        id.into(),
+        Kept {
+            output_metadata: Default::default(),
+            shape: None,
+            native_identity: false,
+            unit: "sessions".into(),
+            columns: columns.clone(),
+            match_columns: vec![],
+        },
+    );
+    let reference = r#"result:"source:λ | \"reader\".matches""#;
+    let program = compile(&format!("{reference} | sort by id"), &options).unwrap();
+    assert!(
+        program
+            .params
+            .iter()
+            .any(|p| matches!(p,Param::Text(value) if value==id))
+    );
+    assert!(program.sql.contains("$.rows"));
+    assert!(!program.sql.contains("$.matches"));
+    assert!(matches!(
+        compile(&format!("{reference} title:other"), &options),
+        Err(QueryError::Invalid { .. })
+    ));
+    options.kept.insert(
+        "simple".into(),
+        Kept {
+            output_metadata: Default::default(),
+            shape: None,
+            native_identity: false,
+            unit: "sessions".into(),
+            columns: columns.clone(),
+            match_columns: columns,
+        },
+    );
+    assert!(
+        compile("result:simple.matches | count", &options)
+            .unwrap()
+            .sql
+            .contains("$.matches")
+    );
+}
+
+#[test]
+fn saved_query_parameters_bind_typed_time_bounds() {
+    let options = opts(&[("window", "sessions where since:$lower until:$upper")]);
+    same(
+        "query:window(lower=2026-10-24,upper=2026-10-25)",
+        "sessions where since:2026-10-24 until:2026-10-25",
+        &options,
+    );
+}
+
+#[test]
+fn nested_saved_condition_uses_its_own_source_coordinates() {
+    let options = opts(&[(
+        "long",
+        "sessions where id in (sessions where title:\"a long synthetic title that extends beyond the calling saved query reference\" repo:morrow | group by id)",
+    )]);
+    compile("sessions where query:long", &options).unwrap();
+}
+
+#[test]
+fn saved_kept_source_records_its_resolved_definition() {
+    let mut options = opts(&[]);
+    options.kept.insert(
+        "example".into(),
+        Kept {
+            output_metadata: Default::default(),
+            shape: None,
+            native_identity: false,
+            unit: "sessions".into(),
+            columns: c("sessions").columns,
+            match_columns: vec![],
+        },
+    );
+    let mut bindings = options.bindings();
+    let plan = polylogue_query::plan::prepare("result:example", &bindings, |_| Ok(())).unwrap();
+    bindings
+        .add_saved("kept", &plan, "kept-revision", "kept-first")
+        .unwrap();
+    options.saved = bindings.saved;
+    let program = compile("query:kept | sort by id", &options).unwrap();
+    assert_eq!(
+        program.definitions,
+        [Definition {
+            name: "kept".into(),
+            revision: "kept-revision".into()
+        }]
+    );
+}
+
+#[test]
+fn omitted_nested_source_inherits_the_bound_tool_call_unit() {
+    same(
+        "tool_calls where command in (outcome:error | group by command)",
+        "tool_calls where command in (tool_calls where outcome:error | group by command)",
+        &opts(&[]),
+    );
+}
+
+#[test]
+fn source_schema_exposes_native_relations_and_only_shaped_output_columns() {
+    let options = opts(&[]);
+    let (produced, relation) = options
+        .bindings()
+        .output_metadata("tool_calls where outcome:$status")
+        .unwrap();
+    assert_eq!(relation.unit.as_deref(), Some("tool_calls"));
+    assert!(
+        !produced
+            .fields
+            .iter()
+            .any(|field| field.name == "session.repo")
+    );
+    assert!(
+        relation
+            .fields
+            .iter()
+            .any(|field| field.name == "session.repo")
+    );
+    let grouped = options
+        .output_schema("tool_calls | group by action | count")
+        .unwrap();
+    assert_eq!(
+        grouped
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["action", "count"]
+    );
+    assert!(grouped.main_time.is_none());
+}
+
+#[test]
+fn definition_metadata_uses_binding_visitor_and_preserves_quoted_dollars() {
+    let text = "tool_calls where tool:$tool AND session.repo:$repo AND command:\"$literal\" | where outcome:$status";
+    let options = opts(&[("activity", text)]);
+    assert_eq!(
+        options.definition_parameters(text).unwrap(),
+        ["tool", "repo", "status"]
+    );
+    let program = compile(
+        "query:activity(tool=Bash,repo=morrow,status=error)",
+        &options,
+    )
+    .unwrap();
+    assert!(
+        program
+            .params
+            .iter()
+            .any(|parameter| matches!(parameter, Param::Text(value) if value.contains("$literal")))
+    );
+}
+
+mod metadata;
+
+mod numeric;
+
+mod relations;
+
+mod combine;
+
+#[test]
+fn explicit_projection_reference_metadata_shadows_native_match_sources() {
+    for query in [
+        "sessions | join (sessions | fields text(id) as id) on id = id | fields match.id",
+        "sessions | join (sessions | fields text(id) as id) on id = id | fields match.id as id | fields id",
+        "sessions | fields text(id) as id | fields id",
+    ] {
+        let program = c(query);
+        assert_eq!(program.columns.len(), 1, "{query}");
+        assert_eq!(program.columns[0].kind, ColKind::Text, "{query}");
+        assert_eq!(program.columns[0].reference, None, "{query}");
+    }
+    let native = c("sessions | join (sessions | fields id) on id = id | fields match.id");
+    assert_eq!(native.columns[0].reference, Some(ColumnReference::Session));
+}

@@ -9,11 +9,13 @@ fn session_kind_reads(supplied: bool) -> u64 {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = open_write(&dir.path().join("index.db"), 1).unwrap();
     crate::schema::create_index(&conn).unwrap();
+    // Count executions rather than cached statement preparations.
+    conn.set_prepared_statement_cache_capacity(0);
     let first_build = crate::first_build::FirstBuild::default();
     let tx = conn.transaction().unwrap();
     let mut seed = batch("input1", 0, 0, vec![], &["main", "child"]);
     seed.parse[0].output.sessions[1] = Session::new(sid("child"), SessionKind::Subagent);
-    write_rows(&tx, &seed, &seed.parse[0], 1, 1, Some(&first_build)).unwrap();
+    write_test_rows(&tx, &seed, &seed.parse[0], 1, 1, Some(&first_build)).unwrap();
     tx.execute(
         "UPDATE session SET kind='subagent' WHERE id=?1",
         [sid("child").to_string()],
@@ -26,8 +28,8 @@ fn session_kind_reads(supplied: bool) -> u64 {
         if matches!(
             context.action,
             AuthAction::Read {
-                table_name: "session",
-                column_name: "kind"
+                table_name: "session_record",
+                column_name: "facts"
             }
         ) {
             count.fetch_add(1, Ordering::Relaxed);
@@ -59,7 +61,7 @@ fn session_kind_reads(supplied: bool) -> u64 {
     if supplied {
         b.parse[0].output.sessions[1] = Session::new(sid("child"), SessionKind::Subagent);
     }
-    write_rows(&tx, &b, &b.parse[0], 1, 2, Some(&first_build)).unwrap();
+    write_test_rows(&tx, &b, &b.parse[0], 1, 2, Some(&first_build)).unwrap();
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
     observed.load(Ordering::Relaxed)
@@ -85,6 +87,8 @@ fn new_messages_do_not_read_a_previous_source() {
     // With caching disabled, authorization sees every statement execution.
     conn.set_prepared_statement_cache_capacity(0);
     let tx = conn.transaction().unwrap();
+    let prefix = batch("input1", 0, 0, Vec::new(), &[]);
+    write_test_rows(&tx, &prefix, &prefix.parse[0], 1, 0, Some(&first_build)).unwrap();
     let observed = Arc::new(AtomicU64::new(0));
     let count = observed.clone();
     tx.authorizer(Some(move |context: AuthContext<'_>| {
@@ -110,9 +114,9 @@ fn new_messages_do_not_read_a_previous_source() {
         })
         .collect();
     let mut b = batch("input1", 0, 100, rows, &["main"]);
-    b.parse[0].at_end = false;
+    b.parse[0].progress = polylogue_model::batch::StepProgress::Partway;
     assert_eq!(
-        write_rows(&tx, &b, &b.parse[0], 1, 1, Some(&first_build)).unwrap(),
+        write_test_rows(&tx, &b, &b.parse[0], 1, 1, Some(&first_build)).unwrap(),
         messages
     );
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
@@ -151,6 +155,7 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
             path: None,
         });
         message.blocks.push(Block::ToolResult {
+            reported_duration_ms: None,
             call_id: Some("call-1".into()),
             outcome: ToolOutcome::Ok,
             output: Some("Synthetic Ω output".into()),
@@ -162,6 +167,9 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
             data: serde_json::json!({"opaque":[null, "Ω"]}),
         });
         let event = Event {
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
             session: Some(sid("s")),
             kind: "notice".into(),
             at: None,
@@ -197,6 +205,7 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
                     .unwrap()
             );
         }
+        let b = w.commit_source(b, &SOURCE_RECORD).unwrap();
         w.writer.send(b).unwrap();
         let report = w.writer.flush().unwrap();
         assert!(report.errors.is_empty(), "{mode}: {:?}", report.errors);
@@ -208,60 +217,6 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
             "{mode}"
         );
         assert_eq!(reader.events(&sid("s")).unwrap(), [event], "{mode}");
-    }
-}
-
-#[test]
-fn filtering_prepared_messages_keeps_original_hashes_and_structured_payloads() {
-    for removed in [vec![0], vec![1], vec![0, 1, 2]] {
-        let w = test_archive();
-        let messages = (0..3)
-            .map(|n| {
-                let mut m = text_message(
-                    &format!("m{n}"),
-                    "s",
-                    Role::Assistant,
-                    "Synthetic text",
-                    Some("end_turn"),
-                );
-                m.blocks.push(Block::Other {
-                    type_name: "synthetic".into(),
-                    data: serde_json::json!({"message":n,"nested":[false,"Ω"]}),
-                });
-                m
-            })
-            .collect::<Vec<_>>();
-        let mut b = batch(
-            "input1",
-            0,
-            0,
-            messages
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(|(i, m)| row(i as u64, m))
-                .collect(),
-            &["s"],
-        );
-        b.parse[0].prepare();
-        let mut refused = crate::excise::RefusedIds::default();
-        for n in &removed {
-            refused.messages.insert(messages[*n].id.to_string());
-        }
-        let mut filtered = without_refused(&b, &refused);
-        filtered.parse[0].prepare();
-        w.writer.send(filtered).unwrap();
-        let report = w.writer.flush().unwrap();
-        assert!(report.errors.is_empty(), "{:?}", report.errors);
-        let pool = ReadPool::open(&w.archive).unwrap();
-        let reader = pool.reader().unwrap();
-        let expected = messages
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !removed.contains(i))
-            .map(|(_, m)| m.clone())
-            .collect::<Vec<_>>();
-        assert_eq!(reader.messages(&sid("s"), false).unwrap(), expected);
     }
 }
 
@@ -287,8 +242,8 @@ fn misaligned_prepared_rows_refuse_before_writing() {
             b.parse[0].prepared.messages[0].blocks.clear();
         }
         b.parse[0].prepare();
-        w.writer.send(b).unwrap();
-        assert!(!w.writer.flush().unwrap().errors.is_empty());
+        assert!(w.writer.send(b).is_err());
+        assert!(w.writer.flush().unwrap().errors.is_empty());
         let pool = ReadPool::open(&w.archive).unwrap();
         assert_eq!(
             pool.reader()
@@ -330,6 +285,9 @@ fn prepared_hook_events_keep_waiting_reasons_and_current_tool_facts() {
             });
             let mut b = batch("input1", 0, 0, vec![row(1, message)], &["s"]);
             b.parse[0].output.events.push(Event {
+                at_quality: polylogue_model::TimeQuality::Intrinsic,
+                at_precision: Some(polylogue_model::Precision::Instant),
+                at_until: None,
                 session: Some(sid("s")),
                 kind: kind.into(),
                 at: Timestamp::from_unix_ms(2_000),
@@ -340,12 +298,13 @@ fn prepared_hook_events_keep_waiting_reasons_and_current_tool_facts() {
             if prepared {
                 b.parse[0].prepare();
             }
+            let b = w.commit_source(b, &SOURCE_RECORD).unwrap();
             w.writer.send(b).unwrap();
             assert!(w.writer.flush().unwrap().errors.is_empty());
             let pool = ReadPool::open(&w.archive).unwrap();
             let reader = pool.reader().unwrap();
             assert_eq!(reader.events(&sid("s")).unwrap()[0].data, data);
-            let rows=reader.query("SELECT s.live_waiting_on AS waiting,s.live_todo AS todo,t.call_id FROM session s LEFT JOIN tool_call t ON t.pk=s.live_open_tool_pk WHERE s.id='claude-code:s'",&[]).unwrap();
+            let rows=reader.query("SELECT json_extract(s.live_facts,'$.hook_waiting_on.value') AS waiting,json_extract(s.live_facts,'$.todo') AS todo,json_extract(s.live_facts,'$.open_call.call_id') AS call_id FROM session s WHERE s.id='claude-code:s'",&[]).unwrap();
             assert_eq!(
                 rows[0]["waiting"].as_str(),
                 waiting,
@@ -357,4 +316,87 @@ fn prepared_hook_events_keep_waiting_reasons_and_current_tool_facts() {
             }
         }
     }
+}
+
+#[test]
+fn complete_products_restore_prepared_structured_values_without_an_index_read() {
+    use polylogue_model::{Document, DocumentId, DocumentPurpose, DocumentRow};
+    let mut message = text_message("m", "s", Role::Assistant, "exact text", None);
+    message.blocks.extend([
+        Block::ToolCall {
+            call_id: Some("call".into()),
+            tool: Some("Bash".into()),
+            action: ToolAction::Shell,
+            input: serde_json::json!({"command":"printf synthetic","nested":[false,null,{}]}),
+            command: None,
+            path: None,
+            run_by_script: false,
+        },
+        Block::ToolResult {
+            reported_duration_ms: None,
+            call_id: Some("call".into()),
+            outcome: ToolOutcome::Ok,
+            output: Some("exact output".into()),
+            data: Some(serde_json::json!({"answer":42})),
+            attachments: vec![],
+        },
+        Block::Other {
+            type_name: "native".into(),
+            data: serde_json::json!({"kept":true}),
+        },
+    ]);
+    let mut document = Document::new(
+        DocumentId::parse("claude-code:doc").unwrap(),
+        DocumentPurpose::Context,
+    );
+    document.blocks = message.blocks.clone();
+    document.metadata = serde_json::json!({"native":false,"empty":"","unknown":null});
+    let mut batch = batch("input", 0, 0, vec![row(0, message)], &["s"]);
+    batch.parse[0].output.documents.push(DocumentRow {
+        offset: 1,
+        end: 9,
+        document,
+    });
+    batch.parse[0].output.events.push(Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
+        session: Some(sid("s")),
+        kind: "native".into(),
+        at: None,
+        after: None,
+        range: Some((1, 9)),
+        data: serde_json::json!({"structured":[{},null,false]}),
+    });
+    let original = batch.parse[0].output.clone();
+    batch.parse[0].prepare();
+    assert_ne!(batch.parse[0].output, original);
+    assert_eq!(batch.parse[0].complete_output().unwrap(), original);
+    let products =
+        crate::primary::products::parse(&batch.input, 41, None, &batch.parse[0]).unwrap();
+    let captured = crate::primary::CapturedReading::from_step(&batch.parse[0], None).unwrap();
+    let bytes = serde_json::to_vec(&captured).unwrap();
+    let captured: crate::primary::CapturedReading = serde_json::from_slice(&bytes).unwrap();
+    let mut replay = captured.into_step();
+    assert_eq!(replay.output, original);
+    replay.prepare();
+    assert_eq!(
+        crate::primary::products::parse(&batch.input, 41, None, &replay).unwrap(),
+        products
+    );
+    let restored = products
+        .iter()
+        .find_map(|p| match p {
+            crate::primary::Product::Message { reading, facts, .. } => {
+                Some((reading, facts.as_ref()))
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(restored.0.chain, 41);
+    assert_eq!(restored.1, &original.messages[0]);
+    assert!(matches!(
+        products.last(),
+        Some(crate::primary::Product::ParseProgress { .. })
+    ));
 }

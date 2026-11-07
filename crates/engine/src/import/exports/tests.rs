@@ -9,7 +9,7 @@ fn conversation(id: &str, time: u64, messages: &[(&str, &str)]) -> serde_json::V
         (id.to_string(),json!({"id":id,"parent":if i==0 {None}else{Some(messages[i-1].0)},"children":[],
             "message":{"id":id,"author":{"role":"user"},"content":{"content_type":"text","parts":[text]},"create_time":i+1}}))
     }).collect();
-    json!({"id":id,"create_time":time,"mapping":mapping})
+    json!({"id":id,"create_time":time,"current_node":messages.last().map(|(id,_)| *id),"mapping":mapping})
 }
 
 fn texts(w: &ClaudeHome, id: &str) -> Vec<String> {
@@ -42,7 +42,8 @@ fn array_order_and_parent_ownership_survive_newest_first_storage_and_rebuild() {
     {
         let (mut e, _lock) = engine(&w, 16);
         let report = e.import(std::slice::from_ref(&path)).unwrap();
-        assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
+        assert!(report.refused.is_empty(), "{report:?}");
+        assert!(report.pass.errors.is_empty(), "{report:?}");
         assert_eq!(texts(&w, "chatgpt:parent"), ["First", "Second"]);
         assert_eq!(texts(&w, "chatgpt:child"), ["Third"]);
         assert_eq!(
@@ -85,7 +86,8 @@ fn malformed_array_suffix_commits_one_refusal_and_no_prefix_conversations() {
         fs::write(&path, bytes).unwrap();
         let (mut e, _lock) = engine(&w, 16);
         let report = e.import(&[path]).unwrap();
-        assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
+        assert!(report.refused.is_empty(), "{report:?}");
+        assert!(report.pass.errors.is_empty(), "{report:?}");
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 0);
         assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 1);
         assert_eq!(w.count("SELECT SUM(unreadable) AS n FROM parse_state"), 1);
@@ -103,7 +105,8 @@ fn claude_array_keeps_message_order_separate_from_one_conversation_span() {
     fs::write(&path, &bytes).unwrap();
     let (mut e, _lock) = engine(&w, 8);
     let report = e.import(&[path]).unwrap();
-    assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
+    assert!(report.refused.is_empty(), "{report:?}");
+    assert!(report.pass.errors.is_empty(), "{report:?}");
     assert_eq!(texts(&w, "claude-ai:c1"), ["First", "Second"]);
     let reads = w.reads();
     let r = reads.reader().unwrap();
@@ -147,7 +150,8 @@ fn interrupted_array_delivery_replays_stored_bytes_and_resets_record_counts() {
             1,
         );
         let report = e.import(std::slice::from_ref(&path)).unwrap();
-        assert_eq!(report.pass.errors.len(), 1);
+        assert!(report.refused.is_empty(), "{report:?}");
+        assert_eq!(report.pass.errors.len(), 1, "{report:?}");
         assert_eq!(w.count("SELECT parsed_upto AS n FROM parse_state"), 0);
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 1);
         assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 2);
@@ -417,8 +421,10 @@ mod ai_studio;
 mod gemini_cli;
 mod openai_chat;
 
-mod polylogue_export;
+mod polylogue_bundle;
 
 mod openrouter;
 
 mod input_events;
+
+mod delivery;

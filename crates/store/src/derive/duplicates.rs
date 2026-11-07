@@ -48,7 +48,7 @@ struct Turn {
     replies: Vec<(i64, String, String)>,
 }
 
-fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
+pub(super) fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     tx.prepare_cached(
         "UPDATE message SET duplicate_of = NULL, duplicate_reason = NULL
          WHERE session_pk = ?1 AND duplicate_of IS NOT NULL",

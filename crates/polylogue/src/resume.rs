@@ -65,36 +65,56 @@ pub fn plan(reader: &Reader<'_>, session: &SessionId) -> Result<Plan, StoreError
 pub struct ResumableSession {
     pub session: polylogue_store::NearbySession,
     pub open: OpenItems,
-    /// Operator notes on it that ask for follow-up (handoffs, blockers).
+    /// Operator notes on it that ask for follow-up (handoffs, problems).
     pub follow_ups: Vec<String>,
     pub harness_command: Option<Command>,
 }
 
 /// Sessions under `cwd`, newest first, that left something open or carry
-/// a handoff or blocker; sessions with nothing open are left out.
+/// a handoff or problem; sessions with nothing open are left out. Which
+/// sessions are under `cwd` comes from the daemon's scope index.
 pub fn resumable(
     reader: &Reader<'_>,
+    scope: &crate::daemon::scope::SharedScopeIndex,
     cwd: &Path,
     limit: u64,
-    now: polylogue_model::Timestamp,
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<Vec<ResumableSession>, StoreError> {
-    use crate::daemon::query::notes;
-    use polylogue_model::{NoteKind, Target};
+    use crate::daemon::query::assertions;
+    use polylogue_model::{Reference, assertion::AssertionKind};
     let dirs = crate::briefing::scope_dirs(cwd);
-    let mut out = Vec::new();
     // Look further back than `limit`: most sessions finish cleanly.
-    for s in reader.sessions_under(&dirs, None, limit.saturating_mul(10).max(50))? {
+    let looked = usize::try_from(limit.saturating_mul(10).max(50)).unwrap_or(usize::MAX);
+    let stop = polylogue_store::read::limit::ReadLimit::current().and_then(|l| l.deadline());
+    let candidates: Vec<polylogue_store::NearbySession> = scope
+        .read(stop, |index| {
+            index
+                .sessions_under(&dirs, None)
+                .into_iter()
+                .take(looked)
+                .map(|s| s.session.clone())
+                .collect()
+        })
+        .ok_or(StoreError::ReadDeadlineExceeded)?;
+    let mut out = Vec::new();
+    for s in candidates {
         let id = s.id.to_string();
         let open = reader.open_items(&id)?.unwrap_or_default();
         let conditions = format!(
-            "{} (kind:{} OR kind:{}) agent:false",
-            notes::about(&[Target::Session(s.id.clone())]),
-            NoteKind::Handoff.as_str(),
-            NoteKind::Blocker.as_str(),
+            "{} (kind:{} OR kind:{}) author:operator",
+            assertions::about(&[Reference::Session(s.id.clone())]),
+            AssertionKind::Handoff.as_str(),
+            AssertionKind::Problem.as_str(),
         );
-        let follow_ups: Vec<String> = notes::list(reader, &conditions, now)?
+        let follow_ups: Vec<String> = assertions::list(reader, &conditions, context)?
             .into_iter()
-            .map(|n| format!("{}: {}", n.kind.as_str(), n.value.unwrap_or_default()))
+            .map(|n| {
+                format!(
+                    "{}: {}",
+                    n.fact.kind.as_str(),
+                    n.fact.text().unwrap_or_default()
+                )
+            })
             .collect();
         if !open.any() && follow_ups.is_empty() {
             continue;

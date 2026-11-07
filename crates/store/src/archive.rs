@@ -1,7 +1,6 @@
 //! The archive directory, its single-writer lock and connection settings.
 
 pub(crate) mod generation;
-mod scanner_key;
 
 use crate::{Result, StoreError, schema};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction};
@@ -38,6 +37,8 @@ pub struct Archive {
     /// In primary mode, Sinex's store root: its content store holds the
     /// inputs' bytes, and the register is a cache of what Sinex holds.
     sinex_store: Option<PathBuf>,
+    primary: bool,
+    pub(crate) read_scope: std::sync::Arc<crate::read::scope::ReadScopeState>,
 }
 
 /// Held by the daemon for as long as it runs. Only the holder writes.
@@ -47,36 +48,77 @@ pub struct ArchiveLock {
 }
 
 impl Archive {
-    /// The register of inputs and of what people and agents wrote. In
-    /// standalone mode it is `archive.db`, the archive's record; in primary
-    /// mode it is `sinex.db`, a copy of what Sinex holds, written only after
-    /// Sinex acknowledged it and rebuilt from Sinex when missing.
+    /// Resolve existing ancestors even before this archive's directory exists.
+    pub fn resolved_root(root: &Path) -> PathBuf {
+        crate::read::scope::root_key(root)
+    }
+
+    /// Register while holding writer custody of a live shared archive. Startup
+    /// uses the open-with-invalidator constructors to acquire that custody first.
+    /// The callback runs immediately and at each reset, under the publication fence;
+    /// it must durably invalidate its pointer without acquiring archive readers
+    /// or re-entering the scope fence.
+    pub fn register_scope_invalidator(
+        root: &Path,
+        invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
+    ) -> Result<crate::read::scope::ScopeInvalidation> {
+        crate::read::scope::state(root).register(invalidate)
+    }
+
+    /// A transition guard without SQL. Currentness still comes from a reader's
+    /// confirmed checkpoint; this token alone cannot authorize cache activation.
+    pub fn scope_token(&self) -> Result<crate::ReadScopeToken> {
+        self.read_scope.token()
+    }
+
+    /// Exercise the native generation transition in synthetic transport tests.
+    /// This changes cursor identity only; primary grant resets use confirmed facts.
+    #[cfg(any(test, feature = "fixture"))]
+    pub fn advance_generation_for_test(&self) -> Result<()> {
+        let mut index = open_write(&self.index_db(), cache::SETUP)?;
+        index.pragma_update(None, "synchronous", 2)?;
+        let mut reset = self.read_scope.begin_reset()?;
+        reset.invalidate()?;
+        drop(reset);
+        let tx = index.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        generation::rotate(&tx)?;
+        tx.commit()?;
+        self.read_scope.finish_reset();
+        Ok(())
+    }
+
+    /// Where source rows are read: the standalone ledger or the primary index cache.
     pub fn archive_db(&self) -> PathBuf {
-        match self.sinex_store {
-            None => self.root.join("archive.db"),
-            Some(_) => self.root.join("sinex.db"),
+        if self.is_primary() {
+            self.index_db()
+        } else {
+            self.root.join("archive.db")
         }
     }
 
     /// Whether Sinex holds the archive.
     pub fn is_primary(&self) -> bool {
-        self.sinex_store.is_some()
+        self.primary
     }
 
-    /// The content store the inputs' bytes are read from: this directory's
-    /// `blobs/` (standalone), or Sinex's content store (primary), which
-    /// Polylogue only reads.
-    pub fn blobs(&self) -> Result<hashed_blobs::Store> {
-        Ok(match &self.sinex_store {
-            None => hashed_blobs::Store::open(self.root.clone(), vec![], 0o600)?,
-            Some(store) => hashed_blobs::Store::open(store.clone(), vec![], 0o600)?,
-        })
+    /// Resolve content hashes in Polylogue's committed catalog and read the
+    /// immutable segment extents with the shared reader.
+    pub fn blobs(&self) -> Result<crate::blobs::Blobs> {
+        self.blob_reader()
     }
 
-    /// Read existing bytes without creating directories or opening a writer.
-    pub fn blob_reader(&self) -> hashed_blobs::Reader {
-        let root = self.sinex_store.as_ref().unwrap_or(&self.root);
-        hashed_blobs::Reader::new(root.clone(), vec![])
+    pub fn blob_reader(&self) -> Result<crate::blobs::Blobs> {
+        let root = self.byte_root()?;
+        let (catalog, layout) = if self.is_primary() {
+            (self.index_db(), crate::blobs::BlobCatalog::Projection)
+        } else {
+            (self.archive_db(), crate::blobs::BlobCatalog::Archive)
+        };
+        Ok(crate::blobs::Blobs::new(
+            root.to_path_buf(),
+            catalog,
+            layout,
+        ))
     }
 
     pub fn index_db(&self) -> PathBuf {
@@ -88,13 +130,7 @@ impl Archive {
     }
 
     pub fn blobs_dir(&self) -> PathBuf {
-        self.root.join("blobs")
-    }
-
-    /// Row dumps of tool databases: one
-    /// append-only file per database, stored as an ordinary input.
-    pub fn exports_dir(&self) -> PathBuf {
-        self.root.join("exports")
+        self.root.join("segments")
     }
 
     /// The daemon's socket. Clients find the daemon of an archive here.
@@ -107,6 +143,8 @@ impl Archive {
         Self {
             root: root.to_path_buf(),
             sinex_store: None,
+            primary: false,
+            read_scope: crate::read::scope::state(root),
         }
     }
 
@@ -116,6 +154,24 @@ impl Archive {
         Self {
             root: root.to_path_buf(),
             sinex_store: Some(store.to_path_buf()),
+            primary: true,
+            read_scope: crate::read::scope::state(root),
+        }
+    }
+
+    /// The primary cache remains readable when configuration cannot name its byte owner.
+    pub fn open_primary_cache(root: &Path) -> Result<(Self, ArchiveLock)> {
+        let (archive, lock, ()) = Self::open_configured(Self::primary_cache(root), |_| Ok(()))?;
+        Ok((archive, lock))
+    }
+
+    pub(crate) fn byte_root(&self) -> Result<&Path> {
+        if self.is_primary() {
+            self.sinex_store
+                .as_deref()
+                .ok_or_else(|| StoreError::Sinex("the primary byte owner is unavailable".into()))
+        } else {
+            Ok(&self.root)
         }
     }
 
@@ -150,69 +206,86 @@ impl Archive {
     /// at their current versions, or opens an existing one. Takes the writer
     /// lock; a second daemon on the same archive is refused.
     pub fn open_or_create(root: &Path) -> Result<(Self, ArchiveLock)> {
-        let lock = Self::lock(root)?;
-        let archive = Self::at(root);
-        fs::create_dir_all(archive.blobs_dir())?;
-        let a = open_write(&archive.archive_db(), cache::SETUP)?;
-        let schema_lock = crate::write_lock::hold(&a)?;
-        schema::ensure_archive(&a)?;
-        drop(schema_lock);
-        // Whatever a stop left of blob writes: files not yet moved under
-        // their content names, rows still `writing` or `deleting`.
-        let store = archive.blobs()?;
-        let blob_lock = crate::write_lock::hold(&a)?;
-        clear_directory(&archive.blobs_dir().join("tmp"))?;
-        crate::blobs::finish_pending(&a, &store)?;
-        drop(blob_lock);
-        archive.finish_open()?;
+        let (archive, lock, ()) = Self::open_configured(Self::at(root), |_| Ok(()))?;
         Ok((archive, lock))
     }
 
-    /// Opens the archive at `root` held by Sinex (primary mode), whose
-    /// store root is `store`. A missing register, or one no migration brings
-    /// to this build's tables, is rebuilt from what Sinex holds, and the index with it; there is no local blob store.
-    pub fn open_primary(
+    /// Opens the single primary cache. Only the confirmed consumer fills it.
+    pub fn open_primary(root: &Path, store: &Path) -> Result<(Self, ArchiveLock)> {
+        let (archive, lock, ()) = Self::open_configured(Self::on_sinex(root, store), |_| Ok(()))?;
+        Ok((archive, lock))
+    }
+
+    /// Acquire writer custody before registering cache invalidation and opening
+    /// the standalone archive. Retain the returned registration with the lock.
+    pub fn open_or_create_with_invalidator(
+        root: &Path,
+        invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
+    ) -> Result<(Self, ArchiveLock, crate::ScopeInvalidation)> {
+        Self::open_configured(Self::at(root), |archive| {
+            archive.read_scope.register(invalidate)
+        })
+    }
+
+    /// Open a primary cache with invalidation installed before generation setup.
+    pub fn open_primary_with_invalidator(
         root: &Path,
         store: &Path,
-        sinex: &dyn crate::primary::Sinex,
-    ) -> Result<(Self, ArchiveLock)> {
-        let lock = Self::lock(root)?;
-        let archive = Self::on_sinex(root, store);
-        clear_directory(&archive.parts_dir())?;
-        // The register is a copy of what Sinex holds: one no migration
-        // brings to this build's tables is rebuilt, not refused.
-        if archive.archive_db().exists() {
-            let register = open_write(&archive.archive_db(), cache::SETUP)?;
-            let migrated = schema::ensure_sinex(&register);
-            drop(register);
-            match migrated {
-                Ok(()) => {}
-                Err(StoreError::NewerSchema { .. } | StoreError::NoMigration { .. }) => {
-                    remove_database(&archive.archive_db())?;
-                }
-                Err(error) => return Err(error),
-            }
+        invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
+    ) -> Result<(Self, ArchiveLock, crate::ScopeInvalidation)> {
+        Self::open_configured(Self::on_sinex(root, store), |archive| {
+            archive.read_scope.register(invalidate)
+        })
+    }
+
+    /// Install invalidation while opening a cache whose byte owner is unavailable.
+    pub fn open_primary_cache_with_invalidator(
+        root: &Path,
+        invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
+    ) -> Result<(Self, ArchiveLock, crate::ScopeInvalidation)> {
+        Self::open_configured(Self::primary_cache(root), |archive| {
+            archive.read_scope.register(invalidate)
+        })
+    }
+
+    fn primary_cache(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            sinex_store: None,
+            primary: true,
+            read_scope: crate::read::scope::state(root),
         }
-        if !archive.archive_db().exists() {
-            // The index describes the register it was built from.
-            remove_database(&archive.index_db())?;
-            let building = root.join("sinex.db.building");
-            remove_database(&building)?;
-            let mut a = open_write(&building, cache::SETUP)?;
-            schema::ensure_sinex(&a)?;
-            crate::primary::load(&mut a, sinex, &archive.blobs()?)?;
-            drop(a);
-            fs::rename(&building, archive.archive_db())?;
-            File::open(root)?.sync_all()?;
+    }
+
+    fn open_configured<T>(
+        archive: Self,
+        setup: impl FnOnce(&Self) -> Result<T>,
+    ) -> Result<(Self, ArchiveLock, T)> {
+        let lock = Self::lock(&archive.root)?;
+        let setup = setup(&archive)?;
+        if !archive.is_primary() {
+            fs::create_dir_all(archive.blobs_dir())?;
+            let source = open_write(&archive.archive_db(), cache::SETUP)?;
+            let schema_lock = crate::write_lock::hold(&source)?;
+            schema::ensure_archive(&source)?;
+            drop(schema_lock);
         }
         archive.finish_open()?;
-        Ok((archive, lock))
+        Ok((archive, lock, setup))
     }
 
     /// Where input bytes wait, in primary mode, until the writer sends them
     /// to Sinex; emptied when the archive opens.
-    pub fn parts_dir(&self) -> PathBuf {
-        self.root.join("parts")
+    pub fn parts_dir(&self) -> Result<PathBuf> {
+        if self.is_primary() {
+            Ok(self.byte_root()?.join("polylogue-prepared").join(
+                blake3::hash(self.root.as_os_str().as_encoded_bytes())
+                    .to_hex()
+                    .to_string(),
+            ))
+        } else {
+            Ok(self.root.join("parts"))
+        }
     }
 
     fn lock(root: &Path) -> Result<ArchiveLock> {
@@ -220,9 +293,6 @@ impl Archive {
         fs::create_dir_all(root)?;
         if fresh {
             no_cow(root);
-            let exports = root.join("exports");
-            fs::create_dir_all(&exports)?;
-            compressed(&exports);
         }
         let file = OpenOptions::new()
             .create(true)
@@ -252,53 +322,29 @@ impl Archive {
         generation::open(self)
     }
 
-    /// The caller holds the archive lock. An index built by another version
-    /// or with another schema, left unsynced by a stop in the middle of a
-    /// first build, or missing an excision the archive holds is deleted and
-    /// created again empty; the loop then rebuilds it from the stored inputs.
+    /// The caller holds the archive lock. Parse positions in the index
+    /// resume an interrupted build; incompatible indexes require an explicit
+    /// schema change rather than removing already indexed rows.
     pub(crate) fn prepare_index(&self) -> Result<()> {
-        let archive = open_read(&self.archive_db())?;
-        let _write = crate::write_lock::hold(&archive)?;
-        if self.index_db().exists() && self.index_out_of_date(&archive)? {
-            remove_database(&self.index_db())?;
-            File::open(&self.root)?.sync_all()?;
-        }
-        crate::fault::check("index.after_removal", "")?;
         let index = open_write(&self.index_db(), cache::SETUP)?;
         let fresh = schema::version(&index)? == 0;
-        schema::ensure_index(&index)?;
-        crate::fault::check("index.after_creation", "")?;
         if fresh {
-            crate::excise::mark_applied(&archive, &index)?;
+            let mut reset = self.read_scope.begin_reset()?;
+            reset.invalidate()?;
         }
+        if self.is_primary() {
+            schema::ensure_primary_index(&index)?;
+        } else {
+            let archive = open_read(&self.archive_db())?;
+            let _write = crate::write_lock::hold(&archive)?;
+            schema::ensure_index(&index)?;
+        }
+        if fresh {
+            self.read_scope.finish_reset();
+        }
+        crate::fault::check("index.after_creation", "")?;
         Ok(())
     }
-
-    fn index_out_of_date(&self, archive: &Connection) -> Result<bool> {
-        let index = open_read(&self.index_db())?;
-        let found = schema::version(&index)?;
-        if found == 0 {
-            return Ok(false);
-        }
-        Ok(found != schema::INDEX_VERSION
-            || !schema::same_index_schema(&index)?
-            || schema::unsynced(&index)?
-            || crate::excise::index_behind(archive, &index)?)
-    }
-}
-
-/// Deletes a SQLite database and its journal files.
-fn remove_database(path: &Path) -> Result<()> {
-    for suffix in ["", "-wal", "-shm"] {
-        let mut name = path.as_os_str().to_owned();
-        name.push(suffix);
-        match fs::remove_file(&name) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Ok(())
 }
 
 /// Deletes every file in `dir`. Blob files are written there before they
@@ -330,23 +376,6 @@ fn no_cow(dir: &Path) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
-}
-
-/// Turns transparent compression on for the new, empty exports directory
-/// on btrfs (clearing the copy-on-write flag it inherited, which would
-/// forbid compression). Exports are append-only JSON Lines that the loop
-/// also stores, compressed, as inputs; uncompressed they were 11 GB of a
-/// 51 GB first build. Best effort: other filesystems ignore it.
-fn compressed(dir: &Path) {
-    // Two calls: btrfs refuses clearing one flag and setting the other at once.
-    for flag in ["-C", "+c"] {
-        let _ = std::process::Command::new("chattr")
-            .arg(flag)
-            .arg(dir)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
 }
 
 fn tune(conn: &Connection) -> Result<()> {
@@ -401,6 +430,7 @@ pub fn open_write(path: &Path, cache_mib: i64) -> Result<Connection> {
 /// The writer's `archive.db` connection; its temporary tables spill to disk.
 pub(crate) fn open_archive_writer(archive: &Archive) -> Result<Connection> {
     let conn = open_write(&archive.archive_db(), cache::ARCHIVE_WRITER)?;
+    conn.pragma_update(None, "synchronous", "full")?;
     conn.pragma_update(None, "temp_store", "file")?;
     conn.pragma_update(Some("temp"), "cache_size", -1024)?;
     Ok(conn)

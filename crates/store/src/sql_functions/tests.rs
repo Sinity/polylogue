@@ -116,7 +116,7 @@ fn seeded_random_refuses_seeds_outside_unsigned_decimal_range() {
 }
 
 #[test]
-fn functions_read_compressed_text_and_logical_days() {
+fn functions_read_compressed_text_and_percentiles() {
     let conn = Connection::open_in_memory().unwrap();
     register(&conn).unwrap();
     let packed = zstd::bulk::compress("Łódź café".as_bytes(), 3).unwrap();
@@ -130,23 +130,6 @@ fn functions_read_compressed_text_and_logical_days() {
     assert_eq!(text, "Łódź café");
     assert_eq!(key, "lodz cafe");
     assert_eq!(folded, "Lódź");
-    // 01:30 local in Warsaw on Oct 6 belongs to logical Oct 5.
-    let ms = "2026-10-05T23:30:00Z"
-        .parse::<jiff::Timestamp>()
-        .unwrap()
-        .as_millisecond();
-    let (day, week, month): (String, String, String) = conn
-        .query_row(
-            "SELECT pl_day(?1, 'Europe/Warsaw', 240), pl_week(?1, 'Europe/Warsaw', 240),
-                    pl_month(?1, 'Europe/Warsaw', 240)",
-            [ms],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        (day.as_str(), week.as_str(), month.as_str()),
-        ("2026-10-05", "2026-W41", "2026-10")
-    );
     let (p90, p50, empty): (f64, f64, Option<f64>) = conn
         .query_row(
             "SELECT (SELECT pl_percentile(column1, 90) FROM (VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(NULL))),
@@ -157,13 +140,41 @@ fn functions_read_compressed_text_and_logical_days() {
         )
         .unwrap();
     assert_eq!((p90, p50, empty), (9.0, 2.0, None));
-    let none: Option<String> = conn
-        .query_row("SELECT pl_day(NULL, 'UTC', 0)", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(none, None);
-    assert!(
-        conn.query_row("SELECT pl_day(0, 'Nowhere/Else', 0)", [], |r| r
-            .get::<_, String>(0))
-            .is_err()
-    );
+}
+
+mod calendar;
+
+mod numeric;
+
+#[test]
+fn glob_patterns_keep_case_unicode_and_sql_pattern_characters_literal() {
+    let conn = Connection::open_in_memory().unwrap();
+    register(&conn).unwrap();
+    for (text, pattern, expected) in [
+        ("terminal.start", "terminal.*", true),
+        ("Terminal.start", "terminal.*", false),
+        ("Żółć/😀/end", "Ż*😀*end", true),
+        ("żółć/😀/end", "Ż*😀*end", false),
+        ("a%b_c\\d", "*%*_c\\d", true),
+        ("axbyc\\d", "*%*_c\\d", false),
+        ("abc", "a**c", true),
+        ("abc", "a*b*c*d", false),
+        ("", "*", true),
+        ("", "", true),
+    ] {
+        let actual: bool = conn
+            .query_row("SELECT pl_glob(?1,?2)", [text, pattern], |row| row.get(0))
+            .unwrap();
+        assert_eq!(actual, expected, "{text:?} {pattern:?}");
+    }
+    for (text, pattern) in [(None, Some("*")), (Some("text"), None), (None, None)] {
+        let value: Option<bool> = conn
+            .query_row(
+                "SELECT pl_glob(?1,?2)",
+                rusqlite::params![text, pattern],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(value, None);
+    }
 }

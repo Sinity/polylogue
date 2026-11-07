@@ -3,6 +3,7 @@
 use super::{Event, Json, Parse, Sink, lines};
 use crate::RecordOutcome;
 use crate::export::{ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use std::path::Path;
 
@@ -27,15 +28,15 @@ pub(super) fn open(path: &Path) -> Option<Parse> {
 struct Atof;
 
 static FIELDS: Fields = Fields::new(&[
-    ("atof_version", Rule::Read),
-    ("kind", Rule::Read),
-    ("uuid", Rule::Read),
-    ("parent_uuid", Rule::Read),
-    ("timestamp", Rule::Read),
-    ("name", Rule::Read),
-    ("scope_category", Rule::Read),
-    ("category", Rule::Read),
-    ("data", Rule::Read),
+    ("atof_version", Rule::Read(T::Number)),
+    ("kind", Rule::Read(T::String)),
+    ("uuid", Rule::Read(T::String)),
+    ("parent_uuid", Rule::Read(T::String)),
+    ("timestamp", Rule::Read(T::StringOrNumber)),
+    ("name", Rule::Read(T::String)),
+    ("scope_category", Rule::Read(T::String)),
+    ("category", Rule::Read(T::String)),
+    ("data", Rule::Kept("complete native observation event data")),
     ("data_schema", Rule::Kept("native observation schema")),
     (
         "metadata",
@@ -43,7 +44,8 @@ static FIELDS: Fields = Fields::new(&[
     ),
     ("attributes", Rule::Kept("native observation attributes")),
     ("category_profile", Rule::Kept("native observation profile")),
-]);
+])
+.for_kind("atof");
 
 fn kind(value: &Json) -> Option<&'static str> {
     match value.get("kind")?.as_str()? {
@@ -122,18 +124,25 @@ impl ExportParser for Atof {
         sink.records.fields("atof", &value, &FIELDS);
         let at = value.get("timestamp").and_then(crate::time::rfc3339);
         if value.get("timestamp").is_some_and(|time| !time.is_null()) && at.is_none() {
-            sink.out.events.push(Event {
-                session: None, kind: "hermes_import_diagnostic".into(), at: None, after: None, range: None,
+            sink.out.events.push({ let (at,time_evidence)=crate::time::parts(None); Event {
+                session: None, kind: "hermes_import_diagnostic".into(),
+ at, at_quality:time_evidence.quality, at_precision:time_evidence.precision, at_until:time_evidence.until, after: None, range: None,
                 data: serde_json::json!({"field":"timestamp","reason":"ATOF RFC3339 time unreadable; time remains unknown"}),
-            });
+            } });
         }
-        sink.out.events.push(Event {
-            session: None,
-            kind: kind.into(),
-            at,
-            after: None,
-            range: None,
-            data: value,
+        sink.out.events.push({
+            let (at, time_evidence) = crate::time::parts(at);
+            Event {
+                session: None,
+                kind: kind.into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: None,
+                range: None,
+                data: value,
+            }
         });
         sink.records.record("atof", &RecordOutcome::Used);
         Ok(())

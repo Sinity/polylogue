@@ -23,13 +23,14 @@ async function batch() {
     });
     if (response.status === 401) {
       stopped = true;
-      clearInterval(clock);
       throw new Error("Sign-in expired. Reopen with polylogue web.");
     }
     if (!response.ok) throw new Error("Changes unavailable (" + response.status + ")");
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let pending = "";
+    let event = "message";
+    let data = [];
     let began = false;
     let complete;
     let count = 0;
@@ -39,11 +40,25 @@ async function batch() {
         pending += decoder.decode(value, { stream: !done });
         let newline;
         while ((newline = pending.indexOf("\n")) >= 0) {
-          const raw = pending.slice(0, newline);
+          const raw = pending.slice(0, newline).replace(/\r$/, "");
           pending = pending.slice(newline + 1);
-          const response = JSON.parse(raw);
-          if (response.result !== "ok") throw new Error("Change batch failed");
-          const line = response.data;
+          if (raw !== "") {
+            if (raw.startsWith(":")) continue;
+            const colon = raw.indexOf(":");
+            const field = colon < 0 ? raw : raw.slice(0, colon);
+            const value = colon < 0 ? "" : raw.slice(colon + 1).replace(/^ /, "");
+            if (field === "event") event = value;
+            if (field === "data") data.push(value);
+            continue;
+          }
+          if (!data.length) { event = "message"; continue; }
+          const name = event;
+          const line = JSON.parse(data.join("\n"));
+          event = "message";
+          data = [];
+          if (name === "error") throw new Error(line.error?.message || "Change batch failed");
+          const expected = line.type === "change" ? "record" : line.type;
+          if (name !== expected) throw new Error("Invalid change event");
           if (complete) throw new Error("Records after change completion");
           if (line.type === "begin" && !began) {
             began = true;
@@ -57,7 +72,7 @@ async function batch() {
         }
         if (done) break;
       }
-      if (pending || !complete) throw new Error("Change batch interrupted; retrying from the last complete position");
+      if (pending || data.length || !complete) throw new Error("Change batch interrupted; retrying from the last complete position");
       for (const subscriber of audience) await subscriber.complete?.(complete);
       if (initializing.size === 0 && [...ready].every(subscriber => audience.includes(subscriber))) position = complete.position;
     } finally {
@@ -74,26 +89,20 @@ async function batch() {
   }
 }
 
-// Clock-driven live states can change without an archive write. The callback
-// asks the existing API to refresh; it never infers a state from elapsed time.
-let clock;
+// Live states that change with the clock alone arrive on the change feed
+// like any other session change: the daemon announces each `live_until`.
 function visibility() {
   clearTimeout(timer);
-  clearInterval(clock);
   if (document.hidden || stopped || !subscribers.size) {
     controller?.abort();
     for (const request of initializing.values()) request.abort();
   } else {
     resume();
-    clock = setInterval(() => {
-      for (const subscriber of ready) Promise.resolve().then(() => subscriber.refresh?.()).catch(report);
-    }, 30000);
   }
 }
 document.addEventListener("visibilitychange", visibility);
 window.addEventListener("pagehide", () => {
   clearTimeout(timer);
-  clearInterval(clock);
   controller?.abort();
   for (const request of initializing.values()) request.abort();
 });
@@ -111,7 +120,9 @@ async function readCurrent(subscriber, signal) {
     const response = await fetch("/api/v1/query?" + query, { credentials: "same-origin", signal });
     if (response.status === 401) { stopped = true; throw new Error("Sign-in expired. Reopen with polylogue web."); }
     if (!response.ok) throw new Error("Current references unavailable (" + response.status + ")");
-    const page = await response.json();
+    const answer = await response.json();
+    if (answer.outcome === "error") throw new Error(answer.error.message);
+    const page = answer.value;
     if (!subscribers.has(subscriber)) return;
     if (!initial) {
       initial = page.read_at.cursor;
@@ -119,7 +130,7 @@ async function readCurrent(subscriber, signal) {
       await subscriber.begin?.({ type: "begin", position: null, generation: page.read_at.generation, replacement: true, generation_changed: false });
     }
     if (subscriber.page) await subscriber.page(page);
-    else for (const row of page.rows) await subscriber.apply?.({ type: "change", component: ["note", "excision"].includes(row.kind) ? "archive" : "index", change: row });
+    else for (const row of page.rows) await subscriber.apply?.({ type: "change", component: row.kind === "assertion" ? "archive" : "index", change: row });
     count += page.rows.length;
     cursor = page.next;
   } while (cursor && subscribers.has(subscriber));

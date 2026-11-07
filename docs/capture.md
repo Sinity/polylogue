@@ -30,6 +30,7 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 
 - **Collecting does not wait for a parser.** An origin has two separate switches: *collect*, on for every declared location, and *parse*. A declared origin without a parser stores its bytes from the first day with parse state `no_parser_yet` ([archive.md](archive.md#parsing)).
 - **Fail closed.** A collected file that fails its origin's shape check is `refused`, with the reason, as a parse-state fact; it is never read as another origin's file. A Claude Code transcript found in Drive is not ingested as a Claude Code session, because it would duplicate the real one.
+- **A bad record is not a bad file.** A malformed line in a JSONL file is counted unreadable and the complete records after it are still read; a parser error stops that parser's rows at its last good record while the bytes keep being collected.
 - Hidden directories are entered only when a location names them. Symlinked roots resolve once. An unreadable directory is a reported state, never an empty result. A `.git` directory inside a root is ignored with its reason.
 - **The coverage table** `(root, class, pattern or reason, files, bytes, newest mtime)` is computed from the discovery walk the daemon already performs (the start-up walk plus file notifications). It is an index fact, rebuilt with the index; there is no separate scan.
 
@@ -113,6 +114,7 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 
 - **A tool's SQLite database is captured as committed rows, never as a database image.** Each capture keeps rows the tool later deleted (a row seen once stays in the archive) and writes no export side file. Uncommitted write-ahead-log rows are not read.
 - Captured: Codex `state`, `goals`, `memories`, `queue`; Hermes `state.db`, `verification_evidence.db` and each profile's `state.db`; Antigravity `conversations/*.db`, `conversation_summaries.db` and each `state.vscdb`; Grok `memory-v2/**/*.sqlite` and `worktrees.db`; `llm` `logs.db`.
+- Each row-dump header keeps the table's SQL and, from the same read transaction, its column names and order, declared types, nullability, primary-key order, hidden or generated columns and `WITHOUT ROWID`. The schema tools report this separately from the JSON types seen in rows, and leave SQL and default expressions out ([archive.md](archive.md#schema-tools)).
 - A table whose schema no parser knows keeps its raw rows readable and is reported as [format drift](archive.md#format-drift).
 
 ## Import
@@ -140,7 +142,24 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 | aider | `.aider.llm.history` beside `.aider.chat.history.md` | `aider`: the LLM history is the session, the Markdown a companion document |
 | Polylogue export bundle | the bundle manifest ([reading.md](reading.md#writing-out)) | the bundle's own records |
 | The predecessor's spools | hook spool NDJSON in every old layout, `browser_llm_session` v1 envelopes, `raw_sessions` blobs | the payload's origin |
+| The predecessor's archive | its `source.db` with `raw_sessions` and their blob files, read without opening it for writing | each source's origin, with its original source facts and append lineage |
 | A live-origin file outside its root | only with `--format NAME`, or when the path keeps the tool's own layout | that origin |
+
+### An archive from before the baseline
+
+`polylogue import --from-archive PATH [--dry-run]` imports an archive written by a Polylogue build before the version 1 baseline ([archive.md](archive.md#evolution)): the folder holding its `archive.db`, `blobs/` and `embeddings.db`. It is a declared older input format, imported once into a fresh archive, not migrated in place; opening such a folder as an archive refuses it and names this command.
+
+- **The older archive is only read.** Its databases are opened read-only and immutable; one with a non-empty write-ahead log is copied with its log into the importing archive's folder and the copy is read. A running Polylogue that holds the older archive's lock refuses the import. Nothing in the older folder is written, renamed or deleted.
+- **Stored bytes keep their history.** Every input keeps its ID and format, and every revision, extent and observation keeps its number, chain, class, path, machine, file facts, version and time, so bytes deleted at their source and every superseded revision stay readable. Each blob, inline or a file of zstd frames, is decoded and must hash to its name and length before it is stored; blobs no extent cites are stored too.
+- **Authored state.** Notes and settings become assertions with their original IDs, authors, machines and times (`via: import`); a later value of a setting revises the earlier one. A `hidden` tag becomes a `hidden` session assertion, retaining its value as the reason. Deliveries with their events, and kept results, become the requests that wrote them, with their original IDs, times and outcomes. Vectors keep their text hash, key, chunk, values and time; a different vector already stored for the same text, key and chunk is refused, never replaced.
+- **Every row lands or is refused.** The answer's `older_archive` gives, per table of the older archive, the rows found and how many were stored, already present, refused or kept, with every refusal and its reason: an input whose bytes do not verify or that an excision changed, a note kind or relation with no counterpart, a delivery no kept request wrote, chat actions, backfill jobs and excisions. Every row other than the stored bytes' is also kept verbatim as one imported input, `archive.db!/rows.jsonl`, so a refused row is still readable. A refused input is set aside whole in `archive.db!/refused-inputs.jsonl`: each of its input, revision, extent and observation rows and the rows and stored bytes of the blobs it cites, with its refusal reason.
+- **Original Notes stay queryable as source data.** The `polylogue-archive-rows` parser reads the immutable `archive.db!/rows.jsonl` input and emits ordinary events for note, target and relation rows. Each event carries its input, chain and record byte range. The [`imported_notes`](query.md#original-notes-from-imported-archives) projection rebuilds from those facts without the older archive folder. Its semantic row identity includes the input and original note ID, so distinct imported archives do not merge rows that reused an ID. Prior imports recorded as kept files acquire this reading on an ordinary parse pass; their bytes and acquisition metadata remain unchanged.
+- **Import before the first pass.** An input whose location the archive already watches as another input is refused, since one file would get two inputs. A daemon reads its sources in its first pass, so the import runs against a fresh archive whose daemon has not read any source yet; sources are read after the import, and the imported locations are then the same inputs.
+- **Importing again changes nothing**: every row is already present.
+- `--dry-run` reads and checks everything, including every blob's bytes, and writes nothing; rows already present are not told apart and count as stored, and refusals only the writer can decide (an input held differently, a conflicting assertion or request, a vector different from one held) are only known on import, as the answer says.
+- **Counts follow what was stored.** A delivery is counted as stored when it is in the archive after the import, whichever of the requests carrying its record stored it.
+
+Aider's LLM log holds snapshots of the context sent and the response returned, with no native session or message IDs: the first recorded request fixes a content-derived session ID, and equal sent prefixes share message IDs. Its times carry no zone, so they stay unknown with the original strings kept. The paired Markdown is a companion document.
 
 Hand-made Markdown chat dumps are not a structure: a flattened transcript is a degraded form of a conversation that has a real source.
 
@@ -152,6 +171,14 @@ AI Studio stores its prompts in Google Drive, which is a known location like a t
 - `driveDocument` and `driveImage` attachments are fetched by Drive ID as attachment bytes. Revision lineage and `branchParent` edges are recorded; a Drive mode that cannot give lineage fails closed.
 - The collector is on whenever the user has authorized a token; the one-time OAuth consent is the only gate, because a known location is never dark behind a setting. Without a token, status shows "not authorized" with the command to run.
 - A prompt deleted in Drive keeps its archived revisions and is marked gone.
+
+## Source clocks
+
+Parsers keep each source time with its quality, its precision and any interval end the source declares. Whole epoch seconds and offset timestamps without fractions have second precision; fractional timestamps, epoch milliseconds and nanoseconds keep their subsecond instants. A missing or unreadable time has no instant and unknown quality. Capture observations and file times keep their own quality and never fill in a missing message time.
+
+Where a format records events rather than a session creation time, the earliest record or activity time is the session's start, and says so. An OpenTelemetry span event keeps its start and end as an interval; its output message uses the call's start and records that basis with both original fields in `otel_span_clock`. Input history without message times stays unknown.
+
+Gemini activity times keep their original text and zone. Explicit offsets are resolved without the host's time zone; ambiguous zone abbreviations stay unknown. AI Studio chunk times belong to the chunks; the Drive listing's file time is file metadata, separate from message times.
 
 ## Capture status
 
@@ -177,6 +204,7 @@ Its figures and verdicts use the shared status format of [command-surface](https
 - **hook-event-recorded**: a synthetic event of each type lands in the spool and in the index.
 - **hook-never-creates-session**: a hook event for an unknown session creates no session.
 - **hook-line-durable**: a hook line survives a crash after the hook returns.
+- **spool-lines-match-rollback-fixture**: the hook writes exactly the line shapes of its rollback fixture (every harness, an event with and without a session, native observations, an emission receipt), each line starting with a key a spool reader recognizes it by, and this build's reader takes every fixture line.
 - **drive-revisions**: against a fake Drive, three revisions and one `driveImage` give one session with three revisions and the image's bytes; a deleted prompt keeps its revisions and is marked gone.
 - **import-every-structure**: a fixture for every row of the structures table imports; an unrelated JSONL file is refused with the structures tried and nothing is stored.
 - **reimport-changes-nothing**: importing identical bytes again changes nothing, and a byte-identical copy of a container is `already_stored`.

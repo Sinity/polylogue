@@ -50,6 +50,7 @@ pub(super) fn result(call: &Json) -> Block {
         }
     }
     Block::ToolResult {
+        reported_duration_ms: None,
         call_id: string_of(call, "id"),
         outcome,
         output: text,

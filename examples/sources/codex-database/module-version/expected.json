@@ -1,0 +1,37 @@
+{
+  "counts": {
+    "records": 1,
+    "skipped": {},
+    "unread_fields": {
+      "threads.h": 1,
+      "threads.k[]": 1
+    },
+    "unreadable": {},
+    "used": {
+      "threads": 1
+    }
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [],
+    "sessions": [
+      {
+        "cwd": [
+          "/work/project"
+        ],
+        "id": "codex:synthetic",
+        "kind": "main",
+        "started": "2023-11-14T22:13:20Z",
+        "title": {
+          "source": "generated",
+          "text": "Read the module"
+        },
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
+      }
+    ]
+  }
+}

@@ -6,19 +6,105 @@ use crate::{BlobHash, Document, Event, Link, Message, Session, SessionId, ToolOu
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub mod export;
+mod progress;
+pub use export::{
+    ExportCursor, ExportDelivery, ExportDeliveryError, ExportDeliverySource, ReadingFootprint,
+};
+pub use progress::{ParseProgress, StepProgress};
+
+/// Native parser continuation at one exact admitted cursor. This is not source,
+/// revision or receipt evidence; the containing reading supplies that identity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ParserCheckpoint {
+    pub version: u32,
+    pub reading_version: String,
+    pub parsed_upto: u64,
+    /// None is an explicitly stateless parser; an absent envelope is unknown.
+    pub parser_state: Option<crate::Json>,
+}
+impl ParserCheckpoint {
+    pub const VERSION: u32 = 1;
+    pub fn new(
+        reading_version: String,
+        parsed_upto: u64,
+        parser_state: Option<crate::Json>,
+    ) -> Self {
+        Self {
+            version: Self::VERSION,
+            reading_version,
+            parsed_upto,
+            parser_state,
+        }
+    }
+    pub fn matches(&self, reading_version: &str, parsed_upto: u64) -> bool {
+        self.version == Self::VERSION
+            && self.reading_version == reading_version
+            && self.parsed_upto == parsed_upto
+    }
+}
+
 /// Rows one parse step produced. Sessions and messages are upserts keyed by
 /// their IDs: a later step may send a longer version of the same message
 /// (one still being written), and writing it again is harmless.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Output {
     /// Facts about every session the step touched. The writer merges them
     /// into what it already holds ([`Session::merge`]).
     pub sessions: Vec<Session>,
     pub messages: Vec<MessageRow>,
+    /// Native parser claims, indexed by message. Receiving admission validates
+    /// their source before promoting them to observed injection evidence.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub native_hook_fields: BTreeMap<usize, Vec<crate::HookFieldClaim>>,
+    /// Imported hook evidence remains declared, independent of local acquisition.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub declared_injections: BTreeMap<usize, Vec<crate::injection::InjectionEvidence>>,
+    /// Portable attachment claims are independent of receiving membership proof.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub declared_attachment_bindings:
+        BTreeMap<usize, Vec<crate::attachment_binding::AttachmentBinding>>,
     /// Textual provider records without conversation roles or usage.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub documents: Vec<DocumentRow>,
+    /// Partial text observations. Their source coordinates name this input's
+    /// record bytes; the payload retains foreign span and admission claims.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fragments: Vec<FragmentRow>,
+    /// Actual immutable receiver admissions, populated by confirmed projection.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fragment_receipts: BTreeMap<usize, u64>,
     pub events: Vec<Event>,
+    /// Stable exported identities and their original source claims, indexed by event.
+    /// The containing input still owns the local bytes.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub imported_events: BTreeMap<usize, crate::bundle::ImportedEventIdentity>,
+    /// Event identities already derived from the original complete reading.
+    /// Canonical fact subsets keep these positions when earlier facts are hidden.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub event_ids: BTreeMap<usize, String>,
+    /// Immutable admission of confirmed event facts, independent of raw source availability.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub event_receipts: BTreeMap<usize, u64>,
+    /// Immutable admissions for session facts before their metadata is merged.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub session_receipts: BTreeMap<usize, u64>,
+    /// Immutable admissions of source document readings.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub document_receipts: BTreeMap<usize, u64>,
+    /// Immutable admissions of source link facts before their evidence is merged.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub link_receipts: BTreeMap<usize, u64>,
+    /// Explicit session reading order, indexed by message; byte ranges stay local.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub message_order: BTreeMap<usize, u64>,
+    /// Selected original block positions retain the original source version.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub message_projections: BTreeMap<usize, crate::bundle::MessageProjection>,
+    /// Immutable admission of each confirmed message fact, indexed by message.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub message_receipts: BTreeMap<usize, u64>,
     /// Upserted by [`Link::key`]; parts one file lacks are filled from
     /// another ([`Link::merge`]).
     pub links: Vec<Link>,
@@ -36,7 +122,7 @@ pub struct Output {
 /// What a repository directory is, as read on this host: where its `.git`
 /// is, its `origin` remote and its first commit. Sessions whose working
 /// directory lies under `path` belong to it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RepoLookup {
     pub path: String,
     /// The remote's URL with any credentials removed.
@@ -45,7 +131,7 @@ pub struct RepoLookup {
     pub root_commit: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ExtractedBlob {
     pub hash: BlobHash,
     pub size: u64,
@@ -54,11 +140,20 @@ pub struct ExtractedBlob {
 }
 
 /// A document as one input holds it, with the record's byte range.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DocumentRow {
     pub offset: u64,
     pub end: u64,
     pub document: Document,
+}
+
+/// A selected-text record in the actual receiving input. Sender commit and
+/// original text coordinates remain claims inside `record`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct FragmentRow {
+    pub offset: u64,
+    pub end: u64,
+    pub record: crate::bundle::fragments::TextFragmentRecord,
 }
 
 /// A message as one input holds it. `offset` is where its first record
@@ -68,15 +163,21 @@ pub struct DocumentRow {
 /// being written); the writer replaces it. At another offset or in another
 /// input it is another version; the writer keeps every version and prefers
 /// one.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct MessageRow {
     pub offset: u64,
     pub end: u64,
     pub message: Message,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BackgroundUpdate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_at: Option<crate::Timestamp>,
+    #[serde(default)]
+    pub result_at_evidence: crate::TimeEvidence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_duration_ms: Option<u64>,
     pub session: SessionId,
     pub task_id: String,
     /// The tool call that started the task, when the notice names it.
@@ -94,14 +195,26 @@ pub struct BackgroundUpdate {
 /// message, so a response that closes after a later user message still
 /// sorts where it opened. `input` is the store's small key for the input,
 /// assigned in the order inputs were first seen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+)]
 pub struct OrderKey {
     pub input: i64,
     pub offset: u64,
 }
 
 /// How one record ended. Every record ends in exactly one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RecordOutcome {
     /// The record became rows: messages, events, links, session facts.
@@ -128,17 +241,57 @@ impl RecordOutcome {
     }
 }
 
-/// How the records of one parse step ended, by record kind. The counts
-/// add up to the records read; the writer refuses a step whose counts do
-/// not.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Derived wire observations contain shape and declared discriminator sets,
+/// never scalar bodies from the input. The writer gives these their receipt time.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WireShape {
+    pub record_kind: String,
+    pub path: String,
+    pub types: BTreeMap<String, u64>,
+    pub expected: Vec<String>,
+    pub dynamic_map: bool,
+    pub known_kinds: Vec<String>,
+    pub unknown_kind_count: u64,
+    pub unused_count: u64,
+    pub table: Option<String>,
+    pub unknown_table_count: u64,
+}
+impl WireShape {
+    pub fn merge(&mut self, other: &Self) {
+        self.record_kind.clone_from(&other.record_kind);
+        self.path.clone_from(&other.path);
+        self.unknown_kind_count += other.unknown_kind_count;
+        self.unused_count += other.unused_count;
+        self.unknown_table_count += other.unknown_table_count;
+        if other.table.is_some() {
+            self.table.clone_from(&other.table);
+        }
+        for (kind, count) in &other.types {
+            *self.types.entry(kind.clone()).or_default() += count;
+        }
+        if self.expected.is_empty() {
+            self.expected.clone_from(&other.expected);
+        }
+        self.dynamic_map |= other.dynamic_map;
+        if self.known_kinds.is_empty() {
+            self.known_kinds.clone_from(&other.known_kinds);
+        }
+    }
+}
+
+/// Outcomes and derived wire observations of one parse step. Outcome counts
+/// sum to its records; the writer refuses a step whose counts do not.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RecordCounts {
+    /// Derived observations travel with scratch steps through the writer boundary.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub wire_shapes: BTreeMap<String, WireShape>,
     pub records: u64,
     pub used: BTreeMap<String, u64>,
     /// Keyed by `record kind: reason`.
     pub skipped: BTreeMap<String, u64>,
     pub unreadable: BTreeMap<String, u64>,
-    /// Wire fields neither read nor excluded, by `record kind.path`. Not a
+    /// Wire leaves neither read nor retained in parsed rows, by `record kind.path`. Not a
     /// failure: it shows where a parser falls behind its format.
     pub unread_fields: BTreeMap<String, u64>,
 }
@@ -191,6 +344,12 @@ impl RecordCounts {
 
     pub fn merge(&mut self, other: &RecordCounts) {
         self.records += other.records;
+        for (path, shape) in &other.wire_shapes {
+            self.wire_shapes
+                .entry(path.clone())
+                .or_default()
+                .merge(shape);
+        }
         let add = |into: &mut BTreeMap<String, u64>, from: &BTreeMap<String, u64>| {
             for (k, v) in from {
                 *into.entry(k.clone()).or_default() += v;

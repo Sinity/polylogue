@@ -3,125 +3,234 @@
 //! and rebuilding them from Sinex, with no provider file left, gives the same
 //! answers again; and Sinex answers its own query language about the
 //! sessions. It runs a real `sinexd` over a throwaway PostgreSQL and NATS, so
-//! it needs Sinex's binaries: `SINEXD` and `SINEX_SCHEMA` name them
-//! (`cargo build -p sinexd -p sinex-schema` in a Sinex checkout).
+//! `SINEXD` names the matching built daemon, including its admin schema command.
 use polylogue_engine::Engine;
-use polylogue_model::{Author, NewNote, NoteKind, Target};
-use polylogue_sinex::{Config, Mode, Sinex};
-use polylogue_store::user_writes::{UserRequest, UserWrite};
+use polylogue_model::Reference;
+use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+use polylogue_model::user::UserWrite;
+use polylogue_sinex::{Authentication, Config, Mode, Sinex};
 use polylogue_store::{Archive, ReadPool};
 use polylogue_testkit::{Morrow, Set};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-struct Daemon(Child);
+// This shared fixture exposes restore phases exercised by the unit-level backup test.
+#[allow(dead_code)]
+#[path = "../support/native.rs"]
+mod native;
 
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-/// A Sinex: PostgreSQL with its schema, NATS and `sinexd`.
 struct Running {
     config: Config,
     socket: PathBuf,
-    _daemon: Daemon,
-    _nats: devkit::nats::Server,
-    _pg: devkit::pg::Server,
+    native: native::Native,
+}
+
+impl Running {
+    fn evidence(&self, sinex: &Sinex, archive: &Archive) -> String {
+        let local = ReadPool::open(archive).and_then(|pool| {
+            let reader = pool.reader()?;
+            reader.query(
+                "SELECT 'meta.'||key AS key,value FROM meta WHERE key IN ('confirmed_position','confirmed_scope','confirmed_replay','generation') UNION ALL SELECT 'source_meta.'||key,value FROM source_meta WHERE key='write_counter' ORDER BY key",
+                &[],
+            )
+        });
+        let pending = polylogue_store::primary::Sinex::pending_captures(sinex).map(|captures| {
+            let mut groups = BTreeMap::<String, usize>::new();
+            for capture in &captures {
+                if let polylogue_store::primary::Capture::Input(input) = &capture.captured
+                    && let Some(group) = &input.group
+                {
+                    *groups.entry(group.identity.clone()).or_default() += 1;
+                }
+            }
+            captures
+                .into_iter()
+                .map(|capture| match capture.captured {
+                    polylogue_store::primary::Capture::Input(input) => {
+                        let current = (|| -> polylogue_store::Result<serde_json::Value> {
+                            let source = input.basis.as_ref().map(|basis| basis.source.clone()).or_else(|| {
+                                let observation = input.rows.observation.as_ref()?;
+                                Some(polylogue_store::primary::SourceSelector {
+                                    origin: input.rows.format.clone(), machine: observation.machine.clone(),
+                                    path_bytes: observation.path_bytes.clone()?,
+                                })
+                            });
+                            let Some(source) = source else { return Ok(serde_json::json!({"source_selector":"missing"})); };
+                            let pool = ReadPool::open(archive)?;
+                            let reader = pool.reader()?;
+                            let boundary = reader.source_boundary()?;
+                            let (status, confirmed) = reader.source_observation(&source)?;
+                            let subject = boundary.as_ref().map(|cut| reader.source_subject_at(cut, &input.rows.input)).transpose()?.flatten();
+                            Ok(serde_json::json!({
+                                "status":status,"boundary":boundary,"subject":subject,
+                                "confirmed_input":confirmed.as_ref().map(|value| &value.input),
+                                "confirmed_observation":confirmed.as_ref().map(|value| &value.observation.id),
+                            }))
+                        })();
+                        let current = current.unwrap_or_else(|error| serde_json::json!({"error":error.to_string()}));
+                        serde_json::json!({
+                        "current_source":current,
+                        "members_present":input.group.as_ref().map(|group| groups.get(&group.identity).copied().unwrap_or(0)),
+                        "identity":capture.identity,
+                        "anchor":capture.anchor,
+                        "material":capture.material.as_ref().map(|material| (&material.id, material.hash, material.length)),
+                        "input":input.rows.input,"format":input.rows.format,"group":input.group,
+                        "basis":input.basis,"raw_range":input.raw_range,"generation":input.generation,
+                        "revision":input.rows.revision,"extent":input.rows.extent,
+                        "observation":input.rows.observation.as_ref().map(|observation| serde_json::json!({
+                            "id":observation.id,"machine":observation.machine,"path":observation.path,
+                            "path_bytes":observation.path_bytes,"class":observation.class,
+                            "revision":observation.revision,"chain":observation.chain,"length":observation.length
+                        }))
+                    })
+                    },
+                    polylogue_store::primary::Capture::Blob { hash, length } => serde_json::json!({
+                        "identity":capture.identity,"anchor":capture.anchor,"material":capture.material,
+                        "blob":hash,"length":length
+                    }),
+                })
+                .collect::<Vec<_>>()
+        });
+        let sources = ReadPool::open(archive).and_then(|pool| {
+            pool.reader()?.query(
+                "SELECT i.id AS input,i.format,o.id AS observation,o.machine,o.path,hex(o.path_bytes) AS path_bytes,o.class,o.revision AS observed_revision,o.chain AS observed_chain,o.length AS observed_length,r.number,r.chain,r.length FROM source_input i LEFT JOIN source_observation o ON o.rowid=(SELECT max(x.rowid) FROM source_observation x WHERE x.input=i.id) LEFT JOIN source_revision r ON r.input=i.id AND r.number=(SELECT max(x.number) FROM source_revision x WHERE x.input=i.id) ORDER BY i.id", &[],
+            )
+        });
+        let staged = ReadPool::open(archive).and_then(|pool| {
+            pool.reader()?.query(
+                "SELECT 'pending' AS stage,position,change,count(*) AS records FROM primary_pending GROUP BY position,change UNION ALL SELECT 'complete',position,NULL,1 FROM primary_complete ORDER BY position,stage LIMIT 32", &[],
+            )
+        });
+        let refused = ReadPool::open(archive).and_then(|pool| {
+            pool.reader()?.query(
+                "SELECT r.event,r.kind,r.reason,r.unreadable_input,f.state,f.product IS NULL AS unreadable FROM primary_refused r LEFT JOIN primary_fact f ON f.event=r.event ORDER BY r.event", &[],
+            )
+        });
+        format!(
+            "producer: {:?}; local source heads: {sources:?}; staged positions: {staged:?}; local refused facts: {refused:?}; local replay: {local:?}; pending capture metadata: {pending:?}; first native refusals: {}; latest native receipts: {}; native event counts: {}",
+            sinex.status(),
+            self.native.sql("SELECT frame,refusal FROM core.ingress_frames WHERE producer='polylogue' AND refusal IS NOT NULL ORDER BY number LIMIT 8"),
+            self.native.sql("SELECT number,frame,commit_seq,admitted,outcome,refusal FROM core.ingress_frames WHERE producer='polylogue' ORDER BY number DESC LIMIT 8"),
+            self.native.sql("SELECT event_type,kind_version,source,source_version,source_fingerprint,count(*) FROM core.events WHERE producer_family='polylogue' GROUP BY event_type,kind_version,source,source_version,source_fingerprint ORDER BY event_type,kind_version"),
+        )
+    }
 }
 
 fn sinex(dir: &Path) -> Running {
-    let sinexd = std::env::var("SINEXD").expect("SINEXD names a built sinexd");
-    let schema = std::env::var("SINEX_SCHEMA").expect("SINEX_SCHEMA names a built sinex-schema");
-    let pg = devkit::pg::Server::start(&devkit::pg::ClusterOptions {
-        preload: vec!["timescaledb".into()],
-        settings: vec![("timescaledb.enable_chunk_skipping".into(), "on".into())],
-    })
-    .unwrap();
-    pg.sql("postgres", "CREATE DATABASE sinex").unwrap();
-    let url = pg.url("sinex", None);
-    let applied = Command::new(&schema)
-        .args(["apply", &url])
-        .status()
-        .unwrap();
-    assert!(applied.success(), "sinex-schema apply");
-    let nats = devkit::nats::Server::start().unwrap();
-    let store = dir.join("sinex-store");
-    let tokens = dir.join("tokens");
-    fs::create_dir_all(&tokens).unwrap();
-    for t in ["read", "agent", "operator"] {
-        fs::write(
-            tokens.join(format!("{t}.token")),
-            format!("{t}-rebuild-token"),
-        )
-        .unwrap();
-    }
-    let socket = dir.join("sinexd.sock");
-    let daemon = Daemon(
-        polylogue_testkit::spawn_daemon(
-            Command::new(&sinexd)
-                .arg("run")
-                .args(["--database", &url])
-                .arg("--store")
-                .arg(&store)
-                .args(["--nats", nats.url(), "--subject-root", "rebuild"])
-                .arg("--tokens")
-                .arg(&tokens)
-                .arg("--socket")
-                .arg(&socket),
-        )
-        .unwrap(),
+    let native = native::Native::start(
+        dir,
+        serde_json::to_value(polylogue_sinex::kinds::source_declaration()).unwrap(),
     );
-    let config = Config {
-        mode: Mode::Primary,
-        nats: nats.url().into(),
-        password_file: None,
-        subject_root: "rebuild".into(),
-        producer: "polylogue".into(),
-        store,
-    };
     Running {
-        config,
-        socket,
-        _daemon: daemon,
-        _nats: nats,
-        _pg: pg,
+        config: Config {
+            mode: Mode::Primary,
+            nats: native.nats.url().into(),
+            password_file: None,
+            subject_root: "rebuild".into(),
+            producer: "polylogue".into(),
+            store: native.store.clone(),
+        },
+        socket: native.socket.clone(),
+        native,
     }
 }
 
 /// A connection once `sinexd` answers.
-fn connect(config: &Config, root: &Path) -> Arc<Sinex> {
+fn connect(config: &Config) -> Arc<Sinex> {
     let started = Instant::now();
     loop {
-        if let Ok(sinex) = Sinex::connect(config, root)
-            && sinex.reachable().is_ok()
-        {
-            return Arc::new(sinex);
-        }
+        let error = match Sinex::connect(config, &Authentication::Anonymous, "fixture-host") {
+            Ok(sinex) => match sinex.reachable() {
+                Ok(()) => return Arc::new(sinex),
+                Err(error @ polylogue_sinex::Error::Unreachable(_)) => {
+                    format!("producer reachability: {error}")
+                }
+                Err(error) => panic!("producer reachability failed: {error}"),
+            },
+            Err(error @ polylogue_sinex::Error::Unreachable(_)) => {
+                format!("producer connection: {error}")
+            }
+            Err(error) => panic!("producer connection failed: {error}"),
+        };
         assert!(
             started.elapsed() < Duration::from_secs(60),
-            "sinexd did not start"
+            "Sinex producer did not become reachable: {error}"
         );
         std::thread::sleep(Duration::from_millis(200));
     }
 }
 
 /// Builds the Morrow example `example` with its home at `home`, on Sinex.
-fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, config: &Config) {
-    let (archive, _lock) =
-        Archive::open_primary(&example.root, &config.store, sinex.as_ref()).unwrap();
+fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &Running) {
+    let (archive, _lock) = Archive::open_primary(&example.root, &running.config.store).unwrap();
     let mut settings = example.config();
     settings.home = home.to_path_buf();
-    let mut engine = Engine::on_sinex(settings, archive, sinex.clone()).unwrap();
-    let pass = engine.run_pass().unwrap();
-    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    let mut engine = Engine::on_sinex(settings, archive.clone(), sinex.clone()).unwrap();
+    let commits = engine.writer().unwrap().completion_commits();
+    let started = Instant::now();
+    loop {
+        assert!(
+            started.elapsed() < Duration::from_secs(120),
+            "capture did not reach confirmed application within its budget; {}",
+            running.evidence(sinex, &archive)
+        );
+        let pass = engine.run_pass().unwrap_or_else(|error| {
+            panic!(
+                "native capture pass failed: {error}; {}",
+                running.evidence(sinex, &archive)
+            )
+        });
+        assert!(
+            pass.errors.is_empty(),
+            "{:?}; {}",
+            pass.errors,
+            running.evidence(sinex, &archive)
+        );
+        if !pass.capture_pending {
+            break;
+        }
+        let remaining = Duration::from_secs(120).saturating_sub(started.elapsed());
+        commits.recv_timeout(remaining).unwrap_or_else(|error| {
+            panic!(
+                "capture did not reach confirmed application: {error}; {}",
+                running.evidence(sinex, &archive)
+            )
+        });
+    }
+    // The idle writer follows the confirmed stream until it reaches Sinex's head.
+    loop {
+        let applied = ReadPool::open(&archive)
+            .unwrap()
+            .reader()
+            .unwrap()
+            .confirmed_checkpoint()
+            .unwrap();
+        let head = sinex.status().unwrap().owner_position;
+        if head.is_some() && applied == head {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(120),
+            "the index did not reach Sinex's head: {applied:?} of {head:?}; {}",
+            running.evidence(sinex, &archive)
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let acquisitions = running.native.sql("SELECT frame,material_id FROM core.ingress_frames WHERE producer='polylogue' AND frame LIKE 'acquisition:%' ORDER BY frame");
+    let repeated = engine.run_pass().unwrap();
+    assert!(
+        repeated.errors.is_empty() && !repeated.capture_pending,
+        "an unchanged capture must already be confirmed: {repeated:?}; {}",
+        running.evidence(sinex, &archive)
+    );
+    assert_eq!(
+        running.native.sql("SELECT frame,material_id FROM core.ingress_frames WHERE producer='polylogue' AND frame LIKE 'acquisition:%' ORDER BY frame"),
+        acquisitions,
+        "an unchanged capture keeps its original acquisition and material identities"
+    );
 }
 
 /// Every session as the export format holds it, and every note.
@@ -140,34 +249,93 @@ fn answers(archive: &Archive) -> (BTreeMap<String, serde_json::Value>, Vec<serde
         .collect();
     let notes = reader
         .query(
-            "SELECT n.id, n.kind, n.value, t.ref FROM a.note n JOIN a.note_target t ON t.note_id = n.id ORDER BY n.id",
+            "SELECT n.id,n.kind,n.value,t.ref FROM source_assertion n JOIN source_link t ON t.record=n.id ORDER BY n.id,t.role,t.ref",
             &[],
         )
         .unwrap();
     (sessions, notes)
 }
 
+/// Structural comparison of synthetic answers, without logging their text bodies.
+fn answer_difference(
+    expected: &BTreeMap<String, serde_json::Value>,
+    actual: &BTreeMap<String, serde_json::Value>,
+) -> String {
+    use serde_json::Value;
+    fn summary(value: Option<&Value>) -> String {
+        match value {
+            None => "absent".into(),
+            Some(Value::Null) => "null".into(),
+            Some(Value::Bool(value)) => format!("bool({value})"),
+            Some(Value::Number(value)) => format!("number({value})"),
+            Some(Value::String(value)) => format!(
+                "string(bytes={},blake3={})",
+                value.len(),
+                blake3::hash(value.as_bytes()).to_hex()
+            ),
+            Some(Value::Array(value)) => format!("array(length={})", value.len()),
+            Some(Value::Object(value)) => format!("object(fields={})", value.len()),
+        }
+    }
+    fn first(expected: Option<&Value>, actual: Option<&Value>, path: String) -> Option<String> {
+        if expected == actual {
+            return None;
+        }
+        match (expected, actual) {
+            (Some(Value::Object(left)), Some(Value::Object(right))) => {
+                let keys: std::collections::BTreeSet<_> = left.keys().chain(right.keys()).collect();
+                keys.into_iter().find_map(|key| {
+                    first(
+                        left.get(key),
+                        right.get(key),
+                        format!("{path}/{}", key.replace('~', "~0").replace('/', "~1")),
+                    )
+                })
+            }
+            (Some(Value::Array(left)), Some(Value::Array(right))) if left.len() == right.len() => {
+                left.iter()
+                    .zip(right)
+                    .enumerate()
+                    .find_map(|(index, (left, right))| {
+                        first(Some(left), Some(right), format!("{path}/{index}"))
+                    })
+            }
+            _ => Some(format!(
+                "{path}: expected {}, actual {}",
+                summary(expected),
+                summary(actual)
+            )),
+        }
+    }
+    let missing: Vec<_> = expected
+        .keys()
+        .filter(|id| !actual.contains_key(*id))
+        .take(8)
+        .collect();
+    let extra: Vec<_> = actual
+        .keys()
+        .filter(|id| !expected.contains_key(*id))
+        .take(8)
+        .collect();
+    let changed = expected.iter().find_map(|(id, value)| {
+        actual
+            .get(id)
+            .and_then(|actual| first(Some(value), Some(actual), id.clone()))
+    });
+    format!(
+        "sessions expected={}, actual={}; missing(first8)={missing:?}; extra(first8)={extra:?}; first changed={changed:?}",
+        expected.len(),
+        actual.len()
+    )
+}
+
 /// Rows a Sinex query answers, asked over its API socket as a reader.
 fn sinex_rows(socket: &Path, query: &str) -> usize {
-    let body = serde_json::json!({ "method": "query", "query": query, "page": 1000 }).to_string();
-    let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
-    write!(
-        stream,
-        "POST /v1 HTTP/1.1\r\nHost: sinexd\r\nContent-Type: application/json\r\nAuthorization: Bearer read-rebuild-token\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    )
-    .unwrap();
-    let mut reply = String::new();
-    stream.read_to_string(&mut reply).unwrap();
-    let json = reply
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or_default();
-    // A chunked body: the JSON object starts at its first brace.
-    let start = json.find('{').expect("a JSON reply");
-    let end = json.rfind('}').expect("a JSON reply");
-    let value: serde_json::Value =
-        serde_json::from_str(&json[start..=end]).unwrap_or_else(|e| panic!("{e}: {reply}"));
+    let value = native::request(
+        socket,
+        "read",
+        serde_json::json!({ "method": "query", "query": query, "page": 1000 }),
+    );
     value["result"]["rows"]
         .as_array()
         .unwrap_or_else(|| panic!("no rows in {value}"))
@@ -175,7 +343,7 @@ fn sinex_rows(socket: &Path, query: &str) -> usize {
 }
 
 #[test]
-#[ignore = "needs Sinex's binaries; set SINEXD and SINEX_SCHEMA"]
+#[ignore = "needs the matching Sinex daemon; set SINEXD"]
 fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     let started = Instant::now();
     let phase = |name: &str| eprintln!("{:>6.1}s {name}", started.elapsed().as_secs_f64());
@@ -186,34 +354,87 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
 
     let example = Morrow::lay_out(Set::Main);
     let running = sinex(example.dir.path());
-    let sinex = connect(&running.config, &example.root);
+    let sinex = connect(&running.config);
     phase("sinexd answers");
-    build_on_sinex(&example, &example.home, &sinex, &running.config);
+    build_on_sinex(&example, &example.home, &sinex, &running);
     phase("built on Sinex");
     {
-        let (archive, _lock) =
-            Archive::open_primary(&example.root, &running.config.store, sinex.as_ref()).unwrap();
-        let mut engine = Engine::on_sinex(example.config(), archive, sinex.clone()).unwrap();
-        example.import_exports(&mut engine);
+        let (archive, _lock) = Archive::open_primary(&example.root, &running.config.store).unwrap();
+        let mut engine =
+            Engine::on_sinex(example.config(), archive.clone(), sinex.clone()).unwrap();
+        let commits = engine.writer().unwrap().completion_commits();
+        let before_import = answer_difference(&expected, &answers(&archive).0);
+        let imported = example.import_exports(&mut engine).unwrap();
+        assert!(
+            imported.pass.errors.is_empty() && imported.refused.is_empty(),
+            "{imported:?}; {}",
+            running.evidence(&sinex, &archive)
+        );
+        let imported_at = Instant::now();
+        loop {
+            assert!(
+                imported_at.elapsed() < Duration::from_secs(120),
+                "imported sessions did not reach the standalone answer; before import: {before_import}; current: {}; {}",
+                answer_difference(&expected, &answers(&archive).0),
+                running.evidence(&sinex, &archive)
+            );
+            let pass = engine.run_pass().unwrap();
+            assert!(
+                pass.errors.is_empty(),
+                "{pass:?}; {}",
+                running.evidence(&sinex, &archive)
+            );
+            if answers(&archive).0 == expected {
+                break;
+            }
+            commits
+                .recv_timeout(Duration::from_secs(120).saturating_sub(imported_at.elapsed()))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "import answer wait: {error}; before import: {before_import}; current: {}; {}",
+                        answer_difference(&expected, &answers(&archive).0),
+                        running.evidence(&sinex, &archive)
+                    )
+                });
+        }
         engine
             .writer()
             .unwrap()
-            .user(UserRequest::now(
+            .user(polylogue_store::fixture::authored::operator_request(
                 "0199d8a0-0000-7000-8000-00000000a001".into(),
-                UserWrite::AddNote {
-                    note: NewNote {
-                        kind: NoteKind::Note,
+                UserWrite::Assert {
+                    assertions: vec![NewAssertion {
+                        kind: AssertionKind::Note,
                         key: None,
-                        value: Some("Synthetic note kept in Sinex".into()),
-                        author: Author::Operator,
-                        targets: vec![Target::Session(polylogue_testkit::session(1))],
-                        relations: vec![],
-                        revises: None,
+                        value: Some(serde_json::json!("Synthetic note kept in Sinex")),
+                        links: vec![NewAssertionLink {
+                            role: LinkRole::About,
+                            reference: Reference::Session(polylogue_testkit::session(1)),
+                        }],
                         valid_until: None,
-                    },
+                    }],
                 },
             ))
             .unwrap();
+        let authored_at = Instant::now();
+        loop {
+            assert!(
+                authored_at.elapsed() < Duration::from_secs(120),
+                "the authored note did not reach confirmed application; {}",
+                running.evidence(&sinex, &archive)
+            );
+            if answers(&archive).1.len() == 1 {
+                break;
+            }
+            commits
+                .recv_timeout(Duration::from_secs(120).saturating_sub(authored_at.elapsed()))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "note confirmation: {error}; {}",
+                        running.evidence(&sinex, &archive)
+                    )
+                });
+        }
     }
     phase("exports imported");
     let on_sinex = Archive::on_sinex(&example.root, &running.config.store);
@@ -246,122 +467,24 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
         ) > 0
     );
     assert_eq!(
-        sinex_rows(&running.socket, "events where event_type = polylogue.note"),
+        sinex_rows(
+            &running.socket,
+            "events where event_type = polylogue.assertion"
+        ),
         1
     );
 
-    // Re-read the complete note material and replace its repeat-policy reading.
-    let saved = running._pg.sql("sinex", "SELECT json_build_object('id',e.id,'event',json_build_object('kind',json_build_object('name',e.event_type,'version',e.kind_version),'payload',e.payload,'location',json_build_object('material',e.material_id,'anchor',e.anchor),'output_index',e.output_index,'parents','[]'::json,'reading_order',0,'class',e.class))::text FROM core.events e WHERE event_type='polylogue.note' AND NOT EXISTS(SELECT 1 FROM audit.archived a WHERE a.event_id=e.id)").unwrap();
-    let saved: serde_json::Value = serde_json::from_str(saved.trim()).unwrap();
-    let event: sinex_protocol::ProducerEvent =
-        serde_json::from_value(saved["event"].clone()).unwrap();
-    let material = event.location.unwrap().material;
-    let scope = sinex_protocol::ReplayScopeQuery {
-        materials: vec![material],
-        event_types: Some(vec!["polylogue.note".into()]),
-        from: None,
-        until: None,
-    };
-    let mut replay = sinex.replay().unwrap();
-    let selection = replay.scope(&scope).unwrap().into_iter().next().unwrap();
-    assert_eq!(selection.rows, 1);
-    let operation = sinex_model::OperationId::new();
-    let batches = vec![sinex_protocol::ReplayBatch {
-        events: vec![event],
-        failures: vec![],
-    }];
-    let replaced = replay
-        .sequence(operation, selection.clone(), scope.clone(), batches.clone())
-        .unwrap();
-    assert_eq!(replaced.admitted.len(), 1);
-    assert_ne!(
-        replaced.admitted[0].to_string(),
-        saved["id"].as_str().unwrap()
-    );
-    assert_eq!(
-        replaced,
-        replay
-            .sequence(operation, selection, scope, batches)
-            .unwrap()
-    );
-    drop(replay);
-    assert_eq!(
-        sinex_rows(&running.socket, "events where event_type = polylogue.note"),
-        1
-    );
-    assert_eq!(answers(&on_sinex), (sessions.clone(), notes.clone()));
-    phase("note replay acknowledged");
-
-    // Delete the local copy and the index; rebuild with no provider file.
-    for name in [
-        "sinex.db",
-        "sinex.db-wal",
-        "sinex.db-shm",
-        "index.db",
-        "index.db-wal",
-        "index.db-shm",
-        "sinex-sent.json",
-    ] {
-        let _ = fs::remove_file(example.root.join(name));
-    }
+    // Delete every local file Polylogue derived (the archive directory with
+    // its index, and the producer spool), then rebuild from Sinex alone with
+    // no provider file.
+    drop(sinex);
+    fs::remove_dir_all(&example.root).unwrap();
+    fs::create_dir_all(&example.root).unwrap();
+    fs::remove_dir_all(running.config.store.join("producer-spool")).unwrap();
+    let sinex = connect(&running.config);
     let empty = example.dir.path().join("empty-home");
     fs::create_dir_all(&empty).unwrap();
-    build_on_sinex(&example, &empty, &sinex, &running.config);
+    build_on_sinex(&example, &empty, &sinex, &running);
     phase("rebuilt from Sinex");
     assert_eq!(answers(&on_sinex), (sessions, notes), "rebuilt from Sinex");
-
-    // Excising session #1 is Sinex's excision of its file, with Polylogue
-    // as the actor; a later rebuild keeps it removed.
-    {
-        let (archive, _lock) =
-            Archive::open_primary(&example.root, &running.config.store, sinex.as_ref()).unwrap();
-        let mut engine = Engine::on_sinex(example.config(), archive, sinex.clone()).unwrap();
-        let excised = engine
-            .excise(polylogue_engine::ExciseRequest {
-                id: "0199d8a0-0000-7000-8000-00000000e001".into(),
-                target: polylogue_engine::ExciseTarget::Session(polylogue_testkit::session(1)),
-                reason: None,
-                dry_run: false,
-            })
-            .unwrap();
-        assert_eq!(
-            excised.sessions,
-            [polylogue_testkit::session(1).to_string()]
-        );
-    }
-    phase("excised");
-    assert_eq!(
-        sinex_rows(
-            &running.socket,
-            "events where event_type = polylogue.session"
-        ),
-        7
-    );
-    assert_eq!(
-        sinex_rows(
-            &running.socket,
-            "events where event_type = polylogue.excision"
-        ),
-        1
-    );
-    let (after, _) = answers(&on_sinex);
-    assert!(!after.contains_key(&polylogue_testkit::session(1).to_string()));
-    for name in [
-        "sinex.db",
-        "sinex.db-wal",
-        "sinex.db-shm",
-        "index.db",
-        "index.db-wal",
-        "index.db-shm",
-        "sinex-sent.json",
-    ] {
-        let _ = fs::remove_file(example.root.join(name));
-    }
-    build_on_sinex(&example, &example.home, &sinex, &running.config);
-    phase("rebuilt after the excision");
-    assert_eq!(
-        answers(&on_sinex).0,
-        after,
-        "a rebuild keeps the excision, though the provider file is still there"
-    );
 }

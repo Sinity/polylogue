@@ -1,5 +1,5 @@
 //! The identity form of a conversation, independent of response order.
-use polylogue_model::{BlobHash, Json, Timestamp};
+use polylogue_model::{BlobHash, Json};
 
 pub(super) fn native<'a>(
     value: &'a Json,
@@ -22,8 +22,8 @@ pub(super) fn native<'a>(
     Ok(id)
 }
 
-pub(super) fn time(value: &Json) -> Result<Option<Timestamp>, &'static str> {
-    let mut at = None;
+pub(super) fn time(value: &Json) -> Result<Option<crate::time::SourceTime>, &'static str> {
+    let mut at: Option<crate::time::SourceTime> = None;
     for field in ["create_time", "createTime"] {
         let Some(value) = value.get(field).filter(|value| !value.is_null()) else {
             continue;
@@ -37,7 +37,10 @@ pub(super) fn time(value: &Json) -> Result<Option<Timestamp>, &'static str> {
                 return Err("unrecognized Grok creation time; no time was inferred");
             }
             if let Some(millis) = date.get("$numberLong").and_then(Json::as_str) {
-                millis.parse::<i64>().ok().and_then(Timestamp::from_unix_ms)
+                millis
+                    .parse::<i64>()
+                    .ok()
+                    .and_then(|millis| crate::time::epoch_millis(&Json::from(millis)))
             } else if date.is_number() {
                 crate::time::epoch_millis(date)
             } else {
@@ -49,7 +52,7 @@ pub(super) fn time(value: &Json) -> Result<Option<Timestamp>, &'static str> {
         let Some(parsed) = parsed else {
             return Err("unrecognized Grok creation time; no time was inferred");
         };
-        if at.is_some_and(|at| at != parsed) {
+        if at.is_some_and(|at| at.timestamp() != parsed.timestamp()) {
             return Err("conflicting Grok creation times; no time was chosen");
         }
         at = Some(parsed);

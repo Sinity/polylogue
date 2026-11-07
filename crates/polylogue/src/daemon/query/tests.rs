@@ -5,6 +5,7 @@
 
 use super::*;
 use polylogue_store::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
+use query_language::time::Clock;
 
 const DAY: i64 = 86_400_000;
 /// 2026-10-01T12:00Z.
@@ -37,6 +38,16 @@ fn msg<'a>(
     }
 }
 
+/// A message ID in its session's origin, as every stored message has.
+fn scoped(session: &str, native: &str) -> String {
+    use polylogue_model::{MessageId, NativeId, SessionId};
+    MessageId::new(
+        SessionId::parse(session).unwrap().origin().clone(),
+        NativeId::new(native).unwrap(),
+    )
+    .to_string()
+}
+
 /// #1–#8 as the example's FACTS table has them, reduced to what the
 /// queries below read.
 fn morrow() -> TestArchive {
@@ -60,7 +71,7 @@ fn morrow() -> TestArchive {
             .message(
                 s1,
                 msg(
-                    &format!("m1p{i}"),
+                    &scoped(&ids[0], &format!("m1p{i}")),
                     "user",
                     "human",
                     "please fix the parser",
@@ -74,7 +85,7 @@ fn morrow() -> TestArchive {
                 MessageFacts {
                     cost_nusd: Some(420_000_000),
                     ..msg(
-                        &format!("m1a{i}"),
+                        &scoped(&ids[0], &format!("m1a{i}")),
                         "assistant",
                         "model",
                         "done",
@@ -116,7 +127,7 @@ fn morrow() -> TestArchive {
     fx.message(
         s2,
         msg(
-            "m2p0",
+            &scoped(&ids[1], "m2p0"),
             "user",
             "human",
             "let's use chrono, not time",
@@ -126,18 +137,33 @@ fn morrow() -> TestArchive {
     .unwrap();
     fx.message(
         s2,
-        msg("m2p1", "user", "human", "now run the tests", at(2, 10)),
+        msg(
+            &scoped(&ids[1], "m2p1"),
+            "user",
+            "human",
+            "now run the tests",
+            at(2, 10),
+        ),
     )
     .unwrap();
-    fx.message(s2, msg("m2p2", "user", "human", "ship it", at(2, 11)))
-        .unwrap();
+    fx.message(
+        s2,
+        msg(
+            &scoped(&ids[1], "m2p2"),
+            "user",
+            "human",
+            "ship it",
+            at(2, 11),
+        ),
+    )
+    .unwrap();
     let a2 = fx
         .message(
             s2,
             MessageFacts {
                 cost_nusd: Some(2_850_000_000),
                 ..msg(
-                    "m2a0",
+                    &scoped(&ids[1], "m2a0"),
                     "assistant",
                     "model",
                     "Switching to chrono.",
@@ -205,7 +231,7 @@ fn morrow() -> TestArchive {
             model: Some("claude-opus-5-5"),
             cost_nusd: Some(160_000_000),
             ..msg(
-                "m3a0",
+                &scoped(&ids[2], "m3a0"),
                 "assistant",
                 "model",
                 "searched the docs for chrono",
@@ -229,7 +255,7 @@ fn morrow() -> TestArchive {
         fx.message(
             s4,
             msg(
-                &format!("m4p{i}"),
+                &scoped(&ids[3], &format!("m4p{i}")),
                 "user",
                 "human",
                 "continue",
@@ -243,7 +269,13 @@ fn morrow() -> TestArchive {
             s4,
             MessageFacts {
                 cost_nusd: Some(1_590_000_000),
-                ..msg("m4a0", "assistant", "model", "continuing", at(3, 10))
+                ..msg(
+                    &scoped(&ids[3], "m4a0"),
+                    "assistant",
+                    "model",
+                    "continuing",
+                    at(3, 10),
+                )
             },
         )
         .unwrap();
@@ -278,7 +310,13 @@ fn morrow() -> TestArchive {
         s5,
         MessageFacts {
             cost_nusd: None,
-            ..msg("m5a0", "assistant", "model", "codex answer five", at(5, 9))
+            ..msg(
+                &scoped("codex:01a20000-0005-7000-8000-000000000005", "m5a0"),
+                "assistant",
+                "model",
+                "codex answer five",
+                at(5, 9),
+            )
         },
     )
     .unwrap();
@@ -293,7 +331,13 @@ fn morrow() -> TestArchive {
         .unwrap();
     fx.message(
         s6,
-        msg("m6a0", "assistant", "model", "codex answer six", at(6, 9)),
+        msg(
+            &scoped("codex:01a20000-0006-7000-8000-000000000006", "m6a0"),
+            "assistant",
+            "model",
+            "codex answer six",
+            at(6, 9),
+        ),
     )
     .unwrap();
     fx.link(
@@ -312,13 +356,28 @@ fn morrow() -> TestArchive {
             ..SessionFacts::default()
         })
         .unwrap();
-    fx.message(s7, msg("m7p0", "user", "human", "dates", at(4, 9)))
-        .unwrap();
+    fx.message(
+        s7,
+        msg(
+            &scoped("chatgpt:abc-7", "m7p0"),
+            "user",
+            "human",
+            "dates",
+            at(4, 9),
+        ),
+    )
+    .unwrap();
     fx.message(
         s7,
         MessageFacts {
             on_active_path: Some(false),
-            ..msg("m7p1", "user", "human", "edited dates", at(4, 9))
+            ..msg(
+                &scoped("chatgpt:abc-7", "m7p1"),
+                "user",
+                "human",
+                "edited dates",
+                at(4, 9),
+            )
         },
     )
     .unwrap();
@@ -326,7 +385,13 @@ fn morrow() -> TestArchive {
         s7,
         MessageFacts {
             on_active_path: Some(false),
-            ..msg("m7a1", "assistant", "model", "abandoned", at(4, 9))
+            ..msg(
+                &scoped("chatgpt:abc-7", "m7a1"),
+                "assistant",
+                "model",
+                "abandoned",
+                at(4, 9),
+            )
         },
     )
     .unwrap();
@@ -341,7 +406,7 @@ fn morrow() -> TestArchive {
     fx.message(
         s8,
         msg(
-            "m8p0",
+            &scoped("claude-ai:abc-8", "m8p0"),
             "user",
             "human",
             "Shorter, and mention chrono.",
@@ -352,18 +417,18 @@ fn morrow() -> TestArchive {
 
     fx.note(
         "tag",
-        Some("project"),
-        Some("morrow"),
+        Some("project:morrow"),
+        None,
         &format!("session:{}", ids[1]),
     )
     .unwrap();
-    fx.note("tag", None, Some("research"), "session:chatgpt:abc-7")
+    fx.note("tag", Some("research"), None, "session:chatgpt:abc-7")
         .unwrap();
     fx.note(
         "decision",
         None,
         Some("decided: chrono, not time"),
-        "message:m2p0",
+        &format!("message:{}", scoped(&ids[1], "m2p0")),
     )
     .unwrap();
     TestArchive { _dir: dir, fx }
@@ -376,12 +441,21 @@ fn ask(text: &str) -> Ask<'_> {
         page_size: None,
         why: false,
         session: None,
-        now: OCT1 + 7 * DAY,
-        day: Some(LogicalDay::named("UTC", 0).unwrap()),
+        context: fixture_context(OCT1 + 7 * DAY, "UTC", 0),
         embeddings: false,
+        ranking_identity: None,
         near: None,
         fields: &[],
     }
+}
+
+fn save_definition(w: &mut TestArchive, name: &str, text: &str) {
+    let pool = w.fx.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let opts = options(&reader, &ask(text), 7).unwrap();
+    let plan = reader.prepare_query_plan(text, &opts).unwrap();
+    drop(reader);
+    w.fx.saved_query(name, &plan).unwrap();
 }
 
 fn run_q(w: &TestArchive, a: Ask<'_>) -> Result<Value, Failure> {
@@ -390,8 +464,32 @@ fn run_q(w: &TestArchive, a: Ask<'_>) -> Result<Value, Failure> {
     run(&r, a)
 }
 
+/// The answer document of a query, with the answer's typed outcome beside
+/// it under `outcome` so one value carries both for comparison. The product
+/// never puts the outcome in the document; [`document`] is the document alone.
+fn run(r: &Reader<'_>, a: Ask<'_>) -> Result<Value, Failure> {
+    super::run(r, a).map(|answer| {
+        let mut value = serde_json::to_value(&answer.value).unwrap();
+        value["outcome"] = json!(match answer.outcome {
+            Outcome::Rows => "rows",
+            Outcome::Empty => "empty",
+            Outcome::Incomplete => "incomplete",
+            Outcome::Measure => "measure",
+        });
+        value
+    })
+}
+
+/// The answer document of a query exactly as surfaces receive it.
+fn document(w: &TestArchive, text: &str) -> Value {
+    let pool = w.fx.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let answer = super::run(&r, ask(text)).unwrap_or_else(|f| panic!("{text}: {}", f.message));
+    serde_json::to_value(&answer.value).unwrap()
+}
+
 fn q(w: &TestArchive, text: &str) -> Value {
-    run_q(w, ask(text)).unwrap_or_else(|f| panic!("{text}: {} {}", f.kind, f.message))
+    run_q(w, ask(text)).unwrap_or_else(|f| panic!("{text}: {} {}", f.code(), f.message))
 }
 
 /// The `id` column of each row, shortened to the session's number.
@@ -479,7 +577,7 @@ fn session_queries_follow_the_morrow_examples() {
 fn aggregates_count_unknowns_apart() {
     let w = morrow();
     // 3: kind:* drops the subagent default; unknown costs are counted, not summed as 0.
-    let v = q(&w, "kind:* | agg count, sum:cost");
+    let v = q(&w, "kind:* | agg count, sum(cost)");
     let row = &v["rows"][0];
     assert_eq!(v["shape"], "summary");
     assert_eq!(row["count"], 8);
@@ -554,15 +652,15 @@ fn row_units_and_their_defaults() {
         "messages where written_by:human | group by session.origin | count",
     );
     assert_eq!(
-        groups(&v, "session_origin"),
+        groups(&v, "session.origin"),
         [
             ("claude-code".into(), 9),
             ("chatgpt".into(), 1),
             ("claude-ai".into(), 1)
         ]
     );
-    // 31: notes.
-    let v = q(&w, "notes where kind:decision");
+    // 31: assertions.
+    let v = q(&w, "assertions where kind:decision");
     assert_eq!(v["rows"][0]["value"], "decided: chrono, not time");
 }
 
@@ -598,27 +696,41 @@ fn exists_and_seq_match_one_call_and_an_order() {
 #[test]
 fn matches_return_the_rows_that_matched() {
     let w = morrow();
-    // seq: one row per step tuple, with the gap between the steps.
+    // A sequence exposes each selected step with its parent and match.
     let v = q(
         &w,
         "sessions where seq(command:\"cargo test\" AND outcome:error -> command:\"cargo test\" AND outcome:ok) | matches",
     );
     assert_eq!(v["unit"], "matches");
     assert_eq!(v["shape"], "matches");
-    assert_eq!(ids(&v), ["#2"]);
-    let row = &v["rows"][0];
-    assert_eq!(row["match"], 1);
-    assert_eq!(row["step1_outcome"], "error");
-    assert_eq!(row["step2_outcome"], "ok");
-    assert_eq!(row["gap_steps"], 1, "the Edit between them");
-    assert_eq!(row["gap_time"], 3_600_000 * 2);
-    // An aggregate after `| matches` is over the tuples.
+    let rows = v["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter()
+            .all(|r| short(r["parent"].as_str().unwrap()) == "#2")
+    );
+    assert_eq!(rows[0]["match"], 1);
+    assert_eq!(rows[1]["match"], 1);
+    assert_eq!(rows[0]["position"], 1);
+    assert_eq!(rows[1]["position"], 2);
+    assert_eq!(rows[0]["step.outcome"], "error");
+    assert_eq!(rows[1]["step.outcome"], "ok");
+    let time = |row: &Value| {
+        row["step.at"]
+            .as_str()
+            .unwrap()
+            .parse::<jiff::Timestamp>()
+            .unwrap()
+            .as_millisecond()
+    };
+    assert_eq!(time(&rows[1]) - time(&rows[0]), 3_600_000 * 2);
+    // Aggregation after Matches counts the selected steps.
     let v = q(
         &w,
-        "sessions where seq(command:\"cargo test\" AND outcome:error -> command:\"cargo test\" AND outcome:ok) | matches | agg p50:gap_time, count",
+        "sessions where seq(command:\"cargo test\" AND outcome:error -> command:\"cargo test\" AND outcome:ok) | matches | agg count()",
     );
     assert_eq!(v["shape"], "summary");
-    assert_eq!(v["rows"][0]["count"], 1);
+    assert_eq!(v["rows"][0]["count"], 2);
     // exists: one row per parent row and matching child.
     let v = q(
         &w,
@@ -629,11 +741,11 @@ fn matches_return_the_rows_that_matched() {
     assert!(!rows.is_empty());
     assert!(
         rows.iter()
-            .all(|r| r["outcome"] == "error" && r["match"].as_u64() >= Some(1))
+            .all(|r| r["step.outcome"] == "error" && r["match"].as_u64() >= Some(1))
     );
     // Without one exists or seq, there is nothing to return as matches.
     let err = run_q(&w, ask("sessions where repo:morrow | matches")).unwrap_err();
-    assert_eq!(err.kind, "invalid_query");
+    assert_eq!(err.code(), "invalid_query");
 }
 
 #[test]
@@ -645,29 +757,28 @@ fn seq_matches_are_earliest_first_and_never_overlap() {
         "sessions where seq(action:shell -> action:shell) | matches",
     );
     let rows = v["rows"].as_array().unwrap();
-    let pairs: Vec<(String, String)> = rows
+    let steps: Vec<(u64, u64, &str)> = rows
         .iter()
         .map(|r| {
             (
-                r["step1_command"].as_str().unwrap().to_owned(),
-                r["step2_command"].as_str().unwrap().to_owned(),
+                r["match"].as_u64().unwrap(),
+                r["position"].as_u64().unwrap(),
+                r["step.command"].as_str().unwrap(),
             )
         })
         .collect();
     assert_eq!(
-        pairs,
+        steps,
         [
-            (
-                "bd update demo-7 --claim".to_owned(),
-                "cargo test -p store".to_owned()
-            ),
-            (
-                "cargo test -p store".to_owned(),
-                "git commit -m fix".to_owned()
-            ),
+            (1, 1, "bd update demo-7 --claim"),
+            (1, 2, "cargo test -p store"),
+            (2, 1, "cargo test -p store"),
+            (2, 2, "git commit -m fix"),
         ]
     );
-    assert_eq!(rows[1]["match"], 2);
+    let identities: std::collections::BTreeSet<_> =
+        rows.iter().map(|r| r["step"].as_str().unwrap()).collect();
+    assert_eq!(identities.len(), 4, "matches never reuse a step");
     // `[next]` with a condition that no later call meets: no match.
     let v = q(
         &w,
@@ -750,9 +861,17 @@ fn kept_results_read_back_as_they_were_kept() {
     );
     // Conditions do not narrow a kept result; stages do.
     let err = run_q(&w, ask("result:0199-kept repo:morrow")).unwrap_err();
-    assert_eq!(err.kind, "invalid_query");
+    assert_eq!(err.code(), "invalid_query");
     let err = run_q(&w, ask("result:nope")).unwrap_err();
-    assert!(err.message.contains("no kept result"), "{}", err.message);
+    let detail = query_failure_detail(&err, query_language::ErrorKind::BadValue, 0);
+    assert_eq!(
+        detail["message"],
+        "kept result \"result:nope\" has no bound output schema"
+    );
+    assert_eq!(
+        detail["hint"],
+        "Supply its actual typed output snapshot before execution"
+    );
 }
 
 #[test]
@@ -811,38 +930,95 @@ fn text_search_ranks_and_cuts_snippets() {
     assert_eq!(q(&w, "tool_calls where command:\"go te\"")["count"], 2);
 }
 
+/// The shared failure as every surface reports it, checked for its code and
+/// byte position.
+#[track_caller]
+fn query_failure_detail(
+    failure: &Failure,
+    kind: query_language::ErrorKind,
+    position: usize,
+) -> Value {
+    assert_eq!(failure.code(), kind.code());
+    assert_eq!(failure.kind, crate::protocol::kind(kind.code()));
+    assert_eq!(failure.position.as_ref().unwrap().offset, position);
+    let mut detail = serde_json::to_value(&failure.error).unwrap();
+    // The message carries the source line and caret below its first line.
+    detail["message"] = failure.message.lines().next().unwrap_or_default().into();
+    if let Some(suggestion) = crate::protocol::suggestion_text(failure) {
+        detail["suggestion"] = suggestion.as_ref().into();
+    }
+    detail
+}
+
+#[track_caller]
+fn assert_same_question(actual: &str, expected: &str) {
+    let catalog = polylogue_query::catalog::catalog(
+        &polylogue_sources::origin::ORIGINS
+            .iter()
+            .map(|origin| origin.name.to_owned())
+            .collect::<Vec<_>>(),
+    );
+    let identity = |text: &str| {
+        let query = query_language::parse::parse(text, &catalog).unwrap();
+        query_language::identity::question_id(&query, &catalog, &Default::default()).unwrap()
+    };
+    assert_eq!(identity(actual), identity(expected));
+}
+
 #[test]
 fn errors_point_at_the_problem_and_offer_a_fix() {
     let w = morrow();
-    // 35.
+    // 35. A correction preserves the intended query and runs as given.
     let f = run_q(&w, ask("reop:morrow")).unwrap_err();
-    assert_eq!(f.kind, "unknown_field");
-    assert_eq!(
-        f.message,
-        "unknown field \"reop\" at position 0; did you mean \"repo\"?"
+    let detail = query_failure_detail(&f, query_language::ErrorKind::UnknownField, 0);
+    assert!(
+        detail["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("unknown field `reop` on `sessions`; fields: ")
     );
-    assert_eq!(f.detail.unwrap()["suggestion"], "repo:morrow");
-    // A closed set names the set and where the value does exist.
+    let suggestion = detail["suggestion"].as_str().unwrap();
+    assert_same_question(suggestion, "repo:morrow");
+    assert_eq!(ids(&q(&w, suggestion)), ids(&q(&w, "repo:morrow")));
+    // A closed set names the complete declaration and every qualifying field.
     let f = run_q(&w, ask("sessions where outcome:error")).unwrap_err();
-    assert!(
-        f.message
-            .contains("one of solved, partial, abandoned, none"),
-        "{}",
-        f.message
+    let detail = query_failure_detail(
+        &f,
+        query_language::ErrorKind::BadValue,
+        "sessions where outcome:".len(),
+    );
+    let catalog = polylogue_query::catalog::catalog(&[]);
+    let values = &catalog.field("sessions", "outcome").unwrap().values;
+    assert_eq!(values, &["solved", "partial", "abandoned", "none"]);
+    assert_eq!(
+        detail["message"],
+        format!(
+            "`outcome` on `sessions` is one of: {}; `error` is a value of {}",
+            values.join(", "),
+            catalog.units_accepting("error").join(", ")
+        )
     );
     assert!(
-        f.message.contains("\"error\" is an outcome of tool_calls"),
-        "{}",
-        f.message
+        catalog
+            .units_accepting("error")
+            .contains(&"tool_calls.outcome".into())
     );
-    // Commands and near misses are refused, not searched.
-    let f = run_q(&w, ask("brief yesterday")).unwrap_err();
-    assert_eq!(f.kind, "not_a_query");
-    let f = run_q(&w, ask("messges cargo")).unwrap_err();
-    assert!(f.message.contains("\"messages\""), "{}", f.message);
-    // Short words and real searches are not near misses.
-    assert!(run_q(&w, ask("bug fix")).is_ok());
-    assert!(run_q(&w, ask("date parsing")).is_ok());
+    // Unit typos carry runnable corrections; quoted words remain literal searches.
+    for text in ["messges where cargo", "messges cargo"] {
+        let f = run_q(&w, ask(text)).unwrap_err();
+        let detail = query_failure_detail(&f, query_language::ErrorKind::NotAQuery, 0);
+        let correction = detail["suggestion"].as_str().unwrap();
+        assert_same_question(correction, "messages where cargo");
+        assert!(run_q(&w, ask(correction)).is_ok());
+    }
+    for words in [
+        "brief yesterday",
+        "\"messges\" cargo",
+        "bug fix",
+        "date parsing",
+    ] {
+        assert!(run_q(&w, ask(words)).is_ok());
+    }
 }
 
 #[test]
@@ -853,16 +1029,16 @@ fn an_empty_result_explains_itself() {
     a.why = true;
     let v = run_q(&w, a).unwrap();
     assert_eq!(v["outcome"], "empty");
-    assert_eq!(v["why"][0]["clause"], "repo:other");
+    assert_same_question(v["why"][0]["clause"].as_str().unwrap(), "repo:other");
     assert_eq!(v["why"][0]["matches"], 0);
     assert_eq!(v["why"][0]["of"], 7);
     // 33: semantic search is not enabled.
-    let v = q(&w, "near:\"ambiguous date formats\"");
+    let v = q(&w, "similar:\"ambiguous date formats\"");
     assert_eq!(v["outcome"], "incomplete");
     assert_eq!(v["count"], 7);
 }
 
-/// Similarities for `near:` computed from stored vectors: the texts of the
+/// Similarities for `similar:` computed from stored vectors: the texts of the
 /// sessions whose ID is `LIKE like` lie along the query, every other text
 /// across it.
 fn similarity(w: &TestArchive, like: &str) -> std::sync::Arc<polylogue_store::vectors::Similarity> {
@@ -905,7 +1081,7 @@ fn near_ranks_every_row_by_similarity() {
         assert_eq!(q, "ambiguous date formats");
         Ok(std::sync::Arc::clone(&s))
     };
-    let mut a = ask("near:\"ambiguous date formats\"");
+    let mut a = ask("similar:\"ambiguous date formats\"");
     a.embeddings = true;
     a.near = Some(&near);
     let v = run_q(&w, a).unwrap();
@@ -923,7 +1099,7 @@ fn near_applies_its_conditions_before_ranking() {
     // excludes #2 still ranks what it keeps instead of finding nothing.
     let s = similarity(&w, "%0002-4000%");
     let near = |_: &str| Ok(std::sync::Arc::clone(&s));
-    let mut a = ask("near:x -id:claude-code:7f3a2c10-0002");
+    let mut a = ask("similar:x -id:claude-code:7f3a2c10-0002");
     a.embeddings = true;
     a.near = Some(&near);
     let v = run_q(&w, a).unwrap();
@@ -947,7 +1123,7 @@ fn text_and_similarity_rank_together() {
     let mut text_only = ask("messages where parser");
     text_only.page_size = Some(100);
     let lexical = run_q(&w, text_only).unwrap();
-    let mut both = ask("messages where parser near:x");
+    let mut both = ask("messages where parser similar:x");
     both.page_size = Some(100);
     both.embeddings = true;
     both.near = Some(&near);
@@ -972,6 +1148,8 @@ fn pages_continue_with_a_cursor_and_keep_their_now() {
     let first = run_q(&w, a).unwrap();
     assert_eq!(first["count"], 8);
     assert_eq!(first["rows"].as_array().unwrap().len(), 3);
+    assert!(first["resolved"]["context"]["clock"].is_object());
+    assert!(first["resolved"]["times"].is_array());
     let mut seen = ids(&first);
     let mut cursor = first["next"].as_str().map(str::to_owned);
     while let Some(c) = cursor {
@@ -979,8 +1157,18 @@ fn pages_continue_with_a_cursor_and_keep_their_now() {
         a.page_size = Some(3);
         a.cursor = Some(&c);
         // A later request still answers the first one's question.
-        a.now += DAY;
+        std::sync::Arc::make_mut(&mut a.context).clock.now = a
+            .context
+            .clock
+            .now
+            .checked_add(jiff::SignedDuration::from_millis(DAY))
+            .unwrap();
         let page = run_q(&w, a).unwrap();
+        assert_eq!(
+            page["resolved"]["context"]["clock"],
+            first["resolved"]["context"]["clock"]
+        );
+        assert_eq!(page["resolved"]["times"], first["resolved"]["times"]);
         seen.extend(ids(&page));
         cursor = page["next"].as_str().map(str::to_owned);
     }
@@ -991,7 +1179,12 @@ fn pages_continue_with_a_cursor_and_keep_their_now() {
     let mut a = ask("origin:codex");
     let c = first["next"].as_str().unwrap().to_owned();
     a.cursor = Some(&c);
-    assert_eq!(run_q(&w, a).unwrap_err().kind, "bad_request");
+    let failure = run_q(&w, a).unwrap_err();
+    let detail = query_failure_detail(&failure, query_language::ErrorKind::InvalidQuery, 0);
+    assert_eq!(
+        detail["message"],
+        "the cursor belongs to a different question"
+    );
 }
 
 #[test]
@@ -1007,7 +1200,7 @@ fn attached_rows_follow_each_session() {
         assert_eq!(m.len(), 1, "{row}");
         assert_eq!(m[0]["role"], "assistant");
     }
-    assert_eq!(v["rows"][1]["messages"][0]["id"], "m2a0");
+    assert_eq!(v["rows"][1]["messages"][0]["id"], "claude-code:m2a0");
 }
 
 #[test]
@@ -1019,12 +1212,12 @@ fn a_session_query_scopes_a_row_query() {
     );
     assert_eq!(v["rows"][0]["count"], 2);
     // Grouping by logical day.
-    let v = q(&w, "tool_calls | group by day(at) | count | sort by day_at");
-    assert_eq!(v["rows"][0]["day_at"], "2026-10-01");
+    let v = q(&w, "tool_calls | group by day(at) | count | sort by day");
+    assert_eq!(v["rows"][0]["day"], "2026-10-01");
 }
 
 /// A session that claims a Bead, fails then passes its tests, commits and
-/// closes the Bead; derived into the work graph.
+/// closes the Bead; derived into its task and commit links.
 fn worked() -> TestArchive {
     let dir = tempfile::tempdir().unwrap();
     let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();
@@ -1036,7 +1229,10 @@ fn worked() -> TestArchive {
         })
         .unwrap();
     let m = fx
-        .message(s, msg("w1a", "assistant", "model", "", at(2, 12)))
+        .message(
+            s,
+            msg("claude-code:w1a", "assistant", "model", "", at(2, 12)),
+        )
         .unwrap();
     let calls: [(&str, &str, &str, i64); 5] = [
         ("bd update demo-7 --claim", "ok", "", 0),
@@ -1066,29 +1262,8 @@ fn worked() -> TestArchive {
 }
 
 #[test]
-fn the_work_unit_reads_the_derived_graph() {
+fn a_short_commit_hash_the_command_printed_answers_a_full_hash_query() {
     let w = worked();
-    let attempts = q(&w, "work where kind:attempt");
-    let row = &attempts["rows"][0];
-    assert_eq!(attempts["rows"].as_array().unwrap().len(), 1);
-    assert_eq!(row["title"], "demo-7");
-    assert_eq!(row["state"], "closed");
-    assert_eq!(row["goal"], "demo-7");
-    let checks = q(&w, "work where kind:verification goal:demo-7");
-    let states: Vec<&str> = checks["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| r["state"].as_str().unwrap())
-        .collect();
-    assert_eq!(states, ["error", "ok"]);
-    assert_eq!(
-        q(&w, "work where checks_failed:1")["rows"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
     // The short hash the commit command printed answers a full-hash query.
     assert_eq!(
         ids(&q(&w, "commit:0123abcd00112233445566778899aabbccddeeff")),
@@ -1113,15 +1288,24 @@ fn failed_saved_result_storage_is_not_an_empty_catalog() {
     let mut fixture = morrow();
     fixture
         .fx
-        .kept_result("broken", "sessions", "not JSON")
+        .kept_result(
+            "broken",
+            "sessions",
+            r#"{"unit":"sessions","columns":[],"rows":[]}"#,
+        )
         .unwrap();
+    fixture.fx.corrupt_kept_body("broken", "not JSON").unwrap();
     let failure = run_q(&fixture, ask("sessions")).unwrap_err();
-    assert_eq!(failure.kind, "store");
-    assert!(failure.message.contains("malformed JSON"));
+    assert_eq!(failure.code(), "store");
+    assert_eq!(
+        failure.message,
+        "kept result \"broken\" field rows_json: invalid JSON"
+    );
     let pool = fixture.fx.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let failure = keep(&reader, ask("sessions")).unwrap_err();
-    assert_eq!(failure.kind, "store");
+    let kept_failure = keep(&reader, ask("sessions")).unwrap_err();
+    assert_eq!(kept_failure.code(), "store");
+    assert_eq!(kept_failure.message, failure.message);
 }
 
 #[test]
@@ -1137,7 +1321,7 @@ fn absent_saved_queries_and_results_are_a_valid_empty_catalog() {
 
 #[test]
 fn damaged_kept_result_shapes_are_not_defaulted_or_discarded() {
-    for (field, body) in [
+    let shapes = [
         ("unit", json!({"columns": []})),
         ("unit", json!({"unit": 7, "columns": []})),
         ("columns", json!({"unit": "sessions"})),
@@ -1154,19 +1338,29 @@ fn damaged_kept_result_shapes_are_not_defaulted_or_discarded() {
             "match_columns",
             json!({"unit": "sessions", "columns": [], "match_columns": "wrong"}),
         ),
-    ] {
+    ];
+    for (field, body) in shapes
+        .into_iter()
+        .map(|(field, body)| (field, body.to_string()))
+        .chain(std::iter::once(("rows_json", "{".to_owned())))
+    {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
         fixture
-            .kept_result("broken", "sessions", &body.to_string())
+            .kept_result(
+                "broken",
+                "sessions",
+                r#"{"unit":"sessions","columns":[],"rows":[]}"#,
+            )
             .unwrap();
+        fixture.corrupt_kept_body("broken", &body).unwrap();
         let pool = fixture.reads().unwrap();
         let reader = pool.reader().unwrap();
         for failure in [
             run(&reader, ask("sessions")).unwrap_err(),
             keep(&reader, ask("sessions")).unwrap_err(),
         ] {
-            assert_eq!(failure.kind, "store");
+            assert_eq!(failure.code(), "store");
             assert!(failure.message.contains("broken"), "{failure:?}");
             assert!(failure.message.contains(field), "{failure:?}");
         }
@@ -1199,86 +1393,165 @@ mod pages;
 
 mod input_events;
 
-#[test]
-fn work_queries_distinguish_unknown_check_totals_from_failures() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();
-    let s = fx
-        .session(SessionFacts {
-            id: "claude-code:unknown-work",
-            ..SessionFacts::default()
-        })
-        .unwrap();
-    let m = fx
-        .message(
-            s,
-            msg("unknown-work-call", "assistant", "model", "", at(2, 12)),
-        )
-        .unwrap();
-    for (n, (command, outcome)) in [
-        ("bd update demo-7 --claim", "ok"),
-        ("cargo test", "unknown"),
-        ("cargo check", "error"),
-        ("cargo clippy", "ok"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        fx.tool_call(
-            s,
-            m,
-            CallFacts {
-                tool: "Bash",
-                action: "shell",
-                command: Some(command),
-                outcome,
-                at: at(2, 12).map(|t| t + n as i64 * 60_000),
-                ..CallFacts::default()
-            },
-        )
-        .unwrap();
-    }
-    fx.derive().unwrap();
-    let w = TestArchive { _dir: dir, fx };
-    let fields = ["checks_passed", "checks_failed", "checks_unknown"].map(str::to_owned);
-    let totals = run_q(
-        &w,
-        Ask {
-            fields: &fields,
-            ..ask("work where kind:attempt")
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        totals["rows"],
-        json!([{"checks_passed":1,"checks_failed":1,"checks_unknown":1}])
-    );
-    assert_eq!(
-        q(
-            &w,
-            "work where kind:attempt checks_passed:1 checks_failed:1 checks_unknown:1"
-        )["rows"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert!(
-        q(&w, "work where kind:attempt checks_failed:2")["rows"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        q(&w, r#"work where kind:verification state:"unknown""#)["rows"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-}
-
 mod composition;
 
 mod language;
 mod measures;
+
+mod shared_laws;
+
+mod reported_timing;
+
+fn fixture_clock(now: i64, zone: &str, start_minutes: u16) -> Clock {
+    Clock::new(
+        jiff::Timestamp::from_millisecond(now).unwrap(),
+        DaySetting::new(
+            jiff::tz::TimeZone::get(zone).unwrap(),
+            jiff::civil::Time::constant(
+                (start_minutes / 60) as i8,
+                (start_minutes % 60) as i8,
+                0,
+                0,
+            ),
+        )
+        .unwrap(),
+    )
+}
+
+fn fixture_context(
+    now: i64,
+    zone: &str,
+    start_minutes: u16,
+) -> std::sync::Arc<crate::operation::Context> {
+    let clock = fixture_clock(now, zone, start_minutes);
+    std::sync::Arc::new(crate::operation::Context::standalone(
+        crate::operation::Invocation::new(
+            clock.now.into(),
+            "synthetic-query-machine".into(),
+            crate::operation::Context::worker_authorship("query-fixture"),
+        ),
+        clock.day,
+    ))
+}
+
+#[test]
+fn shared_query_diagnostics_keep_correction_and_byte_position_at_the_operation_boundary() {
+    let error = polylogue_query::parse(r#"repo:"morrow"#).unwrap_err();
+    let failure = Failure::from(error);
+    assert_eq!(failure.code(), "invalid_query");
+    let shared = failure.error;
+    assert_eq!(shared.position.unwrap().offset, 5);
+    assert_eq!(
+        shared.suggestion(),
+        Some(&command_surface::Suggestion::Query(
+            r#"repo:"morrow""#.into()
+        ))
+    );
+    assert!(polylogue_query::parse(r#"repo:"morrow""#).is_ok());
+}
+
+mod metadata;
+
+#[test]
+fn a_query_document_carries_its_kind_in_its_fields_and_no_outcome() {
+    let mut w = morrow();
+    w.fx.derive().unwrap();
+    let empty = document(&w, "model:claude-opus-5-5");
+    assert!(empty.get("outcome").is_none(), "{empty}");
+    let typed: crate::protocol::query::Answer = serde_json::from_value(empty).unwrap();
+    assert_eq!(typed.rows().unwrap().len(), 0);
+    let measured = document(&w, "sessions | measure time");
+    assert!(measured.get("outcome").is_none(), "{measured}");
+    assert!(matches!(
+        serde_json::from_value(measured).unwrap(),
+        crate::protocol::query::Answer::Measure(_)
+            | crate::protocol::query::Answer::PagedMeasure(_)
+    ));
+}
+
+#[test]
+fn keep_retains_the_bound_logical_declarations_of_same_name_text_casts() {
+    use polylogue_model::kept::OutputMetadata;
+    use query_language::catalog::FieldKind;
+    let archive = morrow();
+    let pool = archive.fx.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    for (text, kinds) in [
+        (
+            "sessions | fields id, cwd",
+            [FieldKind::Reference, FieldKind::Subtree],
+        ),
+        (
+            "sessions | fields text(id) as id, text(cwd) as cwd",
+            [FieldKind::Text, FieldKind::Text],
+        ),
+    ] {
+        let body = keep(&reader, ask(text)).unwrap();
+        let metadata: OutputMetadata =
+            serde_json::from_value(body["output_metadata"].clone()).unwrap();
+        metadata.validate().unwrap();
+        let schema = metadata.rows.schema().expect("actual producer declaration");
+        assert_eq!(
+            schema
+                .fields
+                .iter()
+                .map(|field| field.kind.clone())
+                .collect::<Vec<_>>(),
+            kinds
+        );
+        assert_eq!(
+            schema
+                .fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["id", "cwd"]
+        );
+    }
+}
+
+#[test]
+fn keeping_again_preserves_unproven_policy_until_an_explicit_cast_establishes_it() {
+    use polylogue_model::kept::OutputMetadata;
+    let mut archive = morrow();
+    archive.fx.kept_result("old-policy", "sessions | fields cwd", &json!({
+        "unit":"sessions","shape":"rows","columns":[{"name":"cwd","kind":"text"}],"rows":[{"cwd":"/work/module-other"}]
+    }).to_string()).unwrap();
+    let capture = |archive: &TestArchive, text: &str| {
+        let pool = archive.fx.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        keep(&reader, ask(text)).unwrap()
+    };
+    let copied = capture(&archive, "result:old-policy");
+    let metadata: OutputMetadata =
+        serde_json::from_value(copied["output_metadata"].clone()).unwrap();
+    assert!(metadata.rows.unproven_field("cwd"));
+    archive
+        .fx
+        .kept_result("copied-policy", "result:old-policy", &copied.to_string())
+        .unwrap();
+    let error = run_q(
+        &archive,
+        ask("result:copied-policy | where cwd:/work/module"),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("logical matching policy"),
+        "{error:?}"
+    );
+    let cast = capture(&archive, "result:old-policy | fields text(cwd) as cwd");
+    let metadata: OutputMetadata = serde_json::from_value(cast["output_metadata"].clone()).unwrap();
+    assert!(!metadata.rows.unproven_field("cwd"));
+    archive
+        .fx
+        .kept_result(
+            "cast-policy",
+            "result:old-policy | fields text(cwd) as cwd",
+            &cast.to_string(),
+        )
+        .unwrap();
+    assert_eq!(
+        run_q(&archive, ask("result:cast-policy | where cwd:/work/module")).unwrap()["rows"],
+        json!([{"cwd":"/work/module-other"}])
+    );
+}

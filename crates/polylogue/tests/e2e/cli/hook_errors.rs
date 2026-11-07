@@ -15,11 +15,7 @@ fn cli_read_shows_native_hook_errors_without_an_injected_context_message() {
         "hookAdditionalContext":[], "preventedContinuation":true, "stopReason":"check blocked"});
     let original = format!("{summary}\n");
     std::fs::write(&source, &original).unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     let id = polylogue_model::SessionId::parse("claude-code:hooks").unwrap();
     loop {
@@ -41,31 +37,23 @@ fn cli_read_shows_native_hook_errors_without_an_injected_context_message() {
     // The pass that stored the summary has also derived from it.
     wait_status(&env, |_| true);
     for format in ["terminal", "markdown", "html", "json"] {
-        let out = cli(
-            &env,
-            &["--json", "read", "claude-code:hooks", "--format", format],
-        );
-        assert!(out.status.success(), "{out:?}");
-        let value = json(&out);
+        let items = hook_items(&env, format, "10000");
         assert!(
-            value.to_string().contains("synthetic CLI hook failure"),
-            "{format}: {value}"
-        );
-        assert!(
-            value.to_string().contains("check blocked"),
-            "{format}: {value}"
+            items.iter().any(|item| match &item.kind {
+                polylogue_model::read::ItemKind::Other { data, .. } =>
+                    data["event"]["data"] == summary,
+                _ => false,
+            }),
+            "{format}: native hook event must retain its exact recorded fields: {items:?}"
         );
     }
-    let out = cli(
-        &env,
-        &["--json", "read", "claude-code:hooks", "--budget", "1000"],
-    );
-    assert!(out.status.success(), "{out:?}");
+    let items = hook_items(&env, "json", "1000");
     assert!(
-        json(&out)["text"]
-            .as_str()
-            .unwrap()
-            .contains("synthetic CLI hook failure")
+        items.iter().any(|item| match &item.kind {
+            polylogue_model::read::ItemKind::Other { data, .. } => data["event"]["data"] == summary,
+            _ => false,
+        }),
+        "paged native hook event lost source data: {items:?}"
     );
     assert_eq!(std::fs::read_to_string(source).unwrap(), original);
 }
@@ -81,6 +69,17 @@ fn hook_setup_cli_refuses_malformed_settings_without_replacing_them() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("settings.json");
             std::fs::write(&path, original).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            let tools = dir.path().join("tools");
+            std::fs::create_dir(&tools).unwrap();
+            let probe = tools.join("claude");
+            std::fs::write(
+                &probe,
+                "#!/bin/sh\n: > \"$HOOK_PROBE_MARKER\"\nprintf '2.1.316\\n'\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let marker = dir.path().join("probed");
             let out = crate::command(dir.path())
                 .args([
                     "--json",
@@ -89,11 +88,58 @@ fn hook_setup_cli_refuses_malformed_settings_without_replacing_them() {
                     "--settings",
                     path.to_str().unwrap(),
                 ])
+                .env("PATH", &tools)
+                .env("HOOK_PROBE_MARKER", &marker)
                 .output()
                 .unwrap();
-            assert_eq!(out.status.code(), Some(1), "{out:?}");
+            assert!(!marker.exists(), "malformed settings invoked the harness");
+            assert_eq!(out.status.code(), Some(4), "{out:?}");
             assert_eq!(json(&out)["error"]["kind"], "io", "{out:?}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         }
     }
+}
+
+fn hook_items(
+    fixture: &crate::Fixture,
+    format: &str,
+    budget: &str,
+) -> Vec<polylogue_model::read::ReadItem> {
+    let mut arguments: Vec<String> = [
+        "--json",
+        "read",
+        "session:claude-code:hooks",
+        "--format",
+        format,
+        "--page-tokens",
+        budget,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let mut items = super::read_current::Items::default();
+    let mut seen = std::collections::BTreeSet::new();
+    loop {
+        let output = cli(
+            fixture,
+            &arguments.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert!(output.status.success(), "{output:?}");
+        let page: polylogue_model::read::ReadPage = serde_json::from_value(json(&output)).unwrap();
+        assert!(
+            !page.document.items.is_empty(),
+            "native hook read made no progress"
+        );
+        items.push(&page);
+        let Some(next) = page.document.footer.next else {
+            break;
+        };
+        assert!(seen.insert(next.cli.clone()), "repeated continuation");
+        let stages = polylogue_model::command::effective_stages(&next.cli);
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[0].program, "polylogue");
+        arguments = vec!["--json".into()];
+        arguments.extend(stages[0].args.clone());
+    }
+    items.into_values()
 }

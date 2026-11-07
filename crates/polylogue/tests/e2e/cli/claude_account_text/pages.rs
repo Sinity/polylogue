@@ -1,9 +1,9 @@
 use super::*;
-use base64::Engine as _;
 use polylogue_model::{Block, Document, DocumentId, DocumentPurpose, Timestamp, ToolOutcome};
 
 #[test]
-fn document_pages_mask_hidden_prefix_and_refuse_cross_content_stale_and_invalid_positions() {
+fn document_pages_preserve_exact_prefix_and_refuse_cross_content_stale_and_tampered_continuations()
+{
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let archive = dir.path().join("archive");
@@ -13,9 +13,14 @@ fn document_pages_mask_hidden_prefix_and_refuse_cross_content_stale_and_invalid_
         DocumentId::parse("claude-ai:manual").unwrap(),
         DocumentPurpose::Context,
     );
-    doc.source_time = Timestamp::from_unix_ms(1);
+    doc.set_time(
+        Timestamp::from_unix_ms(1),
+        polylogue_model::TimeEvidence::intrinsic(polylogue_model::Precision::Instant),
+    )
+    .unwrap();
     doc.blocks = vec![
         Block::ToolResult {
+            reported_duration_ms: None,
             call_id: None,
             outcome: ToolOutcome::Ok,
             output: Some("-----BEGIN PRIVATE KEY-----\n".into()),
@@ -28,152 +33,137 @@ fn document_pages_mask_hidden_prefix_and_refuse_cross_content_stale_and_invalid_
         Block::Text {
             text: "Later block".into(),
         },
+        Block::Text {
+            text: "<script>alert('synthetic')</script>\u{1b}[31m\u{7}".into(),
+        },
     ];
     let mut other = doc.clone();
     other.id = DocumentId::parse("claude-ai:other").unwrap();
     let source = dir.path().join("documents.json");
-    let export =
-        polylogue_model::export::Document::new(Vec::new()).with_documents(vec![doc.clone(), other]);
-    std::fs::write(&source, export.to_json().unwrap()).unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    write_documents(&source, &[doc.clone(), other]);
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
-    assert!(imported.status.success(), "{imported:?}");
+    let _ = import_report(&imported);
     let reference = "document:claude-ai:manual";
-    let whole = cli(
-        &env,
-        &[
-            "--json", "read", reference, "--view", "dialogue", "--budget", "100000",
-        ],
+    let whole = reading(&env, reference, &["--page-tokens", "100000"]);
+    let encoded = serde_json::to_string(&whole).unwrap();
+    assert!(encoded.contains("synthetic-secret-tail"));
+    assert!(encoded.contains("Visible λ🙂 tail"));
+    assert_eq!(joined_items(&env, reference, "1"), whole.document.items);
+    assert_eq!(
+        document(&env, reference),
+        serde_json::to_value(&doc).unwrap()
     );
-    assert!(whole.status.success(), "{whole:?}");
-    let expected = json(&whole)["text"].as_str().unwrap().to_owned();
-    assert!(!expected.contains("synthetic-secret-tail"));
-    assert!(expected.contains("Visible λ🙂 tail"));
-    let mut next = None::<String>;
-    let mut text = String::new();
-    let mut first = None;
-    for _ in 0..200 {
-        let mut args = vec![
-            "--json", "read", reference, "--view", "dialogue", "--budget", "1",
-        ];
-        if let Some(cursor) = &next {
-            args.extend(["--cursor", cursor]);
-        }
-        let result = cli(&env, &args);
-        assert!(result.status.success(), "{result:?}");
-        let page = json(&result);
-        text.push_str(page["text"].as_str().unwrap());
-        next = page["next"].as_str().map(str::to_owned);
-        if first.is_none() {
-            first = next.clone();
-        }
-        if next.is_none() {
-            break;
-        }
-    }
-    assert!(next.is_none());
-    assert_eq!(text, expected);
-    let token = first.unwrap();
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&token)
-        .unwrap();
-    let cursor: serde_json::Value = serde_json::from_slice(&decoded).unwrap();
-    assert!(!String::from_utf8(decoded).unwrap().contains("synthetic"));
-    for (id, view) in [
-        ("document:claude-ai:other", "dialogue"),
-        (reference, "full"),
-    ] {
-        let result = cli(
-            &env,
-            &[
-                "--json", "read", id, "--view", view, "--budget", "1", "--cursor", &token,
-            ],
-        );
-        assert!(!result.status.success());
-        assert_eq!(json(&result)["error"]["kind"], "bad_request");
-    }
-    let mut malformed = vec!["broken".into()];
-    for position in [[999, 0, 0], [1, 999, 0], [1, 0, 999999]] {
-        let mut changed = cursor.clone();
-        changed["position"] = json!(position);
-        malformed.push(
-            base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .encode(serde_json::to_vec(&changed).unwrap()),
-        );
-    }
-    let mut old = cursor;
-    old["version"] = json!(1);
-    malformed.push(
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&old).unwrap()),
+    let terminal = cli(&env, &["read", reference, "--format", "terminal"]);
+    assert!(terminal.status.success(), "{terminal:?}");
+    assert!(!terminal.stdout.contains(&0x1b) && !terminal.stdout.contains(&7));
+    assert!(
+        String::from_utf8(terminal.stdout)
+            .unwrap()
+            .contains("synthetic-secret-tail")
     );
-    for token in malformed {
-        let result = cli(
-            &env,
-            &[
-                "--json", "read", reference, "--view", "dialogue", "--budget", "1", "--cursor",
-                &token,
-            ],
-        );
-        assert!(!result.status.success(), "{result:?}");
-        assert_eq!(json(&result)["error"]["kind"], "bad_request");
-    }
-    let note = cli(
+    let html_path = dir.path().join("document.html");
+    let html = cli(
         &env,
         &[
             "--json",
-            "note",
-            "add",
-            "document:claude-ai:other",
-            "--body",
-            "Unrelated write",
+            "read",
+            reference,
+            "--format",
+            "html",
+            "--to",
+            html_path.to_str().unwrap(),
         ],
     );
+    assert!(matches!(html.status.code(), Some(0 | 5)), "{html:?}");
+    let html = std::fs::read_to_string(html_path).unwrap();
+    assert!(!html.contains("<script>alert('synthetic')</script>"));
+    assert!(html.contains("&lt;script&gt;") && html.contains("synthetic-secret-tail"));
+    let first = reading(&env, reference, &["--page-tokens", "1"]);
+    let next = first.document.footer.next.unwrap();
+    let args = next_args(&next);
+    let cursor = args.iter().position(|arg| arg == "--cursor").unwrap() + 1;
+    assert!(!args[cursor].is_empty());
+    assert!(!args[cursor].contains("synthetic-secret-tail"));
+    let other_page = reading(&env, "document:claude-ai:other", &["--page-tokens", "1"]);
+    let other_args = next_args(&other_page.document.footer.next.unwrap());
+    let other_cursor = other_args.iter().position(|arg| arg == "--cursor").unwrap() + 1;
+    for token in [
+        other_args[other_cursor].clone(),
+        "broken".into(),
+        String::new(),
+        format!("{}x", args[cursor]),
+    ] {
+        let mut changed = args.clone();
+        changed[cursor] = token;
+        let result = cli(
+            &env,
+            &changed.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert!(!result.status.success(), "{result:?}");
+    }
+    let notes = serde_json::to_string(&[polylogue_model::assertion::NewAssertion {
+        kind: polylogue_model::assertion::AssertionKind::Note,
+        key: None,
+        value: Some(json!("Unrelated write")),
+        valid_until: None,
+        links: vec![polylogue_model::assertion::NewAssertionLink {
+            role: polylogue_model::assertion::LinkRole::About,
+            reference: polylogue_model::Reference::parse("document:claude-ai:other").unwrap(),
+        }],
+    }])
+    .unwrap();
+    let note = cli(&env, &["--json", "assert", &notes]);
     assert!(note.status.success(), "{note:?}");
-    let continued = cli(
-        &env,
-        &[
-            "--json", "read", reference, "--view", "dialogue", "--budget", "2", "--cursor", &token,
-        ],
-    );
+    let continued = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
     assert!(continued.status.success(), "{continued:?}");
     let index = rusqlite::Connection::open(archive.join("index.db")).unwrap();
     index.execute("UPDATE document_block SET body=x'00' WHERE idx=2 AND document_pk=(SELECT pk FROM document WHERE id='claude-ai:manual')",[]).unwrap();
     drop(index);
-    let prefix = cli(
+    let prefix = reading(&env, reference, &["--page-tokens", "1"]);
+    assert!(!prefix.document.items.is_empty());
+    let full = cli(
         &env,
-        &[
-            "--json", "read", reference, "--view", "dialogue", "--budget", "1",
-        ],
+        &["--json", "read", reference, "--page-tokens", "100000"],
     );
-    assert!(prefix.status.success(), "{prefix:?}");
-    let full = cli(&env, &["--json", "read", reference]);
     assert!(!full.status.success(), "{full:?}");
-    doc.source_time = Timestamp::from_unix_ms(2);
+    doc.set_time(
+        Timestamp::from_unix_ms(2),
+        polylogue_model::TimeEvidence::intrinsic(polylogue_model::Precision::Instant),
+    )
+    .unwrap();
     doc.blocks = vec![Block::Text {
         text: "A changed document version".into(),
     }];
     let changed = dir.path().join("changed.json");
-    std::fs::write(
-        &changed,
-        polylogue_model::export::Document::new(Vec::new())
-            .with_documents(vec![doc])
-            .to_json()
-            .unwrap(),
-    )
-    .unwrap();
+    write_documents(&changed, &[doc]);
     let imported = cli(&env, &["--json", "import", changed.to_str().unwrap()]);
-    assert!(imported.status.success(), "{imported:?}");
-    let stale = cli(
-        &env,
-        &[
-            "--json", "read", reference, "--view", "dialogue", "--budget", "2", "--cursor", &token,
-        ],
-    );
+    let _ = import_report(&imported);
+    let stale = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
     assert!(!stale.status.success(), "{stale:?}");
     assert_eq!(json(&stale)["error"]["kind"], "stale_cursor");
+}
+
+fn write_documents(path: &Path, documents: &[Document]) {
+    let manifest = json!({"record":"manifest","data":{
+        "format":"polylogue-bundle","version":1,"query":format!("query:{}", "0".repeat(64)),"query_text":"synthetic documents",
+        "ran_at":"2026-01-01T00:00:00Z","read_at":{"generation":"synthetic","index":10,"archive":10},"caught_up":true,"currency":{"mode":"standalone"},
+        "counts":{"sessions":0,"messages":0,"documents":documents.len(),"events":0,"links":0,"authored":0,"assertions":0,"variants":0,"variant_parts":0,"text_fragments":0,"blobs":0},
+        "flags":{"format":"jsonl","with_blobs":false,"read":{"view":"transcript","inherited":false,"assertions":true}},"enabled_variants":[],"author":"operator"}});
+    let mut records = vec![serde_json::from_value::<Record>(manifest).unwrap()];
+    for (ordinal, document) in documents.iter().enumerate() {
+        records.push(Record::Document(polylogue_model::bundle::DocumentRecord {
+            reference: format!("document:{}", document.id),
+            commit: ordinal as u64 + 1,
+            document: document.clone(),
+        }));
+    }
+    let mut raw = String::new();
+    for record in records {
+        record.validate().unwrap();
+        raw.push_str(&serde_json::to_string(&record).unwrap());
+        raw.push('\n');
+    }
+    std::fs::write(path, raw).unwrap();
 }

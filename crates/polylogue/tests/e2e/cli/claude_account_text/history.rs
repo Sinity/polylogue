@@ -9,11 +9,7 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
     std::fs::create_dir_all(&home).unwrap();
     let source = dir.path().join("projects/p.json");
     std::fs::create_dir_all(source.parent().unwrap()).unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let daemon = start_daemon(&env);
     let context = "document:claude-ai:project:p:doc:d";
     let instruction = "document:claude-ai:project:p:instructions";
@@ -45,20 +41,30 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
         )
         .unwrap();
         let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
-        assert!(imported.status.success(), "{imported:?}");
+        let _ = import_report(&imported);
         let out = cli(&env, &["--json", "read", instruction]);
         assert!(out.status.success(), "{out:?}");
-        assert_eq!(json(&out)["document"]["blocks"][0]["text"], body);
+        assert_eq!(document(&env, instruction)["blocks"][0]["text"], body);
         let out = cli(&env, &["--json", "read", context]);
         assert!(out.status.success(), "{out:?}");
-        let value = json(&out);
+        let value = document(&env, context);
+        let provenance = cli(
+            &env,
+            &[
+                "--json",
+                "sql",
+                "SELECT r.id AS input FROM document_source s JOIN document d ON d.pk=s.document_pk JOIN input_ref r ON r.pk=s.input_pk WHERE d.id='claude-ai:project:p:doc:d'",
+            ],
+        );
+        assert!(provenance.status.success(), "{provenance:?}");
+        let provenance = json(&provenance);
         if initial.is_none() {
-            initial = Some(value["document"].clone());
-            input = Some(value["sources"][0]["input"].clone());
+            initial = Some(value.clone());
+            input = Some(provenance[0]["input"].clone());
         }
-        assert_eq!(&value["document"], initial.as_ref().unwrap());
-        assert_eq!(value["sources"][0]["input"], *input.as_ref().unwrap());
-        assert_eq!(value["sources"].as_array().unwrap().len(), 1);
+        assert_eq!(&value, initial.as_ref().unwrap());
+        assert_eq!(provenance[0]["input"], *input.as_ref().unwrap());
+        assert_eq!(provenance.as_array().unwrap().len(), 1);
     }
     let inputs = cli(
         &env,
@@ -101,11 +107,11 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
     assert_eq!(json(&after), ids);
     let out = cli(&env, &["--json", "read", context]);
     assert!(out.status.success(), "{out:?}");
-    assert_eq!(&json(&out)["document"], initial.as_ref().unwrap());
+    assert_eq!(&document(&env, context), initial.as_ref().unwrap());
     let out = cli(&env, &["--json", "read", instruction]);
     assert!(out.status.success(), "{out:?}");
     assert_eq!(
-        json(&out)["document"]["blocks"][0]["text"],
+        document(&env, instruction)["blocks"][0]["text"],
         "Instruction beside known empty docs"
     );
 }

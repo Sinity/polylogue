@@ -1,41 +1,115 @@
-//! Table declarations. `archive.db` holds what cannot be recomputed, so an
-//! older one is brought forward by numbered migrations
-//! ([`ARCHIVE_MIGRATIONS`]) when the archive opens. An archive newer than this
-//! build, or one whose tables match no version this build knows, is refused.
-//! `embeddings.db` has one version and no migrations yet. `index.db` is never
-//! migrated: a new version or a different base schema builds a new file and
-//! swaps it in. Read indexes can be added in place.
+//! Table declarations. Each database has one baseline: an empty file is
+//! created at version 1 with exactly the tables declared here, and a file at
+//! version 1 with these tables opens. A newer file, or one whose tables differ
+//! (an archive in another format), is refused unchanged. Later schema changes
+//! are numbered in-place migrations applied by [`ensure`]; there are none yet.
 
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
 
-pub const ARCHIVE: &str = include_str!("schema/archive.sql");
-pub const INDEX: &str = include_str!("schema/index.sql");
+pub const ARCHIVE: &str = concat!(
+    include_str!("schema/archive.sql"),
+    "\n",
+    include_str!("schema/client_requests.sql"),
+    "\n",
+    include_str!("schema/assertions.sql"),
+    "\n",
+    include_str!("schema/variants.sql"),
+    "\n",
+    include_str!("schema/query_objects.sql"),
+    "\n",
+    include_str!("schema/query_runs.sql"),
+    "\n",
+    include_str!("schema/signals.sql")
+);
+pub const INDEX: &str = concat!(
+    include_str!("schema/index.sql"),
+    "\n",
+    include_str!("schema/wire_shapes.sql"),
+    "\n",
+    include_str!("schema/injection_fields.sql"),
+    "\n",
+    include_str!("schema/attachment_bindings.sql"),
+    "\n",
+    include_str!("schema/text_fragments.sql"),
+    "\n",
+    include_str!("schema/session_cwd.sql"),
+    "\n",
+    include_str!("schema/session_items.sql")
+);
+#[cfg(test)]
+pub(crate) const QUERY_OBJECTS: &str = concat!(
+    include_str!("schema/query_objects.sql"),
+    "\n",
+    include_str!("schema/query_runs.sql")
+);
 pub(crate) const READ_INDEXES: &str = include_str!("schema/index_reads.sql");
 pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
-/// A different version rebuilds the index into a new file. Raise it when the
-/// index schema, the row encoding, or what any parser produces from the same
-/// bytes changes.
-pub const INDEX_VERSION: u32 = 52;
-
-/// The steps that bring `archive.db` forward: the first takes version 1 to
-/// version 2, and so on. A change to `archive.sql` appends one step, which
-/// must leave exactly the tables `archive.sql` creates (where `ALTER TABLE`
-/// cannot, the step creates the new table, copies the rows and renames it).
-/// The schema tests check that version 1 and these steps give `archive.sql`.
-pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[
-    // 2: backfill jobs.
-    include_str!("schema/archive_2.sql"),
-    // 3: requests kept whole.
-    include_str!("schema/archive_3.sql"),
-    // 4: row counts kept by triggers.
-    include_str!("schema/archive_4.sql"),
+/// The steps that bring `archive.db` forward from the baseline: the first
+/// takes version 1 to version 2, and so on. A change to the archive tables
+/// appends one step, which must leave exactly the tables [`ARCHIVE`] creates.
+pub(crate) const ARCHIVE_MIGRATIONS: &[Migration] = &[
+    Migration::Data {
+        name: "structured query representation v2",
+        apply: crate::query_objects::evolution::archive_v2,
+    },
+    Migration::Data {
+        name: "kept output declarations v2",
+        apply: crate::kept::archive_v3,
+    },
 ];
 
-/// The version `archive.sql` creates.
+/// A numbered upgrade has one transaction, including its data conversion.
+pub(crate) enum Migration {
+    #[cfg(test)]
+    Sql(&'static str),
+    Data {
+        name: &'static str,
+        apply: fn(&Connection) -> Result<()>,
+    },
+}
+impl Migration {
+    fn apply(&self, conn: &Connection) -> Result<()> {
+        match self {
+            #[cfg(test)]
+            Self::Sql(sql) => conn.execute_batch(sql).map_err(Into::into),
+            Self::Data { name, apply } => {
+                apply(conn).map_err(|error| StoreError::Invalid(format!("{name}: {error}")))
+            }
+        }
+    }
+}
+
+/// The version [`ARCHIVE`] creates.
 pub const ARCHIVE_VERSION: u32 = 1 + ARCHIVE_MIGRATIONS.len() as u32;
+
+/// The index schema and row encoding version. Reading versions are independent.
+pub const INDEX_VERSION: u32 = 3;
+
+/// The SQLite `application_id` of an `archive.db` or `index.db` written at or
+/// after the baseline ("PLG1"). A non-empty file without it was written by an
+/// earlier Polylogue and is an older format, read only by the importer.
+pub const FORMAT_ID: i32 = 0x504c_4731;
+
+fn format_id(conn: &Connection) -> Result<i32> {
+    Ok(conn.pragma_query_value(None, "application_id", |r| r.get(0))?)
+}
+
+/// Refuses a versioned database that carries no baseline format identity,
+/// and an unversioned file that already holds tables: only an empty file is
+/// created into.
+fn check_format(conn: &Connection, database: &'static str) -> Result<()> {
+    let found = version(conn)?;
+    if found != 0 && format_id(conn)? != FORMAT_ID {
+        return Err(StoreError::OlderFormat { database });
+    }
+    if found == 0 && !shape(conn)?.is_empty() {
+        return Err(StoreError::NoMigration { database, found });
+    }
+    Ok(())
+}
 
 /// The `user_version` of a database: 0 for an empty file.
 pub fn version(conn: &Connection) -> Result<u32> {
@@ -48,56 +122,109 @@ fn set_version(conn: &Connection, v: u32) -> Result<()> {
 }
 
 pub fn create_index(conn: &Connection) -> Result<()> {
-    conn.execute_batch(INDEX)?;
-    conn.execute_batch(READ_INDEXES)?;
-    crate::archive::generation::create(conn)?;
-    set_version(conn, INDEX_VERSION)?;
+    create_index_in(conn, false)
+}
+
+fn add_primary(conn: &Connection) -> Result<()> {
+    conn.execute_batch(&crate::source::schema()?.ddl)?;
+    conn.execute_batch(crate::primary::projection::SCHEMA)?;
     Ok(())
 }
 
-/// Creates the index in an empty file. An index at another version is an
-/// error here; [`crate::Archive::open_or_create`] deletes such a file, or
-/// one with another schema, first, so the loop rebuilds the index from
-/// `archive.db`.
-pub fn ensure_index(conn: &Connection) -> Result<()> {
-    match version(conn)? {
-        0 => create_index(conn),
-        v if v == INDEX_VERSION => {
-            conn.execute_batch(READ_INDEXES)?;
-            Ok(())
-        }
-        found => Err(StoreError::IndexVersion {
-            found,
-            wanted: INDEX_VERSION,
-        }),
-    }
+fn base_index(conn: &Connection) -> Result<()> {
+    conn.execute_batch(INDEX)?;
+    conn.execute_batch(crate::coverage::SCHEMA)?;
+    conn.execute_batch(crate::variants::SCHEMA)?;
+    Ok(())
 }
 
-/// Whether the index was being built without syncs and never finished
-/// (`meta.unsynced = 1`): after a crash such a file may be damaged, so it is
-/// rebuilt rather than trusted.
-pub fn unsynced(conn: &Connection) -> Result<bool> {
-    let v: Option<String> = conn
-        .query_row("SELECT value FROM meta WHERE key = 'unsynced'", [], |r| {
-            r.get(0)
+fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
+    base_index(conn)?;
+    conn.execute_batch(READ_INDEXES)?;
+    if primary {
+        add_primary(conn)?;
+        conn.execute(
+            "INSERT INTO meta(key,value) VALUES ('primary_cache',?1)",
+            [uuid::Uuid::now_v7().to_string()],
+        )?;
+    }
+    if !primary {
+        conn.execute("INSERT INTO meta(key,value) VALUES ('building','1')", [])?;
+    }
+    crate::archive::generation::create(conn)?;
+    set_version(conn, INDEX_VERSION)?;
+    conn.pragma_update(None, "application_id", FORMAT_ID)?;
+    Ok(())
+}
+
+/// Creates the index in an empty file, or opens one at this version with the
+/// declared tables, adding any read index it lacks. Any other index is
+/// refused without removing its rows; rebuilding it is a deliberate act.
+pub fn ensure_index(conn: &Connection) -> Result<()> {
+    ensure_index_in(conn, false)
+}
+pub fn ensure_primary_index(conn: &Connection) -> Result<()> {
+    ensure_index_in(conn, true)
+}
+fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
+    check_format(conn, "index")?;
+    let found = version(conn)?;
+    if found > INDEX_VERSION {
+        return Err(StoreError::IndexVersion {
+            found,
+            wanted: INDEX_VERSION,
+        });
+    }
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    if found == 0 {
+        create_index_in(&tx, primary)?;
+    } else {
+        // Read indexes are added before the shape check, so an index missing
+        // only those is completed rather than refused.
+        tx.execute_batch(READ_INDEXES)?;
+        if found == 1 {
+            crate::query_objects::evolution::index_v2(&tx, primary)?;
+        }
+        if found == 1 || found == 2 {
+            crate::kept::index_v3(&tx, primary)?;
+            set_version(&tx, INDEX_VERSION)?;
+        }
+        let matches = (found == 1 || found == 2 || found == INDEX_VERSION)
+            && if building(&tx)? {
+                same_build_schema_in(&tx, primary)?
+            } else {
+                same_index_schema_in(&tx, primary)?
+            };
+        if !matches {
+            return Err(StoreError::NoMigration {
+                database: "index",
+                found,
+            });
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Whether the first build still has search and secondary indexes to finish.
+pub fn building(conn: &Connection) -> Result<bool> {
+    let value: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key = 'building'", [], |row| {
+            row.get(0)
         })
         .optional()?;
-    Ok(v.as_deref() == Some("1"))
+    Ok(value.as_deref() == Some("1"))
 }
 
 /// Creates `archive.db` in an empty file and brings an older one forward.
 pub fn ensure_archive(conn: &Connection) -> Result<()> {
+    check_format(conn, "archive")?;
+    // An empty file takes the identity before its tables, so no crash can
+    // leave a versioned archive without it.
+    if version(conn)? == 0 {
+        conn.pragma_update(None, "application_id", FORMAT_ID)?;
+    }
     ensure(conn, "archive", &[ARCHIVE], ARCHIVE_MIGRATIONS)
-}
-
-/// The tables of `sinex.db`, primary mode's register: the archive's tables
-/// and the Sinex material of each part.
-pub(crate) const SINEX: [&str; 2] = [ARCHIVE, crate::primary::SCHEMA];
-
-/// Creates `sinex.db` in an empty file and brings an older one forward with
-/// the archive's migrations.
-pub fn ensure_sinex(conn: &Connection) -> Result<()> {
-    ensure(conn, "sinex", &SINEX, ARCHIVE_MIGRATIONS)
 }
 
 /// Creates `embeddings.db` in an empty file; refuses one with other tables.
@@ -112,7 +239,7 @@ pub(crate) fn ensure(
     conn: &Connection,
     database: &'static str,
     sql: &[&str],
-    migrations: &[&str],
+    migrations: &[Migration],
 ) -> Result<()> {
     let current = 1 + migrations.len() as u32;
     let found = version(conn)?;
@@ -130,7 +257,7 @@ pub(crate) fn ensure(
         }
     } else {
         for step in &migrations[found as usize - 1..] {
-            tx.execute_batch(step)?;
+            step.apply(&tx)?;
         }
         if !same_schema(&tx, sql)? {
             return Err(StoreError::NoMigration { database, found });
@@ -154,9 +281,12 @@ pub(crate) fn same_schema(conn: &Connection, sql: &[&str]) -> Result<bool> {
 }
 
 /// Missing read indexes can be created without rebuilding parsed rows.
-pub(crate) fn same_index_schema(conn: &Connection) -> Result<bool> {
+fn same_index_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     let expected = Connection::open_in_memory()?;
-    expected.execute_batch(INDEX)?;
+    base_index(&expected)?;
+    if primary {
+        add_primary(&expected)?;
+    }
     let base = shape(&expected)?;
     expected.execute_batch(READ_INDEXES)?;
     let expected = shape(&expected)?;
@@ -170,6 +300,24 @@ pub(crate) fn same_index_schema(conn: &Connection) -> Result<bool> {
         && expected.iter().all(|item| {
             (item.0 == "index" && read_indexes.contains(&item.1)) || found.contains(item)
         }))
+}
+
+/// A pending first build may lack only the indexes the writer deferred.
+fn same_build_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
+    let expected = Connection::open_in_memory()?;
+    base_index(&expected)?;
+    expected.execute_batch(READ_INDEXES)?;
+    if primary {
+        add_primary(&expected)?;
+    }
+    let found = shape(conn)?;
+    let mut wanted = shape(&expected)?;
+    wanted.retain(|(kind, name, _)| {
+        kind != "index"
+            || !crate::writer::deferred_index_names().any(|deferred| deferred == name)
+            || found.iter().any(|(_, present, _)| present == name)
+    });
+    Ok(found == wanted)
 }
 
 fn shape(conn: &Connection) -> Result<Vec<(String, String, String)>> {

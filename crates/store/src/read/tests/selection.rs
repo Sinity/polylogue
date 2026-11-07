@@ -143,49 +143,48 @@ fn an_interrupted_first_read_does_not_wait_for_the_lock() {
     );
 }
 
-fn mark_index_unsynced(archive: &Archive) {
-    let conn = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    let tx = conn.unchecked_transaction().unwrap();
-    tx.execute("INSERT INTO meta(key,value) VALUES ('unsynced','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value",[]).unwrap();
-    tx.commit().unwrap();
-    drop(conn);
-}
-fn replace_index(archive: &Archive) {
-    mark_index_unsynced(archive);
-    archive.prepare_index().unwrap();
+fn rotate_generation(archive: &Archive) {
+    archive.advance_generation_for_test().unwrap();
 }
 
 #[test]
-fn an_unused_slot_on_a_replaced_index_refuses_while_idle_connections_refresh() {
+fn an_unused_slot_on_a_rotated_generation_refuses_while_idle_connections_refresh() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = fixture.reads().unwrap();
     let unused = pool.reader().unwrap();
-    replace_index(&fixture.archive);
+    rotate_generation(&fixture.archive);
     assert!(matches!(
         unused.change_position(),
-        Err(StoreError::ReadIndexReplaced)
+        Err(StoreError::ScopeChanged)
     ));
     assert!(matches!(
         unused.change_position(),
-        Err(StoreError::ReadIndexReplaced)
+        Err(StoreError::ScopeChanged)
     ));
     drop(unused);
     let current = pool.reader().unwrap().change_position().unwrap();
-    replace_index(&fixture.archive);
+    rotate_generation(&fixture.archive);
     let refreshed = pool.reader().unwrap().change_position().unwrap();
     assert_ne!(current.generation, refreshed.generation);
 }
 
 #[test]
-fn a_started_reader_keeps_its_read_while_the_index_is_replaced() {
+fn a_started_reader_is_cancelled_when_its_generation_rotates() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     let old = reader.change_position().unwrap();
-    replace_index(&fixture.archive);
-    assert_eq!(reader.change_position().unwrap(), old);
+    rotate_generation(&fixture.archive);
+    assert!(matches!(
+        reader.change_position(),
+        Err(StoreError::ScopeChanged)
+    ));
+    assert!(matches!(
+        reader.query("SELECT 42 AS n", &[]),
+        Err(StoreError::ScopeChanged)
+    ));
     drop(reader);
     let current = pool.reader().unwrap().change_position().unwrap();
     assert_ne!(current.generation, old.generation);

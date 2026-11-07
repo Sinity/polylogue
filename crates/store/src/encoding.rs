@@ -1,7 +1,9 @@
 //! Encoding of database row bodies. Original-input blob encoding belongs to `blobs`.
 
 use crate::{Result, StoreError};
-use polylogue_model::{Block, Document, DocumentId, Event, Message, MessageId, Timestamp};
+use polylogue_model::{
+    Block, Document, DocumentId, Event, Message, MessageId, Timestamp, bundle::MessageProjection,
+};
 use serde::{Serialize, de::DeserializeOwned};
 use std::io::Read;
 use std::sync::LazyLock;
@@ -39,31 +41,52 @@ pub(crate) fn unpack_text(packed: &[u8]) -> Result<String> {
     String::from_utf8(unpack_bytes(packed)?).map_err(|e| StoreError::Io(std::io::Error::other(e)))
 }
 
-/// Packs JSON without the row dictionary, for test rows; the writer uses
-/// [`RowPacker`].
-#[cfg(any(test, feature = "fixture"))]
+/// Packs source metadata without the index row dictionary.
 pub(crate) fn pack_json(value: &impl Serialize) -> Result<Vec<u8>> {
     Ok(pack_bytes(&serde_json::to_vec(value)?)?)
 }
 
+/// Canonical source time; SQL milliseconds are only query caches.
+pub(crate) fn time_bytes(
+    at: Option<Timestamp>,
+    evidence: polylogue_model::TimeEvidence,
+) -> Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&(at, evidence))?)
+}
+
+pub(crate) fn read_time(
+    row: &rusqlite::Row<'_>,
+    column: usize,
+) -> rusqlite::Result<(Option<Timestamp>, polylogue_model::TimeEvidence)> {
+    let bytes: Vec<u8> = row.get(column)?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Blob,
+            Box::new(error),
+        )
+    })
+}
+
 /// One message's identity and packed rows, prepared together before its parsed
 /// payloads are released. The writer borrows these bytes without repacking.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedMessage {
     pub(crate) id: MessageId,
+    pub(crate) projection: MessageProjection,
+    pub(crate) time: Vec<u8>,
+    pub(crate) body: Vec<u8>,
     content: PreparedContent,
 }
 
 /// Encoded content rows shared by role-bearing messages and textual documents.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedContent {
     pub(crate) hash: [u8; 32],
     pub(crate) blocks: Vec<Vec<u8>>,
+    pub(crate) texts: Vec<Option<[u8; 32]>>,
     /// Each block's structured value, packed for `block.data` ([`block_data`]).
     pub(crate) data: Vec<Option<Vec<u8>>>,
-    /// What each block holds of PEM private key blocks
-    /// ([`crate::ordered_blocks::pem`]).
-    pub(crate) pem: Vec<i64>,
 }
 
 impl std::ops::Deref for PreparedMessage {
@@ -80,11 +103,13 @@ impl std::ops::DerefMut for PreparedMessage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedDocument {
     pub(crate) id: DocumentId,
+    pub(crate) time: Vec<u8>,
     /// The document without its blocks, packed JSON.
     pub(crate) fields: Vec<u8>,
+    pub(crate) body: Vec<u8>,
     content: PreparedContent,
 }
 
@@ -105,10 +130,22 @@ impl PreparedMessage {
     pub(crate) fn new(message: &Message) -> Result<Self> {
         RowPacker::new()?.pack_message(message)
     }
+
+    pub(crate) fn projected(message: &Message, projection: &MessageProjection) -> Result<Self> {
+        RowPacker::new()?.pack_projected_message(message, projection)
+    }
+}
+
+pub(crate) fn read_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    let mut reader = serde_json::Deserializer::from_slice(bytes);
+    reader.disable_recursion_limit();
+    let value = T::deserialize(&mut reader)?;
+    reader.end()?;
+    Ok(value)
 }
 
 pub(crate) fn unpack_json<T: DeserializeOwned>(packed: &[u8]) -> Result<T> {
-    Ok(serde_json::from_slice(&unpack_bytes(packed)?)?)
+    read_json(&unpack_bytes(packed)?)
 }
 
 /// One independent frame per row; both encoders are reused for the batch.
@@ -149,9 +186,39 @@ impl RowPacker {
     }
 
     pub(crate) fn pack_message(&mut self, message: &Message) -> Result<PreparedMessage> {
+        let projection = MessageProjection {
+            source_version: message.content_hash()?,
+            block_count: message.blocks.len() as u64,
+            block_ordinals: (0..message.blocks.len() as u64).collect(),
+        };
+        self.pack_message_value(message, &projection)
+    }
+
+    pub(crate) fn pack_projected_message(
+        &mut self,
+        message: &Message,
+        projection: &MessageProjection,
+    ) -> Result<PreparedMessage> {
+        projection.validate(message.blocks.len())?;
+        if projection.block_count == message.blocks.len() as u64
+            && message.content_hash()? != projection.source_version
+        {
+            return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
+        }
+        self.pack_message_value(message, projection)
+    }
+
+    fn pack_message_value(
+        &mut self,
+        message: &Message,
+        projection: &MessageProjection,
+    ) -> Result<PreparedMessage> {
         Ok(PreparedMessage {
             id: message.id.clone(),
-            content: self.pack_content(message, &message.blocks, None)?,
+            projection: projection.clone(),
+            time: time_bytes(message.at, message.time_evidence())?,
+            body: self.pack_version(message, &message.blocks)?,
+            content: self.pack_content(&message.blocks, projection.source_version.0)?,
         })
     }
 
@@ -161,44 +228,55 @@ impl RowPacker {
             purpose: document.purpose,
             title: document.title.clone(),
             source_time: document.source_time,
+            source_time_quality: document.source_time_quality,
+            source_time_precision: document.source_time_precision,
+            source_time_until: document.source_time_until,
             authorship: document.authorship,
             blocks: Vec::new(),
             metadata: document.metadata.clone(),
         };
-        Ok(PreparedDocument {
-            id: document.id.clone(),
-            fields: self.pack_json(&fields)?,
-            content: self.pack_content(
-                document,
-                &document.blocks,
-                Some(b"polylogue-document-v1\0"),
-            )?,
-        })
-    }
-
-    fn pack_content(
-        &mut self,
-        value: &impl Serialize,
-        blocks: &[Block],
-        domain: Option<&[u8]>,
-    ) -> Result<PreparedContent> {
-        // Messages and documents hash in separate domains.
         let hash = {
-            let mut sorted = serde_json::to_value(value)?;
+            let mut sorted = serde_json::to_value(document)?;
             sorted.sort_all_objects();
             let mut hasher = blake3::Hasher::new();
-            if let Some(domain) = domain {
-                hasher.update(domain);
-            }
+            hasher.update(b"polylogue-document-v1\0");
             hasher.update(&serde_json::to_vec(&sorted)?);
             *hasher.finalize().as_bytes()
         };
+        Ok(PreparedDocument {
+            id: document.id.clone(),
+            time: time_bytes(document.source_time, document.time_evidence())?,
+            body: self.pack_version(document, &document.blocks)?,
+            fields: self.pack_json(&fields)?,
+            content: self.pack_content(&document.blocks, hash)?,
+        })
+    }
+
+    fn pack_version(&mut self, value: &impl Serialize, blocks: &[Block]) -> Result<Vec<u8>> {
+        let mut value = serde_json::to_value(value)?;
+        for (stored, block) in value["blocks"]
+            .as_array_mut()
+            .expect("blocks are an array")
+            .iter_mut()
+            .zip(blocks)
+        {
+            if block_text(block).is_some() {
+                let field = if matches!(block, Block::ToolResult { .. }) {
+                    "output"
+                } else {
+                    "text"
+                };
+                stored[field] = serde_json::Value::String(String::new());
+            }
+        }
+        self.pack_json(&value)
+    }
+
+    fn pack_content(&mut self, blocks: &[Block], hash: [u8; 32]) -> Result<PreparedContent> {
         let mut packed = Vec::with_capacity(blocks.len());
         let mut data = Vec::with_capacity(blocks.len());
-        let mut pem = Vec::with_capacity(blocks.len());
         for block in blocks {
             let bytes = block_bytes(block)?;
-            pem.push(crate::ordered_blocks::pem(&bytes, block_text(block)));
             packed.push(self.pack_row(&bytes)?);
             data.push(
                 block_data(block)
@@ -208,9 +286,14 @@ impl RowPacker {
         }
         Ok(PreparedContent {
             hash,
+            texts: blocks
+                .iter()
+                .map(|block| {
+                    block_text(block).map(|text| *blake3::hash(text.as_bytes()).as_bytes())
+                })
+                .collect(),
             blocks: packed,
             data,
-            pem,
         })
     }
 }
@@ -236,12 +319,14 @@ fn block_bytes(block: &Block) -> Result<Vec<u8>> {
             redacted: *redacted,
         },
         Block::ToolResult {
+            reported_duration_ms,
             call_id,
             outcome,
             output,
             data,
             attachments,
         } if output.is_some() || data.is_some() => Block::ToolResult {
+            reported_duration_ms: *reported_duration_ms,
             call_id: call_id.clone(),
             outcome: outcome.clone(),
             output: output.as_ref().map(|_| String::new()),
@@ -257,6 +342,7 @@ fn block_bytes(block: &Block) -> Result<Vec<u8>> {
 /// An event's id includes its message anchor: identical state recorded at
 /// different messages is distinct. Physical ranges do not change the fact's
 /// identity when another input supplies it.
+#[cfg(test)]
 pub(crate) fn pack_event(e: &Event) -> Result<(String, Vec<u8>)> {
     let (id, data) = event_bytes(e)?;
     Ok((id, pack_bytes(&data)?))
@@ -311,14 +397,6 @@ fn reading_id(e: &Event) -> Option<String> {
         h.update(part.as_bytes());
     }
     Some(h.finalize().to_hex().to_string())
-}
-
-/// Whether a reading's payload reports a measured completion, which wins
-/// over a copy that does not.
-pub(crate) fn reading_confirmed(data: &serde_json::Value) -> bool {
-    data.get("measured_completion")
-        .and_then(serde_json::Value::as_bool)
-        == Some(true)
 }
 
 /// Reads a block back from `block.body`.

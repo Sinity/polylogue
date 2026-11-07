@@ -2,41 +2,61 @@
 //! database files and a blob directory:
 //!
 //! - `archive.db`: what cannot be recomputed (inputs, revisions, notes,
-//!   excisions, deliveries, settings);
+//!   deliveries, settings);
 //! - `index.db`: everything parsed and derived, rebuilt by the loop;
 //! - `embeddings.db`: purchased vectors, never destroyed by a reindex;
-//! - `blobs/`: input bytes of 128 KiB and over.
+//! - `segments/`: every input blob, in append-only shared frame segments.
 
+mod admission;
 pub mod archive;
+pub mod assertions;
 pub mod assets;
 pub mod backfill_jobs;
 pub mod blobs;
+pub mod calendar;
 pub mod chat_actions;
-pub mod check_runs;
+pub mod completion;
+mod container_members;
 pub mod context;
+pub mod coverage;
 pub mod derive;
 pub mod documents;
 mod encoding;
 mod events;
-pub mod excise;
 pub mod export_items;
 pub mod fault;
 pub(crate) mod first_build;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
+mod fragment;
 pub mod input_rows;
+pub mod items;
+mod kept;
+pub mod legacy_import;
 mod live;
+pub use live::{
+    FollowSnapshot, FollowedCall, FollowedMessage, LiveDetail, LiveFootprint, LiveRoot,
+    LiveSession, ProcessRow, RunningSession,
+};
 pub mod measure;
-pub mod notes;
+pub mod older_archive;
 mod ordered_blocks;
 pub mod primary;
+pub mod query;
+pub mod query_objects;
 pub mod read;
+pub mod reference;
 mod repo_lookup;
 pub mod schema;
 pub mod schema_inputs;
+pub mod scope_index;
 pub mod search;
+pub mod selection;
 pub mod session_export;
 mod session_row;
+pub mod session_sql;
+pub mod signals;
+pub(crate) mod source;
 pub mod sql_functions;
 pub mod sql_views;
 pub mod staging;
@@ -46,31 +66,33 @@ pub mod timing;
 pub mod tool_databases;
 pub mod user_state;
 pub mod user_writes;
+pub mod variants;
 pub mod vectors;
+pub mod verify;
+mod versions;
+pub mod wire_shapes;
 mod write_lock;
 pub mod writer;
-mod zip_members;
 
 pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, FileFacts, NewBlob};
-pub use context::{
-    DeliveryRow, FailingCommand, NearbySession, OpenBead, OpenItems, Prompt, SessionWork,
-};
+pub use context::{DeliveryRow, OpenItems, Prompt, SessionSummary};
 pub use read::{
-    BehindChain, CapturedSession, ImportedAs, KnownInput, ReadPool, Reader, SqlValue, Status,
+    BehindChain, CapturedSession, CompletenessDimension, CompletenessReason, ImportedAs,
+    KnownInput, ReadCompleteness, ReadPool, Reader, ReadingContract, SqlValue, Status,
+    StoppedChains,
+    scope::{ReadScopeToken, ScopeInvalidation},
 };
-pub use user_writes::{Delivery, LeftOut, UserOutcome, UserRequest, UserWrite};
+pub use scope_index::{
+    NearbySession, OpenBead, ScopeChanges, ScopeIndex, ScopeSession, ScopedLiveSession,
+};
 pub use writer::{
-    Batch, ImportMember, InFlight, InZip, InputKey, Observation, ParseStep, WriteReport, Writer,
-    WriterSender,
+    Batch, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep, WriteReport,
+    Writer, WriterSender,
 };
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    #[error("input {input} is excluded by the archive's removal policy")]
-    InputRefused { input: String },
-    #[error("input {input} has bytes still being written: {reason}")]
-    InputPending { input: String, reason: String },
     #[error(transparent)]
     Sqlite(rusqlite::Error),
     #[error(transparent)]
@@ -79,6 +101,8 @@ pub enum StoreError {
     Blobs(#[from] hashed_blobs::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Projection(#[from] polylogue_model::bundle::BundleError),
     #[error("archive {path} is held by another process")]
     Locked { path: std::path::PathBuf },
     #[error(
@@ -94,7 +118,13 @@ pub enum StoreError {
         "{database}.db at version {found} has tables this Polylogue build has no migration from"
     )]
     NoMigration { database: &'static str, found: u32 },
-    #[error("index format {found} is not {wanted}; it is rebuilt")]
+    /// A database written before the baseline (no Polylogue format identity).
+    /// The importer lane matches this wording.
+    #[error("older format: import with `polylogue import --from-archive PATH`")]
+    OlderFormat { database: &'static str },
+    #[error(
+        "index format {found} is not {wanted}; stop the daemon, move index.db and its WAL/SHM files aside, then restart the daemon to rebuild from stored bytes"
+    )]
     IndexVersion { found: u32, wanted: u32 },
     #[error("blob {0} failed its check")]
     BlobCorrupt(polylogue_model::BlobHash),
@@ -110,33 +140,75 @@ pub enum StoreError {
     ReadPoolClosed,
     #[error("read pool is full while this thread holds a reader; reuse or release it")]
     ReadPoolNested,
+    #[error("the access scope changed while this read was in progress")]
+    ScopeChanged,
     #[error("the index was replaced; acquire a new reader")]
     ReadIndexReplaced,
-    #[error("blob {0} is still in use and cannot be deleted")]
-    ExcisionBlobReferenced(polylogue_model::BlobHash),
-    #[error("the excision stopped part way; reopen the archive to finish it: {0}")]
-    ExcisionInterrupted(#[source] Box<StoreError>),
     #[error("request {0} was already used for different content")]
     Conflict(String),
+    #[error("{reference} is stale; current revisions: {current:?}")]
+    Stale {
+        reference: String,
+        current: Vec<String>,
+    },
+    #[error("{reference} is ambiguous: {candidates:?}")]
+    Ambiguous {
+        reference: String,
+        candidates: Vec<String>,
+    },
     #[error("the session's parents are incomplete: {0}")]
-    IncompleteParents(read::ParentIssue),
+    IncompleteParents(Box<read::ParentIssue>),
     #[error("{0} not found")]
     NotFound(String),
-    #[error("excision refused for {target}: {reason}")]
-    ExcisionRefused { target: String, reason: String },
-    #[error(
-        "{file} is an export ZIP; excision inside it is not supported, because removing it would also remove unrelated conversations"
-    )]
-    ExcisionInsideZip { input: String, file: String },
     #[error("chat action refused: {0}")]
     ChatAction(&'static str),
     #[error("backfill job refused: {0}")]
     Backfill(&'static str),
     /// Sinex could not be reached, or refused what was sent (primary mode).
+    #[error("capture {identity} is durable and waiting for Sinex confirmation")]
+    PrimaryPending { identity: String },
+    #[error("acquisition {custody:?} retained raw bytes after a source basis conflict")]
+    UnresolvedBasisConflict { custody: primary::RawCustodyReceipt },
     #[error("Sinex: {0}")]
     Sinex(String),
     #[error("{0}")]
     Invalid(String),
+    #[error(transparent)]
+    Query(#[from] polylogue_query::QueryError),
+    #[error("{reference} is unavailable: {reason}")]
+    ReferenceUnavailable { reference: String, reason: String },
+    /// A selection refusal with the product code that classifies it.
+    #[error("{message}")]
+    Selection { code: &'static str, message: String },
+}
+
+impl StoreError {
+    /// The product failure code for this error. Every surface classifies a
+    /// store error through this one mapping.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::ScopeChanged => "scope_changed",
+            Self::Conflict(_) | Self::ReadIndexReplaced => "conflict",
+            Self::Ambiguous { .. } => "ambiguous",
+            Self::Stale { .. } => "stale",
+            Self::ReferenceUnavailable { .. } => "not_yet_available",
+            Self::Projection(issue) => match issue {
+                polylogue_model::bundle::BundleError::ProjectionConflict
+                | polylogue_model::bundle::BundleError::SourceVersionMismatch => "conflict",
+                _ => "bad_request",
+            },
+            Self::ReadDeadlineExceeded => "deadline_exceeded",
+            Self::ReadCancelled => "cancelled",
+            Self::ReadPoolClosed => "shutting_down",
+            Self::NotFound(_) => "not_found",
+            Self::Invalid(_) => "bad_request",
+            Self::Query(error) => error.kind(),
+            Self::Selection { code, .. } => code,
+            Self::IncompleteParents(_) => "incomplete_parents",
+            Self::PrimaryPending { .. } => "degraded",
+            _ => "store",
+        }
+    }
 }
 
 impl From<rusqlite::Error> for StoreError {

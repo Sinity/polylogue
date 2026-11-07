@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn the_manual_gives_working_example_queries() {
-    let guide = include_str!("../../../../docs/agent-manual.md");
+    let guide = text();
     let examples: Vec<_> = guide
         .split('`')
         .skip(1)
@@ -11,12 +11,15 @@ fn the_manual_gives_working_example_queries() {
         .collect();
     assert!(!examples.is_empty());
     let options = polylogue_query::Options {
-        clock: polylogue_query::Clock::new(
-            1_790_000_000_000,
-            polylogue_model::LogicalDay::named("UTC", 240).unwrap(),
+        clock: query_language::time::Clock::new(
+            jiff::Timestamp::from_millisecond(1_790_000_000_000).unwrap(),
+            query_language::time::DaySetting::new(
+                jiff::tz::TimeZone::get("UTC").unwrap(),
+                jiff::civil::Time::constant(4, 0, 0, 0),
+            )
+            .unwrap(),
         ),
         origins: Vec::new(),
-        command_words: Vec::new(),
         page_size: None,
         random_seed: None,
         embeddings: true,
@@ -27,22 +30,35 @@ fn the_manual_gives_working_example_queries() {
         chat_pages: Vec::new(),
     };
     for query in examples {
-        let answer = polylogue_query::compile(query, &options);
+        let answer = polylogue_store::query::compile(query, &options);
         assert!(answer.is_ok(), "{query}: {answer:?}");
     }
     let manual = text();
-    for tool in [
-        "brief", "recall", "takeover", "query", "read", "note_add", "status",
-    ] {
+    assert!(manual.starts_with(card()));
+    for tool in crate::commands::Tool::ALL {
         assert!(
-            crate::mcp::tools()
-                .iter()
-                .any(|entry| entry["name"] == tool),
-            "no tool {tool}"
+            manual.contains(&format!("## `{}`", tool.name())),
+            "{} has no section",
+            tool.name()
         );
-        assert!(
-            manual.contains(&format!("`{tool}`")),
-            "{tool} is not described"
+    }
+    for command in crate::mcp::tool_commands() {
+        let prefix = format!(
+            "- `{}` (CLI `{}`)",
+            command.name,
+            command.cli_words().join(" ")
         );
+        let line = manual
+            .lines()
+            .find(|line| line.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("{} has no runnable CLI spelling", command.name));
+        // Every argument is named, unlisted ones included.
+        let (_, named) = line.rsplit_once("; arguments: ").unwrap();
+        let named: Vec<&str> = named.split(", ").collect();
+        for arg in command.args_for(crate::commands::Surface::Mcp) {
+            if arg.name != "request_id" {
+                assert!(named.contains(&arg.name), "{} {}", command.name, arg.name);
+            }
+        }
     }
 }

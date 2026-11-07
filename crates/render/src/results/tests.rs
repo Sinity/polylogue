@@ -3,7 +3,6 @@ use serde_json::json;
 
 fn answer() -> Value {
     json!({
-        "outcome": "rows",
         "columns": [{"name": "id", "kind": "text"}, {"name": "cost", "kind": "money"}],
         "rows": [
             {"id": "claude-code:a", "cost": 1.5,
@@ -51,7 +50,7 @@ fn terminal_bolds_matches_and_explains_empty_results() {
     assert!(t.contains("chrono"));
     assert!(!t.contains("\x1b"));
     let empty = json!({
-        "outcome": "empty", "columns": [], "rows": [], "count": 0, "next": null,
+        "columns": [], "rows": [], "count": 0, "next": null,
         "notes": [], "incomplete": [],
         "why": [{"clause": "repo:other", "matches": 0, "of": 5}]
     });
@@ -60,6 +59,14 @@ fn terminal_bolds_matches_and_explains_empty_results() {
     let t = String::from_utf8(out).unwrap();
     assert!(t.contains("no rows"));
     assert!(t.contains("repo:other → 0 of 5"), "{t}");
+    // Nothing found while a part failed is not an empty answer.
+    let mut incomplete = empty.clone();
+    incomplete["incomplete"] = json!(["vectors"]);
+    let mut out = vec![];
+    render(&incomplete, Format::Markdown, &mut out).unwrap();
+    let t = String::from_utf8(out).unwrap();
+    assert!(!t.contains("no rows"), "{t}");
+    assert!(t.contains("0 rows"), "{t}");
 }
 
 #[test]
@@ -83,4 +90,17 @@ fn linked_html_escapes_targets_and_keeps_links_in_their_own_cells() {
         "{html}"
     );
     assert!(html.contains("<td>&lt;same&gt;</td>"), "{html}");
+}
+
+#[test]
+fn row_markup_stays_data_and_link_schemes_are_checked() {
+    let data = json!({"columns":[{"name":"text"}],"rows":[{"text":"<script>stored()</script> [x](javascript:foo)"}],"count":1});
+    let mut out = vec![];
+    render(&data, Format::Markdown, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(!text.contains("<script>"));
+    assert!(text.contains("&lt;script&gt;"));
+    let mut out = vec![];
+    linked_html(&data, &mut out, &|_, _| Some("javascript:stored()".into())).unwrap();
+    assert!(!String::from_utf8(out).unwrap().contains("href="));
 }

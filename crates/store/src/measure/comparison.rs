@@ -1,7 +1,7 @@
 //! Side-by-side recorded fields, with unknown and varying values kept visible.
 use super::Selection;
+use crate::session_sql;
 use crate::{Reader, Result, StoreError};
-use polylogue_model::session_sql;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;

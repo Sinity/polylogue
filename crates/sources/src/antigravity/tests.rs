@@ -115,6 +115,7 @@ fn source_update_time_belongs_to_metadata_without_inventing_message_times() {
     assert_eq!(
         event.at,
         crate::time::rfc3339(&json!("2026-03-05T04:21:34Z"))
+            .map(crate::time::SourceTime::timestamp)
     );
     assert_eq!(event.data["workspaceName"], "example");
     assert!(event.data.get("markdown").is_none());

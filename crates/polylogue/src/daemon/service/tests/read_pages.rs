@@ -1,823 +1,783 @@
 use super::*;
-use base64::Engine as _;
+use command_surface::RunnableRequest as ResumeArguments;
+use polylogue_model::read::{
+    ItemKind, ItemPlace, ReadDelivery, ReadItem, ReadOptions, ReadPage, View,
+};
 
+fn request(
+    target: &str,
+    inherited: bool,
+    view: View,
+    budget: usize,
+    cursor: Option<&ResumeArguments>,
+) -> Request {
+    if let Some(resume) = cursor {
+        let mut resume = resume.clone();
+        resume.arguments["page_tokens"] = serde_json::json!(budget);
+        return crate::protocol::operations::admit(
+            crate::commands::command("read").unwrap(),
+            &resume,
+            &crate::commands::Caller {
+                surface: crate::commands::Surface::Http,
+                cwd: None,
+                json: true,
+            },
+        )
+        .unwrap();
+    }
+    Request::Read {
+        target: target.into(),
+        options: ReadOptions {
+            view,
+            inherited,
+            ..Default::default()
+        },
+        delivery: ReadDelivery::Page,
+        format: "json".into(),
+        budget: Some(budget),
+        with_blobs: false,
+        cursor: None,
+    }
+}
 fn page(
     d: &Daemon,
-    session: &str,
-    with_parents: bool,
-    view: &str,
-    cursor: Option<&str>,
-) -> Response {
-    handle(
-        Request::Read {
-            slices: true,
-            selection: None,
-            target: crate::daemon::ReadTarget::Session(
-                polylogue_model::SessionId::parse(session).unwrap(),
-            ),
-            with_parents,
-            view: view.into(),
-            format: "json".into(),
-            budget: Some(2),
-            cursor: cursor.map(str::to_owned),
-        },
-        d,
-    )
-}
-
-fn next(response: Response) -> String {
-    let Response::Ok { data, .. } = response else {
+    target: &str,
+    inherited: bool,
+    view: View,
+    budget: usize,
+    cursor: Option<&ResumeArguments>,
+) -> ReadPage {
+    let response = handle(request(target, inherited, view, budget, cursor), d);
+    let Some(data) = response.value().cloned() else {
         panic!("{response:?}")
     };
-    data["next"].as_str().unwrap().to_owned()
+    serde_json::from_value(data).unwrap()
+}
+fn refused(response: command_surface::Answer<serde_json::Value>, expected: &str) {
+    assert!(
+        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. } if error.code.as_deref() == Some(expected)),
+        "{response:?}"
+    );
+}
+fn call_cursor(call: &polylogue_model::read::ReadyCall) -> ResumeArguments {
+    let envelope: command_surface::RunnableRequest =
+        serde_json::from_value(call.http.arguments.clone()).unwrap();
+    assert_eq!(envelope.operation, "read");
+    envelope
+}
+fn next(page: &ReadPage) -> Option<ResumeArguments> {
+    page.document.footer.next.as_ref().map(call_cursor)
+}
+#[derive(Default)]
+struct Text {
+    value: String,
+    item: String,
+    position: Option<ItemPlace>,
+}
+impl Text {
+    fn push(&mut self, item: &ReadItem) {
+        match &item.kind {
+            ItemKind::Text { text } => {
+                assert!(self.item.is_empty(), "an item interrupted a JSON fragment");
+                self.value.push_str(text);
+            }
+            ItemKind::Fragment {
+                text,
+                position,
+                until,
+                total,
+            } => {
+                assert_eq!(position.character, self.item.chars().count() as u64);
+                assert!(*until > position.character && *until <= *total);
+                if let Some(first) = self.position {
+                    assert_eq!(position.selection, first.selection);
+                    assert_eq!(position.item, first.item);
+                    assert_eq!(position.item_hash, first.item_hash);
+                } else {
+                    self.position = Some(*position);
+                }
+                self.item.push_str(text);
+                assert_eq!(*until, self.item.chars().count() as u64);
+                if until == total {
+                    assert_eq!(
+                        position.item_hash.0,
+                        *blake3::hash(self.item.as_bytes()).as_bytes()
+                    );
+                    let original: ReadItem = serde_json::from_str(&self.item).unwrap();
+                    self.item.clear();
+                    self.position = None;
+                    self.push(&original);
+                }
+            }
+            _ => assert!(self.item.is_empty(), "an item interrupted a JSON fragment"),
+        }
+    }
+    fn page(&mut self, page: &ReadPage) {
+        for item in &page.document.items {
+            self.push(item);
+        }
+    }
+}
+fn all(d: &Daemon, target: &str, inherited: bool, view: View) -> String {
+    let mut cursor = None;
+    let mut text = Text::default();
+    loop {
+        let page = page(d, target, inherited, view, 8, cursor.as_ref());
+        assert!(serde_json::to_vec(&page).unwrap().len() <= 25_000);
+        assert!(page.records.is_empty());
+        text.page(&page);
+        let continued = next(&page);
+        if let (Some(previous), Some(next)) = (&cursor, &continued) {
+            assert_eq!(
+                next.arguments["target"], previous.arguments["target"],
+                "a continuation reads the same target"
+            );
+        }
+        cursor = continued;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert!(
+        text.item.is_empty(),
+        "transfer ended inside a structured item"
+    );
+    text.value
+}
+/// The session's rewrite version: what a cursor binds.
+fn selected_fingerprint(d: &test_daemon::TestDaemon, session: &str) -> String {
+    let reader = d.daemon.reads.reader().unwrap();
+    let index = reader
+        .item_index(&polylogue_model::SessionId::parse(session).unwrap())
+        .unwrap()
+        .unwrap();
+    format!("{}:{}", index.rewrite_version, index.entries.len())
+}
+
+fn replace(d: &test_daemon::TestDaemon, texts: &[(&str, &str)]) {
+    let previous = selected_fingerprint(d, "claude-code:s1");
+    let source = texts
+        .iter()
+        .map(|(id, text)| polylogue_testkit::claude_user(id, "s1", text))
+        .collect::<String>();
+    std::fs::write(d.home.join(".claude/projects/-p/s1.jsonl"), source).unwrap();
+    let started = std::time::Instant::now();
+    d.wait_for(|status| {
+        let ready = status["store"]["messages"] == texts.len()
+            && status["store"]["search_pending"] == 0
+            && selected_fingerprint(d, "claude-code:s1") != previous;
+        assert!(
+            ready || started.elapsed() < std::time::Duration::from_secs(20),
+            "replacement did not reach {} messages with no pending search work; final status: {status}",
+            texts.len()
+        );
+        ready
+    });
+}
+
+// The daemon's seeded S1 remains historical; these records belong to a fresh S2.
+fn add_selected_session(d: &test_daemon::TestDaemon, texts: &[(&str, &str)]) {
+    let source = texts
+        .iter()
+        .map(|(id, text)| polylogue_testkit::claude_user(id, "s2", text))
+        .collect::<String>();
+    std::fs::write(d.home.join(".claude/projects/-p/s2.jsonl"), source).unwrap();
+    let total = texts.len() + 1;
+    let started = std::time::Instant::now();
+    d.wait_for(|status| {
+        let ready = status["store"]["messages"] == total && status["store"]["search_pending"] == 0;
+        assert!(
+            ready || started.elapsed() < std::time::Duration::from_secs(20),
+            "fresh selected session did not reach {total} archival messages; final status: {status}"
+        );
+        ready
+    });
 }
 
 #[test]
-fn read_pages_refuse_malformed_cross_view_and_out_of_range_positions() {
-    let w = test_daemon::start("a synthetic prompt long enough for many pages λ🙂");
-    let token = next(page(&w.daemon, "claude-code:s1", false, "full", None));
-    for malformed in ["broken", "m0.b0.c0", "m0.b0.c0.extra", "m999.b0.c0"] {
-        assert!(
-            matches!(page(&w.daemon, "claude-code:s1", false, "full", Some(malformed)), Response::Error { kind, .. } if kind == "bad_request"),
-            "{malformed}"
-        );
-    }
-    for (with_parents, view) in [(true, "full"), (false, "dialogue")] {
-        assert!(
-            matches!(page(&w.daemon, "claude-code:s1", with_parents, view, Some(&token)), Response::Error { kind, .. } if kind == "bad_request")
-        );
-    }
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&token)
-        .unwrap();
-    let cursor: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert!(
-        !String::from_utf8(bytes)
-            .unwrap()
-            .contains("synthetic prompt")
+fn read_pages_refuse_malformed_cross_view_and_tampered_positions() {
+    let d = test_daemon::start("a synthetic prompt long enough for many pages λ🙂");
+    let first = page(
+        &d.daemon,
+        "session:claude-code:s1",
+        false,
+        View::Transcript,
+        1,
+        None,
     );
-    for position in [[999, 0, 0], [0, 999, 0], [0, 0, 999999]] {
-        let mut changed = cursor.clone();
-        changed["position"] = serde_json::json!(position);
-        let bad = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(serde_json::to_vec(&changed).unwrap());
-        assert!(
-            matches!(page(&w.daemon, "claude-code:s1", false, "full", Some(&bad)), Response::Error { kind, .. } if kind == "bad_request"),
-            "{position:?}"
+    let token = next(&first).expect("real continuation");
+    for malformed in ["broken", "m0.b0.c0", "m0.b0.c0.extra", "m999.b0.c0"] {
+        let mut malformed_resume = token.clone();
+        malformed_resume.cursor = Some(malformed.to_owned());
+        refused(
+            handle(
+                request(
+                    "session:claude-code:s1",
+                    false,
+                    View::Transcript,
+                    1,
+                    Some(&malformed_resume),
+                ),
+                &d.daemon,
+            ),
+            "invalid_query",
+        );
+    }
+    let command = crate::commands::command("read").unwrap();
+    let caller = crate::commands::Caller {
+        surface: crate::commands::Surface::Http,
+        cwd: None,
+        json: true,
+    };
+    for (field, value) in [
+        ("show", serde_json::json!(["inherited"])),
+        ("view", serde_json::json!("dialogue")),
+        ("target", serde_json::json!("message:claude-code:u1")),
+    ] {
+        // A cursor is bound to its reading: other arguments are refused
+        // when the page is read (docs/reading.md, Budgets).
+        let mut changed = token.clone();
+        changed.arguments[field] = value;
+        let request = crate::protocol::operations::admit(command, &changed, &caller).unwrap();
+        refused(handle(request, &d.daemon), "invalid_query");
+    }
+    let wire = token.cursor.clone().unwrap();
+    for at in [0, wire.len() / 2, wire.len() - 1] {
+        let mut changed = wire.as_bytes().to_vec();
+        changed[at] = if changed[at] == b'a' { b'b' } else { b'a' };
+        let mut changed_resume = token.clone();
+        changed_resume.cursor = Some(String::from_utf8(changed).unwrap());
+        refused(
+            handle(
+                request(
+                    "session:claude-code:s1",
+                    false,
+                    View::Transcript,
+                    1,
+                    Some(&changed_resume),
+                ),
+                &d.daemon,
+            ),
+            "invalid_query",
         );
     }
 }
 
 #[test]
 fn read_pages_survive_unrelated_writes_and_refuse_changed_earlier_content() {
-    let w = test_daemon::start("the original synthetic prompt λ🙂 has enough text");
-    let token = next(page(&w.daemon, "claude-code:s1", false, "full", None));
-    w.set("day_start", "06:00");
-    assert!(matches!(
-        page(&w.daemon, "claude-code:s1", false, "full", Some(&token)),
-        Response::Ok { .. }
-    ));
-    let project = w.home.join(".claude/projects/-p");
-    std::fs::write(
-        project.join("s2.jsonl"),
-        polylogue_testkit::claude_user("u2", "s2", "different session"),
-    )
+    let d = test_daemon::start("the original synthetic prompt λ🙂 has enough text");
+    let token = next(&page(
+        &d.daemon,
+        "session:claude-code:s1",
+        false,
+        View::Transcript,
+        1,
+        None,
+    ))
     .unwrap();
-    w.wait_for(|data| data["store"]["sessions"] == 2 && data["store"]["search_pending"] == 0);
-    assert!(
-        matches!(page(&w.daemon, "claude-code:s2", false, "full", Some(&token)), Response::Error { kind, .. } if kind == "bad_request")
+    d.set("browser.actions", "on");
+    let _ = page(
+        &d.daemon,
+        "session:claude-code:s1",
+        false,
+        View::Transcript,
+        1,
+        Some(&token),
     );
-    assert!(matches!(
-        page(&w.daemon, "claude-code:s1", false, "full", Some(&token)),
-        Response::Ok { .. }
-    ));
-    std::fs::write(
-        project.join("s1.jsonl"),
-        polylogue_testkit::claude_user(
-            "u1",
-            "s1",
-            "rewritten earlier content before the continuation",
-        ),
-    )
-    .unwrap();
-    w.wait_for(|_| {
-        let Response::Ok { data, .. } = read(&w.daemon, "full", "json", None, None) else {
-            return false;
-        };
-        data.to_string().contains("rewritten earlier")
-    });
-    assert!(
-        matches!(page(&w.daemon, "claude-code:s1", false, "full", Some(&token)), Response::Error { kind, .. } if kind == "stale_cursor")
+    replace(
+        &d,
+        &[("u1", "rewritten earlier content before the continuation")],
     );
-}
-
-#[test]
-fn read_pages_refuse_positions_from_the_previous_rendering_version() {
-    let daemon = test_daemon::start("synthetic text with enough bytes to paginate");
-    let token = next(page(&daemon.daemon, "claude-code:s1", false, "full", None));
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(token)
-        .unwrap();
-    let mut cursor: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(cursor["version"], 6);
-    cursor["version"] = serde_json::json!(5);
-    let old = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(serde_json::to_vec(&cursor).unwrap());
-    assert!(
-        matches!(page(&daemon.daemon, "claude-code:s1", false, "full", Some(&old)), Response::Error { kind, .. } if kind == "bad_request")
-    );
-}
-
-#[test]
-fn tied_source_positions_keep_page_order_and_cursor_binding_across_index_plan_changes() {
-    use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
-    let dir = tempfile::tempdir().unwrap();
-    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-    let session = fixture
-        .session(SessionFacts {
-            id: "claude-code:ties",
-            kind: "main",
-            ..Default::default()
-        })
-        .unwrap();
-    for (id, text) in [
-        ("claude-code:z-tied", "ZETA_SECOND"),
-        ("claude-code:a-tied", "ALPHA_FIRST"),
-    ] {
-        fixture
-            .message(
-                session,
-                MessageFacts {
-                    id,
-                    role: "user",
-                    written_by: "human",
-                    text: Some(text),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-    }
-    let conn = rusqlite::Connection::open(fixture.archive.index_db()).unwrap();
-    conn.execute("UPDATE message SET seq=0", []).unwrap();
-    let pool = fixture.reads().unwrap();
-    let id = polylogue_model::SessionId::parse("claude-code:ties").unwrap();
-    for with_parents in [false, true] {
-        let mut cursor = None;
-        let mut text = String::new();
-        let mut changed = false;
-        for _ in 0..100 {
-            let response = super::super::read::run(
-                &pool.reader().unwrap(),
-                &id,
-                super::super::read::Options {
-                    slices: true,
-                    selection: None,
-                    view: "full",
-                    format: "json",
-                    with_parents,
-                    budget: Some(2),
-                    cursor: cursor.as_deref(),
-                },
-                &super::super::read::page_ends::Cache::default(),
-                0,
-            );
-            let Response::Ok { data, .. } = response else {
-                panic!("{response:?}")
-            };
-            text.push_str(data["text"].as_str().unwrap());
-            cursor = data["next"].as_str().map(str::to_owned);
-            if cursor.is_none() {
-                break;
-            }
-            if !changed {
-                let order = if with_parents { "ASC" } else { "DESC" };
-                conn.execute_batch(&format!("DROP INDEX message_session; CREATE INDEX message_session ON message(session_pk,order_input_id,seq,record_position,id {order})")).unwrap();
-                changed = true;
-            }
-        }
-        assert!(changed, "the test needs a real continuation");
-        assert!(cursor.is_none(), "pagination did not finish");
-        assert_eq!(text.matches("ALPHA_FIRST").count(), 1);
-        assert_eq!(text.matches("ZETA_SECOND").count(), 1);
-        assert!(
-            text.find("ALPHA_FIRST").unwrap() < text.find("ZETA_SECOND").unwrap(),
-            "{text}"
-        );
-    }
-}
-
-#[test]
-fn cached_session_pages_equal_replay_across_views_parents_and_split_pem() {
-    let daemon = test_daemon::start("temporary synthetic prompt");
-    let lines = [
-        "λ🙂 prefix -----BEGIN VENDOR PRIVATE KEY-----private-one-----END VEND",
-        "OR PRIVATE KEY----- visible tail λ🙂",
-        "third ordinary source message with enough text for continuation",
-    ]
-    .iter()
-    .enumerate()
-    .map(|(n, text)| polylogue_testkit::claude_user(&format!("u{n}"), "s1", text))
-    .collect::<String>();
-    std::fs::write(daemon.home.join(".claude/projects/-p/s1.jsonl"), lines).unwrap();
-    daemon.wait_for(|data| data["store"]["messages"] == 3 && data["store"]["search_pending"] == 0);
-    for with_parents in [false, true] {
-        for view in ["full", "dialogue", "prompts", "actions"] {
-            daemon.daemon.page_ends.clear();
-            let mut cursor: Option<String> = None;
-            let mut joined = String::new();
-            for _ in 0..500 {
-                let cached = page(
-                    &daemon.daemon,
-                    "claude-code:s1",
-                    with_parents,
-                    view,
-                    cursor.as_deref(),
-                );
-                daemon.daemon.page_ends.clear();
-                let replayed = page(
-                    &daemon.daemon,
-                    "claude-code:s1",
-                    with_parents,
-                    view,
-                    cursor.as_deref(),
-                );
-                let (Response::Ok { data: cached, .. }, Response::Ok { data: replayed, .. }) =
-                    (cached, replayed)
-                else {
-                    panic!("page failed");
-                };
-                assert_eq!(cached, replayed, "private cache changed a page or citation");
-                joined.push_str(cached["text"].as_str().unwrap());
-                cursor = cached["next"].as_str().map(str::to_owned);
-                if cursor.is_none() {
-                    break;
-                }
-            }
-            assert!(cursor.is_none());
-            assert!(!joined.contains("private-one"));
-        }
-    }
-    assert!(
-        daemon.daemon.page_ends.test_counts().1 > 0,
-        "the test must hit the cache"
-    );
-    let token = next(page(&daemon.daemon, "claude-code:s1", false, "full", None));
-    assert!(daemon.daemon.page_ends.test_counts().0 > 0);
-    daemon.set("day_start", "06:00");
-    assert_eq!(
-        daemon.daemon.page_ends.test_counts().0,
-        0,
-        "service writes clear private masking state"
-    );
-    // A forged position must fail without populating a new page_end.
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(token)
-        .unwrap();
-    let mut token: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    token["position"] = serde_json::json!([999, 0, 0]);
-    let forged = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(serde_json::to_vec(&token).unwrap());
-    assert!(
-        matches!(page(&daemon.daemon, "claude-code:s1", false, "full", Some(&forged)), Response::Error { kind, .. } if kind == "bad_request")
-    );
-    assert_eq!(daemon.daemon.page_ends.test_counts().0, 0);
-    let _ = page(&daemon.daemon, "claude-code:s1", false, "full", None);
-    assert!(daemon.daemon.page_ends.test_counts().0 > 0);
-    let excised = handle(
-        Request::Excise {
-            request_id: "private-page_end-excision".into(),
-            target: "session:claude-code:s1".into(),
-            reason: None,
-            dry_run: false,
-        },
-        &daemon.daemon,
-    );
-    assert!(matches!(excised, Response::Ok { .. }), "{excised:?}");
-    assert_eq!(daemon.daemon.page_ends.test_counts().0, 0);
-}
-
-#[test]
-fn inherited_pem_context_has_identical_cached_and_replayed_continuations() {
-    use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
-    let dir = tempfile::tempdir().unwrap();
-    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-    for (session_id, messages) in [
-        (
-            "claude-code:parent",
-            vec![(
-                "claude-code:parent-0",
-                "inherited -----BEGIN VENDOR PRIVATE KEY-----hidden",
-            )],
-        ),
-        (
-            "claude-code:child",
-            vec![
-                (
-                    "claude-code:child-0",
-                    "still hidden -----END VENDOR PRIVATE KEY----- visible λ🙂",
-                ),
-                ("claude-code:child-1", "another child message"),
-            ],
-        ),
-    ] {
-        let session = fixture
-            .session(SessionFacts {
-                id: session_id,
-                kind: "main",
-                ..Default::default()
-            })
-            .unwrap();
-        for (id, text) in messages {
-            fixture
-                .message(
-                    session,
-                    MessageFacts {
-                        id,
-                        role: "user",
-                        written_by: "human",
-                        text: Some(text),
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
-        }
-    }
-    fixture
-        .link(
-            "claude-code:parent",
-            "claude-code:child",
-            "continuation",
-            "fork",
-        )
-        .unwrap();
-    let conn = rusqlite::Connection::open(fixture.archive.index_db()).unwrap();
-    conn.execute("UPDATE link SET branch_point='claude-code:parent-0'", [])
-        .unwrap();
-    let pool = fixture.reads().unwrap();
-    let cache = super::super::read::page_ends::Cache::default();
-    let id = polylogue_model::SessionId::parse("claude-code:child").unwrap();
-    for with_parents in [false, true] {
-        let mut cursor: Option<String> = None;
-        let mut joined = String::new();
-        for _ in 0..500 {
-            let render = |cursor: Option<&str>| {
-                super::super::read::run(
-                    &pool.reader().unwrap(),
-                    &id,
-                    super::super::read::Options {
-                        slices: true,
-                        selection: None,
-                        view: "full",
-                        format: "json",
-                        with_parents,
-                        budget: Some(2),
-                        cursor,
-                    },
-                    &cache,
-                    cache.epoch(),
-                )
-            };
-            let cached = render(cursor.as_deref());
-            cache.clear();
-            let replayed = render(cursor.as_deref());
-            let (Response::Ok { data: cached, .. }, Response::Ok { data: replayed, .. }) =
-                (cached, replayed)
-            else {
-                panic!("inherited page failed");
-            };
-            assert_eq!(cached, replayed);
-            joined.push_str(cached["text"].as_str().unwrap());
-            cursor = cached["next"].as_str().map(str::to_owned);
-            if cursor.is_none() {
-                break;
-            }
-        }
-        assert!(cursor.is_none());
-        assert!(joined.contains("visible λ🙂"));
-        if with_parents {
-            assert!(!joined.contains("hidden"));
-        } else {
-            assert!(joined.contains("still hidden -----END VENDOR PRIVATE KEY-----"));
-        }
-    }
-    assert!(cache.test_counts().1 > 0);
-}
-
-#[test]
-fn direct_anchors_restore_private_key_masking_and_refuse_unselected_messages() {
-    let daemon = test_daemon::start("temporary prompt");
-    let text = [
-        "before -----BEGIN PRIVATE KEY-----private-first",
-        "private-tail-----END PRIVATE KEY----- visible λ🙂",
-        "last visible prompt",
-    ]
-    .iter()
-    .enumerate()
-    .map(|(i, text)| {
-        polylogue_testkit::claude_user(
-            &if i == 0 {
-                "u1".into()
-            } else {
-                format!("anchor-{i}")
-            },
-            "s1",
-            text,
-        )
-    })
-    .collect::<String>();
-    std::fs::write(daemon.home.join(".claude/projects/-p/s1.jsonl"), text).unwrap();
-    daemon.wait_for(|data| data["store"]["messages"] == 3);
-    let request = |start, view: &str| Request::Read {
-        slices: true,
-        target: crate::daemon::ReadTarget::Session(
-            polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
-        ),
-        view: view.into(),
-        format: "json".into(),
-        with_parents: true,
-        budget: Some(8192),
-        cursor: None,
-        selection: Some(start),
-    };
     let response = handle(
         request(
-            crate::daemon::PageSelection::Message(
-                polylogue_model::MessageId::parse("claude-code:anchor-1").unwrap(),
-            ),
-            "full",
+            "session:claude-code:s1",
+            false,
+            View::Transcript,
+            1,
+            Some(&token),
         ),
-        &daemon.daemon,
+        &d.daemon,
     );
-    let Response::Ok { data, .. } = response else {
-        panic!("{response:?}")
-    };
-    assert_eq!(data["slices"][0]["message"]["id"], "claude-code:anchor-1");
-    assert!(data["text"].as_str().unwrap().contains("visible λ🙂"));
-    assert!(!data.to_string().contains("private-tail"));
-    assert_eq!(data["position"]["message"], 1);
-    let Response::Ok { data, .. } = handle(
-        request(crate::daemon::PageSelection::Latest, "full"),
-        &daemon.daemon,
-    ) else {
-        panic!("latest failed")
-    };
-    assert_eq!(data["slices"][0]["message"]["id"], "claude-code:anchor-2");
-    assert_eq!(data["position"]["message"], 2);
-    // An anchor whose message is hidden by this view is a valid empty read.
+    assert!(
+        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. } if error.code.as_deref() == Some("stale_cursor")),
+        "{response:?}"
+    );
+}
+
+#[test]
+fn native_display_order_and_original_references_survive_page_boundaries() {
+    let d = test_daemon::start("placeholder");
+    add_selected_session(
+        &d,
+        &[
+            ("z-first", "ZETA_FIRST λ🙂"),
+            ("a-second", "ALPHA_SECOND λ🙂"),
+        ],
+    );
+    for inherited in [false, true] {
+        assert_eq!(
+            all(
+                &d.daemon,
+                "session:claude-code:s2",
+                inherited,
+                View::Transcript
+            ),
+            "ZETA_FIRST λ🙂ALPHA_SECOND λ🙂"
+        );
+    }
+    assert_eq!(
+        all(
+            &d.daemon,
+            "message:claude-code:z-first",
+            false,
+            View::Transcript
+        ),
+        "ZETA_FIRST λ🙂"
+    );
+    assert_eq!(
+        all(
+            &d.daemon,
+            "block:claude-code:a-second#0",
+            false,
+            View::Transcript
+        ),
+        "ALPHA_SECOND λ🙂"
+    );
+}
+
+#[test]
+fn paged_views_preserve_exact_source_text_across_credential_looking_boundaries() {
+    let d = test_daemon::start("placeholder");
+    let texts = [
+        (
+            "u1",
+            "λ🙂 prefix -----BEGIN VENDOR PRIVATE KEY-----private-one-----END VEND",
+        ),
+        ("u2", "OR PRIVATE KEY----- visible tail λ🙂"),
+        ("u3", "ordinary third message"),
+    ];
+    replace(&d, &texts);
+    let expected = texts.iter().map(|(_, text)| *text).collect::<String>();
+    let source = std::fs::read(d.home.join(".claude/projects/-p/s1.jsonl")).unwrap();
+    for inherited in [false, true] {
+        for view in [View::Transcript, View::Dialogue] {
+            assert_eq!(
+                all(&d.daemon, "session:claude-code:s1", inherited, view),
+                expected
+            );
+        }
+        assert_eq!(
+            all(
+                &d.daemon,
+                "session:claude-code:s1",
+                inherited,
+                View::Changes
+            ),
+            ""
+        );
+    }
+    assert_eq!(
+        std::fs::read(d.home.join(".claude/projects/-p/s1.jsonl")).unwrap(),
+        source
+    );
+}
+
+#[test]
+fn direct_anchors_keep_their_own_original_text_and_refuse_missing_sources() {
+    let d = test_daemon::start("placeholder");
+    let source = "-----BEGIN PRIVATE KEY-----synthetic-only-----END PRIVATE KEY-----";
+    replace(&d, &[("u1", "before"), ("u2", source), ("u3", "after")]);
+    assert_eq!(
+        all(&d.daemon, "message:claude-code:u2", false, View::Transcript),
+        source
+    );
+    assert_eq!(
+        all(&d.daemon, "block:claude-code:u2#0", false, View::Transcript),
+        source
+    );
     assert!(matches!(
         handle(
-            request(crate::daemon::PageSelection::Latest, "actions"),
-            &daemon.daemon
-        ),
-        Response::Ok { .. }
-    ));
-    assert!(
-        matches!(handle(request(crate::daemon::PageSelection::Message(polylogue_model::MessageId::parse("claude-code:missing").unwrap()),"full"),&daemon.daemon),Response::Error {kind,..} if kind=="not_found")
-    );
-}
-
-#[test]
-fn hundred_thousand_message_pages_and_jumps_preserve_identities_and_characters() {
-    use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
-    let dir = tempfile::tempdir().unwrap();
-    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-    let session = fixture
-        .session(SessionFacts {
-            id: "claude-code:large",
-            kind: "main",
-            ..Default::default()
-        })
-        .unwrap();
-    let sources = [
-        "synthetic zero λ🙂 <text> ",
-        "synthetic one λ🙂 <text> ",
-        "synthetic two λ🙂 <text> ",
-    ];
-    for (n, text) in sources.iter().enumerate() {
-        fixture
-            .message(
-                session,
-                MessageFacts {
-                    id: &format!("claude-code:large-{n}"),
-                    role: "user",
-                    written_by: "human",
-                    text: Some(text),
-                    seq: Some(n as i64),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-    }
-    let conn = rusqlite::Connection::open(fixture.archive.index_db()).unwrap();
-    conn.execute_batch("WITH RECURSIVE n(i) AS (SELECT 3 UNION ALL SELECT i+1 FROM n WHERE i<99999)
-        INSERT INTO message(id,session_pk,order_input_pk,order_input_id,seq,role,written_by,input_pk)
-        SELECT 'claude-code:large-'||i,m.session_pk,m.order_input_pk,m.order_input_id,i,m.role,m.written_by,m.input_pk FROM n CROSS JOIN message m WHERE m.id='claude-code:large-0';
-        INSERT INTO block(message_pk,session_pk,idx,kind,text_id,body)
-        SELECT m.pk,m.session_pk,b.idx,b.kind,b.text_id,b.body FROM message m JOIN block b ON b.message_pk=(SELECT pk FROM message WHERE id='claude-code:large-'||(m.seq%3)) WHERE m.seq>=3;").unwrap();
-    let pool = fixture.reads().unwrap();
-    let id = polylogue_model::SessionId::parse("claude-code:large").unwrap();
-    let cache = super::super::read::page_ends::Cache::default();
-    let render = |cursor: Option<&str>, start: Option<&crate::daemon::PageSelection>| {
-        super::super::read::run(
-            &pool.reader().unwrap(),
-            &id,
-            super::super::read::Options {
-                slices: true,
-                view: "full",
-                format: "json",
-                with_parents: true,
-                budget: Some(8192),
-                cursor,
-                selection: start,
-            },
-            &cache,
-            cache.epoch(),
-        )
-    };
-    let mut cursor = None;
-    let mut texts = std::collections::HashMap::<String, String>::new();
-    let mut page_count = 0;
-    let mut last_message = None;
-    loop {
-        let response = render(cursor.as_deref(), None);
-        let Response::Ok { data, .. } = response else {
-            panic!("{response:?}")
-        };
-        assert_eq!(data["position"]["total_messages"], 100000);
-        assert!(data["text"].as_str().unwrap().chars().count() <= 32768);
-        for slice in data["slices"].as_array().unwrap() {
-            let message = slice["message"]["id"].as_str().unwrap();
-            let number = message
-                .rsplit_once('-')
-                .unwrap()
-                .1
-                .parse::<usize>()
-                .unwrap();
-            if last_message != Some(number) {
-                assert_eq!(number, last_message.map_or(0, |last| last + 1));
-                last_message = Some(number);
-            }
-            texts
-                .entry(slice["message"]["id"].as_str().unwrap().into())
-                .or_default()
-                .push_str(slice["text"].as_str().unwrap());
-        }
-        cursor = data["next"].as_str().map(str::to_owned);
-        page_count += 1;
-        if cursor.is_none() {
-            break;
-        }
-        assert!(page_count < 1000, "pages must advance");
-    }
-    assert_eq!(texts.len(), 100000);
-    for (id, text) in &texts {
-        let number = id.rsplit_once('-').unwrap().1.parse::<usize>().unwrap();
-        assert_eq!(text, sources[number % 3]);
-    }
-    for (start, expected) in [
-        (
-            crate::daemon::PageSelection::Message(
-                polylogue_model::MessageId::parse("claude-code:large-50000").unwrap(),
+            request(
+                "message:claude-code:missing",
+                false,
+                View::Transcript,
+                10,
+                None
             ),
-            "claude-code:large-50000",
+            &d.daemon
         ),
-        (
-            crate::daemon::PageSelection::Latest,
-            "claude-code:large-99999",
-        ),
-    ] {
-        let Response::Ok { data, .. } = render(None, Some(&start)) else {
-            panic!("jump failed")
-        };
-        assert_eq!(data["slices"][0]["message"]["id"], expected);
-        let number = expected
-            .rsplit_once('-')
-            .unwrap()
-            .1
-            .parse::<usize>()
-            .unwrap();
-        assert_eq!(data["slices"][0]["text"], sources[number % 3]);
-    }
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Error(_),
+            ..
+        }
+    ));
 }
 
 #[test]
-fn outline_continuations_cover_every_reference_and_bind_to_selected_content() {
-    let daemon = test_daemon::start("placeholder");
-    let text = (0..125)
-        .map(|i| {
-            polylogue_testkit::claude_user(
-                &if i == 0 {
-                    "u1".into()
-                } else {
-                    format!("outline-{i}")
-                },
-                "s1",
-                "synthetic prompt",
-            )
-        })
-        .collect::<String>();
-    std::fs::write(daemon.home.join(".claude/projects/-p/s1.jsonl"), text).unwrap();
-    daemon.wait_for(|data| data["store"]["messages"] == 125);
-    let request = |cursor| Request::Outline {
-        session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
-        with_parents: true,
-        page_size: 17,
-        cursor,
-    };
-    let mut cursor = None;
-    let mut references = Vec::new();
-    let mut first_cursor = None;
-    loop {
-        let Response::Ok { data, .. } = handle(request(cursor), &daemon.daemon) else {
-            panic!("outline failed")
-        };
-        references.extend(
-            data["entries"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|entry| entry["message"].as_str().unwrap().to_owned()),
+fn hundred_thousand_message_pages_and_direct_jumps_keep_source_identity() {
+    let d = test_daemon::start("placeholder");
+    let path = d.home.join(".claude/projects/-p/s2.jsonl");
+    {
+        use std::io::Write;
+        let mut source = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+        for n in 0..100_000 {
+            source
+                .write_all(
+                    polylogue_testkit::claude_user(
+                        &format!("large-{n}"),
+                        "s2",
+                        &format!("source {n} λ🙂"),
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+        }
+        source.flush().unwrap();
+    }
+    d.wait_for(|status| status["store"]["messages"] == 100_001);
+    let selected = d
+        .daemon
+        .reads
+        .reader()
+        .unwrap()
+        .select_messages(
+            &polylogue_model::SessionId::parse("claude-code:s2").unwrap(),
+            false,
+        )
+        .unwrap()
+        .len()
+        .unwrap();
+    assert_eq!(selected, 100_000);
+    let first = page(
+        &d.daemon,
+        "session:claude-code:s2",
+        false,
+        View::Transcript,
+        1,
+        None,
+    );
+    assert!(next(&first).is_some());
+    assert!(serde_json::to_vec(&first).unwrap().len() <= 25_000);
+    for n in [0, 50_000, 99_999] {
+        assert_eq!(
+            all(
+                &d.daemon,
+                &format!("message:claude-code:large-{n}"),
+                false,
+                View::Transcript
+            ),
+            format!("source {n} λ🙂")
         );
-        cursor = data["next"].as_str().map(str::to_owned);
-        if first_cursor.is_none() {
-            first_cursor = cursor.clone();
-        }
-        if cursor.is_none() {
-            break;
-        }
     }
-    assert_eq!(
-        references,
-        (0..125)
-            .map(|i| if i == 0 {
-                "claude-code:u1".into()
-            } else {
-                format!("claude-code:outline-{i}")
-            })
-            .collect::<Vec<_>>()
-    );
-    daemon.set("day_start", "06:00");
-    assert!(matches!(
-        handle(request(first_cursor.clone()), &daemon.daemon),
-        Response::Ok { .. }
-    ));
-    let mut text = std::fs::OpenOptions::new()
-        .append(true)
-        .open(daemon.home.join(".claude/projects/-p/s1.jsonl"))
-        .unwrap();
-    std::io::Write::write_all(
-        &mut text,
-        polylogue_testkit::claude_user("outline-new", "s1", "new prompt").as_bytes(),
-    )
-    .unwrap();
-    daemon.wait_for(|data| data["store"]["messages"] == 126);
-    assert!(
-        matches!(handle(request(first_cursor),&daemon.daemon),Response::Error {kind,..} if kind=="stale_cursor")
-    );
-}
-
-#[test]
-fn latest_uses_visible_content_and_current_cursors_skip_hidden_bodies() {
-    use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
-    let dir = tempfile::tempdir().unwrap();
-    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-    let session = fixture
-        .session(SessionFacts {
-            id: "claude-code:visible",
-            kind: "main",
-            ..Default::default()
-        })
-        .unwrap();
-    fixture
-        .message(
-            session,
-            MessageFacts {
-                id: "claude-code:visible-user",
-                role: "user",
-                written_by: "human",
-                text: Some("last human prompt"),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    let assistant = fixture
-        .message(
-            session,
-            MessageFacts {
-                id: "claude-code:visible-assistant",
-                role: "assistant",
-                written_by: "model",
-                text: Some("hidden assistant response"),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    let conn = rusqlite::Connection::open(fixture.archive.index_db()).unwrap();
-    conn.execute(
-        "UPDATE block SET body=x'0011' WHERE message_pk=?1",
-        [assistant],
-    )
-    .unwrap();
-    let pool = fixture.reads().unwrap();
-    let id = polylogue_model::SessionId::parse("claude-code:visible").unwrap();
-    let cache = super::super::read::page_ends::Cache::default();
-    let read = |view, start, cursor| {
-        super::super::read::run(
-            &pool.reader().unwrap(),
-            &id,
-            super::super::read::Options {
-                slices: true,
-                view,
-                format: "json",
-                with_parents: true,
-                budget: Some(8192),
-                selection: start,
-                cursor,
-            },
-            &cache,
-            cache.epoch(),
-        )
-    };
-    let latest = crate::daemon::PageSelection::Latest;
-    let Response::Ok { data, .. } = read("prompts", Some(&latest), None) else {
-        panic!("latest prompt decoded a hidden body")
-    };
-    assert_eq!(
-        data["slices"][0]["message"]["id"],
-        "claude-code:visible-user"
-    );
-    let cursor = data["cursor"].as_str().unwrap();
-    let Response::Ok { data: reopened, .. } = read("prompts", None, Some(cursor)) else {
-        panic!("current page cursor decoded a hidden body")
-    };
-    assert_eq!(data, reopened);
-    let Response::Ok { data, .. } = read("actions", Some(&latest), None) else {
-        panic!("empty view decoded a hidden body")
-    };
-    assert_eq!(data["slices"], serde_json::json!([]));
-    assert!(matches!(
-        read("full", Some(&latest), None),
-        Response::Error { .. }
-    ));
 }
 
 #[test]
 fn previous_pages_end_at_the_current_start_and_next_reopens_it() {
-    let daemon = test_daemon::start("placeholder");
-    let source = (0..12)
+    let d = test_daemon::start("a long synthetic λ🙂 prompt with enough text for several pages");
+    let first = page(
+        &d.daemon,
+        "session:claude-code:s1",
+        false,
+        View::Transcript,
+        1,
+        None,
+    );
+    let continuation = next(&first).unwrap();
+    let second = page(
+        &d.daemon,
+        "session:claude-code:s1",
+        false,
+        View::Transcript,
+        1,
+        Some(&continuation),
+    );
+    let previous = call_cursor(
+        second
+            .document
+            .footer
+            .previous
+            .as_ref()
+            .expect("previous page is required after a continuation"),
+    );
+    let prior = page(
+        &d.daemon,
+        "session:claude-code:s1",
+        false,
+        View::Transcript,
+        1,
+        Some(&previous),
+    );
+    assert_eq!(prior.document.items, first.document.items);
+    let reopened = page(
+        &d.daemon,
+        "session:claude-code:s1",
+        false,
+        View::Transcript,
+        1,
+        Some(&call_cursor(prior.document.footer.next.as_ref().unwrap())),
+    );
+    assert_eq!(reopened.document.items, second.document.items);
+
+    let mut record: serde_json::Value = serde_json::from_str(&polylogue_testkit::claude_user(
+        "issue-own",
+        "issue-child",
+        "available child body",
+    ))
+    .unwrap();
+    record["forkedFrom"] =
+        serde_json::json!({"sessionId":"missing-parent", "messageUuid":"missing-anchor"});
+    std::fs::write(
+        d.home.join(".claude/projects/-p/issue-child.jsonl"),
+        format!("{record}\n"),
+    )
+    .unwrap();
+    d.wait_for(|status| {
+        status["store"]["messages"] == 2
+            && status["store"]["search_pending"] == 0
+            && status["busy"] == false
+    });
+    let target = "session:claude-code:issue-child";
+    let whole = page(&d.daemon, target, true, View::Transcript, 4000, None);
+    assert!(whole.document.footer.next.is_none());
+    let boundary = whole
+        .document
+        .items
+        .iter()
+        .position(|item| matches!(item.kind, ItemKind::MessageHeader { .. }))
+        .unwrap();
+    assert!(boundary > 0);
+    assert!(
+        matches!(&whole.document.items[boundary-1].kind, ItemKind::LinkIssue { issue: polylogue_model::read::ParentIssue::MissingParent { child, parent } }
+        if child.to_string() == "claude-code:issue-child" && parent.to_string() == "claude-code:missing-parent")
+    );
+    // Calibrate the payload cap through the public encoder and sole estimator,
+    // so the next ordinary item begins exactly at the family boundary.
+    let item_tokens = |item: &ReadItem| {
+        let mut prefix = Vec::new();
+        polylogue_render::Encoder::new(
+            &whole.document.header,
+            polylogue_model::read::Format::Json,
+            Default::default(),
+            &mut prefix,
+        )
+        .unwrap();
+        let mut encoded = Vec::new();
+        {
+            let mut encoder = polylogue_render::Encoder::new(
+                &whole.document.header,
+                polylogue_model::read::Format::Json,
+                Default::default(),
+                &mut encoded,
+            )
+            .unwrap();
+            encoder.push(item).unwrap();
+        }
+        assert!(encoded.starts_with(&prefix));
+        let encoded = std::str::from_utf8(&encoded[prefix.len()..]).unwrap();
+        polylogue_model::read::estimate_tokens(encoded)
+    };
+    let budget = whole.document.items[..boundary]
+        .iter()
+        .map(item_tokens)
+        .sum();
+    let first = page(&d.daemon, target, true, View::Transcript, budget, None);
+    assert_eq!(first.document.items, whole.document.items[..boundary]);
+    let second = page(
+        &d.daemon,
+        target,
+        true,
+        View::Transcript,
+        budget,
+        Some(&next(&first).unwrap()),
+    );
+    assert!(matches!(
+        second.document.items.first().unwrap().kind,
+        ItemKind::MessageHeader { .. }
+    ));
+    let prior = page(
+        &d.daemon,
+        target,
+        true,
+        View::Transcript,
+        budget,
+        Some(&call_cursor(
+            second.document.footer.previous.as_ref().unwrap(),
+        )),
+    );
+    assert_eq!(
+        prior.document.items.last(),
+        Some(&whole.document.items[boundary - 1])
+    );
+    assert!(!prior.document.items.iter().any(|item| matches!(
+        item.kind,
+        ItemKind::MessageHeader { .. } | ItemKind::Text { .. }
+    )));
+    // Footer reservation may trim the earlier session card. The fixed upper
+    // content boundary must still reopen the exact next message page.
+    let reopened = page(
+        &d.daemon,
+        target,
+        true,
+        View::Transcript,
+        budget,
+        Some(&call_cursor(prior.document.footer.next.as_ref().unwrap())),
+    );
+    assert_eq!(reopened.document.items, second.document.items);
+}
+
+#[test]
+fn inherited_source_text_is_exact_across_parent_child_page_boundaries() {
+    let parent = "inherited -----BEGIN VENDOR PRIVATE KEY-----synthetic";
+    let child = "still synthetic -----END VENDOR PRIVATE KEY----- visible λ🙂";
+    let d = test_daemon::start(parent);
+    let mut record: serde_json::Value =
+        serde_json::from_str(&polylogue_testkit::claude_user("child-u1", "child", child)).unwrap();
+    record["forkedFrom"] = serde_json::json!({"sessionId":"s1", "messageUuid":"u1"});
+    std::fs::write(
+        d.home.join(".claude/projects/-p/child.jsonl"),
+        format!("{record}\n"),
+    )
+    .unwrap();
+    d.wait_for(|status| status["store"]["sessions"] == 2 && status["store"]["messages"] == 2);
+    assert_eq!(
+        all(
+            &d.daemon,
+            "session:claude-code:child",
+            false,
+            View::Transcript
+        ),
+        child
+    );
+    assert_eq!(
+        all(
+            &d.daemon,
+            "session:claude-code:child",
+            true,
+            View::Transcript
+        ),
+        format!("{parent}{child}")
+    );
+}
+
+#[test]
+fn selected_latest_user_message_does_not_include_later_assistant_bodies() {
+    let d = test_daemon::start("first prompt");
+    let source = [
+        polylogue_testkit::claude_user("u1", "s1", "first prompt"),
+        polylogue_testkit::claude_assistant("a1", "s1", "earlier assistant answer"),
+        polylogue_testkit::claude_user("u2", "s1", "latest human prompt λ🙂")
+            .replace("2026-03-01T10:00:00Z", "2026-03-01T10:00:02Z"),
+        polylogue_testkit::claude_assistant("a2", "s1", "later assistant body")
+            .replace("2026-03-01T10:00:01Z", "2026-03-01T10:00:03Z"),
+    ]
+    .concat();
+    std::fs::write(d.home.join(".claude/projects/-p/s1.jsonl"), source).unwrap();
+    d.wait_for(|status| status["store"]["messages"] == 4);
+    assert_eq!(
+        all(
+            &d.daemon,
+            "messages where role:user | sort by at desc, id desc | limit 1",
+            false,
+            View::Transcript
+        ),
+        "latest human prompt λ🙂"
+    );
+}
+
+/// law: pl.read.page-append-stable
+#[test]
+fn a_cursor_on_a_live_session_continues_after_appended_messages() {
+    let d = test_daemon::start("placeholder");
+    let first: Vec<(String, String)> = (0..6)
         .map(|n| {
-            polylogue_testkit::claude_user(
-                &if n == 0 {
-                    "u1".to_owned()
-                } else {
-                    format!("reverse-{n}")
-                },
-                "s1",
-                &format!("prompt number {n} λ🙂"),
+            (
+                format!("live-{n}"),
+                format!("message {n} before the append"),
             )
         })
-        .collect::<String>();
-    std::fs::write(daemon.home.join(".claude/projects/-p/s1.jsonl"), source).unwrap();
-    daemon.wait_for(|data| data["store"]["messages"] == 12);
-    let read = |cursor, start| {
-        handle(
-            Request::Read {
-                target: crate::daemon::ReadTarget::Session(
-                    polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
-                ),
-                slices: true,
-                view: "full".into(),
-                format: "json".into(),
-                with_parents: false,
-                budget: Some(40),
-                cursor,
-                selection: start,
-            },
-            &daemon.daemon,
-        )
-    };
-    let Response::Ok { data: current, .. } = read(None, Some(crate::daemon::PageSelection::Latest))
-    else {
-        panic!("latest")
-    };
-    let Response::Ok { data: previous, .. } =
-        read(Some(current["previous"].as_str().unwrap().into()), None)
-    else {
-        panic!("previous")
-    };
-    assert_eq!(previous["next"], current["cursor"]);
-    assert!(
-        !previous["text"]
-            .as_str()
-            .unwrap()
-            .contains("prompt number 11")
+        .collect();
+    let borrowed: Vec<(&str, &str)> = first
+        .iter()
+        .map(|(id, text)| (id.as_str(), text.as_str()))
+        .collect();
+    add_selected_session(&d, &borrowed);
+    let opening = page(
+        &d.daemon,
+        "session:claude-code:s2",
+        false,
+        View::Transcript,
+        8,
+        None,
     );
-    assert_eq!(previous["text"].as_str().unwrap().chars().count(), 160);
-    let Response::Ok { data: again, .. } =
-        read(Some(previous["next"].as_str().unwrap().into()), None)
-    else {
-        panic!("next")
-    };
-    assert_eq!(again["text"], current["text"]);
-    assert_eq!(again["slices"], current["slices"]);
+    let cursor = next(&opening).expect("a second page");
+    let mut source = std::fs::read_to_string(d.home.join(".claude/projects/-p/s2.jsonl")).unwrap();
+    for n in 6..9 {
+        source.push_str(&polylogue_testkit::claude_user(
+            &format!("live-{n}"),
+            "s2",
+            &format!("message {n} after the append"),
+        ));
+    }
+    std::fs::write(d.home.join(".claude/projects/-p/s2.jsonl"), source).unwrap();
+    d.wait_for(|status| {
+        status["store"]["messages"] == 10 && status["store"]["search_pending"] == 0
+    });
+    let mut text = Text::default();
+    text.page(&opening);
+    let mut cursor = Some(cursor);
+    while let Some(current) = cursor {
+        let continued = page(
+            &d.daemon,
+            "session:claude-code:s2",
+            false,
+            View::Transcript,
+            8,
+            Some(&current),
+        );
+        text.page(&continued);
+        cursor = next(&continued);
+    }
+    let mut expected = String::new();
+    for n in 0..6 {
+        expected.push_str(&format!("message {n} before the append"));
+    }
+    for n in 6..9 {
+        expected.push_str(&format!("message {n} after the append"));
+    }
+    assert_eq!(text.value, expected);
+}
+
+/// law: pl.read.page-no-proof
+#[test]
+fn continuation_pages_write_nothing() {
+    let d = test_daemon::start("a synthetic prompt long enough for several pages of reading");
+    let first = page(
+        &d.daemon,
+        "session:claude-code:s1",
+        false,
+        View::Transcript,
+        8,
+        None,
+    );
+    // The first page's run record goes to the writer after the answer; a
+    // blocking write behind it is a barrier.
+    d.set("browser.actions", "on");
+    let before = d.daemon.reads.reader().unwrap().change_position().unwrap();
+    let mut cursor = next(&first);
+    let mut pages = 0;
+    while let Some(current) = cursor {
+        let continued = page(
+            &d.daemon,
+            "session:claude-code:s1",
+            false,
+            View::Transcript,
+            8,
+            Some(&current),
+        );
+        pages += 1;
+        cursor = next(&continued);
+    }
+    assert!(pages > 0);
+    let after = d.daemon.reads.reader().unwrap().change_position().unwrap();
+    assert_eq!(before, after);
 }

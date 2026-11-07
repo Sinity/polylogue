@@ -171,26 +171,28 @@ fn long_export_records_have_no_size_cutoff() {
 #[test]
 fn row_dumps_include_table_column_and_revision_structure_without_sql_or_values() {
     let before = infer(
-        br#"{"schema":{"threads":"CREATE TABLE threads (title TEXT)"}}
+        br#"{"schema":{"threads":"CREATE TABLE private_sql(title TEXT)","empty":"private SQL"}}
 {"t":"threads","k":"secret-id","r":{"title":"private-title"}}"#,
-        Framing::Lines,
+        Framing::RowDump,
     );
-    let after = infer(
-        br#"{"schema":{"threads":"CREATE TABLE threads (title TEXT, added_column INT)"}}
-{"t":"threads","k":"secret-id","r":{"title":"private-title","added_column":1}}"#,
-        Framing::Lines,
-    );
-    assert_eq!(before.fields["/schema/threads"].types["string"], 1);
-    assert!(after.fields.contains_key("/r/added_column"));
+    let after = infer(br#"{"schema":{"threads":"CREATE TABLE private_sql(title TEXT, added_column INT)","empty":"private SQL"}}
+{"r":{"title":"private-title","added_column":1},"t":"threads"}
+{"t":"threads","k":"secret-id","gone":true}"#, Framing::RowDump);
+    assert_eq!(before.tables["threads"].fields["/title"].types["string"], 1);
+    assert!(before.tables["empty"].unobserved_columns);
+    assert!(before.tables["empty"].metadata.is_empty());
+    assert_eq!(before.tables["empty"].metadata_headers, 0);
+    assert_eq!(after.tables["threads"].deleted_records, 1);
     let diff = compare(&before, &after).unwrap();
     assert!(
         diff.changes
             .iter()
-            .any(|c| c.path == "/r/added_column" && c.kind == ChangeKind::Added)
+            .any(|c| c.table.as_deref() == Some("threads")
+                && c.path == "/added_column"
+                && c.kind == ChangeKind::Added)
     );
-    let output = serde_json::to_string(&after).unwrap();
-    for value in ["CREATE TABLE", "private-title", "secret-id"] {
-        assert!(!output.contains(value));
+    for value in ["CREATE TABLE", "private-title", "secret-id", "private SQL"] {
+        assert!(!serde_json::to_string(&after).unwrap().contains(value));
     }
 }
 
@@ -339,3 +341,92 @@ mod memory;
 mod streaming;
 
 mod throughput;
+
+#[test]
+fn row_dump_tables_keep_native_declarations_separate_from_observed_types() {
+    let bytes = br#"{"schema":{"empty":"private SQL","a":"private SQL","b":"private SQL"},"table_metadata":{"empty":{"columns":[{"cid":0,"name":"id","declared_type":"INTEGER","not_null":true,"primary_key":1,"hidden":0,"dflt_value":"private default"}],"without_rowid":true}}}
+{"t":"a","r":{"same":1,"1234567890":"private value","nested":{"1234567890":"private nested"}}}
+{"t":"b","r":{"same":"private value"}}
+{"r":{"discarded":true},"t":"a"} trailing
+{"t":"a","gone":false}
+{"schema":{}}"#;
+    let schema = infer(bytes, Framing::RowDump);
+    assert_eq!(schema.records, 2);
+    assert_eq!(schema.unreadable_records, 2);
+    assert_eq!(schema.tables["a"].fields["/same"].types["integer"], 1);
+    assert_eq!(schema.tables["b"].fields["/same"].types["string"], 1);
+    assert!(schema.tables["a"].fields.contains_key("/1234567890"));
+    assert!(schema.tables["a"].fields.contains_key("/nested/*"));
+    assert!(!schema.tables["a"].fields.contains_key("/discarded"));
+    let empty = &schema.tables["empty"];
+    assert!(empty.fields.is_empty());
+    assert!(empty.unobserved_columns);
+    assert_eq!((empty.headers, empty.metadata_headers), (1, 1));
+    let metadata = empty.metadata.first().unwrap();
+    assert!(metadata.without_rowid);
+    assert_eq!(metadata.columns[0].declared_type, "INTEGER");
+    assert!(compare(&schema, &schema).unwrap().changes.is_empty());
+    let text = serde_json::to_string(&schema).unwrap();
+    for value in ["private", "dflt_value", "SQL"] {
+        assert!(!text.contains(value));
+    }
+}
+
+#[test]
+fn row_dump_declared_columns_are_not_dynamic_maps_and_long_sql_is_discarded() {
+    let mut bytes = format!(
+        r#"{{"schema":{{"wide":"{}"}}}}
+{{"t":"wide","r":{{"#,
+        "s".repeat(2 * 1024 * 1024)
+    );
+    for column in 0..60 {
+        if column > 0 {
+            bytes.push(',');
+        }
+        bytes.push_str(&format!("\"column{column}\":null"));
+    }
+    bytes.push_str("}}\n");
+    let schema = infer(bytes.as_bytes(), Framing::RowDump);
+    assert_eq!(schema.tables["wide"].fields.len(), 61);
+    assert!(!schema.tables["wide"].fields.contains_key("/*"));
+}
+
+#[test]
+fn row_dump_metadata_variants_survive_merging_without_claiming_observed_column_types() {
+    let mut observer = Observer::default();
+    for declared in ["TEXT", "INTEGER"] {
+        let header = serde_json::json!({"schema":{"empty":"private SQL"},"table_metadata":{"empty":{"columns":[{"cid":0,"name":"id","declared_type":declared,"not_null":false,"primary_key":0,"hidden":0}],"without_rowid":false}}});
+        let mut one = Observer::default();
+        one.read(
+            io::Cursor::new(serde_json::to_vec(&header).unwrap()),
+            Framing::RowDump,
+        )
+        .unwrap();
+        observer.merge(one).unwrap();
+    }
+    let schema = observer.finish("synthetic".into(), vec![]);
+    let table = &schema.tables["empty"];
+    assert_eq!(
+        (table.headers, table.metadata_headers, table.metadata.len()),
+        (2, 2, 2)
+    );
+    assert!(table.fields.is_empty());
+    assert!(table.unobserved_columns);
+    assert!(compare(&schema, &schema).unwrap().tables.is_empty());
+}
+
+#[test]
+fn row_dump_hidden_declared_columns_are_explicitly_unobserved_beside_visible_rows() {
+    let schema = infer(br#"{"schema":{"native":"private SQL"},"table_metadata":{"native":{"columns":[{"cid":0,"name":"visible/value","declared_type":"TEXT","not_null":false,"primary_key":0,"hidden":0},{"cid":1,"name":"hidden/value","declared_type":"TEXT","not_null":false,"primary_key":0,"hidden":1}],"without_rowid":false}}}
+{"t":"native","r":{"visible/value":"private cell"}}"#, Framing::RowDump);
+    let table = &schema.tables["native"];
+    assert_eq!(table.records, 1);
+    assert!(!table.unobserved_columns);
+    assert_eq!(
+        table.unobserved_declared_columns,
+        ["hidden/value".into()].into()
+    );
+    assert_eq!(table.fields["/visible~1value"].types["string"], 1);
+    assert!(!table.fields.contains_key("/hidden~1value"));
+    assert!(compare(&schema, &schema).is_ok());
+}

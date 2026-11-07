@@ -2,21 +2,37 @@
 //! home directory.
 //!
 //! - `cli`: the binary as a daemon, driven through the CLI;
-//! - `browser_host`: the binary as Chrome's native messaging host.
+//! - `browser_host`: the binary as Chrome's native messaging host;
+//! - `completion`: shell callbacks over an offline synthetic catalog.
 
 mod browser_host;
 mod cli;
+mod completion;
 mod onboarding;
 
 const BIN: &str = env!("CARGO_BIN_EXE_polylogue");
 
-/// Runtime files belong to the fixture even when a daemon is killed.
+mod process;
+use process::Fixture;
+
 fn command(root: &std::path::Path) -> std::process::Command {
-    let runtime = root.join("runtime");
-    std::fs::create_dir_all(&runtime).unwrap();
-    let mut command = std::process::Command::new(BIN);
-    command.env("XDG_RUNTIME_DIR", runtime);
-    command
+    Fixture::new(
+        &root.join("archive"),
+        &root.join("home"),
+        &root.join("config"),
+    )
+    .command()
 }
 
 mod deadlines;
+
+fn test_process(root: &std::path::Path) -> std::process::Command {
+    let fixture = Fixture::new(
+        &root.join("archive"),
+        &root.join("home"),
+        &root.join("config"),
+    );
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    fixture.environment(&mut command);
+    command
+}

@@ -9,11 +9,7 @@ fn promoted_chatgpt_import_resolves_assets_and_pages_after_provider_free_rebuild
     let source = dir.path().join("export");
     std::fs::create_dir(&home).unwrap();
     std::fs::create_dir(&source).unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let unknown = dir.path().join("renamed.json");
     let body = conversation();
     std::fs::write(&unknown, &body).unwrap();
@@ -27,14 +23,31 @@ fn promoted_chatgpt_import_resolves_assets_and_pages_after_provider_free_rebuild
     let daemon = start_daemon(&env);
     let kept = cli(&env, &["--json", "import", unknown.to_str().unwrap()]);
     assert!(kept.status.success(), "{kept:?}");
-    assert_eq!(json(&kept)["unrecognized"].as_array().unwrap().len(), 1);
+    let kept: polylogue_engine::ImportReport = serde_json::from_value(json(&kept)).unwrap();
+    assert_eq!(kept.refused.len(), 1);
+    assert_eq!(kept.refused[0].path, unknown);
+    assert!(!kept.refused[0].reason.is_empty());
+    assert!(!kept.refused[0].structures_tried.is_empty());
+    assert_eq!(std::fs::read(&unknown).unwrap(), body);
     let promoted = cli(&env, &["--json", "import", source.to_str().unwrap()]);
     assert!(promoted.status.success(), "{promoted:?}");
+    let promoted: polylogue_engine::ImportReport = serde_json::from_value(json(&promoted)).unwrap();
     assert!(
-        json(&promoted)["pass"]["errors"]
-            .as_array()
-            .unwrap()
-            .is_empty()
+        promoted.pass.errors.is_empty(),
+        "{:?}",
+        promoted.pass.errors
+    );
+    assert!(
+        promoted
+            .members
+            .iter()
+            .any(|member| member.path.ends_with("conversations.json")
+                && member.class == "parsed"
+                && member.origin.as_deref() == Some("chatgpt"))
+    );
+    assert_eq!(
+        std::fs::read(source.join("file-Native.dat")).unwrap(),
+        b"promoted asset bytes"
     );
     for rebuild in [false, true] {
         if rebuild {
@@ -51,21 +64,34 @@ fn promoted_chatgpt_import_resolves_assets_and_pages_after_provider_free_rebuild
     }
 }
 
-fn check(env: &[(&str, &Path)]) {
+fn check(env: &crate::Fixture) {
     let descriptor = cli(env, &["--json", "attachment", MESSAGE, "0"]);
     assert!(descriptor.status.success(), "{descriptor:?}");
-    assert_eq!(json(&descriptor)["state"], "available");
+    assert_eq!(json(&descriptor)["descriptor"]["state"], "available");
     assert_eq!(
-        json(&descriptor)["matches"][0]["names"],
+        json(&descriptor)["descriptor"]["matches"][0]["names"],
         json!(["promoted.png"])
     );
-    let page = cli(env, &["--json", "read", SESSION, "--budget", "100000"]);
-    assert!(page.status.success(), "{page:?}");
-    assert_eq!(json(&page)["attachments"][0]["state"], "available");
-    assert!(
-        json(&page)["text"]
-            .as_str()
-            .unwrap()
-            .contains("promoted.png")
+    let page = cli(env, &["--json", "read", SESSION, "--page-tokens", "100000"]);
+    let page = typed_page(&page);
+    let item = one_attachment(&page.document.items);
+    let descriptor = json(&descriptor)["descriptor"].clone();
+    assert_available(env, item, &descriptor);
+    assert_eq!(
+        descriptor["matches"][0]["size"],
+        b"promoted asset bytes".len()
+    );
+    assert_eq!(
+        descriptor["matches"][0]["blob"],
+        json!(polylogue_model::BlobHash::of(b"promoted asset bytes"))
+    );
+    let bytes = cli(env, &["--json", "attachment", MESSAGE, "0"]);
+    assert!(bytes.status.success(), "{bytes:?}");
+    use base64::Engine as _;
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(json(&bytes)["content_base64"].as_str().unwrap())
+            .unwrap(),
+        b"promoted asset bytes"
     );
 }

@@ -26,13 +26,13 @@ fn a_request_is_checked_before_it_is_stored() {
     other.provider = "grok".into();
     assert_eq!(
         new_action("k", &other, vec![]).unwrap_err(),
-        Refused(400, "unsupported_provider")
+        Refused("unsupported_provider")
     );
     let mut blank = request(None, false);
     blank.model = " ".into();
     assert_eq!(
         new_action("k", &blank, vec![]).unwrap_err(),
-        Refused(400, "model_required")
+        Refused("model_required")
     );
 
     let file = ChatFile {
@@ -43,7 +43,7 @@ fn a_request_is_checked_before_it_is_stored() {
     let blob = BlobHash::of(&file.bytes);
     assert_eq!(
         new_action("k", &request(None, false), vec![attachment(&file, blob)]).unwrap_err(),
-        Refused(400, "attachment_name_not_a_basename")
+        Refused("attachment_name_not_a_basename")
     );
     let file = ChatFile {
         name: "notes.txt".into(),

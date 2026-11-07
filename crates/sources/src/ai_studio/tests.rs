@@ -343,3 +343,38 @@ fn repeated_prompt_parents_make_one_fork_and_conflicting_parents_make_none() {
         assert_eq!(step.output.links.len(), count);
     }
 }
+
+#[test]
+fn native_chunk_clock_is_intrinsic_and_drive_file_clock_is_file_mtime() {
+    use polylogue_model::{Precision, TimeQuality};
+    let step = parse(
+        "clock",
+        &prompt(vec![
+            json!({"text":"q","role":"user","createTime":"2026-01-02T03:04:05Z"}),
+            json!({"text":"a","role":"model"}),
+        ]),
+    );
+    let messages: Vec<_> = step
+        .output
+        .messages
+        .iter()
+        .filter(|r| r.message.role != Role::System)
+        .collect();
+    assert_eq!(messages[0].message.at_precision, Some(Precision::Second));
+    assert_eq!(messages[0].message.at_quality, TimeQuality::Intrinsic);
+    assert_eq!(messages[1].message.at, None);
+    assert_eq!(messages[1].message.at_quality, TimeQuality::Unknown);
+    let bytes = br#"{"files":[{"id":"file","name":"Clock","createdTime":"2026-01-02T03:04:05Z"}]}"#;
+    let listed =
+        crate::export::fixture::parse(&mut Parse::Export(Box::new(Listing::default())), bytes)
+            .unwrap();
+    assert_eq!(
+        listed.output.sessions[0].started_quality,
+        TimeQuality::FileMtime
+    );
+    assert_eq!(
+        listed.output.sessions[0].started_precision,
+        Some(Precision::Second)
+    );
+    assert!(listed.output.messages.is_empty());
+}

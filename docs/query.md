@@ -32,17 +32,17 @@ How the first word of a command line is read (command, query signal, `find`) is 
 
 ### Errors
 
-Every query error carries `kind`, `message`, `position` (byte offset, shown with a caret), `suggestion` (a corrected query that runs as given, whenever one can be formed), `hint` and `retryable`. Polylogue's query error kinds and their exit codes are listed in [interfaces.md](interfaces.md#exit-codes). A unit or field that is part of the design but has no producer yet answers `not_built`, never an empty result.
+Every query error carries `kind`, `message`, `position` (byte offset, shown with a caret), `suggestion` (a corrected query that runs as given, whenever one can be formed), `hint`, `candidates` (the matches of an ambiguous reference, or the known fields close to an unknown one) and `retryable`. Polylogue's query error kinds and their exit codes are listed in [interfaces.md](interfaces.md#exit-codes). A unit or field that is part of the design but has no producer yet answers `not_built`, never an empty result.
 
 ### References inside queries
 
-A reference names exactly one thing and drops the reachability defaults (subagent, hidden, duplicate, active path) for that match. The reference forms and their resolution are in [references.md](references.md#forms); the command line's own forms (`@N`, `@last`) are in [interfaces.md](interfaces.md#addressing). An ID-shaped word or unique prefix resolves to exactly one session or message, or is `not_found` or `ambiguous` naming the matches; it never silently becomes search text. `self` is the calling session; `last` and `latest` are the most recently active main session in scope, never the calling session.
+A reference names exactly one thing and drops the reachability defaults (subagent, hidden, duplicate, active path) for that match. The reference forms and their resolution are in [references.md](references.md#forms); the command line's own forms (`@N`, `@last`) are in [interfaces.md](interfaces.md#addressing). A query that is only an exact assertion revision (`assertion:R@X`) reads the `assertions` unit, since the revision is one row; every other lone reference is a condition on the default unit. An ID-shaped word or unique prefix resolves to exactly one session or message, or is `not_found` or `ambiguous` naming the matches; it never silently becomes search text. `self` is the calling session; `last` and `latest` are the most recently active main session in scope, never the calling session.
 
 ## Units and fields
 
 Raw tool-call failures are queryable as recorded outcomes: `tool_calls where outcome:error`. These rows report tool results without classifying a command as a verification check.
 
-Each unit declares, once, its rows, key and identity, default filters, default order, search behaviour and relations (`session.`, `message.`, `call.`, `child.`, `next.`, `parent.`, `recipient.`). Each field declares its kind (match, substring, words, subtree, number, money, time, duration, bool, ref), its closed value set taken from the model's stored names, its unknown word, a one-line help and the phrase `read_as` uses. The full listing will be rendered into [planned reference/query-units.md](reference/README.md#planned-pages).
+Each unit declares, once, its rows, key and identity, default filters, default order, search behaviour and relations (`session.`, `message.`, `call.`, `child.`, `next.`, `parent.`, `recipient.`). Each field declares its kind (match, substring, words, subtree, number, money, time, duration, bool, ref), its closed value set taken from the model's stored names, its unknown word, a one-line help and the phrase `read_as` uses. The full listing will be rendered into [planned reference/query-units.md](reference/README.md#planned-pages). Entity-reference fields declare their target independently of their storage unit. A raw provider ID or mixed-reference value has no fixed entity target. An ID list retains its list shape and declares only its members' target.
 
 | Unit | Rows |
 |---|---|
@@ -50,6 +50,7 @@ Each unit declares, once, its rows, key and identity, default filters, default o
 | `messages`, `blocks`, `tool_calls`, `documents`, `attachments`, `events`, `links`, `turns`, `files` | as parsed ([sessions.md](sessions.md)) |
 | `pastes` | paste spans: content hash, source of the span, state, message and session; `group by hash` gives repeats |
 | `assertions` | assertions ([assertions.md](assertions.md)) |
+| `imported_notes` | original note rows from imported archives written before the version 1 baseline |
 | `variants` | variants and their parts ([assertions.md](assertions.md#variants)) |
 | `deliveries` | deliveries ([agents.md](agents.md#deliveries)) |
 | `changes` | the change feed as rows |
@@ -64,7 +65,18 @@ Field rules:
 - **Counts and content fields** include `project`, `has:code` and `code_lang`, per-role counts (`user_words`, `assistant_words`, `tool_use_messages`, `thinking_messages`, `paste_messages`), `since_session:<ref>`, and `time_quality` and `precision` on every time.
 - **Assertion fields**, on `assertions` and as conditions on any unit through `kv:`: `kind`, `key`, `value`, `author`, `by_operator`, `agent`, `unattributed`, `via`, `about`, `evidence`, `scope`, `origin`, `current`, `conflict`, `withdrawn`, `judged`, `judged_by`, `expired`, `changed_since`, `waiting`, `pass`, `rubric`. On any unit: `tag:<name>[:<value>]`, `title:`, `kv:<kind>.<key>=<value>`, `hidden:`, `referenced_by:<ref>`. Grain is strict: an assertion about a session never matches its messages.
 - **Variant fields:** `variant:true` admits variant text into text search; `lang:<code>` matches variant parts in that language and messages by their derived `lang`.
-- **Names shared with Sinex** keep their meaning per product: `evidence_until:` is Polylogue's as-of field, and Sinex's "as of" is a different concept.
+- **Names shared with Sinex** keep their meaning per product: `evidence_until:` is Polylogue's as-of field, and Sinex's "as of" is a different concept. Polylogue does not retain historical query membership at earlier read positions: `| as of POSITION|TIME` answers `not_yet_available`. `evidence_until:` selects evidence received by then, read with current parsers and prices.
+
+### Original notes from imported archives
+
+`imported_notes` reads the original Notes corpus kept by `import --from-archive`.
+It retains raw text values (including JSON spelling), original IDs, targets,
+writer times and write-counter currency. It includes original kinds that have
+no current assertion counterpart. Current assertion writes belong to
+`assertions`; they do not add rows to this historical source.
+
+Its parser and source-byte provenance are defined with the
+[older archive input format](capture.md#an-archive-from-before-the-baseline).
 
 ## Defaults
 
@@ -86,14 +98,18 @@ Time expressions (relative, calendar, natural-language dates, bounds, daylight-s
 
 - A query resolves its times once, against one `now` and zone, recorded in `resolved`. A cursor carries them and a kept result keeps them; a saved query and a watch re-resolve on each run.
 - Every time Polylogue reads carries `time_quality` and `precision` ([sessions.md](sessions.md#times)), in the closed sets shared with Sinex.
+- A tool call's `result_at` is the time of its result or completion notice. `reported_duration` is the harness's own duration in milliseconds, unknown when absent; it is separate from the elapsed `duration` of [measures](measures.md), which needs both times on one clock.
 - **Coarse times.** A coarse or bounded time satisfies a time condition only when its whole period does, fails when none of its period does, and is otherwise `unknown`. A row whose time is unknown never matches a time condition, is counted in `notes`, and `group by day` puts it in an `unknown` group.
 - Period groups (`day()`, `week()`, `month()`) follow the logical day, and each says `period: complete|partial`.
+- `last_active` is the latest of the messages’ known native times. Its possible period is the maximum of their whole periods: a recorded period `[0,10)` and a point at 5 give `[5,10)`. Its source quality is known only when every possible latest message has that quality; a combination of different source qualities leaves the derived quality unknown. Calendar bounds are never inferred from the reader’s zone.
+- An order relation’s `at when` and `at start` anchor the outer row at its start; `at end` anchors it at its end. The inner row retains its native period and start. `match.distance` is the signed time from that outer anchor to the inner start, in seconds. Coarse periods still have to satisfy the whole-period relation and window.
+- An order condition chooses its nearest satisfying witness by default. `pick first by E [asc|desc], …` chooses by explicit inner-row sort keys instead, with unknown values last and identity as the final tie-breaker. It keeps the outer row once in its existing order. `abs(match.distance)` compares exact native nanosecond distances when choosing a time witness; the public signed distance remains seconds. All operands of a condition read the relation entering it. After the complete predicate filters those rows, exactly one positive order condition in its top-level AND exposes its witness; OR, NOT, and multiple positive order conditions preserve the input witness namespace.
 
 ## Related rows, stages, attached rows, combining
 
 ### Conditions over related rows
 
-- `exists child(C)`: one child satisfies all of C; three-valued.
+- `exists child(C)`: one child satisfies all of C; three-valued. `exists child()` is true when any related child exists, and false when there is none.
 - `count(UNIT [where C]) OP N`: a count is always known, so it and its `NOT` partition the rows.
 - `FIELD in (QUERY | group by F)`: the value is one of the other query's grouped values of the same type.
 - `seq(A -> [next] B -> [within:5m] C)`: tool calls in session order. Matches are the earliest non-overlapping; a step's own conditions narrow before matches are chosen; `within` needs both times, the later strictly after; `| matches` returns each match as rows. `seq all(…)` (every, overlapping match) and `gap_steps`/`gap_time` on match rows are part of the language.
@@ -103,13 +119,17 @@ Time expressions (relative, calendar, natural-language dates, bounds, daylight-s
 Stages apply in the order written:
 
 - `sort by F [asc|desc], …`: unknowns last in either direction; row identity is the final tie-break. `sort by random[(seed)]` keeps its seed in the cursor.
-- `group by K1, K2 | count` or `| agg …`: keys are fields and `day()`, `week()`, `month()`.
-- `agg count, sum:F, avg:F, min:F, max:F, pNN:F, count_distinct:F, histogram:F, corr:F,G`: each value is summed at its owner's grain; unknown and partial values are reported as `unknown_F` and `partial_F`; percentiles are nearest-rank.
-- `| where C` after grouping filters groups.
+- `group by K1, K2 | count` or `| agg …`: keys are fields and `day()`, `week()`, `month()`. Group keys and `min` or `max` of a reference retain that field's reference metadata. The group or summary has its own row identity and no native entity target. Computed aggregate values carry no entity reference.
+- `agg count(), sum(E), avg(E), min(E), max(E), pNN(E), count_distinct(E), histogram(E), corr(E, F), covered(start, end)`: expressions are evaluated at the input row's grain; unknown and partial values are reported as `unknown_F` and `partial_F`; percentiles are nearest-rank. `covered` measures the union of intervals, so overlap is counted once. `histogram` returns ordered JSON bins with `value` and `count`; `corr` is Pearson correlation over complete known pairs and stays unknown for fewer than two pairs or constant input. Arithmetic preserves dimensions; division by zero and operations on unknown inputs stay unknown.
+- `text(E)` keeps an actual string as plain text and clears entity-reference metadata. It propagates unknown values and refuses numbers, times, booleans, lists and objects; a JSON string is decoded as a string. Natural `FIELD:value` matching follows the bound field kind after projection: plain text uses Unicode lowercase substring matching with accents preserved, references and exact fields use equality, and paths keep whole-component boundaries. Explicit `=` remains equality.
+- `| where C` after grouping filters groups. Projection, filtering, sorting, row selection, grouping and aggregation execute at their written relation boundaries. An output alias may use any accepted name, including `_pk`; physical row keys and ordering slots occupy a separate namespace.
+- `| group by K | first N` returns the first N input rows of each retained group, in the input order. A key join returns every matching pair, with the right-hand columns under `match.`. An order condition keeps an outer row once and exposes its nearest satisfying witness under `match.`; a later order condition replaces that namespace.
 - `limit N`, `offset N` are selections and change the question; there is no maximum.
-- `distinct`; `matches`; `| UNIT [where C]` (rows of another unit within the matched sessions); `fields a,b` (projection; `--fields` on the command line).
+- `distinct` removes repeated row identities. A projection changes visible fields while retaining row identity, so equal projected values from different rows remain separate.
+- `matches` retains the entering row's visible columns under `parent.` with their types and reference metadata; projected aliases keep their names. Its matched child fields are under `step.`. Parent rows retain their entering order, followed by each parent's match and step order.
+- `| UNIT [where C]` returns rows of another unit within the matched sessions; `fields a,b` projects columns (`--fields` on the command line).
 - `| measure WHAT` hands the selection to a measure ([measures.md](measures.md)).
-- Further stages are part of the language and answer `not_built` until built: a per-group limit (`| group by origin | first 5`), derived keys (`program(command)`, `fingerprint(text)`), `| series`, `| extract number before "MB/s" as rate`, `| cluster by similar [k:20]`, and `let` names within one query.
+- Further stages are part of the language and answer `not_built` until built: derived keys (`program(command)`, `fingerprint(text)`), `| series`, `| extract number before "MB/s" as rate`, `| cluster by similar [k:20]`, and `let` names within one query.
 
 ### Attached rows
 
@@ -118,8 +138,8 @@ Stages apply in the order written:
 ### Combining queries
 
 - `Q | union (R)`, `| intersect (R)` and `| except (R)` combine two queries of the same unit; `| fuse (R)` adds R's order as one more ranking without adding rows.
-- A chain of `| union` and `| fuse` stages at one level is one reciprocal-rank fusion over all operands ([search.md](search.md#fusion)); `intersect` and `except` keep the left order; an unranked operand contributes its own order; `found_in` names the lists that ranked each row.
-- Grains must match; a mismatch is `invalid_query` suggesting the explicit lift (`| sessions`). Combining applies before a terminal aggregate.
+- A chain containing `| fuse` or a ranked operand is one reciprocal-rank fusion over all original operands ([search.md](search.md#fusion)); an unranked operand contributes its captured order. A fuse operand's ranks are taken over its full input before membership restriction. Values come from the first membership operand that supplies a row; compatible physical representations are converted to the output column's units. A member without an optional witness keeps unknown witness values and coordinates. `found_in` names the membership lists that ranked it. Ordinary unranked unions remove duplicate identities and order by identity. `intersect` and `except` keep the left order.
+- Grains must match; a mismatch is `invalid_query` suggesting the explicit lift (`| sessions`). Projected set operands require compatible semantic declarations, including reference targets; a reference and `text(reference)` need the same explicit projection on both sides. Combining applies before a terminal aggregate.
 
 ## Query objects
 
@@ -127,8 +147,8 @@ Queries, their runs, kept results, figures and findings are stored objects with 
 
 ### Identity
 
-- **`query:<hash>`** is the BLAKE3 hash of the query's normal form: the parsed AST after resolving surface references to their stored forms and saved-query names to the hashes they resolved to, with operands sorted where order carries no meaning and spelling variants removed. Two texts with one normal form have one hash. The normal form and the hash function belong to the shared language, so Sinex hashes its queries the same way.
-- `query:<hash>` accepts the full 64-hex hash or a unique prefix of at least 12 hex characters. Saved-query names cannot be all hex.
+- **`query:<hash>`** is the BLAKE3 hash of the query's semantic normal form and declared parameter types. The form resolves surface references to their stored forms and saved-query names to the hashes they resolved to, sorts operands where order carries no meaning, and removes spelling variants. Its explicit encoding is independent of the Rust AST's serialization layout. Equal normal forms and parameter declarations have equal hashes. The normal form and the hash function belong to the shared language, so Sinex hashes its queries the same way.
+- `query:<hash>` accepts the full 64-hex hash or a unique prefix of at least 12 hex characters. A saved-query name is what `query:NAME` can say: ASCII letters, digits, `_`, `-` and `.`; a save under any other name is refused. Saved-query names cannot be all hex.
 - Relative times stay as expressions in the normal form (`since:7d`, not an instant); each run records what they resolved to.
 
 ### Names and composition
@@ -147,9 +167,41 @@ Queries, their runs, kept results, figures and findings are stored objects with 
 
 - **Shapes.** A saved query whose text is a relation (a unit and conditions, no stages) can stand where a condition can, over the same unit: at the top level it is the source, bound with its own defaults and times; under OR or NOT it means membership. A saved query with stages or `similar:` is a shaped result, which can be read and followed by stages only.
 - **Parameters:** `$word` in the text is a parameter, given as `query:NAME(word=VALUE)`. Values substitute in the parsed tree, never as text; a missing or unused parameter is an error naming it.
+- **A saved definition retains its executable object and frozen dependency closure.** Running a retained hash loads that object, its typed source-output schemas and the exact definitions it captured. It does not resolve its old dependency names against their current revisions. Execution requires custody of the object and every frozen definition.
 - **Recorded definitions:** every answer and kept result names each name it used, with the hash and saved-query revision it resolved to (`definitions`). Revising a saved query never changes what an earlier kept result says it ran.
 - **Shipped saved queries** are data in the code, listed beside the operator's own and without an author: `running`, `live`, `notices`, `changes`, `triage`, `needs-review` (non-operator assertions not yet judged by the counted judges), `open-questions`, `unjudged-agent-notes`, `resume_candidates`. A saved query of one's own with the same name takes precedence; withdrawing it brings the shipped one back. Shortcuts are shipped saved queries, never text builders.
-- **`query:triage`** orders sessions across all repositories by a visible sum of named facts, each shown with its contribution: a failed command never followed by a success of the same command; three or more consecutive failures of one normalized command; cost or duration at least three times the repository's 30-day median; three or more operator corrections; open questions and blockers. Tagging a session `triaged` removes it; later activity brings it back.
+- **`query:triage`** orders sessions across all repositories by a visible sum of named facts, each shown with its contribution: a failed command never followed by a success of the same command; three or more consecutive failures of one normalized command; cost or duration at least three times the repository's 30-day median; three or more operator corrections; open questions and problems. Tagging a session `triaged` removes it; later activity brings it back.
+
+### Stored representations
+
+Current writes use the current grammar and executable body. Stored-data evolution
+is a numbered representation upgrade. It retains each original JSON value under
+its named source format, validates the original normal form and identity, and
+checks that the named conversion yields the stored current representation.
+Historical decoding belongs to the owning source boundary, while current command
+admission accepts the current grammar. Immutable producer records keep their
+original representation; their adapter supplies the validated current product.
+
+A stored question body is either executable current syntax or an explicit
+unavailable state backed by its original source. The upgrade retains definitions
+whose original backend never implemented their construct, together with queries
+that depended on the retired private SQL row key. Their question identity, normal
+form, closure, output declarations and original JSON remain inspectable. Running
+one returns its specific unavailable reason; opening the archive and running other
+questions continue normally. Current writes require executable bodies. Retained
+invocations of an unavailable definition keep their original binding and invocation
+hashes without supplying a current replay binding.
+
+#### Retired content-position invocations
+
+The numbered query representation upgrade preserves Run2 invocations of the
+retired content-position reader as `retired_read` bindings. Original invocations
+and continuations remain distinct. A continuation retains its original root run,
+binding hash and position; the complete original record, including its accepted
+request, supplies the unchanged invocation hash. Raw run reads expose that
+evidence. These records supply no current execution binding, and their positions
+are never interpreted as current page cursors. Current executions cannot create a
+retired binding without its exact versioned source proof.
 
 ### Kept results
 
@@ -166,6 +218,8 @@ Rules:
 
 - **Ranking is kept, or the keep is refused.** Keeping a ranked answer whose ranking is incomplete is `refused` with the missing list named; the caller can keep the unranked membership by removing the ranking term.
 - **Reading back** `result:<id>` (or `#<row>`, `.matches`) reads the stored rows, never a re-run; only stages may follow (`result:<id> | group by origin | count`). Re-running is running `query:<hash>`. Where a derivation version changed since, the read says so ("computed under prices `<hash>`, now `<hash>`").
+- A kept result retains the producer's bound logical declarations alongside its physical columns, so same-name `text(id) as id` and `text(cwd) as cwd` keep text matching. Declarations do not grant native field, period or position access. Numbered format evolution marks older declarations without original catalog proof as unproven; their rows remain readable, sortable and groupable. Natural matching and type-dependent prefixes over an unproven declaration return unavailable. An explicit `text(E)` establishes text matching, while copying or re-keeping a field preserves its uncertainty. Canonical questions and their frozen definitions retain that proof on each source declaration. Replay preserves unknown matching policy; a missing proof never authenticates text or JSON matching. Reading a canonical question checks its retained declaration against the immutable result it names.
+- Stages over a kept result use its captured shape, columns and values, including a shaped result with no native row unit. Missing fields and native time or position evidence are not fetched from current rows. Captured native identity is retained when present; otherwise each stored item has an identity from the result, part and stored ordinal, so equal values remain distinct when paged.
 - **Membership:** `in:result:<id>` restricts any query of the result's unit to its rows; a bulk write over an exact reviewed population uses it.
 - **One kept result, many uses:** assertions, page slots, briefs, watch baselines and written-out bundles cite the same `result:<id>`; nothing copies rows.
 - **Every row is stored,** in `kept_row(result, position, values_json, refs_json)`, so paging a large result reads by key. Keeping an answer that cannot be read within one deadline keeps it in steps, each its own read transaction, recording every position read.
@@ -212,6 +266,7 @@ A run or kept result is **pre-registered** when a `saved_query` assertion naming
 - **Any caller can lift the deadline,** agents included: `--deadline MS` or `--deadline none` on the command line, `deadline: null` over MCP and HTTP. No valid query is refused for time.
 - A read past its deadline ends `timeout`, never `ok` with a partial page. The answer names the running stage and rows scanned, a narrower query, and the same query with the deadline lifted.
 - A read stops within 100 ms when its deadline passes or its caller cancels or disconnects (MCP cancellation, a closed HTTP connection or socket, Ctrl-C); no abandoned read keeps running in the daemon.
+- A read's deadline covers the whole read, from waiting for a read connection and opening it through the last statement. A deadline that passes before any statement runs ends the read the same way, past its deadline.
 - Background work never blocks an interactive read; one read connection is reserved for latency-bound requests (hook briefs, `status`, completion).
 
 ## Answers
@@ -220,7 +275,6 @@ Every surface returns one answer shape, rendered from types:
 
 ```json
 {
-  "outcome": "rows",
   "unit": "sessions", "shape": "rows",
   "columns": [{"name": "id", "kind": "text", "reference": "session"}],
   "rows": [], "count": 3, "next": null, "ranked": true,
@@ -235,7 +289,7 @@ Every surface returns one answer shape, rendered from types:
 }
 ```
 
-- `outcome` is `rows`, `empty`, `incomplete` or `measure`; errors are `{"error": {…}}`. `positions` is filled only for cross-system answers ([primary-mode.md](primary-mode.md#cross-system-queries)).
+- The document carries no outcome of its own: the answer's outcome ([interfaces.md](interfaces.md#output)) says `ok`, `empty` or `degraded`, and a measurement is the document with `measure` and `data` in place of the row fields. Errors are `{"error": {…}}`. `positions` is filled only for cross-system answers ([primary-mode.md](primary-mode.md#cross-system-queries)).
 - `empty` comes only from a read that succeeded and matched nothing; a failure never produces `empty`.
 - An answer assembled from parts (the two sides of a hybrid search, recall lists, cross-system parts) is `incomplete` if any part failed, naming each.
 - `up_to_date` is false while files have unparsed growth, inputs wait, derived products are behind, or the index is held; `notes` say which.
@@ -247,7 +301,7 @@ A facet count is `group by F | count` over the same filtered population as the a
 
 ## Watches
 
-A watch is a signal rule over a query ([operations.md](operations.md#notices)); the rule schema and the evaluator's semantics (changes, baselines, cooldowns, thresholds, catching up, downtime) are the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/signals.md) design. What Polylogue's query side supplies:
+A watch is a signal rule over a query ([operations.md](operations.md#notices)); the rule schema and the evaluator's semantics (changes, baselines, cooldowns, thresholds, catching up, downtime) are the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) design. What Polylogue's query side supplies:
 
 - `watch [--name N] QUERY` keeps the current answer as the baseline (a kept result) and re-evaluates as data arrives, re-resolving relative times.
 - Changes are reported as `membership` (rows joined or left), `ranking` or `top_k`, never one for another.
@@ -291,5 +345,6 @@ The language's own laws (filter composition, three-valued filters, grouped rows,
 - **answer-schema**: one JSON-schema test of the answer holds across all surfaces; `empty` never results from a failure.
 - **read-as-complete**: every field, operator and stage has a reading phrase; `read_as` for every Morrow example is pinned; `--why` on an empty Morrow query names the clause that matched nothing and the known values.
 - **facets-equal-group-by**: facet counts equal their `group by` queries.
+- **cwd-reads-directory-key-range**: `cwd:` at a deep directory and at `/` finds sessions through a key range over every directory sessions recorded, never by reading every session row, and matches whole path components.
 - **watch-change-kinds**: a watched `similar:` query reports rows joining and the top five changing as separate changes; a reading during catch-up reports nothing; a re-parse of the same input never fires again.
 - **bulk-write-membership**: a bulk write over a query writes exactly one assertion per row of the query's membership at write time.

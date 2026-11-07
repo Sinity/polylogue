@@ -1,7 +1,7 @@
 //! One pass of the loop: collect, store, parse, derive; and the loop that
 //! runs passes.
 
-use crate::plan::{FailedChain, InputState, Plan, span, whole};
+use crate::plan::{InputState, Plan, span, whole};
 use crate::*;
 
 /// Parser state stays in memory for inputs written within this long.
@@ -16,6 +16,64 @@ const IN_POOL_PER_WORKER: usize = 16;
 const RECENT_NS: i128 = 10 * 60 * 1_000_000_000;
 
 impl Engine {
+    /// Fails `plan` with `error` and records the failure as its chain's parse
+    /// state, at the position the chain was parsed to. Recording needs stored
+    /// bytes; when it cannot be made, the failure stays the loop's own.
+    pub(crate) fn record_failure(&mut self, plan: &mut Plan, error: String, pass: &mut Pass) {
+        pass.errors.push(error.clone());
+        plan.failed = true;
+        if plan.failure_recorded || plan.stored_upto == 0 {
+            return;
+        }
+        let mut step = polylogue_store::ParseStep::new(
+            Default::default(),
+            Default::default(),
+            plan.parse_pos..plan.parse_pos,
+            false,
+        );
+        step.reset = false;
+        step.progress = polylogue_model::batch::StepProgress::Failed { error };
+        step.reading_version = plan.origin.reading_version();
+        step.prepare();
+        let batch = polylogue_store::Batch {
+            required_disposition: None,
+            input: plan.input.clone(),
+            // The bytes are stored: the record names the chain they are in.
+            change: match plan.change {
+                Change::Reparse { chain } => Change::Reparse { chain },
+                _ => Change::Unchanged,
+            },
+            observation: None,
+            continues: false,
+            new_blob: None,
+            blobs: Vec::new(),
+            length: plan.stored_upto,
+            parse: vec![step],
+            acquisition: None,
+            basis: None,
+            release: Default::default(),
+        };
+        let recorded = self
+            .writer
+            .send(batch)
+            .map_err(|error| error.to_string())
+            .and_then(|()| {
+                let written = self.flush_writes().map_err(|error| error.to_string())?;
+                if written.errors.is_empty() {
+                    Ok(())
+                } else {
+                    Err(written.errors.join("; "))
+                }
+            });
+        match recorded {
+            Ok(()) => plan.failure_recorded = true,
+            Err(recording) => pass.errors.push(format!(
+                "record the failure of {}: {recording}",
+                plan.path.display()
+            )),
+        }
+    }
+
     /// Writes the repository lookups for the working directories the index
     /// holds, at most once a minute. The files it writes are collected in
     /// this same pass.
@@ -40,9 +98,10 @@ impl Engine {
         let dir = self
             .config
             .spool_dir(polylogue_sources::repo_lookup::ORIGIN);
-        let read_at = polylogue_model::Timestamp::from_unix_ms(now_ms())
-            .map(|t| t.to_string())
-            .unwrap_or_default();
+        let read_at =
+            polylogue_model::Timestamp::from_unix_ms(self.config.clock.now().as_millisecond())
+                .map(|t| t.to_string())
+                .unwrap_or_default();
         repo_lookup::refresh(
             repo_lookup::working_directories(&rows),
             &dir,
@@ -65,10 +124,17 @@ impl Engine {
                 let on = self
                     .reads
                     .reader()
-                    .and_then(|r| r.setting(setting, &self.config.machine));
+                    .and_then(|r| r.setting_value(setting, &self.config.machine));
                 match on {
-                    Ok(Some(value)) if value == "on" => {}
-                    Ok(_) => continue,
+                    Ok(Some(polylogue_model::settings::Value::Boolean(true))) => {}
+                    Ok(Some(polylogue_model::settings::Value::Boolean(false))) => continue,
+                    Ok(_) => {
+                        errors.push(format!(
+                            "{} collector: {setting} has no typed boolean value",
+                            origin.name
+                        ));
+                        continue;
+                    }
                     Err(e) => {
                         errors.push(format!("{} collector: {e}", origin.name));
                         continue;
@@ -90,98 +156,155 @@ impl Engine {
         errors
     }
 
-    /// Completes a finite capture batch. The daemon also discovers source
-    /// changes and handles queued requests between its turns.
+    /// Waits for database reads as well as the current file pass.
     pub fn run_pass(&mut self) -> Result<Pass, EngineError> {
-        let mut total = self.run_turn()?;
-        while total.capture_pending {
-            let next = self.one_pass(false)?;
-            total.inputs_seen += next.inputs_seen;
-            total.inputs_changed += next.inputs_changed;
-            total.bytes_read += next.bytes_read;
-            total.bytes_stored += next.bytes_stored;
-            total.messages_written += next.messages_written;
-            total.sessions_derived += next.sessions_derived;
-            total.seconds += next.seconds;
-            total.unreadable_roots = next.unreadable_roots;
-            total.pending_inputs = next.pending_inputs;
-            total.errors.extend(next.errors);
-            total.capture_pending = next.capture_pending;
+        let started = Instant::now();
+        let (mut total, seen) = self.one_pass(true, &Default::default())?;
+        let mut paths: std::collections::BTreeSet<_> = seen.into_iter().collect();
+        // A confirmed reading can still be pending after all local work ends.
+        // Return that wait to the caller instead of spinning inside its pass.
+        while total.capture_pending && self.captures.pending() {
+            let completed = self.captures.completed(true);
+            total.inputs_seen += completed.inputs_seen;
+            total.bytes_stored += completed.bytes_stored;
+            total.errors.extend(completed.errors);
+            self.refresh_database_progress()?;
+            if completed.finished && self.capture_checked.is_some() {
+                self.capture_checked = Some(Instant::now());
+            }
+            let (mut next, seen) = self.one_pass(false, &paths)?;
+            next.capture_pending |= completed.primary_pending;
+            paths.extend(seen);
+            total.add(next);
         }
+        total.seconds = started.elapsed().as_secs_f64();
         Ok(total)
     }
 
-    /// Services ordinary inputs and one cooperative SQLite capture turn.
+    /// Services files and starts or observes an independent database read.
     pub fn run_turn(&mut self) -> Result<Pass, EngineError> {
-        self.one_pass(true)
+        self.one_pass(true, &Default::default())
+            .map(|(pass, _)| pass)
     }
 
-    fn one_pass(&mut self, discover: bool) -> Result<Pass, EngineError> {
+    fn one_pass(
+        &mut self,
+        discover: bool,
+        paths: &std::collections::BTreeSet<PathBuf>,
+    ) -> Result<(Pass, HashSet<PathBuf>), EngineError> {
+        let continuing = self.pass_open;
+        self.pass_open = false;
         let started = Instant::now();
-        let pending_inputs = self.writer.finish_writing(Arc::clone(&self.blobs))?.pending;
         self.load()?;
-        self.restore_failed_writes()?;
-        let (found, unreadable, errors) = if discover {
-            let mut errors = self.run_collectors();
+        let collectors_due = self
+            .collectors_at
+            .is_none_or(|at| at.elapsed() >= Duration::from_secs(60));
+        let mut errors = Vec::new();
+        let sources = self.config.reads_sources;
+        if sources && (discover || collectors_due) {
+            self.collectors_at = Some(Instant::now());
+            errors.extend(self.run_collectors());
             errors.extend(self.refresh_lookups().err());
-            let (found, unreadable) = collect::scan(&self.config);
-            (found, unreadable, errors)
+        }
+        let (mut found, unreadable) = if !sources {
+            (Vec::new(), Vec::new())
+        } else if discover {
+            let scan = collect::scan_with_coverage(&self.config);
+            self.writer.coverage(polylogue_model::capture::Coverage {
+                version: 1,
+                machine: self.config.machine.clone(),
+                observed_at: polylogue_model::Timestamp::from_unix_ms(
+                    self.config.clock.now().as_millisecond(),
+                )
+                .ok_or_else(|| std::io::Error::other("capture observation time is out of range"))?,
+                roots: scan.roots,
+            })?;
+            (scan.found, scan.unreadable)
         } else {
-            (Vec::new(), Vec::new(), Vec::new())
+            collect::scan_paths(&self.config, paths)
         };
+        if sources && !discover && collectors_due {
+            found.extend(collect::scan_spools(&self.config));
+        }
         let mut pass = Pass {
-            pending_inputs,
+            full_scans: u64::from(discover && sources),
             unreadable_roots: unreadable,
             errors,
             ..Pass::default()
         };
-        // The asset lookup comes from stored observations and sidecars, so
-        // after an index rebuild it is in place before any message that
-        // names an asset is parsed. Imports stored in this pass add theirs
-        // at its end.
-        self.refresh_import_assets(&mut pass)?;
-        if discover {
-            self.reparse_behind(None, &mut pass)?;
-        }
-        let databases = found
-            .iter()
-            .filter(|f| f.origin.capture == Capture::RowDump)
-            .filter_map(|f| {
-                let name = polylogue_sources::origin::export_name(&f.path)?;
-                Some((
-                    f.path.clone(),
-                    self.archive
-                        .exports_dir()
-                        .join(f.origin.name)
-                        .join(self.location_id(&f.path))
-                        .join(name),
-                    Some(self.observation(&f.path, None)),
-                ))
-            })
-            .collect();
-        // A first build captures tool databases whole while it reads the
-        // files, and parses each capture's parts in the same pass as they are
-        // appended; afterwards a pass captures in turns of 1,024 rows, so
-        // other work goes between them.
-        let whole_capture = if discover && self.first_pass && self.writer.started_empty() {
-            Some(databases)
+        let (deferred_database, database_changed) = if sources {
+            self.capture_databases(&found, discover, &mut pass)?
         } else {
-            self.capture_turn(databases, 1024, &mut pass);
-            None
+            (false, false)
         };
         let mut found: Vec<_> = found
             .into_iter()
-            .filter(|f| f.origin.capture != Capture::RowDump)
+            .filter(|f| !f.origin.is_row_dump(&f.path))
             .collect();
-        found.extend(self.capture_outputs());
+        if sources && !discover && self.live_checked.elapsed() >= self.config.live_every {
+            self.live_checked = Instant::now();
+            let now_ns = i128::from(self.config.clock.now().as_millisecond()) * 1_000_000;
+            found.extend(collect::scan_spools(&self.config));
+            found.extend(
+                self.inputs
+                    .iter()
+                    .filter(|(path, st)| {
+                        st.origin.arrival == polylogue_sources::Arrival::Live
+                            && !st.origin.is_row_dump(path)
+                    })
+                    .filter(|(_, st)| st.facts.is_some_and(|f| now_ns - f.mtime_ns < RECENT_NS))
+                    .map(|(path, st)| collect::Found {
+                        path: path.clone(),
+                        origin: st.origin,
+                    }),
+            );
+        }
+        found.sort_by(|a, b| a.path.cmp(&b.path));
+        found.dedup_by(|a, b| a.path == b.path);
+        let changed = found.iter().any(|f| {
+            self.inputs.get(&f.path).is_none_or(|st| {
+                std::fs::metadata(&f.path).ok().map(|m| FileFacts::of(&m)) != st.facts
+            })
+        });
+        let disappeared = paths.iter().any(|path| {
+            self.inputs
+                .iter()
+                .any(|(p, st)| p.starts_with(path) && st.facts.is_some() && !p.exists())
+        });
+        if !discover
+            && !continuing
+            && !changed
+            && !disappeared
+            && !pass.capture_pending
+            && !database_changed
+            && !deferred_database
+            && !self.captures.pending()
+        {
+            pass.seconds = started.elapsed().as_secs_f64();
+            return Ok((pass, HashSet::new()));
+        }
+        // The asset lookup comes from stored observations and sidecars, so
+        // after an index rebuild it is in place before any message that
+        // names an asset is parsed. The import operation refreshes its new members.
+        if !continuing {
+            self.refresh_import_assets(&mut pass)?;
+        }
+        if discover {
+            self.reparse_behind(None, &mut pass)?;
+        }
+
         let mut seen = HashSet::new();
         let mut plans = self.plan_found(found, &mut pass, &mut seen)?;
         // Paths seen before and gone now: an observation, never a delete.
+        // Without sources nothing is looked at, so nothing is gone.
         let gone: Vec<PathBuf> = self
             .inputs
             .iter()
             .filter(|(p, s)| {
-                (discover || s.origin.capture == Capture::RowDump)
+                sources
+                    && (discover
+                        || s.origin.is_row_dump(p)
+                        || paths.iter().any(|path| p.starts_with(path)))
                     && s.facts.is_some()
                     && !seen.contains(*p)
                     && !p.exists()
@@ -192,25 +315,30 @@ impl Engine {
             let st = self.inputs.get_mut(&path).expect("known input");
             st.facts = None;
             let batch = polylogue_store::Batch {
+                required_disposition: None,
                 input: InputKey {
                     id: st.input_id.clone(),
                     format: st.origin.name.into(),
-                    arrival_rank: 0,
+                    arrival_rank: st.origin.arrival.rank(),
                 },
                 change: Change::Disappeared,
                 observation: Some(Observation {
                     machine: self.config.machine.clone(),
                     host: self.config.host.clone(),
                     path: path.display().to_string(),
+                    path_bytes: path.as_os_str().as_encoded_bytes().to_vec(),
                     facts: None,
-                    seen_at_ms: now_ms(),
+                    seen_at_ms: self.config.clock.now().as_millisecond(),
                     import: None,
+                    container: None,
                 }),
                 continues: false,
                 new_blob: None,
                 blobs: vec![],
                 length: st.stored,
                 parse: Vec::new(),
+                acquisition: None,
+                basis: None,
                 release: Default::default(),
             };
             self.writer.send(batch)?;
@@ -221,7 +349,10 @@ impl Engine {
             .inputs
             .iter()
             .filter(|(p, s)| {
-                (discover || s.origin.capture == Capture::RowDump) && !seen.contains(*p)
+                (discover
+                    || s.origin.is_row_dump(p)
+                    || paths.iter().any(|path| p.starts_with(path)))
+                    && !seen.contains(*p)
             })
             .map(|(p, _)| p.clone())
             .collect();
@@ -231,89 +362,23 @@ impl Engine {
             }
         }
         pass.inputs_changed = plans.len() as u64;
-        if plans.is_empty() && whole_capture.is_none() {
+        if plans.is_empty() {
             let report = self.flush_writes()?;
             pass.errors.extend(report.errors);
         }
-        if let Some(databases) = whole_capture {
-            let captures: Vec<PathBuf> = databases.iter().map(|(_, out, _)| out.clone()).collect();
-            let mut exporter = std::mem::take(&mut self.exporter);
-            let turn = std::thread::scope(|scope| {
-                let capture = scope.spawn(move || {
-                    let turn = exporter.turn(databases, usize::MAX);
-                    (exporter, turn)
-                });
-                let mut executed = self.execute(plans, &mut pass);
-                // A large database's capture becomes input in parts while it
-                // is read; each part is stored and parsed meanwhile.
-                while executed.is_ok() && !capture.is_finished() {
-                    let parts = captures
-                        .iter()
-                        .filter(|out| out.exists())
-                        .filter_map(|out| self.capture_found(out))
-                        .collect();
-                    executed = self
-                        .plan_found(parts, &mut pass, &mut seen)
-                        .and_then(|plans| {
-                            if plans.is_empty() {
-                                std::thread::sleep(std::time::Duration::from_secs(2));
-                                return Ok(());
-                            }
-                            pass.inputs_changed += plans.len() as u64;
-                            self.execute(plans, &mut pass)
-                        });
-                }
-                let (exporter, turn) = capture.join().expect("the capture thread does not panic");
-                self.exporter = exporter;
-                executed.map(|()| turn)
-            })?;
-            record_turn(turn, &mut pass);
-            let outputs = self.capture_outputs();
-            let plans = self.plan_found(outputs, &mut pass, &mut seen)?;
-            pass.inputs_changed += plans.len() as u64;
-            self.execute(plans, &mut pass)?;
-        } else {
-            self.execute(plans, &mut pass)?;
+        self.execute(plans, &mut pass)?;
+        if deferred_database && pass.errors.is_empty() && !self.captures.pending() {
+            // Local parsing may have made a deferred database runnable. Start
+            // that real work in this batch; a still-pending reading just yields.
+            self.capture_databases(&[], false, &mut pass)?;
         }
-        self.first_pass = false;
-        self.restore_failed_writes()?;
-        self.refresh_import_assets(&mut pass)?;
-        pass.sessions_derived = self.derive()?;
+        pass.capture_pending |= self.captures.pending();
+        if !pass.capture_pending {
+            pass.sessions_derived = self.derive()?;
+        }
+        self.pass_open = pass.capture_pending;
         pass.seconds = started.elapsed().as_secs_f64();
-        Ok(pass)
-    }
-
-    /// One turn of the SQLite capture, of at most `limit` rows.
-    fn capture_turn(
-        &mut self,
-        databases: Vec<(PathBuf, PathBuf, Option<Observation>)>,
-        limit: usize,
-        pass: &mut Pass,
-    ) {
-        let turn = self.exporter.turn(databases, limit);
-        record_turn(turn, pass);
-    }
-
-    /// The captures of tool databases the capture accepted, as found inputs.
-    /// Accepted captures remain inputs even if their provider disappears
-    /// while a pinned source view is being read.
-    fn capture_outputs(&self) -> Vec<collect::Found> {
-        self.exporter
-            .paths()
-            .filter_map(|out| self.capture_found(out))
-            .collect()
-    }
-
-    /// A capture of a tool database as a found input.
-    fn capture_found(&self, out: &Path) -> Option<collect::Found> {
-        let origin = ORIGINS.iter().find(|o| {
-            o.capture == Capture::RowDump
-                && out.starts_with(self.archive.exports_dir().join(o.name))
-        })?;
-        Some(collect::Found {
-            path: out.into(),
-            origin,
-        })
+        Ok((pass, seen))
     }
 
     /// Plans for found files; `seen` collects their paths.
@@ -325,27 +390,54 @@ impl Engine {
     ) -> Result<Vec<Plan>, EngineError> {
         let mut plans = Vec::new();
         for f in found {
-            if self.refused.contains(&f.path) {
-                continue;
-            }
             seen.insert(f.path.clone());
             let Ok(meta) = std::fs::metadata(&f.path) else {
                 continue;
             };
             pass.inputs_seen += 1;
             let now = FileFacts::of(&meta);
+            if compressed::is_rollout(&f) {
+                match self.capture_rollout(&f, now, pass) {
+                    Ok(Some(plan)) => {
+                        if let Some(previous) = plans
+                            .iter_mut()
+                            .find(|p: &&mut Plan| p.input.id == plan.input.id)
+                        {
+                            *previous = plan;
+                        } else {
+                            plans.push(plan);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => pass
+                        .errors
+                        .push(format!("capture {}: {error}", f.path.display())),
+                }
+                continue;
+            }
             if !self.track(&f) {
                 continue;
             }
-            let pending = pass
-                .pending_inputs
-                .iter()
-                .any(|u| u.input == self.inputs[&f.path].input_id);
-            if let Some(plan) = self.plan(&f.path, now, pending)? {
+            if let Some(plan) = self.plan(&f.path, now)? {
                 plans.push(plan);
             }
         }
         Ok(plans)
+    }
+
+    /// Reconcile the sampler with confirmed application after a pending capture.
+    /// Private raw custody never supplies these logical source coordinates.
+    pub(crate) fn refresh_confirmed_input(&mut self, path: &Path) -> Result<(), EngineError> {
+        let known = self
+            .reads
+            .reader()?
+            .known_watched_input_at(&self.config.machine, path.as_os_str().as_encoded_bytes())?;
+        if let Some(known) = known {
+            self.adopt_watched_input(path, known);
+        } else if let Some(state) = self.inputs.get_mut(path) {
+            state.adopt_confirmed(&state.input_id.clone(), state.origin, None, None);
+        }
+        Ok(())
     }
 
     /// Starts tracking a found path its origin recognizes; false when it
@@ -358,23 +450,8 @@ impl Engine {
             return false;
         }
         let id = self.location_id(&f.path);
-        self.inputs.insert(
-            f.path.clone(),
-            InputState {
-                input_id: id,
-                origin: f.origin,
-                facts: None,
-                stored: 0,
-                parsed_upto: 0,
-                parsed: false,
-                waiting: false,
-                parser_state: None,
-                tail: None,
-                chain: None,
-                failed: None,
-                failed_history: HashMap::new(),
-            },
-        );
+        self.inputs
+            .insert(f.path.clone(), InputState::new(id, f.origin));
         true
     }
 
@@ -382,24 +459,61 @@ impl Engine {
     /// in the spools, and the known files of live origins written in the
     /// last minutes (a session being written). They run ahead of the
     /// pass's bulk work. Paths with work in flight are left to it.
-    fn live_plans(&mut self, busy: &HashSet<&Path>) -> Result<Vec<Plan>, EngineError> {
-        let now_ns = i128::from(now_ms()) * 1_000_000;
-        let mut found = collect::scan_spools(&self.config);
+    pub(crate) fn live_plans(
+        &mut self,
+        busy: &HashSet<&Path>,
+        pass: &mut Pass,
+    ) -> Result<Vec<Plan>, EngineError> {
+        if !self.config.reads_sources {
+            return Ok(Vec::new());
+        }
+        let mut changes = watch::Changes::default();
+        if let Some(watcher) = &mut self.watcher {
+            if let Err(error) = watcher.refresh(&self.config) {
+                pass.errors.push(format!("source watch: {error}"));
+                changes.full = true;
+            }
+            let latest = watcher.take();
+            changes.full |= latest.full;
+            changes.paths = latest.paths;
+            pass.errors.extend(latest.errors);
+        }
+        let paths = changes
+            .paths
+            .into_iter()
+            .map(|path| collect::database_path(&self.config, &path).unwrap_or(path))
+            .collect();
+        let (mut found, unreadable) = if changes.full {
+            pass.full_scans += 1;
+            collect::scan(&self.config)
+        } else {
+            collect::scan_paths(&self.config, &paths)
+        };
+        pass.unreadable_roots.extend(unreadable);
+        self.capture_databases(&found, changes.full, pass)?;
+        found.retain(|file| !file.origin.is_row_dump(&file.path));
+        let now_ns = i128::from(self.config.clock.now().as_millisecond()) * 1_000_000;
+        found.extend(collect::scan_spools(&self.config));
         found.extend(
             self.inputs
                 .iter()
-                .filter(|(_, st)| st.origin.arrival == polylogue_sources::Arrival::Live)
+                .filter(|(path, st)| {
+                    st.origin.arrival == polylogue_sources::Arrival::Live
+                        && !st.origin.is_row_dump(path)
+                })
                 .filter(|(_, st)| st.facts.is_some_and(|f| now_ns - f.mtime_ns < RECENT_NS))
                 .map(|(path, st)| collect::Found {
                     path: path.clone(),
                     origin: st.origin,
                 }),
         );
+        found.sort_by(|left, right| left.path.cmp(&right.path));
+        found.dedup_by(|left, right| left.path == right.path);
         let mut plans = Vec::new();
         let mut seen = HashSet::new();
         for f in &found {
-            if self.refused.contains(&f.path)
-                || busy.contains(f.path.as_path())
+            if busy.contains(f.path.as_path())
+                || self.reparsing.contains_key(&f.path)
                 || !seen.insert(f.path.as_path())
             {
                 continue;
@@ -407,14 +521,56 @@ impl Engine {
             let Ok(meta) = std::fs::metadata(&f.path) else {
                 continue;
             };
+            let now = FileFacts::of(&meta);
+            if compressed::is_rollout(f) {
+                match self.capture_rollout(f, now, pass) {
+                    Ok(Some(mut plan)) => {
+                        plan.priority = Priority::Live;
+                        if let Some(previous) = plans
+                            .iter_mut()
+                            .find(|p: &&mut Plan| p.input.id == plan.input.id)
+                        {
+                            *previous = plan;
+                        } else {
+                            plans.push(plan);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => pass
+                        .errors
+                        .push(format!("capture {}: {error}", f.path.display())),
+                }
+                continue;
+            }
             if !self.track(f) {
                 continue;
             }
-            let now = FileFacts::of(&meta);
-            if self.inputs[&f.path].facts == Some(now) {
-                continue;
+            // Every recently written live file is checked on each tick. An
+            // unchanged, fully stored one with no capture waiting can only
+            // have an unfinished reading left, which needs no source state
+            // from the writer; asking the writer for each one made a pass
+            // over many recent files quadratic.
+            let st = &self.inputs[&f.path];
+            let plan = if st.facts == Some(now) && st.working.is_none() && st.stored >= now.size {
+                self.stored_plan(&f.path)?
+            } else {
+                self.plan(&f.path, now)?
+            };
+            if let Some(mut plan) = plan {
+                plan.priority = Priority::Live;
+                plans.push(plan);
             }
-            if let Some(mut plan) = self.plan(&f.path, now, false)? {
+        }
+        let databases: Vec<_> = self
+            .inputs
+            .iter()
+            .filter(|(path, state)| {
+                state.origin.is_row_dump(path) && !busy.contains(path.as_path())
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        for path in databases {
+            if let Some(mut plan) = self.stored_plan(&path)? {
                 plan.priority = Priority::Live;
                 plans.push(plan);
             }
@@ -423,38 +579,95 @@ impl Engine {
     }
 
     /// Decides what to read for one tracked path.
-    fn plan(
-        &mut self,
-        path: &Path,
-        now: FileFacts,
-        pending: bool,
-    ) -> Result<Option<Plan>, EngineError> {
+    fn plan(&mut self, path: &Path, now: FileFacts) -> Result<Option<Plan>, EngineError> {
+        if self.archive.is_primary() {
+            self.refresh_confirmed_input(path)?;
+        }
+        let origin = self.inputs[path].origin;
+        let source = self
+            .acquisition_context(
+                path,
+                origin.name,
+                polylogue_store::primary::AcquisitionRoute::NativeCapture,
+            )
+            .source;
+        let snapshot = self.writer.source_snapshot(source, "")?;
+        let pending = snapshot.pending.head.as_ref();
+        if let Some(working) = &self.inputs[path].working
+            && pending.is_some_and(|head| head.identity == working.capture)
+            && working.facts == Some(now)
+            && working.stored == now.size
+        {
+            // This is a private-custody wait, not confirmed source progress.
+            let mut plan = Plan::stored(
+                path.to_path_buf(),
+                origin,
+                InputKey {
+                    id: self.inputs[path].input_id.clone(),
+                    format: origin.name.into(),
+                    arrival_rank: origin.arrival.rank(),
+                },
+                Change::Unchanged,
+                Some(now),
+                now.size,
+                now.size,
+                pool::Bytes::File,
+                self.config.chunk,
+                false,
+            );
+            plan.pending = Some(working.group.clone());
+            plan.basis = Some(snapshot.basis);
+            return Ok(Some(plan));
+        }
+        let source_uncertain =
+            snapshot.basis.status != polylogue_store::primary::SourceStatus::Ready;
         let obs = self.observation(path, Some(now));
+        let restored = if let Some(st) = self.inputs.get(path)
+            && st.parser_state.is_none()
+            && st.parsed_upto > 0
+        {
+            let reader = self.reads.reader()?;
+            let known = reader.known_watched_input_at(
+                &self.config.machine,
+                path.as_os_str().as_encoded_bytes(),
+            )?;
+            if let Some(known) = known
+                && known.input_id == st.input_id
+                && known.facts == st.facts
+                && known.stored == st.stored
+                && known.parsed_upto == st.parsed_upto
+            {
+                known
+                    .chain
+                    .map(|chain| {
+                        self.restored_parser_state(
+                            &reader,
+                            &st.input_id,
+                            chain,
+                            st.parsed_upto,
+                            &st.origin.reading_version(),
+                        )
+                    })
+                    .transpose()?
+                    .flatten()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let st = self.inputs.get_mut(path).expect("tracked input");
-        if st.failed == Some(now) {
+        if st.unread == Some(now) {
             return Ok(None);
         }
-        let parsed = st.origin.support == Support::Parsed;
+        if st.parser_state.is_none() {
+            st.parser_state = restored;
+        }
+        let parsed = has_reading(st.origin);
         let mut change = polylogue_store::blobs::classify(st.facts, Some(now));
         if change == Change::Unchanged && st.stored < now.size {
             // Stored only in part (a stop in the middle of a large file).
             change = Change::Appended { from: st.stored };
-        }
-        if pending && let Some(chain) = st.chain {
-            match self
-                .reads
-                .reader()?
-                .check_bytes_present(&st.input_id, chain, 0..st.stored)
-            {
-                Ok(()) => {}
-                Err(polylogue_store::StoreError::InputPending { .. }) => {
-                    // Bytes still being written are never replaced by what the
-                    // file holds now: equal bytes are stored again under the
-                    // same hash, edited bytes start a new chain.
-                    change = Change::Rewritten;
-                }
-                Err(error) => return Err(error.into()),
-            }
         }
         if let Change::Appended { from } = &mut change {
             // The source observation may describe a larger file than the
@@ -482,23 +695,20 @@ impl Engine {
         let never_parsed = parsed && !st.parsed;
         let (stored_upto, parse_pos, parser_state, priority) = match &change {
             Change::First | Change::Rewritten => (0, 0, None, Priority::Bulk),
-            Change::Appended { .. } => {
-                let resumable = st.parser_state.is_some()
-                    || st.parsed_upto == 0
-                    || (st.origin.open)(path).is_some_and(|p| p.is_capture_log());
-                if resumable && !never_parsed {
-                    (
-                        st.stored,
-                        st.parsed_upto,
-                        st.parser_state.take(),
-                        Priority::Live,
-                    )
+            Change::Appended { .. } => (
+                st.stored,
+                if !parsed {
+                    st.stored
+                } else if never_parsed {
+                    0
                 } else {
-                    (st.stored, 0, None, Priority::Live)
-                }
-            }
+                    st.parsed_upto
+                },
+                st.parser_state.take(),
+                Priority::Live,
+            ),
             Change::Unchanged | Change::Disappeared => return self.stored_plan(path),
-            Change::Reparse { .. } => unreachable!(),
+            Change::Reparse { .. } | Change::Observed { .. } => unreachable!(),
         };
         // A document is parsed whole: any change parses it from its start.
         let (parse_pos, parser_state) = if whole(st.origin, path) {
@@ -507,12 +717,16 @@ impl Engine {
             (parse_pos, parser_state)
         };
         Ok(Some(Plan {
+            raw: None,
+            basis: Some(snapshot.basis),
+            pending: None,
+            checkpoint: None,
             path: path.to_path_buf(),
             origin: st.origin,
             input: InputKey {
                 id: st.input_id.clone(),
                 format: st.origin.name.into(),
-                arrival_rank: 0,
+                arrival_rank: st.origin.arrival.rank(),
             },
             change,
             observation: Some(obs),
@@ -521,6 +735,7 @@ impl Engine {
             stored_upto,
             parse_pos,
             storing_started: false,
+            parser_deferred: source_uncertain || never_parsed && st.stored > 0,
             parser_state,
             tail: None,
             span: span(st.origin, path, self.config.chunk),
@@ -528,6 +743,8 @@ impl Engine {
             priority,
             tracked: true,
             failed: false,
+            failure_recorded: false,
+            replace: false,
             waiting: false,
             source: pool::Bytes::File,
         }))
@@ -547,7 +764,24 @@ impl Engine {
         selected: Option<&[String]>,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
-        let behind = self.reads.reader()?.chains_behind_index()?;
+        let behind = self.reads.reader()?.chains_behind_index(
+            &crate::reading_contracts()
+                .into_iter()
+                .filter_map(|contract| match contract {
+                    polylogue_store::ReadingContract::Expected { origin, version } => {
+                        Some((origin, version))
+                    }
+                    polylogue_store::ReadingContract::Kept { .. }
+                    | polylogue_store::ReadingContract::RawOnly { .. } => None,
+                })
+                .collect::<Vec<_>>(),
+            if std::mem::replace(&mut self.stopped_offered, true) {
+                polylogue_store::StoppedChains::Settled
+            } else {
+                polylogue_store::StoppedChains::Retry
+            },
+        )?;
+        let mut replacements = Vec::new();
         let mut rounds: Vec<Vec<Plan>> = Vec::new();
         let mut chains_per_path: HashMap<PathBuf, usize> = HashMap::new();
         let watched: HashMap<String, PathBuf> = self
@@ -563,7 +797,7 @@ impl Engine {
             let (path, origin) = match &c.imported {
                 Some(imported) => {
                     let Some(origin) = polylogue_sources::origin::by_name(&imported.format)
-                        .filter(|origin| origin.support == Support::Parsed)
+                        .filter(|origin| has_reading(origin))
                     else {
                         continue;
                     };
@@ -573,7 +807,7 @@ impl Engine {
                             c.input
                         ))
                     })?);
-                    if (origin.open)(&path).is_none() {
+                    if origin.support == Support::Parsed && (origin.open)(&path).is_none() {
                         return Err(std::io::Error::other(format!(
                             "stored import {} has no parser for its recorded path",
                             c.input
@@ -587,37 +821,50 @@ impl Engine {
                         continue;
                     };
                     let st = &self.inputs[path];
-                    // A whole-document input's older chain is replaced by its
-                    // current one; a chain that failed waits for new bytes.
-                    let lines = matches!(
-                        (st.origin.open)(path),
-                        Some(
-                            polylogue_sources::Parse::Lines(_)
-                                | polylogue_sources::Parse::CaptureLog(_)
-                        )
-                    );
-                    let failed = st.failed_history.get(&state.chain)
-                        == Some(&FailedChain {
-                            length: state.length,
-                        });
-                    if c.current || !lines || failed {
+                    // A chain whose failure or refusal the parse state records
+                    // at this length is not behind; one no record holds waits
+                    // for changed bytes.
+                    if c.current && (!c.reading_changed || st.unread.is_some()) {
                         continue;
                     }
                     (path.clone(), st.origin)
                 }
             };
-            let plan = self.reparse_plan(
+            if !has_reading(origin) {
+                continue;
+            }
+            let tracked = c.current && c.imported.is_none() && watched.get(&c.input) == Some(&path);
+            let facts = tracked
+                .then(|| self.inputs.get(&path).and_then(|st| st.facts))
+                .flatten();
+            let mut reading_state = state.clone();
+            if c.reading_changed {
+                reading_state.parsed = false;
+                reading_state.parsed_upto = 0;
+            }
+            let mut plan = self.reparse_plan(
                 path,
                 origin,
                 InputKey {
                     id: c.input,
                     format: origin.name.into(),
-                    arrival_rank: state.arrival_rank,
+                    arrival_rank: if c.imported.is_some() {
+                        2
+                    } else {
+                        origin.arrival.rank()
+                    },
                 },
-                &state,
-                None,
-                false,
+                &reading_state,
+                facts,
+                tracked,
             );
+            if c.current && origin.arrival == polylogue_sources::Arrival::Live {
+                plan.priority = Priority::Live;
+            }
+            if state.parsed && c.reading_changed {
+                replacements.push(plan);
+                continue;
+            }
             let round = chains_per_path.entry(plan.path.clone()).or_default();
             if *round == rounds.len() {
                 rounds.push(Vec::new());
@@ -625,6 +872,7 @@ impl Engine {
             rounds[*round].push(plan);
             *round += 1;
         }
+        self.replace_readings(replacements, pass)?;
         for round in rounds {
             self.execute(round, pass)?;
         }
@@ -634,14 +882,17 @@ impl Engine {
     /// The plan for a watched location whose current chain the index is
     /// behind while its file is gone, moved or unchanged.
     pub(crate) fn stored_plan(&mut self, path: &Path) -> Result<Option<Plan>, EngineError> {
+        if self.archive.is_primary() {
+            self.refresh_confirmed_input(path)?;
+        }
         let Some(st) = self.inputs.get(path) else {
             return Ok(None);
         };
-        let behind = (!st.waiting && st.parsed_upto < st.stored) || !st.parsed;
+        let behind = st.needs_reading();
         let Some(chain) = st.chain else {
             return Ok(None);
         };
-        if st.origin.support != Support::Parsed || st.stored == 0 || !behind {
+        if !has_reading(st.origin) || st.stored == 0 || !behind || st.unread.is_some() {
             return Ok(None);
         }
         let (input_id, origin, facts) = (st.input_id.clone(), st.origin, st.facts);
@@ -660,7 +911,8 @@ impl Engine {
             .ok_or_else(|| {
                 polylogue_store::StoreError::Invalid("the stored revision disappeared".into())
             })?
-            .arrival_rank;
+            .arrival_rank
+            .max(origin.arrival.rank());
         Ok(Some(self.reparse_plan(
             path.to_path_buf(),
             origin,
@@ -689,13 +941,17 @@ impl Engine {
         tracked: bool,
     ) -> Plan {
         let parser = (origin.open)(&path);
-        let parse_pos = if state.parsed && parser.as_ref().is_some_and(|p| p.is_capture_log()) {
+        let independent_rows =
+            origin.is_row_dump(&path) && matches!(parser, Some(polylogue_sources::Parse::Lines(_)));
+        let parse_pos = if state.parsed
+            && (independent_rows || parser.as_ref().is_some_and(|p| p.is_capture_log()))
+        {
             state.parsed_upto
         } else {
             0
         };
         let export = matches!(parser, Some(polylogue_sources::Parse::Export(_)));
-        Plan::stored(
+        let mut plan = Plan::stored(
             path,
             origin,
             input,
@@ -710,30 +966,46 @@ impl Engine {
             },
             self.config.chunk,
             tracked,
-        )
+        );
+        plan.replace = state.parsed && parse_pos == 0;
+        plan
     }
 
     /// Loads a plan's stored bytes as it starts ([`pool::Bytes::Unloaded`]).
     /// False while they are still being written: the plan waits for a later
     /// pass.
-    fn load_stored(&self, plan: &mut Plan) -> Result<bool, EngineError> {
+    pub(crate) fn load_stored(&self, plan: &mut Plan) -> Result<bool, EngineError> {
         let pool::Bytes::Unloaded {
             chain,
             length,
-            decoded,
+            mut decoded,
         } = plan.source
         else {
             return Ok(true);
         };
-        let stored = match self
+        if !whole(plan.origin, &plan.path) && plan.origin.support == Support::Parsed {
+            let reader = self.reads.reader()?;
+            if let Some(stored) =
+                reader.parser_checkpoint(&plan.input.id, chain, &plan.origin.reading_version())?
+                && stored.reading_version == plan.origin.reading_version()
+                && stored.parsed_upto > 0
+            {
+                plan.parse_pos = stored.parsed_upto;
+                plan.replace = false;
+                plan.parser_state = self.restored_parser_state(
+                    &reader,
+                    &plan.input.id,
+                    chain,
+                    stored.parsed_upto,
+                    &stored.reading_version,
+                )?;
+                decoded = false;
+            }
+        }
+        let stored = self
             .reads
             .reader()?
-            .stored_chain(&plan.input.id, chain, length)
-        {
-            Ok(stored) => stored,
-            Err(polylogue_store::StoreError::InputPending { .. }) => return Ok(false),
-            Err(error) => return Err(error.into()),
-        };
+            .stored_chain(&plan.input.id, chain, length)?;
         plan.source = if decoded {
             pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::from_chain(
                 stored,
@@ -757,7 +1029,47 @@ impl Engine {
         let mut plans = plans;
         plans.sort_by_key(|p| (p.priority == Priority::Bulk, std::cmp::Reverse(p.size)));
         let mut ordinary = Vec::new();
+        let mut replacements = Vec::new();
         for mut plan in plans {
+            self.prepare_raw_plan(&mut plan)?;
+            if plan.raw.is_some() && plan.finished() {
+                self.record_raw_status(&plan, None, pass)?;
+                self.finish_plan(plan);
+                continue;
+            }
+            if plan.pending.is_some() && !plan.tracked && plan.finished() {
+                pass.capture_pending = true;
+                continue;
+            }
+
+            if let Err(error) = self.restore_captured_authored(&plan, pass) {
+                let error = format!("authored restoration {}: {error}", plan.path.display());
+                self.record_failure(&mut plan, error, pass);
+
+                self.finish_plan(plan);
+                continue;
+            }
+            if let Err(error) = self.observe_local_references(&plan, pass) {
+                let error = format!("local references {}: {error}", plan.path.display());
+                self.record_failure(&mut plan, error, pass);
+                self.finish_plan(plan);
+                continue;
+            }
+            let store_first = matches!(plan.source, pool::Bytes::File)
+                && plan.parse_pos == 0
+                && plan.stored_upto > 0
+                && !matches!(plan.change, Change::First | Change::Rewritten);
+            if plan.replace || store_first {
+                self.execute_pool(std::mem::take(&mut ordinary), pass)?;
+                if store_first && let Err(error) = self.store_plan(&mut plan, pass) {
+                    plan.failed = true;
+                    self.finish_plan(plan);
+                    pass.errors.push(format!("store before re-parse: {error}"));
+                    continue;
+                }
+                replacements.push(plan);
+                continue;
+            }
             if let Some(polylogue_sources::parse::Parse::Export(mut parser)) =
                 (plan.origin.open)(&plan.path)
             {
@@ -768,20 +1080,14 @@ impl Engine {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     self.execute_export(&mut plan, &mut *parser, pass)
                 }));
-                match result {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => {
-                        pass.errors
-                            .push(format!("parse {}: {error}", plan.path.display()));
-                        plan.failed = true;
-                    }
-                    Err(_) => {
-                        pass.errors.push(format!(
-                            "parse {}: array parser panicked",
-                            plan.path.display()
-                        ));
-                        plan.failed = true;
-                    }
+                let failure = match result {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => Some(error.to_string()),
+                    Err(_) => Some("the array parser panicked".to_owned()),
+                };
+                if let Some(error) = failure {
+                    let error = format!("parse {}: {error}", plan.path.display());
+                    self.record_failure(&mut plan, error, pass);
                 }
                 self.finish_plan(plan);
             } else {
@@ -789,7 +1095,8 @@ impl Engine {
             }
         }
         self.execute_pool(ordinary, pass)?;
-        self.restore_failed_writes()
+        self.replace_readings(replacements, pass)?;
+        Ok(())
     }
 
     fn execute_pool(&mut self, plans: Vec<Plan>, pass: &mut Pass) -> Result<(), EngineError> {
@@ -824,7 +1131,7 @@ impl Engine {
                         .map(PathBuf::as_path)
                         .chain(waiting.iter().map(|plan| plan.path.as_path()))
                         .collect();
-                    self.live_plans(&busy)
+                    self.live_plans(&busy, pass)
                 };
                 match live {
                     Ok(live) => {
@@ -839,6 +1146,7 @@ impl Engine {
                 && let Some(mut plan) = waiting.pop_front()
             {
                 if plan.finished() {
+                    pass.capture_pending |= plan.pending.is_some();
                     self.finish_plan(plan);
                     continue;
                 }
@@ -847,7 +1155,40 @@ impl Engine {
                 if !self.load_stored(&mut plan)? {
                     continue;
                 }
-                let job = plan.next_job();
+                let mut job = plan.next_job();
+                if matches!(job.source, pool::Bytes::File) {
+                    let mut context =
+                        if plan.raw.is_none() && !plan.storing_started && plan.basis.is_some() {
+                            let mut context = self.acquisition_context(
+                                &job.path,
+                                &job.input.format,
+                                polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                            );
+                            context.basis = plan.basis.clone();
+                            context
+                        } else {
+                            self.sampling_context(
+                                &job.path,
+                                &job.input.format,
+                                &job.origin.reading_version(),
+                            )?
+                        };
+                    context.facts = plan.facts;
+                    if let Some(raw) = &plan.raw {
+                        job.observation = Some(self.observation(&plan.path, plan.facts));
+                        if let Some(cursor) = &raw.cursor {
+                            if job.store_from == Some(cursor.range().end) {
+                                context.raw_predecessor = Some(cursor.last_body().into());
+                            }
+                            if cursor.disposition()
+                                != Some(polylogue_store::primary::CaptureDisposition::Prepared)
+                            {
+                                context.required_disposition = Some(polylogue_store::primary::CaptureDisposition::UnresolvedBasisConflict);
+                            }
+                        }
+                    }
+                    job.acquisition = Some(context);
+                }
                 pass.bytes_read += job.end - job.start;
                 pool.submit(job);
                 outstanding += 1;
@@ -865,13 +1206,63 @@ impl Engine {
             let Some(mut plan) = running.remove(&d.path) else {
                 continue;
             };
+            if d.raw_custody.is_some()
+                || plan.raw.is_some()
+                || d.pending.is_some()
+                    && d.raw_acquisition.is_some()
+                    && plan.tracked
+                    && matches!(plan.source, pool::Bytes::File)
+            {
+                if let Some(error) = &d.error {
+                    pass.errors.push(error.clone());
+                }
+                self.apply_raw_result(&mut plan, &d)?;
+                if plan.finished() {
+                    self.record_raw_status(&plan, d.raw_acquisition.as_ref(), pass)?;
+                    self.finish_plan(plan);
+                } else {
+                    waiting.push_front(plan);
+                }
+                continue;
+            }
+            if d.write_failed {
+                if let Some(error) = d.error {
+                    pass.errors.push(error);
+                }
+                if plan.tracked {
+                    self.refresh_confirmed_input(&plan.path)?;
+                }
+                continue;
+            }
             pass.bytes_stored += d.stored;
+            if d.continuation_missing && !plan.parser_deferred {
+                pass.errors.push(format!(
+                    "parser continuation unavailable at {}:{}; captured bytes retained",
+                    plan.input.id, plan.parse_pos
+                ));
+            }
             if let Some(e) = &d.error {
                 pass.errors.push(e.clone());
             }
-            let parsed = plan.origin.support == Support::Parsed;
+            let parsed = has_reading(plan.origin);
             plan.apply(d, parsed);
             if plan.finished() {
+                // A read failure before producing any reading has no external
+                // work to await. Earlier prepared steps still need confirmation.
+                if self.archive.is_primary()
+                    && matches!(plan.change, Change::Reparse { .. })
+                    && (!plan.failed || plan.failure_recorded || plan.checkpoint.is_some())
+                {
+                    if self.confirmed_reading(&plan)? {
+                        if plan.tracked {
+                            self.refresh_confirmed_input(&plan.path)?;
+                        }
+                    } else {
+                        pass.capture_pending = true;
+                    }
+                    continue;
+                }
+                pass.capture_pending |= plan.pending.is_some();
                 self.finish_plan(plan);
             } else {
                 // The next part of the same input keeps its place.
@@ -881,26 +1272,69 @@ impl Engine {
         drop(pool);
         let report: WriteReport = self.flush_writes()?;
         pass.messages_written += report.messages;
+        pass.segment_syncs += report.segment_syncs;
+        pass.segment_bytes_written += report.segment_bytes_written;
+        pass.blobs_appended += report.blobs_appended;
+        pass.blobs_deduplicated += report.blobs_deduplicated;
         pass.errors.extend(report.errors);
         Ok(())
     }
 
     /// Records what a finished plan leaves for the next pass. Parser state
     /// is kept in memory only for files written recently; an older file's
-    /// state is rebuilt by parsing it again if it ever grows.
-    fn finish_plan(&mut self, plan: Plan) {
-        if !plan.tracked {
-            if let Change::Reparse { chain } = plan.change
-                && let Some(st) = self.inputs.get_mut(&plan.path)
-                && st.input_id == plan.input.id
-            {
-                if plan.failed {
-                    st.failed_history
-                        .insert(chain, FailedChain { length: plan.size });
-                } else {
-                    st.failed_history.remove(&chain);
+    /// state is restored from its admitted checkpoint if it grows.
+    pub(crate) fn finish_plan(&mut self, plan: Plan) {
+        if plan.raw.is_some() {
+            // A verified physical cursor never updates logical input facts,
+            // parser progress, or the latest accepted working source head.
+            return;
+        }
+        if plan.pending.is_some() && !plan.tracked {
+            return;
+        }
+        if let Some(group) = &plan.pending {
+            let source = polylogue_store::primary::SourceSelector {
+                origin: plan.input.format.clone(),
+                machine: self.config.machine.clone(),
+                path_bytes: plan.path.as_os_str().as_encoded_bytes().to_vec(),
+            };
+            let snapshot = self
+                .writer
+                .source_snapshot(source, &plan.origin.reading_version())
+                .ok();
+            let head = snapshot.and_then(|snapshot| snapshot.pending.head);
+            let capture = head.and_then(|head| match head.captured {
+                polylogue_store::primary::Capture::Input(input)
+                    if input.rows.input == plan.input.id
+                        && input.group.as_ref().is_some_and(|g| &g.identity == group)
+                        && input
+                            .raw_range
+                            .is_some_and(|range| range.end == plan.stored_upto) =>
+                {
+                    Some(head.identity)
                 }
+                _ => None,
+            });
+            // An exact accepted retry can return an older immutable receipt.
+            // Only its still-current header may update the sampler's working
+            // state; a newer accepted source observation remains untouched.
+            if let Some(capture) = capture
+                && let Some(state) = self.inputs.get_mut(&plan.path)
+            {
+                state.unread = (plan.failed && !plan.failure_recorded)
+                    .then_some(plan.facts)
+                    .flatten();
+                state.working = Some(crate::plan::WorkingState {
+                    capture,
+                    group: group.clone(),
+                    facts: plan.facts,
+                    stored: plan.stored_upto,
+                });
             }
+            return;
+        }
+
+        if !plan.tracked {
             return;
         }
         if let Some(st) = self.inputs.get_mut(&plan.path) {
@@ -908,7 +1342,7 @@ impl Engine {
             if new_chain && plan.failed && !plan.storing_started {
                 // Planning a rewrite does not replace the committed checkpoint.
                 // A failed first read leaves its facts, tail and parser intact.
-                st.failed = plan.facts;
+                st.unread = plan.facts;
                 return;
             }
             if new_chain {
@@ -919,108 +1353,178 @@ impl Engine {
             } else {
                 st.stored = plan.stored_upto.max(st.stored);
             }
+            if plan.failure_recorded {
+                // The parse state holds the failure at the stored length, so
+                // the chain waits for changed bytes or a new reading like a
+                // chain that waits for a record to finish.
+                st.unread = None;
+                st.facts = plan.facts;
+                st.parsed = true;
+                st.parsed_upto = plan.parse_pos;
+                st.parser_state = plan
+                    .checkpoint
+                    .and_then(|checkpoint| checkpoint.parser_state);
+                st.waiting = true;
+                return;
+            }
             if plan.failed {
                 // Tried again when the bytes change; the facts stay old, so
                 // a change is still seen as one.
                 st.parser_state = None;
                 st.waiting = false;
-                st.failed = plan.facts;
+                st.unread = plan.facts;
                 if plan.tail.is_some() {
                     st.tail = plan.tail;
                 }
                 return;
             }
-            st.failed = None;
-            let recent = plan
-                .facts
-                .is_some_and(|f| i128::from(now_ms()) * 1_000_000 - f.mtime_ns < KEEP_STATE_NS);
+            st.unread = None;
+            let recent = plan.facts.is_some_and(|f| {
+                i128::from(self.config.clock.now().as_millisecond()) * 1_000_000 - f.mtime_ns
+                    < KEEP_STATE_NS
+            });
             st.facts = plan.facts;
-            st.parsed_upto = plan.parse_pos.min(plan.size);
-            st.parsed = true;
+            st.parsed_upto = if has_reading(plan.origin) {
+                plan.parse_pos.min(plan.size)
+            } else {
+                0
+            };
+            st.parsed = has_reading(plan.origin) && (!plan.parser_deferred || st.parsed);
             st.waiting = plan.waiting;
             st.parser_state = if recent { plan.parser_state } else { None };
             st.tail = plan.tail;
         }
     }
 
-    /// Runs passes until stopped: after any change under a watched
-    /// location, and at least every `rescan_every`.
+    /// Runs passes after any change under a watched location and at least
+    /// every `rescan_every`, until stopped or, for [`Lifetime::UntilIdle`],
+    /// until a pass ends with no work pending and nothing queued. Without
+    /// sources (`reads_sources` off) nothing is watched: the first pass
+    /// parses and derives what the archive stores, and later passes run only
+    /// for imports.
     pub fn run(
         &mut self,
         tx: Sender<LoopMsg>,
         rx: &Receiver<LoopMsg>,
         status: &Arc<Mutex<LoopStatus>>,
+        lifetime: Lifetime,
         ready: impl FnOnce(),
-    ) -> Result<(), EngineError> {
+    ) -> Result<RunSummary, EngineError> {
         let busy = |busy: bool| {
             if let Ok(mut s) = status.lock() {
                 s.busy = busy;
             }
         };
-        let mut watcher = watch::Roots::new(&self.config, tx.clone())?;
+        self.watcher = if self.config.reads_sources {
+            Some(watch::Roots::new(&self.config, tx.clone())?)
+        } else {
+            None
+        };
+        self.wake = Some(tx.clone());
         drop(tx);
         ready();
+        let mut summary = RunSummary::default();
         let mut discover = true;
         let mut discovered_at = Instant::now();
+        let mut changed = std::collections::BTreeSet::new();
+        let mut watch_errors = Vec::new();
         loop {
-            watcher.refresh(&self.config)?;
+            discover |= self.take_watched(&mut changed, &mut watch_errors);
             discover |= discovered_at.elapsed() >= self.config.rescan_every;
             if discover {
                 discovered_at = Instant::now();
             }
             busy(true);
             let pending;
-            let finished = match self.one_pass(discover) {
-                Ok(pass) => {
+            let mut finished = match self.one_pass(discover, &std::mem::take(&mut changed)) {
+                Ok((pass, _)) => {
                     pending = pass.capture_pending;
                     pass
                 }
                 Err(e) => {
-                    pending = self.exporter.pending();
-                    let mut pass = status
-                        .lock()
-                        .map(|s| s.last_pass.clone())
-                        .unwrap_or_default();
-                    pass.errors = vec![e.to_string()];
-                    pass.capture_pending = pending;
-                    pass
+                    pending = self.captures.pending();
+                    Pass {
+                        full_scans: u64::from(discover && self.config.reads_sources),
+                        errors: vec![e.to_string()],
+                        capture_pending: pending,
+                        ..Pass::default()
+                    }
                 }
             };
+            finished.errors.append(&mut watch_errors);
+            summary.passes += 1;
+            summary.work.add(finished.clone());
             if let Ok(mut s) = status.lock() {
-                s.last_pass = finished;
+                s.full_scans += finished.full_scans;
+                if finished.full_scans > 0
+                    || finished.inputs_seen > 0
+                    || finished.inputs_changed > 0
+                    || s.last_pass.capture_pending
+                    || finished.capture_pending
+                    || !finished.errors.is_empty()
+                    || s.passes == 0
+                {
+                    s.last_pass = finished;
+                }
                 s.passes += 1;
                 s.busy = pending;
             }
             discover = false;
+            if lifetime == Lifetime::UntilIdle {
+                // Work queued while the pass ran (imports, changes the
+                // watcher saw) is taken now; with none, the loop is idle. A
+                // capture that continues gets `live_every` before the next pass.
+                let mut more = pending;
+                if pending {
+                    match rx.recv_timeout(self.config.live_every) {
+                        Ok(LoopMsg::Stop) | Err(RecvTimeoutError::Disconnected) => {
+                            return Ok(self.stopped(summary));
+                        }
+                        Ok(message) => {
+                            self.answer(message, &busy, pending, &mut summary);
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                    }
+                }
+                loop {
+                    match rx.try_recv() {
+                        Ok(LoopMsg::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            return Ok(self.stopped(summary));
+                        }
+                        Ok(message) => {
+                            more = true;
+                            self.answer(message, &busy, pending, &mut summary);
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    }
+                }
+                more |= self.take_watched(&mut changed, &mut watch_errors);
+                more |= !changed.is_empty();
+                if !more {
+                    return Ok(self.stopped(summary));
+                }
+                continue;
+            }
             let delay = if pending {
-                Duration::ZERO
+                self.config.live_every
             } else {
-                self.config.rescan_every
+                self.config.live_every.min(
+                    self.config
+                        .rescan_every
+                        .saturating_sub(discovered_at.elapsed()),
+                )
             };
             let mut msg = rx.recv_timeout(delay);
             let burst = Instant::now();
             loop {
                 match msg {
                     Ok(LoopMsg::Stop) | Err(RecvTimeoutError::Disconnected) => {
-                        self.exporter = Captures::default();
-                        return Ok(());
+                        return Ok(self.stopped(summary));
                     }
-                    Ok(LoopMsg::Import { paths, reply }) => {
-                        busy(true);
-                        let report = self.import(&paths).map_err(|e| e.to_string());
-                        busy(pending);
-                        let _ = reply.send(report);
-                        discover = true;
+                    Ok(message) => {
+                        self.answer(message, &busy, pending, &mut summary);
                     }
-                    Ok(LoopMsg::Excise { request, reply }) => {
-                        busy(true);
-                        let done = self.excise(request);
-                        busy(pending);
-                        let _ = reply.send(done);
-                        discover = true;
-                    }
-                    Ok(LoopMsg::Changed) => discover = true,
-                    Err(RecvTimeoutError::Timeout) => discover |= !pending,
+                    Err(RecvTimeoutError::Timeout) => {}
                 }
                 if burst.elapsed() > COALESCE {
                     break;
@@ -1047,21 +1551,93 @@ impl Engine {
             }
         }
     }
-}
 
-fn record_turn(
-    turn: Result<
-        polylogue_store::tool_databases::CaptureTurn,
-        polylogue_store::tool_databases::ExportError,
-    >,
-    pass: &mut Pass,
-) {
-    match turn {
-        Ok(turn) => {
-            pass.capture_pending = turn.pending;
-            pass.errors.extend(turn.errors);
+    /// Moves what the watcher saw into `changed`; true when it asks for a
+    /// full scan. Without sources there is no watcher and nothing changes.
+    fn take_watched(
+        &mut self,
+        changed: &mut std::collections::BTreeSet<PathBuf>,
+        errors: &mut Vec<String>,
+    ) -> bool {
+        let Some(watcher) = self.watcher.as_mut() else {
+            return false;
+        };
+        let mut full = false;
+        if let Err(error) = watcher.refresh(&self.config) {
+            errors.push(format!("source watch: {error}"));
+            full = true;
         }
-        Err(e) => pass.errors.push(format!("SQLite capture: {e}")),
+        let changes = watcher.take();
+        errors.extend(changes.errors);
+        full |= changes.full;
+        changed.extend(
+            changes
+                .paths
+                .into_iter()
+                .map(|path| collect::database_path(&self.config, &path).unwrap_or(path)),
+        );
+        full
+    }
+
+    /// Answers one message other than `Stop`, adding an import's work to
+    /// `summary`.
+    fn answer(
+        &mut self,
+        message: LoopMsg,
+        busy: &impl Fn(bool),
+        pending: bool,
+        summary: &mut RunSummary,
+    ) {
+        let LoopMsg::Import {
+            paths,
+            from_archive,
+            dry_run,
+            authorship,
+            parent,
+            reply,
+        } = message
+        else {
+            return;
+        };
+        // Queue waits belong to the producing transport. After
+        // admission the engine owns completion and its ACK.
+        let report = parent
+            .as_ref()
+            .map_or(Ok(()), |parent| parent.check())
+            .map_err(ImportFailure::Parent)
+            .and_then(|()| {
+                busy(true);
+                let report = self
+                    .import_with_options(
+                        &paths,
+                        &ImportOptions {
+                            authorship: Some(authorship),
+                            from_archive,
+                            dry_run,
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(|e| ImportFailure::Import(e.to_string()));
+                busy(pending);
+                report
+            });
+        summary.imports += 1;
+        match &report {
+            Ok(report) => summary.work.add(report.pass.clone()),
+            Err(ImportFailure::Import(error)) => {
+                summary.work.errors.push(format!("import: {error}"))
+            }
+            Err(ImportFailure::Parent(_)) => {}
+        }
+        let _ = reply.send(report);
+    }
+
+    fn stopped(&mut self, summary: RunSummary) -> RunSummary {
+        self.captures = Databases::default();
+        self.wake = None;
+        self.watcher = None;
+        self.pass_open = false;
+        summary
     }
 }
 

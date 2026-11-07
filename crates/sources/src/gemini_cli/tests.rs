@@ -65,10 +65,17 @@ fn a_turn_with_a_tool_call_and_its_result() {
         .find(|e| e.kind == "notice")
         .unwrap();
     assert_eq!(notice.after.as_ref().unwrap().native().as_str(), "g1");
-    assert!(
-        step.counts.unread_fields.is_empty(),
-        "{:?}",
-        step.counts.unread_fields
+    assert_eq!(
+        step.counts.unread_fields,
+        std::collections::BTreeMap::from([
+            ("gemini.thoughts[].timestamp".into(), 1),
+            ("gemini.tokens.tool".into(), 1),
+            ("gemini.tokens.total".into(), 1),
+            ("gemini.toolCalls[].description".into(), 1),
+            ("gemini.toolCalls[].displayName".into(), 1),
+            ("gemini.toolCalls[].renderOutputAsMarkdown".into(), 1),
+            ("gemini.toolCalls[].timestamp".into(), 1),
+        ])
     );
     assert_eq!(step.counts.records, 4);
 }

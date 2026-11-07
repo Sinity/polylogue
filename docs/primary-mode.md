@@ -20,10 +20,88 @@ Capture is identical in both modes ([capture.md](capture.md)); parsing, the pars
 
 Before writing frame bytes, Polylogue checks Sinex's producer welcome with an
 empty hello. This checks the protocol and sealing configuration before its
-producer-owned kinds exist. It then registers its ten `polylogue.*` declarations
+producer-owned kinds exist. It then registers its `polylogue.*` declarations
 and requires the acknowledgment to name their exact definition hashes before
 sending materials or events. Each event selects its declaration by name and
-version. A refused hello returns Sinex's reason.
+version. A refused hello or frame returns Sinex's reason. Retrying an operation
+with a durable refusal returns the same reason from its verified receipt.
+
+A complete producer acknowledgment can carry no admitted-event position: an
+empty frame, a repeated event or kind registration may admit no new events;
+a replay may archive readings without admitting replacements. Polylogue keeps
+that absent position in the original receipt. New admissions and replacements
+require their event position. A receipt alone never advances the local index.
+Ungrouped metadata operations can settle on their durable complete receipt.
+A group holding original source bytes also waits until the local index has
+applied a complete prefix in the same scope through an owner head observed
+after the acknowledgment. Sinex reads that head from its committed counter.
+A head observed before publication, or an incomplete prefix, retains the group.
+
+Each complete stream position applies atomically. If a later position fails,
+the earlier committed prefix stays visible and notifies readers. The writer
+reports the failure with its last applied position before sending that cue;
+a failed attempt with no committed progress produces no commit notification.
+The capture loop returns queued writer errors on continuing passes even when
+there are no new inputs to parse, while keeping outstanding custody pending.
+
+Declarations validate the complete record and describe the outer projected
+fields used by privacy hints and time rules. The complete record remains guarded;
+the outer fields let Sinex join the record to its other domains.
+
+Each distinct typed link statement keeps its own source contribution. A later
+statement without a branch point therefore cannot replace an earlier statement
+that supplies it; the index merges them into one logical relation. Confirmed
+export events retain the identities assigned before publication, even when
+JSON object keys return in a different order. The original callback body and
+its seal remain unchanged.
+
+The stream follower alone reads and acknowledges confirmed pages. It sends each
+page to the writer and acknowledges it after durable application. Preparing a
+write does not start another stream read on the writer thread. Explicit
+synchronization asks the follower for a page, drains ready captures on the writer,
+then asks the follower again so newly prepared capture products can be applied.
+
+A durable capture can remain pending while its confirmed input reaches the local
+index. The capture loop reports this as pending progress and resumes the original
+acquisition; it is complete only after confirmed application. Before planning
+another acquisition, the sampler adopts the confirmed input and reading cursor.
+One transition adopts logical progress for watched inputs and exact database
+input IDs. It keeps parser continuation only at the same input, origin, chain
+and reading cursor, invalidates cached tail bytes when their stored range changes,
+and retires working custody only when the matching observation is covered.
+A pending capture's raw byte cursor cannot advance that logical source state.
+Confirmed application can retire the producer body before the capture loop
+receives its result. The loop then adopts the exact confirmed input, file facts
+and covered chain through that acquisition's actual range. A partial confirmed
+prefix leaves the remaining bytes and reading pending; the next normal plan
+continues from that prefix. Fully confirmed parsing needs no extra pass.
+When a pass waits for a tool database, its later turns revisit that pass's
+provider paths. Database completion cannot clear still-pending file capture.
+Before assigning source revisions, the writer compares the capture with the
+completed confirmed-stream history. If an unreadable record might describe an
+input, new source revisions remain pending. Already readable facts remain available.
+Identity claims sampled before provider I/O are checked against their original
+scoped history cut. Later confirmations do not rebind that basis or turn missing
+evidence into an alias claim. Parsed facts use the acquired body's original byte
+range for their material anchors, even when those bytes add no new logical
+extent. Facts outside that range need an existing confirmed source anchor.
+Parsing an already confirmed chain prepares reading products directly, using the
+exact input, origin, chain, byte range and material anchors. It does not sample a
+new provider head; several database inputs can share one provider path. Inline
+attachments decoded by that parser retain their own blob preparation. Durable
+product preparation advances the sampler's cached parser state only after the
+matching reading version and cursor reach the confirmed index.
+A batch waits for active local database work. Deferred parsing is local work,
+not a confirmation wait: successful parsing can start a database read in the
+same batch, while a failed parse stops that attempt. Errors in that attempt do
+not clear another input's confirmation wait. Once only confirmed application
+remains, the batch returns pending progress so its caller can wait for stream events.
+Later batches consult the original producer custody until it is retired; an
+unchanged database does not need another physical read to report that wait.
+
+Confirmed payloads are checked against their current immutable kind declaration
+and payload digest. The saved native context carries that digest and the
+owner-provided source and producer origin.
 
 Message and tool-call declarations request no Sinex text index. Their field
 hints describe defaults for operator-configured output rules; they impose no
@@ -40,6 +118,25 @@ What a host keeps locally in primary mode:
 - the producer client's spool, where bytes and prepared writes wait until Sinex acknowledges them; it sits under Sinex's store root on the same host. Material bytes are acknowledged before the events that cite them.
 
 There is no local ledger of inputs, no local segment log and no send cursor. The Sinex adapter is a Cargo feature outside the default build.
+
+### Online backup
+
+Polylogue participates in Sinex's producer backup cut. Before Sinex fixes its
+core position, the producer freezes transmission through durable acknowledgment
+and freezes confirmed-stream spool retirement. Capture continues preparing new
+operations. After the core cut, Polylogue pins the accepted spool operations
+under the queue mutex, including acquisition groups, original encoded frame and
+body bytes, immutable identities and receipts. It copies and hashes those pinned
+files outside the mutex into an immutable producer artifact. The coordinator
+acquires those bytes before releasing the freeze through Sinex's participant
+protocol. A cancelled request stops pinning and copying and discards its partial
+artifact. Rebuildable indexes and unpublished temporary operations are excluded.
+
+The producer artifact restores under the same producer identity alongside its
+paired core cut. Receipts in that artifact precede the core cut; operations
+without receipts retry their original identities. A later live spool or a
+producer label alone cannot replace this artifact. A missing participant leaves
+producer custody incomplete.
 
 **Reads see what Sinex committed.** A write becomes visible to queries once its record arrives on the confirmed stream and is applied. The stale-base check of an authored write is the one exception: it runs against the applied position plus this host's prepared writes not yet confirmed, so two quick revisions on one host (an MCP memory `create` followed by `str_replace`) see each other ([assertions.md#currency](assertions.md#currency)).
 
@@ -60,6 +157,7 @@ When Sinex is unreachable or refuses this producer:
 - Polylogue never falls back to standalone, whatever the cause, a broken configuration file included.
 
 **Status in primary** adds a section: the mode, the Sinex endpoint and this host's producer identity; reachability and the time of the last acknowledgement; prepared materials and writes waiting (count and bytes); the stream position applied and its lag; chains parsed but not yet confirmed.
+Publication and read failures remain distinct observations in that status. A successful confirmed read does not clear an outstanding publication failure; only a successful publication retry clears it. Both reasons remain visible when both operations fail.
 
 ## Rebuild and parser upgrades
 

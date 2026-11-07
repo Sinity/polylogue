@@ -10,12 +10,14 @@
 extern crate self as polylogue_sources;
 
 pub mod ai_studio;
+pub mod aider;
 pub mod antigravity;
 pub mod browser_capture;
 pub mod chatgpt;
 pub mod claude_ai;
 pub mod claude_code;
 pub mod codex;
+pub mod codex_cloud;
 pub mod document;
 pub mod export;
 pub mod fields;
@@ -26,14 +28,17 @@ pub mod grok_cli;
 pub mod hermes;
 pub mod hook_spool;
 pub mod lines;
+pub mod locations;
+pub mod older_archive_rows;
 pub mod openai_chat;
 pub mod openrouter;
 pub mod origin;
 pub mod otel_genai;
 pub mod parse;
-pub mod polylogue_export;
+pub mod polylogue_bundle;
 mod records;
 pub mod repo_lookup;
+pub mod row_dump;
 pub mod schema;
 pub mod time;
 
