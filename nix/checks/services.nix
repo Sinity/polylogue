@@ -53,7 +53,6 @@ pkgs.testers.runNixOSTest {
     environment.systemPackages = [ pkgs.python3 ];
   };
   testScript = ''
-    import json
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.wait_for_unit("user@1000.service")
