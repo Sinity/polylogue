@@ -93,11 +93,11 @@ fn canonical_query_and_typed_about_share_forks_withdrawal_and_snapshot_retiremen
     );
     let mut associated = Vec::new();
     let flow = pinned
-        .visit_assertions_linked(
+        .visit_assertion_references_linked(
             &Reference::parse(about.1).unwrap(),
             &[polylogue_model::assertion::LinkRole::About],
             |row| {
-                associated.push(row.fact.id);
+                associated.push(row.revision.expect("linked revisions are exact"));
                 Ok(std::ops::ControlFlow::Continue(()))
             },
         )

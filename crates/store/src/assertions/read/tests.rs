@@ -495,6 +495,22 @@ fn expiry_metadata_does_not_materialize_the_assertion_body() {
             )
             .unwrap()
     );
+    let mut linked = Vec::new();
+    let _ = reader
+        .visit_assertion_references_linked(
+            &Reference::parse("repo:morrow").unwrap(),
+            &[LinkRole::About],
+            |revision| {
+                linked.push(revision);
+                Ok(std::ops::ControlFlow::Continue(()))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        linked,
+        [reference.clone()],
+        "linked metadata must not decode the malformed body"
+    );
     assert!(reader.assertion(&reference).is_err());
     assert!(
         !reader

@@ -41,7 +41,7 @@ A pack turns a selection into context for a recipient and a purpose: `polylogue 
 A pack holds:
 - exact passages, and the assertions on them with author and judgment state;
 - open questions and problems, and whatever a current assertion `blocks`;
-- **contrary evidence:** every assertion that `challenges` or `corrects` an included item is included with it;
+- **contrary evidence:** current operator or operator-accepted agent assertions with a `challenges` or `corrects` link to an included item precede its text; other authors' contrary assertions are counted with references and inspection commands, without inlining their bodies;
 - the repository state of the selected sessions ("HEAD is N commits past <anchor>");
 - applicable methods, as nominations with their assessment ([assertions.md#memory](assertions.md#memory));
 - the **entry map**, last: what is whole, what is shortened, what can be expanded and with which command, what was left out and why.

@@ -304,7 +304,7 @@ fn operator_note_ids(
     .map(|k| format!("kind:{}", k.as_str()))
     .join(" OR ");
     let mut conditions = format!(
-        "{} ({kinds}) (author:operator OR judged:accepted)",
+        "{} ({kinds}) (author:operator OR (agent:true judged:accepted))",
         assertions::about(&targets)
     );
     if let Some(after) = after_seq {
@@ -332,17 +332,22 @@ fn eligible_note(
     {
         return Ok(None);
     }
-    let Some(note) = reader.assertion(reference)? else {
+    let Some(id) = &reference.revision else {
         return Ok(None);
     };
-    let eligible = note.fact.author == polylogue_model::Author::Operator
-        || (note.fact.author.is_agent()
-            && assertions::count(
-                reader,
-                &format!("id:{} judged:accepted", assertions::quoted(&note.fact.id)),
-                context,
-            )? > 0);
-    Ok(eligible.then_some(note))
+    let eligible = assertions::count(
+        reader,
+        &format!(
+            "id:{} (author:operator OR (agent:true judged:accepted))",
+            assertions::quoted(id)
+        ),
+        context,
+    )? > 0;
+    if eligible {
+        reader.assertion(reference)
+    } else {
+        Ok(None)
+    }
 }
 
 /// Bodies of the eligible notes on an already selected session.
@@ -415,7 +420,7 @@ fn assertion_item(
     let reference = Reference::parse(&format!("assertion:{}@{}", note.fact.root, note.fact.id))
         .map_err(|error| StoreError::Invalid(error.to_string()))?;
     let mut contrary = Vec::new();
-    let _ = reader.visit_assertions_linked(
+    let _ = reader.visit_assertion_references_linked(
         &reference,
         &[LinkRole::Challenges, LinkRole::Corrects],
         |assertion| {
@@ -449,7 +454,17 @@ fn assertion_item(
         note.fact.via,
         judgment(note)?
     );
-    for correction in contrary {
+    let mut not_inlined = Vec::new();
+    for revision in contrary {
+        if !reader.assertion_is_unexpired(&revision, context.clock.now.into())? {
+            continue;
+        }
+        let Some(correction) = eligible_note(reader, &revision, context)? else {
+            let reference = format!("assertion:{revision}");
+            refs.push(reference.clone());
+            not_inlined.push(reference);
+            continue;
+        };
         let state = judgment(&correction)?;
         let _ = write!(
             provenance,
@@ -471,6 +486,18 @@ fn assertion_item(
             "assertion:{}@{}",
             correction.fact.root, correction.fact.id
         ));
+    }
+    if !not_inlined.is_empty() {
+        let _ = write!(
+            provenance,
+            "; contrary assertions not inlined: {}; inspect: {}",
+            not_inlined.len(),
+            not_inlined
+                .iter()
+                .map(|reference| format!("`polylogue read {reference}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     text.push_str(&note_line(note));
     refs.push(reference.to_string());

@@ -59,13 +59,14 @@ impl Reader<'_> {
         Ok(value)
     }
 
-    /// Streams all current assertions with an exact link in `roles`, including
-    /// every conflicting head. False currency never becomes a chosen winner.
-    pub fn visit_assertions_linked(
+    /// Streams current exact assertion references with a link in `roles`, including
+    /// every conflicting head, without materializing bodies. False currency
+    /// never becomes a chosen winner.
+    pub fn visit_assertion_references_linked(
         &self,
         reference: &Reference,
         roles: &[LinkRole],
-        mut visit: impl FnMut(Assertion) -> Result<ControlFlow<()>>,
+        mut visit: impl FnMut(RevisionReference) -> Result<ControlFlow<()>>,
     ) -> Result<ControlFlow<()>> {
         let conn = self.conn()?;
         let source = Source::reading(conn)?;
@@ -87,8 +88,7 @@ impl Reader<'_> {
                 .assertion_revision_currency(&revision)?
                 .is_some_and(|state| state.current)
             {
-                let fact = get(conn, &id)?.ok_or_else(|| StoreError::NotFound(id))?;
-                if visit(fact)?.is_break() {
+                if visit(revision)?.is_break() {
                     self.check()?;
                     return Ok(ControlFlow::Break(()));
                 }
