@@ -161,6 +161,13 @@ fn distinct_near_counts_the_answer_rows_without_vectors() {
     let answer = run_q(&w, request).unwrap();
     assert_eq!(answer["count"], 4, "{answer}");
     assert_eq!(answer["unknown"]["near"], answer["count"], "{answer}");
+    let mut limited = ask("kind:* similar:dates | distinct | limit 2");
+    limited.fields = &fields;
+    limited.embeddings = true;
+    limited.near = Some(&near);
+    let limited = run_q(&w, limited).unwrap();
+    assert_eq!(limited["count"], 2, "{limited}");
+    assert_eq!(limited["unknown"]["near"], 2, "{limited}");
     assert!(
         answer["rows"]
             .as_array()

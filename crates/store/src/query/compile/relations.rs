@@ -847,6 +847,9 @@ impl Relation {
     fn private_columns(&self) -> Vec<String> {
         let mut names = std::collections::BTreeSet::new();
         names.insert("_pk".to_owned());
+        if self.program.counts_near {
+            names.insert("_near".into());
+        }
         if self.sources.iter().any(|source| source.prefix.is_empty())
             && matches!(self.program.row_basis, RowBasis::Native { .. })
         {
