@@ -41,6 +41,14 @@ pub(crate) fn start_runtime(
 pub(crate) struct ReadObservation {
     pub limit: polylogue_store::read::limit::ReadLimit,
     pub owner: std::thread::ThreadId,
+    /// Checkout evidence survives release before the observing thread runs.
+    pub acquired: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ReadObservation {
+    pub(crate) fn reader_acquired(&self) -> bool {
+        self.acquired.load(std::sync::atomic::Ordering::Acquire)
+    }
 }
 
 impl std::ops::Deref for ReadObservation {

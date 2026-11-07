@@ -636,17 +636,26 @@ pub(crate) fn handle_with_invocation(
     invocation: &crate::operation::Invocation,
 ) -> Answer<Value> {
     #[cfg(test)]
+    let reader_acquired = Arc::new(AtomicBool::new(false));
+    #[cfg(test)]
     if let Some(sender) = d.read_limits.lock().unwrap().as_ref() {
         let _ = sender.send(crate::test_daemon::ReadObservation {
             limit: limit.clone(),
             owner: std::thread::current().id(),
+            acquired: Arc::clone(&reader_acquired),
         });
     }
     if let Err(error) = invocation.check_parent_admission() {
         return store_error(&error);
     }
     super::execution::run(request, limit, |request| {
-        handle_inner(request, d, invocation)
+        handle_inner(
+            request,
+            d,
+            invocation,
+            #[cfg(test)]
+            &reader_acquired,
+        )
     })
 }
 
@@ -654,6 +663,7 @@ fn handle_inner(
     request: Request,
     d: &Daemon,
     invocation: &crate::operation::Invocation,
+    #[cfg(test)] reader_acquired: &AtomicBool,
 ) -> Answer<Value> {
     if let Err(failure) = accepting(d) {
         return failure.answer();
@@ -700,6 +710,8 @@ fn handle_inner(
         }
         Err(e) => return store_error(&e),
     };
+    #[cfg(test)]
+    reader_acquired.store(true, Ordering::Release);
     let operation = if matches!(
         &request,
         Request::Query { .. }

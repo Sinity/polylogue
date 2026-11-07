@@ -68,12 +68,10 @@ fn cancelled_read(disconnect: bool, name: &str) {
         .unwrap();
         let limit = reads.recv_timeout(Duration::from_secs(5)).unwrap();
         let until = std::time::Instant::now() + Duration::from_secs(5);
-        while daemon.daemon.reads.checked_out_by(limit.owner) == 0
-            && std::time::Instant::now() < until
-        {
+        while !limit.reader_acquired() && std::time::Instant::now() < until {
             std::thread::yield_now();
         }
-        let started = daemon.daemon.reads.checked_out_by(limit.owner) > 0;
+        let started = limit.reader_acquired();
         let acquisition_check = format!("{:?}", limit.check());
         let acquisition_slots = daemon.daemon.reads.checked_out();
         let mut acquisition_reply = Vec::new();
@@ -225,7 +223,8 @@ fn stdio_tool_body_preserves_the_explicit_shared_deadline() {
 }
 
 fn context_deadline(name: &str) {
-    let daemon = test_daemon::start_with_workers("MCP context deadline", 4);
+    let mut daemon = test_daemon::start_with_workers("MCP context deadline", 4);
+    daemon.pause_signals();
     let lock = std::fs::File::open(daemon.daemon.archive.archive_db()).unwrap();
     lock.lock().unwrap();
     let reads = daemon.watch_reads();
@@ -235,7 +234,11 @@ fn context_deadline(name: &str) {
         .unwrap();
     let mut input = BufReader::new(client.try_clone().unwrap());
     let archive = Archive::at(&daemon.daemon.archive.root);
-    let (answer, started, owner_slots, pool_slots) = std::thread::scope(|scope| {
+    let (answer, started, acquisition, owner_slots, pool_slots) = std::thread::scope(|scope| {
+        let _cleanup = PeerCleanup {
+            socket: client.try_clone().unwrap(),
+            lock: Some(&lock),
+        };
         let output = server.try_clone().unwrap();
         let service = scope.spawn(|| serve(BufReader::new(server), output, &archive));
         writeln!(client, "{}", super::initialize()).unwrap();
@@ -252,13 +255,19 @@ fn context_deadline(name: &str) {
         .unwrap();
         let limit = reads.recv_timeout(Duration::from_secs(5)).unwrap();
         let until = std::time::Instant::now() + Duration::from_secs(2);
-        while daemon.daemon.reads.checked_out_by(limit.owner) == 0
-            && limit.check().is_ok()
-            && std::time::Instant::now() < until
+        while !limit.reader_acquired() && limit.check().is_ok() && std::time::Instant::now() < until
         {
             std::thread::yield_now();
         }
-        let started = daemon.daemon.reads.checked_out_by(limit.owner) > 0;
+        let started = limit.reader_acquired();
+        let acquisition = format!(
+            "request={params}, check={:?}, remaining={:?}, owner_slots={}, pool_slots={}, limit={:?}",
+            limit.check(),
+            limit.remaining(),
+            daemon.daemon.reads.checked_out_by(limit.owner),
+            daemon.daemon.reads.checked_out(),
+            limit.limit,
+        );
         line.clear();
         let answer = input.read_line(&mut line).map(|_| line);
         // The transport timeout can win the race with daemon cleanup. Keep the
@@ -272,12 +281,15 @@ fn context_deadline(name: &str) {
         let owner_slots = daemon.daemon.reads.checked_out_by(limit.owner);
         let pool_slots = daemon.daemon.reads.checked_out();
         // Release fixture holds before assertions so a failing regression also joins.
-        drop(lock);
-        client.shutdown(Shutdown::Both).unwrap();
+        lock.unlock().unwrap();
+        let _ = client.shutdown(Shutdown::Both);
         let _ = service.join().unwrap();
-        (answer, started, owner_slots, pool_slots)
+        (answer, started, acquisition, owner_slots, pool_slots)
     });
-    assert!(started, "MCP {name} never acquired its reader");
+    assert!(
+        started,
+        "MCP {name} never acquired its reader: {acquisition}, reply={answer:?}"
+    );
     assert!(
         owner_slots == 0,
         "MCP {name} retained its daemon reader after the deadline: owner_slots={owner_slots}, pool_slots={pool_slots}"

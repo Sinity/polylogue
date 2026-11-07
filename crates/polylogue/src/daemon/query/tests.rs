@@ -1003,15 +1003,17 @@ fn errors_point_at_the_problem_and_offer_a_fix() {
             .units_accepting("error")
             .contains(&"tool_calls.outcome".into())
     );
-    // Ordinary words remain searches; an explicit unit typo carries a runnable correction.
-    let f = run_q(&w, ask("messges where cargo")).unwrap_err();
-    let detail = query_failure_detail(&f, query_language::ErrorKind::InvalidQuery, 0);
-    let correction = detail["suggestion"].as_str().unwrap();
-    assert_same_question(correction, "messages where cargo");
-    assert!(run_q(&w, ask(correction)).is_ok());
+    // Unit typos carry runnable corrections; quoted words remain literal searches.
+    for text in ["messges where cargo", "messges cargo"] {
+        let f = run_q(&w, ask(text)).unwrap_err();
+        let detail = query_failure_detail(&f, query_language::ErrorKind::NotAQuery, 0);
+        let correction = detail["suggestion"].as_str().unwrap();
+        assert_same_question(correction, "messages where cargo");
+        assert!(run_q(&w, ask(correction)).is_ok());
+    }
     for words in [
         "brief yesterday",
-        "messges cargo",
+        "\"messges\" cargo",
         "bug fix",
         "date parsing",
     ] {
