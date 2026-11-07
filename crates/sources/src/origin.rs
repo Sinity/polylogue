@@ -154,10 +154,18 @@ pub struct Collector {
     pub setting: Option<&'static str>,
     /// Run outside the loop thread when requests can wait on another process.
     pub background: bool,
+    /// Settles retained inputs against archive acceptance before fetching more.
+    /// The callback verifies bytes, not parser completion or provider presence.
+    pub settle: Option<fn(&CollectorPaths<'_>, &CollectorAcceptance<'_>) -> Result<(), String>>,
     /// Writes new inputs into the spool and returns the errors for the pass.
     /// Background collectors check the stop flag between files.
     pub sync: fn(&CollectorPaths<'_>, &std::sync::atomic::AtomicBool) -> Vec<String>,
 }
+
+/// Whether the exact complete input bytes have reached the archive. In primary
+/// mode this means confirmed application, not merely durable producer preparation.
+pub type CollectorAcceptance<'a> =
+    dyn Fn(&Path, polylogue_model::BlobHash, u64) -> Result<bool, String> + 'a;
 
 /// Configured directories a collector reads from and writes to.
 pub struct CollectorPaths<'a> {

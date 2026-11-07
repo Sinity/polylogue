@@ -169,6 +169,7 @@ Hand-made Markdown chat dumps are not a structure: a flattened transcript is a d
 AI Studio stores its prompts in Google Drive, which is a known location like a tool's home directory.
 
 - The collector follows Drive's changes feed from a start page token, not folder relisting, and writes every Drive revision of each prompt, oldest first, into the spool.
+- A fetched revision has immutable pending bytes until the archive accepts the exact complete body at that prompt's stable input path. The committed revision cursor advances after acceptance; in primary mode, producer preparation remains pending until confirmed application. A retry or restart republishes the same retained bytes. Saving acceptance precedes pending-body cleanup, which leaves the watched prompt present and creates no source-gone observation. The predecessor's download cursor retains its last local body without assuming a revision identity, obtains archive acceptance, then enumerates retained Drive revisions from the beginning under this rule.
 - `driveDocument` and `driveImage` attachments are fetched by Drive ID as attachment bytes. Revision lineage and `branchParent` edges are recorded; a Drive mode that cannot give lineage fails closed.
 - The collector is on whenever the user has authorized a token; the one-time OAuth consent is the only gate, because a known location is never dark behind a setting. Without a token, status shows "not authorized" with the command to run.
 - A prompt deleted in Drive keeps its archived revisions and is marked gone.

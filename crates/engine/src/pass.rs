@@ -151,6 +151,10 @@ impl Engine {
                 state_dir: &state_dir,
                 spool: &spool,
             };
+            if let Err(error) = self.settle_collector(origin.name, collector, &paths) {
+                errors.push(format!("{} collector: {error}", origin.name));
+                continue;
+            }
             errors.extend(self.collectors.run(origin.name, collector, &paths));
         }
         errors
