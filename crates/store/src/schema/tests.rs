@@ -20,20 +20,17 @@ fn every_database_starts_at_its_current_version() {
     assert_eq!(ARCHIVE_VERSION, 3);
     assert_eq!(INDEX_VERSION, 3);
     assert_eq!(ARCHIVE_MIGRATIONS.len(), 2);
-    for create in [
-        ensure_archive as fn(&Connection) -> Result<()>,
-        ensure_index,
-        ensure_primary_index,
-        ensure_embeddings,
+    for (create, expected) in [
+        (
+            ensure_archive as fn(&Connection) -> Result<()>,
+            ARCHIVE_VERSION,
+        ),
+        (ensure_index, INDEX_VERSION),
+        (ensure_primary_index, INDEX_VERSION),
+        (ensure_embeddings, 1),
     ] {
         let conn = Connection::open_in_memory().unwrap();
         create(&conn).unwrap();
-        let expected =
-            if std::ptr::fn_addr_eq(create, ensure_embeddings as fn(&Connection) -> Result<()>) {
-                1
-            } else {
-                2
-            };
         assert_eq!(version(&conn).unwrap(), expected);
     }
 }
@@ -51,7 +48,7 @@ fn an_index_at_another_version_is_refused_without_removing_rows() {
         ensure_index(&conn),
         Err(StoreError::IndexVersion {
             found: 17,
-            wanted: 2
+            wanted: INDEX_VERSION
         })
     ));
     let conn = Connection::open_in_memory().unwrap();
@@ -226,6 +223,8 @@ fn read_indexes_are_added_in_place_and_survive_reopen() {
         .unwrap();
     conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
         .unwrap();
+    // Read views are part of the schema; only read indexes may be absent.
+    conn.execute_batch(READ_INDEXES).unwrap();
     assert!(same_index_schema_in(&conn, false).unwrap());
     ensure_index(&conn).unwrap();
     let base = Connection::open_in_memory().unwrap();
