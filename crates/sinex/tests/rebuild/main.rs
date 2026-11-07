@@ -33,23 +33,79 @@ impl Running {
         let local = ReadPool::open(archive).and_then(|pool| {
             let reader = pool.reader()?;
             reader.query(
-                "SELECT key,value FROM meta WHERE key IN ('confirmed_position','confirmed_scope','confirmed_replay') ORDER BY key",
+                "SELECT 'meta.'||key AS key,value FROM meta WHERE key IN ('confirmed_position','confirmed_scope','confirmed_replay','generation') UNION ALL SELECT 'source_meta.'||key,value FROM source_meta WHERE key='write_counter' ORDER BY key",
                 &[],
             )
         });
         let pending = polylogue_store::primary::Sinex::pending_captures(sinex).map(|captures| {
+            let mut groups = BTreeMap::<String, usize>::new();
+            for capture in &captures {
+                if let polylogue_store::primary::Capture::Input(input) = &capture.captured
+                    && let Some(group) = &input.group
+                {
+                    *groups.entry(group.identity.clone()).or_default() += 1;
+                }
+            }
             captures
                 .into_iter()
-                .map(|capture| {
-                    (
-                        capture.identity,
-                        capture.material.map(|material| material.id),
-                    )
+                .map(|capture| match capture.captured {
+                    polylogue_store::primary::Capture::Input(input) => {
+                        let current = (|| -> polylogue_store::Result<serde_json::Value> {
+                            let source = input.basis.as_ref().map(|basis| basis.source.clone()).or_else(|| {
+                                let observation = input.rows.observation.as_ref()?;
+                                Some(polylogue_store::primary::SourceSelector {
+                                    origin: input.rows.format.clone(), machine: observation.machine.clone(),
+                                    path_bytes: observation.path_bytes.clone()?,
+                                })
+                            });
+                            let Some(source) = source else { return Ok(serde_json::json!({"source_selector":"missing"})); };
+                            let pool = ReadPool::open(archive)?;
+                            let reader = pool.reader()?;
+                            let boundary = reader.source_boundary()?;
+                            let (status, confirmed) = reader.source_observation(&source)?;
+                            let subject = boundary.as_ref().map(|cut| reader.source_subject_at(cut, &input.rows.input)).transpose()?.flatten();
+                            Ok(serde_json::json!({
+                                "status":status,"boundary":boundary,"subject":subject,
+                                "confirmed_input":confirmed.as_ref().map(|value| &value.input),
+                                "confirmed_observation":confirmed.as_ref().map(|value| &value.observation.id),
+                            }))
+                        })();
+                        let current = current.unwrap_or_else(|error| serde_json::json!({"error":error.to_string()}));
+                        serde_json::json!({
+                        "current_source":current,
+                        "members_present":input.group.as_ref().map(|group| groups.get(&group.identity).copied().unwrap_or(0)),
+                        "identity":capture.identity,
+                        "anchor":capture.anchor,
+                        "material":capture.material.as_ref().map(|material| (&material.id, material.hash, material.length)),
+                        "input":input.rows.input,"format":input.rows.format,"group":input.group,
+                        "basis":input.basis,"raw_range":input.raw_range,"generation":input.generation,
+                        "revision":input.rows.revision,"extent":input.rows.extent,
+                        "observation":input.rows.observation.as_ref().map(|observation| serde_json::json!({
+                            "id":observation.id,"machine":observation.machine,"path":observation.path,
+                            "path_bytes":observation.path_bytes,"class":observation.class,
+                            "revision":observation.revision,"chain":observation.chain,"length":observation.length
+                        }))
+                    })
+                    },
+                    polylogue_store::primary::Capture::Blob { hash, length } => serde_json::json!({
+                        "identity":capture.identity,"anchor":capture.anchor,"material":capture.material,
+                        "blob":hash,"length":length
+                    }),
                 })
                 .collect::<Vec<_>>()
         });
+        let sources = ReadPool::open(archive).and_then(|pool| {
+            pool.reader()?.query(
+                "SELECT i.id AS input,i.format,o.id AS observation,o.machine,o.path,hex(o.path_bytes) AS path_bytes,o.class,o.revision AS observed_revision,o.chain AS observed_chain,o.length AS observed_length,r.number,r.chain,r.length FROM source_input i LEFT JOIN source_observation o ON o.rowid=(SELECT max(x.rowid) FROM source_observation x WHERE x.input=i.id) LEFT JOIN source_revision r ON r.input=i.id AND r.number=(SELECT max(x.number) FROM source_revision x WHERE x.input=i.id) ORDER BY i.id", &[],
+            )
+        });
+        let refused = ReadPool::open(archive).and_then(|pool| {
+            pool.reader()?.query(
+                "SELECT r.event,r.kind,r.reason,r.unreadable_input,f.state,f.product IS NULL AS unreadable FROM primary_refused r LEFT JOIN primary_fact f ON f.event=r.event ORDER BY r.event", &[],
+            )
+        });
         format!(
-            "producer: {:?}; local replay: {local:?}; pending capture/material IDs: {pending:?}; first native refusals: {}; latest native receipts: {}; native event counts: {}",
+            "producer: {:?}; local source heads: {sources:?}; local refused facts: {refused:?}; local replay: {local:?}; pending capture metadata: {pending:?}; first native refusals: {}; latest native receipts: {}; native event counts: {}",
             sinex.status(),
             self.native.sql("SELECT frame,refusal FROM core.ingress_frames WHERE producer='polylogue' AND refusal IS NOT NULL ORDER BY number LIMIT 8"),
             self.native.sql("SELECT number,frame,commit_seq,admitted,outcome,refusal FROM core.ingress_frames WHERE producer='polylogue' ORDER BY number DESC LIMIT 8"),
@@ -113,7 +169,8 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
     loop {
         assert!(
             started.elapsed() < Duration::from_secs(120),
-            "capture did not reach confirmed application within its budget; {}",
+            "capture did not reach confirmed application within its budget; writer report: {:?}; {}",
+            engine.writer().map(|writer| writer.flush()),
             running.evidence(sinex, &archive)
         );
         let pass = engine.run_pass().unwrap_or_else(|error| {
@@ -134,7 +191,8 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
         let remaining = Duration::from_secs(120).saturating_sub(started.elapsed());
         commits.recv_timeout(remaining).unwrap_or_else(|error| {
             panic!(
-                "capture did not reach confirmed application: {error}; {}",
+                "capture did not reach confirmed application: {error}; writer report: {:?}; {}",
+                engine.writer().map(|writer| writer.flush()),
                 running.evidence(sinex, &archive)
             )
         });
