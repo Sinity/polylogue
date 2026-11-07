@@ -205,16 +205,16 @@ fn native_time_spans_overlap_bounds_and_comparisons_preserve_unknown_and_nanosec
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
     for (condition, expected) in [
-        ("kind:bounded since 2026-10-29T10:30:00Z", vec!["bounded"]),
-        ("kind:bounded until 2026-10-29T10:30:00Z", vec!["bounded"]),
-        ("kind:bounded since 2026-10-29T11:00:00Z", vec![]),
-        ("kind:bounded until 2026-10-29T10:00:00Z", vec![]),
+        ("kind:bounded since:2026-10-29T10:30:00Z", vec!["bounded"]),
+        ("kind:bounded until:2026-10-29T10:30:00Z", vec!["bounded"]),
+        ("kind:bounded since:2026-10-29T11:00:00Z", vec![]),
+        ("kind:bounded until:2026-10-29T10:00:00Z", vec![]),
         (
-            "since 2026-10-29T10:30:00.000000001Z until 2026-10-29T10:30:00.000000002Z",
+            "since:2026-10-29T10:30:00.000000001Z until:2026-10-29T10:30:00.000000002Z",
             vec!["bounded", "calendar", "minute", "nano-one", "second"],
         ),
         (
-            "since 2026-10-29T11:00:00Z (until 2026-10-29T10:00:00Z)",
+            "since:2026-10-29T11:00:00Z (until:2026-10-29T10:00:00Z)",
             vec![],
         ),
         ("at = 2026-10-29T10:30:00.000000001Z", vec!["nano-one"]),
@@ -228,19 +228,19 @@ fn native_time_spans_overlap_bounds_and_comparisons_preserve_unknown_and_nanosec
         ("kind:calendar at:2026", vec!["calendar"]),
         ("kind:calendar-no-boundary at:2026", vec![]),
         ("kind:calendar-no-boundary at:unknown", vec![]),
-        ("kind:second since 2026-10-29T10:30:00.5Z", vec!["second"]),
+        ("kind:second since:2026-10-29T10:30:00.5Z", vec!["second"]),
         ("kind:second at >= 2026-10-29T10:30:00.5Z", vec![]),
-        ("kind:minute since 2026-10-29T10:30:59.9Z", vec!["minute"]),
+        ("kind:minute since:2026-10-29T10:30:59.9Z", vec!["minute"]),
         ("kind:minute at >= 2026-10-29T10:30:59.9Z", vec![]),
         ("kind:minute at <= 2026-10-29T10:31:00Z", vec!["minute"]),
         ("at = 1969-12-31T23:59:59.999999999Z", vec!["negative-one"]),
         (
-            "since 1969-12-31T23:59:59.999999999Z until 1970-01-01T00:00:00Z",
+            "since:1969-12-31T23:59:59.999999999Z until:1970-01-01T00:00:00Z",
             vec!["negative-one"],
         ),
         ("at:unknown", vec!["missing-time"]),
-        ("NOT since 2026-10-29T10:30:00Z kind:missing-time", vec![]),
-        ("kind:bounded until 2026-10-29", vec!["bounded"]),
+        ("NOT since:2026-10-29T10:30:00Z kind:missing-time", vec![]),
+        ("kind:bounded until:2026-10-29", vec!["bounded"]),
         ("kind:bounded at < 2026-10-29", vec![]),
     ] {
         assert_eq!(
@@ -250,19 +250,19 @@ fn native_time_spans_overlap_bounds_and_comparisons_preserve_unknown_and_nanosec
         );
     }
     assert_eq!(
-        values(&reader, "messages where since 2026-10-29T10:30:00Z", "id"),
+        values(&reader, "messages where since:2026-10-29T10:30:00Z", "id"),
         ["claude-code:bounded"]
     );
     assert_eq!(
-        values(&reader, "blocks where since 2026-10-29T10:30:00Z", "kind"),
+        values(&reader, "blocks where since:2026-10-29T10:30:00Z", "kind"),
         ["text"]
     );
     assert_eq!(
-        values(&reader, "documents where since 2026-10-29T10:30:00Z", "id"),
+        values(&reader, "documents where since:2026-10-29T10:30:00Z", "id"),
         ["claude-code:bounded-document"]
     );
     assert_eq!(
-        values(&reader, "sessions where until 2026-10-29T10:30:00Z", "id"),
+        values(&reader, "sessions where until:2026-10-29T10:30:00Z", "id"),
         ["claude-code:temporal"]
     );
     assert_eq!(
@@ -369,7 +369,7 @@ fn native_time_day_overlap_uses_the_resolved_owner_boundary_across_both_dst_chan
         )
         .unwrap();
         // Warsaw's 04:00 is 02:00Z after the spring change, versus UTC 04:00Z.
-        for condition in ["kind:spring at:2026-03-29", "kind:spring since 2026-03-29"] {
+        for condition in ["kind:spring at:2026-03-29", "kind:spring since:2026-03-29"] {
             assert_eq!(
                 read_values(
                     &reader,
@@ -393,7 +393,7 @@ fn native_time_day_overlap_uses_the_resolved_owner_boundary_across_both_dst_chan
         )
         .unwrap();
         // Warsaw's 04:00 is 03:00Z after the fold; each span endpoint is literal above.
-        for condition in ["kind:fold at:2026-10-25", "kind:fold since 2026-10-25"] {
+        for condition in ["kind:fold at:2026-10-25", "kind:fold since:2026-10-25"] {
             assert_eq!(
                 read_values(
                     &reader,
@@ -409,7 +409,7 @@ fn native_time_day_overlap_uses_the_resolved_owner_boundary_across_both_dst_chan
         assert_eq!(
             read_values(
                 &reader,
-                "events where kind:fold until 2026-10-24",
+                "events where kind:fold until:2026-10-24",
                 "kind",
                 day
             )

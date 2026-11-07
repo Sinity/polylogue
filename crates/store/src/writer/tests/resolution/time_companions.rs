@@ -251,8 +251,9 @@ fn native_time_companions_use_evidence_and_keep_missing_relations_distinct() {
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0]["started_at_time_quality"], "captured");
     assert_eq!(sessions[0]["started_at_precision"], "minute");
-    assert!(sessions[0]["last_active_time_quality"].is_null());
-    assert!(sessions[0]["last_active_precision"].is_null());
+    // The completion is later than the call's whole bounded period.
+    assert_eq!(sessions[0]["last_active_time_quality"], "intrinsic");
+    assert_eq!(sessions[0]["last_active_precision"], "instant");
     let documents = query(
         &reader,
         "documents",

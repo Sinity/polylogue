@@ -139,11 +139,11 @@ fn fractional_compiled_since_until_and_comparisons_keep_index_boundaries_exclusi
     let reader = pool.reader().unwrap();
     for (text, expected) in [
         (
-            "messages where since 1970-01-01T00:00:00.0005Z | sort by at",
+            "messages where since:1970-01-01T00:00:00.0005Z | sort by at",
             vec!["one", "two"],
         ),
         (
-            "messages where until 1970-01-01T00:00:00.0005Z | sort by at",
+            "messages where until:1970-01-01T00:00:00.0005Z | sort by at",
             vec!["before", "zero"],
         ),
         (
