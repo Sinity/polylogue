@@ -1193,7 +1193,10 @@ impl Inner {
         match result {
             Ok(()) => self.stream_error = None,
             Err(error) => {
-                let error = format!("confirmed stream: {error}");
+                let position = crate::primary::projection::checkpoint(&self.index)
+                    .map(|position| position.unwrap_or(0).to_string())
+                    .unwrap_or_else(|error| format!("unavailable ({error})"));
+                let error = format!("confirmed stream: after position {position}: {error}");
                 if self.stream_error.as_ref() != Some(&error) {
                     self.report.errors.push(error.clone());
                     self.stream_error = Some(error);

@@ -536,3 +536,89 @@ fn one_follower_owns_confirmation_across_a_blocked_page_and_a_new_write() {
             .is_some()
     );
 }
+
+#[test]
+fn a_failed_later_position_reports_earlier_commits_without_inventing_progress() {
+    use crate::primary::ReplayControl;
+    let directory = tempfile::tempdir().unwrap();
+    let producer = Arc::new(Producer {
+        path: directory.path().join("unused-product.json"),
+        online: AtomicBool::new(false),
+        live_calls: AtomicUsize::new(0),
+        follow: Mutex::default(),
+    });
+    let (archive, _lock) = Archive::open_primary(
+        &directory.path().join("cache"),
+        &directory.path().join("bytes"),
+    )
+    .unwrap();
+    let writer = Writer::start_on_sinex(&archive, producer).unwrap();
+    let control = |control| Confirmed {
+        native: None,
+        position: 0,
+        output_index: 0,
+        event: String::new(),
+        change: ConfirmedChange::Control(Box::new(control)),
+    };
+    writer
+        .apply_confirmed(vec![control(ReplayControl::Reset {
+            scope: "partial-page".into(),
+        })])
+        .unwrap();
+    let connection = crate::archive::open_write(&archive.index_db(), 1024).unwrap();
+    connection.execute_batch("CREATE TRIGGER stop_projection BEFORE INSERT ON source_input WHEN new.id='second' BEGIN SELECT raise(ABORT,'stop second input'); END").unwrap();
+    let input = |position, id: &str| Confirmed {
+        native: None,
+        position,
+        output_index: 0,
+        event: format!("event-{id}"),
+        change: ConfirmedChange::Live(Box::new(Product::Input {
+            rows: Box::new(crate::input_rows::InputRows {
+                acquisition: None,
+                input: id.into(),
+                format: "synthetic".into(),
+                revision: None,
+                extent: None,
+                observation: None,
+            }),
+            material: None,
+        })),
+    };
+    let commits = writer.sender().unwrap().completion_commits();
+    let error = writer
+        .apply_confirmed(vec![
+            input(1, "first"),
+            control(ReplayControl::Completion { position: 1 }),
+            input(2, "second"),
+            control(ReplayControl::Completion { position: 2 }),
+        ])
+        .unwrap_err();
+    assert!(matches!(error, StoreError::Sqlite(_)), "{error:?}");
+    assert!(error.to_string().contains("stop second input"));
+    commits.try_recv().unwrap();
+    let report = writer.flush_rows().unwrap();
+    assert!(
+        report.errors.iter().any(|error| {
+            error.contains("after position 1") && error.contains("stop second input")
+        }),
+        "{report:?}"
+    );
+    assert_eq!(
+        crate::primary::projection::checkpoint(&connection).unwrap(),
+        Some(1)
+    );
+    assert!(writer.apply_confirmed(vec![]).is_err());
+    assert!(matches!(
+        commits.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    connection
+        .execute_batch("DROP TRIGGER stop_projection")
+        .unwrap();
+    assert_eq!(writer.apply_confirmed(vec![]).unwrap(), 2);
+    commits.try_recv().unwrap();
+    assert_eq!(
+        crate::primary::projection::checkpoint(&connection).unwrap(),
+        Some(2)
+    );
+}

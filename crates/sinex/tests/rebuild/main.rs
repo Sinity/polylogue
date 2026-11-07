@@ -312,24 +312,14 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
             if answers(&archive).0 == expected {
                 break;
             }
-            if let Err(error) =
-                commits.recv_timeout(Duration::from_secs(120).saturating_sub(imported_at.elapsed()))
-            {
-                // Preserve the failed state before exercising the existing
-                // owner's resume path. This does not change the failed assertion.
-                let original = running.evidence(&sinex, &archive);
-                drop(engine);
-                let resumed = polylogue_store::Writer::start_on_sinex(&archive, sinex.clone()).map(
-                    |writer| {
-                        let applied = writer.apply_confirmed(Vec::new());
-                        let report = writer.flush();
-                        (applied, report)
-                    },
-                );
-                panic!(
-                    "import confirmation: {error}; original state: {original}; diagnostic resume: {resumed:?}"
-                );
-            }
+            commits
+                .recv_timeout(Duration::from_secs(120).saturating_sub(imported_at.elapsed()))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "import confirmation: {error}; {}",
+                        running.evidence(&sinex, &archive)
+                    )
+                });
         }
         engine
             .writer()

@@ -38,14 +38,19 @@ impl Inner {
             return Ok(0);
         }
         let before = crate::primary::projection::checkpoint(&self.index)?;
-        let position = crate::primary::projection::apply(&mut self.index, &self.resolver, events)?;
+        let result = crate::primary::projection::apply(&mut self.index, &self.resolver, events);
         if crate::primary::projection::checkpoint(&self.index)? != before {
+            // A later complete position can fail after earlier positions committed.
+            // Make that failure observable before notifying their real progress.
+            if let Err(error) = &result {
+                self.stream_followed(Some(error.to_string()));
+            }
             self.commits.committed();
             self.derive_due = true;
             self.search.wake();
             self.report.transactions += 1;
         }
-        Ok(position)
+        result
     }
 
     pub(super) fn product_writes(&self, products: Vec<Product>) -> Result<Vec<ProductWrite>> {

@@ -37,6 +37,11 @@ applied a complete prefix in the same scope through an owner head observed
 after the acknowledgment. Sinex reads that head from its committed counter.
 A head observed before publication, or an incomplete prefix, retains the group.
 
+Each complete stream position applies atomically. If a later position fails,
+the earlier committed prefix stays visible and notifies readers. The writer
+reports the failure with its last applied position before sending that cue;
+a failed attempt with no committed progress produces no commit notification.
+
 Declarations validate the complete record and describe the outer projected
 fields used by privacy hints and time rules. The complete record remains guarded;
 the outer fields let Sinex join the record to its other domains.
