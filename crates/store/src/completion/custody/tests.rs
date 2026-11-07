@@ -4,7 +4,7 @@ use crate::{
     completion::{CatalogReader, CatalogWriter, Metadata},
 };
 use std::sync::Arc;
-fn build(pointer: &CatalogPointer, generation: &str, value: &str) {
+fn build(pointer: &CatalogPointer, generation: &str, value: &str) -> CatalogWriter {
     let metadata = Metadata {
         archive: "synthetic".into(),
         position: polylogue_model::ChangePosition {
@@ -14,17 +14,18 @@ fn build(pointer: &CatalogPointer, generation: &str, value: &str) {
         },
         written_at: 100,
     };
-    CatalogWriter::build(&pointer.generation_path(generation), &metadata, |writer| {
-        writer.put_catalog(&query_language::catalog::Catalog::new("sessions"))?;
-        writer.put_values(
-            "synthetic",
-            &std::collections::BTreeMap::from([(
-                "repo".into(),
-                std::collections::BTreeMap::from([(value.into(), 1)]),
-            )]),
-        )
-    })
-    .unwrap();
+    pointer
+        .build(&metadata, |writer| {
+            writer.put_catalog(&query_language::catalog::Catalog::new("sessions"))?;
+            writer.put_values(
+                "synthetic",
+                &std::collections::BTreeMap::from([(
+                    "repo".into(),
+                    std::collections::BTreeMap::from([(value.into(), 1)]),
+                )]),
+            )
+        })
+        .unwrap()
 }
 #[test]
 fn revoked_pointer_rejects_open_snapshots_and_a_late_old_generation_publisher() {
@@ -43,8 +44,8 @@ fn revoked_pointer_rejects_open_snapshots_and_a_late_old_generation_publisher() 
         .unwrap()
         .generation;
     let old = archive.scope_token().unwrap();
-    build(&pointer, &generation, "old-value");
-    pointer.activate(&generation, &old).unwrap();
+    let writer = build(&pointer, &generation, "old-value");
+    pointer.activate(&writer, &old).unwrap();
     let snapshot = CatalogReader::open(&pointer.path, "synthetic")
         .unwrap()
         .unwrap();
@@ -61,13 +62,13 @@ fn revoked_pointer_rejects_open_snapshots_and_a_late_old_generation_publisher() 
             .is_none()
     );
     assert!(matches!(
-        pointer.activate(&generation, &old),
+        pointer.activate(&writer, &old),
         Err(StoreError::ScopeChanged)
     ));
     state.finish_reset();
-    build(&pointer, "new-generation", "new-value");
+    let writer = build(&pointer, "new-generation", "new-value");
     pointer
-        .activate("new-generation", &archive.scope_token().unwrap())
+        .activate(&writer, &archive.scope_token().unwrap())
         .unwrap();
     let current = CatalogReader::open(&pointer.path, "synthetic")
         .unwrap()
@@ -85,8 +86,8 @@ fn standalone_generation_change_revokes_pointer_before_reopen_finishes() {
         Archive::register_scope_invalidator(&root, move || invalidator.invalidate()).unwrap();
     let (archive, lock) = Archive::open_or_create(&root).unwrap();
     let token = archive.scope_token().unwrap();
-    build(&pointer, "first", "cached");
-    pointer.activate("first", &token).unwrap();
+    let writer = build(&pointer, "first", "cached");
+    pointer.activate(&writer, &token).unwrap();
     let conn = crate::archive::open_write(&archive.index_db(), 1).unwrap();
     conn.execute(
         "UPDATE meta SET value='synthetic-earlier-boot' WHERE key='boot_id'",
@@ -99,4 +100,70 @@ fn standalone_generation_change_revokes_pointer_before_reopen_finishes() {
     let (_archive, _lock) = Archive::open_or_create(&root).unwrap();
     assert!(!pointer.path.exists());
     assert!(matches!(token.check(), Err(StoreError::ScopeChanged)));
+}
+
+#[test]
+fn same_source_generation_rebuild_never_reuses_a_pinned_wal_namespace() {
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&directory.path().join("archive")).unwrap();
+    let token = archive.scope_token().unwrap();
+    let pointer = CatalogPointer::new(directory.path().join("catalog"));
+    let mut first = build(&pointer, "same-source-generation", "first");
+    pointer.activate(&first, &token).unwrap();
+    let old = CatalogReader::open(&pointer.path, "synthetic")
+        .unwrap()
+        .unwrap();
+    let next = Metadata {
+        archive: "synthetic".into(),
+        position: polylogue_model::ChangePosition {
+            generation: "same-source-generation".into(),
+            index: 2,
+            archive: 2,
+        },
+        written_at: 200,
+    };
+    first
+        .update(&next, |writer| {
+            writer.put_values(
+                "synthetic",
+                &std::collections::BTreeMap::from([(
+                    "repo".into(),
+                    std::collections::BTreeMap::from([("newer-commit".into(), 1)]),
+                )]),
+            )
+        })
+        .unwrap();
+    let first_path = first.path.clone();
+    drop(first);
+    // The pinned old reader keeps the first materialization's WAL alive.
+    assert_eq!(old.values("repo", "").unwrap()[0].value, "first");
+    let latest = CatalogReader::open(&pointer.path, "synthetic")
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.values("repo", "").unwrap()[0].value, "newer-commit");
+    assert_eq!(latest.metadata.position, next.position);
+    let second = build(&pointer, "same-source-generation", "rebuilt");
+    assert_ne!(second.path, first_path);
+    pointer.activate(&second, &token).unwrap();
+    let rebuilt = CatalogReader::open(&pointer.path, "synthetic")
+        .unwrap()
+        .unwrap();
+    assert_eq!(rebuilt.values("repo", "").unwrap()[0].value, "rebuilt");
+    assert_eq!(rebuilt.metadata.position.index, 1);
+    assert!(matches!(old.check(), Err(StoreError::ScopeChanged)));
+    assert!(matches!(latest.check(), Err(StoreError::ScopeChanged)));
+    let second_path = second.path.clone();
+    drop(second);
+    // Recreating a deleted derived database is another new physical build,
+    // even while a reader still owns the old materialization's open files.
+    std::fs::remove_file(&second_path).unwrap();
+    let third = build(&pointer, "same-source-generation", "recreated");
+    assert_ne!(third.path, second_path);
+    assert_ne!(third.path, first_path);
+    pointer.activate(&third, &token).unwrap();
+    let recreated = CatalogReader::open(&pointer.path, "synthetic")
+        .unwrap()
+        .unwrap();
+    assert_eq!(recreated.values("repo", "").unwrap()[0].value, "recreated");
+    assert!(matches!(rebuilt.check(), Err(StoreError::ScopeChanged)));
 }

@@ -18,10 +18,8 @@ fn an_unpublished_old_generation_is_rebuilt_before_the_next_activation() {
         },
         written_at: 1,
     };
-    let writer = CatalogWriter::build(
-        &pointer.generation_path(&old.position.generation),
-        &old,
-        |writer| {
+    let writer = pointer
+        .build(&old, |writer| {
             writer.put_catalog(&super::super::base_catalog())?;
             writer.put_values(
                 "old",
@@ -30,9 +28,8 @@ fn an_unpublished_old_generation_is_rebuilt_before_the_next_activation() {
                     BTreeMap::from([("old-scope-value".into(), 1)]),
                 )]),
             )
-        },
-    )
-    .unwrap();
+        })
+        .unwrap();
     let mut state = State::new(false, super::super::tests::request_metadata());
     // A build may finish before its activation is rejected by the scope fence.
     state.writer = Some((old.position.generation, writer));

@@ -1,4 +1,5 @@
 //! A derived cache pointer follows the archive's existing scope publication fence.
+use super::{CatalogWriter, Metadata};
 use crate::{ReadScopeToken, Result, StoreError};
 use std::{
     fs,
@@ -13,11 +14,19 @@ impl CatalogPointer {
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }
-    pub fn generation_path(&self, generation: &str) -> PathBuf {
-        self.path.with_file_name(format!(
-            "catalog.{}.db",
-            blake3::hash(generation.as_bytes()).to_hex()
-        ))
+    /// A rebuild owns fresh database and journal names even when its source
+    /// generation is unchanged and an old snapshot still holds the previous WAL.
+    pub fn build(
+        &self,
+        metadata: &Metadata,
+        populate: impl FnOnce(&mut CatalogWriter) -> Result<()>,
+    ) -> Result<CatalogWriter> {
+        let target = self.path.with_file_name(format!(
+            "catalog.{}.{}.db",
+            blake3::hash(metadata.position.generation.as_bytes()).to_hex(),
+            uuid::Uuid::now_v7(),
+        ));
+        CatalogWriter::build(&target, metadata, populate)
     }
     /// Called synchronously by the native scope owner, never by a commit wake.
     pub fn invalidate(&self) -> Result<()> {
@@ -33,11 +42,13 @@ impl CatalogPointer {
         }
     }
     /// Only pointer activation holds the native fence; database work precedes it.
-    pub fn activate(&self, generation: &str, token: &ReadScopeToken) -> Result<()> {
-        let target = self.generation_path(generation);
+    pub fn activate(&self, writer: &CatalogWriter, token: &ReadScopeToken) -> Result<()> {
+        let target = &writer.path;
         token.with_current(|| {
-            fs::metadata(&target)?;
-            let name = target.file_name().expect("generation file name");
+            if target.parent() != self.path.parent() || !writer.is_current_file() {
+                return Err(StoreError::ScopeChanged);
+            }
+            let name = target.file_name().expect("materialization file name");
             if fs::read_link(&self.path).ok().as_deref() == Some(Path::new(name)) {
                 return Ok(());
             }

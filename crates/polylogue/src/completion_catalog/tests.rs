@@ -20,7 +20,7 @@ fn populated(path: &Path) {
         written_at: 100,
     };
     let catalog = polylogue_query::catalog::catalog(&["codex".into()]);
-    CatalogWriter::build(path, &metadata, |writer| {
+    CatalogWriter::fixture(path, &metadata, |writer| {
         writer.put_catalog(&catalog)?;
         writer.put_session(&Session {
             id: "codex:abc123".into(),
@@ -404,7 +404,7 @@ fn observation_literals_roundtrip_and_terminal_controls_never_enter_candidates()
         },
         written_at: 100,
     };
-    CatalogWriter::build(&path, &metadata, |writer| {
+    CatalogWriter::fixture(&path, &metadata, |writer| {
         writer.put_catalog(&base_catalog())?;
         writer.put_values(
             "observed",
@@ -623,7 +623,7 @@ fn frozen_plan_metadata_survives_cache_serialization_without_rebinding_names() {
         },
         written_at: 100,
     };
-    CatalogWriter::build(&path, &metadata, |writer| {
+    CatalogWriter::fixture(&path, &metadata, |writer| {
         writer.put_catalog(&base_catalog())?;
         writer.put_saved(&Saved {
             relation_scope: Some(replay.relation_scope().unwrap()),

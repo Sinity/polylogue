@@ -82,7 +82,7 @@ pub struct Setting {
 
 pub struct CatalogWriter {
     conn: Connection,
-    path: PathBuf,
+    pub(super) path: PathBuf,
     identity: (u64, u64),
 }
 pub struct CatalogReader {
@@ -126,9 +126,19 @@ fn text_key(value: &str) -> String {
 }
 
 impl CatalogWriter {
+    /// Seed a synthetic catalog for cross-crate read tests. Production builds
+    /// allocate their physical database through CatalogPointer.
+    #[cfg(feature = "fixture")]
+    pub fn fixture(
+        path: &Path,
+        metadata: &Metadata,
+        populate: impl FnOnce(&mut Self) -> Result<()>,
+    ) -> Result<Self> {
+        Self::build(path, metadata, populate)
+    }
     /// Build in a private sibling, then close, sync and rename the coherent
-    /// database before opening its canonical journal path for incremental writes.
-    pub fn build(
+    /// database before opening its fresh journal namespace for incremental writes.
+    pub(super) fn build(
         path: &Path,
         metadata: &Metadata,
         populate: impl FnOnce(&mut Self) -> Result<()>,

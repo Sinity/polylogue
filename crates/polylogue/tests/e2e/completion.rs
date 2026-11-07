@@ -14,7 +14,7 @@ fn seed(root: &Path, cache: &Path, model: &str) {
         [..12]
         .to_owned();
     let catalog = polylogue_query::catalog::catalog(&["codex".into()]);
-    CatalogWriter::build(
+    CatalogWriter::fixture(
         &cache.join("polylogue").join(&key).join("catalog"),
         &Metadata {
             archive: key,

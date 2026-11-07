@@ -202,7 +202,6 @@ impl State {
             written_at: self.requests.now().unix_ms(),
         };
         let pointer = completion::CatalogPointer::new(path.to_owned());
-        let generation_path = pointer.generation_path(&position.generation);
         let after = self.position.clone();
         let result = if let Some((generation, mut writer)) = self.writer.take() {
             let result = writer.update(&metadata, |writer| {
@@ -211,16 +210,21 @@ impl State {
             self.writer = Some((generation, writer));
             result
         } else {
-            CatalogWriter::build(&generation_path, &metadata, |writer| {
-                writer.put_catalog(&self.catalog)?;
-                self.apply(reader, writer, None)
-            })
-            .map(|writer| {
-                self.writer = Some((position.generation.clone(), writer));
-            })
+            pointer
+                .build(&metadata, |writer| {
+                    writer.put_catalog(&self.catalog)?;
+                    self.apply(reader, writer, None)
+                })
+                .map(|writer| {
+                    self.writer = Some((position.generation.clone(), writer));
+                })
         };
         result?;
-        pointer.activate(&position.generation, &token)?;
+        let (_, writer) = self
+            .writer
+            .as_ref()
+            .expect("successful catalog publication");
+        pointer.activate(writer, &token)?;
         self.position = Some(position);
         Ok(())
     }
