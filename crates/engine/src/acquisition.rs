@@ -195,9 +195,54 @@ impl Engine {
                     return Ok(());
                 }
             }
+            let source_kind = match &plan.source {
+                crate::pool::Bytes::File => "provider file",
+                crate::pool::Bytes::Stored(_) => "stored chain",
+                crate::pool::Bytes::Import(_) => "decoded/imported stream",
+                crate::pool::Bytes::Unloaded { decoded: true, .. } => "unloaded decoded chain",
+                crate::pool::Bytes::Unloaded { decoded: false, .. } => "unloaded stored chain",
+            };
+            let confirmed = match self.reads.reader().and_then(|reader| {
+                reader.known_watched_input_at(
+                    &self.config.machine,
+                    plan.path.as_os_str().as_encoded_bytes(),
+                )
+            }) {
+                Ok(Some(known)) => format!(
+                    "input={} matches={}; format={} matches={}; facts={:?} matches={}; chain={:?}; stored={} covers_acquired={}; parsed={} parsed_upto={} waiting={}",
+                    known.input_id,
+                    known.input_id == plan.input.id,
+                    known.format,
+                    known.format == plan.input.format,
+                    known.facts,
+                    known.facts == plan.facts,
+                    known.chain,
+                    known.stored,
+                    acquisition.is_some_and(|receipt| known.stored >= receipt.range.end),
+                    known.parsed,
+                    known.parsed_upto,
+                    known.waiting,
+                ),
+                Ok(None) => "no confirmed watched input at this machine/path".into(),
+                Err(error) => format!("confirmed lookup failed: {error}"),
+            };
             pass.errors.push(format!(
-                "raw custody retained for {}; continuation proof unavailable",
-                plan.input.id
+                "raw custody retained for {}; continuation proof unavailable; path={} machine={} origin={} format={} source={} tracked={}; planned={}..{} facts={:?} file_size_matches={}; acquired={:?} generation={:?}; unresolved_custody={:?}; confirmed: {}",
+                plan.input.id,
+                plan.path.display(),
+                self.config.machine,
+                plan.origin.name,
+                plan.input.format,
+                source_kind,
+                plan.tracked,
+                plan.stored_upto,
+                plan.size,
+                plan.facts,
+                plan.facts.is_some_and(|facts| facts.size == plan.size),
+                acquisition.map(|receipt| receipt.range),
+                acquisition.and_then(|receipt| receipt.generation.as_ref()),
+                raw.custody,
+                confirmed,
             ));
             return Ok(());
         };
