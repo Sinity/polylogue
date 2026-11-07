@@ -156,10 +156,12 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
             .into_iter()
             .find(|d| d.kind.name == kind)
             .unwrap();
-        // Kind declarations are immutable per version: query runs were
-        // declared twice before (the confirmed stream still carries version
-        // 2), so their current declaration is version 3.
-        let version = if kind == "polylogue.query_run" { 3 } else { 1 };
+        let version = match kind {
+            "polylogue.query" => 2,
+            "polylogue.query_run" => 4,
+            "polylogue.query_run_outcome" => 1,
+            other => panic!("unexpected named query phase kind: {other}"),
+        };
         assert_eq!(declaration.kind.version, version, "{kind}");
         assert_eq!(
             declaration.replace_rule,
