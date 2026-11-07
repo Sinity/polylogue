@@ -26,7 +26,7 @@ use serde::Serialize;
 pub enum QueryError {
     #[error("{diagnostic}")]
     Language {
-        error: query_language::Error,
+        error: Box<query_language::Error>,
         diagnostic: String,
     },
     /// With a caret under the position and, when a simple repair parses,
@@ -97,7 +97,10 @@ fn hint(similar: &[String]) -> String {
 impl QueryError {
     pub fn language(error: query_language::Error, source: &str) -> Self {
         let diagnostic = error.diagnostic(source);
-        Self::Language { error, diagnostic }
+        Self::Language {
+            error: Box::new(error),
+            diagnostic,
+        }
     }
 
     pub fn syntax(text: &str, at: usize, message: String, suggestion: Option<String>) -> Self {

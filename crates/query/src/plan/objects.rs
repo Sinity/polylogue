@@ -549,7 +549,7 @@ fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, Q
 fn expand(query: &Query, native: &Catalog, bindings: &Bindings) -> Result<Query, QueryError> {
     let text = query_language::format::format_query(query, native).map_err(language)?;
     let (query, _) = crate::compile::source::expand_ast(query.clone(), &text, bindings)?;
-    Ok(query_language::bind::bind(&query, &native)
+    Ok(query_language::bind::bind(&query, native)
         .map_err(language)?
         .into_query())
 }

@@ -66,7 +66,7 @@ impl From<query_language::Error> for Failure {
     fn from(error: query_language::Error) -> Self {
         Self::from(polylogue_store::query::QueryError::Language {
             diagnostic: error.to_string(),
-            error,
+            error: Box::new(error),
         })
     }
 }

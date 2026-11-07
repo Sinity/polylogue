@@ -43,7 +43,7 @@ impl SelectionError {
             Self::Query(error) => StoreError::Query(error),
             Self::Language(error) => StoreError::Query(QueryError::Language {
                 diagnostic: error.to_string(),
-                error,
+                error: Box::new(error),
             }),
             Self::Invalid { kind, message } => StoreError::Selection {
                 code: kind,
