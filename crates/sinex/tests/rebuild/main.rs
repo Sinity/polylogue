@@ -25,7 +25,18 @@ mod native;
 struct Running {
     config: Config,
     socket: PathBuf,
-    _native: native::Native,
+    native: native::Native,
+}
+
+impl Running {
+    fn evidence(&self, sinex: &Sinex) -> String {
+        format!(
+            "producer: {:?}; first native refusals: {}; latest native receipts: {}",
+            sinex.status(),
+            self.native.sql("SELECT frame,refusal FROM core.ingress_frames WHERE producer='polylogue' AND refusal IS NOT NULL ORDER BY number LIMIT 8"),
+            self.native.sql("SELECT frame,commit_seq,refusal FROM core.ingress_frames WHERE producer='polylogue' ORDER BY number DESC LIMIT 8"),
+        )
+    }
 }
 
 fn sinex(dir: &Path) -> Running {
@@ -43,7 +54,7 @@ fn sinex(dir: &Path) -> Running {
             store: native.store.clone(),
         },
         socket: native.socket.clone(),
-        _native: native,
+        native,
     }
 }
 
@@ -73,13 +84,23 @@ fn connect(config: &Config) -> Arc<Sinex> {
 }
 
 /// Builds the Morrow example `example` with its home at `home`, on Sinex.
-fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, config: &Config) {
-    let (archive, _lock) = Archive::open_primary(&example.root, &config.store).unwrap();
+fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &Running) {
+    let (archive, _lock) = Archive::open_primary(&example.root, &running.config.store).unwrap();
     let mut settings = example.config();
     settings.home = home.to_path_buf();
     let mut engine = Engine::on_sinex(settings, archive.clone(), sinex.clone()).unwrap();
-    let pass = engine.run_pass().unwrap();
-    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    let pass = engine.run_pass().unwrap_or_else(|error| {
+        panic!(
+            "native capture pass failed: {error}; {}",
+            running.evidence(sinex)
+        )
+    });
+    assert!(
+        pass.errors.is_empty(),
+        "{:?}; {}",
+        pass.errors,
+        running.evidence(sinex)
+    );
     // The idle writer follows the confirmed stream until it reaches Sinex's head.
     let started = Instant::now();
     loop {
@@ -95,7 +116,8 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, config: &Co
         }
         assert!(
             started.elapsed() < Duration::from_secs(120),
-            "the index did not reach Sinex's head: {applied:?} of {head:?}"
+            "the index did not reach Sinex's head: {applied:?} of {head:?}; {}",
+            running.evidence(sinex)
         );
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -151,7 +173,7 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     let running = sinex(example.dir.path());
     let sinex = connect(&running.config);
     phase("sinexd answers");
-    build_on_sinex(&example, &example.home, &sinex, &running.config);
+    build_on_sinex(&example, &example.home, &sinex, &running);
     phase("built on Sinex");
     {
         let (archive, _lock) = Archive::open_primary(&example.root, &running.config.store).unwrap();
@@ -225,7 +247,7 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     let sinex = connect(&running.config);
     let empty = example.dir.path().join("empty-home");
     fs::create_dir_all(&empty).unwrap();
-    build_on_sinex(&example, &empty, &sinex, &running.config);
+    build_on_sinex(&example, &empty, &sinex, &running);
     phase("rebuilt from Sinex");
     assert_eq!(answers(&on_sinex), (sessions, notes), "rebuilt from Sinex");
 }
