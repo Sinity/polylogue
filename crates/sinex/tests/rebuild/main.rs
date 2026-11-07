@@ -169,8 +169,7 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
     loop {
         assert!(
             started.elapsed() < Duration::from_secs(120),
-            "capture did not reach confirmed application within its budget; writer report: {:?}; {}",
-            engine.writer().map(|writer| writer.flush()),
+            "capture did not reach confirmed application within its budget; {}",
             running.evidence(sinex, &archive)
         );
         let pass = engine.run_pass().unwrap_or_else(|error| {
@@ -191,8 +190,7 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
         let remaining = Duration::from_secs(120).saturating_sub(started.elapsed());
         commits.recv_timeout(remaining).unwrap_or_else(|error| {
             panic!(
-                "capture did not reach confirmed application: {error}; writer report: {:?}; {}",
-                engine.writer().map(|writer| writer.flush()),
+                "capture did not reach confirmed application: {error}; {}",
                 running.evidence(sinex, &archive)
             )
         });
