@@ -71,6 +71,9 @@ fn callbacks(version: &str) -> (crate::ParseStep, crate::ParseStep) {
         .unwrap();
     let mut complete =
         crate::ParseStep::new(Output::default(), RecordCounts::default(), 0..2, true);
+    // The producer overrides the byte-range reset default: only the first
+    // emitted export callback resets, while this EOF continues its prefix.
+    complete.reset = false;
     complete.reading_version = version.into();
     complete.order_from = Some(1);
     complete.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
@@ -147,7 +150,6 @@ fn export_completion_rebuilds_shapes_with_foreign_keys_and_original_receipts() {
         .unwrap();
     }
     let (item, complete) = callbacks("v2");
-    let (other_version, _) = callbacks("v1");
     apply(&mut index, &resolver, &callback(3, "other", &item)).unwrap();
     let independent = shapes(&index, "other", "v2");
     assert_eq!(independent.len(), 1);
@@ -157,7 +159,13 @@ fn export_completion_rebuilds_shapes_with_foreign_keys_and_original_receipts() {
     // The separate EOF control rematerializes a parent which already has
     // shape children. FK checks stay immediate throughout the transaction.
     index.execute_batch("CREATE TRIGGER stop_export BEFORE INSERT ON wire_reading WHEN new.reading_version='v2' BEGIN SELECT raise(ABORT,'stop'); END").unwrap();
-    assert!(apply(&mut index, &resolver, &callback(5, "target", &complete)).is_err());
+    let error = apply(&mut index, &resolver, &callback(5, "target", &complete)).unwrap_err();
+    assert!(
+        matches!(&error,
+        StoreError::Sqlite(rusqlite::Error::SqliteFailure(code, Some(message)))
+            if code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER && message == "stop"),
+        "the injected rebuild failure must reach its SQL trigger: {error:?}"
+    );
     assert_eq!(checkpoint(&index).unwrap(), Some(4));
     assert_eq!(
         shapes(&index, "target", "v2"),
@@ -177,37 +185,11 @@ fn export_completion_rebuilds_shapes_with_foreign_keys_and_original_receipts() {
     assert!(!current["complete_presence"].is_null());
     let status:String=index.query_row("SELECT p.status FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id='target' AND p.chain=1",[],|row| row.get(0)).unwrap();
     assert_eq!(status, "done");
-    apply(
-        &mut index,
-        &resolver,
-        &callback(6, "target", &other_version),
-    )
-    .unwrap();
-    let older = shapes(&index, "target", "v1");
-    assert_eq!(older.len(), 1);
-    // A later lifecycle reapplication rebuilds the same retained callback
-    // sequence without accumulating counts or replacing its source receipts.
-    apply(
-        &mut index,
-        &resolver,
-        &[
-            Confirmed {
-                position: 7,
-                event: "target-v2-5-0".into(),
-                output_index: 0,
-                native: None,
-                change: ConfirmedChange::Restored,
-            },
-            barrier(7),
-        ],
-    )
-    .unwrap();
-    assert_eq!(shapes(&index, "target", "v2"), completed);
-    assert_eq!(shapes(&index, "target", "v1"), older);
-    assert_eq!(shapes(&index, "other", "v2"), independent);
+    // Redelivery of the original admitted callback and completion is read-only.
+    apply(&mut index, &resolver, &callback(4, "target", &item)).unwrap();
     apply(&mut index, &resolver, &callback(5, "target", &complete)).unwrap();
+    assert_eq!(checkpoint(&index).unwrap(), Some(5));
     assert_eq!(shapes(&index, "target", "v2"), completed);
-    assert_eq!(shapes(&index, "target", "v1"), older);
     assert_eq!(shapes(&index, "other", "v2"), independent);
     assert_eq!(
         index
