@@ -204,7 +204,9 @@ fn pages_and_api_never_carry_the_archive_path() {
 #[test]
 fn the_session_page_escapes_archive_text_and_matches_the_socket() {
     use polylogue_model::read::{ReadDelivery, ReadOptions, ReadPage};
-    let r = reader();
+    let mut r = reader();
+    // Signal commits advance the archive independently of this read comparison.
+    r.w.pause_signals();
     rt().block_on(async {
         let (status, _, page) = send_html(&r, "/s/claude-code%3As1").await;
         assert_eq!(status, StatusCode::OK, "{page}");

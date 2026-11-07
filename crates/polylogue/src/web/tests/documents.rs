@@ -161,7 +161,7 @@ fn search_links_follow_reference_columns_in_native_and_grouped_rows() {
             ("assertions", false),
             ("sessions | fields text(id) as id", false),
             ("sessions | group by id", true),
-            ("sessions | agg min:id", true),
+            ("sessions | agg min(id)", true),
             ("result:web-kept-group", true),
         ] {
             let path = format!(
