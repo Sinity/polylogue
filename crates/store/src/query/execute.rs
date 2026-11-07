@@ -243,7 +243,7 @@ pub fn attach(
     })
 }
 
-/// Project declared output columns and shape their public values.
+/// Shape declared output columns and retain generated ranked snippets.
 pub fn present(program: &Program, row: &mut Value) -> Result<(), SelectionError> {
     let mut output = serde_json::Map::new();
     for col in &program.columns {
@@ -256,6 +256,11 @@ pub fn present(program: &Program, row: &mut Value) -> Result<(), SelectionError>
             attachment.name.clone(),
             row[attachment.name.as_str()].clone(),
         );
+    }
+    if program.ranked
+        && let Some(snippet) = row.get("snippet")
+    {
+        output.entry("snippet").or_insert_with(|| snippet.clone());
     }
     *row = Value::Object(output);
     Ok(())

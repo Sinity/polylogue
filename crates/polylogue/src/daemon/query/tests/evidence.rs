@@ -7,6 +7,8 @@ fn query(home: &ClaudeHome, text: &str) -> Result<Value, Failure> {
     let pool = home.reads();
     let reader = pool.reader().unwrap();
     let mut request = ask(text);
+    let fields = vec!["id".into(), "first_seen".into()];
+    request.fields = &fields;
     request.page_size = Some(100);
     run(&reader, request)
 }

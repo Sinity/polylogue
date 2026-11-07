@@ -132,7 +132,7 @@ fn worked_directory() -> (tempfile::TempDir, polylogue_store::fixture::Fixture) 
     f.message(
         s,
         MessageFacts {
-            id: "p1",
+            id: "claude-code:p1",
             role: "user",
             written_by: "human",
             prompt_kind: Some("prose"),
@@ -146,7 +146,7 @@ fn worked_directory() -> (tempfile::TempDir, polylogue_store::fixture::Fixture) 
         .message(
             s,
             MessageFacts {
-                id: "a1",
+                id: "claude-code:a1",
                 role: "assistant",
                 written_by: "model",
                 at: Some(T0 + 1_000),
@@ -207,7 +207,7 @@ fn worked_directory() -> (tempfile::TempDir, polylogue_store::fixture::Fixture) 
     f.message(
         s,
         MessageFacts {
-            id: "a2",
+            id: "claude-code:a2",
             role: "assistant",
             written_by: "model",
             text: Some("Finished the parser fix; one test still fails."),
@@ -230,7 +230,7 @@ fn worked_directory() -> (tempfile::TempDir, polylogue_store::fixture::Fixture) 
         .message(
             s2,
             MessageFacts {
-                id: "b1",
+                id: "claude-code:b1",
                 role: "assistant",
                 written_by: "model",
                 at: Some(T0 - 60_000),

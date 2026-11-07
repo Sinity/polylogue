@@ -110,7 +110,7 @@ fn native_documents_search_and_read_through_one_typed_http_operation() {
 }
 
 #[test]
-fn message_note_group_and_string_columns_do_not_become_session_links() {
+fn search_links_follow_reference_columns_in_native_and_grouped_rows() {
     let r = reader();
     let note = handle(
         Request::Assert {
@@ -157,11 +157,12 @@ fn message_note_group_and_string_columns_do_not_become_session_links() {
             !messages.contains("href=\"/s/claude-code%3Au1\""),
             "{messages}"
         );
-        for query in [
-            "assertions",
-            "sessions | group by id",
-            "sessions | agg min:id",
-            "result:web-kept-group",
+        for (query, linked) in [
+            ("assertions", false),
+            ("sessions | fields text(id) as id", false),
+            ("sessions | group by id", true),
+            ("sessions | agg min:id", true),
+            ("result:web-kept-group", true),
         ] {
             let path = format!(
                 "/search?q={}",
@@ -169,7 +170,18 @@ fn message_note_group_and_string_columns_do_not_become_session_links() {
             );
             let (status, _, page) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
             assert_eq!(status, StatusCode::OK, "{page}");
-            assert!(!page.contains("href=\"/s/"), "{query}: {page}");
+            if linked {
+                assert!(
+                    page.contains("href=\"/s/claude-code%3As1\""),
+                    "{query}: {page}"
+                );
+            } else {
+                assert!(!page.contains("href=\"/s/"), "{query}: {page}");
+            }
+            assert!(
+                !page.contains("href=\"/s/claude-code%3Au1\""),
+                "{query}: {page}"
+            );
         }
     });
 }
