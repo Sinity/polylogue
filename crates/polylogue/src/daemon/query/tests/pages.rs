@@ -49,7 +49,7 @@ fn counting_fused_rows_does_not_rank_or_sort_the_answer() {
             .unwrap();
         assert!(
             operations.iter().all(|op| op["opcode"] != "SorterOpen"),
-            "{text}"
+            "{text}\ncount SQL: {count_sql}\noperations: {operations:#?}"
         );
     }
 }
