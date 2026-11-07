@@ -109,17 +109,32 @@ fn publish_and_project(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]
     let (archive, lock) = Archive::open_primary(cache, &sinex.config.store).unwrap();
     let writer = Writer::start_on_sinex(&archive, sinex.clone()).unwrap();
     wait_until(|| {
-        let reader = ReadPool::open(&archive).unwrap();
-        let reader = reader.reader().unwrap();
+        let pool = match ReadPool::open(&archive) {
+            Ok(pool) => pool,
+            Err(polylogue_store::StoreError::ScopeChanged) => return false,
+            Err(error) => panic!("open native primary cache: {error}"),
+        };
+        let reader = match pool.reader() {
+            Ok(reader) => reader,
+            Err(polylogue_store::StoreError::ScopeChanged) => return false,
+            Err(error) => panic!("read native primary cache: {error}"),
+        };
         items.iter().all(|(identity, bytes)| {
             if sinex.spool.lock().unwrap().get(identity).unwrap().is_some() {
                 return false;
             }
-            let Ok(blobs) = reader.blob_reader() else {
-                return false;
+            let blobs = match reader.blob_reader() {
+                Ok(blobs) => blobs,
+                Err(polylogue_store::StoreError::ScopeChanged) => return false,
+                Err(error) => panic!("open native primary blob reader: {error}"),
             };
-            let Ok(mut body) = blobs.read(&hashed_blobs::Hash(BlobHash::of(bytes).0)) else {
-                return false;
+            let mut body = match blobs.read(&hashed_blobs::Hash(BlobHash::of(bytes).0)) {
+                Ok(body) => body,
+                Err(
+                    polylogue_store::StoreError::NotFound(_)
+                    | polylogue_store::StoreError::ScopeChanged,
+                ) => return false,
+                Err(error) => panic!("read confirmed native primary bytes: {error}"),
             };
             let mut found = Vec::new();
             body.read_to_end(&mut found).unwrap();
