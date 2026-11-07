@@ -99,7 +99,7 @@ fn generated_ready_cli_call_reaches_the_socket_with_its_identity_and_deadline() 
         std::io::BufReader::new(&stream)
             .read_line(&mut text)
             .unwrap();
-        let (actual, _) = crate::protocol::wire::incoming(&text).unwrap().unwrap();
+        let (actual, _, _) = crate::protocol::wire::incoming(&text).unwrap().unwrap();
         assert_eq!(actual, expected);
         let answer = command_surface::Answer::ok(serde_json::json!({"count":1}));
         writeln!(stream, "{}", serde_json::to_string(&answer).unwrap()).unwrap();
@@ -403,7 +403,7 @@ fn literal_read_envelope_is_not_expanded_with_cli_defaults() {
             std::io::BufReader::new(&stream)
                 .read_line(&mut line)
                 .unwrap();
-            let (actual, _) = crate::protocol::wire::incoming(&line).unwrap().unwrap();
+            let (actual, _, _) = crate::protocol::wire::incoming(&line).unwrap().unwrap();
             assert_eq!(actual, expected, "{form} changed the accepted envelope");
             let refusal =
                 command_surface::Answer::<serde_json::Value>::error(command_surface::Failure::new(

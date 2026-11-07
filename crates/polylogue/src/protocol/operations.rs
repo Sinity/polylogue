@@ -23,6 +23,8 @@ pub struct ToolCall {
     pub deadline: command_surface::Deadline,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_tokens: Option<u32>,
 }
 
 fn default_deadline(deadline: &command_surface::Deadline) -> bool {
@@ -101,7 +103,7 @@ pub(crate) fn specification(command: &Command) -> OperationSpec {
         arguments: command
             .args
             .iter()
-            .filter(|arg| !matches!(arg.name, "request_id" | "cursor"))
+            .filter(|arg| !matches!(arg.name, "request_id" | "cursor" | "budget"))
             .map(|arg| ArgumentSpec {
                 name: arg.name.into(),
                 form: match arg.kind {
@@ -130,6 +132,10 @@ pub(crate) fn cursor(request: &crate::daemon::Request) -> Option<&str> {
         | crate::daemon::Request::Read { cursor, .. }
         | crate::daemon::Request::Attachment { cursor, .. }
         | crate::daemon::Request::Explain { cursor, .. } => cursor.as_deref(),
+        crate::daemon::Request::Context {
+            ask: crate::briefing::Ask::Recall { cursor, .. },
+            ..
+        } => cursor.as_deref(),
         _ => None,
     }
 }
@@ -140,7 +146,11 @@ pub(crate) fn with_cursor(
 ) -> Result<crate::daemon::Request, Failure> {
     if let Some(cursor) = cursor {
         match &mut request {
-            crate::daemon::Request::Query { cursor: target, .. }
+            crate::daemon::Request::Context {
+                ask: crate::briefing::Ask::Recall { cursor: target, .. },
+                ..
+            }
+            | crate::daemon::Request::Query { cursor: target, .. }
             | crate::daemon::Request::Read { cursor: target, .. }
             | crate::daemon::Request::Attachment { cursor: target, .. }
             | crate::daemon::Request::Explain { cursor: target, .. } => {
@@ -157,6 +167,24 @@ pub(crate) fn with_cursor(
     Ok(request)
 }
 
+pub(crate) fn with_budget(
+    mut request: crate::daemon::Request,
+    budget: Option<u32>,
+) -> Result<crate::daemon::Request, Failure> {
+    if let Some(tokens) = budget {
+        match &mut request {
+            crate::daemon::Request::Context { budget_tokens, .. } => *budget_tokens = Some(tokens),
+            _ => {
+                return Err(Failure::new(
+                    FailureKind::BadRequest,
+                    "operation does not prepare budgeted context",
+                ));
+            }
+        }
+    }
+    Ok(request)
+}
+
 pub(crate) fn admit(
     command: &Command,
     envelope: &command_surface::RunnableRequest,
@@ -165,9 +193,12 @@ pub(crate) fn admit(
     let build = command
         .build_typed
         .ok_or_else(|| Failure::new(FailureKind::BadRequest, "operation has no typed builder"))?;
-    with_cursor(
-        build(envelope.arguments.clone(), caller, &envelope.request_id)?,
-        envelope.cursor.as_deref(),
+    with_budget(
+        with_cursor(
+            build(envelope.arguments.clone(), caller, &envelope.request_id)?,
+            envelope.cursor.as_deref(),
+        )?,
+        envelope.budget_tokens,
     )
 }
 
@@ -213,10 +244,19 @@ impl<C: CommandType> Operation for TypedCommand<C> {
         Box::pin(async move {
             let command = crate::commands::command(C::NAME).expect("typed command exists");
             let caller = Caller {
-                surface: match context.via {
-                    command_surface::Via::Web => Surface::Http,
-                    command_surface::Via::Mcp => Surface::Mcp,
-                    _ => Surface::Cli,
+                surface: if context
+                    .caller()
+                    .identity::<crate::protocol::caller::Accepted>()
+                    .is_some_and(|accepted| {
+                        accepted.authorship.via == polylogue_model::authorship::Channel::Hook
+                    }) {
+                    Surface::Hook
+                } else {
+                    match context.via {
+                        command_surface::Via::Web => Surface::Http,
+                        command_surface::Via::Mcp => Surface::Mcp,
+                        _ => Surface::Cli,
+                    }
                 },
                 cwd: context
                     .caller()
@@ -283,6 +323,15 @@ impl<C: CommandType> Operation for TypedCommand<C> {
             let request = match with_cursor(request, context.cursor()) {
                 Ok(request) => request,
                 Err(error) => return Answer::error(error),
+            };
+            let request = if let crate::daemon::Request::Context { ask, .. } = &request {
+                let budget = context.budget(ask.default_budget_tokens(), None).tokens;
+                match with_budget(request, Some(budget)) {
+                    Ok(request) => request,
+                    Err(error) => return Answer::error(error),
+                }
+            } else {
+                request
             };
             if let Err(error) = context.check_cancelled() {
                 return Answer::error(error);
@@ -374,11 +423,9 @@ fn checked_values<C: CommandType>(
     let mut values = Values::from_json(command, caller.surface, values)
         .map_err(|error| Failure::new(FailureKind::BadRequest, error))?;
     // Durable identity belongs to the accepted envelope, outside operation arguments.
-    if command.writes {
-        values
-            .0
-            .insert("request_id".into(), Value::String(request_id.into()));
-    }
+    values
+        .0
+        .insert("request_id".into(), Value::String(request_id.into()));
     Ok(values)
 }
 
@@ -418,6 +465,7 @@ pub fn deadlines() -> command_surface::Deadlines {
 pub fn table(daemon: Arc<Daemon>) -> OperationTable {
     let mut table = OperationTable::new(PRODUCT, deadlines());
     table.accept(command_surface::RequestOption::Cursor);
+    table.accept(command_surface::RequestOption::BudgetTokens);
     for (kind, codes) in super::FAILURE_CLASSES {
         for code in *codes {
             table
@@ -459,6 +507,9 @@ pub fn request(
     deadline: command_surface::Deadline,
 ) -> command_surface::RunnableRequest {
     let cursor = arguments.text("cursor");
+    let budget_tokens = arguments
+        .integer("budget")
+        .and_then(|tokens| u32::try_from(tokens).ok());
     command_surface::Request {
         operation: command.name.into(),
         arguments: Value::Object(
@@ -474,7 +525,7 @@ pub fn request(
         ),
         request_id,
         deadline,
-        budget_tokens: Default::default(),
+        budget_tokens,
         cursor,
         fresh: false,
         format: Default::default(),

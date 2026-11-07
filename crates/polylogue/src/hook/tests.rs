@@ -137,10 +137,14 @@ fn context_uses_the_configured_archive_socket_and_clock() {
         let mut request = String::new();
         BufReader::new(&stream).read_line(&mut request).unwrap();
         let request: Value = serde_json::from_str(&request).unwrap();
+        assert_eq!(request["operation"], "brief");
+        assert_eq!(request["arguments"]["cwd"], "/synthetic/project");
+        assert_eq!(request["deadline"], 1500);
+        assert!(request.get("budget_tokens").is_none());
         let id = uuid::Uuid::parse_str(request["request_id"].as_str().unwrap()).unwrap();
         assert_eq!(id.get_timestamp().unwrap().to_unix().0, 1767225600);
         let response = command_surface::Answer::ok(
-            json!({"delivery":"context-1", "prepared":{"empty":false,"text":"configured archive"}}),
+            json!({"delivery":"context-1", "prepared":{"event":"session_start","empty":false,"text":"configured archive","refs":[],"left_out":[]}}),
         );
         writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
     });
@@ -552,4 +556,77 @@ fn a_standing_answer_becomes_the_permission_decision() {
             "decision": {"behavior": "deny", "message": "not on main"}}})
         )
     );
+}
+
+#[test]
+fn a_context_timeout_emits_an_unreferenced_notice_and_names_only_the_original_prepare() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    let dir = tempfile::tempdir().unwrap();
+    let startup = Startup::for_test(startup().engine, dir.path());
+    let listener = UnixListener::bind(Archive::at(dir.path()).socket()).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let peer = std::thread::spawn(move || {
+        let accept = || {
+            let until = std::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < until =>
+                    {
+                        std::thread::sleep(Duration::from_millis(1))
+                    }
+                    Err(error) => panic!("context exchange was not contacted: {error}"),
+                }
+            }
+        };
+        let mut stream = accept();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(&stream).read_line(&mut line).unwrap();
+        let prepare: Value = serde_json::from_str(&line).unwrap();
+        let failure = command_surface::Answer::<Value>::error(crate::protocol::failure(
+            "deadline_exceeded",
+            "fixture timeout",
+        ));
+        writeln!(stream, "{}", serde_json::to_string(&failure).unwrap()).unwrap();
+        let mut stream = accept();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        line.clear();
+        BufReader::new(&stream).read_line(&mut line).unwrap();
+        let outcome: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(outcome["op"], "delivery_event");
+        assert_eq!(outcome["delivery"], prepare["request_id"]);
+        assert_eq!(outcome["what"], "not_sent");
+        assert_eq!(outcome["detail"], "timeout");
+        writeln!(
+            stream,
+            "{}",
+            serde_json::to_string(&command_surface::Answer::ok(
+                json!({"queued":false,"preparation":"unconfirmed"})
+            ))
+            .unwrap()
+        )
+        .unwrap();
+    });
+    let (deliveries, text) = context(
+        &startup,
+        Ask::SessionStart {
+            cwd: "/synthetic/project".into(),
+            session: None,
+            source: StartSource::Startup,
+        },
+        None,
+    )
+    .unwrap();
+    peer.join().unwrap();
+    assert!(deliveries.is_empty());
+    assert!(text.contains("timed out"));
+    assert!(!text.contains("delivery:"));
 }

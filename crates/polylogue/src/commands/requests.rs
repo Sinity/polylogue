@@ -256,6 +256,7 @@ pub fn withdraw(command: &Command, v: &Values, _: &Caller) -> Built {
 
 pub fn brief(_: &Command, v: &Values, caller: &Caller) -> Built {
     Ok(Request::Context {
+        budget_tokens: None,
         request_id: v.request_id(),
         ask: Ask::SessionStart {
             cwd: cwd(v, caller)?,
@@ -268,10 +269,11 @@ pub fn brief(_: &Command, v: &Values, caller: &Caller) -> Built {
 
 pub fn takeover(_: &Command, v: &Values, caller: &Caller) -> Built {
     Ok(Request::Context {
+        budget_tokens: None,
         request_id: v.request_id(),
         ask: Ask::Takeover {
             session: v.session("session")?.ok_or("`session` is required")?,
-            for_session: None,
+            for_session: v.session("for_session")?,
         },
         sender: caller.sender(),
     })
@@ -291,11 +293,12 @@ pub fn resume(_: &Command, v: &Values, caller: &Caller) -> Built {
 
 pub fn recall(_: &Command, v: &Values, caller: &Caller) -> Built {
     Ok(Request::Context {
+        budget_tokens: None,
         request_id: v.request_id(),
         ask: Ask::Recall {
             text: v.text("query").unwrap_or_default(),
             cwd: cwd(v, caller).ok(),
-            for_session: None,
+            for_session: v.session("for_session")?,
             cursor: v.text("cursor"),
         },
         sender: caller.sender(),

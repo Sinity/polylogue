@@ -18,8 +18,8 @@
 //!
 //! Claude Code, Codex and Gemini CLI take context as `hookSpecificOutput.additionalContext`,
 //! Hermes as `{"context": ...}`. Other events are only recorded. Hooks fail
-//! open: when the daemon is down or slow, the harness gets no context and
-//! carries on.
+//! open: a timeout emits an unreferenced failure notice and the harness
+//! carries on. The original preparation is acknowledged only with positive proof.
 
 use crate::briefing::{Ask, StartSource};
 use crate::config::Startup;
@@ -354,24 +354,84 @@ fn is_uuid(w: &str) -> bool {
 
 /// Asks for context and returns its text, recording it as delivered once
 /// it is handed to the harness by the caller.
-fn context(startup: &Startup, ask: Ask) -> Option<(String, String)> {
+fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(String, String)> {
     let request_id = request_id(startup.clock.now()).ok()?;
-    let reply = ask_daemon(
-        startup,
-        &Request::Context {
-            request_id,
-            ask,
-            sender: Some(polylogue_model::DeliverySender::Hook.as_str().into()),
-        },
+    let (operation, arguments, cursor) = match ask {
+        Ask::SessionStart {
+            cwd,
+            session,
+            source,
+        } => (
+            "brief",
+            json!({ "cwd": cwd, "session": session, "source": source }),
+            None,
+        ),
+        Ask::Takeover {
+            session,
+            for_session,
+        } => (
+            "takeover",
+            json!({ "session": session, "for_session": for_session }),
+            None,
+        ),
+        Ask::Recall {
+            text,
+            cwd,
+            for_session,
+            cursor,
+        } => (
+            "recall",
+            json!({ "query": text, "cwd": cwd, "for_session": for_session }),
+            cursor,
+        ),
+    };
+    let request = command_surface::Request {
+        operation: operation.into(),
+        arguments,
+        request_id: request_id.clone(),
+        deadline: command_surface::Deadline::Milliseconds(CONTEXT_BUDGET.as_millis() as u64),
+        budget_tokens,
+        cursor,
+        fresh: false,
+        format: Default::default(),
+    };
+    let reply = crate::client::call_with_budget(
+        &Archive::at(&startup.config.archive).socket(),
+        &request,
         CONTEXT_BUDGET,
-    )?;
-    let data = crate::protocol::into_value(reply).ok()?;
-    if data["prepared"]["empty"].as_bool() != Some(false) {
+    );
+    let timed_out = match &reply {
+        Err(error) => error.kind() == std::io::ErrorKind::TimedOut,
+        Ok(reply) => reply.failure().is_some_and(|error| {
+            error.code.as_deref() == Some("deadline_exceeded")
+                || error.kind == command_surface::FailureKind::Timeout
+        }),
+    };
+    if timed_out {
+        // No prepared bytes were emitted. Only the daemon's existing queue
+        // may confirm preparation; absent proof leaves acceptance unresolved.
+        let _ = ask_daemon(
+            startup,
+            &Request::DeliveryEvent {
+                request_id: self::request_id(startup.clock.now()).ok()?,
+                delivery: request_id,
+                what: DeliveryOutcome::NotSent,
+                detail: Some("timeout".into()),
+            },
+            DELIVERED_BUDGET,
+        );
+        return Some((
+            String::new(),
+            "Polylogue context timed out; continue with the current task and local instructions."
+                .into(),
+        ));
+    }
+    let data = crate::protocol::into_value(reply.ok()?).ok()?;
+    let answer: crate::protocol::context::Answer = serde_json::from_value(data).ok()?;
+    if answer.prepared.empty {
         return None;
     }
-    let text = data["prepared"]["text"].as_str()?.to_owned();
-    let delivery = data["delivery"].as_str()?.to_owned();
-    Some((delivery, text))
+    Some((answer.delivery?, answer.prepared.text))
 }
 
 fn delivered(startup: &Startup, delivery: &str, budget: Duration) {
@@ -429,6 +489,7 @@ fn start(
             session: session_of(harness, payload, startup),
             source,
         },
+        None,
     )
 }
 
@@ -442,16 +503,27 @@ fn takeovers(
     let me = session_of(harness, payload, startup);
     let mut texts = Vec::new();
     let mut deliveries = Vec::new();
-    for id in pasted_session_ids(prompt) {
-        if Some(&id) == me.as_ref() {
-            continue;
-        }
+    let sessions: Vec<_> = pasted_session_ids(prompt)
+        .into_iter()
+        .filter(|id| Some(id) != me.as_ref())
+        .collect();
+    // Separators and every session share the named takeover budget.
+    let separators = sessions
+        .len()
+        .saturating_sub(1)
+        .saturating_mul(2)
+        .div_ceil(4);
+    let available = crate::briefing::DEFAULT_BUDGET
+        .saturating_sub(u32::try_from(separators).unwrap_or(u32::MAX));
+    let budget = available.checked_div(u32::try_from(sessions.len()).ok()?)?;
+    for id in sessions {
         if let Some((d, t)) = context(
             startup,
             Ask::Takeover {
                 session: id,
                 for_session: me.clone(),
             },
+            Some(budget),
         ) {
             deliveries.push(d);
             texts.push(t);
@@ -553,7 +625,12 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
     let mut ids: Vec<String> = Vec::new();
     let mut texts: Vec<String> = Vec::new();
     if let Some((deliveries, text)) = &responded {
-        ids.extend(deliveries.split(',').map(str::to_owned));
+        ids.extend(
+            deliveries
+                .split(',')
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned),
+        );
         texts.push(text.clone());
     }
     if let Some((claimed, text)) = &mail {

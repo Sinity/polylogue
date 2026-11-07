@@ -60,7 +60,7 @@ Sending a pack creates a delivery ([Deliveries](#deliveries)); preparing one wit
 
 ## Budgets
 
-A budget is a request argument (`--budget N`, MCP `budget_tokens`; a token counts as 4 bytes), with a default per named pack. Defaults are product values, not settings, adjusted by measured exploration saved. Ruling, 2026-07-03: "I said 10K but frankly … 30K or 50K even" (cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:6698988f-5446-4512-b9a3-3767899bd73d).
+A budget is a request-envelope field (`budget_tokens` on the socket, HTTP and MCP, `--budget N` on the CLI; a token counts as 4 bytes), with a default per named pack. Defaults are product values, not settings, adjusted by measured exploration saved. Ruling, 2026-07-03: "I said 10K but frankly … 30K or 50K even" (cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:6698988f-5446-4512-b9a3-3767899bd73d).
 
 | Pack | Default budget |
 |---|---|
@@ -68,6 +68,9 @@ A budget is a request argument (`--budget N`, MCP `budget_tokens`; a token count
 | brief at `resume` | 4,000 tokens |
 | brief at `compact` | 10,000 tokens plus the operator's prompts, which are never cut |
 | takeover | 10,000 tokens per prompt, shared by every session the prompt names |
+| recall | 10,000 tokens |
+
+A budget smaller than the required context header is refused; compaction prompts remain outside the fitted budget.
 
 Each harness's inline cap is declared with its hooks. A pack larger than the cap is injected as whole sections up to the cap, then a line naming the command that prints the whole delivery (`polylogue delivery:<id> read`); the delivery stores every byte, and text is never silently cut.
 
@@ -107,9 +110,9 @@ The session-start brief is injected by the `SessionStart` hook (and Hermes's fir
 - **Deadline.** Sections run cheapest first (assertions, other agents, open tasks, recent sessions, notices) and stop a fifth of the remaining time, at most a second, before the request's deadline. A section that meets it is left out with reason `deadline`, the brief names it and the command that prints the whole brief (`polylogue brief --cwd DIR --deadline none`), and the hook injects the sections that are ready. A deadline never yields an empty brief while a section has items.
 - **Delivery off the answer path.** The answer does not wait for the writer: the delivery record is queued, the hook hands its `delivered` outcome over within 20 ms and exits, and the writer applies both in order, a repeated request ID once. A full writer queue never makes a brief wait: the record waits in the daemon, in order with its outcome event, and goes to the writer after its next commit. An outcome is recorded even when the hook has already exited. Until a delivery's record commits, the daemon remembers it as the recipient's latest brief, so a `resume` or `compact` brief right after it reports only what changed since.
 
-On a whole-brief timeout or refusal, the hook injects one line "Polylogue brief unavailable: timed out (delivery:<id>)", records `not_sent:timeout` and exits 0.
+On a whole-brief timeout, the hook injects one unreferenced line: "Polylogue context timed out; continue with the current task and local instructions." It exits 0. The original preparation is marked `not_sent:timeout` only when the daemon positively confirms its existing queued preparation and its bytes were never emitted. Unconfirmed acceptance remains unresolved; the failure notice does not invent a delivery. If output was emitted but its acknowledgement was lost, its outcome remains unknown for reconciliation, without resending.
 
-**Interfaces:** the hook; `polylogue pack brief [--cwd DIR] [--for SESSION] [--source startup|resume|compact] [--budget N]`; MCP `brief`.
+**Interfaces:** the hook; `polylogue brief [--cwd DIR] [--session SESSION] [--source startup|resume|compact] [--budget N]`; MCP `brief`.
 
 ## Takeover
 
@@ -404,7 +407,7 @@ Morrow is the fixture; a "fixture harness" is a stub binary on `PATH` that recor
 - **takeover-after-compaction**: a takeover of a compacted session shows the summary and the kept tail, not the evicted prefix.
 - **recall-states-method**: on Morrow, `recall "weekday arithmetic"` ranks the subagent's final answer first and states that semantic search is off.
 - **cap-keeps-every-byte**: a pack larger than a harness's cap injects whole sections up to the cap plus the line naming the delivery; the delivery stores every byte.
-- **delivery-outcomes**: a hook brief that times out leaves `prepared` then `not_sent:timeout`; an MCP brief leaves `delivered`; a CLI brief from inside session S leaves a delivery to S with sender `cli`.
+- **delivery-outcomes**: a hook brief that times out records `not_sent:timeout` when its preparation is confirmed and its bytes were not emitted; unconfirmed acceptance remains unresolved; an MCP brief leaves `delivered`; a CLI brief from inside session S leaves a delivery to S with sender `cli`.
 - **deliveries-counted-per-send**: one pack sent twice to A and once to B gives one content hash and three deliveries; re-recording one with the same request ID still gives three.
 - **unknown-reconciled-not-resent**: an `unknown` delivery whose reference line is found in the recipient's transcript becomes `delivered` with no second send.
 - **use-has-no-window**: a recipient whose 40th tool call reads a delivery's ref makes the delivery `used`, with that call as evidence; a recipient that never refers to it leaves no `used`.

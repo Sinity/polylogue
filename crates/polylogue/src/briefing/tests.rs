@@ -83,6 +83,7 @@ fn recall_fuses_prose_and_tool_output_in_the_querys_order() {
         &fixture_context(Timestamp::from_unix_ms(0).unwrap()),
         None,
         None,
+        None,
     )
     .unwrap();
     // Each list has one first-place hit. Equal ranks and unknown times
@@ -285,6 +286,7 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         &fixture_context(now),
         None,
         None,
+        None,
     )
     .unwrap();
     let t = &p.text;
@@ -309,7 +311,7 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
 #[test]
 fn a_brief_fits_its_budget_and_names_what_it_left_out() {
     for budget in [200u64, 500, 1_000, 2_000, 8_000] {
-        let mut fit = Fitter::new(budget, "Polylogue brief for /x (delivery d)\n".into());
+        let mut fit = Fitter::new(budget, "Polylogue brief for /x (delivery d)\n".into()).unwrap();
         let items = |n: usize, width: usize| -> Vec<Item> {
             (0..n)
                 .map(|i| Item {
@@ -396,6 +398,7 @@ fn recall_pages_continue_by_cursor() {
             &fixture_context(now),
             None,
             None,
+            None,
         )
         .unwrap();
         seen.extend(p.refs.iter().filter(|r| r.starts_with("message:")).cloned());
@@ -427,6 +430,7 @@ fn recall_pages_continue_by_cursor() {
             &ask,
             "d",
             &fixture_context(now),
+            None,
             None,
             None,
         )
@@ -487,6 +491,7 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
             },
             "d1",
             &fixture_context(now),
+            None,
             None,
             None,
         )
@@ -563,6 +568,7 @@ fn a_brief_past_its_deadline_answers_with_the_sections_it_has() {
             &fixture_context(Timestamp::from_unix_ms(T0 + 3_600_000).unwrap()),
             None,
             None,
+            None,
         )
         .unwrap()
     });
@@ -614,4 +620,40 @@ fn fixture_context(now: Timestamp) -> std::sync::Arc<crate::operation::Context> 
         ),
         day,
     ))
+}
+
+#[test]
+fn named_context_defaults_and_explicit_tight_budgets_share_one_fitter() {
+    let (_dir, f) = worked_directory();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let ask = Ask::SessionStart {
+        cwd: "/home/op/proj".into(),
+        session: None,
+        source: StartSource::Resume,
+    };
+    assert_eq!(ask.default_budget_tokens(), 4000);
+    assert_eq!(
+        Ask::Takeover {
+            session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+            for_session: None
+        }
+        .default_budget_tokens(),
+        10000
+    );
+    let prepared = prepare(
+        &reader,
+        &scope_of(&reader),
+        None,
+        &ask,
+        "tight",
+        &fixture_context(Timestamp::from_unix_ms(T0 + 3_600_000).unwrap()),
+        None,
+        None,
+        Some(200),
+    )
+    .unwrap();
+    assert!(prepared.text.len() <= 800, "{}", prepared.text);
+    assert!(!prepared.left_out.is_empty());
+    assert!(Fitter::new(0, "required header".into()).is_err());
 }

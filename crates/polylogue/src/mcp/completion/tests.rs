@@ -33,6 +33,7 @@ fn completion_route_uses_full_query_cursor_and_preserves_the_suffix() {
         ToolCall {
             operation: None,
             arguments: json!({"text":"live: | measure count","position":5}),
+            budget_tokens: None,
             cursor: None,
             request_id: "complete-parity".into(),
             deadline: Default::default(),

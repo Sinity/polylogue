@@ -263,12 +263,16 @@ pub enum Request {
         #[serde(default)]
         reason: Option<String>,
     },
-    /// Prepares context: a brief, a takeover or a recall. With a `sender`
+    /// Internal plan for the canonical brief, takeover and recall operations.
+    /// With a `sender`
     /// (hook, mcp, ...) its record as a delivery to the recipient is queued
     /// for the writer and the answer does not wait for it; the request ID
     /// becomes the delivery ID.
+    #[serde(skip)]
     Context {
         request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget_tokens: Option<u32>,
         ask: Ask,
         #[serde(default)]
         sender: Option<String>,

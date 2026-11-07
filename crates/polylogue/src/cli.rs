@@ -278,7 +278,7 @@ pub fn run(
     let raw = m.get_one::<String>("request");
     if raw.is_some()
         && cmd.args_for(Surface::Cli).any(|argument| {
-            argument.name != "cursor"
+            !matches!(argument.name, "cursor" | "budget")
                 && m.value_source(argument.name) == Some(ValueSource::CommandLine)
         })
     {
@@ -310,6 +310,32 @@ pub fn run(
         .get_one::<String>("request_id")
         .cloned()
         .unwrap_or_else(|| values.request_id());
+    let budget_tokens = match m
+        .get_one::<u64>("budget")
+        .copied()
+        .map(u32::try_from)
+        .transpose()
+    {
+        Ok(tokens) => tokens,
+        Err(_) => {
+            return fail(
+                policy,
+                json,
+                "bad_request",
+                "budget exceeds the request token type",
+                2,
+            );
+        }
+    };
+    if budget_tokens.is_some() && !matches!(cmd.name, "brief" | "takeover" | "recall") {
+        return fail(
+            policy,
+            json,
+            "bad_request",
+            "operation does not prepare budgeted context",
+            2,
+        );
+    }
     let cursor = values.text("cursor");
     let mut literal_arguments = None;
     let request = if let Some(raw) = raw {
@@ -364,7 +390,7 @@ pub fn run(
             arguments,
             request_id,
             deadline,
-            budget_tokens: Default::default(),
+            budget_tokens,
             cursor,
             fresh: false,
             format: Default::default(),

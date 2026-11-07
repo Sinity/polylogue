@@ -281,6 +281,7 @@ pub enum Surface {
     Cli,
     Mcp,
     Http,
+    Hook,
 }
 
 /// Who is calling, for what a command's arguments leave open.
@@ -298,8 +299,11 @@ impl Caller {
     /// The sender a prepared context is recorded under: MCP hands it to a
     /// model; the command line and the reader show it to a person.
     pub fn sender(&self) -> Option<String> {
-        (self.surface == Surface::Mcp)
-            .then(|| polylogue_model::DeliverySender::Mcp.as_str().to_owned())
+        match self.surface {
+            Surface::Mcp => Some(polylogue_model::DeliverySender::Mcp.as_str().to_owned()),
+            Surface::Hook => Some(polylogue_model::DeliverySender::Hook.as_str().to_owned()),
+            Surface::Cli | Surface::Http => None,
+        }
     }
 }
 
@@ -341,6 +345,15 @@ const CWD: Arg = opt(
     Kind::Text,
     "The directory (default: the caller's working directory)",
 );
+const BUDGET: Arg = Arg {
+    global: true,
+    cli_only: true,
+    ..opt(
+        "budget",
+        Kind::Integer,
+        "Tokens for a prepared context; defaults to its named pack",
+    )
+};
 const FORMATS: &[&str] = polylogue_render::Format::NAMES;
 const VIEWS: &[&str] = polylogue_model::read::View::NAMES;
 const SHELLS: &[&str] = &["bash", "elvish", "fish", "powershell", "zsh"];
@@ -903,9 +916,11 @@ const WRITTEN: &[Command] = &[
         tool: Some(Tool::Note), http: true, writes: true,
         ..CLI
     }),
-    Command {
+    typed_command!(BriefOperation, crate::protocol::context::Brief, crate::protocol::context::Answer, {
         name: "brief",
-        help: "The session-start brief for a directory or session: the operator's notes there, other agents working there now, Beads claimed and open, what the recent sessions did, checks failing with no later pass, and signal notices; within `briefing.budget` tokens",
+        reason: "Prepare the named context with its declared selection and token budget",
+        latency: command_surface::LatencyClass::Search,
+        help: "The session-start brief for a directory or session: the operator's notes there, other agents working there now, Beads claimed and open, what the recent sessions did, checks failing with no later pass, and signal notices; within its request token budget",
         args: &[
             opt(
                 "session",
@@ -913,6 +928,7 @@ const WRITTEN: &[Command] = &[
                 "The session asking, when known (`claude-code:<id>`)",
             ),
             CWD,
+            BUDGET,
             Arg {
                 default: Some("startup"),
                 ..opt(
@@ -924,18 +940,20 @@ const WRITTEN: &[Command] = &[
         ],
         action: Action::Request(requests::brief),
         print: print::context,
-        tool: Some(Tool::Context),
+        tool: Some(Tool::Context), http: true,
         ..CLI
-    },
-    Command {
+    }),
+    typed_command!(TakeoverOperation, crate::protocol::context::Takeover, crate::protocol::context::Answer, {
         name: "takeover",
+        reason: "Prepare the named context with its declared selection and token budget",
+        latency: command_surface::LatencyClass::Search,
         help: "Context for taking over another session: its prompts, notes, what it left open and its last answer",
-        args: &[pos("session", Kind::Text, "`origin:native_id`")],
+        args: &[pos("session", Kind::Text, "`origin:native_id`"), BUDGET, unlisted(opt("for_session", Kind::Text, "The receiving session"))],
         action: Action::Request(requests::takeover),
         print: print::context,
-        tool: Some(Tool::Context),
+        tool: Some(Tool::Context), http: true,
         ..CLI
-    },
+    }),
     Command {
         name: "continue",
         help: "Resume a session through its tool's own command. Without a session, the sessions in this directory that left something open (an unanswered prompt, an unfinished tool call, a todo, a handoff)",
@@ -959,19 +977,23 @@ const WRITTEN: &[Command] = &[
         http: true,
         ..CLI
     },
-    Command {
+    typed_command!(RecallOperation, crate::protocol::context::Recall, crate::protocol::context::Answer, {
         name: "recall",
+        reason: "Prepare the named context with its declared selection and token budget",
+        latency: command_surface::LatencyClass::Search,
         help: "Search past work for something relevant now: messages holding every word (in prose or tool output) and, when vectors exist, messages similar to the text, ranked together; grouped by session, with notes on them and a summary of how it searched. A page ends with the cursor of the next",
         args: &[
             pos_opt("query", Kind::Words, "What to look for"),
             CWD,
+            BUDGET,
+            unlisted(opt("for_session", Kind::Text, "The receiving session")),
             CURSOR,
         ],
         action: Action::Request(requests::recall),
         print: print::context,
-        tool: Some(Tool::Context),
+        tool: Some(Tool::Context), http: true,
         ..CLI
-    },
+    }),
     typed_command!(SettingOperation, crate::protocol::setting::Arguments, crate::protocol::setting::Answer, crate::protocol::setting::required_access, {
         name: "setting",
         help: "List the typed runtime settings catalog, read KEY, or write KEY VALUE. Includes reading.variants, browser.actions, embed.*, plan.* and price.*. Standalone attention settings are local; primary attention names its Sinex owner",

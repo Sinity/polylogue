@@ -134,6 +134,7 @@ impl Daemon {
                 request_id: request.request_id.clone(),
                 deadline: request.deadline,
                 cursor: request.cursor.clone(),
+                budget_tokens: request.budget_tokens,
             };
             serde_json::json!({"name": tool.name(), "arguments": call})
         });
@@ -284,6 +285,7 @@ fn context(
     request_id: String,
     ask: &Ask,
     sender: Option<String>,
+    budget_tokens: Option<u32>,
     operation: &Arc<Context>,
 ) -> Answer<Value> {
     use polylogue_store::read::limit::ReadLimit;
@@ -332,6 +334,7 @@ fn context(
             operation,
             ranking_identity.as_deref(),
             near,
+            budget_tokens,
         )
         .map_err(|e| match &request_limit {
             Some(limit) if limit.check().is_err() => {
@@ -375,7 +378,7 @@ fn context(
             },
             recipient_id: ask.recipient().map(ToString::to_string),
             sender,
-            event: prepared.event.into(),
+            event: prepared.event.clone(),
             cwd: ask.cwd().map(|c| c.to_string_lossy().into_owned()),
             text: prepared.text.clone(),
             refs: prepared.refs.clone(),
@@ -424,6 +427,16 @@ fn delivery_event(
     request_id: String,
     write: UserWrite,
 ) -> Answer<Value> {
+    if let UserWrite::DeliveryEvent {
+        delivery,
+        what: polylogue_model::DeliveryOutcome::NotSent,
+        detail,
+    } = &write
+        && detail.as_deref() == Some("timeout")
+        && !d.queued_deliveries.owns_preparation(delivery)
+    {
+        return ok(serde_json::json!({ "queued": false, "preparation": "unconfirmed" }));
+    }
     let writes = match writer(d) {
         Ok(writes) => writes,
         Err(failure) => return failure.answer(),
@@ -701,6 +714,24 @@ fn handle_inner(
     }
     if matches!(&request, Request::Attachment { .. }) {
         return super::attachment::read(request, d);
+    }
+    if let Request::DeliveryEvent {
+        request_id,
+        delivery,
+        what,
+        detail,
+    } = request
+    {
+        return delivery_event(
+            d,
+            invocation,
+            request_id,
+            UserWrite::DeliveryEvent {
+                delivery,
+                what,
+                detail,
+            },
+        );
     }
     let _foreground = d.idle_admission.foreground();
     let reader = match d.reads.reader() {
@@ -1342,6 +1373,7 @@ fn handle_inner(
             request_id,
             ask,
             sender,
+            budget_tokens,
         } => {
             drop(reader);
             context(
@@ -1349,26 +1381,12 @@ fn handle_inner(
                 request_id,
                 &ask,
                 sender,
+                budget_tokens,
                 operation.as_ref().expect("briefing operation context"),
             )
         }
-        Request::DeliveryEvent {
-            request_id,
-            delivery,
-            what,
-            detail,
-        } => {
-            drop(reader);
-            delivery_event(
-                d,
-                invocation,
-                request_id,
-                UserWrite::DeliveryEvent {
-                    delivery,
-                    what,
-                    detail,
-                },
-            )
+        Request::DeliveryEvent { .. } => {
+            unreachable!("delivery events are handed over without a reader")
         }
         Request::Resumable { cwd, limit } => {
             match crate::resume::resumable(

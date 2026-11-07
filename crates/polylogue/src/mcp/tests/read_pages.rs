@@ -410,6 +410,7 @@ pub(super) fn read_without_deadline(archive: &Archive, arguments: Value) -> Resu
     let envelope = serde_json::to_value(crate::protocol::operations::ToolCall {
         operation: Some("read".into()),
         arguments,
+        budget_tokens: None,
         cursor: None,
         request_id: uuid::Uuid::now_v7().to_string(),
         deadline: command_surface::Deadline::None,

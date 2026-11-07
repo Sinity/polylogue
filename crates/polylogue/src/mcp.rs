@@ -116,6 +116,7 @@ fn input_schema(tool: Tool) -> Value {
             "request_id": {"type": "string"},
             "deadline": {"type": ["integer", "null"], "description": "ms; null: none"},
             "cursor": {"type": ["string", "null"]},
+            "budget_tokens": {"type":"integer", "minimum":0},
         },
         "required": required,
         "additionalProperties": false,
@@ -287,11 +288,14 @@ fn run(
             arguments: call.arguments.clone(),
             request_id: call.request_id.clone(),
             deadline: call.deadline,
-            budget_tokens: Default::default(),
+            budget_tokens: call.budget_tokens,
             cursor: call.cursor.clone(),
             fresh: false,
             format: Default::default(),
         });
+    if canonical.is_none() && call.budget_tokens.is_some() {
+        return Err(bad_request("operation does not prepare budgeted context"));
+    }
     let request = if let Some(canonical) = &canonical {
         let caller = Caller {
             surface: Surface::Mcp,
@@ -315,6 +319,7 @@ fn run(
     };
     // An untyped request carries an absolute deadline; a lifted one is
     // expressed only by the typed envelope.
+    let parent_deadline_ms = deadline_ms;
     let deadline_ms = match call.deadline {
         Deadline::Default => deadline_ms,
         Deadline::Milliseconds(ms) => Some(crate::daemon::execution::deadline(
@@ -337,8 +342,12 @@ fn run(
         caller.tool_call_id = tool_call_id;
     }
     let answer = if let Some(canonical) = canonical {
-        runtime.block_on(crate::client::call_ready_as(
-            archive, &canonical, cancelled, caller,
+        runtime.block_on(crate::client::call_ready_as_bounded(
+            archive,
+            &canonical,
+            cancelled,
+            caller,
+            parent_deadline_ms,
         ))
     } else {
         runtime.block_on(crate::client::send_ready_as(

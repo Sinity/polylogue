@@ -76,7 +76,7 @@ enum Input {
 fn ready_pairs(pairs: Vec<(String, String)>) -> Result<command_surface::RunnableRequest, String> {
     let mut object = serde_json::Map::new();
     for (key, value) in pairs {
-        let value = if matches!(key.as_str(), "arguments" | "deadline") {
+        let value = if matches!(key.as_str(), "arguments" | "deadline" | "budget_tokens") {
             serde_json::from_str(&value).map_err(|error| error.to_string())?
         } else {
             serde_json::Value::String(value)

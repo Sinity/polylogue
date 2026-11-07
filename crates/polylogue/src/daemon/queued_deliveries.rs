@@ -78,6 +78,27 @@ impl QueuedDeliveries {
         hand_over(&mut state, writes)
     }
 
+    /// Positive proof only: absence says nothing about a preparation already
+    /// committed or an invocation still running. Never acquires an archive reader.
+    pub fn owns_preparation(&self, id: &str) -> bool {
+        let state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        state.latest.values().any(|latest| {
+            latest.request == id
+                && match &latest.committed {
+                    None => true,
+                    Some(committed) => {
+                        matches!(committed.try_recv(), Err(TryRecvError::Empty) | Ok(Ok(_)))
+                    }
+                }
+        }) || state.waiting.iter().any(|waiting| {
+            waiting.request.id == id
+                && matches!(
+                    &waiting.request.write,
+                    polylogue_model::user::UserWrite::Deliver(_)
+                )
+        })
+    }
+
     /// The latest brief handed to `recipient` whose record is not committed.
     pub fn latest(&self, recipient: &str) -> Option<LastBrief> {
         let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);

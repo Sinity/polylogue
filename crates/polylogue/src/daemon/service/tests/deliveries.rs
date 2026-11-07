@@ -20,6 +20,7 @@ fn after_queued_writes(d: &test_daemon::TestDaemon) {
 
 fn takeover(d: &test_daemon::TestDaemon, request_id: &str) -> serde_json::Value {
     let request = Request::Context {
+        budget_tokens: None,
         request_id: request_id.into(),
         ask: Ask::Takeover {
             session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
@@ -71,6 +72,7 @@ fn an_accepted_prepared_receipt_crosses_the_read_deadline_without_a_false_refusa
     let id = polylogue_store::user_writes::new_request_id();
     let limit = ReadLimit::new(Duration::from_secs(2), Default::default());
     let request = Request::Context {
+        budget_tokens: None,
         request_id: id.clone(),
         ask: Ask::Takeover {
             session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
@@ -158,6 +160,7 @@ fn daemon_with_a_project() -> test_daemon::TestDaemon {
 
 fn brief(d: &test_daemon::TestDaemon, request_id: &str, source: StartSource) -> serde_json::Value {
     let request = Request::Context {
+        budget_tokens: None,
         request_id: request_id.into(),
         ask: Ask::SessionStart {
             cwd: "/home/op/proj".into(),
@@ -380,4 +383,38 @@ fn a_brief_answers_while_the_writer_queue_is_full_and_its_delivery_commits_once_
         )
         .unwrap();
     assert_eq!(rows[0]["n"], 1);
+}
+
+#[test]
+fn timeout_outcome_requires_positive_preparation_without_waiting_for_the_writer() {
+    let d = daemon_with_a_project();
+    let (barrier, held) = hold_writer(&d, "held-timeout-receipt");
+    let id = polylogue_store::user_writes::new_request_id();
+    let prepared = brief(&d, &id, StartSource::Startup);
+    let event = |delivery: &str| {
+        handle(
+            Request::DeliveryEvent {
+                request_id: polylogue_store::user_writes::new_request_id(),
+                delivery: delivery.into(),
+                what: polylogue_model::DeliveryOutcome::NotSent,
+                detail: Some("timeout".into()),
+            },
+            &d.daemon,
+        )
+    };
+    let unknown = crate::test_answers::ok(event("unconfirmed-prepare"));
+    let known = crate::test_answers::ok(event(&id));
+    barrier.release();
+    held.join().unwrap();
+    assert_eq!(prepared["delivery"], id);
+    assert_eq!(unknown["queued"], false);
+    assert_eq!(known["queued"], true);
+    after_queued_writes(&d);
+    let reader = d.daemon.reads.reader().unwrap();
+    assert!(reader.delivery("unconfirmed-prepare").unwrap().is_none());
+    let delivery = reader.delivery(&id).unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(delivery).unwrap()["outcome"],
+        "not_sent"
+    );
 }

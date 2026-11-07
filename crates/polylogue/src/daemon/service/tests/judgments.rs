@@ -137,6 +137,7 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         &operation,
         None,
         None,
+        None,
     )
     .unwrap();
     assert!(brief.text.contains("use the fast path"), "{}", brief.text);

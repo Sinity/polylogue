@@ -529,3 +529,68 @@ fn measurement_answers_retain_the_actual_resolved_context_on_the_shared_socket()
         assert_eq!(schema["additionalProperties"], false);
     }
 }
+
+#[test]
+fn named_context_budget_and_identity_survive_admission_and_socket_execution() {
+    let daemon = crate::test_daemon::start("context budget witness");
+    let command = crate::commands::command("brief").unwrap();
+    let caller = crate::commands::Caller {
+        surface: crate::commands::Surface::Hook,
+        cwd: None,
+        json: true,
+    };
+    let envelope = command_surface::Request {
+        operation: "brief".into(),
+        arguments: json!({"cwd":"/synthetic","source":"resume"}),
+        request_id: "context-budget-witness".into(),
+        deadline: command_surface::Deadline::None,
+        budget_tokens: Some(200),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
+    };
+    let (cli_command, cli_values) = crate::cli::parse(&[
+        "polylogue",
+        "brief",
+        "--cwd",
+        "/synthetic",
+        "--source",
+        "resume",
+        "--budget",
+        "200",
+    ])
+    .unwrap();
+    assert_eq!(
+        request(
+            cli_command,
+            cli_values,
+            envelope.request_id.clone(),
+            envelope.deadline
+        ),
+        envelope
+    );
+    let original = envelope.clone();
+    let internal = admit(command, &envelope, &caller).unwrap();
+    assert!(
+        matches!(internal, crate::daemon::Request::Context { request_id, budget_tokens: Some(200), sender: Some(sender), .. }
+        if request_id == envelope.request_id && sender == "hook")
+    );
+    assert_eq!(envelope, original);
+    let answer = crate::client::call_ready(&daemon.daemon.archive, &envelope).unwrap();
+    assert_eq!(answer.exit_code(), 0, "{answer:?}");
+    let prepared: crate::protocol::context::Answer =
+        serde_json::from_value(answer.value().unwrap().clone()).unwrap();
+    assert!(prepared.prepared.text.len() <= 800);
+    assert!(prepared.prepared.text.contains("context-budget-witness"));
+    let mut unsupported = envelope;
+    unsupported.operation = "query".into();
+    unsupported.arguments = json!({"query":"sessions"});
+    assert!(
+        admit(
+            crate::commands::command("query").unwrap(),
+            &unsupported,
+            &caller
+        )
+        .is_err()
+    );
+}

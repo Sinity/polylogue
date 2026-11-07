@@ -16,7 +16,7 @@
 //! - on resume, only what changed since the session's last brief; after
 //!   compaction, every prompt the operator typed in the session, verbatim.
 //!
-//! A brief fits its fixed budget (in tokens of about four
+//! A brief fits its request budget (in tokens of about four
 //! bytes; [`DEFAULT_BUDGET`]). Sections fill in the order above and each
 //! names what did not fit and the command that shows it. The operator's
 //! prompts after compaction are never cut.
@@ -48,8 +48,9 @@ use std::path::{Path, PathBuf};
 const RECENT_SESSIONS: u64 = 5;
 /// Hits a recall returns per page.
 const RECALL_PAGE: u64 = 20;
-/// A brief's fixed budget in tokens.
-pub const DEFAULT_BUDGET: u64 = 2_000;
+/// The default named-context budget in tokens.
+pub const DEFAULT_BUDGET: u32 = 10_000;
+const RESUME_BUDGET: u32 = 4_000;
 /// Bytes kept for the lines that name what did not fit.
 const POINTER_RESERVE: usize = 600;
 /// How far back Bead claims are reported.
@@ -58,7 +59,9 @@ const CLAIM_WINDOW_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const NOTICE_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// Why a session is starting, as the harness reports it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum StartSource {
     #[default]
@@ -111,6 +114,16 @@ pub enum Ask {
 }
 
 impl Ask {
+    pub fn default_budget_tokens(&self) -> u32 {
+        match self {
+            Self::SessionStart {
+                source: StartSource::Resume,
+                ..
+            } => RESUME_BUDGET,
+            _ => DEFAULT_BUDGET,
+        }
+    }
+
     pub fn recipient(&self) -> Option<&SessionId> {
         match self {
             Self::SessionStart { session, .. } => session.as_ref(),
@@ -130,9 +143,9 @@ impl Ask {
 }
 
 /// Prepared context, not yet delivered.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Prepared {
-    pub event: &'static str,
+    pub event: String,
     pub text: String,
     /// References included, in order.
     pub refs: Vec<String>,
@@ -148,12 +161,12 @@ pub struct Prepared {
 }
 
 /// How a recall searched, so a reader can judge what it may have missed.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SearchSummary {
     pub words: Vec<String>,
     /// What was searched: `prose` and `output` (full text, every word),
     /// and `semantic` (similarity to the whole text) when vectors exist.
-    pub indexes: Vec<&'static str>,
+    pub indexes: Vec<String>,
     /// Hits on this page and the sessions they are in.
     pub hits: usize,
     pub sessions: usize,
@@ -244,7 +257,9 @@ pub fn prepare(
     context: &std::sync::Arc<crate::operation::Context>,
     ranking_identity: Option<&str>,
     near: Option<&NearFn<'_>>,
+    budget_tokens: Option<u32>,
 ) -> Result<Prepared, StoreError> {
+    let budget = u64::from(budget_tokens.unwrap_or_else(|| ask.default_budget_tokens()));
     match ask {
         Ask::SessionStart {
             cwd,
@@ -257,10 +272,11 @@ pub fn prepare(
             cwd,
             session.as_ref(),
             *source,
+            budget,
             delivery_id,
             context,
         ),
-        Ask::Takeover { session, .. } => takeover(reader, session, delivery_id, context),
+        Ask::Takeover { session, .. } => takeover(reader, session, budget, delivery_id, context),
         Ask::Recall {
             text, cwd, cursor, ..
         } => recall(
@@ -268,6 +284,7 @@ pub fn prepare(
             text,
             cwd.as_deref(),
             cursor.as_deref(),
+            budget,
             delivery_id,
             context,
             ranking_identity,
@@ -382,20 +399,29 @@ struct Fitter {
     /// that prints the whole brief.
     late: Option<String>,
     budget: u64,
+    reserve: usize,
 }
 
 impl Fitter {
-    fn new(budget: u64, header: String) -> Self {
+    fn new(budget: u64, header: String) -> Result<Self, StoreError> {
         let bytes = usize::try_from(budget.saturating_mul(4)).unwrap_or(usize::MAX);
-        Self {
-            room: bytes.saturating_sub(POINTER_RESERVE + header.len()),
+        if header.len() > bytes {
+            return Err(StoreError::Invalid(
+                "context budget cannot fit the required header; increase budget_tokens".into(),
+            ));
+        }
+        let available = bytes - header.len();
+        let reserve = POINTER_RESERVE.min(available);
+        Ok(Self {
+            room: available - reserve,
             text: header,
             refs: Vec::new(),
             left_out: Vec::new(),
             pointers: Vec::new(),
             late: None,
             budget,
-        }
+            reserve,
+        })
     }
 
     /// Adds a section's items while they fit. Items that do not are
@@ -434,7 +460,7 @@ impl Fitter {
     /// Lines that need no budget accounting of their own (the pointers
     /// left over and the closing hint), as long as the reserve lasts.
     fn finish(mut self, closing: &str) -> (String, Vec<String>, Vec<LeftOut>) {
-        let mut reserve = POINTER_RESERVE + self.room;
+        let mut reserve = self.reserve + self.room;
         let mut tail = Vec::new();
         if !self.pointers.is_empty() {
             tail.push("\nLeft out for the budget:".to_owned());
@@ -661,6 +687,7 @@ fn session_start(
     cwd: &Path,
     session: Option<&SessionId>,
     source: StartSource,
+    budget: u64,
     delivery_id: &str,
     context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<Prepared, StoreError> {
@@ -755,17 +782,18 @@ fn session_start(
     }
     // The operator's own words after compaction are never cut.
     let mut prompt_refs = Vec::new();
+    let mut protected_prompts = String::new();
     if source == StartSource::Compact
         && let Some(s) = &me
     {
         let prompts = reader.prompts(s)?;
         if !prompts.is_empty() {
             let _ = writeln!(
-                header,
+                protected_prompts,
                 "\nEvery prompt the operator typed in this session, verbatim, oldest first:"
             );
             for p in &prompts {
-                let _ = writeln!(header, "\n[{}] {}", day(p.at), p.text.trim_end());
+                let _ = writeln!(protected_prompts, "\n[{}] {}", day(p.at), p.text.trim_end());
                 prompt_refs.push(format!("message:{}", p.message_id));
             }
         }
@@ -777,7 +805,8 @@ fn session_start(
         })?
         .unwrap_or_default();
 
-    let mut fit = Fitter::new(DEFAULT_BUDGET, header);
+    let mut fit = Fitter::new(budget, header)?;
+    fit.text.push_str(&protected_prompts);
     fit.refs.extend(prompt_refs);
 
     fit.section(
@@ -899,7 +928,8 @@ fn session_start(
             StartSource::Resume => DeliveryEvent::Resume,
             StartSource::Compact => DeliveryEvent::Compaction,
         }
-        .as_str(),
+        .as_str()
+        .into(),
         text,
         refs,
         left_out,
@@ -911,6 +941,7 @@ fn session_start(
 fn takeover(
     reader: &Reader<'_>,
     session: &SessionId,
+    budget: u64,
     delivery_id: &str,
     context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<Prepared, StoreError> {
@@ -1005,29 +1036,49 @@ fn takeover(
         }
         let _ = writeln!(text, "Left open: {}.", open.join("; "));
     }
-    if !notes.is_empty() {
-        let _ = writeln!(text, "\nNotes from the operator on it:");
-        for n in &notes {
-            let _ = writeln!(text, "{}", note_line(n));
-            refs.push(format!("assertion:{}@{}", n.fact.root, n.fact.id));
-        }
-    }
-    if !prompts.is_empty() {
-        let _ = writeln!(text, "\nThe operator's prompts in it, oldest first:");
-        for p in &prompts {
-            let _ = writeln!(text, "\n[{}] {}", day(p.at), p.text.trim_end());
-            refs.push(format!("message:{}", p.message_id));
-        }
-    }
-    if let Some(answer) = last_answer.filter(|a| !a.trim().is_empty()) {
-        let _ = writeln!(text, "\nIts last answer:\n{}", answer.trim_end());
-    }
-    let _ = writeln!(
-        text,
-        "\nThe full session: `polylogue read {id}`; its tool calls: `polylogue read {id} --view actions`."
+    let mut fit = Fitter::new(budget, text)?;
+    fit.refs.append(&mut refs);
+    fit.left_out.append(&mut left_out);
+    let pull = format!("polylogue read {id}");
+    fit.section(
+        "Notes from the operator on it:",
+        notes
+            .iter()
+            .map(|n| Item {
+                text: note_line(n),
+                refs: vec![format!("assertion:{}@{}", n.fact.root, n.fact.id)],
+            })
+            .collect(),
+        "operator notes",
+        &pull,
     );
+    fit.section(
+        "The operator's prompts in it, oldest first:",
+        prompts
+            .iter()
+            .map(|p| Item {
+                text: format!("[{}] {}", day(p.at), p.text.trim_end()),
+                refs: vec![format!("message:{}", p.message_id)],
+            })
+            .collect(),
+        "operator prompts",
+        &pull,
+    );
+    fit.section(
+        "Its last answer:",
+        last_answer
+            .filter(|a| !a.trim().is_empty())
+            .into_iter()
+            .map(|text| Item { text, refs: vec![] })
+            .collect(),
+        "last answer",
+        &pull,
+    );
+    let (text, refs, left_out) = fit.finish(&format!(
+        "\nThe full session: `{pull}`; its tool calls: `{pull} --view actions`."
+    ));
     Ok(Prepared {
-        event: DeliveryEvent::Takeover.as_str(),
+        event: DeliveryEvent::Takeover.as_str().into(),
         text,
         refs,
         left_out,
@@ -1095,6 +1146,7 @@ fn recall(
     text_in: &str,
     cwd: Option<&Path>,
     cursor: Option<&str>,
+    budget: u64,
     delivery_id: &str,
     context: &std::sync::Arc<crate::operation::Context>,
     ranking_identity: Option<&str>,
@@ -1195,7 +1247,6 @@ fn recall(
     }
 
     let mut out = String::new();
-    let mut refs = Vec::new();
     let _ = writeln!(
         out,
         "Polylogue recall for {:?} (delivery {delivery_id})",
@@ -1218,7 +1269,10 @@ fn recall(
             }
         );
     }
+    let mut items = Vec::new();
     for sid in &sessions {
+        let mut out = String::new();
+        let mut refs = Vec::new();
         let Ok(id) = SessionId::parse(sid) else {
             continue;
         };
@@ -1271,22 +1325,24 @@ fn recall(
             }
             refs.push(format!("assertion:{}@{}", n.fact.root, n.fact.id));
         }
+        items.push(Item { text: out, refs });
     }
     let search_summary = SearchSummary {
         words,
-        indexes,
+        indexes: indexes.into_iter().map(str::to_owned).collect(),
         hits: page.len(),
         sessions: sessions.len(),
         more: next.is_some(),
     };
+    let mut closing = String::new();
     let _ = writeln!(
-        out,
+        closing,
         "\nHow this was found: {}, ranked together by reciprocal rank fusion{}; \
          {} hits in {} sessions{}.",
         search_summary
             .indexes
             .iter()
-            .map(|i| match *i {
+            .map(|i| match i.as_str() {
                 "prose" => "every word in prose",
                 "output" => "every word in tool output",
                 _ => "similarity to the whole text",
@@ -1305,11 +1361,22 @@ fn recall(
             None => String::new(),
         }
     );
+    let mut fit = Fitter::new(budget, out)?;
+    fit.section(
+        "Stored context:",
+        items,
+        "matching sessions",
+        &format!(
+            "polylogue recall {}",
+            polylogue_render::shell_quote(text_in)
+        ),
+    );
+    let (out, refs, left_out) = fit.finish(&closing);
     Ok(Prepared {
-        event: DeliveryEvent::Recall.as_str(),
+        event: DeliveryEvent::Recall.as_str().into(),
         text: out,
         refs,
-        left_out: Vec::new(),
+        left_out,
         search_summary: Some(search_summary),
         empty: false,
         next,

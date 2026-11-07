@@ -86,6 +86,7 @@ fn expired_requests_never_start_any_read_operation() {
             cursor: None,
         },
         Request::Context {
+            budget_tokens: None,
             request_id: "synthetic-recall".into(),
             ask: crate::briefing::Ask::Recall {
                 text: "synthetic".into(),
@@ -208,6 +209,7 @@ fn other_read_requests_use_their_operation_name_in_refusals() {
 #[test]
 fn context_receipts_do_not_disable_the_read_phase_deadline() {
     let request = Request::Context {
+        budget_tokens: None,
         request_id: "synthetic-context".into(),
         ask: crate::briefing::Ask::Takeover {
             session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),

@@ -84,7 +84,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                     "bad_request",
                     error.to_string(),
                 )),
-                Ok((request, caller)) => {
+                Ok((request, caller, parent_deadline_ms)) => {
                     let (evidence, channel) =
                         crate::protocol::caller::peer(&out, &caller, d.config.requests.machine())
                             .unwrap_or_else(|_| {
@@ -99,6 +99,13 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                         channel,
                         cancellation.clone(),
                     );
+                    accepted.parent = parent_deadline_ms.map(|deadline| {
+                        crate::operation::ParentLifetime::capture(
+                            super::execution::limit(Some(deadline), cancellation.clone())
+                                .deadline(),
+                            cancellation.clone(),
+                        )
+                    });
                     accepted.invocation = Some(
                         d.invocation(&accepted.authorship)
                             .with_accepted_request(Some(Arc::new(request.clone()))),
@@ -107,10 +114,14 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                         crate::protocol::caller::working_directory(&out).ok();
                     let command = crate::commands::command(&request.operation);
                     let caller = crate::commands::Caller {
-                        surface: if channel == polylogue_model::authorship::Channel::Mcp {
-                            crate::commands::Surface::Mcp
-                        } else {
-                            crate::commands::Surface::Cli
+                        surface: match channel {
+                            polylogue_model::authorship::Channel::Mcp => {
+                                crate::commands::Surface::Mcp
+                            }
+                            polylogue_model::authorship::Channel::Hook => {
+                                crate::commands::Surface::Hook
+                            }
+                            _ => crate::commands::Surface::Cli,
                         },
                         cwd: accepted.working_directory.clone(),
                         json: true,
@@ -174,7 +185,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                         && let crate::commands::Action::Stream { .. } = command.action
                         && let Some(internal) = internal.filter(Request::streaming)
                     {
-                        let limit = request
+                        let mut limit = request
                             .deadline
                             .duration(crate::protocol::operations::deadlines().get(command.latency))
                             .map_or_else(
@@ -190,6 +201,14 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                                     )
                                 },
                             );
+                        if let Some(parent) = &accepted.parent {
+                            let parent_limit = parent.read_limit(cancellation.clone());
+                            if parent_limit.deadline().is_some_and(|parent| {
+                                limit.deadline().is_none_or(|request| parent < request)
+                            }) {
+                                limit = parent_limit;
+                            }
+                        }
                         let _ = out.set_write_timeout(Some(Duration::from_millis(10)));
                         let produced = limit.scope(|| match limit.check() {
                             Ok(()) => {
