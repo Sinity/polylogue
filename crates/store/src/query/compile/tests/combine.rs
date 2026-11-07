@@ -234,3 +234,76 @@ fn snapshot_operands_refuse_without_reconstructing_current_native_rows() {
         assert_eq!(error.kind(), "not_built", "{text}: {error}");
     }
 }
+
+#[test]
+fn projected_set_operands_refuse_reference_text_and_reference_target_mismatches() {
+    let options = opts(&[]);
+    for (left, right) in [
+        (
+            "sessions where origin:claude-code | fields id",
+            "sessions where origin:codex | fields text(id) as id",
+        ),
+        (
+            "sessions where origin:claude-code | fields text(id) as id",
+            "sessions where origin:codex | fields id",
+        ),
+        (
+            "messages | fields id as ref",
+            "messages | fields session as ref",
+        ),
+    ] {
+        compile(left, &options).unwrap();
+        compile(right, &options).unwrap();
+        for operation in ["union", "intersect", "except", "diff"] {
+            let text = format!("{left} | {operation} ({right})");
+            let error = compile(&text, &options).unwrap_err();
+            assert_eq!(error.kind(), "invalid_query", "{text}: {error}");
+        }
+    }
+}
+
+#[test]
+fn compatible_projected_sets_keep_plain_text_and_matching_reference_metadata() {
+    let (_directory, fixture) = fixture();
+    let reads = fixture.reads().unwrap();
+    let reader = reads.reader().unwrap();
+    let options = opts(&[]);
+    let text = "sessions where repo:east | fields text(id) as id | union (sessions where repo:west | fields text(id) as id) | fields id";
+    let plan = polylogue_query::compile(text, &options).unwrap();
+    let program = lower(&plan, &options).unwrap();
+    assert_eq!(program.columns.len(), 1);
+    assert_eq!(program.columns[0].kind, ColKind::Text);
+    assert_eq!(program.columns[0].reference, None);
+    let schema = plan.output_schema_for_columns(&program.columns).unwrap();
+    assert_eq!(
+        schema.fields[0].kind,
+        query_language::catalog::FieldKind::Text
+    );
+    assert_eq!(schema.fields[0].unit, None);
+    let mut rows = reader.query_rows(&program).unwrap();
+    for row in &mut rows {
+        crate::query::execute::present(&program, row).unwrap();
+    }
+    assert_eq!(
+        rows,
+        [
+            json!({"id":"claude-code:a"}),
+            json!({"id":"claude-code:b"}),
+            json!({"id":"claude-code:c"})
+        ]
+    );
+
+    let plan = polylogue_query::compile(
+        "messages | fields id as ref | union (messages | fields id as ref) | fields ref",
+        &options,
+    )
+    .unwrap();
+    let program = lower(&plan, &options).unwrap();
+    assert_eq!(program.columns[0].reference, Some(ColumnReference::Message));
+    let schema = plan.output_schema_for_columns(&program.columns).unwrap();
+    assert_eq!(
+        schema.fields[0].kind,
+        query_language::catalog::FieldKind::Reference
+    );
+    assert_eq!(schema.fields[0].unit.as_deref(), Some("messages"));
+}
