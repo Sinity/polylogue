@@ -926,10 +926,10 @@ impl Inner {
         if status != crate::primary::SourceStatus::Ready {
             return Ok(None);
         }
-        if let Some(confirmed) = confirmed {
-            if confirmed.input != input.rows.input {
-                return Ok(None);
-            }
+        if let Some(confirmed) = confirmed
+            && confirmed.input != input.rows.input
+        {
+            return Ok(None);
         }
         if crate::source::SourceBoundary::read(&self.index, &self.index, &self.location)?.is_none()
         {

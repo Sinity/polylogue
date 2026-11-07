@@ -230,13 +230,13 @@ fn primary_source_cut_requires_completed_scope_and_survives_new_admissions() {
     assert!(boundary(&index).is_none());
     let observed = |position, id: &str| {
         let mut fact = input(position, "first");
-        if let ConfirmedChange::Live(product) = &mut fact.change {
-            if let Product::Input { rows, .. } = product.as_mut() {
-                rows.observation = Some(serde_json::from_value(serde_json::json!({
+        if let ConfirmedChange::Live(product) = &mut fact.change
+            && let Product::Input { rows, .. } = product.as_mut()
+        {
+            rows.observation = Some(serde_json::from_value(serde_json::json!({
                     "id":id,"machine":"machine","host":"host","path":"/home/op/source",
                     "path_bytes":b"/home/op/source".to_vec(),"class":"seen","polylogue_version":"test","seen_at":position
-                })).unwrap());
-            }
+            })).unwrap());
         }
         fact
     };
