@@ -163,7 +163,7 @@ pub struct KnownInput {
     /// whether that chain was parsed at all.
     pub parsed_upto: u64,
     pub parsed: bool,
-    /// A successful parse reached source EOF with only an incomplete suffix.
+    /// An incomplete suffix, refusal or failure waits at this stored length.
     pub waiting: bool,
 }
 
@@ -1517,8 +1517,8 @@ impl Reader<'_> {
             {
                 k.parsed_upto = upto as u64;
                 k.parsed = true;
-                k.waiting = stored_parse_progress(&status, at_length, reason)?
-                    == polylogue_model::batch::ParseProgress::Waiting { length: k.stored };
+                k.waiting = stored_parse_progress(&status, at_length, reason)?.at_length()
+                    == Some(k.stored);
             }
         }
         Ok(out)
@@ -1529,7 +1529,7 @@ impl Reader<'_> {
         let row = self
             .conn()?
             .prepare_cached(
-                "SELECT r.length, COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, r.produced, COALESCE(p.status = 'waiting' AND p.at_length = r.length, 0), r.chain
+                "SELECT r.length, COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, r.produced, COALESCE(p.status IN ('waiting','refused','failed') AND p.at_length = r.length, 0), r.chain
              FROM source_revision r
              LEFT JOIN input_ref i ON i.id = r.input
              LEFT JOIN parse_state p ON p.input_pk = i.pk AND p.chain = r.chain

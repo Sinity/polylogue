@@ -373,3 +373,92 @@ fn unrelated_file_events_do_not_make_a_busy_database_appear_quiet() {
 
 mod capture_only;
 mod live_inputs;
+
+#[test]
+fn confirmed_stopped_readings_settle_only_their_exact_bytes_and_reader() {
+    use polylogue_model::batch::StepProgress;
+    for progress in [
+        StepProgress::Refused {
+            reason: "synthetic unsupported record".into(),
+        },
+        StepProgress::Failed {
+            error: "synthetic parse failure".into(),
+        },
+    ] {
+        let home = ClaudeHome::new();
+        home.append(
+            "stopped.jsonl",
+            &claude_user("u1", "stopped", "stored source"),
+        );
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 64 << 10);
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+        let path = home.file("stopped.jsonl");
+        let state = &engine.inputs[&path];
+        let input = InputKey {
+            id: state.input_id.clone(),
+            format: state.origin.name.into(),
+            arrival_rank: 0,
+        };
+        let chain = engine
+            .reads
+            .reader()
+            .unwrap()
+            .input_progress(&input.id)
+            .unwrap()
+            .unwrap()
+            .chain;
+        let mut expected = Plan::stored(
+            path.clone(),
+            state.origin,
+            input.clone(),
+            Change::Reparse { chain },
+            state.facts,
+            state.stored,
+            state.stored,
+            pool::Bytes::Unloaded {
+                chain,
+                length: state.stored,
+                decoded: true,
+            },
+            64 << 10,
+            true,
+        );
+        let mut step =
+            polylogue_store::ParseStep::new(Default::default(), Default::default(), 0..0, false);
+        step.progress = progress;
+        step.reading_version = expected.origin.reading_version();
+        engine
+            .writer
+            .send(polylogue_store::Batch {
+                required_disposition: None,
+                input,
+                change: Change::Reparse { chain },
+                observation: None,
+                continues: false,
+                new_blob: None,
+                blobs: vec![],
+                length: expected.size,
+                parse: vec![step],
+                acquisition: None,
+                basis: None,
+                release: Default::default(),
+            })
+            .unwrap();
+        assert!(engine.writer.flush().unwrap().errors.is_empty());
+        assert!(
+            engine.confirmed_reading(&expected).unwrap(),
+            "confirmed stops settle without reaching source EOF"
+        );
+        expected.size += 1;
+        assert!(
+            !engine.confirmed_reading(&expected).unwrap(),
+            "a stop at different bytes cannot confirm this attempt"
+        );
+        expected.size -= 1;
+        expected.origin = polylogue_sources::origin::by_name("codex").unwrap();
+        assert!(
+            !engine.confirmed_reading(&expected).unwrap(),
+            "a different reader must produce its own confirmation"
+        );
+    }
+}

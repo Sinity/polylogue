@@ -35,6 +35,12 @@ pub(crate) struct InputState {
     pub(crate) working: Option<WorkingState>,
 }
 
+impl InputState {
+    pub(crate) fn needs_reading(&self) -> bool {
+        (!self.waiting && self.parsed_upto < self.stored) || !self.parsed
+    }
+}
+
 pub(crate) struct WorkingState {
     pub(crate) capture: String,
     pub(crate) group: String,

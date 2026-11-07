@@ -661,3 +661,55 @@ fn an_explicit_package_keeps_its_member_custody_atomic() {
             .is_none()
     );
 }
+
+#[test]
+fn a_finished_database_worker_keeps_its_original_custody_pending_across_batches() {
+    let home = ClaudeHome::new();
+    let db = home.home.join(".codex/state_5.sqlite");
+    std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+    std::fs::copy(
+        polylogue_testkit::morrow_dir().join("codex/state_5.sqlite"),
+        &db,
+    )
+    .unwrap();
+    let (mut engine, _archive, _lock, sdk) = open(&home);
+    let first = engine.run_pass().unwrap();
+    assert!(first.capture_pending, "{first:?}");
+    let identities = || {
+        let mut captures: Vec<_> = sdk
+            .pending_captures()
+            .unwrap()
+            .into_iter()
+            .map(|capture| {
+                let Capture::Input(input) = capture.captured else {
+                    panic!("database input capture")
+                };
+                assert_eq!(input.rows.format, "codex-database");
+                (capture.identity, input.hash, input.length)
+            })
+            .collect();
+        captures.sort_by(|a, b| a.0.cmp(&b.0));
+        captures
+    };
+    let original = identities();
+    assert!(!original.is_empty());
+    std::fs::remove_file(&db).unwrap();
+    for _ in 0..2 {
+        let pending = engine.run_pass().unwrap();
+        assert!(
+            pending.capture_pending,
+            "durable database bytes still await confirmation: {pending:?}"
+        );
+        assert!(
+            pending
+                .errors
+                .iter()
+                .all(|error| error.starts_with("confirmed stream:")
+                    && error.contains("Connection refused")),
+            "{pending:?}"
+        );
+        assert_eq!(pending.bytes_read, 0);
+        assert_eq!(pending.bytes_stored, 0);
+        assert_eq!(identities(), original);
+    }
+}

@@ -428,6 +428,22 @@ impl Engine {
                 .insert(f.path.clone(), f.origin.name)
                 .is_none();
         }
+        if self.archive.is_primary() {
+            // The database worker can finish before its durable acquisition is
+            // confirmed. Keep that existing producer custody visible on later
+            // turns, even when unchanged file facts need no new worker.
+            for (path, origin) in &self.databases {
+                let source = self
+                    .acquisition_context(
+                        path,
+                        origin,
+                        polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                    )
+                    .source;
+                let snapshot = self.writer.source_snapshot(source, "")?;
+                pass.capture_pending |= snapshot.pending.head.is_some();
+            }
+        }
         let completed = self.captures.completed(false);
         pass.inputs_seen += completed.inputs_seen;
         pass.bytes_stored += completed.bytes_stored;
@@ -449,16 +465,15 @@ impl Engine {
             deferred_database = self.databases.keys().any(|path| {
                 self.inputs
                     .get(path)
-                    .is_some_and(|state| state.stored > 0 && state.parsed_upto < state.stored)
+                    .is_some_and(|state| state.stored > 0 && state.needs_reading())
             });
-            self.capture_checked = (!deferred_database).then(Instant::now);
             let sources: Vec<_> = self
                 .databases
                 .iter()
                 .filter(|(path, _)| {
                     self.inputs
                         .get(*path)
-                        .is_none_or(|state| state.stored == 0 || state.parsed_upto == state.stored)
+                        .is_none_or(|state| state.stored == 0 || !state.needs_reading())
                 })
                 .map(|(path, origin)| (path.clone(), *origin))
                 .collect();
@@ -487,12 +502,16 @@ impl Engine {
                     path,
                 });
             }
+            let starting = !databases.is_empty();
             self.captures.start(
                 databases,
                 self.archive.clone(),
                 self.writer.sender()?,
                 self.wake.clone(),
             )?;
+            if starting {
+                self.capture_checked = Some(Instant::now());
+            }
         }
         pass.capture_pending |= self.captures.pending() || deferred_database;
         Ok((deferred_database, completed.changed))

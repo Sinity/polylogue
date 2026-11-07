@@ -46,6 +46,7 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 
 - **Each parser module declares its reading version.** A chain is re-parsed when the reading version of the module that parsed it changes, and nothing else triggers a re-parse; there is no index-wide version that rebuilds everything.
 - A re-parse prepares the new reading aside, then retracts and replaces one chain in one transaction; other chains stay readable throughout.
+- An incomplete suffix, refusal or failure waits at its recorded byte length. Changed bytes or a new reading version make it eligible again; a daemon also offers a stopped chain one retry when it starts.
 - Derivations carry their own versions ([measures.md](measures.md#rules)).
 
 ### Independent goldens

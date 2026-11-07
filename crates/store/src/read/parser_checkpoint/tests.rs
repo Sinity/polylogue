@@ -82,3 +82,84 @@ fn checkpoint_commits_with_its_cursor_and_mismatched_state_rolls_back() {
             .is_err()
     );
 }
+
+#[test]
+fn unchanged_stopped_readings_wait_until_the_source_or_reading_changes() {
+    use polylogue_model::batch::StepProgress;
+    for progress in [
+        StepProgress::AtEnd,
+        StepProgress::Refused {
+            reason: "unsupported synthetic record".into(),
+        },
+        StepProgress::Failed {
+            error: "synthetic parse failure".into(),
+        },
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
+        let writer = Writer::start(&archive).unwrap();
+        let path = "/synthetic/stopped.jsonl";
+        let mut batch =
+            crate::fixture::writer::step("stopped", "claude-code", path, Default::default(), 0, 1);
+        let mut raw = batch.clone();
+        raw.parse.clear();
+        let stored = writer
+            .store_bytes(archive.prepare_bytes(&b"r\n"[..]).unwrap(), raw.clone())
+            .unwrap();
+        batch.change = Change::Reparse {
+            chain: stored.chain,
+        };
+        batch.observation = None;
+        batch.parse[0].parsed_upto = 0;
+        batch.parse[0].counts = Default::default();
+        batch.parse[0].progress = progress;
+        batch.parse[0].checkpoint = None;
+        writer.send(batch.clone()).unwrap();
+        assert!(writer.flush().unwrap().errors.is_empty());
+        let pool = ReadPool::open(&archive).unwrap();
+        let waiting = || {
+            let reader = pool.reader().unwrap();
+            let progress = reader.input_progress("stopped").unwrap().unwrap();
+            let known = reader
+                .known_watched_input_at("m", path.as_bytes())
+                .unwrap()
+                .unwrap();
+            assert_eq!(known.waiting, progress.waiting);
+            progress.waiting
+        };
+        assert!(waiting());
+        assert!(
+            pool.reader()
+                .unwrap()
+                .parser_checkpoint("stopped", stored.chain, "synthetic=2")
+                .unwrap()
+                .unwrap()
+                .checkpoint
+                .is_none()
+        );
+        raw.change = Change::Appended {
+            from: stored.length,
+        };
+        raw.length = stored.length + 2;
+        writer
+            .store_bytes(archive.prepare_bytes(&b"s\n"[..]).unwrap(), raw)
+            .unwrap();
+        assert!(!waiting(), "new bytes invalidate the old stopped length");
+        batch.length = stored.length + 2;
+        batch.parse[0].parsed_upto = batch.length;
+        batch.parse[0].progress = StepProgress::AtEnd;
+        batch.parse[0].reading_version = "synthetic=2".into();
+        writer.send(batch).unwrap();
+        assert!(writer.flush().unwrap().errors.is_empty());
+        assert!(!waiting());
+        assert_eq!(
+            pool.reader()
+                .unwrap()
+                .parser_checkpoint("stopped", stored.chain, "synthetic=2")
+                .unwrap()
+                .unwrap()
+                .parsed_upto,
+            stored.length + 2
+        );
+    }
+}

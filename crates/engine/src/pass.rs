@@ -161,10 +161,9 @@ impl Engine {
         let started = Instant::now();
         let (mut total, seen) = self.one_pass(true, &Default::default())?;
         let mut paths: std::collections::BTreeSet<_> = seen.into_iter().collect();
-        while total.capture_pending
-            && (self.captures.pending()
-                || self.capture_checked.is_none() && !self.databases.is_empty())
-        {
+        // A confirmed reading can still be pending after all local work ends.
+        // Return that wait to the caller instead of spinning inside its pass.
+        while total.capture_pending && self.captures.pending() {
             let completed = self.captures.completed(true);
             total.inputs_seen += completed.inputs_seen;
             total.bytes_stored += completed.bytes_stored;
@@ -173,7 +172,8 @@ impl Engine {
             if completed.finished && self.capture_checked.is_some() {
                 self.capture_checked = Some(Instant::now());
             }
-            let (next, seen) = self.one_pass(false, &paths)?;
+            let (mut next, seen) = self.one_pass(false, &paths)?;
+            next.capture_pending |= completed.primary_pending;
             paths.extend(seen);
             total.add(next);
         }
@@ -365,6 +365,11 @@ impl Engine {
             pass.errors.extend(report.errors);
         }
         self.execute(plans, &mut pass)?;
+        if deferred_database && pass.errors.is_empty() && !self.captures.pending() {
+            // Local parsing may have made a deferred database runnable. Start
+            // that real work in this batch; a still-pending reading just yields.
+            self.capture_databases(&[], false, &mut pass)?;
+        }
         if deferred_database && !pass.errors.is_empty() {
             pass.capture_pending = self.captures.pending();
         }
@@ -965,7 +970,7 @@ impl Engine {
         let Some(st) = self.inputs.get(path) else {
             return Ok(None);
         };
-        let behind = (!st.waiting && st.parsed_upto < st.stored) || !st.parsed;
+        let behind = st.needs_reading();
         let Some(chain) = st.chain else {
             return Ok(None);
         };

@@ -62,6 +62,10 @@ new provider head; several database inputs can share one provider path. Inline
 attachments decoded by that parser retain their own blob preparation. Durable
 product preparation advances the sampler's cached parser state only after the
 matching reading version and cursor reach the confirmed index.
+A batch waits for active local database work. Once only confirmed application
+remains, it returns pending progress so its caller can wait for stream events.
+Later batches consult the original producer custody until it is retired; an
+unchanged database does not need another physical read to report that wait.
 
 Confirmed payloads are checked against their current immutable kind declaration
 and payload digest. The saved native context carries that digest and the

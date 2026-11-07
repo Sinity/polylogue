@@ -274,7 +274,15 @@ impl Engine {
             .reader()?
             .parser_checkpoint(&plan.input.id, chain, &version)?;
         Ok(cursor.is_some_and(|cursor| {
-            cursor.reading_version == version && cursor.parsed_upto >= plan.parse_pos
+            if cursor.reading_version != version {
+                return false;
+            }
+            if let Some(length) = cursor.progress.at_length() {
+                return length == plan.size
+                    && (cursor.progress.stopped() || cursor.parsed_upto >= plan.parse_pos);
+            }
+            cursor.parsed_upto >= plan.parse_pos
+                && (!(plan.waiting || plan.failure_recorded) || cursor.parsed_upto >= plan.size)
         }))
     }
 

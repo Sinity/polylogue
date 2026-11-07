@@ -241,3 +241,89 @@ fn native_capture_continues_the_input_at_the_observed_byte_path() {
     );
     assert_eq!(reader.query("SELECT s.id,r.chain,r.admitted FROM session_record r JOIN session s ON s.pk=r.session_pk JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap(), admission);
 }
+
+#[test]
+fn a_database_pass_yields_when_its_waiting_parser_has_no_local_work() {
+    let home = polylogue_testkit::ClaudeHome::new();
+    let db = home.home.join(".codex/state_5.sqlite");
+    std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch("CREATE TABLE kept(id INTEGER PRIMARY KEY, body TEXT);")
+        .unwrap();
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 64 << 10);
+    let bytes = b"{\"t\":\"kept\"";
+    let input = engine.location_id(&db);
+    engine
+        .writer
+        .store_bytes(
+            engine.archive.prepare_bytes(bytes.as_slice()).unwrap(),
+            Batch {
+                required_disposition: None,
+                input: InputKey {
+                    id: input.clone(),
+                    format: "codex-database".into(),
+                    arrival_rank: 0,
+                },
+                change: Change::First,
+                observation: Some(engine.observation(&db, None)),
+                continues: false,
+                new_blob: None,
+                blobs: vec![],
+                length: bytes.len() as u64,
+                parse: vec![],
+                acquisition: None,
+                basis: None,
+                release: Default::default(),
+            },
+        )
+        .unwrap();
+    engine.load().unwrap();
+    let origin = polylogue_sources::origin::by_name("codex-database").unwrap();
+    let mut discovering = Pass::default();
+    engine
+        .capture_databases(
+            &[collect::Found {
+                path: db.clone(),
+                origin,
+            }],
+            false,
+            &mut discovering,
+        )
+        .unwrap();
+    assert!(discovering.capture_pending);
+    assert!(
+        !engine.captures.pending(),
+        "confirmed bytes need their first reading"
+    );
+    let plan = engine.stored_plan(&db).unwrap().unwrap();
+    let mut parsed = Pass::default();
+    engine.execute(vec![plan], &mut parsed).unwrap();
+    assert!(parsed.errors.is_empty(), "{parsed:?}");
+    let before = engine
+        .reads
+        .reader()
+        .unwrap()
+        .input_progress(&input)
+        .unwrap()
+        .unwrap();
+    assert!(before.parsed && before.waiting);
+    assert_eq!(before.parsed_upto, 0);
+    assert_eq!(before.length, bytes.len() as u64);
+    std::fs::remove_file(&db).unwrap();
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert!(!pass.capture_pending);
+    assert_eq!(pass.bytes_read, 0);
+    assert!(!engine.captures.pending());
+    assert_eq!(
+        engine
+            .reads
+            .reader()
+            .unwrap()
+            .input_progress(&input)
+            .unwrap()
+            .unwrap(),
+        before
+    );
+}
