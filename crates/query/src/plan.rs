@@ -82,6 +82,7 @@ impl Plan {
                 // The physical producer proves the reference target. Filter-only
                 // catalog matching rules need not describe its emitted value.
                 field.kind = FieldKind::Reference;
+                field.unit = column.reference.map(|reference| reference.unit().into());
             }
             fields.push(field);
         }

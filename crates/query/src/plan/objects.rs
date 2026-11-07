@@ -1,6 +1,8 @@
 //! Canonical object admission and replay use the product's native declarations.
 use super::*;
-use polylogue_model::query_objects::{FrozenQueryDefinition, QueryEdge, QueryObject, QuestionBody};
+use polylogue_model::query_objects::{
+    FrozenQueryDefinition, QueryEdge, QueryObject, QuestionBody, SourceOutput,
+};
 use query_language::identity;
 use std::collections::{BTreeSet, VecDeque};
 
@@ -36,7 +38,7 @@ pub fn catalog_fingerprint() -> &'static str {
 }
 fn catalog(outputs: &[SourceOutput]) -> Catalog {
     let mut catalog = native_catalog();
-    catalog.source_outputs = outputs.to_vec();
+    catalog.source_outputs = outputs.iter().map(SourceOutput::catalog_output).collect();
     catalog
 }
 fn parse_id(name: &str) -> Result<QuestionId, QueryError> {
@@ -125,8 +127,11 @@ fn sources(query: &Query) -> Result<Vec<(Source, OutputSource)>, QueryError> {
     )?;
     Ok(sources)
 }
-fn used_outputs(query: &Query, catalog: &Catalog) -> Result<Vec<SourceOutput>, QueryError> {
-    let mut outputs: Vec<SourceOutput> = Vec::new();
+fn used_outputs(
+    query: &Query,
+    catalog: &Catalog,
+) -> Result<Vec<query_language::catalog::SourceOutput>, QueryError> {
+    let mut outputs: Vec<query_language::catalog::SourceOutput> = Vec::new();
     for (source, key) in sources(query)? {
         // Shared binding owns semantic argument matching, including lexical
         // quoting and argument order. Its validated catalog rejects duplicates.
@@ -134,7 +139,7 @@ fn used_outputs(query: &Query, catalog: &Catalog) -> Result<Vec<SourceOutput>, Q
             .source_output(&source)
             .cloned()
             .ok_or_else(|| invalid("canonical source needs exactly one frozen output schema"))?;
-        let output = SourceOutput {
+        let output = query_language::catalog::SourceOutput {
             source: key,
             schema,
         };
@@ -143,6 +148,44 @@ fn used_outputs(query: &Query, catalog: &Catalog) -> Result<Vec<SourceOutput>, Q
         }
     }
     Ok(outputs)
+}
+fn capture_outputs(
+    query: &Query,
+    catalog: &Catalog,
+    bindings: &Bindings,
+) -> Result<Vec<SourceOutput>, QueryError> {
+    used_outputs(query, catalog)?
+        .into_iter()
+        .map(|output| {
+            let unproven_fields = match &output.source {
+                OutputSource::Result { reference, part } => {
+                    let id = reference
+                        .strip_prefix("result:")
+                        .ok_or_else(|| invalid("kept output has no canonical result identity"))?;
+                    let kept = bindings
+                        .kept
+                        .get(id)
+                        .ok_or_else(|| invalid("kept output has no declaration evidence"))?;
+                    let proof = match part {
+                        ResultPart::Rows => &kept.output_metadata.rows,
+                        ResultPart::Matches => &kept.output_metadata.matches,
+                    };
+                    match proof {
+                        polylogue_model::kept::SchemaProof::Unproven => None,
+                        polylogue_model::kept::SchemaProof::Captured {
+                            unproven_fields, ..
+                        } => Some(unproven_fields.clone()),
+                    }
+                }
+                OutputSource::Saved { .. } => None,
+            };
+            Ok(SourceOutput {
+                source: output.source,
+                schema: output.schema,
+                unproven_fields,
+            })
+        })
+        .collect()
 }
 fn edge_key(edge: &QueryEdge) -> String {
     match edge {
@@ -243,7 +286,7 @@ pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
     if let Some(object) = &plan.retained_object {
         return Ok(object.clone());
     }
-    let outputs = used_outputs(&plan.identity, &plan.identity_catalog)?;
+    let outputs = capture_outputs(&plan.identity, &plan.identity_catalog, &plan.bindings)?;
     let native = &plan.identity_catalog;
     let mut frozen = plan.frozen.clone();
     // Inline composition bodies have canonical custody just like named inputs.
@@ -268,7 +311,7 @@ pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
                     body: QuestionBody::Executable {
                         query: query.clone(),
                     },
-                    source_outputs: used_outputs(query, &plan.identity_catalog)?,
+                    source_outputs: capture_outputs(query, &plan.identity_catalog, &plan.bindings)?,
                 });
             }
             Ok(())
@@ -303,9 +346,21 @@ fn all_outputs(object: &QueryObject) -> Result<Vec<SourceOutput>, QueryError> {
             .flat_map(|node| node.source_outputs.iter()),
     ) {
         let output = output.clone();
+        if let Some(fields) = &output.unproven_fields {
+            let names: BTreeSet<_> = fields.iter().collect();
+            if names.len() != fields.len()
+                || fields
+                    .iter()
+                    .any(|name| !output.schema.fields.iter().any(|field| &field.name == name))
+            {
+                return Err(invalid(
+                    "unproven source declarations must name distinct emitted fields",
+                ));
+            }
+        }
 
         if let Some(previous) = outputs.iter().find(|old| old.source == output.source) {
-            if previous.schema != output.schema {
+            if previous != &output {
                 return Err(invalid("conflicting frozen output schemas"));
             }
         } else {
@@ -477,7 +532,7 @@ fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, Q
             }],
         );
     }
-    for output in &native.source_outputs {
+    for output in all_outputs(object)? {
         if let OutputSource::Result { reference, part } = &output.source {
             let id = reference
                 .strip_prefix("result:")
@@ -505,7 +560,14 @@ fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, Q
                     crate::Column {
                         name: field.name.clone(),
                         kind,
-                        reference: None,
+                        reference: (field.kind == FieldKind::Reference)
+                            .then(|| {
+                                field
+                                    .unit
+                                    .as_deref()
+                                    .and_then(crate::ColumnReference::from_unit)
+                            })
+                            .flatten(),
                     }
                 })
                 .collect();
@@ -529,22 +591,25 @@ fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, Q
             match part {
                 ResultPart::Rows => {
                     kept.columns = columns;
-                    kept.output_metadata.rows = polylogue_model::kept::SchemaProof::Captured {
-                        schema: output.schema.clone(),
-                        unproven_fields: vec![],
-                    };
+                    kept.output_metadata.rows = source_proof(&output);
                 }
                 ResultPart::Matches => {
                     kept.match_columns = columns;
-                    kept.output_metadata.matches = polylogue_model::kept::SchemaProof::Captured {
-                        schema: output.schema.clone(),
-                        unproven_fields: vec![],
-                    };
+                    kept.output_metadata.matches = source_proof(&output);
                 }
             }
         }
     }
     Ok(bindings)
+}
+fn source_proof(output: &SourceOutput) -> polylogue_model::kept::SchemaProof {
+    match &output.unproven_fields {
+        None => polylogue_model::kept::SchemaProof::Unproven,
+        Some(fields) => polylogue_model::kept::SchemaProof::Captured {
+            schema: output.schema.clone(),
+            unproven_fields: fields.clone(),
+        },
+    }
 }
 fn expand(query: &Query, native: &Catalog, bindings: &Bindings) -> Result<Query, QueryError> {
     let text = query_language::format::format_query(query, native).map_err(language)?;
@@ -576,7 +641,7 @@ fn check_node(
             "canonical question changes when bound to native declarations",
         ));
     }
-    let recorded = outputs.to_vec();
+    let recorded: Vec<_> = outputs.iter().map(SourceOutput::catalog_output).collect();
     if used_outputs(query, &native)? != recorded {
         return Err(invalid(
             "question contains unused or unordered output schemas",

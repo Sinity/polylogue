@@ -163,6 +163,7 @@ pub(super) fn physical_schema(unit: &str, columns: &[Column]) -> OutputSchema {
                 } else {
                     super::source::column_kind(column.kind)
                 },
+                unit: column.reference.map(|reference| reference.unit().into()),
                 ..Field::default()
             })
             .collect(),

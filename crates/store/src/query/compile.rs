@@ -328,16 +328,16 @@ pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Progr
         let actual = opts.kept.get(id).ok_or_else(|| QueryError::Unavailable {
             what: format!("kept result {id:?} is absent from this read"),
         })?;
-        if kept
-            .columns
-            .iter()
-            .map(|column| &column.name)
-            .ne(actual.columns.iter().map(|column| &column.name))
-            || kept
-                .match_columns
-                .iter()
-                .map(|column| &column.name)
-                .ne(actual.match_columns.iter().map(|column| &column.name))
+        actual.validate_output_metadata()?;
+        if [ResultPart::Rows, ResultPart::Matches]
+            .into_iter()
+            .any(|part| {
+                kept.output_schema(part) != actual.output_schema(part)
+                    || kept.output_schema(part).fields.iter().any(|field| {
+                        kept.unproven_match_policy(part, &field.name)
+                            != actual.unproven_match_policy(part, &field.name)
+                    })
+            })
         {
             return Err(QueryError::Unavailable {
                 what: format!("kept result {id:?} differs from its bound columns"),

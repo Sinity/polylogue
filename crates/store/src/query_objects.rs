@@ -93,11 +93,11 @@ pub(crate) fn validate_result_bindings(
         return Ok(());
     }
     let kept = crate::selection::kept_results(conn, source)?;
-    let actual = polylogue_query::Bindings {
+    let bindings = polylogue_query::Bindings {
         kept,
         ..Default::default()
-    }
-    .catalog();
+    };
+    let actual = bindings.catalog();
     for output in result_outputs {
         let query_language::catalog::OutputSource::Result { reference, .. } = &output.source else {
             unreachable!()
@@ -111,7 +111,22 @@ pub(crate) fn validate_result_bindings(
                 "canonical result schema {reference}"
             )));
         };
-        if canonical.schema != output.schema {
+        let query_language::catalog::OutputSource::Result { part, .. } = &output.source else {
+            unreachable!()
+        };
+        let id = reference.strip_prefix("result:").unwrap_or(reference);
+        let original = &bindings.kept[id];
+        let proof = match part {
+            query_language::ast::ResultPart::Rows => &original.output_metadata.rows,
+            query_language::ast::ResultPart::Matches => &original.output_metadata.matches,
+        };
+        let unproven_fields = match proof {
+            polylogue_model::kept::SchemaProof::Unproven => None,
+            polylogue_model::kept::SchemaProof::Captured {
+                unproven_fields, ..
+            } => Some(unproven_fields),
+        };
+        if canonical.schema != output.schema || unproven_fields != output.unproven_fields.as_ref() {
             return Err(invalid(format!(
                 "frozen result schema {reference} differs from its canonical column metadata"
             )));

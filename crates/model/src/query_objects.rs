@@ -6,7 +6,11 @@ use crate::bundle::{
 };
 use crate::{ChangePosition, Timestamp, authorship::Authorship};
 use query_language::{
-    ast::Query, catalog::SourceOutput, cursor::CursorContext, identity::QuestionId, time::ClockWire,
+    ast::Query,
+    catalog::{OutputSchema, OutputSource},
+    cursor::CursorContext,
+    identity::QuestionId,
+    time::ClockWire,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -28,6 +32,28 @@ pub enum QuerySourceFormat {
     StructuredQueryV1,
     #[serde(rename = "retired_read_v2")]
     RetiredReadV2,
+}
+
+/// Semantic source declaration captured with a question. Missing proof never
+/// authenticates a retained text or JSON matching policy.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SourceOutput {
+    pub source: OutputSource,
+    pub schema: OutputSchema,
+    /// Kept-result declaration proof: None lacks original evidence, Some([])
+    /// captures every field, Some(names) retains the named uncertainties.
+    /// Saved sources establish their declarations through the frozen body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unproven_fields: Option<Vec<String>>,
+}
+impl SourceOutput {
+    pub fn catalog_output(&self) -> query_language::catalog::SourceOutput {
+        query_language::catalog::SourceOutput {
+            source: self.source.clone(),
+            schema: self.schema.clone(),
+        }
+    }
 }
 
 /// Semantic identity excludes display names and the clock of an execution.

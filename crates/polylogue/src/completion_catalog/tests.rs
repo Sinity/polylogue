@@ -532,12 +532,15 @@ fn published_saved_qualifiers_drive_offline_matches_fields_and_closed_values() {
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
     for name in ["qualified", "nested"] {
-        let fields = rendered(&path, &format!("query:{name} | matches | where out"));
+        let fields = rendered(&path, &format!("query:{name} | matches | where step.out"));
         assert!(
             fields.iter().any(|text| text.ends_with("outcome")),
             "{fields:?}"
         );
-        let values = rendered(&path, &format!("query:{name} | matches | where outcome:e"));
+        let values = rendered(
+            &path,
+            &format!("query:{name} | matches | where step.outcome:e"),
+        );
         assert!(
             values.iter().any(|text| text.ends_with("error")),
             "{values:?}"
@@ -580,11 +583,11 @@ fn published_saved_qualifiers_drive_offline_matches_fields_and_closed_values() {
             .iter()
             .any(|text| text.ends_with("repo"))
     );
-    let native = "sessions where exists tool_call() | matches | where out";
+    let native = "sessions where exists tool_call() | matches | where step.out";
     assert!(
         grammar(native, native.len())
             .iter()
-            .any(|candidate| candidate.value == "outcome")
+            .any(|candidate| candidate.value == "step.outcome")
     );
 }
 
@@ -635,7 +638,7 @@ fn frozen_plan_metadata_survives_cache_serialization_without_rebinding_names() {
     })
     .unwrap();
     assert!(
-        rendered(&path, "query:retained | matches | where out")
+        rendered(&path, "query:retained | matches | where step.out")
             .iter()
             .any(|text| text.ends_with("outcome"))
     );

@@ -160,6 +160,26 @@ pub enum ColumnReference {
     Assertion,
 }
 
+impl ColumnReference {
+    pub fn unit(self) -> &'static str {
+        match self {
+            Self::Session => "sessions",
+            Self::Document => "documents",
+            Self::Message => "messages",
+            Self::Assertion => "assertions",
+        }
+    }
+    pub fn from_unit(unit: &str) -> Option<Self> {
+        match unit {
+            "sessions" => Some(Self::Session),
+            "documents" => Some(Self::Document),
+            "messages" => Some(Self::Message),
+            "assertions" => Some(Self::Assertion),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Column {
     pub name: String,

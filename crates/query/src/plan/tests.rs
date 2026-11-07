@@ -174,6 +174,11 @@ fn canonical_kept_replay_retains_its_immutable_typed_columns() {
             unit: "sessions".into(),
             columns: vec![
                 crate::Column {
+                    name: "id".into(),
+                    kind: crate::ColKind::Text,
+                    reference: Some(crate::ColumnReference::Session),
+                },
+                crate::Column {
                     name: "when".into(),
                     kind: crate::ColKind::Time,
                     reference: None,

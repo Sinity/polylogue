@@ -523,3 +523,23 @@ fn real_parent_identity_projection_preserves_original_text_semantics() {
         ),
     );
 }
+
+#[test]
+fn historical_result_declarations_keep_missing_matching_evidence_unproven() {
+    let mut before = object(json!({
+        "source":{"kind":"result","reference":"result:legacy","part":"rows","condition":null,"output":"known"},
+        "attach":[],"stages":[]
+    }));
+    before["source_outputs"] = json!([{
+        "source":{"kind":"result","reference":"result:legacy","part":"rows"},
+        "schema":{"unit":"sessions","fields":[{
+            "name":"body","kind":"text","values":[],"unknown":"unknown","help":"","read_as":"","unit":null
+        }],"main_time":null}
+    }]);
+    let after = query_object(&before).unwrap();
+    assert_eq!(after["id"], before["id"]);
+    assert_eq!(after["normal_form"], before["normal_form"]);
+    assert_eq!(after["source_outputs"], before["source_outputs"]);
+    let typed: crate::query_objects::QueryObject = serde_json::from_value(after).unwrap();
+    assert!(typed.source_outputs[0].unproven_fields.is_none());
+}

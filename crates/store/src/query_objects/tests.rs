@@ -404,6 +404,10 @@ fn result_output_schemas_require_the_canonical_kept_columns() {
         .unwrap();
     assert_eq!(forged.id, actual.id);
     assert!(archive.writer.query_object(forged.clone()).is_err());
+    let mut promoted = actual.clone();
+    promoted.source_outputs[0].unproven_fields = Some(vec![]);
+    assert_eq!(promoted.id, actual.id);
+    assert!(archive.writer.query_object(promoted).is_err());
     archive.writer.query_object(actual.clone()).unwrap();
     assert!(archive.writer.query_object(forged).is_err());
     let pool = crate::ReadPool::open(&archive.archive).unwrap();

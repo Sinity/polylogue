@@ -332,3 +332,121 @@ fn forwarded_saved_conditions_keep_suffixes_defaults_and_reject_cycles() {
     ));
     assert!(compiler.saved_stack.is_empty());
 }
+
+#[test]
+fn canonical_replay_preserves_unproven_text_and_json_matching_policy() {
+    use polylogue_model::kept::{OutputMetadata, SchemaProof};
+    for proof_kind in 0..3 {
+        let mut options = opts(&[]);
+        let columns = vec![
+            Column {
+                name: "body".into(),
+                kind: ColKind::Text,
+                reference: None,
+            },
+            Column {
+                name: "payload".into(),
+                kind: ColKind::Json,
+                reference: None,
+            },
+        ];
+        let schema = polylogue_query::columns_schema("sessions", &columns);
+        let proof = match proof_kind {
+            0 => SchemaProof::Unproven,
+            1 => SchemaProof::Captured {
+                schema,
+                unproven_fields: vec!["body".into(), "payload".into()],
+            },
+            _ => SchemaProof::Captured {
+                schema,
+                unproven_fields: vec![],
+            },
+        };
+        options.kept.insert(
+            "legacy".into(),
+            Kept {
+                output_metadata: OutputMetadata {
+                    rows: proof,
+                    ..Default::default()
+                },
+                unit: "sessions".into(),
+                columns,
+                match_columns: vec![],
+                shape: None,
+                native_identity: false,
+            },
+        );
+        let base = polylogue_query::plan::prepare("result:legacy", &options.bindings(), |_| Ok(()))
+            .unwrap();
+        let mut bindings = options.bindings();
+        bindings
+            .add_saved("retained", &base, "retained-revision", "retained-root")
+            .unwrap();
+        options.saved = bindings.saved;
+        for (source, field) in ["result:legacy", "query:retained"]
+            .into_iter()
+            .flat_map(|source| {
+                ["body", "payload"]
+                    .into_iter()
+                    .map(move |field| (source, field))
+            })
+        {
+            let text = format!("{source} | where {field}:needle");
+            let plan =
+                polylogue_query::plan::prepare(&text, &options.bindings(), |_| Ok(())).unwrap();
+            let encoded = serde_json::to_vec(&plan.query_object().unwrap()).unwrap();
+            let object = serde_json::from_slice(&encoded).unwrap();
+            let replay = polylogue_query::plan::replay(
+                &object,
+                polylogue_query::plan::catalog_fingerprint(),
+            )
+            .unwrap();
+            assert_eq!(replay.bindings().kept, options.kept);
+            // Lower using only the recovered immutable declaration, so consulting
+            // a current source cannot conceal a proof upgrade during replay.
+            let mut recovered = options.clone();
+            recovered.kept = replay.bindings().kept.clone();
+            if proof_kind == 2 {
+                assert!(lower(&replay, &recovered).is_ok());
+                let mut missing = serde_json::to_value(&object).unwrap();
+                for output in missing["source_outputs"].as_array_mut().unwrap() {
+                    output.as_object_mut().unwrap().remove("unproven_fields");
+                }
+                for definition in missing["definitions"].as_array_mut().unwrap() {
+                    for output in definition["source_outputs"].as_array_mut().unwrap() {
+                        output.as_object_mut().unwrap().remove("unproven_fields");
+                    }
+                }
+                let missing = serde_json::from_value(missing).unwrap();
+                let conservative = polylogue_query::plan::replay(
+                    &missing,
+                    polylogue_query::plan::catalog_fingerprint(),
+                )
+                .unwrap();
+                assert_eq!(conservative.question_id(), replay.question_id());
+                recovered.kept = conservative.bindings().kept.clone();
+                let error = lower(&conservative, &recovered).unwrap_err();
+                assert!(
+                    error.to_string().contains("logical matching policy"),
+                    "{text}: {error}"
+                );
+            } else {
+                let error = lower(&replay, &recovered).unwrap_err();
+                assert!(
+                    error.to_string().contains("logical matching policy"),
+                    "{text}: {error}"
+                );
+            }
+        }
+        let text = "result:legacy | fields text(body) as body | where body:needle";
+        let plan = polylogue_query::plan::prepare(text, &options.bindings(), |_| Ok(())).unwrap();
+        let replay = polylogue_query::plan::replay(
+            &plan.query_object().unwrap(),
+            polylogue_query::plan::catalog_fingerprint(),
+        )
+        .unwrap();
+        let mut recovered = options.clone();
+        recovered.kept = replay.bindings().kept.clone();
+        assert!(lower(&replay, &recovered).is_ok());
+    }
+}
