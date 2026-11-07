@@ -1903,12 +1903,11 @@ fn validate_ack_header(
     if position.is_some_and(|position| position < 0) {
         return invalid("acknowledgment has a negative confirmed position");
     }
-    if !refused {
-        if let Some(expected) = prepared.material()
-            && material != Some(expected.id.as_str())
-        {
-            return invalid("material acknowledgment has another material identity");
-        }
+    if !refused
+        && let Some(expected) = prepared.material()
+        && material != Some(expected.id.as_str())
+    {
+        return invalid("material acknowledgment has another material identity");
     }
     Ok(())
 }
