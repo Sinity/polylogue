@@ -329,18 +329,27 @@ impl Engine {
                 },
             ),
         ));
-        self.writer
+        let outcomes = self
+            .writer
             .sender()?
-            .store_group(group, Arc::clone(&self.blobs))?
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?
-            .pop()
-            .expect("transcript result");
+            .store_group(group, Arc::clone(&self.blobs))?;
+        let mut pending = false;
+        for outcome in outcomes {
+            match outcome {
+                Ok(_) => {}
+                Err(polylogue_store::StoreError::PrimaryPending { .. }) => pending = true,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        pass.bytes_read += facts.size;
+        pass.bytes_stored += raw_added + added;
+        if pending {
+            pass.capture_pending = true;
+            return Ok(None);
+        }
         let progress = self.reads.reader()?.input_progress(&id)?.ok_or_else(|| {
             std::io::Error::other("captured native input has no current revision")
         })?;
-        pass.bytes_read += facts.size;
-        pass.bytes_stored += raw_added + added;
         self.inputs.insert(
             path.clone(),
             InputState {

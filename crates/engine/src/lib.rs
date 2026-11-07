@@ -244,7 +244,7 @@ pub struct Pass {
     pub seconds: f64,
     pub unreadable_roots: Vec<PathBuf>,
     pub errors: Vec<String>,
-    /// A database reader has queued or pending work.
+    /// Capture work is queued or waiting for primary-mode confirmation.
     pub capture_pending: bool,
 }
 

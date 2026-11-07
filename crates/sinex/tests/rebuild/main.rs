@@ -89,20 +89,33 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
     let mut settings = example.config();
     settings.home = home.to_path_buf();
     let mut engine = Engine::on_sinex(settings, archive.clone(), sinex.clone()).unwrap();
-    let pass = engine.run_pass().unwrap_or_else(|error| {
-        panic!(
-            "native capture pass failed: {error}; {}",
-            running.evidence(sinex)
-        )
-    });
-    assert!(
-        pass.errors.is_empty(),
-        "{:?}; {}",
-        pass.errors,
-        running.evidence(sinex)
-    );
-    // The idle writer follows the confirmed stream until it reaches Sinex's head.
+    let commits = engine.writer().unwrap().completion_commits();
     let started = Instant::now();
+    loop {
+        let pass = engine.run_pass().unwrap_or_else(|error| {
+            panic!(
+                "native capture pass failed: {error}; {}",
+                running.evidence(sinex)
+            )
+        });
+        assert!(
+            pass.errors.is_empty(),
+            "{:?}; {}",
+            pass.errors,
+            running.evidence(sinex)
+        );
+        if !pass.capture_pending {
+            break;
+        }
+        let remaining = Duration::from_secs(120).saturating_sub(started.elapsed());
+        commits.recv_timeout(remaining).unwrap_or_else(|error| {
+            panic!(
+                "capture did not reach confirmed application: {error}; {}",
+                running.evidence(sinex)
+            )
+        });
+    }
+    // The idle writer follows the confirmed stream until it reaches Sinex's head.
     loop {
         let applied = ReadPool::open(&archive)
             .unwrap()
@@ -121,6 +134,18 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
         );
         std::thread::sleep(Duration::from_millis(200));
     }
+    let acquisitions = running.native.sql("SELECT frame,material_id FROM core.ingress_frames WHERE producer='polylogue' AND frame LIKE 'acquisition:%' ORDER BY frame");
+    let repeated = engine.run_pass().unwrap();
+    assert!(
+        repeated.errors.is_empty() && !repeated.capture_pending,
+        "an unchanged capture must already be confirmed: {repeated:?}; {}",
+        running.evidence(sinex)
+    );
+    assert_eq!(
+        running.native.sql("SELECT frame,material_id FROM core.ingress_frames WHERE producer='polylogue' AND frame LIKE 'acquisition:%' ORDER BY frame"),
+        acquisitions,
+        "an unchanged capture keeps its original acquisition and material identities"
+    );
 }
 
 /// Every session as the export format holds it, and every note.
