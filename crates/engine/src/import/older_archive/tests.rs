@@ -776,7 +776,7 @@ fn imported_notes_match_the_original_sql_and_replay_prior_kept_imports() {
     let options = polylogue_store::query::Options {
         clock: polylogue_store::query::time::Clock::new(
             jiff::Timestamp::from_millisecond(20_000).unwrap(),
-            polylogue_query::time::DaySetting::new(
+            query_language::time::DaySetting::new(
                 jiff::tz::TimeZone::get("UTC").unwrap(),
                 jiff::civil::Time::constant(0, 0, 0, 0),
             )

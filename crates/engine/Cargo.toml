@@ -30,7 +30,7 @@ sha2 = "0.10"
 faults = ["polylogue-store/faults"]
 
 [dev-dependencies]
-polylogue-query.workspace = true
+query-language.workspace = true
 jiff.workspace = true
 libc.workspace = true
 mimalloc.workspace = true
