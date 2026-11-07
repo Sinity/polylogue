@@ -3,10 +3,10 @@
 use crate::{Error, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use hashed_blobs::{BlobReader, EncodedBlob, Preparation, ReadLimits};
-use polylogue_store::primary::Capture;
+use polylogue_store::primary::{Capture, ReplayState};
 use serde::{Deserialize, Serialize};
 use sinex_protocol::{Acknowledgment, Ingress};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -103,8 +103,8 @@ pub(crate) enum Payload {
 pub(crate) enum Phase {
     /// No receipt yet.
     Pending,
-    /// The owner accepted the operation; writes carry the position that
-    /// confirmed them.
+    /// The owner accepted the operation. Only newly admitted events carry
+    /// an event commit position; complete no-admission outcomes retain None.
     Acknowledged { commit_seq: Option<i64> },
     /// The owner refused the operation.
     Refused,
@@ -196,7 +196,7 @@ impl Record {
             _ => None,
         }
     }
-    /// A write the owner confirms with a queue position.
+    /// An operation that can admit events with a confirmed position.
     pub(crate) fn is_write(&self) -> bool {
         matches!(
             self.payload,
@@ -277,7 +277,7 @@ pub(crate) struct Spool {
     first: Cell<u64>,
     next: Cell<u64>,
     index_dirty: Cell<bool>,
-    last_retired: Cell<Option<i64>>,
+    last_retired: RefCell<Option<ReplayState>>,
     retirement_dirty: Cell<bool>,
     _lock: File,
 }
@@ -438,7 +438,7 @@ impl Spool {
             first: Cell::new(1),
             next: Cell::new(1),
             index_dirty: Cell::new(true),
-            last_retired: Cell::new(None),
+            last_retired: RefCell::new(None),
             retirement_dirty: Cell::new(true),
             _lock: lock,
         };
@@ -689,7 +689,7 @@ impl Spool {
             first: Cell::new(1),
             next: Cell::new(1),
             index_dirty: Cell::new(true),
-            last_retired: Cell::new(None),
+            last_retired: RefCell::new(None),
             retirement_dirty: Cell::new(true),
             _lock: self._lock.try_clone()?,
         };
@@ -1135,12 +1135,27 @@ impl Spool {
         Ok(Some(receipt))
     }
 
-    pub fn retire(&self, applied: i64) -> Result<()> {
-        if applied < 0 {
+    /// The caller supplies only a head verified after publication acknowledgments
+    /// in this scope. Missing head evidence retains grouped source custody.
+    pub fn retire(&self, state: &ReplayState) -> Result<()> {
+        if state.applied_position.is_some_and(|position| position < 0)
+            || state.head.is_some_and(|position| position < 0)
+        {
             return invalid("confirmed position is negative");
         }
+        let key = ReplayState {
+            applied_position: state.applied_position,
+            scope: state.scope.clone(),
+            head: state.head,
+            staged_delivery: None,
+        };
+        let caught_up = state.scope.as_ref().is_some_and(|scope| !scope.is_empty())
+            && state
+                .applied_position
+                .zip(state.head)
+                .is_some_and(|(applied, head)| applied >= head);
         self.ensure_indexes()?;
-        if self.last_retired.get() == Some(applied) && !self.retirement_dirty.get() {
+        if self.last_retired.borrow().as_ref() == Some(&key) && !self.retirement_dirty.get() {
             return Ok(());
         }
         // Indexes stay unchanged during this pass. Rebuilding after every
@@ -1158,9 +1173,25 @@ impl Spool {
             if prepared.order != order {
                 return invalid("pending queue order differs from its operation");
             }
-            if !prepared.phase.confirmed_through(applied) {
+            let positioned = state
+                .applied_position
+                .is_some_and(|applied| prepared.phase.confirmed_through(applied));
+            let no_event_position =
+                matches!(prepared.phase, Phase::Acknowledged { commit_seq: None })
+                    && matches!(
+                        prepared.payload,
+                        Payload::Events { .. }
+                            | Payload::ReplaySequence { .. }
+                            | Payload::RegisterKinds
+                    )
+                    && (prepared.group().is_none() || caught_up);
+            if !positioned && !no_event_position {
                 continue;
             }
+            // A summary phase cannot substitute for the immutable full receipt.
+            self.acknowledgment(&identity)?.ok_or_else(|| {
+                Error::Invalid("settled operation has no verified receipt".into())
+            })?;
             if prepared.group().is_some() {
                 self.visit_captures(&prepared.identity, |identity| {
                     self.remove(identity)?;
@@ -1173,7 +1204,7 @@ impl Spool {
             self.remove(&prepared.identity)?;
         }
         self.ensure_indexes()?;
-        self.last_retired.set(Some(applied));
+        *self.last_retired.borrow_mut() = Some(key);
         self.retirement_dirty.set(false);
         Ok(())
     }
@@ -1757,8 +1788,95 @@ fn validate_ack(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<
             .as_deref(),
         acknowledgment.commit_seq,
         acknowledgment.refusal.is_some(),
-    )
+    )?;
+    if acknowledgment.refusal.is_none()
+        && acknowledgment.commit_seq.is_none()
+        && matches!(
+            prepared.payload,
+            Payload::Events { .. } | Payload::ReplaySequence { .. } | Payload::RegisterKinds
+        )
+    {
+        validate_no_event_position(prepared, acknowledgment)?;
+    }
+    Ok(())
 }
+
+/// An absent admitted-event position is an explicit owner outcome, not an
+/// empty or partial receipt. Replay lifecycle changes can have their own stream
+/// positions without admitting new events in this frame.
+fn validate_no_event_position(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<()> {
+    if acknowledgment.number.is_none_or(|number| number <= 0)
+        || acknowledgment.content_hash() != Some(prepared.frame.blob.as_str())
+        || !acknowledgment.admitted.is_empty()
+        || acknowledgment.material.is_some()
+        || !acknowledgment.material_extents.is_empty()
+    {
+        return invalid("unpositioned acknowledgment lacks exact durable frame evidence");
+    }
+    let outcome = &acknowledgment.outcome;
+    for field in [
+        "admitted",
+        "repeats",
+        "replaced",
+        "older",
+        "superseded",
+        "superseded_input",
+        "failures",
+        "dirty_keys",
+        "replay_archived",
+        "removed_at_source",
+    ] {
+        if outcome
+            .get(field)
+            .and_then(serde_json::Value::as_u64)
+            .is_none()
+        {
+            return invalid("unpositioned acknowledgment omits a complete admission outcome");
+        }
+    }
+    if outcome["admitted"] != 0 || outcome["replaced"] != 0 {
+        return invalid("newly admitted or replaced events need a confirmed position");
+    }
+    if outcome.get("commit_range") != Some(&serde_json::Value::Null)
+        || outcome.get("refusal_kind") != Some(&serde_json::Value::Null)
+        || !matches!(
+            outcome.get("source"),
+            Some(serde_json::Value::Null | serde_json::Value::String(_))
+        )
+    {
+        return invalid("unpositioned acknowledgment has inconsistent frame outcome metadata");
+    }
+    let kinds: Vec<(sinex_model::KindRef, String)> = serde_json::from_value(
+        outcome
+            .get("registered_kinds")
+            .cloned()
+            .ok_or_else(|| Error::Invalid("acknowledgment omits its kind outcome".into()))?,
+    )?;
+    let event_types: Vec<String> = serde_json::from_value(
+        outcome
+            .get("event_types")
+            .cloned()
+            .ok_or_else(|| Error::Invalid("acknowledgment omits its event types".into()))?,
+    )?;
+    if matches!(prepared.payload, Payload::Events { .. }) && !kinds.is_empty() {
+        return invalid("event acknowledgment claims kind registration");
+    }
+    if matches!(prepared.payload, Payload::RegisterKinds)
+        && (!event_types.is_empty()
+            || outcome["replay_archived"] != 0
+            || outcome["removed_at_source"] != 0
+            || outcome["dirty_keys"] != 0
+            || outcome["failures"] != 0
+            || outcome["repeats"] != 0
+            || outcome["older"] != 0
+            || outcome["superseded"] != 0
+            || outcome["superseded_input"] != 0)
+    {
+        return invalid("kind registration acknowledgment claims an event admission outcome");
+    }
+    Ok(())
+}
+
 fn validate_conflict(prepared: &Prepared, offered: &str, receipt: &Acknowledgment) -> Result<()> {
     if receipt.frame != prepared.identity
         || offered != prepared.frame.blob
@@ -1786,9 +1904,6 @@ fn validate_ack_header(
         return invalid("acknowledgment has a negative confirmed position");
     }
     if !refused {
-        if prepared.is_write() && position.is_none() {
-            return invalid("a write acknowledgment has no confirmed position");
-        }
         if let Some(expected) = prepared.material()
             && material != Some(expected.id.as_str())
         {

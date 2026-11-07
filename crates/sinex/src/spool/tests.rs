@@ -52,7 +52,7 @@ fn producer_backup_cut_keeps_original_frames_after_live_retirement() {
     spool
         .prepare(events("after-producer-cut", "later"))
         .unwrap();
-    spool.retire(10).unwrap();
+    spool.retire(&crate::tests::applied(10)).unwrap();
     assert!(spool.get(&first.identity).unwrap().is_none());
     let restored = Spool::open(pinned.path(), "host").unwrap();
     assert_eq!(
@@ -90,7 +90,7 @@ fn producer_backup_keeps_group_material_encoding_after_confirmed_retirement() {
     spool.acknowledge(ack("group", false, Some(10))).unwrap();
     let encoded = fs::read(spool.operation("raw").unwrap().join("body.zst")).unwrap();
     let pinned = spool.pin_backup(&AtomicBool::new(false)).unwrap();
-    spool.retire(10).unwrap();
+    spool.retire(&crate::tests::applied(10)).unwrap();
     assert!(spool.get("raw").unwrap().is_none());
     assert!(spool.get("group").unwrap().is_none());
     let restored = Spool::open(pinned.path(), "host").unwrap();
@@ -191,10 +191,10 @@ fn a_late_receipt_retires_at_the_already_applied_barrier() {
     let directory = tempfile::tempdir().unwrap();
     let spool = Spool::open(directory.path(), "host").unwrap();
     spool.prepare(events("late", "value")).unwrap();
-    spool.retire(10).unwrap();
+    spool.retire(&crate::tests::applied(10)).unwrap();
     assert!(spool.get("late").unwrap().is_some());
     spool.acknowledge(ack("late", false, Some(8))).unwrap();
-    spool.retire(10).unwrap();
+    spool.retire(&crate::tests::applied(10)).unwrap();
     assert!(spool.get("late").unwrap().is_none());
 }
 
@@ -286,9 +286,9 @@ fn acknowledgment_is_not_the_confirmed_application_barrier() {
     let spool = Spool::open(directory.path(), "host-a").unwrap();
     let page = spool.pending_after(None, 1).unwrap();
     assert!(page[0].phase.is_acknowledged());
-    spool.retire(17).unwrap();
+    spool.retire(&crate::tests::applied(17)).unwrap();
     assert!(spool.get("write").unwrap().is_some());
-    spool.retire(18).unwrap();
+    spool.retire(&crate::tests::applied(18)).unwrap();
     assert!(spool.get("write").unwrap().is_none());
 }
 
@@ -325,14 +325,14 @@ fn one_group_owns_every_capture_until_its_confirmed_position_is_applied() {
         spool.capture_group("member").unwrap().unwrap().identity,
         "canonical"
     );
-    spool.retire(999).unwrap();
+    spool.retire(&crate::tests::applied(999)).unwrap();
     assert!(spool.get("zip").unwrap().is_some());
     spool
         .acknowledge(ack("canonical", false, Some(21)))
         .unwrap();
-    spool.retire(20).unwrap();
+    spool.retire(&crate::tests::applied(20)).unwrap();
     assert_eq!(spool.counts().unwrap().0, 2);
-    spool.retire(21).unwrap();
+    spool.retire(&crate::tests::applied(21)).unwrap();
     assert!(all(&spool, 2).is_empty());
     assert!(spool.get("member").unwrap().is_none());
 }
@@ -356,7 +356,7 @@ fn malformed_receipts_and_group_members_never_authorize_retirement() {
     let mut damaged: serde_json::Value = serde_json::from_slice(&original).unwrap();
     damaged["value"]["phase"]["commit_seq"] = 0.into();
     fs::write(&receipt, serde_json::to_vec(&damaged).unwrap()).unwrap();
-    assert!(spool.retire(1).is_err());
+    assert!(spool.retire(&crate::tests::applied(1)).is_err());
     assert!(spool.get("raw").unwrap().is_some());
     fs::remove_file(&receipt).unwrap();
     assert!(spool.get("group").is_err());
@@ -372,7 +372,7 @@ fn malformed_receipts_and_group_members_never_authorize_retirement() {
         b"\"other\"\n",
     )
     .unwrap();
-    assert!(spool.retire(12).is_err());
+    assert!(spool.retire(&crate::tests::applied(12)).is_err());
     assert!(spool.get("raw").unwrap().is_some());
 }
 
@@ -494,11 +494,11 @@ fn crash_worker() {
             )
             .unwrap();
         spool.acknowledge(ack("canonical", false, Some(9))).unwrap();
-        spool.retire(9).unwrap();
+        spool.retire(&crate::tests::applied(9)).unwrap();
     } else if stage == "ack_synced" || stage == "ack_published" || stage == "operation_retired" {
         spool.prepare(events("write", "original")).unwrap();
         spool.acknowledge(ack("write", false, Some(9))).unwrap();
-        spool.retire(9).unwrap();
+        spool.retire(&crate::tests::applied(9)).unwrap();
     } else {
         spool
             .prepare_material(material("raw", b"source bytes"), b"source bytes".as_slice())
@@ -584,7 +584,7 @@ fn process_death_at_durability_boundaries_exposes_only_complete_operations() {
             }
             "ack_published" => {
                 assert!(spool.get("write").unwrap().unwrap().phase.is_acknowledged());
-                spool.retire(8).unwrap();
+                spool.retire(&crate::tests::applied(8)).unwrap();
                 assert!(spool.get("write").unwrap().is_some());
             }
             "operation_retired" => assert!(all(&spool, 1).is_empty()),
@@ -630,7 +630,7 @@ fn process_death_never_exposes_a_partial_capture_group() {
             );
         }
         if stage == "group_member_retired" {
-            spool.retire(9).unwrap();
+            spool.retire(&crate::tests::applied(9)).unwrap();
             assert!(all(&spool, 1).is_empty());
         }
     }
@@ -673,7 +673,7 @@ fn request_and_blob_visitors_can_use_small_metadata_until_application() {
         1
     );
     assert!(page.iter().all(|entry| entry.phase.is_acknowledged()));
-    spool.retire(999).unwrap();
+    spool.retire(&crate::tests::applied(999)).unwrap();
     assert_eq!(spool.pending_after(None, 10).unwrap().len(), 2);
     let mut body = String::new();
     spool
@@ -719,9 +719,9 @@ fn replay_capture_group_retains_its_material_until_applied() {
     spool
         .acknowledge(ack("replacement", false, Some(21)))
         .unwrap();
-    spool.retire(20).unwrap();
+    spool.retire(&crate::tests::applied(20)).unwrap();
     assert!(spool.get("raw").unwrap().is_some());
-    spool.retire(21).unwrap();
+    spool.retire(&crate::tests::applied(21)).unwrap();
     assert!(all(&spool, 1).is_empty());
 }
 
@@ -1094,7 +1094,7 @@ fn receipt_body_conflict_is_terminal_evidence_and_keeps_offered_bytes_after_rest
     );
     drop(spool);
     let spool = Spool::open(root.path(), "host").unwrap();
-    spool.retire(i64::MAX).unwrap();
+    spool.retire(&crate::tests::applied(i64::MAX)).unwrap();
     let retained = spool.get("same-frame").unwrap().unwrap();
     assert!(matches!(retained.phase, Phase::Conflicted { .. }));
     let mut observed = Vec::new();
@@ -1261,4 +1261,194 @@ fn material_metadata_written_with_the_retired_export_flag_still_reads() {
         spool.get("captured"),
         Err(Error::Invalid(message)) if message == "spool metadata checksum differs from its contents"
     ));
+}
+
+#[test]
+fn complete_no_position_outcomes_preserve_receipt_and_application_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    let mut repeat = events("coverage-repeat", "owner-known event");
+    if let Ingress::Events { coverage, .. } = &mut repeat {
+        *coverage = Some(sinex_protocol::CoverageProof {
+            stamp: "owner-signed-coverage".into(),
+            position: 42,
+            scope: "scope".into(),
+        });
+    }
+    spool.prepare(repeat.clone()).unwrap();
+    let mut receipt = crate::tests::no_event_receipt(&repeat);
+    receipt.outcome["repeats"] = 1.into();
+    receipt.outcome["event_types"] = serde_json::json!(["fixture.value"]);
+    spool.acknowledge(receipt.clone()).unwrap();
+    assert_eq!(spool.acknowledgment(repeat.frame()).unwrap(), Some(receipt));
+    assert_eq!(
+        spool.get(repeat.frame()).unwrap().unwrap().phase,
+        Phase::Acknowledged { commit_seq: None }
+    );
+    // An accepted metadata operation can settle without claiming any index
+    // position. Raw materials remain governed by the group barrier below.
+    spool.retire(&ReplayState::default()).unwrap();
+    assert!(spool.get(repeat.frame()).unwrap().is_none());
+
+    let empty = Ingress::RegisterKinds {
+        frame: "empty-kinds".into(),
+        declarations: vec![],
+    };
+    spool.prepare(empty.clone()).unwrap();
+    spool
+        .acknowledge(crate::tests::no_event_receipt(&empty))
+        .unwrap();
+    spool.retire(&ReplayState::default()).unwrap();
+    assert!(spool.get(empty.frame()).unwrap().is_none());
+}
+
+#[test]
+fn incomplete_or_new_admission_without_position_cannot_settle_or_retire_raw_group() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    let bytes = b"retained provider bytes";
+    spool
+        .prepare_material(material("raw", bytes), bytes.as_slice())
+        .unwrap();
+    spool.acknowledge(ack("raw", true, None)).unwrap();
+    let frame = events("no-position", "known record");
+    spool.prepare_group(frame.clone(), &["raw".into()]).unwrap();
+    let complete = crate::tests::no_event_receipt(&frame);
+    for field in ["admitted", "replaced"] {
+        let mut receipt = complete.clone();
+        receipt.outcome[field] = 1.into();
+        assert!(spool.acknowledge(receipt).is_err());
+    }
+    let mut receipt = complete.clone();
+    receipt.outcome.as_object_mut().unwrap().remove("repeats");
+    assert!(spool.acknowledge(receipt).is_err());
+    let mut receipt = complete.clone();
+    receipt.outcome["frame_content_hash"] = "different original bytes".into();
+    assert!(spool.acknowledge(receipt).is_err());
+    let mut receipt = complete.clone();
+    receipt.outcome["refusal_kind"] = "partial-data".into();
+    receipt.outcome["failures"] = 1.into();
+    assert!(spool.acknowledge(receipt).is_err());
+    let mut receipt = complete.clone();
+    receipt
+        .admitted
+        .push(sinex_model::EventId(uuid::Uuid::from_bytes([1; 16])));
+    assert!(spool.acknowledge(receipt).is_err());
+    let mut refused = complete;
+    refused.refusal = Some("owner refused data".into());
+    spool.acknowledge(refused).unwrap();
+    spool.retire(&crate::tests::applied(42)).unwrap();
+    assert!(spool.get("raw").unwrap().is_some());
+    assert!(
+        spool
+            .get(frame.frame())
+            .unwrap()
+            .unwrap()
+            .phase
+            .is_refused()
+    );
+}
+
+#[test]
+fn new_no_position_group_at_same_completed_head_invalidates_retirement_memo() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    let state = crate::tests::applied(42);
+    spool.retire(&state).unwrap();
+    spool
+        .prepare_material(material("raw", b"bytes"), b"bytes".as_slice())
+        .unwrap();
+    spool.acknowledge(ack("raw", true, None)).unwrap();
+    let frame = events("repeat", "known record");
+    spool.prepare_group(frame.clone(), &["raw".into()]).unwrap();
+    let mut receipt = crate::tests::no_event_receipt(&frame);
+    receipt.outcome["repeats"] = 1.into();
+    spool.acknowledge(receipt).unwrap();
+    spool.retire(&state).unwrap();
+    assert!(
+        spool.get("raw").unwrap().is_none(),
+        "new same-head ACK invalidates the memo"
+    );
+    assert!(spool.get(frame.frame()).unwrap().is_none());
+    spool
+        .prepare_material(material("raw-next", b"next"), b"next".as_slice())
+        .unwrap();
+    spool.acknowledge(ack("raw-next", true, None)).unwrap();
+    let frame = events("repeat-next", "known next record");
+    spool
+        .prepare_group(frame.clone(), &["raw-next".into()])
+        .unwrap();
+    let mut receipt = crate::tests::no_event_receipt(&frame);
+    receipt.outcome["repeats"] = 1.into();
+    spool.acknowledge(receipt).unwrap();
+    let mut behind = state.clone();
+    behind.applied_position = Some(41);
+    spool.retire(&behind).unwrap();
+    assert!(spool.get("raw-next").unwrap().is_some());
+    let mut stale = state.clone();
+    stale.head = None;
+    spool.retire(&stale).unwrap();
+    assert!(spool.get("raw-next").unwrap().is_some());
+    // A fresh verified post-ACK head can have the same numeric position.
+    spool.retire(&state).unwrap();
+    assert!(spool.get("raw-next").unwrap().is_none());
+    assert!(spool.get(frame.frame()).unwrap().is_none());
+}
+
+#[test]
+fn archive_only_replay_without_admitted_event_position_waits_for_completed_prefix() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    spool
+        .prepare_material(material("raw", b"bytes"), b"bytes".as_slice())
+        .unwrap();
+    spool.acknowledge(ack("raw", true, None)).unwrap();
+    let replay = Ingress::ReplaySequence {
+        frame: "archive-only".into(),
+        sequence: Box::new(sinex_protocol::ProducerReplay {
+            source: crate::source_reference(),
+            operation: sinex_model::OperationId(uuid::Uuid::nil()),
+            root: crate::material_id("polylogue-test", "raw"),
+            materials: vec![],
+            event_types: None,
+            from: None,
+            until: None,
+            declarations: vec![],
+            parser_build: "fixture".into(),
+            parser_version: "fixture".into(),
+            expected_live_hash: "fixture".into(),
+            batches: vec![],
+        }),
+    };
+    spool
+        .prepare_group(replay.clone(), &["raw".into()])
+        .unwrap();
+    let mut receipt = crate::tests::no_event_receipt(&replay);
+    receipt.outcome["replay_archived"] = 1.into();
+    receipt.outcome["dirty_keys"] = 1.into();
+    spool.acknowledge(receipt.clone()).unwrap();
+    let mut state = crate::tests::applied(42);
+    state.head = Some(43); // lifecycle commit belongs to the stream, not the event ACK
+    spool.retire(&state).unwrap();
+    assert!(spool.get("raw").unwrap().is_some());
+    assert_eq!(
+        spool.acknowledgment(replay.frame()).unwrap(),
+        Some(receipt.clone())
+    );
+    let pinned = spool.pin_backup(&AtomicBool::new(false)).unwrap();
+    state.applied_position = Some(43);
+    spool.retire(&state).unwrap();
+    assert!(spool.get("raw").unwrap().is_none());
+    let restored = Spool::open(pinned.path(), "host").unwrap();
+    assert_eq!(
+        restored.acknowledgment(replay.frame()).unwrap(),
+        Some(receipt)
+    );
+    let mut bytes = Vec::new();
+    restored
+        .body("raw")
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .unwrap();
+    assert_eq!(bytes, b"bytes");
 }

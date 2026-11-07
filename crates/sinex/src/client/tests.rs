@@ -51,7 +51,8 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
             let frame=ingress.next().await.unwrap();
             let sinex_protocol::Ingress::RegisterKinds{frame,declarations}=serde_json::from_slice(&frame.payload).unwrap() else {panic!("kind registration expected")};
             let hashes:Vec<_>=declarations.iter().map(|declaration|(declaration.kind.clone(),declaration.definition_hash())).collect();
-            let receipt:sinex_protocol::Acknowledgment=serde_json::from_value(serde_json::json!({"number":1,"frame":frame,"material":null,"admitted":[],"outcome":{"registered_kinds":hashes,"frame_content_hash":sinex_transport::producer::content_hash(&sinex_protocol::Ingress::RegisterKinds{frame:frame.clone(),declarations:declarations.clone()}).unwrap()},"refusal":null,"commit_seq":null})).unwrap();
+            let mut receipt=crate::tests::no_event_receipt(&sinex_protocol::Ingress::RegisterKinds{frame:frame.clone(),declarations:declarations.clone()});
+            receipt.outcome["registered_kinds"]=serde_json::to_value(hashes).unwrap();
             client.publish("auth.ack.polylogue",serde_json::to_vec(&sinex_protocol::ReceiptHint{number:1,frame_hash:blake3::hash(frame.as_bytes()).to_hex().to_string()}).unwrap().into()).await.unwrap();
             let request=recorded.next().await.unwrap();
             let query:sinex_protocol::RecordedQuery=serde_json::from_slice(&request.payload).unwrap();assert_eq!(query.numbers,[1]);
@@ -61,6 +62,25 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
             assert!(request.reply.as_ref().unwrap().starts_with("_INBOX.polylogue."));
             let context:sinex_protocol::PublicContext=serde_json::from_value(serde_json::json!({"state":"available","context_token":"synthetic-context-token","settings_identity":"owner-settings","owner_revision":7,"day":{"zone":"Europe/Warsaw","start":"04:00:00"},"quiet_hours":{"from":1320,"to":420},"interrupt_budget":{"per_hour":3,"used":1,"remaining":2,"window_ms":3600000},"observed_at":"2026-01-01T00:00:00Z","coverage":{"state":"not_requested"}})).unwrap();
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),context,Duration::from_secs(5)).await.unwrap();
+            // Exercise real transmission/recorded-receipt lookup for two
+            // accepted frames which have no admitted-event position.
+            for (number, expected) in [(5, "empty-events"), (6, "empty-kinds")] {
+                let message=ingress.next().await.unwrap();
+                let frame:sinex_protocol::Ingress=serde_json::from_slice(&message.payload).unwrap();
+                assert_eq!(frame.frame(), expected);
+                match &frame {
+                    sinex_protocol::Ingress::Events{events,failures,..} => assert!(events.is_empty() && failures.is_empty()),
+                    sinex_protocol::Ingress::RegisterKinds{declarations,..} => assert!(declarations.is_empty()),
+                    _ => panic!("unexpected no-event frame"),
+                }
+                let mut receipt=crate::tests::no_event_receipt(&frame);
+                receipt.number=Some(number);
+                client.publish("auth.ack.polylogue",serde_json::to_vec(&sinex_protocol::ReceiptHint{number,frame_hash:blake3::hash(expected.as_bytes()).to_hex().to_string()}).unwrap().into()).await.unwrap();
+                let request=recorded.next().await.unwrap();
+                let query:sinex_protocol::RecordedQuery=serde_json::from_slice(&request.payload).unwrap();
+                assert_eq!(query.numbers,[number]);
+                sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),sinex_protocol::RecordedPage{acknowledgments:vec![receipt],next:None,..Default::default()},Duration::from_secs(5)).await.unwrap();
+            }
             let subjects=Subjects::new("auth");
             let request=consumers.next().await.unwrap();
             let query:sinex_protocol::ConfirmedConsumer=serde_json::from_slice(&request.payload).unwrap();
@@ -149,6 +169,31 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
             .contains("synthetic-context-token")
     );
     assert!(!format!("{context:?}").contains("synthetic-context-token"));
+    sinex
+        .client_operation(async |client| {
+            for frame in [
+                sinex_protocol::Ingress::Events {
+                    frame: "empty-events".into(),
+                    source: None,
+                    coverage: None,
+                    events: vec![],
+                    failures: vec![],
+                },
+                sinex_protocol::Ingress::RegisterKinds {
+                    frame: "empty-kinds".into(),
+                    declarations: vec![],
+                },
+            ] {
+                let receipt = client.send(frame.clone()).await?;
+                assert_eq!(receipt.commit_seq, None);
+                assert_eq!(
+                    client.spool.lock().unwrap().acknowledgment(frame.frame())?,
+                    Some(receipt)
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
     use polylogue_store::primary::{self, ConfirmedChange, ReplayControl};
     let state = primary::ReplayState {
         applied_position: Some(42),
@@ -219,12 +264,8 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
     // Restore the original encoded frame and install its exact owner receipt.
     // The corresponding retry succeeds without changing bytes or identity.
     std::fs::write(&frame_path, original_frame).unwrap();
-    let receipt = serde_json::from_value(serde_json::json!({
-        "number":4,"frame":pending.frame(),"material":null,"admitted":[],
-        "outcome":{"frame_content_hash":sinex_transport::producer::content_hash(&pending).unwrap()},
-        "refusal":null,"commit_seq":null,
-    }))
-    .unwrap();
+    let mut receipt = crate::tests::no_event_receipt(&pending);
+    receipt.number = Some(4);
     sinex.queue().unwrap().acknowledge(receipt).unwrap();
     sinex.send_pending();
     let read_error = sinex.status().unwrap().error.unwrap();

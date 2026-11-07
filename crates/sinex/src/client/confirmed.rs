@@ -414,14 +414,37 @@ impl Client {
             .await
             .map_err(|error| Error::Unreachable(error.to_string()))?;
         self.pending.clear();
-        if let Some(position) = state.applied_position {
-            self.spool
+        let retirement = {
+            let health = self
+                .health
                 .lock()
-                .map_err(|_| Error::Invalid("producer spool panicked".into()))?
-                .retire(position)?;
-        }
+                .map_err(|_| Error::Invalid("producer health panicked".into()))?;
+            retirement_state(state, &health)
+        };
+        self.spool
+            .lock()
+            .map_err(|_| Error::Invalid("producer spool panicked".into()))?
+            .retire(&retirement)?;
         Ok(())
     }
+}
+
+/// A receipt without an admitted-event position needs a completed prefix
+/// whose owner head was observed after the durable acknowledgment. The owner
+/// reads that head from its committed counter, not from the delivery broker.
+fn retirement_state(state: &ReplayState, health: &crate::status::Health) -> ReplayState {
+    let mut retirement = state.clone();
+    let fresh_head = health.owner_scope.as_ref() == state.scope.as_ref()
+        && health.owner_position == state.head
+        && health.position_observed.is_some_and(|observed| {
+            health
+                .last_ack
+                .is_none_or(|acknowledged| observed >= acknowledged)
+        });
+    if !fresh_head {
+        retirement.head = None;
+    }
+    retirement
 }
 
 fn control_fact(control: ReplayControl) -> Confirmed {

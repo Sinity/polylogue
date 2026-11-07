@@ -26,6 +26,17 @@ sending materials or events. Each event selects its declaration by name and
 version. A refused hello or frame returns Sinex's reason. Retrying an operation
 with a durable refusal returns the same reason from its verified receipt.
 
+A complete producer acknowledgment can carry no admitted-event position: an
+empty frame, a repeated event or kind registration may admit no new events;
+a replay may archive readings without admitting replacements. Polylogue keeps
+that absent position in the original receipt. New admissions and replacements
+require their event position. A receipt alone never advances the local index.
+Ungrouped metadata operations can settle on their durable complete receipt.
+A group holding original source bytes also waits until the local index has
+applied a complete prefix in the same scope through an owner head observed
+after the acknowledgment. Sinex reads that head from its committed counter.
+A head observed before publication, or an incomplete prefix, retains the group.
+
 Declarations validate the complete record and describe the outer projected
 fields used by privacy hints and time rules. The complete record remains guarded;
 the outer fields let Sinex join the record to its other domains.

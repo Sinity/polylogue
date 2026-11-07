@@ -210,7 +210,11 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
     for (ordinal, (name, _)) in expected.iter().enumerate() {
         sinex.queue().unwrap().acknowledge(serde_json::from_value(json!({"number":ordinal+10,"frame":name,"material":null,"admitted":[],"outcome":{},"refusal":null,"commit_seq":10})).unwrap()).unwrap();
     }
-    sinex.queue().unwrap().retire(9).unwrap();
+    sinex
+        .queue()
+        .unwrap()
+        .retire(&crate::tests::applied(9))
+        .unwrap();
     drop(sinex);
     let sinex = client(root.path());
     for (name, product) in &expected {
@@ -219,7 +223,11 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
             vec![product.clone()]
         );
     }
-    sinex.queue().unwrap().retire(10).unwrap();
+    sinex
+        .queue()
+        .unwrap()
+        .retire(&crate::tests::applied(10))
+        .unwrap();
     for (name, _) in expected {
         assert!(retained(&sinex, NamedProductSelector::Exact(name)).is_empty());
     }

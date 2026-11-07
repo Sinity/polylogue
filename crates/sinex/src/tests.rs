@@ -5,6 +5,48 @@ use polylogue_store::primary::{
 };
 use serde_json::json;
 
+/// The complete Core outcome for an accepted frame admitting no new events.
+pub(crate) fn no_event_receipt(frame: &sinex_protocol::Ingress) -> sinex_protocol::Acknowledgment {
+    let mut event_types = match frame {
+        sinex_protocol::Ingress::Events { events, .. } => events
+            .iter()
+            .map(|event| event.kind.name.clone())
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    event_types.sort();
+    event_types.dedup();
+    let source = match frame {
+        sinex_protocol::Ingress::Events { source, .. } => {
+            source.as_ref().map(|source| source.name.as_str())
+        }
+        sinex_protocol::Ingress::ReplaySequence { sequence, .. } => {
+            Some(sequence.source.name.as_str())
+        }
+        _ => None,
+    };
+    serde_json::from_value(json!({
+        "number":1,"frame":frame.frame(),"material":null,"admitted":[],
+        "outcome":{
+            "frame_content_hash":sinex_transport::producer::content_hash(frame).unwrap(),
+            "registered_kinds":[],"commit_range":null,"superseded_input":0,
+            "replay_archived":0,"removed_at_source":0,"dirty_keys":0,
+            "admitted":0,"repeats":0,"replaced":0,"older":0,"superseded":0,
+            "failures":0,"refusal_kind":null,"source":source,"event_types":event_types
+        },"refusal":null,"commit_seq":null
+    }))
+    .unwrap()
+}
+
+pub(crate) fn applied(position: i64) -> polylogue_store::primary::ReplayState {
+    polylogue_store::primary::ReplayState {
+        applied_position: Some(position),
+        head: Some(position),
+        scope: Some("fixture-scope".into()),
+        staged_delivery: None,
+    }
+}
+
 pub(crate) fn body(root: &std::path::Path, bytes: &[u8]) -> polylogue_store::primary::PreparedBody {
     let prepared = hashed_blobs::Preparation::new(root.join("source-staging"))
         .unwrap()
@@ -159,9 +201,19 @@ fn grouped_capture_remains_pending_until_its_confirmed_barrier() {
         .unwrap();
     assert_eq!(sinex.pending_captures().unwrap()[0].identity, raw.identity);
     sinex.spool.lock().unwrap().acknowledge(serde_json::from_value(json!({"number":2,"frame":grouped.identity,"material":null,"admitted":[],"outcome":{},"refusal":null,"commit_seq":10})).unwrap()).unwrap();
-    sinex.spool.lock().unwrap().retire(9).unwrap();
+    sinex
+        .spool
+        .lock()
+        .unwrap()
+        .retire(&crate::tests::applied(9))
+        .unwrap();
     assert_eq!(sinex.pending_captures().unwrap().len(), 1);
-    sinex.spool.lock().unwrap().retire(10).unwrap();
+    sinex
+        .spool
+        .lock()
+        .unwrap()
+        .retire(&crate::tests::applied(10))
+        .unwrap();
     assert!(sinex.pending_captures().unwrap().is_empty());
 }
 
