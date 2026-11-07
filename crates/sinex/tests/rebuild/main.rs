@@ -99,13 +99,18 @@ impl Running {
                 "SELECT i.id AS input,i.format,o.id AS observation,o.machine,o.path,hex(o.path_bytes) AS path_bytes,o.class,o.revision AS observed_revision,o.chain AS observed_chain,o.length AS observed_length,r.number,r.chain,r.length FROM source_input i LEFT JOIN source_observation o ON o.rowid=(SELECT max(x.rowid) FROM source_observation x WHERE x.input=i.id) LEFT JOIN source_revision r ON r.input=i.id AND r.number=(SELECT max(x.number) FROM source_revision x WHERE x.input=i.id) ORDER BY i.id", &[],
             )
         });
+        let staged = ReadPool::open(archive).and_then(|pool| {
+            pool.reader()?.query(
+                "SELECT 'pending' AS stage,position,change,count(*) AS records FROM primary_pending GROUP BY position,change UNION ALL SELECT 'complete',position,NULL,1 FROM primary_complete ORDER BY position,stage LIMIT 32", &[],
+            )
+        });
         let refused = ReadPool::open(archive).and_then(|pool| {
             pool.reader()?.query(
                 "SELECT r.event,r.kind,r.reason,r.unreadable_input,f.state,f.product IS NULL AS unreadable FROM primary_refused r LEFT JOIN primary_fact f ON f.event=r.event ORDER BY r.event", &[],
             )
         });
         format!(
-            "producer: {:?}; local source heads: {sources:?}; local refused facts: {refused:?}; local replay: {local:?}; pending capture metadata: {pending:?}; first native refusals: {}; latest native receipts: {}; native event counts: {}",
+            "producer: {:?}; local source heads: {sources:?}; staged positions: {staged:?}; local refused facts: {refused:?}; local replay: {local:?}; pending capture metadata: {pending:?}; first native refusals: {}; latest native receipts: {}; native event counts: {}",
             sinex.status(),
             self.native.sql("SELECT frame,refusal FROM core.ingress_frames WHERE producer='polylogue' AND refusal IS NOT NULL ORDER BY number LIMIT 8"),
             self.native.sql("SELECT number,frame,commit_seq,admitted,outcome,refusal FROM core.ingress_frames WHERE producer='polylogue' ORDER BY number DESC LIMIT 8"),
@@ -307,14 +312,24 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
             if answers(&archive).0 == expected {
                 break;
             }
-            commits
-                .recv_timeout(Duration::from_secs(120).saturating_sub(imported_at.elapsed()))
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "import confirmation: {error}; {}",
-                        running.evidence(&sinex, &archive)
-                    )
-                });
+            if let Err(error) =
+                commits.recv_timeout(Duration::from_secs(120).saturating_sub(imported_at.elapsed()))
+            {
+                // Preserve the failed state before exercising the existing
+                // owner's resume path. This does not change the failed assertion.
+                let original = running.evidence(&sinex, &archive);
+                drop(engine);
+                let resumed = polylogue_store::Writer::start_on_sinex(&archive, sinex.clone()).map(
+                    |writer| {
+                        let applied = writer.apply_confirmed(Vec::new());
+                        let report = writer.flush();
+                        (applied, report)
+                    },
+                );
+                panic!(
+                    "import confirmation: {error}; original state: {original}; diagnostic resume: {resumed:?}"
+                );
+            }
         }
         engine
             .writer()
