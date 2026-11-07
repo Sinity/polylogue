@@ -41,6 +41,8 @@ Each complete stream position applies atomically. If a later position fails,
 the earlier committed prefix stays visible and notifies readers. The writer
 reports the failure with its last applied position before sending that cue;
 a failed attempt with no committed progress produces no commit notification.
+The capture loop returns queued writer errors on continuing passes even when
+there are no new inputs to parse, while keeping outstanding custody pending.
 
 Declarations validate the complete record and describe the outer projected
 fields used by privacy hints and time rules. The complete record remains guarded;

@@ -825,3 +825,79 @@ fn a_deferred_database_read_error_preserves_another_files_confirmation_wait() {
         assert_eq!(progress.length, bytes.len() as u64);
     }
 }
+
+#[test]
+fn an_idle_continuation_reports_queued_writer_errors_without_clearing_custody() {
+    let home = ClaudeHome::new();
+    let db = home.home.join(".codex/state_5.sqlite");
+    std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+    std::fs::copy(
+        polylogue_testkit::morrow_dir().join("codex/state_5.sqlite"),
+        &db,
+    )
+    .unwrap();
+    let (mut engine, _archive, _lock, sdk) = open(&home);
+    let captured = engine.run_pass().unwrap();
+    assert!(captured.capture_pending, "{captured:?}");
+    let mut before: Vec<_> = sdk
+        .pending_captures()
+        .unwrap()
+        .into_iter()
+        .map(|capture| capture.identity)
+        .collect();
+    before.sort();
+    assert!(!before.is_empty());
+    std::fs::remove_file(&db).unwrap();
+    // The real writer rejects this queued reading because its source input
+    // does not exist. No parse work is needed to observe the resulting report.
+    engine
+        .writer()
+        .unwrap()
+        .send(polylogue_store::Batch {
+            required_disposition: None,
+            input: polylogue_store::InputKey {
+                id: "idle-continuation-error".into(),
+                format: "codex-database".into(),
+                arrival_rank: 0,
+            },
+            change: polylogue_store::Change::Reparse { chain: 1 },
+            observation: None,
+            continues: false,
+            new_blob: None,
+            blobs: Vec::new(),
+            length: 0,
+            parse: Vec::new(),
+            acquisition: None,
+            basis: None,
+            release: Default::default(),
+        })
+        .unwrap();
+    let continued = engine.run_pass().unwrap();
+    assert!(
+        continued.errors.iter().any(|error| {
+            error.starts_with("input idle-continuation-error:")
+                && error.contains("stored reading input identity differs")
+        }),
+        "{continued:?}"
+    );
+    assert!(continued.capture_pending, "{continued:?}");
+    assert_eq!(continued.inputs_changed, 0);
+    assert_eq!(continued.bytes_read, 0);
+    assert_eq!(continued.bytes_stored, 0);
+    assert_eq!(continued.sessions_derived, 0);
+    let mut after: Vec<_> = sdk
+        .pending_captures()
+        .unwrap()
+        .into_iter()
+        .map(|capture| capture.identity)
+        .collect();
+    after.sort();
+    assert_eq!(after, before);
+    let next = engine.run_pass().unwrap();
+    assert!(next.capture_pending, "{next:?}");
+    assert!(
+        next.errors
+            .iter()
+            .all(|error| !error.contains("idle-continuation-error"))
+    );
+}

@@ -362,7 +362,7 @@ impl Engine {
             }
         }
         pass.inputs_changed = plans.len() as u64;
-        if plans.is_empty() && !continuing {
+        if plans.is_empty() {
             let report = self.flush_writes()?;
             pass.errors.extend(report.errors);
         }
