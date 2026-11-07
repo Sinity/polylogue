@@ -82,7 +82,7 @@ fn fusion_keeps_projected_values_order_and_full_right_operand_ranks() {
     }
     let union = read(
         &reader,
-        "sessions where id:\"claude-code:a\" | fields id as label,input_tokens as n | union (sessions where repo:east | fields id as label,input_tokens+10 as n)",
+        "sessions where id:\"claude-code:a\" | fields id as label,input_tokens as n | union (sessions where repo:east | fields id as label,input_tokens + 10 as n)",
     );
     assert_eq!(
         union,

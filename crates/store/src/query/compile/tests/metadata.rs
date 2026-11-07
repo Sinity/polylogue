@@ -38,7 +38,7 @@ fn matches_declarations_follow_actual_producer_columns_and_replay_frozen_saved_b
         "sessions where exists tool_call() | limit 1 | matches",
         "sessions where exists tool_call() | distinct | matches",
         "sessions where exists tool_call() | fields id as source, started as began | matches",
-        "sessions where exists tool_call() | fields repo as \"source.repo\" | matches",
+        "sessions where exists tool_call() | fields repo as source.repo | matches",
     ] {
         let options = opts(&[]);
         let schema = options.output_schema(text).unwrap();
