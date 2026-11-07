@@ -34,7 +34,11 @@ exchange in a guest with private XDG and archive paths. Formatting, crate
 boundaries, extension packaging, deployment-file rendering and Nix formatting
 are flake checks too. The `modules` check evaluates both deployment modules,
 and the `services` VM starts the Home Manager user service and reaches its
-daemon through every installed alias and MCP.
+daemon through every installed alias and MCP. Its ordinary account home lets
+Home Manager activate; literal spaces, dollar signs and percent signs in the
+archive and XDG data, state and cache paths are checked against the running
+daemon's arguments and environment. Module evaluation separately checks those
+characters in the Home Manager profile command path.
 
 The development shell installs the check tools and points Git at `.githooks`
 when no other hooks path is configured; it builds no VM. The commit hook checks

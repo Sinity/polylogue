@@ -4,8 +4,23 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 
 profile, expected_pid = Path(sys.argv[1]), int(sys.argv[2])
+expected = json.loads(Path(sys.argv[3]).read_text())
+process = Path("/proc") / str(expected_pid)
+environment = dict(
+    entry.split(b"=", 1)
+    for entry in (process / "environ").read_bytes().split(b"\0") if entry
+)
+for name, path in expected.items():
+    if name != "archive":
+        assert environment[name.encode()].decode() == path, (name, environment)
+argv = (process / "cmdline").read_bytes().split(b"\0")
+assert argv[argv.index(b"--archive") + 1].decode() == expected["archive"], argv
+assert Path(expected["archive"], "index.db").is_file()
+config = Path(os.fsdecode(argv[argv.index(b"--config") + 1]))
+assert tomllib.loads(config.read_text())["archive"] == expected["archive"]
 for name in ("polylogue", "plg", "plog", "polylogue-main"):
     status = subprocess.run(
         [str(profile / name), "--json", "status"],
