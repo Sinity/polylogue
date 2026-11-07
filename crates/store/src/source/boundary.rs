@@ -62,7 +62,9 @@ impl SourceBoundary {
         match &self.authority {
             Authority::Standalone { through } if !archive.is_primary() => Ok(*through),
             Authority::Primary { through, scope } if archive.is_primary() => {
-                match primary_position(index)? {
+                // Later unknown inputs affect current head claims, not this
+                // already completed historical cut. Lifecycle changes rotate generation.
+                match applied_prefix(index)? {
                     Some((applied, current_scope))
                         if applied >= *through && &current_scope == scope =>
                     {
@@ -85,6 +87,11 @@ fn primary_position(index: &Connection) -> Result<Option<(u64, String)>> {
     if unreadable {
         return Ok(None);
     }
+    applied_prefix(index)
+}
+
+fn applied_prefix(index: &Connection) -> Result<Option<(u64, String)>> {
+    crate::primary::scope::require_readable(index)?;
     let state = crate::primary::projection::replay_state(index)?;
     let Some(position) = state.applied_position else {
         return Ok(None);

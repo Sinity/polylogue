@@ -77,6 +77,31 @@ fn material_reader(archive: &Archive, material: &Material) -> Result<hashed_blob
     Ok(hashed_blobs::Reader::new(archive.byte_root()?).open(&[extent], None)?)
 }
 
+// The acquired body keeps its own coordinates after logical extents are trimmed.
+fn captured_location(
+    input: &CapturedInput,
+    material: Option<&Material>,
+    offset: u64,
+) -> Result<Option<crate::primary::SourceLocation>> {
+    let (Some(range), Some(material)) = (input.raw_range, material) else {
+        return Ok(None);
+    };
+    if material.hash != input.hash
+        || material.length != input.length
+        || range.length()? != input.length
+    {
+        return Err(StoreError::Invalid(
+            "ready provider material differs from its acquired body".into(),
+        ));
+    }
+    Ok(
+        (offset >= range.start && offset <= range.end).then(|| crate::primary::SourceLocation {
+            material: material.id.clone(),
+            anchor: offset - range.start,
+        }),
+    )
+}
+
 // The acquired body may be retained without creating a logical source extent.
 // A receipt identifies the physical preparation, never a whole-chain blob guess.
 fn acquired_body(item: &PreparedBatch) -> Result<Option<&crate::staging::PreparedBytes>> {
@@ -278,12 +303,8 @@ impl Inner {
                     .parse
                     .last()
                     .map_or("", |step| step.reading_version.as_str());
-                let snapshot = self.source_snapshot(source.clone(), version)?;
                 let basis = if let Some(sampled) = &item.batch.basis {
-                    if sampled.source != source
-                        || sampled.confirmed != snapshot.basis.confirmed
-                        || sampled.status != snapshot.basis.status
-                    {
+                    if !self.sampled_basis_matches(sampled, &source, &item.batch.input.id)? {
                         required_disposition =
                             Some(crate::primary::CaptureDisposition::UnresolvedBasisConflict);
                     }
@@ -291,7 +312,7 @@ impl Inner {
                     // lock, after the serialized writer checks confirmed state.
                     sampled.clone()
                 } else {
-                    snapshot.basis
+                    self.source_snapshot(source.clone(), version)?.basis
                 };
                 bases.insert(source, basis);
             }
@@ -835,42 +856,32 @@ impl Inner {
                                 }
                                 _ => reading.start,
                             };
-                            let location = match (&input.rows.extent, &member.material) {
-                                (Some(original), Some(material))
-                                    if start >= original.offset as u64
-                                        && start
-                                            <= (original.offset as u64
-                                                + original.length as u64)
-                                        || original.length == 0
-                                            && start == original.offset as u64 =>
-                                {
-                                    Some(crate::primary::SourceLocation {
-                                        material: material.id.clone(),
-                                        anchor: start - original.offset as u64
-                                            + original.blob_offset as u64,
-                                    })
-                                }
-                                _ => match ready_extents.iter().rev().find(|(id, extent, _)| {
-                                    id == &key.id
-                                        && extent.chain == chain
-                                        && start >= extent.offset as u64
-                                        && start <= (extent.offset + extent.length) as u64
-                                }) {
-                                    Some((_, extent, material)) => {
-                                        Some(crate::primary::SourceLocation {
-                                            material: material.id.clone(),
-                                            anchor: start - extent.offset as u64
-                                                + extent.blob_offset as u64,
-                                        })
+                            let location =
+                                match captured_location(input, member.material.as_ref(), start)? {
+                                    Some(location) => Some(location),
+                                    None => {
+                                        match ready_extents.iter().rev().find(|(id, extent, _)| {
+                                            id == &key.id
+                                                && extent.chain == chain
+                                                && start >= extent.offset as u64
+                                                && start <= (extent.offset + extent.length) as u64
+                                        }) {
+                                            Some((_, extent, material)) => {
+                                                Some(crate::primary::SourceLocation {
+                                                    material: material.id.clone(),
+                                                    anchor: start - extent.offset as u64
+                                                        + extent.blob_offset as u64,
+                                                })
+                                            }
+                                            None => crate::primary::projection::material_at(
+                                                &self.index,
+                                                &key.id,
+                                                chain,
+                                                start,
+                                            )?,
+                                        }
                                     }
-                                    None => crate::primary::projection::material_at(
-                                        &self.index,
-                                        &key.id,
-                                        chain,
-                                        start,
-                                    )?,
-                                },
-                            };
+                                };
                             if location.is_none() {
                                 return Err(StoreError::Invalid(
                                     "parsed fact has no captured source anchor".into(),

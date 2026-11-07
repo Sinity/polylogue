@@ -120,6 +120,16 @@ impl crate::primary::Sinex for OfflineProducer {
                 "missing synthetic capture member".into(),
             ));
         }
+        if plan.required_disposition
+            == Some(crate::primary::CaptureDisposition::UnresolvedBasisConflict)
+        {
+            return Ok(crate::primary::CaptureReceipt::UnresolvedBasisConflict {
+                custody: crate::primary::RawCustodyReceipt {
+                    identity: "offline-capture".into(),
+                    count: plan.count,
+                },
+            });
+        }
         Ok(crate::primary::CaptureReceipt::Accepted {
             write: crate::primary::PreparedWrite {
                 identity: "offline-capture".into(),
@@ -888,4 +898,258 @@ fn frozen_unknown_empty_capture_publishes_only_after_scoped_stream_completion() 
     );
     assert_eq!(std::fs::read(producer_root.join("source")).unwrap(), bytes);
     assert!(producer.captured().basis.unwrap().resolved.is_none());
+}
+
+#[test]
+fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
+    use crate::primary::{Confirmed, ConfirmedChange, ReplayControl, SourceSelector};
+    for scenario in [
+        "unknown-to-ready",
+        "later-head",
+        "changed-scope",
+        "copied-alias",
+        "forged-alias",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let producer_root = directory.path().join("producer");
+        let (archive, _lock) = Archive::open_primary(
+            &directory.path().join("cache"),
+            &directory.path().join("bytes"),
+        )
+        .unwrap();
+        let producer = Arc::new(OfflineProducer {
+            root: producer_root.clone(),
+        });
+        let writer = Writer::start_on_sinex(&archive, producer.clone()).unwrap();
+        let selector = SourceSelector {
+            origin: "codex".into(),
+            machine: "machine".into(),
+            path_bytes: b"/home/op/offline".to_vec(),
+        };
+        let control = |control| Confirmed {
+            position: 0,
+            event: String::new(),
+            output_index: 0,
+            native: None,
+            change: ConfirmedChange::Control(Box::new(control)),
+        };
+        let unknown = writer.source_snapshot(selector.clone(), "").unwrap().basis;
+        writer
+            .apply_confirmed(vec![control(ReplayControl::Reset {
+                scope: "original".into(),
+            })])
+            .unwrap();
+        writer
+            .apply_confirmed(vec![control(ReplayControl::Completion { position: 0 })])
+            .unwrap();
+        let mut sampled = if scenario == "unknown-to-ready" {
+            unknown
+        } else {
+            writer.source_snapshot(selector.clone(), "").unwrap().basis
+        };
+        if scenario == "later-head" {
+            let observation = serde_json::from_value(serde_json::json!({"id":"own-confirmation","machine":"machine","host":"host","path":"/home/op/offline","path_bytes":selector.path_bytes.clone(),"class":"seen","polylogue_version":"test","seen_at":1})).unwrap();
+            writer
+                .apply_confirmed(vec![
+                    Confirmed {
+                        position: 1,
+                        event: "own-input".into(),
+                        output_index: 0,
+                        native: None,
+                        change: ConfirmedChange::Live(Box::new(Product::Input {
+                            rows: Box::new(InputRows {
+                                acquisition: None,
+                                input: "offline".into(),
+                                format: "codex".into(),
+                                revision: None,
+                                extent: None,
+                                observation: Some(observation),
+                            }),
+                            material: None,
+                        })),
+                    },
+                    control(ReplayControl::Completion { position: 1 }),
+                ])
+                .unwrap();
+        } else if scenario == "changed-scope" {
+            writer
+                .apply_confirmed(vec![control(ReplayControl::Reset {
+                    scope: "changed".into(),
+                })])
+                .unwrap();
+            writer
+                .apply_confirmed(vec![control(ReplayControl::Completion { position: 0 })])
+                .unwrap();
+        }
+        if matches!(scenario, "copied-alias" | "forged-alias") {
+            let observation = serde_json::from_value(serde_json::json!({"id":"alias-head","machine":"machine","host":"host","path":"/home/op/original","path_bytes":b"/home/op/original".to_vec(),"class":"seen","polylogue_version":"test","seen_at":1})).unwrap();
+            writer
+                .apply_confirmed(vec![
+                    Confirmed {
+                        position: 1,
+                        event: "alias-input".into(),
+                        output_index: 0,
+                        native: None,
+                        change: ConfirmedChange::Live(Box::new(Product::Input {
+                            rows: Box::new(InputRows {
+                                acquisition: None,
+                                input: "alias-target".into(),
+                                format: "codex".into(),
+                                revision: None,
+                                extent: None,
+                                observation: Some(observation),
+                            }),
+                            material: None,
+                        })),
+                    },
+                    control(ReplayControl::Completion { position: 1 }),
+                ])
+                .unwrap();
+            sampled = writer.source_snapshot(selector.clone(), "").unwrap().basis;
+            sampled.resolved = Some(crate::primary::SourceSubject {
+                input: "alias-target".into(),
+                observation: if scenario == "copied-alias" {
+                    "alias-head"
+                } else {
+                    "missing-head"
+                }
+                .into(),
+            });
+        }
+        let bytes = b"retained source bytes";
+        let mut capture = source("offline", bytes);
+        capture.batch.basis = Some(sampled.clone());
+        if sampled.resolved.is_some() {
+            capture.batch.input.id = "alias-target".into();
+        }
+        capture
+            .files
+            .push(archive.prepare_bytes(bytes.as_slice()).unwrap());
+        let mut outcomes = writer
+            .sender()
+            .unwrap()
+            .store_group(vec![capture], Arc::new(archive.blobs().unwrap()))
+            .unwrap();
+        let outcome = outcomes.remove(0);
+        if matches!(scenario, "changed-scope" | "forged-alias") {
+            assert!(
+                matches!(outcome, Err(StoreError::UnresolvedBasisConflict { .. })),
+                "{scenario}: {outcome:?}"
+            );
+        } else {
+            assert!(
+                matches!(outcome, Err(StoreError::PrimaryPending { .. })),
+                "{scenario}: {outcome:?}"
+            );
+        }
+        let original = producer.captured();
+        assert_eq!(original.basis.as_ref(), Some(&sampled));
+        assert_eq!(original.hash, BlobHash::of(bytes));
+        assert_eq!(original.basis.unwrap().resolved, sampled.resolved);
+        let body = producer.capture_body("offline-capture").unwrap();
+        let prepared = hashed_blobs::Prepared::from_encoded(
+            body.file,
+            body.descriptor,
+            None,
+            Default::default(),
+        )
+        .unwrap();
+        let mut retained = vec![];
+        prepared
+            .reader(None, Default::default())
+            .unwrap()
+            .read_to_end(&mut retained)
+            .unwrap();
+        assert_eq!(retained, bytes);
+    }
+}
+
+#[test]
+fn captured_body_anchors_survive_duplicate_and_trimmed_logical_extents() {
+    let bytes = b"abcdefgh";
+    let hash = BlobHash::of(bytes);
+    let mut captured = CapturedInput {
+        input: crate::primary::InputName {
+            origin: "codex".into(),
+            host: "host".into(),
+            path: "/home/op/source".into(),
+        },
+        rows: InputRows {
+            acquisition: None,
+            input: "source".into(),
+            format: "codex".into(),
+            revision: None,
+            extent: None,
+            observation: None,
+        },
+        index: 0,
+        previous: None,
+        hash,
+        length: 8,
+        group: None,
+        arrival_rank: 0,
+        parsed: vec![],
+        raw_range: Some(crate::primary::RawRange { start: 10, end: 18 }),
+        generation: None,
+        raw_total: None,
+        raw_predecessor: None,
+        basis: None,
+    };
+    let descriptor = hashed_blobs::Extent {
+        segment: "segments/owner.hb".into(),
+        offset: 0,
+        len: 100,
+        decoded_len: 8,
+        hash: hashed_blobs::Hash(hash.0),
+        kind: hashed_blobs::Kind::Plain,
+        index_hash: hashed_blobs::Hash([1; 32]),
+        encoded_hash: hashed_blobs::Hash([2; 32]),
+    };
+    let mut material = Material {
+        id: "original-material".into(),
+        hash,
+        length: 8,
+        extents: vec![descriptor.encode()],
+    };
+    for extent in [
+        None,
+        Some(crate::input_rows::Extent {
+            chain: 1,
+            offset: 14,
+            length: 4,
+            blob: hash,
+            blob_offset: 4,
+        }),
+    ] {
+        captured.rows.extent = extent;
+        for (offset, anchor) in [(10, 0), (12, 2), (18, 8)] {
+            let location = captured_location(&captured, Some(&material), offset)
+                .unwrap()
+                .unwrap();
+            assert_eq!(location.material, "original-material");
+            assert_eq!(location.anchor, anchor);
+        }
+        assert!(
+            captured_location(&captured, Some(&material), 9)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            captured_location(&captured, Some(&material), 19)
+                .unwrap()
+                .is_none()
+        );
+    }
+    material.hash = BlobHash::of(b"different body");
+    assert!(captured_location(&captured, Some(&material), 12).is_err());
+    material.hash = hash;
+    material.length = 7;
+    assert!(captured_location(&captured, Some(&material), 12).is_err());
+    material.length = 8;
+    captured.raw_range = None;
+    assert!(
+        captured_location(&captured, Some(&material), 12)
+            .unwrap()
+            .is_none()
+    );
 }

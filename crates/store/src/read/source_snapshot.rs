@@ -1,7 +1,6 @@
 use super::Reader;
 use crate::Result;
 use crate::primary::{ConfirmedSource, SourceSelector, SourceStatus, SourceSubject};
-use rusqlite::OptionalExtension;
 
 impl Reader<'_> {
     /// Existing source authority in this read snapshot, before provider I/O.
@@ -20,16 +19,7 @@ impl Reader<'_> {
     ) -> Result<Option<SourceSubject>> {
         let conn = self.conn()?;
         let through = boundary.through(conn, &self.pool.archive)?;
-        let through = i64::try_from(through).map_err(|_| {
-            crate::StoreError::Invalid(
-                "source admission fence exceeds archive address space".into(),
-            )
-        })?;
-        Ok(conn.query_row(
-            "SELECT id FROM source_observation WHERE input=?1 AND commit_seq<=?2 ORDER BY rowid DESC LIMIT 1",
-            rusqlite::params![input, through],
-            |row| Ok(SourceSubject { input: input.into(), observation: row.get(0)? }),
-        ).optional()?)
+        crate::source::Source::subject_at(conn, input, through)
     }
 
     /// Exact retained observation identity. In primary mode, absent cache rows

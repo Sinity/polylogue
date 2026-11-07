@@ -243,3 +243,37 @@ fn queued_source_snapshot_and_reader_keep_the_same_exact_observation() {
             .is_none()
     );
 }
+
+#[test]
+fn source_history_checks_only_observations_admitted_at_the_original_cut() {
+    for primary in [false, true] {
+        let conn = database(primary);
+        let path = b"/home/op/\xff";
+        rows("first", Some(path.to_vec())).insert(&conn, 2).unwrap();
+        rows("legacy", None).insert(&conn, 4).unwrap();
+        rows("later", Some(path.to_vec())).insert(&conn, 6).unwrap();
+        let (status, first) = Source::confirmed_source_at(&conn, &selector(path), Some(2)).unwrap();
+        assert_eq!(status, SourceStatus::Ready);
+        assert_eq!(first.unwrap().observation.id, "first");
+        assert_eq!(
+            Source::confirmed_source_at(&conn, &selector(path), Some(4))
+                .unwrap()
+                .0,
+            SourceStatus::MissingEvidence
+        );
+        assert_eq!(
+            Source::confirmed_source(&conn, &selector(path))
+                .unwrap()
+                .1
+                .unwrap()
+                .observation
+                .id,
+            "later"
+        );
+        assert!(Source::observation_matches(&conn, &selector(path), "first", Some(2)).unwrap());
+        assert!(
+            !Source::observation_matches(&conn, &selector(b"other"), "first", Some(2)).unwrap()
+        );
+        assert!(!Source::observation_matches(&conn, &selector(path), "later", Some(2)).unwrap());
+    }
+}

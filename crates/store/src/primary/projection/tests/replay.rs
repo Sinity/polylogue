@@ -366,10 +366,7 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         rows(&index, "SELECT count(*) FROM source_input WHERE id='known'"),
         1
     );
-    assert!(matches!(
-        previous.through(&index, &archive),
-        Err(StoreError::ScopeChanged)
-    ));
+    assert_eq!(previous.through(&index, &archive).unwrap(), 2);
     let lifecycle = |position, change| Confirmed {
         position,
         event: "possible-input".into(),

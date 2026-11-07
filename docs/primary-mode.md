@@ -38,6 +38,11 @@ A pending capture's raw byte cursor cannot advance that logical source state.
 Before assigning source revisions, the writer compares the capture with the
 completed confirmed-stream history. If an unreadable record might describe an
 input, new source revisions remain pending. Already readable facts remain available.
+Identity claims sampled before provider I/O are checked against their original
+scoped history cut. Later confirmations do not rebind that basis or turn missing
+evidence into an alias claim. Parsed facts use the acquired body's original byte
+range for their material anchors, even when those bytes add no new logical
+extent. Facts outside that range need an existing confirmed source anchor.
 
 Confirmed payloads are checked against their current immutable kind declaration
 and payload digest. The saved native context carries that digest and the
