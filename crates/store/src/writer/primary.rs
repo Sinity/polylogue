@@ -48,28 +48,6 @@ impl Inner {
         Ok(position)
     }
 
-    pub(super) fn poll_primary(&mut self) -> Result<i64> {
-        let sinex = Arc::clone(
-            self.sinex
-                .as_ref()
-                .ok_or_else(|| StoreError::Invalid("this writer is standalone".into()))?,
-        );
-        let state = crate::primary::projection::replay_state(&self.index)?;
-        let identity = crate::primary::cache_identity(&self.index)?;
-        let events = sinex.confirmed(&state, &identity)?;
-        let applied = self.apply_confirmed(&events)?;
-        // Staged deliveries are durable even before their position completes.
-        let state = crate::primary::projection::replay_state(&self.index)?;
-        sinex.acknowledge(&state)?;
-        Ok(applied)
-    }
-
-    pub(super) fn synchronize_primary(&mut self) -> Result<i64> {
-        self.poll_primary()?;
-        self.drain_primary_captures()?;
-        self.poll_primary()
-    }
-
     pub(super) fn product_writes(&self, products: Vec<Product>) -> Result<Vec<ProductWrite>> {
         self.primary_cache_ready()?;
         let mut writes = Vec::with_capacity(products.len());
@@ -136,7 +114,6 @@ impl Inner {
         batches: impl Iterator<Item = &'a Batch>,
     ) -> Result<()> {
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
-        let mut pending = None;
         for batch in batches {
             let Change::Reparse { chain } = batch.change else {
                 return Err(StoreError::Invalid(
@@ -162,25 +139,15 @@ impl Inner {
                     Some(batch.length),
                     step,
                 )?)?;
-                pending = Some(
-                    if let Some(key) = &key {
-                        sinex.prepare_export_products(key, &writes)?
-                    } else {
-                        sinex.prepare_products(&writes)?
-                    }
-                    .identity,
-                );
+                if let Some(key) = &key {
+                    sinex.prepare_export_products(key, &writes)?;
+                } else {
+                    sinex.prepare_products(&writes)?;
+                }
             }
         }
-        if pending.is_none() {
-            return Ok(());
-        }
-        if let Err(error) = self.poll_primary() {
-            return Err(match (error, pending) {
-                (StoreError::Sinex(_), Some(identity)) => StoreError::PrimaryPending { identity },
-                (error, _) => error,
-            });
-        }
+        // This fire-and-forget batch acknowledges durable preparation. The
+        // follower independently makes its records visible after confirmation.
         Ok(())
     }
 
@@ -195,7 +162,6 @@ impl Inner {
         let mut complete = false;
         let mut refusal = false;
         let mut has_export = false;
-        let mut messages = 0;
         source.visit_source(|step| {
             if version
                 .as_ref()
@@ -209,7 +175,6 @@ impl Inner {
             complete = step.progress.reached_end() && step.parsed_upto <= length;
             refusal = crate::wire_shapes::is_refusal(step);
             has_export |= step.delivery.is_some();
-            messages += step.output.messages.len() as u64;
             Ok(())
         })?;
         if !complete && !refusal {
@@ -258,15 +223,10 @@ impl Inner {
                 }
                 Ok(())
             })?;
-            if let Err(error) = self.poll_primary() {
-                return Err(match (error, pending) {
-                    (StoreError::Sinex(_), Some(identity)) => {
-                        StoreError::PrimaryPending { identity }
-                    }
-                    (error, _) => error,
-                });
-            }
-            return Ok(messages);
+            return match pending {
+                Some(identity) => Err(StoreError::PrimaryPending { identity }),
+                None => Ok(messages),
+            };
         }
         let root:Option<String>=self.index.query_row("SELECT id FROM source_material WHERE input=?1 AND chain=?2 AND offset=0 ORDER BY rowid LIMIT 1",params![input.id,chain],|row|row.get(0)).optional()?;
         let root = root.ok_or_else(|| {
@@ -285,15 +245,9 @@ impl Inner {
                 Ok(())
             })
         })?;
-        if let Err(error) = self.poll_primary() {
-            return Err(match error {
-                StoreError::Sinex(_) => StoreError::PrimaryPending {
-                    identity: prepared.identity,
-                },
-                error => error,
-            });
-        }
-        Ok(messages)
+        Err(StoreError::PrimaryPending {
+            identity: prepared.identity,
+        })
     }
 
     pub(super) fn primary_request(
@@ -361,10 +315,7 @@ impl Inner {
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
         let prepared = sinex.prepare_blob(new_blob.hash, new_blob.size, prepared.body()?)?;
         // Captured bytes are durable before their temporary preparation is released.
-        if let Err(error) = self
-            .drain_primary_captures()
-            .and_then(|_| self.poll_primary())
-        {
+        if let Err(error) = self.drain_primary_captures() {
             return Err(match error {
                 StoreError::Sinex(_) => StoreError::PrimaryPending {
                     identity: prepared.identity,

@@ -30,6 +30,12 @@ Declarations validate the complete record and describe the outer projected
 fields used by privacy hints and time rules. The complete record remains guarded;
 the outer fields let Sinex join the record to its other domains.
 
+The stream follower alone reads and acknowledges confirmed pages. It sends each
+page to the writer and acknowledges it after durable application. Preparing a
+write does not start another stream read on the writer thread. Explicit
+synchronization asks the follower for a page, drains ready captures on the writer,
+then asks the follower again so newly prepared capture products can be applied.
+
 A durable capture can remain pending while its confirmed input reaches the local
 index. The capture loop reports this as pending progress and resumes the original
 acquisition; it is complete only after confirmed application. Before planning

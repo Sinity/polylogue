@@ -269,8 +269,36 @@ impl Engine {
         self.release_reading(busy, &plan.path);
         match written {
             Ok(written) => {
-                pass.messages_written += written;
-                self.finish_plan(plan);
+                if self.archive.is_primary() {
+                    let Change::Reparse { chain } = plan.change else {
+                        unreachable!("a queued replacement has its original chain")
+                    };
+                    let version = plan.origin.reading_version();
+                    let confirmed = self.reads.reader().and_then(|reader| {
+                        reader.parser_checkpoint(&plan.input.id, chain, &version)
+                    });
+                    match confirmed {
+                        Ok(Some(cursor))
+                            if cursor.reading_version == version
+                                && cursor.parsed_upto >= plan.parse_pos =>
+                        {
+                            pass.messages_written += written;
+                            if plan.tracked
+                                && let Err(error) = self.refresh_confirmed_input(&plan.path)
+                            {
+                                pass.errors.push(format!("confirmed reading: {error}"));
+                            }
+                        }
+                        Ok(_) => pass.capture_pending = true,
+                        Err(error) => pass.errors.push(format!("confirmed reading: {error}")),
+                    }
+                } else {
+                    pass.messages_written += written;
+                    self.finish_plan(plan);
+                }
+            }
+            Err(polylogue_store::StoreError::PrimaryPending { .. }) => {
+                pass.capture_pending = true;
             }
             // The old reading remains committed and the next pass retries.
             Err(error) => pass.errors.push(format!("re-parse: {error}")),

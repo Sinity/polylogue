@@ -93,7 +93,7 @@ enum Msg {
     ),
     ReplaceChain(InputKey, i64, u64, ChainReading, SyncSender<Result<u64>>),
     Confirmed(Vec<crate::primary::Confirmed>, SyncSender<Result<i64>>),
-    SynchronizePrimary(SyncSender<Result<i64>>),
+    DrainPrimaryCaptures(SyncSender<Result<()>>),
     /// The stream follower handled a page, or failed to read one.
     StreamFollowed(Option<String>),
     CaptureBody(String, SyncSender<Result<crate::primary::PreparedBody>>),
@@ -489,13 +489,21 @@ impl Writer {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
     pub fn synchronize_primary(&self) -> Result<i64> {
+        let follower = self
+            .follower
+            .as_ref()
+            .ok_or_else(|| StoreError::Invalid("this writer is standalone".into()))?;
+        follower.synchronize()?;
+        // Acknowledged material can now produce input/reading events. Wait
+        // outside the writer thread while their owner reads the next page.
         let (reply, wait) = sync_channel(1);
         self.tx
             .as_ref()
             .ok_or(StoreError::WriterGone)?
-            .send(Msg::SynchronizePrimary(reply))
+            .send(Msg::DrainPrimaryCaptures(reply))
             .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
+        wait.recv().map_err(|_| StoreError::WriterGone)??;
+        follower.synchronize()
     }
 
     /// Whether the index was empty when the writer started.
@@ -1204,7 +1212,7 @@ impl Inner {
         let mut coverage = Vec::new();
         let mut live_clock = Vec::new();
         let mut confirmations = Vec::new();
-        let mut synchronizations = Vec::new();
+        let mut capture_drains = Vec::new();
         let mut followed = Vec::new();
         let mut snapshots = Vec::new();
         let mut pending_bodies = Vec::new();
@@ -1302,8 +1310,8 @@ impl Inner {
                         snapshots.push((source, version, reply));
                         false
                     }
-                    Msg::SynchronizePrimary(reply) => {
-                        synchronizations.push(reply);
+                    Msg::DrainPrimaryCaptures(reply) => {
+                        capture_drains.push(reply);
                         false
                     }
                     Msg::StreamFollowed(error) => {
@@ -1347,8 +1355,8 @@ impl Inner {
             for (events, reply) in confirmations.drain(..) {
                 let _ = reply.send(self.apply_confirmed(&events));
             }
-            for reply in synchronizations.drain(..) {
-                let _ = reply.send(self.synchronize_primary());
+            for reply in capture_drains.drain(..) {
+                let _ = reply.send(self.drain_primary_captures());
             }
             for error in followed.drain(..) {
                 self.stream_followed(error);

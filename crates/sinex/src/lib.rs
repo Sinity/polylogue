@@ -405,9 +405,10 @@ impl polylogue_store::primary::Sinex for Sinex {
         state: &polylogue_store::primary::ReplayState,
         cache: &str,
     ) -> polylogue_store::Result<Vec<polylogue_store::primary::Confirmed>> {
-        let page = self.with(async |client| client.confirmed(state, cache).await)?;
+        // Send durable preparations before reading the page that can confirm
+        // them. The follower owns both this read and its later acknowledgment.
         self.send_pending();
-        Ok(page)
+        Ok(self.with(async |client| client.confirmed(state, cache).await)?)
     }
     fn acknowledge(
         &self,

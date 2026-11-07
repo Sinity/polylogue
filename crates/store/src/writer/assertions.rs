@@ -52,11 +52,7 @@ impl Inner {
                 fact: restoration.fact.clone(),
             }])?;
             sinex.prepare_named_products(&identity, &writes)?;
-            match self.poll_primary() {
-                Ok(_) => outcome.pending = !stored(&self.index, &restoration.fact)?,
-                Err(StoreError::Sinex(_)) => outcome.pending = true,
-                Err(error) => return Err(error),
-            }
+            outcome.pending = true;
             return Ok(outcome);
         }
         if stored(&self.archive, &restoration.fact)? {

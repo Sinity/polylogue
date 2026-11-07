@@ -102,10 +102,18 @@ fn writer_restore_changes_the_snapshot_once_and_projects_frozen_variant_text() {
     assert_eq!(results[0].variant.machine, "source-machine");
 }
 
+#[derive(Default)]
+struct FollowProbe {
+    calls: Vec<(std::thread::ThreadId, Option<i64>, usize)>,
+    pause: Option<(SyncSender<()>, Receiver<()>)>,
+    drains: usize,
+}
+
 struct Producer {
     path: std::path::PathBuf,
     online: AtomicBool,
     live_calls: AtomicUsize,
+    follow: Mutex<FollowProbe>,
 }
 impl Producer {
     fn original(&self) -> Option<(String, Vec<ProductWrite>)> {
@@ -170,6 +178,7 @@ impl crate::primary::Sinex for Producer {
         Self::unavailable()
     }
     fn pending_captures(&self) -> Result<Vec<PendingCapture>> {
+        self.follow.lock().unwrap().drains += 1;
         Ok(vec![])
     }
     fn complete_captures(&self, _: &[String], _: &[ProductWrite]) -> Result<PreparedWrite> {
@@ -258,6 +267,18 @@ impl crate::primary::Sinex for Producer {
         })
     }
     fn confirmed(&self, state: &crate::primary::ReplayState, _: &str) -> Result<Vec<Confirmed>> {
+        let pause = {
+            let mut probe = self.follow.lock().unwrap();
+            let drains = probe.drains;
+            probe
+                .calls
+                .push((std::thread::current().id(), state.applied_position, drains));
+            probe.pause.take()
+        };
+        if let Some((ready, release)) = pause {
+            ready.send(()).unwrap();
+            release.recv().unwrap();
+        }
         if !self.online.load(Ordering::SeqCst) {
             return Self::unavailable();
         }
@@ -299,6 +320,7 @@ fn a_pending_scope_reset_cannot_resolve_or_publish_authored_work_from_old_cache(
         path: directory.path().join("private-product.json"),
         online: AtomicBool::new(false),
         live_calls: AtomicUsize::new(0),
+        follow: Mutex::default(),
     });
     let (archive, _lock) = Archive::open_primary(
         &directory.path().join("cache"),
@@ -352,6 +374,7 @@ fn primary_restore_stays_pending_across_reopen_and_cannot_publish_a_live_retry()
         path: directory.path().join("durable-product.json"),
         online: AtomicBool::new(false),
         live_calls: AtomicUsize::new(0),
+        follow: Mutex::default(),
     });
     {
         let (archive, _lock) = Archive::open_primary(&root, &bytes).unwrap();
@@ -444,4 +467,72 @@ fn commit_subscribers_wake_for_new_visible_facts_and_skip_exact_or_failed_user_r
         commits.try_recv(),
         Err(std::sync::mpsc::TryRecvError::Empty)
     ));
+}
+
+#[test]
+fn one_follower_owns_confirmation_across_a_blocked_page_and_a_new_write() {
+    let directory = tempfile::tempdir().unwrap();
+    let (ready, blocked) = sync_channel(1);
+    let (release, held) = sync_channel(1);
+    let producer = Arc::new(Producer {
+        path: directory.path().join("durable-product.json"),
+        online: AtomicBool::new(true),
+        live_calls: AtomicUsize::new(0),
+        follow: Mutex::new(FollowProbe {
+            pause: Some((ready, held)),
+            ..Default::default()
+        }),
+    });
+    let (archive, _lock) = Archive::open_primary(
+        &directory.path().join("cache"),
+        &directory.path().join("bytes"),
+    )
+    .unwrap();
+    let writer = Writer::start_on_sinex(&archive, producer.clone()).unwrap();
+    let original = prepared(UserWrite::ChatEnqueue(NewChatAction {
+        id: "interleaved-chat".into(),
+        request_key: "interleaved".into(),
+        request_hash: BlobHash::of(b"interleaved"),
+        request: serde_json::json!({"text":"captured while a page is in flight"}),
+        stage_only: true,
+        needs_approval: false,
+        attachments: vec![],
+    }));
+    std::thread::scope(|scope| {
+        let synchronization = scope.spawn(|| writer.synchronize_primary());
+        let started = blocked.recv_timeout(std::time::Duration::from_secs(5));
+        if started.is_err() {
+            let _ = release.send(());
+        }
+        started.unwrap();
+        // The follower owns a page based on the old applied position. The
+        // writer can prepare this operation without fetching another page.
+        let restored = writer.restore_authored(original.clone());
+        let reads_before_release = producer.follow.lock().unwrap().calls.len();
+        release.send(()).unwrap();
+        let synchronized = synchronization.join().unwrap();
+        assert!(restored.unwrap().pending);
+        assert_eq!(reads_before_release, 1);
+        assert_eq!(synchronized.unwrap(), 1);
+    });
+    let probe = producer.follow.lock().unwrap();
+    assert!(probe.calls.len() >= 2);
+    let owner = probe.calls[0].0;
+    assert!(probe.calls.iter().all(|call| call.0 == owner));
+    assert_eq!(probe.calls[0].1, None);
+    assert_eq!(probe.calls[1].1, Some(1));
+    assert!(
+        probe.calls[1].2 > probe.calls[0].2,
+        "capture drain precedes the next owner page"
+    );
+    drop(probe);
+    let reads = crate::ReadPool::open(&archive).unwrap();
+    assert!(
+        reads
+            .reader()
+            .unwrap()
+            .user_request(&original.request.id)
+            .unwrap()
+            .is_some()
+    );
 }

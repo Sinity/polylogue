@@ -669,10 +669,7 @@ impl Inner {
     }
 
     pub(super) fn drain_primary_captures(&mut self) -> Result<()> {
-        self.poll_primary()?;
-        self.complete_ready_captures()?;
-        self.poll_primary()?;
-        Ok(())
+        self.complete_ready_captures()
     }
 
     /// Prepares the parsed facts of captures whose materials Sinex has
