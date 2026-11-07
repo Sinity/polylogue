@@ -417,21 +417,21 @@ fn outputs(v: &mut Value, definitions: &[Value]) -> Result<()> {
         .ok_or("invalid format-1 source outputs")?
         .clone();
     for output in v.as_array_mut().ok_or("invalid format-1 source outputs")? {
-        if output["source"]["kind"] == "saved" {
-            if let Some(definition) = find_definition(&output["source"], definitions) {
-                let ast = definition
-                    .get("identity_ast")
-                    .or_else(|| definition.get("ast"))
-                    .ok_or("missing captured saved AST")?;
-                let nested = definition["source_outputs"]
-                    .as_array()
-                    .map_or(captured.as_slice(), Vec::as_slice);
-                let domain = output_domain(ast, nested, definitions, 0)?;
-                if domain.is_none() {
-                    output["schema"]["main_time"] = Value::Null;
-                }
-                output["schema"]["unit"] = json!(domain);
+        if output["source"]["kind"] == "saved"
+            && let Some(definition) = find_definition(&output["source"], definitions)
+        {
+            let ast = definition
+                .get("identity_ast")
+                .or_else(|| definition.get("ast"))
+                .ok_or("missing captured saved AST")?;
+            let nested = definition["source_outputs"]
+                .as_array()
+                .map_or(captured.as_slice(), Vec::as_slice);
+            let domain = output_domain(ast, nested, definitions, 0)?;
+            if domain.is_none() {
+                output["schema"]["main_time"] = Value::Null;
             }
+            output["schema"]["unit"] = json!(domain);
         }
         if let Some(unit) = output["schema"]["unit"].as_str() {
             output["schema"]["unit"] = json!(current_unit(unit));
@@ -597,28 +597,27 @@ fn unavailability(
     if let Some(source_kind) = source_kind {
         return Ok(Some(U::NativeSource { source_kind }));
     }
-    if source["kind"] == "saved" {
-        if let Some(definition) = find_definition(source, definitions) {
-            let ast = definition
-                .get("identity_ast")
-                .or_else(|| definition.get("ast"))
-                .ok_or("missing captured definition AST")?;
-            let nested = definition["source_outputs"]
-                .as_array()
-                .map_or(outputs, Vec::as_slice);
-            if unavailability(ast, nested, definitions, depth + 1)?.is_some() {
-                let question = serde_json::from_value(definition["question"].clone())
-                    .map_err(|error| format!("unavailable dependency identity: {error}"))?;
-                return Ok(Some(U::Dependency { question }));
-            }
+    if source["kind"] == "saved"
+        && let Some(definition) = find_definition(source, definitions)
+    {
+        let ast = definition
+            .get("identity_ast")
+            .or_else(|| definition.get("ast"))
+            .ok_or("missing captured definition AST")?;
+        let nested = definition["source_outputs"]
+            .as_array()
+            .map_or(outputs, Vec::as_slice);
+        if unavailability(ast, nested, definitions, depth + 1)?.is_some() {
+            let question = serde_json::from_value(definition["question"].clone())
+                .map_err(|error| format!("unavailable dependency identity: {error}"))?;
+            return Ok(Some(U::Dependency { question }));
         }
     }
-    if !source["condition"].is_null() {
-        if let Some(reason) =
+    if !source["condition"].is_null()
+        && let Some(reason) =
             unavailable_condition(&source["condition"], outputs, definitions, depth)?
-        {
-            return Ok(Some(reason));
-        }
+    {
+        return Ok(Some(reason));
     }
     for attachment in query["attach"]
         .as_array()
@@ -628,11 +627,10 @@ fn unavailability(
             .as_array()
             .ok_or("missing original attachment windows")?
         {
-            if let Some(condition) = window.get("where") {
-                if let Some(reason) = unavailable_condition(condition, outputs, definitions, depth)?
-                {
-                    return Ok(Some(reason));
-                }
+            if let Some(condition) = window.get("where")
+                && let Some(reason) = unavailable_condition(condition, outputs, definitions, depth)?
+            {
+                return Ok(Some(reason));
             }
         }
     }
@@ -655,12 +653,11 @@ fn unavailability(
                 parent = string(kind, "unit")?.into();
                 patterns_here.clear();
                 patterns(&kind["condition"], &mut patterns_here);
-                if !kind["condition"].is_null() {
-                    if let Some(reason) =
+                if !kind["condition"].is_null()
+                    && let Some(reason) =
                         unavailable_condition(&kind["condition"], outputs, definitions, depth)?
-                    {
-                        return Ok(Some(reason));
-                    }
+                {
+                    return Ok(Some(reason));
                 }
             }
             Some("group" | "aggregate" | "fields") => patterns_here.clear(),
