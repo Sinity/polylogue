@@ -128,7 +128,7 @@ fn selected_reference_survives_projection_and_membership_keeps_offset() {
     let mut options = options();
     options.fields = vec!["title".into()];
     let prepared = reader
-        .prepare_selection("sessions | limit 1 | offset 1", &options)
+        .prepare_selection("sessions | offset 1 | limit 1", &options)
         .unwrap();
     let mut rows = vec![];
     reader

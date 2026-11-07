@@ -4,6 +4,18 @@
 use super::*;
 
 impl<'a> Compiler<'a> {
+    pub(super) fn note_field(&mut self, field: &str) {
+        if field == "clustered_time" || field.ends_with(".clustered_time") {
+            let note = format!(
+                "clustered_time uses a {}-minute gap, extended across paired tools",
+                polylogue_model::derived::CLUSTER_GAP_MS / 60_000
+            );
+            if !self.notes.contains(&note) {
+                self.notes.push(note);
+            }
+        }
+    }
+
     /// Finds the unit a field belongs to before its name becomes an alias.
     pub(super) fn field_reference(field: &str, scope: &RowContext) -> Option<ColumnReference> {
         let lower = field.to_ascii_lowercase();
@@ -37,6 +49,7 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         at: usize,
     ) -> Result<(String, ColKind), QueryError> {
+        self.note_field(field);
         expression::expression(
             self.text,
             scope.unit,

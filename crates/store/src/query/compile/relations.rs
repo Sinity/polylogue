@@ -83,6 +83,7 @@ impl Relation {
         at: usize,
         alias: &str,
     ) -> Result<(String, ColKind), QueryError> {
+        compiler.note_field(name);
         if let Some(column) = self.program.columns.iter().find(|c| c.name == name) {
             let sql = format!("{alias}.{}", column_sql(self.program.column_slot(name)));
             return Ok((
@@ -494,20 +495,13 @@ impl<'a> Compiler<'a> {
                 self.relation_first(relation, *count)?
             }
             TransformKind::Limit { count } | TransformKind::First { count } => {
-                relation.program.sql = format!(
-                    "SELECT * FROM ({}) r ORDER BY {} LIMIT {}",
-                    relation.program.sql,
-                    relation_order(&relation.program.order),
-                    (*count).min(i64::MAX as u64)
-                );
+                relation.select_window(&format!("LIMIT {}", (*count).min(i64::MAX as u64)));
             }
             TransformKind::Offset { count } => {
-                relation.program.sql = format!(
-                    "SELECT * FROM ({}) r ORDER BY {} LIMIT -1 OFFSET {}",
-                    relation.program.sql,
-                    relation_order(&relation.program.order),
+                relation.select_window(&format!(
+                    "LIMIT -1 OFFSET {}",
                     (*count).min(i64::MAX as u64)
-                );
+                ));
             }
             TransformKind::Distinct => self.relation_distinct(relation),
             TransformKind::Group { keys } => self.relation_group(relation, keys, at)?,
@@ -770,6 +764,48 @@ impl<'a> Compiler<'a> {
 }
 
 impl Relation {
+    /// Bound the selected keys before projecting rows. A LIMIT over answer
+    /// expressions would decode every candidate body while finding a page.
+    fn select_window(&mut self, window: &str) {
+        if self.program.order.is_empty() {
+            self.program.sql = format!("SELECT * FROM ({}) {window}", self.program.sql);
+            return;
+        }
+        let keys = self
+            .program
+            .order
+            .iter()
+            .map(|key| column_sql(&key.column))
+            .collect::<Vec<_>>();
+        let selected = format!(
+            "SELECT {} FROM ({}) r ORDER BY {} {window}",
+            keys.join(", "),
+            self.program.sql,
+            relation_order(&self.program.order)
+        );
+        let same = keys
+            .iter()
+            .map(|key| format!("r.{key} IS selected.{key}"))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        self.program.sql = format!(
+            "SELECT r.* FROM ({selected}) selected JOIN ({}) r ON {same} ORDER BY {}",
+            self.program.sql,
+            self.program
+                .order
+                .iter()
+                .map(|key| {
+                    format!(
+                        "r.{}{}",
+                        column_sql(&key.column),
+                        if key.descending { " DESC" } else { "" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
     fn private_columns(&self) -> Vec<String> {
         let mut names = std::collections::BTreeSet::new();
         names.insert("_pk".to_owned());
@@ -1039,10 +1075,16 @@ impl Compiler<'_> {
     }
 
     fn relation_distinct(&mut self, relation: &mut Relation) {
-        let identity = relation.identity_order();
-        let values = identity
+        let columns = relation
+            .program
+            .columns
             .iter()
-            .map(|key| column_sql(&key.column))
+            .filter(|column| column.name != "rank")
+            .map(|column| relation.program.column_slot(&column.name).to_owned())
+            .collect::<Vec<_>>();
+        let values = columns
+            .iter()
+            .map(|name| column_sql(name))
             .collect::<Vec<_>>();
         let ordinal = relation.slot();
         relation.program.sql = format!(
@@ -1058,6 +1100,9 @@ impl Compiler<'_> {
             column_sql(&ordinal),
             relation_order(&relation.program.order)
         );
+        relation.program.row_basis = RowBasis::Distinct { columns };
+        relation.sources.clear();
+        relation.open_fields = false;
         relation.group = None;
     }
 }
@@ -1136,6 +1181,14 @@ impl Compiler<'_> {
         let mut result = compiler.native_program_with(&native, None)?;
         self.near = result.near.clone();
         self.params = std::mem::take(&mut result.params);
+        if let Some(mut measure) = result.measure.take() {
+            // The preceding relation owns membership and order. The native
+            // descriptor contributes only the default comparison population.
+            measure.selection_sql = relation.program.sql.clone();
+            measure.everything = false;
+            relation.program.measure = Some(measure);
+            return Ok(());
+        }
         join(&mut result.notes, &mut relation.program.notes);
         join(&mut result.incomplete, &mut relation.program.incomplete);
         join(&mut result.id_checks, &mut relation.program.id_checks);
