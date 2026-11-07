@@ -126,6 +126,129 @@ fn shapes(index: &Connection, id: &str, version: &str) -> Vec<String> {
 }
 
 #[test]
+fn export_event_identities_survive_normalized_product_objects() {
+    let root = tempfile::tempdir().unwrap();
+    let mut index = cache(&root.path().join("index.db"));
+    let archive = crate::Archive::on_sinex(root.path(), &root.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    apply(
+        &mut index,
+        &resolver,
+        &[
+            Confirmed {
+                position: 1,
+                event: "source".into(),
+                output_index: 0,
+                native: None,
+                change: ConfirmedChange::Live(Box::new(source("target"))),
+            },
+            barrier(1),
+        ],
+    )
+    .unwrap();
+    let session = polylogue_model::SessionId::parse("chatgpt:normalized-export").unwrap();
+    let settings: polylogue_model::Event = serde_json::from_str(&format!(
+        r#"{{"session":"{session}","kind":"conversation_settings","data":{{"z":0,"a":1}}}}"#
+    ))
+    .unwrap();
+    let (mut item, _) = callbacks("normalized-v1");
+    item.output.sessions.push(polylogue_model::Session::new(
+        session.clone(),
+        polylogue_model::SessionKind::Main,
+    ));
+    item.output.events.push(settings);
+    item.output.events.push(
+        serde_json::from_value(serde_json::json!({
+            "session":session, "kind":"active_leaf", "after":"chatgpt:leaf", "data":null
+        }))
+        .unwrap(),
+    );
+    assert!(
+        item.output.event_ids.is_empty(),
+        "the parser supplies no explicit IDs"
+    );
+    item.seal_export(
+        0,
+        ExportDeliverySource::Item { start: 0, end: 2 },
+        ExportDelivery::seed(),
+    )
+    .unwrap();
+    let mut changes = callback(2, "target", &item);
+    let expected: BTreeMap<String, String> = changes
+        .iter()
+        .filter_map(|change| match &change.change {
+            ConfirmedChange::Live(product) => match product.as_ref() {
+                Product::Event { id, facts, .. } => Some((id.clone(), facts.kind.clone())),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    for change in &mut changes {
+        if let ConfirmedChange::Live(product) = &mut change.change {
+            // Core's JSON/JSONB round trip preserves object meaning, not key order.
+            let mut value = serde_json::to_value(product.as_ref()).unwrap();
+            value.sort_all_objects();
+            **product = serde_json::from_value(value).unwrap();
+        }
+    }
+    apply(&mut index, &resolver, &changes).unwrap();
+    let actual: Vec<(String, String)> = index
+        .prepare("SELECT id,kind FROM event ORDER BY seq,id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        actual,
+        expected.clone().into_iter().collect::<Vec<_>>(),
+        "identities and display order survive normalized data and the unchanged callback seal"
+    );
+    let snapshot = shapes(&index, "target", "normalized-v1");
+    assert_eq!(checkpoint(&index).unwrap(), Some(2));
+    apply(&mut index, &resolver, &changes).unwrap();
+    assert_eq!(shapes(&index, "target", "normalized-v1"), snapshot);
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM event", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+
+    // An explicit source identity remains part of the seal; a conflicting
+    // Event product must not override it during receiver application.
+    item.output.event_ids.insert(0, "explicit-settings".into());
+    item.seal_export(
+        0,
+        ExportDeliverySource::Item { start: 0, end: 2 },
+        ExportDelivery::seed(),
+    )
+    .unwrap();
+    let mut facts = super::super::ReadingStep::default();
+    let mut reading = None;
+    for change in callback(3, "target", &item) {
+        if let ConfirmedChange::Live(mut product) = change.change {
+            reading.get_or_insert_with(|| product.reading().unwrap().clone());
+            if let Product::Event { id, .. } = product.as_mut() {
+                *id = "conflicting-event".into();
+            }
+            facts.push(*product, None, None).unwrap();
+        }
+    }
+    let error = super::super::finish_step(
+        &mut crate::writer::ChainReading::new().unwrap(),
+        &reading.unwrap(),
+        facts,
+        &mut super::super::SourceSpans::default(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, StoreError::Invalid(message) if message == "export event identities differ from their explicit callback identities")
+    );
+}
+
+#[test]
 fn export_completion_rebuilds_shapes_with_foreign_keys_and_original_receipts() {
     let root = tempfile::tempdir().unwrap();
     let mut index = cache(&root.path().join("index.db"));

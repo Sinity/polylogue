@@ -48,6 +48,13 @@ Declarations validate the complete record and describe the outer projected
 fields used by privacy hints and time rules. The complete record remains guarded;
 the outer fields let Sinex join the record to its other domains.
 
+Each distinct typed link statement keeps its own source contribution. A later
+statement without a branch point therefore cannot replace an earlier statement
+that supplies it; the index merges them into one logical relation. Confirmed
+export events retain the identities assigned before publication, even when
+JSON object keys return in a different order. The original callback body and
+its seal remain unchanged.
+
 The stream follower alone reads and acknowledges confirmed pages. It sends each
 page to the writer and acknowledges it after durable application. Preparing a
 write does not start another stream read on the writer thread. Explicit

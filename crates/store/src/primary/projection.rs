@@ -534,14 +534,39 @@ fn finish_step(
         spans.missing = true;
     }
     let mut output = facts.output;
+    let mut confirmed_event_ids = None;
     if reading.delivery.is_some() {
-        output.event_ids = facts.semantic_event_ids.ok_or_else(|| {
+        let semantic_event_ids = facts.semantic_event_ids.ok_or_else(|| {
             StoreError::Invalid(
                 "export progress omitted its original semantic event identities".into(),
             )
         })?;
+        // The explicit map restores the sealed callback body. The admitted
+        // Event products also carry generated identities, which must survive
+        // payload normalization when the confirmed reading is applied.
+        if semantic_event_ids
+            .iter()
+            .any(|(index, id)| output.event_ids.get(index) != Some(id))
+        {
+            return Err(StoreError::Invalid(
+                "export event identities differ from their explicit callback identities".into(),
+            ));
+        }
+        confirmed_event_ids = Some(
+            (0..output.events.len())
+                .map(|index| {
+                    output.event_ids.get(&index).cloned().ok_or_else(|| {
+                        StoreError::Invalid(
+                            "confirmed export event omitted its admitted identity".into(),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+        );
+        output.event_ids = semantic_event_ids;
     }
     let mut step = step(reading, output, facts.counts);
+    step.confirmed_event_ids = confirmed_event_ids;
     step.receipt = facts.receipt;
     step.reset = facts.reset;
     step.comparison = facts.comparison;

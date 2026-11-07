@@ -120,7 +120,10 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
         Product::Document { facts, .. } => json!([facts.document.id, facts.offset]),
         Product::Fragment { facts, .. } => json!([facts.record.reference, facts.offset]),
         Product::Event { id, .. } => json!([id]),
-        Product::Link { facts, .. } => json!([facts.kind, facts.parent, facts.child]),
+        // Link assertions accumulate: a later source record may omit a branch
+        // point which an earlier record supplied. Keep both contributions for
+        // the canonical relation merger rather than replacing one with the other.
+        Product::Link { facts, .. } => json!([facts]),
         Product::Background { facts, .. } => json!([facts.session, facts.task_id]),
         Product::Repository { facts, .. } => json!([facts.path]),
         Product::ParseProgress { reading, .. } => json!([reading.start]),

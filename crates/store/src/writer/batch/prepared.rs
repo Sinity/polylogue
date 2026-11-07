@@ -291,6 +291,26 @@ impl ParseStep {
     /// fact subsets and portable imports retain their supplied canonical IDs.
     pub(crate) fn event_identities(&self, input: &str, chain: i64) -> Result<Vec<String>> {
         self.prepared.validate(&self.output)?;
+        if let Some(ids) = &self.confirmed_event_ids {
+            if ids.len() != self.output.events.len()
+                || ids.iter().any(String::is_empty)
+                || self
+                    .output
+                    .event_ids
+                    .iter()
+                    .any(|(&index, id)| ids.get(index) != Some(id))
+                || self
+                    .output
+                    .imported_events
+                    .iter()
+                    .any(|(&index, identity)| ids.get(index) != Some(&identity.id))
+            {
+                return Err(StoreError::Invalid(
+                    "confirmed event identities do not match their canonical facts".into(),
+                ));
+            }
+            return Ok(ids.clone());
+        }
         let mut occurrences = std::collections::BTreeMap::<(u64, u64), u64>::new();
         self.output
             .events

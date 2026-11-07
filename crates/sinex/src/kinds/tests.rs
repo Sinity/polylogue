@@ -64,6 +64,39 @@ fn source_copies_have_distinct_keys_and_chunk_boundaries_do_not_rename_a_record(
 }
 
 #[test]
+fn richer_and_weaker_link_contributions_keep_their_own_retry_stable_keys() {
+    // A Claude subagent's fork-context-ref supplies the branch message, then
+    // its user record names the same parent without repeating that message.
+    let strong: polylogue_model::Link = serde_json::from_value(json!({
+        "kind":"spawn", "parent":"claude-code:parent", "child":"claude-code:agent-child",
+        "at":"claude-code:branch", "evidence":"fork-context-ref"
+    }))
+    .unwrap();
+    let mut weak = strong.clone();
+    weak.at = None;
+    weak.evidence = "agentId".into();
+    let contribution = |facts, start| Product::Link {
+        reading: reading("subagent-source", start),
+        facts,
+    };
+    let rich = contribution(strong.clone(), 0);
+    let weak = contribution(weak, 0);
+    let rich_key = products::key(&rich, 0).unwrap();
+    assert_ne!(rich_key, products::key(&weak, 1).unwrap());
+    assert_eq!(rich_key, products::key(&rich, 99).unwrap());
+    assert_eq!(
+        rich_key,
+        products::key(&contribution(strong, 75), 0).unwrap()
+    );
+    for product in [rich, weak] {
+        assert_eq!(
+            products::decode("polylogue.link", products::payload(&product, 0).unwrap()).unwrap(),
+            product
+        );
+    }
+}
+
+#[test]
 fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
     for declaration in declarations("polylogue") {
         let schema = declaration.payload_schema.as_ref().unwrap();
