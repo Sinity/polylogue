@@ -130,12 +130,7 @@ fn predecessor_note_commands_are_retired_in_favor_of_the_canonical_operations() 
     ] {
         assert!(command(name).is_none(), "{name}");
     }
-    let (command, values) =
-        crate::cli::parse(&["polylogue", "note", "add", "repo:x", "-m", "b"]).unwrap();
-    assert_eq!(command.name, "query");
-    let request = request_json(command, &values, &cli_caller());
-    assert_eq!(request["op"], "query");
-    assert_eq!(request["text"], "note add repo:x -m b");
+    assert!(crate::cli::parse(&["polylogue", "note", "add", "repo:x", "-m", "b"]).is_err());
     for name in ["assert", "assert-query", "revise", "withdraw"] {
         let command = crate::commands::command(name).unwrap();
         assert!(command.register.is_some() && command.typed_schemas.is_some());
