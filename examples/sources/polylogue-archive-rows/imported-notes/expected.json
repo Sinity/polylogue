@@ -1,0 +1,78 @@
+{
+  "counts": {
+    "records": 3,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
+    "used": {
+      "note": 1,
+      "note_relation": 1,
+      "note_target": 1
+    }
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "at": "1970-01-01T00:00:01Z",
+        "at_precision": "instant",
+        "at_quality": "intrinsic",
+        "data": {
+          "row": {
+            "author": "agent:s1",
+            "commit_seq": 7,
+            "created_at": 1000,
+            "first_note": "n0",
+            "id": "n1",
+            "key": "topic",
+            "kind": "tag",
+            "machine": "synthetic",
+            "valid_until": null,
+            "value": "synthetic"
+          },
+          "table": "note"
+        },
+        "kind": "imported_note",
+        "range": [
+          0,
+          193
+        ]
+      },
+      {
+        "at_quality": "unknown",
+        "data": {
+          "row": {
+            "note_id": "n1",
+            "ref": "session:test:s1"
+          },
+          "table": "note_target"
+        },
+        "kind": "imported_note_target",
+        "range": [
+          194,
+          264
+        ]
+      },
+      {
+        "at_quality": "unknown",
+        "data": {
+          "row": {
+            "kind": "withdraws",
+            "note_id": "n1",
+            "other": "note:n0"
+          },
+          "table": "note_relation"
+        },
+        "kind": "imported_note_relation",
+        "range": [
+          265,
+          350
+        ]
+      }
+    ],
+    "links": [],
+    "messages": [],
+    "sessions": []
+  }
+}
