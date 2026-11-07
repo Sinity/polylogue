@@ -189,16 +189,6 @@ pub type TypedRequestBuilder =
 pub type OutputHandler =
     fn(&Values, &command_surface::Answer<Value>, &crate::config::Startup, bool) -> ExitCode;
 
-/// How the command line received a call: as the caller's complete argument
-/// object (`--request`), which is sent exactly as given, or as operation
-/// flags, which the command line interprets and may complete with the
-/// choices it makes for its own output.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CallForm {
-    Literal,
-    Flags,
-}
-
 #[derive(Clone, Copy)]
 pub enum Action {
     /// Sent to the daemon as the request this builds.
@@ -212,7 +202,6 @@ pub enum Action {
             &Request,
             &crate::config::Startup,
             &command_surface::RunnableRequest,
-            CallForm,
         ) -> ExitCode,
     },
     /// Runs in the calling process (the CLI only), with `--json`.

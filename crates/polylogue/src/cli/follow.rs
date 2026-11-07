@@ -20,7 +20,6 @@ pub fn run(
     request: &Request,
     startup: &crate::config::Startup,
     call: &command_surface::RunnableRequest,
-    form: crate::commands::CallForm,
 ) -> ExitCode {
     let json = values.flag("json");
     let output = startup.output;
@@ -55,7 +54,7 @@ pub fn run(
             );
         }
         if target.split_whitespace().next() == Some("sessions") {
-            return live_query(values, request, startup, call, form);
+            return live_query(values, request, startup, call);
         }
         return follow_query(&archive, &target, output, json);
     }
@@ -305,7 +304,6 @@ fn live_query(
     request: &Request,
     startup: &crate::config::Startup,
     _: &command_surface::RunnableRequest,
-    _: crate::commands::CallForm,
 ) -> ExitCode {
     let Request::Follow { query, marks } = request else {
         return fail(

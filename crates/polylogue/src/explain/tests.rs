@@ -63,10 +63,10 @@ fn every_grammar_keyword_is_discoverable() {
         "month",
         "month_day",
         "program",
-        "fingerprint",
     ] {
         assert!(keywords.contains(&json!(function)), "missing {function}");
     }
+    assert!(!keywords.contains(&json!("fingerprint")));
     assert!(
         page["entries"][0]["stages"]
             .as_array()

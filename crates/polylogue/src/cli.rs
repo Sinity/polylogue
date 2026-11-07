@@ -369,15 +369,16 @@ pub fn run(
             fresh: false,
             format: Default::default(),
         },
-        None => crate::protocol::operations::request(cmd, values.clone(), request_id, deadline),
+        None => {
+            let mut explicit = values.clone();
+            explicit
+                .0
+                .retain(|name, _| m.value_source(name) == Some(ValueSource::CommandLine));
+            crate::protocol::operations::request(cmd, explicit, request_id, deadline)
+        }
     };
     if let Action::Stream { cli, .. } = cmd.action {
-        let form = if raw.is_some() {
-            crate::commands::CallForm::Literal
-        } else {
-            crate::commands::CallForm::Flags
-        };
-        return cli(&values, &request, startup, &call, form);
+        return cli(&values, &request, startup, &call);
     }
     let root = startup.config.archive.clone();
     let result = if cmd.register.is_some() {

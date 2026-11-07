@@ -94,7 +94,13 @@ fn declarations(
 fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
     Ok(match subject {
         "derived" => polylogue_model::derived::all().into_iter().map(|p|json!(p)).collect(),
-        "syntax" => vec![json!({"syntax": SYNTAX, "stages": polylogue_query::catalog::TRANSFORMS.iter().map(|s| s.completion).collect::<Vec<_>>(), "aggregates": polylogue_query::catalog::AGGREGATES, "keywords": polylogue_query::catalog::FUNCTIONS})],
+        "syntax" => {
+            let catalog = polylogue_query::catalog::catalog(&[]);
+            let keywords: Vec<_> = polylogue_query::catalog::FUNCTIONS.iter().copied()
+                .chain(catalog.functions.iter().map(|function| function.name.as_str()))
+                .collect();
+            vec![json!({"syntax": SYNTAX, "stages": polylogue_query::catalog::TRANSFORMS.iter().map(|s| s.completion).collect::<Vec<_>>(), "aggregates": polylogue_query::catalog::AGGREGATES, "keywords": keywords})]
+        },
         "units" => units::UNITS.iter().map(|u| json!({
             "name": u.name, "singular": u.singular,
             "columns": u.columns.iter().map(|c| c.name).collect::<Vec<_>>(),
