@@ -51,14 +51,16 @@ fn sinex(dir: &Path) -> Running {
 fn connect(config: &Config) -> Arc<Sinex> {
     let started = Instant::now();
     loop {
-        if let Ok(sinex) = Sinex::connect(config, &Authentication::Anonymous, "fixture-host")
-            && sinex.reachable().is_ok()
-        {
-            return Arc::new(sinex);
-        }
+        let error = match Sinex::connect(config, &Authentication::Anonymous, "fixture-host") {
+            Ok(sinex) => match sinex.reachable() {
+                Ok(()) => return Arc::new(sinex),
+                Err(error) => format!("producer reachability: {error}"),
+            },
+            Err(error) => format!("producer connection: {error}"),
+        };
         assert!(
             started.elapsed() < Duration::from_secs(60),
-            "sinexd did not start"
+            "Sinex producer did not become reachable: {error}"
         );
         std::thread::sleep(Duration::from_millis(200));
     }
