@@ -580,20 +580,19 @@ impl<'a> Compiler<'a> {
                 .filter(|source| source.prefix.is_empty())
                 .count()
                 == 1
+            && let Some(source) = input.sources.iter().find(|source| source.prefix.is_empty())
         {
-            if let Some(source) = input.sources.iter().find(|source| source.prefix.is_empty()) {
-                let context = RowContext {
-                    unit: source.unit,
-                    a: self.fresh(),
-                };
-                let predicate = self.cond(condition, &context, false)?;
-                let key = context.a.expand(units::spec(context.unit).key);
-                return Ok(format!(
-                    "(SELECT ({predicate}) FROM {} WHERE {key} = r.{})",
-                    base_from(context.unit, &context.a),
-                    column_sql(&source.key)
-                ));
-            }
+            let context = RowContext {
+                unit: source.unit,
+                a: self.fresh(),
+            };
+            let predicate = self.cond(condition, &context, false)?;
+            let key = context.a.expand(units::spec(context.unit).key);
+            return Ok(format!(
+                "(SELECT ({predicate}) FROM {} WHERE {key} = r.{})",
+                base_from(context.unit, &context.a),
+                column_sql(&source.key)
+            ));
         }
         Ok(match &condition.kind {
             ConditionKind::Order {

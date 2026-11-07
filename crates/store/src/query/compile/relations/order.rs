@@ -11,6 +11,10 @@ struct PairOrder {
 }
 
 impl Compiler<'_> {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Mirrors the fixed order-expression fields."
+    )]
     pub(super) fn rel_order_pair(
         &mut self,
         outer: &mut Relation,
@@ -315,6 +319,10 @@ impl Compiler<'_> {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Mirrors order inputs shared by predicates and joins."
+    )]
     fn pair_order(
         &mut self,
         outer: &Relation,
