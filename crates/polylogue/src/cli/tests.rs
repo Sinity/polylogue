@@ -296,62 +296,135 @@ fn a_json_value_without_its_final_line_boundary_is_not_a_completed_answer() {
 #[test]
 fn literal_read_envelope_is_not_expanded_with_cli_defaults() {
     use std::io::{BufRead, Write};
-    let daemon = crate::test_daemon::start("literal read envelope witness");
-    let root = tempfile::tempdir().unwrap();
-    let archive = Archive::at(root.path());
-    let listener = std::os::unix::net::UnixListener::bind(archive.socket()).unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let expected = command_surface::Request {
-        operation: "read".into(),
-        arguments: serde_json::json!({"target":"sessions"}),
-        request_id: "literal-read".into(),
-        deadline: command_surface::Deadline::None,
-        budget_tokens: Default::default(),
-        cursor: None,
-        fresh: false,
-        format: Default::default(),
-    };
-    let ready = daemon.daemon.ready_call(&expected).unwrap();
-    let arguments = polylogue_model::command::effective_stages(&ready.cli)[0]
-        .args
-        .clone();
-    let peer = std::thread::spawn(move || {
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        && std::time::Instant::now() < until =>
-                {
-                    std::thread::yield_now()
-                }
-                Err(error) => panic!("literal read did not reach the configured socket: {error}"),
-            }
+    let daemon = crate::test_daemon::start("read envelope witness");
+    for form in ["generated", "literal", "flags", "export", "export-hidden"] {
+        let root = tempfile::tempdir().unwrap();
+        let archive = Archive::at(root.path());
+        let destination = root.path().join("reading");
+        let listener = std::os::unix::net::UnixListener::bind(archive.socket()).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut expected = command_surface::Request {
+            operation: "read".into(),
+            arguments: serde_json::json!({"target":"sessions"}),
+            request_id: "read ' identity".into(),
+            deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
         };
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
-            .unwrap();
-        let mut line = String::new();
-        std::io::BufReader::new(&stream)
-            .read_line(&mut line)
-            .unwrap();
-        let (actual, _) = crate::protocol::wire::incoming(&line).unwrap().unwrap();
-        assert_eq!(actual, expected);
-        let refusal =
-            command_surface::Answer::<serde_json::Value>::error(command_surface::Failure::new(
-                command_surface::FailureKind::Refused,
-                "synthetic refusal",
-            ));
-        writeln!(stream, "{}", serde_json::to_string(&refusal).unwrap()).unwrap();
-    });
-    let mut argv = vec!["polylogue".to_string()];
-    argv.extend(arguments);
-    argv.push("--json".into());
-    let matches = command().try_get_matches_from(argv).unwrap();
-    let startup = crate::config::Startup::for_test(daemon.config.clone(), root.path());
-    assert_eq!(run(&matches, &startup, root.path()), ExitCode::from(3));
-    peer.join().unwrap();
+        let mut argv = vec!["polylogue".to_string()];
+        match form {
+            "generated" => {
+                let ready = daemon.daemon.ready_call(&expected).unwrap();
+                argv.extend(
+                    polylogue_model::command::effective_stages(&ready.cli)[0]
+                        .args
+                        .clone(),
+                );
+            }
+            "literal" => argv.extend([
+                "read".into(),
+                "--request".into(),
+                expected.arguments.to_string(),
+                "--request-id".into(),
+                expected.request_id.clone(),
+                "--deadline".into(),
+                "none".into(),
+            ]),
+            _ => {
+                expected.arguments = serde_json::json!({
+                    "target":"sessions", "view":"transcript", "format":"markdown",
+                    "page_tokens":41, "output_lines":100, "show":["tools:line"],
+                    "for_others":true, "variant":["concise"], "with_blobs":true,
+                });
+                expected.deadline = command_surface::Deadline::Milliseconds(60_000);
+                expected.cursor = Some("sealed:cursor".into());
+                argv.extend(
+                    [
+                        "read",
+                        "sessions",
+                        "--view",
+                        "transcript",
+                        "--format",
+                        "markdown",
+                        "--page-tokens",
+                        "41",
+                        "--output-lines",
+                        "100",
+                        "--show",
+                        "tools:line",
+                        "--for-others",
+                        "--variant",
+                        "concise",
+                        "--with-blobs",
+                        "--request-id",
+                        "read ' identity",
+                        "--deadline",
+                        "60000",
+                        "--cursor",
+                        "sealed:cursor",
+                    ]
+                    .map(str::to_owned),
+                );
+                if form.starts_with("export") {
+                    argv.extend(["--to".into(), destination.to_str().unwrap().into()]);
+                    expected.arguments["delivery"] = serde_json::json!("stream");
+                    if form == "export-hidden" {
+                        argv.extend(["--hide".into(), "inherited".into()]);
+                        expected.arguments["hide"] = serde_json::json!(["inherited"]);
+                    } else {
+                        expected.arguments["show"] = serde_json::json!(["tools:line", "inherited"]);
+                    }
+                }
+            }
+        }
+        argv.push("--json".into());
+        let peer = std::thread::spawn(move || {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < until =>
+                    {
+                        std::thread::yield_now()
+                    }
+                    Err(error) => {
+                        panic!("{form} read did not reach the configured socket: {error}")
+                    }
+                }
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .unwrap();
+            let (actual, _) = crate::protocol::wire::incoming(&line).unwrap().unwrap();
+            assert_eq!(actual, expected, "{form} changed the accepted envelope");
+            let refusal =
+                command_surface::Answer::<serde_json::Value>::error(command_surface::Failure::new(
+                    command_surface::FailureKind::Refused,
+                    "synthetic refusal",
+                ));
+            writeln!(stream, "{}", serde_json::to_string(&refusal).unwrap()).unwrap();
+        });
+        let matches = command().try_get_matches_from(argv).unwrap();
+        let startup = crate::config::Startup::for_test(daemon.config.clone(), root.path());
+        assert_eq!(
+            run(&matches, &startup, root.path()),
+            ExitCode::from(3),
+            "{form}"
+        );
+        peer.join().unwrap();
+        assert!(
+            !destination.exists(),
+            "a refused export must not publish its destination"
+        );
+    }
 }
 
 #[test]
