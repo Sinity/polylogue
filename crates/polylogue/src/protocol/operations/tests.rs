@@ -544,7 +544,7 @@ fn named_context_budget_and_identity_survive_admission_and_socket_execution() {
         arguments: json!({"cwd":"/synthetic","source":"resume"}),
         request_id: "context-budget-witness".into(),
         deadline: command_surface::Deadline::None,
-        budget_tokens: Some(200),
+        budget_tokens: command_surface::TokenBudget::Tokens(200),
         cursor: None,
         fresh: false,
         format: Default::default(),
@@ -572,10 +572,60 @@ fn named_context_budget_and_identity_survive_admission_and_socket_execution() {
     let original = envelope.clone();
     let internal = admit(command, &envelope, &caller).unwrap();
     assert!(
-        matches!(internal, crate::daemon::Request::Context { request_id, budget_tokens: Some(200), sender: Some(sender), .. }
+        matches!(internal, crate::daemon::Request::Context { request_id, budget_tokens: command_surface::TokenBudget::Tokens(200), sender: Some(sender), .. }
         if request_id == envelope.request_id && sender == "hook")
     );
     assert_eq!(envelope, original);
+    for (label, budget, option) in [
+        ("default", command_surface::TokenBudget::Default, None),
+        (
+            "unlimited",
+            command_surface::TokenBudget::Unlimited,
+            Some("none"),
+        ),
+        (
+            "numeric",
+            command_surface::TokenBudget::Tokens(200),
+            Some("200"),
+        ),
+    ] {
+        let mut selected = envelope.clone();
+        selected.request_id = format!("context-budget-{label}");
+        selected.budget_tokens = budget;
+        let encoded = serde_json::to_value(&selected).unwrap();
+        match budget {
+            command_surface::TokenBudget::Default => {
+                assert!(encoded.get("budget_tokens").is_none())
+            }
+            command_surface::TokenBudget::Unlimited => assert!(encoded["budget_tokens"].is_null()),
+            command_surface::TokenBudget::Tokens(tokens) => {
+                assert_eq!(encoded["budget_tokens"], tokens)
+            }
+        }
+        let mut words = vec![
+            "polylogue",
+            "brief",
+            "--cwd",
+            "/synthetic",
+            "--source",
+            "resume",
+        ];
+        if let Some(option) = option {
+            words.extend(["--budget", option]);
+        }
+        let (selected_command, values) = crate::cli::parse(&words).unwrap();
+        assert_eq!(
+            request(
+                selected_command,
+                values,
+                selected.request_id.clone(),
+                selected.deadline
+            ),
+            selected
+        );
+        assert!(matches!(admit(command, &selected, &caller).unwrap(),
+            crate::daemon::Request::Context { budget_tokens, .. } if budget_tokens == budget));
+    }
     let answer = crate::client::call_ready(&daemon.daemon.archive, &envelope).unwrap();
     assert_eq!(answer.exit_code(), 0, "{answer:?}");
     let prepared: crate::protocol::context::Answer =

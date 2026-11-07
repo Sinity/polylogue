@@ -285,7 +285,7 @@ fn context(
     request_id: String,
     ask: &Ask,
     sender: Option<String>,
-    budget_tokens: Option<u32>,
+    budget_tokens: command_surface::TokenBudget,
     operation: &Arc<Context>,
 ) -> Answer<Value> {
     use polylogue_store::read::limit::ReadLimit;

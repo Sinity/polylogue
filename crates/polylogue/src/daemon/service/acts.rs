@@ -1193,7 +1193,7 @@ fn hand_off(
         &operation,
         None,
         None,
-        None,
+        Default::default(),
     )?;
     drop(reader);
     let mut text = format!("Hand-off from {}", h.source);

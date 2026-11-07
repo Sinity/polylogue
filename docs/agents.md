@@ -70,7 +70,7 @@ A budget is a request-envelope field (`budget_tokens` on the socket, HTTP and MC
 | takeover | 10,000 tokens per prompt, shared by every session the prompt names |
 | recall | 10,000 tokens |
 
-A budget too small for the required header, entry map and one candidate entry is refused; compaction prompts remain outside the fitted budget.
+A missing budget uses the named default. JSON `budget_tokens: null` or CLI `--budget none` lifts the token limit; a numeric budget, including zero, remains explicit. A budget too small for the required header, entry map and one candidate entry is refused; compaction prompts remain outside the fitted budget.
 
 Each harness's inline cap is declared with its hooks. A pack larger than the cap is injected as whole sections up to the cap, then a line naming the command that prints the whole delivery (`polylogue delivery:<id> read`); the delivery stores every byte, and text is never silently cut.
 

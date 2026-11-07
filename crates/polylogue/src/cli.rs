@@ -154,6 +154,11 @@ fn clap_arg(a: &crate::commands::Arg) -> clap::Arg {
         Kind::List if a.positional => arg.num_args(1..),
         Kind::List => arg.action(ArgAction::Append).value_delimiter(','),
     };
+    if a.name == "budget" {
+        arg = arg.value_parser(|value: &str| {
+            crate::protocol::operations::parse_budget(Some(value)).map(|_| value.to_owned())
+        });
+    }
     if a.name == "query" && matches!(a.kind, Kind::Words | Kind::Rest) {
         arg = arg.add(clap_complete::engine::ArgValueCompleter::new(
             completion::Query,
@@ -310,24 +315,13 @@ pub fn run(
         .get_one::<String>("request_id")
         .cloned()
         .unwrap_or_else(|| values.request_id());
-    let budget_tokens = match m
-        .get_one::<u64>("budget")
-        .copied()
-        .map(u32::try_from)
-        .transpose()
-    {
+    let budget_tokens = match crate::protocol::operations::parse_budget(
+        m.get_one::<String>("budget").map(String::as_str),
+    ) {
         Ok(tokens) => tokens,
-        Err(_) => {
-            return fail(
-                policy,
-                json,
-                "bad_request",
-                "budget exceeds the request token type",
-                2,
-            );
-        }
+        Err(error) => return fail(policy, json, "bad_request", &error, 2),
     };
-    if budget_tokens.is_some() && !matches!(cmd.name, "brief" | "takeover" | "recall") {
+    if !budget_tokens.is_default() && !matches!(cmd.name, "brief" | "takeover" | "recall") {
         return fail(
             policy,
             json,

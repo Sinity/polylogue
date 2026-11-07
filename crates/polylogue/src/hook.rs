@@ -390,7 +390,10 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
         arguments,
         request_id: request_id.clone(),
         deadline: command_surface::Deadline::Milliseconds(CONTEXT_BUDGET.as_millis() as u64),
-        budget_tokens,
+        budget_tokens: budget_tokens.map_or(
+            command_surface::TokenBudget::Default,
+            command_surface::TokenBudget::Tokens,
+        ),
         cursor,
         fresh: false,
         format: Default::default(),

@@ -23,8 +23,11 @@ pub struct ToolCall {
     pub deadline: command_surface::Deadline,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget_tokens: Option<u32>,
+    #[serde(
+        default,
+        skip_serializing_if = "command_surface::TokenBudget::is_default"
+    )]
+    pub budget_tokens: command_surface::TokenBudget,
 }
 
 fn default_deadline(deadline: &command_surface::Deadline) -> bool {
@@ -169,11 +172,11 @@ pub(crate) fn with_cursor(
 
 pub(crate) fn with_budget(
     mut request: crate::daemon::Request,
-    budget: Option<u32>,
+    budget: command_surface::TokenBudget,
 ) -> Result<crate::daemon::Request, Failure> {
-    if let Some(tokens) = budget {
+    if !budget.is_default() {
         match &mut request {
-            crate::daemon::Request::Context { budget_tokens, .. } => *budget_tokens = Some(tokens),
+            crate::daemon::Request::Context { budget_tokens, .. } => *budget_tokens = budget,
             _ => {
                 return Err(Failure::new(
                     FailureKind::BadRequest,
@@ -323,15 +326,6 @@ impl<C: CommandType> Operation for TypedCommand<C> {
             let request = match with_cursor(request, context.cursor()) {
                 Ok(request) => request,
                 Err(error) => return Answer::error(error),
-            };
-            let request = if let crate::daemon::Request::Context { ask, .. } = &request {
-                let budget = context.budget(ask.default_budget_tokens(), None).tokens;
-                match with_budget(request, Some(budget)) {
-                    Ok(request) => request,
-                    Err(error) => return Answer::error(error),
-                }
-            } else {
-                request
             };
             if let Err(error) = context.check_cancelled() {
                 return Answer::error(error);
@@ -500,6 +494,17 @@ pub fn table(daemon: Arc<Daemon>) -> OperationTable {
     table
 }
 
+pub(crate) fn parse_budget(value: Option<&str>) -> Result<command_surface::TokenBudget, String> {
+    match value {
+        None => Ok(command_surface::TokenBudget::Default),
+        Some("none") => Ok(command_surface::TokenBudget::Unlimited),
+        Some(value) => value
+            .parse::<u32>()
+            .map(command_surface::TokenBudget::Tokens)
+            .map_err(|_| "budget must be a token count or none".into()),
+    }
+}
+
 pub fn request(
     command: &Command,
     arguments: Values,
@@ -507,9 +512,8 @@ pub fn request(
     deadline: command_surface::Deadline,
 ) -> command_surface::RunnableRequest {
     let cursor = arguments.text("cursor");
-    let budget_tokens = arguments
-        .integer("budget")
-        .and_then(|tokens| u32::try_from(tokens).ok());
+    let budget_tokens =
+        parse_budget(arguments.text("budget").as_deref()).expect("CLI token budget was validated");
     command_surface::Request {
         operation: command.name.into(),
         arguments: Value::Object(

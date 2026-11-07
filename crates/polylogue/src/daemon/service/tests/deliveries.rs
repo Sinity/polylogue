@@ -20,7 +20,7 @@ fn after_queued_writes(d: &test_daemon::TestDaemon) {
 
 fn takeover(d: &test_daemon::TestDaemon, request_id: &str) -> serde_json::Value {
     let request = Request::Context {
-        budget_tokens: None,
+        budget_tokens: Default::default(),
         request_id: request_id.into(),
         ask: Ask::Takeover {
             session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
@@ -72,7 +72,7 @@ fn an_accepted_prepared_receipt_crosses_the_read_deadline_without_a_false_refusa
     let id = polylogue_store::user_writes::new_request_id();
     let limit = ReadLimit::new(Duration::from_secs(2), Default::default());
     let request = Request::Context {
-        budget_tokens: None,
+        budget_tokens: Default::default(),
         request_id: id.clone(),
         ask: Ask::Takeover {
             session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
@@ -160,7 +160,7 @@ fn daemon_with_a_project() -> test_daemon::TestDaemon {
 
 fn brief(d: &test_daemon::TestDaemon, request_id: &str, source: StartSource) -> serde_json::Value {
     let request = Request::Context {
-        budget_tokens: None,
+        budget_tokens: Default::default(),
         request_id: request_id.into(),
         ask: Ask::SessionStart {
             cwd: "/home/op/proj".into(),

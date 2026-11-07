@@ -271,8 +271,11 @@ pub enum Request {
     #[serde(skip)]
     Context {
         request_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        budget_tokens: Option<u32>,
+        #[serde(
+            default,
+            skip_serializing_if = "command_surface::TokenBudget::is_default"
+        )]
+        budget_tokens: command_surface::TokenBudget,
         ask: Ask,
         #[serde(default)]
         sender: Option<String>,

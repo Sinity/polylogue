@@ -350,7 +350,7 @@ const BUDGET: Arg = Arg {
     cli_only: true,
     ..opt(
         "budget",
-        Kind::Integer,
+        Kind::Text,
         "Tokens for a prepared context; defaults to its named pack",
     )
 };

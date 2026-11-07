@@ -41,7 +41,7 @@ pub(super) fn answer(
     let call = ToolCall {
         operation: None,
         arguments: serde_json::to_value(&arguments).expect("completion arguments serialize"),
-        budget_tokens: None,
+        budget_tokens: Default::default(),
         cursor: None,
         request_id: uuid::Uuid::now_v7().to_string(),
         deadline,

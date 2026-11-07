@@ -249,9 +249,11 @@ pub fn prepare(
     context: &std::sync::Arc<crate::operation::Context>,
     ranking_identity: Option<&str>,
     near: Option<&NearFn<'_>>,
-    budget_tokens: Option<u32>,
+    budget_tokens: command_surface::TokenBudget,
 ) -> Result<Prepared, StoreError> {
-    let budget = u64::from(budget_tokens.unwrap_or_else(|| ask.default_budget_tokens()));
+    let budget = budget_tokens
+        .resolve(Some(ask.default_budget_tokens()))
+        .map_or(u64::MAX, u64::from);
     match ask {
         Ask::SessionStart {
             cwd,
@@ -451,7 +453,7 @@ fn assertion_item(
     let mut provenance = format!(
         "original author:{} via:{} judgment:{}",
         note.fact.author,
-        note.fact.via,
+        note.fact.via.as_str(),
         judgment(note)?
     );
     let mut not_inlined = Vec::new();
@@ -472,14 +474,14 @@ fn assertion_item(
             correction.fact.root,
             correction.fact.id,
             correction.fact.author,
-            correction.fact.via,
+            correction.fact.via.as_str(),
             state
         );
         let _ = writeln!(
             text,
             "Contrary evidence, author:{} via:{}; judgment {state}: {}",
             correction.fact.author,
-            correction.fact.via,
+            correction.fact.via.as_str(),
             note_line(&correction)
         );
         refs.push(format!(

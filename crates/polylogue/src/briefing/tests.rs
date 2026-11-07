@@ -101,7 +101,7 @@ fn recall_fuses_prose_and_tool_output_in_the_querys_order() {
         &fixture_context(Timestamp::from_unix_ms(0).unwrap()),
         None,
         None,
-        None,
+        Default::default(),
     )
     .unwrap();
     // Each list has one first-place hit. Equal ranks and unknown times
@@ -304,7 +304,7 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         &fixture_context(now),
         None,
         None,
-        None,
+        Default::default(),
     )
     .unwrap();
     let visible = visible_context(&p.text);
@@ -431,7 +431,7 @@ fn recall_pages_continue_by_cursor() {
             &fixture_context(now),
             None,
             None,
-            None,
+            Default::default(),
         )
         .unwrap();
         seen.extend(p.refs.iter().filter(|r| r.starts_with("message:")).cloned());
@@ -465,7 +465,7 @@ fn recall_pages_continue_by_cursor() {
             &fixture_context(now),
             None,
             None,
-            None,
+            Default::default(),
         )
         .is_err()
     );
@@ -526,7 +526,7 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
             &fixture_context(now),
             None,
             None,
-            None,
+            Default::default(),
         )
         .unwrap();
         let pages = reader.take_page_reads().unwrap();
@@ -599,7 +599,7 @@ fn a_brief_past_its_deadline_answers_with_the_sections_it_has() {
             &fixture_context(Timestamp::from_unix_ms(T0 + 3_600_000).unwrap()),
             None,
             None,
-            None,
+            Default::default(),
         )
         .unwrap()
     });
@@ -683,12 +683,74 @@ fn named_context_defaults_and_explicit_tight_budgets_share_one_fitter() {
         &fixture_context(Timestamp::from_unix_ms(T0 + 3_600_000).unwrap()),
         None,
         None,
-        Some(400),
+        command_surface::TokenBudget::Tokens(400),
     )
     .unwrap();
     assert!(prepared.text.len() <= 1600, "{}", prepared.text);
     assert!(!prepared.left_out.is_empty());
     assert!(Fitter::new(0, "required header".into()).is_err());
+}
+
+#[test]
+fn default_numeric_and_unlimited_context_budgets_retain_their_distinct_meanings() {
+    use polylogue_model::{
+        Author,
+        assertion::{AssertionFact, AssertionKind, AssertionLink, LinkRole},
+        authorship::Channel,
+    };
+    let archive = polylogue_store::fixture::writer::WriterArchive::new();
+    let source = "complete synthetic context passage ".repeat(2000);
+    archive
+        .writer
+        .restore_assertion(AssertionFact {
+            root: "budget-source".into(),
+            id: "budget-source-v1".into(),
+            kind: AssertionKind::Goal,
+            key: None,
+            value: Some(serde_json::json!(source)),
+            author: Author::Operator,
+            via: Channel::Cli,
+            machine: "synthetic-machine".into(),
+            created_at: Timestamp::from_unix_ms(T0).unwrap(),
+            valid_until: None,
+            links: vec![AssertionLink {
+                role: LinkRole::About,
+                reference: Reference::Cwd("/work/budget".into()),
+                seen_hash: None,
+                quote: None,
+            }],
+        })
+        .unwrap();
+    let pool = polylogue_store::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let ask = Ask::SessionStart {
+        cwd: "/work/budget".into(),
+        session: None,
+        source: StartSource::Resume,
+    };
+    let prepared = |budget| {
+        prepare(
+            &reader,
+            &SharedScopeIndex::default(),
+            None,
+            &ask,
+            "budget-witness",
+            &fixture_context(Timestamp::from_unix_ms(T0).unwrap()),
+            None,
+            None,
+            budget,
+        )
+        .unwrap()
+    };
+    let default = prepared(command_surface::TokenBudget::Default);
+    let numeric = prepared(command_surface::TokenBudget::Tokens(2000));
+    let unlimited = prepared(command_surface::TokenBudget::Unlimited);
+    assert!(default.text.len() <= 4000 * 4);
+    assert!(numeric.text.len() <= 2000 * 4);
+    assert!(!default.left_out.is_empty() && !numeric.left_out.is_empty());
+    assert!(unlimited.text.len() > 4000 * 4);
+    assert!(visible_context(&unlimited.text).contains(&source));
+    assert!(unlimited.left_out.is_empty(), "{:?}", unlimited.left_out);
 }
 
 #[test]
@@ -785,7 +847,7 @@ fn startup_manual_and_compaction_prompts_are_outside_the_fitted_budget() {
             &fixture_context(Timestamp::from_unix_ms(T0 + 3600000).unwrap()),
             None,
             None,
-            Some(1000),
+            command_surface::TokenBudget::Tokens(1000),
         )
         .unwrap();
         assert_eq!(p.text.contains(&manual), source != StartSource::Resume);
@@ -827,7 +889,7 @@ fn older_observed_claims_remain_visible_without_claiming_external_state() {
         &fixture_context(Timestamp::from_unix_ms(T0 + 40 * 86400000).unwrap()),
         None,
         None,
-        None,
+        Default::default(),
     )
     .unwrap();
     assert!(visible_context(&p.text).contains("pl-1: last observed claim"));
@@ -1014,7 +1076,7 @@ fn latest_human_correction_is_shown_before_the_older_model_answer() {
         &fixture_context(Timestamp::from_unix_ms(T0).unwrap()),
         None,
         None,
-        Some(1000),
+        command_surface::TokenBudget::Tokens(1000),
     )
     .unwrap();
     let visible = visible_context(&prepared.text);

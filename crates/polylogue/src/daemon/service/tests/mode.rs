@@ -127,7 +127,7 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
             machine: None,
         },
         Request::Context {
-            budget_tokens: None,
+            budget_tokens: Default::default(),
             request_id: "delivery".into(),
             ask,
             sender: Some("hook".into()),

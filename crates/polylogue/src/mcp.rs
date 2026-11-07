@@ -116,7 +116,7 @@ fn input_schema(tool: Tool) -> Value {
             "request_id": {"type": "string"},
             "deadline": {"type": ["integer", "null"], "description": "ms; null: none"},
             "cursor": {"type": ["string", "null"]},
-            "budget_tokens": {"type":"integer", "minimum":0},
+            "budget_tokens": {"type":["integer","null"], "minimum":0, "maximum":u32::MAX},
         },
         "required": required,
         "additionalProperties": false,
@@ -293,7 +293,7 @@ fn run(
             fresh: false,
             format: Default::default(),
         });
-    if canonical.is_none() && call.budget_tokens.is_some() {
+    if canonical.is_none() && !call.budget_tokens.is_default() {
         return Err(bad_request("operation does not prepare budgeted context"));
     }
     let request = if let Some(canonical) = &canonical {
