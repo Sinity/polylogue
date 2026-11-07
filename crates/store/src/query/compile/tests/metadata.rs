@@ -350,7 +350,7 @@ fn canonical_replay_preserves_unproven_text_and_json_matching_policy() {
                 reference: None,
             },
         ];
-        let schema = polylogue_query::columns_schema("sessions", &columns);
+        let schema = polylogue_query::compile::columns_schema("sessions", &columns);
         let proof = match proof_kind {
             0 => SchemaProof::Unproven,
             1 => SchemaProof::Captured {
