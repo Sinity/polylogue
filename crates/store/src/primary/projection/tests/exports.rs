@@ -185,9 +185,12 @@ fn export_completion_rebuilds_shapes_with_foreign_keys_and_original_receipts() {
     assert!(!current["complete_presence"].is_null());
     let status:String=index.query_row("SELECT p.status FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id='target' AND p.chain=1",[],|row| row.get(0)).unwrap();
     assert_eq!(status, "done");
-    // Redelivery of the original admitted callback and completion is read-only.
-    apply(&mut index, &resolver, &callback(4, "target", &item)).unwrap();
-    apply(&mut index, &resolver, &callback(5, "target", &complete)).unwrap();
+    // Redelivery keeps the original fact positions and identities, while its
+    // cumulative completion cannot move behind the already applied prefix.
+    let mut redelivery = callback(4, "target", &item);
+    redelivery.pop().expect("callback includes its completion");
+    redelivery.extend(callback(5, "target", &complete));
+    apply(&mut index, &resolver, &redelivery).unwrap();
     assert_eq!(checkpoint(&index).unwrap(), Some(5));
     assert_eq!(shapes(&index, "target", "v2"), completed);
     assert_eq!(shapes(&index, "other", "v2"), independent);
