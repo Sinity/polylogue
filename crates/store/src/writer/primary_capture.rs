@@ -918,9 +918,28 @@ impl Inner {
         let Some(source) = source else {
             return Ok(None);
         };
-        // Raw custody is valid without source-scope coverage. Final coordinates
-        // wait for explicit confirmed identity/absence evidence.
-        if self.source_snapshot(source, "")?.basis.status != crate::primary::SourceStatus::Ready {
+        // Current source coordinates require a complete scoped prefix; a known
+        // exact row alone cannot exclude an unreadable newer input. Frozen
+        // pre-I/O uncertainty continues to govern the pending capture's alias claims.
+        self.primary_cache_ready()?;
+        let (status, confirmed) = crate::source::Source::confirmed_source(&self.index, &source)?;
+        if status != crate::primary::SourceStatus::Ready {
+            return Ok(None);
+        }
+        if let Some(confirmed) = confirmed {
+            if confirmed.input != input.rows.input {
+                return Ok(None);
+            }
+        }
+        if crate::source::SourceBoundary::read(&self.index, &self.index, &self.location)?.is_none()
+        {
+            return Ok(None);
+        }
+        let replay = crate::primary::projection::replay_state(&self.index)?;
+        if replay
+            .head
+            .is_some_and(|head| replay.applied_position.is_none_or(|applied| applied < head))
+        {
             return Ok(None);
         }
         let mut rows = input.rows.clone();

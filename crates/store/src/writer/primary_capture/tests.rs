@@ -187,7 +187,10 @@ impl crate::primary::Sinex for OfflineProducer {
             anchor: None,
         };
         Ok(PendingSource {
-            status: SourceStatus::Ready,
+            status: full
+                .basis
+                .as_ref()
+                .map_or(SourceStatus::MissingEvidence, |basis| basis.status),
             raw: full.raw_range.map(|_| head.clone()),
             head: Some(head),
             continuation: checkpoint.map(|checkpoint| PendingCheckpoint {
@@ -277,7 +280,14 @@ impl crate::primary::Sinex for OfflineProducer {
                     header
                 })),
                 material: None,
-                anchor: None,
+                anchor: self
+                    .root
+                    .join("ready")
+                    .exists()
+                    .then(|| crate::primary::SourceLocation {
+                        material: "confirmed-anchor".into(),
+                        anchor: 0,
+                    }),
             }]
         } else {
             Vec::new()
@@ -293,10 +303,14 @@ impl crate::primary::Sinex for OfflineProducer {
     }
     fn complete_captures(
         &self,
-        _: &[String],
-        _: &[ProductWrite],
+        identities: &[String],
+        writes: &[ProductWrite],
     ) -> Result<crate::primary::PreparedWrite> {
-        Self::unavailable()
+        if !self.root.join("ready").exists() {
+            return Self::unavailable();
+        }
+        assert_eq!(identities, &["offline-capture".to_owned()]);
+        self.prepare_products(writes)
     }
     fn prepare_export_products(
         &self,
@@ -355,10 +369,18 @@ impl crate::primary::Sinex for OfflineProducer {
         _: &crate::primary::ReplayState,
         _: &str,
     ) -> Result<Vec<crate::primary::Confirmed>> {
-        Self::unavailable()
+        if self.root.join("ready").exists() {
+            Ok(vec![])
+        } else {
+            Self::unavailable()
+        }
     }
     fn acknowledge(&self, _: &crate::primary::ReplayState) -> Result<()> {
-        Self::unavailable()
+        if self.root.join("ready").exists() {
+            Ok(())
+        } else {
+            Self::unavailable()
+        }
     }
 }
 
@@ -738,4 +760,132 @@ fn an_idle_primary_writer_records_a_failed_stream_read() {
         }
     }
     panic!("the idle writer never recorded its failed stream read");
+}
+
+#[test]
+fn frozen_unknown_empty_capture_publishes_only_after_scoped_stream_completion() {
+    use crate::primary::{Confirmed, ConfirmedChange, ReplayControl, SourceSelector, SourceStatus};
+    let directory = tempfile::tempdir().unwrap();
+    let producer_root = directory.path().join("producer");
+    let (archive, _lock) = Archive::open_primary(
+        &directory.path().join("cache"),
+        &directory.path().join("bytes"),
+    )
+    .unwrap();
+    let producer = Arc::new(OfflineProducer {
+        root: producer_root.clone(),
+    });
+    let writer = Writer::start_on_sinex(&archive, producer.clone()).unwrap();
+    let mut capture = source("offline", b"");
+    capture.batch.new_blob = None;
+    let outcome = writer
+        .sender()
+        .unwrap()
+        .store_group(vec![capture], Arc::new(archive.blobs().unwrap()))
+        .unwrap();
+    assert!(matches!(
+        &outcome[0],
+        Err(StoreError::PrimaryPending { .. })
+    ));
+    let original = std::fs::read(producer_root.join("capture.json")).unwrap();
+    let bytes = std::fs::read(producer_root.join("source")).unwrap();
+    let source = SourceSelector {
+        origin: "codex".into(),
+        machine: "machine".into(),
+        path_bytes: b"/home/op/offline".to_vec(),
+    };
+    let control = |control| Confirmed {
+        position: 0,
+        event: String::new(),
+        output_index: 0,
+        native: None,
+        change: ConfirmedChange::Control(Box::new(control)),
+    };
+    writer
+        .apply_confirmed(vec![control(ReplayControl::Reset {
+            scope: "scope".into(),
+        })])
+        .unwrap();
+    std::fs::write(producer_root.join("ready"), b"confirmed native anchor").unwrap();
+    writer.synchronize_primary().unwrap();
+    assert!(
+        !producer_root.join("products.json").exists(),
+        "raw custody and an anchor do not prove absent source coordinates"
+    );
+    writer
+        .apply_confirmed(vec![
+            control(ReplayControl::Head { position: 1 }),
+            control(ReplayControl::Completion { position: 0 }),
+        ])
+        .unwrap();
+    let snapshot = writer.source_snapshot(source.clone(), "").unwrap();
+    assert_eq!(snapshot.basis.status, SourceStatus::MissingEvidence);
+    assert!(snapshot.basis.boundary.is_some());
+    writer.synchronize_primary().unwrap();
+    assert!(
+        !producer_root.join("products.json").exists(),
+        "known unapplied commits leave current source coordinates pending"
+    );
+    writer
+        .apply_confirmed(vec![control(ReplayControl::Completion { position: 1 })])
+        .unwrap();
+    writer.synchronize_primary().unwrap();
+    let writes: Vec<ProductWrite> =
+        serde_json::from_slice(&std::fs::read(producer_root.join("products.json")).unwrap())
+            .unwrap();
+    let products: Vec<_> = writes
+        .into_iter()
+        .enumerate()
+        .map(|(index, write)| Confirmed {
+            position: 2,
+            event: format!("published-{index}"),
+            output_index: index as u64,
+            native: None,
+            change: ConfirmedChange::Live(Box::new(write.product)),
+        })
+        .chain(std::iter::once(control(ReplayControl::Completion {
+            position: 2,
+        })))
+        .collect();
+    writer.apply_confirmed(products).unwrap();
+    let reads = crate::ReadPool::open(&archive).unwrap();
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .source_observation(&source)
+            .unwrap()
+            .1
+            .unwrap()
+            .input,
+        "offline"
+    );
+    std::fs::remove_file(producer_root.join("products.json")).unwrap();
+    writer
+        .apply_confirmed(vec![
+            Confirmed {
+                position: 3,
+                event: "unreadable-input".into(),
+                output_index: 0,
+                native: None,
+                change: ConfirmedChange::Refused {
+                    kind: "opaque-owner-input".into(),
+                    reason: "unavailable".into(),
+                    unreadable_input: true,
+                },
+            },
+            control(ReplayControl::Completion { position: 3 }),
+        ])
+        .unwrap();
+    writer.synchronize_primary().unwrap();
+    assert!(!producer_root.join("products.json").exists());
+    let (status, positive) = reads.reader().unwrap().source_observation(&source).unwrap();
+    assert_eq!(status, SourceStatus::MissingEvidence);
+    assert_eq!(positive.unwrap().input, "offline");
+    assert_eq!(
+        std::fs::read(producer_root.join("capture.json")).unwrap(),
+        original
+    );
+    assert_eq!(std::fs::read(producer_root.join("source")).unwrap(), bytes);
+    assert!(producer.captured().basis.unwrap().resolved.is_none());
 }

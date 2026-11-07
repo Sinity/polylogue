@@ -186,6 +186,13 @@ impl Fact {
             native: None,
         }
     }
+    // The delivered event has lifecycle identity even when its body is unavailable.
+    fn unreadable(event: String, position: i64, order: i64) -> Self {
+        let mut fact = Self::tombstoned(event, position, order);
+        fact.state = "live".into();
+        fact.kind = "refused".into();
+        fact
+    }
     fn product(&self) -> Result<Option<Product>> {
         self.product.as_deref().map(unpacked).transpose()
     }
@@ -283,7 +290,9 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                             "a tombstoned Sinex event cannot become live".into(),
                         ));
                     }
-                    if old.product.as_ref() != Some(&bytes) || old.native != native {
+                    if old.kind != "refused"
+                        && (old.product.as_ref() != Some(&bytes) || old.native != native)
+                    {
                         return Err(StoreError::Invalid(
                             "a Sinex event changed its immutable product facts".into(),
                         ));
@@ -339,7 +348,10 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                 fact
             }),
             ConfirmedChange::Restored => match old {
-                Some(mut fact) if fact.state != "tombstoned" && fact.product.is_some() => {
+                Some(mut fact)
+                    if fact.state != "tombstoned"
+                        && (fact.product.is_some() || fact.kind == "refused") =>
+                {
                     fact.state = "live".into();
                     fact.changed = position;
                     Some(fact)
@@ -361,7 +373,10 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                 }
                 None => Fact::tombstoned(event, position, order),
             }),
-            ConfirmedChange::Refused { .. } | ConfirmedChange::Control(_) => None,
+            ConfirmedChange::Refused { .. } => {
+                Some(old.unwrap_or_else(|| Fact::unreadable(event, position, order)))
+            }
+            ConfirmedChange::Control(_) => None,
         };
         if let Some(next) = next {
             next.insert(index, "primary_candidate")?;
@@ -429,8 +444,9 @@ enum StateChange {
 
 impl StateChange {
     fn of(index: &Connection, kind: &str) -> Result<Self> {
+        // A formerly unreadable fact can precede already-applied authored state.
         let rewritten: bool = index.query_row(
-            "SELECT EXISTS(SELECT 1 FROM primary_candidate c JOIN main.primary_fact f ON f.event=c.event WHERE f.kind=?1 AND f.state!=c.state)",
+            "SELECT EXISTS(SELECT 1 FROM primary_candidate c JOIN main.primary_fact f ON f.event=c.event WHERE (f.kind=?1 AND f.state!=c.state) OR (f.kind='refused' AND c.kind=?1))",
             [kind],
             |row| row.get(0),
         )?;
@@ -927,13 +943,19 @@ fn refusals(tx: &rusqlite::Transaction<'_>, through: i64) -> Result<()> {
         let event: String = row.get(0)?;
         let position: i64 = row.get(1)?;
         let bytes: Vec<u8> = row.get(2)?;
-        if let ConfirmedChange::Refused { kind, reason } = unpacked(&bytes)? {
+        if let ConfirmedChange::Refused {
+            kind,
+            reason,
+            unreadable_input,
+        } = unpacked(&bytes)?
+        {
             tx.execute(
-                "INSERT INTO primary_refused(event,position,kind,reason) VALUES (?1,?2,?3,?4) ON CONFLICT(event) DO UPDATE SET position=excluded.position,kind=excluded.kind,reason=excluded.reason",
-                params![event, position, kind, reason],
+                "INSERT INTO primary_refused(event,position,kind,reason,unreadable_input) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(event) DO UPDATE SET position=excluded.position,kind=excluded.kind,reason=excluded.reason,unreadable_input=excluded.unreadable_input",
+                params![event, position, kind, reason, unreadable_input],
             )?;
         }
     }
+    tx.execute("DELETE FROM primary_refused WHERE EXISTS(SELECT 1 FROM primary_next f WHERE f.event=primary_refused.event AND (f.product IS NOT NULL OR f.state='tombstoned'))", [])?;
     Ok(())
 }
 
@@ -991,6 +1013,15 @@ pub(crate) fn apply(
         resolver.confirmed_readings(&mut plan.readings, &plan.available)?;
         let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = crate::archive::bump_counter(&tx)?;
+        // Lifecycle changes can remove or restore source admissions older than
+        // a pre-I/O cut. New admissions preserve that cut; retained-row changes do not.
+        let source_lifecycle: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM primary_candidate WHERE kind='input' AND changed!=admitted)",
+            [], |row| row.get(0),
+        )?;
+        if source_lifecycle {
+            crate::archive::generation::rotate(&tx)?;
+        }
         sources(&tx, &plan)?;
         members(&tx, &plan)?;
         requests(&tx, &plan)?;

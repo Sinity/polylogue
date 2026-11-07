@@ -181,6 +181,7 @@ fn an_unreadable_event_in_the_middle_of_a_page_is_refused_and_later_events_apply
                 change: ConfirmedChange::Refused {
                     kind: "polylogue.future@7".into(),
                     reason: "unsupported Polylogue kind polylogue.future@7".into(),
+                    unreadable_input: true,
                 },
             },
             barrier(2),
@@ -209,8 +210,235 @@ fn an_unreadable_event_in_the_middle_of_a_page_is_refused_and_later_events_apply
     assert_eq!(
         rows(
             &index,
-            "SELECT count(*) FROM primary_fact WHERE event='event-unknown'"
+            "SELECT count(*) FROM primary_fact WHERE event='event-unknown' AND state='live' AND product IS NULL"
+        ),
+        1
+    );
+}
+
+#[test]
+fn primary_source_cut_requires_completed_scope_and_survives_new_admissions() {
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) =
+        crate::Archive::open_primary(directory.path(), &directory.path().join("bytes")).unwrap();
+    let mut index =
+        crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-a").unwrap();
+    let boundary =
+        |index: &Connection| crate::primary::SourceBoundary::read(index, index, &archive).unwrap();
+    assert!(boundary(&index).is_none());
+    let observed = |position, id: &str| {
+        let mut fact = input(position, "first");
+        if let ConfirmedChange::Live(product) = &mut fact.change {
+            if let Product::Input { rows, .. } = product.as_mut() {
+                rows.observation = Some(serde_json::from_value(serde_json::json!({
+                    "id":id,"machine":"machine","host":"host","path":"/home/op/source",
+                    "path_bytes":b"/home/op/source".to_vec(),"class":"seen","polylogue_version":"test","seen_at":position
+                })).unwrap());
+            }
+        }
+        fact
+    };
+    apply(
+        &mut index,
+        &resolver,
+        &[
+            observed(2, "first-head"),
+            control(ReplayControl::Head { position: 9 }),
+            delivered(1),
+        ],
+    )
+    .unwrap();
+    assert!(
+        boundary(&index).is_none(),
+        "a staged page and stream head do not complete the scope"
+    );
+    drop(index);
+    let mut index =
+        crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
+    assert!(boundary(&index).is_none());
+    apply(&mut index, &resolver, &[barrier(2)]).unwrap();
+    let cut = boundary(&index).unwrap();
+    assert_eq!(cut.through(&index, &archive).unwrap(), 2);
+    let mut append = observed(4, "later-head");
+    append.event = "event-first-append".into();
+    apply(
+        &mut index,
+        &resolver,
+        &[append, input(5, "next"), barrier(5)],
+    )
+    .unwrap();
+    assert_eq!(cut.through(&index, &archive).unwrap(), 2);
+    assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 2);
+    let reads = crate::ReadPool::open(&archive).unwrap();
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .source_subject_at(&cut, "first")
+            .unwrap()
+            .unwrap()
+            .observation,
+        "first-head"
+    );
+    let later = boundary(&index).unwrap();
+    for (position, change) in [
+        (7, ConfirmedChange::Archived),
+        (8, ConfirmedChange::Restored),
+    ] {
+        let previous = boundary(&index).unwrap();
+        apply(
+            &mut index,
+            &resolver,
+            &[
+                Confirmed {
+                    position,
+                    event: "event-first".into(),
+                    output_index: 0,
+                    native: None,
+                    change,
+                },
+                barrier(position),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(
+            previous.through(&index, &archive),
+            Err(StoreError::ScopeChanged)
+        ));
+    }
+    assert!(matches!(
+        later.through(&index, &archive),
+        Err(StoreError::ScopeChanged)
+    ));
+    let previous = boundary(&index).unwrap();
+    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-b").unwrap();
+    assert!(boundary(&index).is_none());
+    assert!(matches!(
+        previous.through(&index, &archive),
+        Err(StoreError::ScopeChanged)
+    ));
+}
+
+#[test]
+fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacement() {
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) =
+        crate::Archive::open_primary(directory.path(), &directory.path().join("bytes")).unwrap();
+    let mut index =
+        crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope").unwrap();
+    let boundary =
+        |index: &Connection| crate::primary::SourceBoundary::read(index, index, &archive).unwrap();
+    let refused = |position, event: &str, unreadable_input| Confirmed {
+        position,
+        event: event.into(),
+        output_index: 0,
+        native: None,
+        change: ConfirmedChange::Refused {
+            kind: "opaque-native-kind".into(),
+            reason: "synthetic unavailable body".into(),
+            unreadable_input,
+        },
+    };
+    apply(
+        &mut index,
+        &resolver,
+        &[
+            input(1, "known"),
+            barrier(1),
+            refused(2, "non-input", false),
+            barrier(2),
+        ],
+    )
+    .unwrap();
+    let previous = boundary(&index).unwrap();
+    apply(
+        &mut index,
+        &resolver,
+        &[refused(3, "possible-input", true), barrier(3)],
+    )
+    .unwrap();
+    assert!(boundary(&index).is_none());
+    assert_eq!(
+        rows(&index, "SELECT count(*) FROM source_input WHERE id='known'"),
+        1
+    );
+    assert!(matches!(
+        previous.through(&index, &archive),
+        Err(StoreError::ScopeChanged)
+    ));
+    let lifecycle = |position, change| Confirmed {
+        position,
+        event: "possible-input".into(),
+        output_index: 0,
+        native: None,
+        change,
+    };
+    apply(
+        &mut index,
+        &resolver,
+        &[lifecycle(4, ConfirmedChange::Archived), barrier(4)],
+    )
+    .unwrap();
+    assert!(boundary(&index).is_some());
+    apply(
+        &mut index,
+        &resolver,
+        &[lifecycle(5, ConfirmedChange::Restored), barrier(5)],
+    )
+    .unwrap();
+    assert!(boundary(&index).is_none());
+    let mut replacement = input(6, "recovered");
+    replacement.event = "possible-input".into();
+    apply(&mut index, &resolver, &[replacement, barrier(6)]).unwrap();
+    assert!(boundary(&index).is_some());
+    assert_eq!(
+        rows(
+            &index,
+            "SELECT count(*) FROM primary_refused WHERE event='possible-input'"
         ),
         0
+    );
+    assert_eq!(
+        rows(
+            &index,
+            "SELECT admitted FROM primary_fact WHERE event='possible-input'"
+        ),
+        3
+    );
+    assert_eq!(
+        rows(
+            &index,
+            "SELECT count(*) FROM source_input WHERE id='recovered'"
+        ),
+        1
+    );
+    apply(
+        &mut index,
+        &resolver,
+        &[refused(7, "erased-input", true), barrier(7)],
+    )
+    .unwrap();
+    assert!(boundary(&index).is_none());
+    let mut erased = lifecycle(8, ConfirmedChange::Tombstoned);
+    erased.event = "erased-input".into();
+    apply(&mut index, &resolver, &[erased, barrier(8)]).unwrap();
+    assert!(boundary(&index).is_some());
+    assert_eq!(
+        rows(
+            &index,
+            "SELECT count(*) FROM primary_refused WHERE event='erased-input'"
+        ),
+        0
+    );
+    assert_eq!(
+        rows(
+            &index,
+            "SELECT count(*) FROM primary_fact WHERE event='erased-input' AND state='tombstoned' AND product IS NULL AND native_context IS NULL"
+        ),
+        1
     );
 }

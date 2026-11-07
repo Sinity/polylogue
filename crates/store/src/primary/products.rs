@@ -188,6 +188,8 @@ pub enum ConfirmedChange {
     Refused {
         kind: String,
         reason: String,
+        /// The adapter cannot exclude source input semantics for this unreadable event.
+        unreadable_input: bool,
     },
     Control(Box<super::ReplayControl>),
 }

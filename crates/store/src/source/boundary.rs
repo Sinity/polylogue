@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::os::unix::ffi::OsStrExt;
 
 /// A pre-acquisition cut of source authority. It is not an index write counter.
-/// Primary cuts require the owner's full projection certificate; a raw-input
-/// certificate or an intermediate stream checkpoint cannot construct one.
+/// Primary cuts use the scoped, atomically applied confirmed-stream prefix.
+/// A reported stream head or a staged page cannot construct one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SourceBoundary {
@@ -18,6 +18,7 @@ pub struct SourceBoundary {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Authority {
     Standalone { through: u64 },
+    Primary { through: u64, scope: String },
 }
 
 impl SourceBoundary {
@@ -26,11 +27,16 @@ impl SourceBoundary {
         source: &Connection,
         archive: &Archive,
     ) -> Result<Option<Self>> {
-        if archive.is_primary() {
-            return Ok(None);
-        }
-        let Some(through) = source_position(source)? else {
-            return Ok(None);
+        let authority = if archive.is_primary() {
+            let Some((through, scope)) = primary_position(index)? else {
+                return Ok(None);
+            };
+            Authority::Primary { through, scope }
+        } else {
+            let Some(through) = source_position(source)? else {
+                return Ok(None);
+            };
+            Authority::Standalone { through }
         };
         let generation = index.query_row(
             "SELECT value FROM main.meta WHERE key='generation'",
@@ -40,7 +46,7 @@ impl SourceBoundary {
         Ok(Some(Self {
             generation,
             scope_root: scope_root(archive),
-            authority: Authority::Standalone { through },
+            authority,
         }))
     }
 
@@ -50,16 +56,51 @@ impl SourceBoundary {
             [],
             |row| row.get(0),
         )?;
-        if archive.is_primary()
-            || generation != self.generation
-            || scope_root(archive) != self.scope_root
-        {
+        if generation != self.generation || scope_root(archive) != self.scope_root {
             return Err(StoreError::ScopeChanged);
         }
-        match self.authority {
-            Authority::Standalone { through } => Ok(through),
+        match &self.authority {
+            Authority::Standalone { through } if !archive.is_primary() => Ok(*through),
+            Authority::Primary { through, scope } if archive.is_primary() => {
+                match primary_position(index)? {
+                    Some((applied, current_scope))
+                        if applied >= *through && &current_scope == scope =>
+                    {
+                        Ok(*through)
+                    }
+                    _ => Err(StoreError::ScopeChanged),
+                }
+            }
+            _ => Err(StoreError::ScopeChanged),
         }
     }
+}
+
+fn primary_position(index: &Connection) -> Result<Option<(u64, String)>> {
+    crate::primary::scope::require_readable(index)?;
+    let unreadable: bool = index.query_row(
+        "SELECT EXISTS(SELECT 1 FROM primary_refused r LEFT JOIN primary_fact f ON f.event=r.event WHERE r.unreadable_input=1 AND (f.event IS NULL OR (f.state='live' AND f.product IS NULL)))",
+        [], |row| row.get(0),
+    )?;
+    if unreadable {
+        return Ok(None);
+    }
+    let state = crate::primary::projection::replay_state(index)?;
+    let Some(position) = state.applied_position else {
+        return Ok(None);
+    };
+    let Some(scope) = state.scope.filter(|scope| !scope.is_empty()) else {
+        return Ok(None);
+    };
+    let through = u64::try_from(position)
+        .map_err(|_| StoreError::Invalid("confirmed source position cannot be negative".into()))?;
+    if crate::primary::projection::checkpoint(index)? != Some(position)
+        || crate::primary::scope::current(index)?.as_deref() != Some(scope.as_str())
+        || source_position(index)? != Some(through)
+    {
+        return Ok(None);
+    }
+    Ok(Some((through, scope)))
 }
 
 fn source_position(conn: &Connection) -> Result<Option<u64>> {
