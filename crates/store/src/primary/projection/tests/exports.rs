@@ -98,7 +98,10 @@ fn callback(position: i64, id: &str, step: &crate::ParseStep) -> Vec<Confirmed> 
         format: "synthetic".into(),
         arrival_rank: 0,
     };
-    crate::primary::products::parse(&key, 1, Some(2), step)
+    let mut step = step.clone();
+    step.prepare();
+    step.validate_export().unwrap();
+    crate::primary::products::parse(&key, 1, Some(2), &step)
         .unwrap()
         .into_iter()
         .enumerate()
