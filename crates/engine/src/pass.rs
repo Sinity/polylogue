@@ -1107,7 +1107,7 @@ impl Engine {
         for mut plan in plans {
             self.prepare_raw_plan(&mut plan)?;
             if plan.raw.is_some() && plan.finished() {
-                self.record_raw_status(&plan, pass)?;
+                self.record_raw_status(&plan, None, pass)?;
                 self.finish_plan(plan);
                 continue;
             }
@@ -1292,7 +1292,7 @@ impl Engine {
                 }
                 self.apply_raw_result(&mut plan, &d)?;
                 if plan.finished() {
-                    self.record_raw_status(&plan, pass)?;
+                    self.record_raw_status(&plan, d.raw_acquisition.as_ref(), pass)?;
                     self.finish_plan(plan);
                 } else {
                     waiting.push_front(plan);

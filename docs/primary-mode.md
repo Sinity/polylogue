@@ -43,7 +43,9 @@ another acquisition, the sampler adopts the confirmed input and reading cursor.
 A pending capture's raw byte cursor cannot advance that logical source state.
 Confirmed application can retire the producer body before the capture loop
 receives its result. The loop then adopts the exact confirmed input, file facts
-and covered chain; retirement does not require another raw continuation proof.
+and covered chain through that acquisition's actual range. A partial confirmed
+prefix leaves the remaining bytes and reading pending; the next normal plan
+continues from that prefix. Fully confirmed parsing needs no extra pass.
 Before assigning source revisions, the writer compares the capture with the
 completed confirmed-stream history. If an unreadable record might describe an
 input, new source revisions remain pending. Already readable facts remain available.

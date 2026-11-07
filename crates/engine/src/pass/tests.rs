@@ -45,6 +45,9 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         }
         plan.parser_deferred = true;
         let mut job = plan.next_job();
+        job.end = (bytes.len() / 2) as u64;
+        job.length = job.end;
+        job.at_end = false;
         let mut context = engine.sampling_context(&path, origin.name, "").unwrap();
         context.facts = Some(now);
         job.acquisition = Some(context);
@@ -53,7 +56,9 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         // A cursorless raw attempt is still unsupported before confirmation.
         engine.apply_raw_result(&mut plan, &done).unwrap();
         let mut unconfirmed = Pass::default();
-        engine.record_raw_status(&plan, &mut unconfirmed).unwrap();
+        engine
+            .record_raw_status(&plan, done.raw_acquisition.as_ref(), &mut unconfirmed)
+            .unwrap();
         assert_eq!(unconfirmed.errors.len(), 1);
         let results = engine
             .writer
@@ -80,6 +85,18 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         let original_format = plan.input.format.clone();
         let original_facts = plan.facts;
         let original_size = plan.size;
+        let mut not_covered = done.raw_acquisition.clone().unwrap();
+        not_covered.range.end += 1;
+        let mut refused = Pass::default();
+        engine
+            .record_raw_status(&plan, Some(&not_covered), &mut refused)
+            .unwrap();
+        assert_eq!(refused.errors.len(), 1);
+        let mut no_receipt = Pass::default();
+        engine
+            .record_raw_status(&plan, None, &mut no_receipt)
+            .unwrap();
+        assert_eq!(no_receipt.errors.len(), 1);
         for mismatch in 0..4 {
             match mismatch {
                 0 => plan.input.id = "another-input".into(),
@@ -88,7 +105,9 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
                 _ => plan.size += 1,
             }
             let mut refused = Pass::default();
-            engine.record_raw_status(&plan, &mut refused).unwrap();
+            engine
+                .record_raw_status(&plan, done.raw_acquisition.as_ref(), &mut refused)
+                .unwrap();
             assert_eq!(refused.errors.len(), 1, "{refused:?}");
             plan.input.id = original_id.clone();
             plan.input.format = original_format.clone();
@@ -100,14 +119,43 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
             count: 1,
         });
         let mut unresolved = Pass::default();
-        engine.record_raw_status(&plan, &mut unresolved).unwrap();
+        engine
+            .record_raw_status(&plan, done.raw_acquisition.as_ref(), &mut unresolved)
+            .unwrap();
         assert_eq!(unresolved.errors.len(), 1);
         plan.raw.as_mut().unwrap().custody = None;
         let mut confirmed = Pass::default();
-        engine.record_raw_status(&plan, &mut confirmed).unwrap();
+        engine
+            .record_raw_status(&plan, done.raw_acquisition.as_ref(), &mut confirmed)
+            .unwrap();
         assert!(confirmed.errors.is_empty(), "{confirmed:?}");
+        assert!(
+            confirmed.capture_pending,
+            "confirmed bytes still need their reading"
+        );
         assert!(plan.raw.as_ref().unwrap().cursor.is_none());
-        engine.finish_plan(plan);
+        assert_eq!(engine.inputs[&path].stored, done.end);
+        assert!(engine.inputs[&path].stored < bytes.len() as u64);
+        // The next ordinary plan reads only the missing suffix from the exact
+        // confirmed prefix. No retired private cursor is fabricated.
+        let mut tail = engine.plan(&path, now).unwrap().unwrap();
+        assert_eq!(tail.stored_upto, done.end);
+        assert!(matches!(tail.change, Change::Appended { from } if from == done.end));
+        let mut job = tail.next_job();
+        assert_eq!(job.start, done.end);
+        let mut context = engine.sampling_context(&path, origin.name, "").unwrap();
+        context.facts = Some(now);
+        job.acquisition = Some(context);
+        let (prepared, last) = crate::pool::run(job, &engine.archive, &engine.blobs, true);
+        assert!(last.error.is_none(), "{:?}", last.error);
+        let results = engine
+            .writer
+            .sender()
+            .unwrap()
+            .store_group(vec![prepared.unwrap()], Arc::clone(&engine.blobs))
+            .unwrap();
+        assert!(results.into_iter().all(|result| result.is_ok()));
+        engine.refresh_confirmed_input(&path).unwrap();
         assert_eq!(engine.inputs[&path].stored, bytes.len() as u64);
         let parse = engine.stored_plan(&path).unwrap().unwrap();
         assert_eq!(parse.input.id, original_id);
@@ -125,6 +173,16 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
             .messages(&session, false)
             .unwrap();
         assert_eq!(messages.len(), 1);
+        let mut settled = Pass::default();
+        engine
+            .record_raw_status(&plan, done.raw_acquisition.as_ref(), &mut settled)
+            .unwrap();
+        assert!(settled.errors.is_empty(), "{settled:?}");
+        assert!(
+            !settled.capture_pending,
+            "a confirmed reading needs no extra pass"
+        );
+        engine.finish_plan(plan);
         assert_eq!(
             messages[0].text(),
             if codex {
@@ -146,7 +204,7 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         assert!(engine.inputs[&path].parser_state.is_none());
         assert_eq!(engine.inputs[&path].parsed_upto, bytes.len() as u64);
         assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 1);
-        assert_eq!(home.count("SELECT count(*) AS n FROM a.extent"), 1);
+        assert_eq!(home.count("SELECT count(*) AS n FROM a.extent"), 2);
     }
 }
 

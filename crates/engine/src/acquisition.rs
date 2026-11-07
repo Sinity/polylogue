@@ -161,6 +161,7 @@ impl Engine {
     pub(crate) fn record_raw_status(
         &mut self,
         plan: &crate::plan::Plan,
+        acquisition: Option<&AcquisitionReceipt>,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         let Some(raw) = &plan.raw else { return Ok(()) };
@@ -171,19 +172,28 @@ impl Engine {
             if raw.custody.is_none()
                 && plan.tracked
                 && matches!(plan.source, crate::pool::Bytes::File)
-                && plan.facts.is_some()
-                && let Some(known) = self.reads.reader()?.known_watched_input_at(
+                && plan.facts.is_some_and(|facts| facts.size == plan.size)
+                && let Some(acquisition) = acquisition
+                && acquisition.range.end <= plan.size
+            {
+                let known = self.reads.reader()?.known_watched_input_at(
                     &self.config.machine,
                     plan.path.as_os_str().as_encoded_bytes(),
-                )?
-                && known.input_id == plan.input.id
-                && known.format == plan.input.format
-                && known.facts == plan.facts
-                && known.chain.is_some()
-                && known.stored >= plan.size
-            {
-                self.refresh_confirmed_input(&plan.path)?;
-                return Ok(());
+                )?;
+                if let Some(known) = known
+                    && known.input_id == plan.input.id
+                    && known.format == plan.input.format
+                    && known.facts == plan.facts
+                    && known.chain.is_some()
+                    && known.stored >= acquisition.range.end
+                {
+                    pass.capture_pending |= known.stored < plan.size
+                        || has_reading(plan.origin)
+                            && (!known.parsed
+                                || !known.waiting && known.parsed_upto < known.stored);
+                    self.refresh_confirmed_input(&plan.path)?;
+                    return Ok(());
+                }
             }
             pass.errors.push(format!(
                 "raw custody retained for {}; continuation proof unavailable",
