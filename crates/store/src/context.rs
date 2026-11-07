@@ -543,7 +543,6 @@ mod notice_candidate_tests {
 
 #[cfg(test)]
 mod latest_prompt_tests {
-    use super::*;
     use crate::fixture::{Fixture, MessageFacts, SessionFacts};
     #[test]
     fn latest_request_keeps_unknown_authorship_and_skips_injection_commands_and_old_branches() {

@@ -507,8 +507,8 @@ fn expiry_metadata_does_not_materialize_the_assertion_body() {
         )
         .unwrap();
     assert_eq!(
-        linked,
-        [reference.clone()],
+        linked.as_slice(),
+        std::slice::from_ref(&reference),
         "linked metadata must not decode the malformed body"
     );
     assert!(reader.assertion(&reference).is_err());

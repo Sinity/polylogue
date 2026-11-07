@@ -87,11 +87,10 @@ impl Reader<'_> {
             if self
                 .assertion_revision_currency(&revision)?
                 .is_some_and(|state| state.current)
+                && visit(revision)?.is_break()
             {
-                if visit(revision)?.is_break() {
-                    self.check()?;
-                    return Ok(ControlFlow::Break(()));
-                }
+                self.check()?;
+                return Ok(ControlFlow::Break(()));
             }
         }
         self.check()?;
