@@ -52,6 +52,13 @@ toolchain or Nix files change. The git-ignored `.envrc.local` holds personal
 settings such as build-output placement, job counts and compiler wrappers.
 Cargo's output directory is `target/` unless `CARGO_TARGET_DIR` is set.
 
+Declared AgentCTL operations clear an ambient `CARGO_TARGET_DIR` before entering
+the actual workspace's shell. The shell selects that checkout's isolated host
+target when `sinnix-cargo-target` is available, with dependency artifacts seeded
+by the host helper. For an explicit target experiment, pass
+`exec -- env CARGO_TARGET_DIR=... cargo ...`; this assignment runs after shell
+selection. Keep the experimental target exclusive to the same checkout.
+
 To build against a local checkout of the shared crates, run
 `cargo xtask link-common PATH`, and `cargo xtask unlink-common` before
 committing a lock file, as the shared

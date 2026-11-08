@@ -5,9 +5,9 @@ display_name = "Polylogue"
 root_markers = ["Cargo.toml", "crates"]
 [environment]
 kind = "direct"
-command = ["env"]
-inherit = ["HOME", "USER", "PATH", "LANG", "XDG_RUNTIME_DIR", "CARGO_TARGET_DIR"]
-unset = ["PYTHONPATH", "PYTHONHOME"]
+command = ["env", "-u", "CARGO_TARGET_DIR"]
+inherit = ["HOME", "USER", "PATH", "LANG", "XDG_RUNTIME_DIR"]
+unset = ["CARGO_TARGET_DIR", "PYTHONPATH", "PYTHONHOME"]
 
 [environment.values]
 # Share CPU and memory with other builds.
