@@ -340,7 +340,9 @@ fn restart_reopens_an_evicted_response_and_resolves_its_native_record_alias() {
         fields: vec!["id".into()],
         chat_pages: vec![],
     };
-    let program = polylogue_store::query::compile(&native_reference.to_string(), &options).unwrap();
+    // Select the message grain so the row's id names the canonical message.
+    let program =
+        polylogue_store::query::compile(&format!("messages {native_reference}"), &options).unwrap();
     let parameters = program
         .params
         .iter()
@@ -414,6 +416,11 @@ fn restart_reopens_an_evicted_response_and_resolves_its_native_record_alias() {
         before, after,
         "reparse changed an authored request or its native reference"
     );
+    let rows = reader
+        .with_clock(&program.clock, || reader.query(&program.sql, &parameters))
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], "claude-code:first");
     assert_eq!(
         reader
             .message_with_projection(id)
