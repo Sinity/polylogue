@@ -43,6 +43,9 @@ reports the failure with its last applied position before sending that cue;
 a failed attempt with no committed progress produces no commit notification.
 The capture loop returns queued writer errors on continuing passes even when
 there are no new inputs to parse, while keeping outstanding custody pending.
+
+A capture turn pins the existing read-scope token before using cached confirmed state and checks that same token before reporting completion. A reset during a turn, or between turns, discards reconstructible input progress, parser and discovery caches; watched identities and receiving custody remain owned until their actual acknowledgments settle. The next turn reloads confirmed facts under a fresh scope and repeats discovery. The outer loop retries a scope interruption as a failed turn; queued writer and reset failures remain errors.
+
 A failed capture turn cannot mark earlier pending custody settled. The loop
 keeps that continuation through a read or planning error until a completed
 pass observes its actual state; batch mode cannot report idle from that error.

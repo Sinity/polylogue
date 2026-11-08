@@ -250,6 +250,63 @@ fn quiet_offline_native_file_finishes_all_chunks_and_reopens_without_provider_pr
 }
 
 #[test]
+fn a_scope_reset_keeps_disappeared_unconfirmed_native_custody_in_the_same_engine() {
+    let home = ClaudeHome::new();
+    let text = polylogue_testkit::claude_user(
+        "one",
+        "scope-custody",
+        &"retained source bytes ".repeat(40),
+    );
+    home.append("scope-custody.jsonl", &text);
+    let path = home.file("scope-custody.jsonl");
+    let (mut engine, archive, _lock, sdk) = open(&home);
+    let first = engine.run_pass().unwrap();
+    assert!(
+        first
+            .errors
+            .iter()
+            .all(|error| error.starts_with("confirmed stream:")
+                && error.contains("Connection refused")),
+        "{first:?}"
+    );
+    assert!(first.capture_pending);
+    assert_eq!(first.bytes_read, text.len() as u64);
+    let count = assert_complete(&sdk, &archive, &path, text.as_bytes());
+    let identities = || {
+        sdk.pending_captures()
+            .unwrap()
+            .into_iter()
+            .map(|capture| capture.identity)
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let before = identities();
+    let original_scope = archive.scope_token().unwrap();
+    // Reset after actual receiving custody, with no provider left to reacquire.
+    std::fs::remove_file(&path).unwrap();
+    archive.advance_generation_for_test().unwrap();
+    assert!(matches!(
+        original_scope.check(),
+        Err(polylogue_store::StoreError::ScopeChanged)
+    ));
+    let resumed = engine.run_pass().unwrap();
+    assert!(
+        resumed
+            .errors
+            .iter()
+            .all(|error| error.starts_with("confirmed stream:")
+                && error.contains("Connection refused")),
+        "{resumed:?}"
+    );
+    assert!(resumed.capture_pending);
+    assert_eq!((resumed.bytes_read, resumed.bytes_stored), (0, 0));
+    assert_eq!(identities(), before);
+    assert_eq!(
+        assert_complete(&sdk, &archive, &path, text.as_bytes()),
+        count
+    );
+}
+
+#[test]
 fn interrupted_native_capture_child() {
     let Some(root) = std::env::var_os("POLYLOGUE_NATIVE_CAPTURE_ROOT") else {
         return;
@@ -848,7 +905,7 @@ fn an_idle_continuation_reports_queued_writer_errors_without_clearing_custody() 
         &db,
     )
     .unwrap();
-    let (mut engine, _archive, _lock, sdk) = open(&home);
+    let (mut engine, archive, _lock, sdk) = open(&home);
     let captured = engine.run_pass().unwrap();
     assert!(captured.capture_pending, "{captured:?}");
     let mut before: Vec<_> = sdk
@@ -884,6 +941,7 @@ fn an_idle_continuation_reports_queued_writer_errors_without_clearing_custody() 
             release: Default::default(),
         })
         .unwrap();
+    archive.advance_generation_for_test().unwrap();
     let continued = engine.run_pass().unwrap();
     assert!(
         continued.errors.iter().any(|error| {
@@ -1125,4 +1183,65 @@ fn a_gone_observation_waits_on_the_confirmed_input_through_the_capture_route() {
     assert_eq!(next.bytes_read, 0);
     assert_eq!(next.bytes_stored, 0);
     assert_eq!(sdk.pending_captures().unwrap(), pending);
+}
+
+#[test]
+fn a_failed_scope_reset_reports_its_original_error_before_reply_without_a_commit_cue() {
+    use polylogue_store::primary::{Confirmed, ConfirmedChange, ReplayControl};
+    let home = ClaudeHome::new();
+    let store = home.dir.path().join("sdk");
+    let sdk = Arc::new(client(&store));
+    let (archive, _lock) = Archive::open_primary(&home.root, &store).unwrap();
+    let writer = polylogue_store::Writer::start_on_sinex(&archive, sdk).unwrap();
+    let commits = writer.sender().unwrap().completion_commits();
+    let reset = |scope: &str| {
+        vec![Confirmed {
+            native: None,
+            position: 0,
+            output_index: 0,
+            event: String::new(),
+            change: ConfirmedChange::Control(Box::new(ReplayControl::Reset {
+                scope: scope.into(),
+            })),
+        }]
+    };
+    writer.apply_confirmed(reset("original")).unwrap();
+    while commits.try_recv().is_ok() {}
+    let index = rusqlite::Connection::open(archive.index_db()).unwrap();
+    index.execute_batch("CREATE TRIGGER fail_scope BEFORE INSERT ON meta WHEN new.key='confirmed_scope' AND new.value='changed' BEGIN SELECT raise(ABORT,'original scope reset failure'); END").unwrap();
+    let error = writer.apply_confirmed(reset("changed")).unwrap_err();
+    assert!(
+        error.to_string().contains("original scope reset failure"),
+        "{error}"
+    );
+    assert!(matches!(
+        archive.scope_token(),
+        Err(polylogue_store::StoreError::ScopeChanged)
+    ));
+    let report = writer.flush_rows().unwrap();
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.starts_with("confirmed stream:")
+                && error.contains("original scope reset failure")),
+        "{report:?}"
+    );
+    assert!(matches!(
+        commits.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    index.execute_batch("DROP TRIGGER fail_scope").unwrap();
+    writer.apply_confirmed(reset("changed")).unwrap();
+    archive.scope_token().unwrap().check().unwrap();
+    assert_eq!(
+        ReadPool::open(&archive)
+            .unwrap()
+            .reader()
+            .unwrap()
+            .confirmed_scope()
+            .unwrap()
+            .as_deref(),
+        Some("changed")
+    );
 }

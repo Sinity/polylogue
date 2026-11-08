@@ -187,7 +187,8 @@ impl Engine {
             total.inputs_seen += completed.inputs_seen;
             total.bytes_stored += completed.bytes_stored;
             total.errors.extend(completed.errors);
-            self.refresh_database_progress()?;
+            self.refresh_database_progress()
+                .map_err(|error| self.failed_read_turn(error))?;
             if completed.finished && self.capture_checked.is_some() {
                 self.capture_checked = Some(Instant::now());
             }
@@ -206,7 +207,78 @@ impl Engine {
             .map(|(pass, _)| pass)
     }
 
+    fn discard_confirmed_state(&mut self) {
+        for state in self.inputs.values_mut() {
+            state.discard_confirmed();
+        }
+        self.read_scope = None;
+        self.loaded = false;
+        self.pass_open = true;
+        self.capture_checked = None;
+        self.collectors_at = None;
+        self.lookups = repo_lookup::Cache::default();
+        self.lookups_at = None;
+    }
+
     fn one_pass(
+        &mut self,
+        discover: bool,
+        paths: &std::collections::BTreeSet<PathBuf>,
+    ) -> Result<(Pass, HashSet<PathBuf>), EngineError> {
+        if self
+            .read_scope
+            .as_ref()
+            .is_some_and(|scope| scope.check().is_err())
+        {
+            self.discard_confirmed_state();
+        }
+        let result = (|| {
+            let scope = self.archive.scope_token()?;
+            self.read_scope = Some(scope.clone());
+            let result = self.read_turn(discover || !self.loaded, paths)?;
+            // A completed reset can race the last SQL read. Its cached progress
+            // cannot establish completion in the new scope.
+            if let Err(error) = scope.check() {
+                if !result.0.errors.is_empty() {
+                    return Err(
+                        polylogue_store::StoreError::Invalid(result.0.errors.join("; ")).into(),
+                    );
+                }
+                return Err(error.into());
+            }
+            Ok(result)
+        })();
+        result.map_err(|error| self.failed_read_turn(error))
+    }
+
+    fn failed_read_turn(&mut self, error: EngineError) -> EngineError {
+        let scope_changed = matches!(
+            &error,
+            EngineError::Store(polylogue_store::StoreError::ScopeChanged)
+        );
+        if scope_changed
+            || self
+                .read_scope
+                .as_ref()
+                .is_some_and(|scope| scope.check().is_err())
+        {
+            self.discard_confirmed_state();
+        }
+        if scope_changed {
+            // A failed reset may leave reads blocked. Its original queued
+            // writer error must remain observable instead of an endless wait.
+            match self.flush_writes() {
+                Ok(report) if !report.errors.is_empty() => {
+                    return polylogue_store::StoreError::Invalid(report.errors.join("; ")).into();
+                }
+                Err(error) => return error,
+                _ => {}
+            }
+        }
+        error
+    }
+
+    fn read_turn(
         &mut self,
         discover: bool,
         paths: &std::collections::BTreeSet<PathBuf>,
@@ -1512,9 +1584,21 @@ impl Engine {
                         || self.captures.pending()
                         || discover
                         || !changed.is_empty();
+                    let mut errors = if matches!(
+                        &e,
+                        EngineError::Store(polylogue_store::StoreError::ScopeChanged)
+                    ) {
+                        Vec::new()
+                    } else {
+                        vec![e.to_string()]
+                    };
+                    match self.flush_writes() {
+                        Ok(report) => errors.extend(report.errors),
+                        Err(error) => errors.push(error.to_string()),
+                    }
                     Pass {
                         full_scans: u64::from(discover && self.config.reads_sources),
-                        errors: vec![e.to_string()],
+                        errors,
                         capture_pending: pending,
                         ..Pass::default()
                     }

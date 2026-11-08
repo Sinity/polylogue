@@ -1,6 +1,7 @@
 mod coverage;
 mod no_sources;
 mod parent_admission;
+mod scope_lifecycle;
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user};
 use std::io::Read;

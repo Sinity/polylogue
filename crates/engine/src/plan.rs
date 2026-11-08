@@ -99,6 +99,14 @@ impl InputState {
         self.waiting = waiting;
     }
 
+    /// A new scope reconstructs confirmed facts and parser state. Original
+    /// receiving custody stays owned until its real acknowledgment settles.
+    pub(crate) fn discard_confirmed(&mut self) {
+        let working = self.working.take();
+        *self = Self::new(std::mem::take(&mut self.input_id), self.origin);
+        self.working = working;
+    }
+
     pub(crate) fn needs_reading(&self) -> bool {
         (!self.waiting && self.parsed_upto < self.stored) || !self.parsed
     }

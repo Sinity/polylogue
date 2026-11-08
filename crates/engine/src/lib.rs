@@ -406,6 +406,8 @@ pub struct Engine {
     pub archive: Archive,
     writer: Writer,
     reads: ReadPool,
+    /// The existing archive scope that admitted the cached confirmed state.
+    read_scope: Option<polylogue_store::ReadScopeToken>,
     blobs: Arc<polylogue_store::blobs::Blobs>,
     inputs: HashMap<PathBuf, InputState>,
     /// Rejected writes awaiting checkpoint reload after their plans finish.
@@ -470,6 +472,7 @@ impl Engine {
             archive,
             writer,
             reads,
+            read_scope: None,
             blobs,
             inputs: HashMap::new(),
             reparsing: HashMap::new(),
@@ -504,15 +507,22 @@ impl Engine {
     }
 
     fn load(&mut self) -> Result<(), EngineError> {
+        if self
+            .read_scope
+            .as_ref()
+            .is_some_and(|scope| scope.check().is_err())
+        {
+            self.discard_confirmed_state();
+        }
         if self.loaded {
             return Ok(());
         }
+        let scope = self.archive.scope_token()?;
+        self.read_scope = Some(scope.clone());
         let reader = self.reads.reader()?;
 
         let known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;
         drop(reader);
-        self.inputs
-            .retain(|path, state| !state.origin.is_row_dump(path));
         for mut k in known {
             let Some(path_bytes) = k.path_bytes.take() else {
                 // Historical display text cannot identify a native location.
@@ -520,14 +530,9 @@ impl Engine {
             };
             use std::os::unix::ffi::OsStringExt;
             let path = PathBuf::from(std::ffi::OsString::from_vec(path_bytes));
-            let Some(origin) = ORIGINS.iter().find(|o| o.name == k.format) else {
-                continue;
-            };
-            if !origin.is_row_dump(&path) && self.inputs.contains_key(&path) {
-                continue;
-            }
             self.adopt_watched_input(&path, k);
         }
+        scope.check()?;
         self.loaded = true;
         Ok(())
     }
