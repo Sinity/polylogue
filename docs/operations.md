@@ -215,7 +215,7 @@ An upgrade is a version change in `status` and, when a parser changed, a while i
 | a schema change of any store | a numbered in-place migration at open | down for the migration |
 | an archive newer than the binary, or with no migration from its version | refused, exit 78, not restarted | down |
 
-**Spools across a rollback.** Hooks and the browser host keep writing their spools while the daemon is replaced, and the spools are never deleted, so the build a deployment rolls back to reads what the newer build wrote. A spool line's shape is therefore part of the deployed format: the hook's line shapes are pinned by a fixture that the previous build's reader is checked against (law `spool-lines-match-rollback-fixture` in [capture.md](capture.md#laws)), and a change to them is checked against the deployed reader before it ships.
+**Spools across a rollback.** Hooks and the browser host keep writing their spools while the daemon is replaced, and the spools are never deleted, so the build a deployment rolls back to reads what the newer build wrote. A spool line's shape is therefore part of the deployed format: the hook's line shapes are pinned by a fixture that the previous build's reader is checked against, and a change to them is checked against the deployed reader before it ships.
 
 No code path deletes the index. A full rebuild is a rare deliberate act: someone moves `index.db` aside and starts the daemon, which rebuilds from stored bytes and answers reads with `index building` and progress until it can answer. Moving a whole archive aside and starting fresh is likewise a deliberate act, never something code does to get past a change.
 
@@ -228,45 +228,3 @@ No code path deletes the index. A full rebuild is a rare deliberate act: someone
 - **Restore** is putting the files back and starting the daemon. Migrations apply as on any open; an uncommitted segment tail is truncated; an index behind its positions catches up; a daemon that finds a segment log but no `archive.db` refuses to start a fresh archive over it and says why. There is no restore command.
 - **A restore drill** restores the latest backup into a scratch directory, runs `polylogue --archive <dir> daemon --no-sources --until-idle`, then starts `polylogue --archive <dir> daemon --no-sources` and runs `polylogue --archive <dir> verify` against it. Someone runs it when they want the evidence, for example after changing the backup route.
 - **Primary mode:** Sinex is the store of record, and its backup covers Polylogue's materials and authored records. Losing the local directory means a rebuild from the confirmed stream ([primary-mode.md](primary-mode.md)). The embeddings store stays local and is backed up, because recomputing it costs money.
-
-## Laws
-
-- **sigterm-resumes-cleanly**: `SIGTERM` during a first build exits 0 within the stop target, the next start resumes from committed positions, and `status` shows the previous end `clean SIGTERM`; after `SIGKILL` the end is `unknown` and only the uncommitted group is lost.
-- **one-daemon-per-archive**: a second daemon on the same archive, reached through a symlinked path, exits 1 naming the holder's pid.
-- **newer-archive-refused**: an archive newer than the binary gives exit 78 and nothing is written.
-- **open-never-deletes**: no open path deletes the index or a store (tested over every open path with a populated archive at each older migration).
-- **cli-opens-no-archive-file**: the CLI process opens no archive file, with the daemon up or down, for every command including `schema` and `verify` (syscall filter in the harness).
-- **idle-reads-what-changed**: over a synthetic archive with nothing changing, no content is read in a measured window; with one appended rollout and one updated tool database, read bytes stay within twice the appended bytes and no full scan runs.
-- **write-waits-one-group**: a user write during a first build commits after at most one writer group.
-- **halt-unschedulable-and-reported**: a unit put into its halt state takes the writer no more; `status` names it and is not `healthy`; the halt survives a restart with its reason; a new revision of its input clears it. Each assertion fails when its mechanism is removed.
-- **watchdog-tracks-request-loop**: a request loop that stops answering stops feeding the watchdog; a stalled unit with a responsive loop keeps feeding it and is reported stalled.
-- **status-golden**: orientation and `status` on Morrow and on a fresh archive match their goldens.
-- **figure-states-honest**: every figure's state is one of `measured`, `none_found`, `not_measured`, `unavailable`; a zero-denominator ratio is `not_measured`; no `not_measured` figure renders as `0` or under a `healthy` verdict.
-- **counters-equal-counts**: after convergence, every writer-kept counter equals the count it stands for (property test over generated archives).
-- **slow-figure-times-out-alone**: a blocked reader on one figure makes it `not_measured: timed out`, and the rest answers within the status budget (fault point).
-- **cached-figure-keyed**: a cached figure is never served after its key changed.
-- **non-operator-changes-listed**: a setting or rule written by an author other than `operator` appears in `status` until the operator next looks.
-- **one-deliverer-per-host**: in primary mode an interrupting notice is shown by Sinex's deliverer and Polylogue makes no notification call of its own except for `Sinex blocked`; standalone, Polylogue's deliverer shows it (fake notification server).
-- **shipped-waiting-rule-passive**: the shipped "agent waiting on you" rule delivers passively, and shipped and operator rules are outside the interrupt budget.
-- **occurrence-follows-lineage**: a waiting episode carried across a fork, resume or continuation fires once; an agent regenerating an equal note is no change, and a contrary note is.
-- **no-firing-on-own-output**: a rule never fires on deliveries or injected context.
-- **shipped-rule-override**: withdrawing an authored override of a shipped rule restores the shipped rule; the change survives an index rebuild.
-- **stall-notice-reaches-every-outlet**: a synthetic stalled unit produces exactly one `daemon stalled` delivery, visible in `status`, the next brief in scope and `query:notices`, with the fake notification server called once.
-- **environment-allow-list**: the binary reads no environment variable outside the allow-list (checked statically); `POLYLOGUE_LISTEN` with a non-loopback address and no token file refuses to start.
-- **broken-mode-config-degrades**: a broken `sinex.toml` yields `degraded` with the path and error, never standalone behaviour.
-- **archive-selected-explicitly**: with two archives under one user, each with its daemon, a command with `--archive A` reaches only A and its output names A.
-- **bundle-moves-between-archives**: a bundle written by `read --to` from archive A and imported into B (another machine ID) gives the same answers for A's sessions, with authors preserved, and leaves B's own sessions unaffected.
-- **no-agent-refusal**: no operation here refuses a caller for being an agent or lacking a terminal.
-- **until-idle-ends-after-work**: `daemon --until-idle` exits after a pass ends with nothing pending, with its summary, the socket removed and the lock released; it exits 0 when its passes and imports met no error and 1 otherwise.
-- **no-sources-reads-no-source**: a daemon started with `--no-sources` on a fresh archive beside a home with provider files and spools records no input, observation or coverage and writes nothing under the home.
-- **no-sources-parses-what-is-stored**: with `--no-sources` and the index moved aside, the index is rebuilt from stored bytes, and an input whose file has gone gets no `deleted` observation.
-- **no-sources-takes-imports**: a daemon started with `--no-sources` stores what `import` gives it and then becomes idle.
-- **verify-counts-every-class**: on a consistent archive `verify` names no problem, and its counts per format, observation class and revision kind equal the rows.
-- **verify-reads-only**: `verify`, with or without a manifest, changes no row and no write counter of any store.
-- **verify-manifest-hashes-each-revision**: each manifest line's hash is the BLAKE3 of that revision's bytes, computed from the bytes written, not read back from the store.
-- **corruption-named-not-rewritten**: corrupting one byte of a stored frame makes the next read of it fail naming the extent, records the problem, and `verify` names it; nothing is rewritten.
-- **upgrade-answers-throughout**: a scripted upgrade on Morrow with one reading-version bump answers every read meanwhile, `status` shows progress then `up to date`, and the result equals a fresh build by natural keys.
-- **migration-keeps-rows**: every migration keeps every row of a populated store (one test per migration).
-- **backup-api-copy-consistent**: a copy taken through the SQLite backup API while the writer commits, followed by the segment log, opens consistent; a restore without `index.db` catches up and answers `index building` meanwhile.
-- **hooks-install-round-trip**: `hooks print` round-trips through `install-agent` into an empty settings file; installing twice changes nothing; `--remove` restores the original bytes; a symlinked file is refused.
-- **missing-hook-needs-opportunity**: `hooks status` on a fixture spool reports a missing `Notification` for Claude Code only when a session ran in the window.

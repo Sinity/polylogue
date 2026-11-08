@@ -265,7 +265,7 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
         |phase| matches!(phase, Phase::Status(value) if value["rules"].is_array()),
     );
     // Confirm startup was read-only instead of letting a self-generated cue
-    // stand in for the authored commit this law needs to observe.
+    // stand in for the authored commit this test needs to observe.
     let startup = observe.until("startup completion", |phase| {
         matches!(phase, Phase::TickCompleted { .. })
     });

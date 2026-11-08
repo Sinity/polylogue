@@ -1,6 +1,6 @@
 # Polylogue documentation
 
-These pages are Polylogue's design: its behaviour, model, formats and laws, and
+These pages are Polylogue's design: its behaviour, model, formats, and
 the reasons for them. They describe the product as designed. What exists in a
 given build is described by CLI help, MCP tool schemas and module
 documentation. The [reference index](reference/README.md) distinguishes
@@ -35,7 +35,7 @@ locations are inputs to the runtime and its tests.
 | [web](web.md) | the web workbench and its visual baselines |
 | [operations](operations.md) | the daemon, status, notices, configuration, deployment, backup |
 | [primary mode](primary-mode.md) | Polylogue on Sinex |
-| [testing](testing.md) | test archives, law suites, fault and crash tests, fuzzing, benchmarks |
+| [testing](testing.md) | test archives, properties tested, fault and crash tests, fuzzing, benchmarks |
 | [vocabulary](vocabulary.md) | each concept and its one name |
 
 The shared mechanics (blobs and segments, the query grammar, the operation and
@@ -78,20 +78,6 @@ Every locator resolves in a primary source.
 
 Sinex's and polylogue-sinex-common's documentation use the same conventions
 and link here.
-
-### Laws
-
-Every area page ends with `## Laws`. Each law is one bullet: a bold key, then
-the property and how it is checked. A law's full name is `<page>/<key>`
-(`archive/re-parse-keeps-every-version`). Keys are plain words and stay stable;
-there are no law numbers.
-
-A test that checks a law carries the key in its name
-(`re_parse_keeps_every_version`, with a suffix when several tests check one
-law). Finding a law's tests is a name search. `cargo xtask laws` lists each
-law and the tests whose names carry its key, and the laws with none; it fails
-nothing. Laws of the shared query language live in the `query-language` crate
-and run against Polylogue's catalog too.
 
 ### Generated pages
 

@@ -133,7 +133,6 @@ fn record(hosting: &Hosting) -> Record {
     }
 }
 
-/// law: pl.live.hosted-survives
 /// A daemon connection that goes away leaves the hosted agent running: a
 /// new connection reattaches within 2 s, gets the permission request the
 /// first connection never answered, answers it, and the turn finishes;

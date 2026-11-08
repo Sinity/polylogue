@@ -109,7 +109,6 @@ fn kinds(found: &Verification) -> Vec<ProblemKind> {
     found.problems.iter().map(|problem| problem.kind).collect()
 }
 
-/// law: verify-counts-every-class
 #[test]
 fn a_consistent_archive_has_no_problems_and_counts_every_class() {
     let stored = two_inputs();
@@ -187,7 +186,6 @@ fn a_consistent_archive_has_no_problems_and_counts_every_class() {
     assert_eq!(found.manifest, None);
 }
 
-/// law: verify-manifest-hashes-each-revision
 #[test]
 fn the_manifest_names_each_revision_with_the_hash_of_its_bytes() {
     let stored = two_inputs();
@@ -220,7 +218,6 @@ fn the_manifest_names_each_revision_with_the_hash_of_its_bytes() {
     );
 }
 
-/// law: corruption-named-not-rewritten
 #[test]
 fn a_corrupted_stored_byte_is_named_and_left_as_it_is() {
     let stored = two_inputs();
@@ -273,7 +270,6 @@ fn a_corrupted_stored_byte_is_named_and_left_as_it_is() {
     );
 }
 
-/// law: verify-reads-only
 #[test]
 fn verifying_changes_no_row() {
     let stored = two_inputs();

@@ -192,23 +192,3 @@ Gemini activity times keep their original text and zone. Explicit offsets are re
 - **field accounting:** `unused` paths per origin and reading version ([archive.md](archive.md#parsing)).
 
 Its figures and verdicts use the shared status format of [command-surface](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/command-surface.md); the rest of status is in [operations.md](operations.md#status). The health report raises an item for every non-empty `unrecognized` class, every refusal, every unwired hook event, and every origin silent for longer than its own usual gap. Status is computed on request from stored facts; nothing is checked on a schedule.
-
-## Laws
-
-- **classes-partition-files**: a synthetic root with one file per class reports each as `collected`, `ignored` (with its reason) or `unrecognized`, and the classes partition the files.
-- **rename-moves-class**: renaming a collected file to an unknown extension moves it to `unrecognized` at the next discovery event.
-- **collect-without-parser**: a declared origin with no parser stores its files and reports `no_parser_yet`.
-- **refused-stays-refused**: a file failing its origin's shape check is `refused` with a reason and appears under no other origin.
-- **known-locations-fully-recognized**: a fixture tree holding every listed location of each live origin has no `unrecognized` file.
-- **root-follows-tool-variable**: setting the tool's home variable moves the root; no Polylogue setting does.
-- **hook-event-recorded**: a synthetic event of each type lands in the spool and in the index.
-- **hook-never-creates-session**: a hook event for an unknown session creates no session.
-- **hook-line-durable**: a hook line survives a crash after the hook returns.
-- **spool-lines-match-rollback-fixture**: the hook writes exactly the line shapes of its rollback fixture (every harness, an event with and without a session, native observations, an emission receipt), each line starting with a key a spool reader recognizes it by, and this build's reader takes every fixture line.
-- **drive-revisions**: against a fake Drive, three revisions and one `driveImage` give one session with three revisions and the image's bytes; a deleted prompt keeps its revisions and is marked gone.
-- **import-every-structure**: a fixture for every row of the structures table imports; an unrelated JSONL file is refused with the structures tried and nothing is stored.
-- **reimport-changes-nothing**: importing identical bytes again changes nothing, and a byte-identical copy of a container is `already_stored`.
-- **newer-export-keeps-dropped-field**: a newer export that lacks a field keeps the older export's value.
-- **corrupt-member-refuses-container**: a corrupt member refuses its container before anything is stored.
-- **container-streams**: every member of a container far larger than memory streams with bounded memory.
-- **tool-database-keeps-deleted-rows**: a row deleted by the tool after one capture stays in the archive, and no database image or side file is written.

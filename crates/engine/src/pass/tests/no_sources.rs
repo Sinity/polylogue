@@ -40,7 +40,6 @@ fn files(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// law: until-idle-ends-after-work
 #[test]
 fn a_loop_run_until_idle_stores_what_it_finds_then_returns() {
     let home = ClaudeHome::new();
@@ -55,7 +54,6 @@ fn a_loop_run_until_idle_stores_what_it_finds_then_returns() {
     assert_eq!(home.texts("first"), ["first words"]);
 }
 
-/// law: no-sources-reads-no-source
 #[test]
 fn without_sources_a_fresh_archive_records_no_input_and_writes_nothing_under_home() {
     let home = ClaudeHome::new();
@@ -86,7 +84,6 @@ fn without_sources_a_fresh_archive_records_no_input_and_writes_nothing_under_hom
     );
 }
 
-/// law: no-sources-parses-what-is-stored
 #[test]
 fn without_sources_the_index_is_rebuilt_from_stored_bytes_and_a_gone_file_is_not_observed() {
     let home = ClaudeHome::new();
@@ -113,7 +110,6 @@ fn without_sources_the_index_is_rebuilt_from_stored_bytes_and_a_gone_file_is_not
     );
 }
 
-/// law: no-sources-takes-imports
 #[test]
 fn without_sources_an_import_is_stored_and_the_loop_then_becomes_idle() {
     let home = ClaudeHome::new();

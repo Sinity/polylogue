@@ -72,7 +72,6 @@ fn stat_lines_with_spaces_and_parentheses_in_the_name_parse() {
     );
 }
 
-/// law: pl.live.sampler-proportional
 #[test]
 fn the_watcher_writes_only_changes_and_reads_nothing_without_roots() {
     let dir = tempfile::tempdir().unwrap();
@@ -111,7 +110,6 @@ fn the_watcher_writes_only_changes_and_reads_nothing_without_roots() {
     assert!(w.update_roots(&roots, now()).is_empty());
 }
 
-/// law: pl.live.pid-reuse
 #[test]
 fn a_root_from_another_boot_or_start_time_is_written_gone() {
     let dir = tempfile::tempdir().unwrap();
@@ -160,7 +158,6 @@ fn an_exited_root_waiting_to_be_reaped_is_gone() {
     assert!(w.update_roots(&roots, now()).is_empty());
 }
 
-/// law: pl.live.root-gone-prompt
 #[test]
 fn a_root_exit_is_seen_through_its_pidfd_at_once() {
     let mut child = std::process::Command::new("sleep")
@@ -376,7 +373,6 @@ fn git_in(repo: &Path, args: &[&str]) {
     );
 }
 
-/// law: pl.live.footprint-commit
 /// A commit in a session's worktree that contains files of its footprint
 /// writes one line naming exactly those files; a file the commit does not
 /// contain stays, and a step with no commit writes nothing.

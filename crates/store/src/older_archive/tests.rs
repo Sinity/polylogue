@@ -28,7 +28,6 @@ fn read_all(older: &OlderArchive) {
     older.write_rows(&mut Vec::new()).unwrap();
 }
 
-/// law: older-archive-recognized
 #[test]
 fn the_older_format_is_recognized_by_its_declared_tables_and_anything_else_is_refused() {
     let dir = tempfile::tempdir().unwrap();
@@ -90,7 +89,6 @@ fn the_older_format_is_recognized_by_its_declared_tables_and_anything_else_is_re
     );
 }
 
-/// law: older-archive-versions
 #[test]
 fn versions_one_to_three_lack_only_what_later_versions_added() {
     for version in 1..=3 {
@@ -117,7 +115,6 @@ fn versions_one_to_three_lack_only_what_later_versions_added() {
     }
 }
 
-/// law: older-archive-read-only
 #[test]
 fn reading_an_older_archive_writes_nothing_in_its_folder() {
     let dir = tempfile::tempdir().unwrap();
@@ -130,7 +127,6 @@ fn reading_an_older_archive_writes_nothing_in_its_folder() {
     assert_eq!(file_hashes(&standard.root), before);
 }
 
-/// law: older-archive-read-only
 #[test]
 fn a_write_ahead_log_is_read_from_a_copy_and_the_original_pair_is_unchanged() {
     let dir = tempfile::tempdir().unwrap();
@@ -172,7 +168,6 @@ fn a_write_ahead_log_is_read_from_a_copy_and_the_original_pair_is_unchanged() {
     assert_eq!(std::fs::read_dir(copies.path()).unwrap().count(), 0);
 }
 
-/// law: older-archive-read-only
 #[test]
 fn an_older_archive_a_running_polylogue_holds_is_refused() {
     let dir = tempfile::tempdir().unwrap();
@@ -187,7 +182,6 @@ fn an_older_archive_a_running_polylogue_holds_is_refused() {
     OlderArchive::open(&standard.root, scratch().path()).unwrap();
 }
 
-/// law: older-archive-bytes-verified
 #[test]
 fn inline_and_file_blobs_decode_to_their_bytes_and_a_damaged_file_is_refused() {
     let dir = tempfile::tempdir().unwrap();
@@ -227,7 +221,6 @@ fn inline_and_file_blobs_decode_to_their_bytes_and_a_damaged_file_is_refused() {
     assert!(reason.contains("is missing"), "{reason}");
 }
 
-/// law: older-archive-rows-kept
 #[test]
 fn the_rows_input_holds_every_row_but_the_stored_bytes_in_a_fixed_order() {
     let dir = tempfile::tempdir().unwrap();
@@ -263,7 +256,6 @@ fn the_rows_input_holds_every_row_but_the_stored_bytes_in_a_fixed_order() {
     assert!(lines.iter().all(|line| line["table"] != "input"));
 }
 
-/// law: older-archive-history-kept
 #[test]
 fn an_input_keeps_every_revision_extent_and_observation_in_insertion_order() {
     let dir = tempfile::tempdir().unwrap();
@@ -301,7 +293,6 @@ fn an_input_keeps_every_revision_extent_and_observation_in_insertion_order() {
     assert_eq!(input.observations[3].revision, None);
 }
 
-/// law: older-archive-refusals
 #[test]
 fn an_excised_or_exported_member_input_carries_its_refusal() {
     let dir = tempfile::tempdir().unwrap();
@@ -324,7 +315,6 @@ fn an_excised_or_exported_member_input_carries_its_refusal() {
     assert_eq!(older.input(&standard.watched).unwrap().refusal, None);
 }
 
-/// law: older-archive-history-kept
 #[test]
 fn a_path_written_as_lossy_display_text_keeps_no_exact_location() {
     let dir = tempfile::tempdir().unwrap();

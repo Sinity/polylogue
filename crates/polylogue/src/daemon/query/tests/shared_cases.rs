@@ -44,7 +44,7 @@ impl laws::Compiler for Product {
     type Plan = Plan;
     fn compile(&self, value: &Query) -> Result<Plan, Error> {
         let Source::Unit { unit, .. } = &value.source else {
-            return Err(error("law fixture has no native source unit"));
+            return Err(error("case fixture has no native source unit"));
         };
         let options = options(vec![]);
         let catalog = polylogue_query::catalog::catalog(&options.origins);
@@ -130,7 +130,7 @@ fn project_fixture_sources(
         ..
     } = &mut query.source
     else {
-        return Err(error("law fixture has no native source unit"));
+        return Err(error("case fixture has no native source unit"));
     };
     let requested = if unit == "tool_calls" {
         CHILD_FIELDS
@@ -162,7 +162,7 @@ fn project_fixture_sources(
     let source = &bound
         .typing()
         .query(&Default::default())
-        .ok_or_else(|| error("law fixture source has no typed scope"))?
+        .ok_or_else(|| error("case fixture source has no typed scope"))?
         .source;
     let mut columns = requested
         .iter()

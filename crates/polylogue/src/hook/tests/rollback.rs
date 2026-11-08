@@ -19,7 +19,6 @@ fn first_key(line: &str) -> &str {
         .map_or("", |(key, _)| key)
 }
 
-/// law: spool-lines-match-rollback-fixture
 #[test]
 fn the_hook_writes_exactly_the_line_shapes_the_rollback_fixture_holds() {
     let dir = tempfile::tempdir().unwrap();
@@ -132,7 +131,6 @@ fn the_hook_writes_exactly_the_line_shapes_the_rollback_fixture_holds() {
     }
 }
 
-/// law: spool-lines-match-rollback-fixture
 #[test]
 fn this_builds_reader_takes_every_rollback_fixture_line() {
     use polylogue_sources::hook_spool::{HookSpool, ParserState, recognize};

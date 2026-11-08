@@ -2,7 +2,7 @@ use super::*;
 use std::io::Write;
 use std::time::Duration;
 
-/// Protocol laws inspect the canonical envelope before any domain projection.
+/// Protocol tests inspect the canonical envelope before any domain projection.
 async fn send_wire(r: &Reader, request: Http<Body>) -> (StatusCode, HeaderMap, String) {
     let response = router(Arc::clone(&r.web)).oneshot(request).await.unwrap();
     let status = response.status();

@@ -127,7 +127,6 @@ fn a_message_gives_a_header_then_one_entry_per_block() {
     assert_eq!(entries[3].output_lines, 3);
 }
 
-/// law: pl.read.ctx-meter-state
 #[test]
 fn the_header_carries_reported_input_and_nothing_when_unreported() {
     let mut reported = message(1, Role::Assistant, None, vec![text("a")]);
@@ -213,7 +212,6 @@ fn branches_and_harness_follow_the_options() {
     assert_eq!(shown.len(), 2);
 }
 
-/// law: pl.read.idx-equiv
 #[test]
 fn page_boundaries_from_running_sums_equal_greedy_layout() {
     for size in [0, 1, 2, 7, 40, 301] {
@@ -270,7 +268,6 @@ fn page_boundaries_from_running_sums_equal_greedy_layout() {
     }
 }
 
-/// law: pl.read.pages-concatenate
 #[test]
 fn backward_pages_tile_the_reading_with_no_gap_or_overlap() {
     let entries = entries_of(&session(120));

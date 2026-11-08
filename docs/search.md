@@ -96,15 +96,3 @@ Fuzzy recall finds a half-remembered conversation by explicit, explained toleran
 - `similar:` on the hint, when vectors exist.
 
 Field names and values never match approximately; a mistyped field is an error with a suggestion.
-
-## Laws
-
-- **search-plans-agree**: the three search plans return identical rows in identical order for the same query on a generated archive.
-- **folding-and-fragments**: `lodz` finds `Łódź`; `text ~ "7/10"` finds the literal; the Morrow `chrono` search returns its 3 sessions and 8 hits, with subagent hits under their logical session.
-- **retraction-ranking**: ranking after retracting half the texts equals a fresh build's.
-- **count-exact-or-null**: `count` is exact, or `null` with a counting query in `notes`; never an estimate.
-- **similar-off-no-call**: with model calls off, `similar:"x"` is `incomplete` with the note and makes no network request (a provider that fails on any call proves it); `similar:"x" | agg count` makes no call.
-- **similar-ranks-never-filters**: `similar:session:<id> repo:Y` ranks only repository Y's sessions and returns every one of them, unranked ones after ranked.
-- **fusion-membership**: a three-list fusion matches an independent evaluator; fusion never changes membership or `count`; chained unions fuse once.
-- **recall-ranks-partial-matches**: on Morrow, `weekday arithmetic` ranks subagent #3's answer first, then #5 and #6; a five-word hint where no message has all five still returns ranked hits; a 100-hit recall pages through every hit once.
-- **fuzzy-recall**: `"backpu~ tools" around:2026-04` finds the backup-tools fixture, lists its substitutions, and ranks exact matches above approximate ones.

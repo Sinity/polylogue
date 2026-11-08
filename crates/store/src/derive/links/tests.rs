@@ -1,7 +1,6 @@
 use crate::fixture::writer::*;
 use serde_json::json;
 
-/// law: task-from-explicit-evidence
 #[test]
 fn no_task_from_prose_or_claim_commands() {
     // docs/agents.md: "A command's name or arguments, including a tracker's

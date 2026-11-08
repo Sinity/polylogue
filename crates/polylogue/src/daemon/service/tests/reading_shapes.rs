@@ -192,7 +192,6 @@ fn cards(page: &ReadPage) -> Vec<&Card> {
         .collect()
 }
 
-/// law: pl.read.logical-read-composes
 #[test]
 fn a_logical_read_follows_the_root_with_its_continuation() {
     let d = test_daemon::start("placeholder");
@@ -219,7 +218,6 @@ fn a_logical_read_follows_the_root_with_its_continuation() {
     assert!(!physical.iter().any(|text| text == "continuation question"));
 }
 
-/// law: pl.read.only-copied-prefixes-compose
 #[test]
 fn forks_and_spawns_are_cards_at_their_branch_point_and_call() {
     let d = test_daemon::start("placeholder");
@@ -246,7 +244,6 @@ fn forks_and_spawns_are_cards_at_their_branch_point_and_call() {
     );
 }
 
-/// law: pl.read.context-view-composes
 #[test]
 fn the_context_view_and_its_difference_across_a_compaction() {
     let d = test_daemon::start("placeholder");
@@ -296,7 +293,6 @@ fn the_context_view_and_its_difference_across_a_compaction() {
     );
 }
 
-/// law: pl.read.links-tree
 #[test]
 fn the_links_view_is_a_tree_from_the_root_with_the_seed_marked() {
     let d = test_daemon::start("placeholder");
@@ -343,7 +339,6 @@ fn the_links_view_is_a_tree_from_the_root_with_the_seed_marked() {
     );
 }
 
-/// law: pl.read.follow-appends
 #[test]
 fn the_last_page_follows_what_the_session_appends() {
     let d = test_daemon::start("placeholder");
@@ -401,7 +396,6 @@ fn the_last_page_follows_what_the_session_appends() {
     assert!(!texts.iter().any(|text| text == "continuation question"));
 }
 
-/// law: pl.read.logical-read-composes
 #[test]
 fn a_logical_read_has_the_logical_header_and_physical_reads_the_root_alone() {
     let d = test_daemon::start("placeholder");
@@ -546,7 +540,6 @@ fn spawns_read_inline_at_their_call_to_the_asked_depth() {
     assert!(subtask < nested, "{full:?}");
 }
 
-/// law: pl.read.context-view-composes
 #[test]
 fn a_microcompaction_removes_its_results_from_the_context_view() {
     let d = test_daemon::start("placeholder");

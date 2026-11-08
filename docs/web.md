@@ -73,7 +73,7 @@ Parts of MK3.1 that do not bind: the redaction policy, redacted paths and "copy 
 | status panels: archive counts, sources with lag, capture, recent, diagnostics | MK2's terminal cockpit, as the [Status](#status-status) view and the status strip. No terminal UI is built now, and diagnostics suggest ordinary commands only |
 | fuzzy selector: descriptor-driven, preview pane, multi-select, print or open the choice | MK2, for the CLI picker ([interfaces.md](interfaces.md#picker)) |
 | CLI: bare overview with source bars, completion popup with counts, opening the latest session in the web reader | MK2, for the CLI ([interfaces.md](interfaces.md#completion)) |
-| data-flow invariants: any surface renders anything by reference alone; nothing leaves the machine unless the user writes it out or configures a listen address | MK2, as the laws `any-surface-by-reference` and `nothing-leaves-unasked` |
+| data-flow invariants: any surface renders anything by reference alone; nothing leaves the machine unless the user writes it out or configures a listen address | MK2 |
 | bundles from multi-select, message references without copied payloads | MK2; MK3.1 10 for the flow. The bundle's manifest carries references and content hashes |
 
 The MK2 board is drawn for the Python predecessor, so its command and module names (`polylogued`, `ops doctor`, `--fix` targets, Python file names) are the predecessor's; the commands are those in [interfaces.md](interfaces.md#commands), and there are no repair commands. Its roadmap and inventory artboards show the predecessor's plan, not views. MK2's MCP role gate (read, write, admin) and its MCP server with direct archive access do not apply: agents get every power ([architecture.md](architecture.md#principles)), and the daemon is the only process on the archive.
@@ -517,45 +517,3 @@ Every change shows who made it and when.
 | Keyboard and local interaction | ≤ 100 ms |
 
 A missed budget is a defect. Figures are paired benchmark runs ([testing.md](testing.md#benchmarks)); no test asserts elapsed time.
-
-## Laws
-
-Checks run a real browser over the DevTools protocol against the real daemon on the [Morrow](testing.md#morrow) archive with the clock at 2026-10-08 12:00 Europe/Warsaw (live views: the live set at 2026-10-09 15:00).
-
-- **footer-command-reproduces-view**: every view's rows equal the rows of the CLI command its footer shows (IDs, counts, order), for every view and for a filtered `near:` query across HTTP, CLI and MCP.
-- **no-web-only-capability**: no web route serves a capability that is not a command-table row.
-- **web-writes-authored-by-daemon**: every write from the web is stored with author `operator` and `via: web` (or `extension`), computed by the daemon; a request carrying an author field is refused as invalid.
-- **retry-writes-once**: a retried write with the same `request_id` creates one record.
-- **live-update-never-moves-reader**: a live update never moves the reader, steals focus or removes a text selection; following appends only at the end.
-- **stale-reply-never-wins**: a stale reply never overwrites a newer selection.
-- **unknown-never-zero**: an unknown value is never rendered as zero, `$0` or a zero-height bar.
-- **disabled-action-has-reason**: every disabled action shows its reason, taken from the operation's availability answer.
-- **four-states-without-modal**: every view renders its four states without a modal, each with a recovery command, and no recovery is a repair command.
-- **ping-delivered-once**: a ping sent from the web is delivered once, to a live session at its next context-accepting hook event or to an ended one by one run of its harness's resume command; the delivery records the concrete session and never retargets.
-- **launch-mints-no-lineage**: continuing or branching from the web creates no lineage link by itself; a link appears only when the new session's transcript shows the delivery.
-- **context-copy-has-manifest**: Copy as context includes a manifest listing every included reference with its `seen_hash`, and records a `prepared` delivery whose ID appears in the copied text.
-- **archive-path-never-sent**: no HTTP payload contains the archive directory's path.
-- **any-surface-by-reference**: every view a reference opens renders from the reference alone, with no state held by another surface; opening the same reference from the CLI's `read --to browser`, a pasted URL and a fresh browser gives the same view.
-- **nothing-leaves-unasked**: nothing leaves the machine through the workbench except a file the operator saves and acts the operator takes toward a provider through the extension; the web answers only on the configured listen address with its authentication, and a non-loopback address without a token refuses to start.
-- **stored-text-unchanged**: no view, file or copy masks, flags or redacts stored text; a synthetic credential in a Morrow message appears byte-identical in the reader, the share file and a copied pack.
-- **preferences-in-archive**: product state persists as archive settings; clearing browser storage changes no view preference.
-- **csp-on-every-route**: the CSP header is present on every route, and a browser run records no CSP violation.
-- **fixed-slots-never-change**: fixed slots never change; following slots show the current revision; two heads render as a conflict.
-- **pages-store-references**: pages, bundles and stories store references, never copied text; the quoted text equals the archive message.
-- **key-parity-with-picker**: every key shared with the CLI picker does the same action there.
-
-Checks on Morrow, each a test:
-- Home shows 8 sessions, 7 top-level, 17 prompts, 35 tool calls, the known cost with the price table's unknowns, the `atis-latch` notice, and a links column naming the fork, continuation, subagent and abandoned branch for #6, #4, #2 and #7.
-- Running at 15:00: the waiting session (permission for Bash `cargo test --all`) first with **Approve** and **Deny**; the working session with `job-morrow-7` and the `cargo test parser` child linked to its tool call; the stale session under Stopped with "process gone at 13:40"; the peer warning. At 15:15 with no events the waiting session stays waiting and the working one changes per its `until`. Approving records an act authored `operator` via web.
-- Search `chrono`: 3 sessions; subagent hits under #2; the decision note on the 10:56 hit; the defaults line names #4's inherited copies and #7's abandoned branch, and "include them" adds them; a bare `chrono` typed in the field is refused with the `find chrono` form.
-- Reader #2: 13 of 18 messages shown with the folded-results footer; `cargo test` reads `error exit 101 3m 43s` with the FAILED line; `Read` lines show no duration; the Edit expands to a diff; the Agent line expands to the delegation card; the provenance tab of the 10:37 call shows input, byte range, hash and parser version; `1` sets the outcome solved. #4 shows the compaction line (14:40, 182k → 14.5k) and the inherited line of 18 messages; #7 shows the branch line (21:04) and **show branches**.
-- A 100,000-message synthetic session opens its first, middle and last pages within budget and keeps a selection across window moves.
-- Report #2 reproduces the board's figures, and "1 error, fixed later" is derived.
-- Sharing 10:37–10:52 plus the claim writes one self-contained HTML file with no archive path and the stored text unchanged, through the `read` row.
-- Claims: the claim on #2 `holds`; "every test run passed" `fails` with the 10:37 row; `/judge` shows "2 of 3".
-- Pages: `page new --template investigation morrow-next-friday` and adding `msg_01a20000a11` under Evidence gives the Page board; the `::finding` marker in #6's final model message appears under Findings authored by `codex:…0006` without reload; reordering leaves the note's revision unchanged; the table of contents equals the CLI's; history shows the page before the finding; a ping to an ended member runs its resume command once and lists the delivery.
-- Compare #5 and #6 by lineage pairs the shared prefix as `same`, shows the fork point, and shows every message once.
-- Timeline: a 02:30 message lands on the previous logical day; dragging a window supersedes the earlier request.
-- Cost since Oct 01: known `$5.86 (exact 5.8626)`, 4 unknown; Oct 04 and Oct 07 hatched.
-- Analysis renders a kept figure with its denominator and hatched unknowns, and a bar opens its rows.
-- Each run stores screenshots of every view at 1,440 and 390 px in light and dark, an accessibility report, a keyboard-only journey, and screencasts usable in the README.

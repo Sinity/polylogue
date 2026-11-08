@@ -130,6 +130,8 @@ Over MCP the timeout answer carries both as `next` entries.
 | down | the local class and completion (from the catalog file) work; everything else exits 6 with one line naming the archive and the installed service command (`systemctl --user start polylogue`), or `polylogue daemon` when no service is installed. Nothing starts a daemon implicitly |
 | hung | the socket timeout ends the command, exit 7 |
 
+Because one daemon assembly answers every transport, the same question gives identical rows, totals and refusals through CLI `--json`, the socket, HTTP and MCP.
+
 ## Warm state
 
 The daemon keeps derived state warm so the classes hold. Each item is keyed by what it depends on, so no answer from before a write is served after it; none is a second archive, and each is rebuilt from the archive after a restart (`status` says `warming` until they are built). An LRU may evict items; it never limits answers.
@@ -296,31 +298,3 @@ Exit 78 is used only by the daemon process itself, when it refuses to open an ar
 - An empty result says what to change (`--why`, the "where else" notes) and exits 1.
 - Bare `polylogue` is orientation, in the status class; its contents are [operations.md](operations.md#status)'s.
 - There is no manual or tutorial command: help is learned in place, `demo` builds a Morrow archive to try things on, and the agent manual is generated from the same table ([agents.md](agents.md#agent-manual)).
-
-## Laws
-
-- **mode-parity**: every Morrow example gives identical rows, totals and refusals through CLI `--json`, the socket, HTTP and MCP `structuredContent`, because one daemon assembly answers all.
-- **unsignalled-word-refused**: `polylogue chrono` exits 2 within the local budget with the `find` form and no command suggestion; `polylogue find chrono` and `polylogue 'rate limit'` search.
-- **table-rows-declared**: every command-table row has a reason, a latency class and at least one example, and every example runs on Morrow and matches its golden.
-- **options-anywhere**: `polylogue 'sessions | limit 1' --json` equals `polylogue --json 'sessions | limit 1'`; `polylogue find query --help` prints help, never a search.
-- **class-budgets**: each latency class meets its budget at p95 through the real binary on a real-shaped archive, in paired benchmark runs.
-- **deadline-timeout**: a request past its deadline ends `timeout`, exit 7, never `ok` with a partial page, and no read for it is left running in the daemon 100 ms later; closing the connection frees the read within 100 ms.
-- **deadline-lift**: `--deadline none` and MCP `deadline: null` run a query that times out by default to completion; a default timeout of an aggregate prints the narrower query and the lifted command.
-- **no-caller-refusal**: no refusal depends on the caller's harness or author; each terminal-only behaviour, off a terminal, names the non-interactive form that does the same act.
-- **completion-matrix**: the position matrix (position × unit × shell) passes through `COMPLETE=bash|zsh|fish` on the empty and the Morrow archive.
-- **completion-daemon-down**: with the daemon down, catalog values are offered within 50 ms and zsh shows the catalog's age; the completing process opens no file under the archive directory.
-- **completion-under-writes**: while a writer commits one batch per second, no keystroke returns zero candidates for a position that has values.
-- **candidates-parse**: every candidate, spliced at its replace range, parses (property test over generated queries and offsets).
-- **completion-surfaces-agree**: MCP `completion/complete` returns the same candidates as the shell for the same text and offset.
-- **wrapper-completes-own-archive**: a wrapper bound to its own archive completes values from that archive; `plg` completes.
-- **picker-in-terminal**: in a PTY on Morrow, typing, moving, Tab and Enter act on the chosen rows; a late preview for a row no longer highlighted is never drawn.
-- **ambiguous-off-terminal**: off a terminal or with `--json`, an ambiguous one-row verb exits 2 with candidates and exact calls, and `@N` works next.
-- **key-parity**: every act in both the picker table and the web key table has the same letter.
-- **at-forms-only-in-references**: `REF assert note "see @2"` stores `see @2`; `@2-4 assert tag x` tags exactly rows 2, 3 and 4; in a harness tool shell without a terminal, `@N` resolves against the calling session's last list.
-- **footer-handle**: every list, search and aggregate printed for a person carries its `query:<hash>` in the footer, and `result:<id>` when kept; `@last read` reproduces the same rows.
-- **next-continues**: `next` after a page prints the following page with continued numbers; after a rebuild it answers `stale_cursor`.
-- **write-undo**: every write verb prints its undo command, and running it restores the previous current state.
-- **output-gallery**: every command's terminal output on Morrow at widths 60, 80, 120 and 200, with `NO_COLOR=1` and piped, is checked on a terminal-cell model: no ANSI in a pipe, no line over the width, no traceback, no exit code outside the table, and colour never changes the text.
-- **exit-code-per-kind**: one invocation per failure kind exits with its table code.
-- **control-characters-inert**: a fixture with `\x1b]0;pwned\x07` in a title and a message renders inert in lists, reads and previews.
-- **long-read-first-screen**: `read` of a 10,000-message session shows its first screen within the read budget, and quitting the pager ends the command within 100 ms with no read left running.

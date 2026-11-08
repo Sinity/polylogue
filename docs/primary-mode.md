@@ -197,20 +197,7 @@ Where a deployment manages Polylogue's configuration (a Nix module option, for e
 
 The Polylogue daemon evaluates queries that mix Polylogue and Sinex data, because it holds the AI text, which Sinex does not index; Sinex callers reach AI text through this route.
 
-- Names are bound from the parsed query with the `pl.` and `sx.` prefixes, never from strings; namespace binding is a law of the shared language in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md).
+- Names are bound from the parsed query with the `pl.` and `sx.` prefixes, never from strings; namespace binding is defined by the shared language in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md).
 - Sinex parts are compiled for and run by Sinex through its API; results join on references and time.
 - Every answer reports the positions it read in each product and their lag, so a mixed answer is reproducible and its staleness visible.
 - `sx:` references are a form whose grammar Sinex owns ([references.md#forms](references.md#forms)).
-
-## Laws
-
-- **rebuild-from-stream**: Morrow in primary mode answers as standalone does, and again after a rebuild from the confirmed stream with no provider file present (CI, against a test Sinex stack from devkit).
-- **user-state-rebuilds-from-stream**: every kind of authored record, rebuilt from the confirmed stream alone, reads identically.
-- **outage-degrades-and-recovers**: during a Sinex outage reads answer with their position and lag, capture continues into the spool, an authored write returns `pending`, the verdict is `degraded: sinex blocked` and the notice fires once; on recovery everything is sent with its original write identities and the verdict returns to `healthy`.
-- **write-identity**: a retry reuses identity and contents; a value changing A → B → A sends three writes and leaves A live; reading order never comes from the host clock.
-- **hosts-converge**: two hosts sending the same session converge to one set of facts by stable keys; concurrent authored edits on two hosts appear as two heads.
-- **cutover-compares-and-sets-aside**: `sinex cutover --dry-run` on Morrow (standalone, with an import whose file is gone and authored notes) reports equality by natural keys; the full act yields a primary archive with the same answers and the standalone archive set aside, not deleted.
-- **no-bytes-outside-sinex**: a primary-mode host stores no source byte outside Sinex's store root (filesystem check after converging).
-- **lifecycle-reaches-index**: on a test Sinex stack, archiving a session's readings removes the session from answers, restoring brings it back, and tombstoning leaves its reference marked tombstoned; a note, judgment and page slot on the session survive a parser-upgrade replay of it, still resolving to the new readings.
-- **user-state-moves**: an archive with assertions, revisions, a withdrawal, a pass, a variant and a page, written out with `read --to DIR` and imported into a fresh archive with the same inputs, gives identical reads; importing twice changes nothing.
-- **mixed-answer-reports-positions**: a mixed query's answer names the position it read in each product and their lag.

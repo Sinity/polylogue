@@ -315,7 +315,6 @@ fn malformed_request_ids_are_not_echoed_in_error_responses() {
     }
 }
 
-/// law: mcp-instructions-are-the-card
 #[test]
 fn server_instructions_are_the_card_naming_every_tool() {
     let Reply::Message(info) = Session::default().prepare(initialize()) else {
@@ -363,7 +362,6 @@ fn errors_show_archived_controls_as_text() {
     assert!(text.contains("\\x1b]52;c;YQ==\\x07"));
 }
 
-/// law: mcp-tool-access-is-uniform
 #[test]
 fn tool_annotations_follow_the_command_table() {
     let tools = tools();
@@ -388,7 +386,6 @@ fn tool_annotations_follow_the_command_table() {
     }
 }
 
-/// law: mcp-covers-command-table
 #[test]
 fn every_tool_operation_is_reachable_from_exactly_one_tool() {
     let tools = tools();
@@ -422,7 +419,6 @@ fn every_tool_operation_is_reachable_from_exactly_one_tool() {
     }
 }
 
-/// law: mcp-arguments-are-listed-or-explained
 #[test]
 fn every_argument_is_in_its_tool_schema_or_unlisted() {
     let tools = tools();
@@ -454,7 +450,6 @@ fn every_argument_is_in_its_tool_schema_or_unlisted() {
     }
 }
 
-/// law: mcp-arguments-are-listed-or-explained
 #[test]
 fn typed_operations_declare_every_field_of_their_arguments() {
     fn fields(schema: &Value, root: &Value, names: &mut std::collections::BTreeSet<String>) {
@@ -488,7 +483,6 @@ fn typed_operations_declare_every_field_of_their_arguments() {
     }
 }
 
-/// law: mcp-operation-dispatch
 #[test]
 fn a_tool_call_names_one_of_its_operations() {
     let temp = tempfile::tempdir().unwrap();

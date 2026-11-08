@@ -1398,7 +1398,7 @@ mod composition;
 mod language;
 mod measures;
 
-mod shared_laws;
+mod shared_cases;
 
 mod reported_timing;
 

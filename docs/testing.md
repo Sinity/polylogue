@@ -1,6 +1,6 @@
 # Testing
 
-How Polylogue is tested: the test archives (Morrow and independent goldens), the test layout, law suites and how laws map to tests, fault points and crash tests, end-to-end scenarios, fuzzing, benchmarks and their figures, and the row dictionary.
+How Polylogue is tested: the test archives (Morrow and independent goldens), the test layout, the properties tested, fault points and crash tests, end-to-end scenarios, fuzzing, benchmarks and their figures, and the row dictionary.
 
 The commands that run all of this, and the standard every test is held to, are in [AGENTS.md](../AGENTS.md). The parser contract that goldens check is [archive.md#parsing](archive.md#parsing).
 
@@ -12,7 +12,7 @@ Tests use synthetic data only: the Morrow archive and hand-written golden cases.
 
 Morrow is a synthetic archive: a week of work (2026-10-01 to 10-07) on a fictional Rust library, in Claude Code, Codex, ChatGPT and claude.ai, plus a Claude-Code-only parents set, a live set, hook spools and an annotation session. It lives in `examples/morrow/`; `FACTS.md` there owns its message identities, counting rules and cost interpretation, and `expected/` holds the query examples with their answers. Paths inside it use the synthetic home `/home/op`.
 
-- `polylogue-testkit` lays Morrow out in a temporary home where each tool writes, runs the real engine over it and imports its exports, so tests read an archive built by the real parsers and writer: `Morrow::build(Set::Main)`, with `view()` and `stored_bytes()` giving what laws compare.
+- `polylogue-testkit` lays Morrow out in a temporary home where each tool writes, runs the real engine over it and imports its exports, so tests read an archive built by the real parsers and writer: `Morrow::build(Set::Main)`, with `view()` and `stored_bytes()` giving what tests compare.
 - The files are edited directly; nothing regenerates them. A new behaviour that Morrow cannot show is added to Morrow, with its facts in `FACTS.md`, rather than to a one-off fixture.
 - The same archive backs the tour in the [README](../README.md) (`polylogue demo tour DIR`), whose answers a public CLI test checks.
 
@@ -29,19 +29,26 @@ A golden is the expected parse of an input, written by hand from knowledge of th
 
 **Waiting, never timing.** No test asserts elapsed time. A test of a deadline makes the peer stay silent until the client gives up, so only the deadline can end the wait; other tests wait for an event (a reply, a file, a closed connection). A test that waits for the daemon to read a change waits until `status` shows it up to date. nextest's slow timeout ends a hung test.
 
-## Law suites
+## Properties tested
 
-Every area page ends with its laws. Each law has a stable key unique in its page, and its full name is `<page>/<key>`, for example `operations/open-never-deletes`.
+A test sits in the module of the area that owns its behaviour. The query language's shared tests live in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/query-language/README.md) and run against Polylogue's catalog; the signal evaluator's conformance cases are in common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) and run against Polylogue's occurrence keys.
 
-- **A test that checks a law carries the key in its name,** in snake case: `open_never_deletes`, with a suffix when several tests check one law. Finding a law's tests is a name search; no table maps them by hand.
-- A law's tests sit in the module of the area that owns it.
-- **Shared laws live with the shared code:** the query-language law suite is in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md) and runs against Polylogue's catalog; the signal evaluator's conformance cases are in common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) and run against Polylogue's occurrence keys.
-- **Coverage is a report:** `cargo xtask laws` (devkit) lists each law key with the tests whose names carry it, and the laws that have none. It fails nothing; a law without a test is a gap for the area's owner.
-- Cross-cutting laws (crash states, parity across CLI, socket, HTTP and MCP) are in [architecture.md](architecture.md) and [interfaces.md](interfaces.md).
+These properties hold for every input; the tests named are where to look when one changes:
+
+- Appending to an input in steps gives the same rows as reading it whole (`append_equivalence`).
+- The order in which inputs arrive does not change the result (`order_independence`, `session_facts_do_not_depend_on_arrival_order`).
+- A crash at every point between append, sync, commit and truncate leaves only a state the ordinary open path resumes, with no repair step (`crash_leaves_only_a_tail_at_each_product_commit_boundary`).
+- Rebuilding the index from stored bytes gives the same answers (`a_deliberate_index_rebuild_keeps_authored_rows_and_vectors`; in primary mode `the_morrow_example_rebuilt_from_sinex_gives_the_same_answers`).
+- An export imported into a fresh archive gives the same sessions, IDs and user state (`an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_state`, `read_to_bundle_import_round_trip_preserves_structured_values_and_unknown_tool_fields`).
+- The current revision of an authored record is a pure function of its revision links (`currency`, `assertion_revision_currency`).
+- Budgeted pages concatenate to the whole read (`fused_pages_concatenate_to_the_whole_answer`).
+- Archived text renders inert in every format (`archived_html_and_dangerous_urls_stay_inert`, `archive_quotes_escape_roles_and_controls_without_changing_source`).
+- Writes between pages neither repeat nor skip rows, and a rebuild retires the cursor (`writes_between_pages_neither_refuse_nor_repeat_rows`).
+- Not yet tested: re-parsing the same bytes twice yields identical rows; the same question gives identical answers over CLI, socket, HTTP and MCP; every writer-kept counter equals the count it stands for (plnext-s5oe.14).
 
 ## Fault points and crash tests
 
-Crash tests stop the writer at every point between append, sync, commit and truncate, and check that the next open resumes each state a crash can leave, losing only the uncommitted group (the law is [architecture.md#durability](architecture.md#durability)'s).
+Crash tests stop the writer at every point between append, sync, commit and truncate, and check that the next open resumes each state a crash can leave, losing only the uncommitted group ([architecture.md#durability](architecture.md#durability) owns the states).
 
 The store and engine have a `faults` feature that adds a fault registry. It starts empty: only a test's own call to arm a named point activates it, in that process. Points sit at write steps (between commits, inside a group, during migration and catch-up) and at readers whose deadlines a test exercises. Shipped builds never enable the feature. Tests that check durability use a real filesystem, not a memory one.
 
@@ -74,12 +81,3 @@ The whole suite runs in under 10 minutes, measured per stage (compile, setup, ru
 ## Row dictionary
 
 `crates/store/src/encoding/rows.dict` compresses index rows. It is generated only from the synthetic samples in `crates/store/examples/row_dictionary/samples.rs`, and a check confirms that it reproduces from them. Changing it is an index format change. Archive records never depend on it.
-
-## Laws
-
-- **goldens-independent**: no golden file is written by the code it checks; regenerating parser output never changes a golden.
-- **tests-use-synthetic-data**: no test opens a path outside its temporary home and the repository.
-- **no-elapsed-time-assertions**: no test asserts on elapsed time.
-- **fault-registry-empty-by-default**: with the `faults` feature built in and no point armed, every test behaves as in a build without it.
-- **fuzz-corpus-replayed**: every fuzz target's corpus replays in the ordinary test run.
-- **row-dictionary-reproduces**: the committed row dictionary equals the one generated from the synthetic samples.

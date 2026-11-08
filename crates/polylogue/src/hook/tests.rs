@@ -520,7 +520,6 @@ fn newer_events_are_registered_only_for_a_confirmed_version() {
     assert!(removed["hooks"].as_object().unwrap().is_empty());
 }
 
-/// law: pl.live.never-mid-tool
 /// Pings and notices are claimed only after a tool result or at a prompt,
 /// never before a tool runs.
 #[test]
