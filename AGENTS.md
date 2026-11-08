@@ -104,13 +104,12 @@ Put personal settings (`CARGO_TARGET_DIR`, job counts) in a git-ignored
 
 | Command | Does |
 |---|---|
-| `cargo xtask check` | formatting, crate boundaries, both Clippy configurations, standalone tests and Sinex client/primary-mode tests |
+| `cargo xtask check` | formatting, crate boundaries, both Clippy configurations and every test |
 | `cargo xtask fast` | formatting, boundaries and clippy, without tests |
-| `cargo xtask test -p <crate> -E 'test(<name>)'` | selected tests under nextest |
+| `cargo xtask test -p <crate> -E 'test(<name>)'` | a type check of every target, then the selected tests under nextest |
 | `cargo xtask test --changed` | tests selected through changed packages and their dependents |
 | `cargo xtask test --no-run` | build every test binary without running tests |
 | `cargo xtask warm` | build every test binary and both Clippy configurations without running tests: the warm target new checkouts copy |
-| `cargo xtask sinex-client` | Sinex client and primary-mode application tests |
 | `cargo xtask scenarios` | end-to-end tests of the real daemon, CLI and MCP server |
 | `cargo xtask bench ...` | corpus builds and interactive read measurements |
 | `cargo xtask status`, `cargo xtask history ...` | what failed in this checkout's last run, and the recorded run history |
@@ -118,13 +117,17 @@ Put personal settings (`CARGO_TARGET_DIR`, job counts) in a git-ignored
 | `nix flake check` | locked package, source, module and VM checks described in [development](docs/development.md) |
 | `nix build` | the package |
 
-Default tests build the standalone workspace with the fault-test features;
-Sinex client tests use a separate primary-mode build. `test`, `scenarios` and
-`check` reuse these artifacts. Package selectors limit Cargo's test build;
-test filters select execution within that build. Changed-package selection
-enables primary mode when its dependencies are affected; the landing check
-always runs both configurations. Every xtask
-run is recorded in devkit's history database.
+Every command builds one dependency graph: the whole workspace with the Sinex
+client and the fault-test features. Shared dependencies declare their
+features once, in the root manifest's `[workspace.dependencies]`, and crates
+add none of their own (dev-dependencies may add test-only ones), because
+Cargo builds a crate again for each feature set it sees, and everything above
+it. So Clippy, `check`, `test`, `scenarios`, `warm` and every focused run reuse
+the same units. Selectors (`-p`, `--exclude`, `-E`, `--changed`) choose which
+tests run, never what is built, and feature flags are refused. Tests run in
+the primary-mode build; the standalone Clippy pass compiles the code that the
+Sinex client replaces. Every xtask run is recorded in devkit's history
+database.
 
 Designed and not built yet: `cargo xtask compile` and `coverage`.
 
