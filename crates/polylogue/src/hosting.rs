@@ -738,7 +738,16 @@ impl HostedStdio {
                     lock(&shared.0).absorb(message);
                     shared.1.notify_all();
                 }
-                lock(&shared.0).closed = true;
+                let mut state = lock(&shared.0);
+                state.closed = true;
+                // These prompts never left this connection's local queue.
+                // Already-written prompts keep their reported outcome.
+                for (_, delivery) in std::mem::take(&mut state.queued) {
+                    state.report(
+                        delivery.as_deref(),
+                        Err("the host connection closed before the queued prompt was sent".into()),
+                    );
+                }
                 shared.1.notify_all();
             })?;
         Ok(Self { state })
