@@ -167,6 +167,8 @@ fn regular_local_files_keep_exact_binary_bytes_empty_files_and_descriptor_facts(
     }
 }
 
+const FIFO_CHILD_VERIFIED: &str = "POLYLOGUE_FIFO_CAPTURE_ASSERTIONS_COMPLETE";
+
 #[test]
 fn fifo_local_reference_child() {
     let Some(path) = std::env::var_os("POLYLOGUE_LOCAL_FIFO") else {
@@ -211,6 +213,7 @@ fn fifo_local_reference_child() {
             .unwrap()
             .contains("not a regular file")
     );
+    println!("\n{FIFO_CHILD_VERIFIED}");
 }
 
 #[test]
@@ -261,5 +264,26 @@ fn a_local_fifo_without_a_writer_is_reported_unreadable() {
         "FIFO child failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| *line == "running 1 test")
+            .count(),
+        1,
+        "FIFO child: {output:?}"
+    );
+    assert!(
+        stdout.contains("test result: ok. 1 passed; 0 failed; 0 ignored;"),
+        "FIFO child: {output:?}"
+    );
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| *line == FIFO_CHILD_VERIFIED)
+            .count(),
+        1,
+        "FIFO child: {output:?}"
     );
 }
