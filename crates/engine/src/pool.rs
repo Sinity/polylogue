@@ -495,7 +495,7 @@ pub(crate) fn run(
         && !job.parser_deferred
         && (job.start == 0 || out.parser_state.is_some())
     {
-        let chain = job.parser_chain.or_else(|| match job.change {
+        let chain = job.parser_chain.or(match job.change {
             Change::Reparse { chain } => Some(chain),
             _ => None,
         });
