@@ -315,7 +315,7 @@ fn failed_catalog_transaction_retries_the_same_committed_definition_delta() {
                     UserWrite::SaveQuery {
                         name: name.into(),
                         text: "sessions | group by origin | count".into(),
-                        denominator: None,
+                        denominator: Some("sessions".into()),
                     },
                 ),
                 crate::daemon::service::authored_preparation(),

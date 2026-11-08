@@ -193,7 +193,7 @@ fn authored_deltas_follow_only_affected_families_and_setting_keys() {
             UserWrite::SaveQuery {
                 name: name.into(),
                 text: "sessions | group by origin | count".into(),
-                denominator: None,
+                denominator: Some("sessions".into()),
             },
         );
     }
@@ -279,7 +279,7 @@ fn authored_deltas_follow_only_affected_families_and_setting_keys() {
         UserWrite::SaveQuery {
             name: "alpha".into(),
             text: "messages | group by role | count".into(),
-            denominator: None,
+            denominator: Some("messages".into()),
         },
     );
     let delta = reads
