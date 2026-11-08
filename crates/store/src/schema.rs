@@ -36,7 +36,9 @@ pub const INDEX: &str = concat!(
     "\n",
     include_str!("schema/session_cwd.sql"),
     "\n",
-    include_str!("schema/session_items.sql")
+    include_str!("schema/session_items.sql"),
+    "\n",
+    include_str!("schema/version_cleanup.sql")
 );
 #[cfg(test)]
 pub(crate) const QUERY_OBJECTS: &str = concat!(
@@ -90,7 +92,7 @@ impl Migration {
 pub const ARCHIVE_VERSION: u32 = 1 + ARCHIVE_MIGRATIONS.len() as u32;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 5;
+pub const INDEX_VERSION: u32 = 6;
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
 /// after the baseline ("PLG1"). A non-empty file without it was written by an
@@ -205,6 +207,11 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         if (1..=4).contains(&found) {
             tx.execute_batch(crate::parser_context::SCHEMA)?;
             tx.execute_batch("ALTER TABLE parse_state ADD COLUMN stopped_attempt BLOB CHECK(stopped_attempt IS NULL OR status IN ('refused','failed'));")?;
+            set_version(&tx, INDEX_VERSION)?;
+        }
+        if (1..=5).contains(&found) {
+            tx.execute_batch(include_str!("schema/index_6.sql"))?;
+            tx.execute_batch(include_str!("schema/version_cleanup.sql"))?;
             set_version(&tx, INDEX_VERSION)?;
         }
         let matches = (1..=INDEX_VERSION).contains(&found)

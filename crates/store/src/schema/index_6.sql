@@ -1,0 +1,16 @@
+DROP TRIGGER message_source_removed;
+DROP TRIGGER message_source_changed;
+DROP TRIGGER document_source_removed;
+DROP TRIGGER document_source_changed;
+DROP TRIGGER event_source_removed;
+DROP TRIGGER event_source_changed;
+DROP TRIGGER link_source_removed;
+DROP TRIGGER link_source_changed;
+DROP TRIGGER block_removed;
+DROP TRIGGER block_changed;
+DROP TRIGGER document_block_removed;
+DROP TRIGGER document_block_changed;
+DROP TRIGGER message_version_text_removed;
+DROP TRIGGER message_version_text_changed;
+DROP TRIGGER document_version_text_removed;
+DROP TRIGGER document_version_text_changed;

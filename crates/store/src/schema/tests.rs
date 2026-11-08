@@ -18,7 +18,7 @@ fn every_schema_applies_to_an_empty_database() {
 #[test]
 fn every_database_starts_at_its_current_version() {
     assert_eq!(ARCHIVE_VERSION, 4);
-    assert_eq!(INDEX_VERSION, 5);
+    assert_eq!(INDEX_VERSION, 6);
     assert_eq!(ARCHIVE_MIGRATIONS.len(), 3);
     for (create, expected) in [
         (
@@ -601,3 +601,5 @@ fn embeddings_revision_migration_preserves_paid_rows_and_rejections() {
         .unwrap();
     assert_eq!(revision("synthetic/1"), 4);
 }
+
+mod context_cleanup;
