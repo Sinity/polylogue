@@ -409,3 +409,96 @@ fn native_background_notification_keeps_reported_clock_precision_or_unknown() {
 }
 
 mod hook_provenance;
+
+#[test]
+fn a_response_reopens_after_more_than_the_hot_cache_window() {
+    let mut records = vec![assistant(
+        "a1",
+        "response-a",
+        json!({"type":"text","text":"first"}),
+    )];
+    for name in ["b", "c", "d", "e", "f"] {
+        records.push(assistant(name, name, json!({"type":"text","text":name})));
+    }
+    records.push(assistant(
+        "a2",
+        "response-a",
+        json!({"type":"text","text":"last"}),
+    ));
+    let bytes = jsonl(&records);
+    let mut state = ParserState::default();
+    let whole = final_messages(&[run(&main_file("s1"), &mut state, &bytes, 0).unwrap()]);
+    assert_eq!(whole.len(), 6);
+    assert_eq!(
+        whole
+            .iter()
+            .find(|m| m.id.native().as_str() == "a1")
+            .unwrap()
+            .text(),
+        "first\n\nlast"
+    );
+    let parser = Parse::Lines(Box::new(main_file("s1")));
+    for cut in 0..=bytes.len() {
+        let context = polylogue_model::parser_context::Handle::default();
+        let (first, state) = parser.step(None, &bytes[..cut], 0, &context).unwrap();
+        let used = first.consumed as usize;
+        let state = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        let (second, _) = parser
+            .step(Some(&state), &bytes[used..], used as u64, &context)
+            .unwrap();
+        assert_eq!(final_messages(&[first, second]), whole, "cut {cut}");
+    }
+}
+
+#[test]
+fn a_child_of_an_evicted_record_alias_keeps_its_canonical_parent() {
+    let mut records = vec![
+        assistant("a1", "response-a", json!({"type":"text","text":"first"})),
+        assistant("a2", "response-a", json!({"type":"text","text":"last"})),
+    ];
+    for n in 0..=ALIASES {
+        records.push(json!({"type":"progress","uuid":format!("progress-{n}"),"parentUuid":"a1","sessionId":"s1","data":{"type":"bash_progress"}}));
+    }
+    records.push(json!({"type":"user","uuid":"child","parentUuid":"a2","sessionId":"s1","message":{"role":"user","content":"follow-up"}}));
+    let mut state = ParserState::default();
+    let messages =
+        final_messages(&[run(&main_file("s1"), &mut state, &jsonl(&records), 0).unwrap()]);
+    assert_eq!(
+        messages
+            .iter()
+            .find(|m| m.id.native().as_str() == "child")
+            .unwrap()
+            .parent,
+        message_id("a1")
+    );
+}
+
+#[test]
+fn a_context_backend_error_rejects_the_entire_parse_before_rows_are_published() {
+    struct Unavailable;
+    impl polylogue_model::parser_context::Context for Unavailable {
+        fn get(
+            &mut self,
+            _: &polylogue_model::parser_context::Key,
+        ) -> Result<Option<polylogue_model::parser_context::Value>, String> {
+            Err("unavailable selected context".into())
+        }
+        fn put(
+            &mut self,
+            _: polylogue_model::parser_context::Key,
+            _: polylogue_model::parser_context::Value,
+        ) -> Result<(), String> {
+            Err("unavailable selected context".into())
+        }
+    }
+    let parser = Parse::Lines(Box::new(main_file("s1")));
+    let context = polylogue_model::parser_context::Handle::new(Unavailable);
+    let bytes = jsonl(&[assistant(
+        "a1",
+        "response-a",
+        json!({"type":"text","text":"first"}),
+    )]);
+    assert!(
+        matches!(parser.step(None,&bytes,0,&context),Err(crate::ParseError::Context(error)) if error=="unavailable selected context")
+    );
+}

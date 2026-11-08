@@ -29,6 +29,7 @@ pub mod injection;
 pub mod kept;
 pub mod live;
 pub mod native;
+pub mod parser_context;
 pub use injection::{HookContextEmission, HookFieldClaim};
 mod message;
 pub mod price;

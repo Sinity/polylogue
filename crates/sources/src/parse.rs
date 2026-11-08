@@ -19,6 +19,11 @@ pub trait Parser {
     /// most a few hundred KB on the real archive).
     type ParserState: Default + Clone + Serialize + DeserializeOwned;
 
+    fn bind_context(&self, _: &mut Self::ParserState, _: polylogue_model::parser_context::Handle) {}
+    fn check_context(&self, _: &Self::ParserState) -> Result<(), ParseError> {
+        Ok(())
+    }
+
     /// The kind name the record counts use for a record (`user`, `progress`).
     fn kind(&self, value: &Json) -> String;
 
@@ -62,6 +67,8 @@ pub enum ParseError {
     Counts(#[from] CountMismatch),
     #[error("carried state is unreadable: {0}")]
     ParserState(serde_json::Error),
+    #[error("parser context: {0}")]
+    Context(String),
 }
 
 /// Parses the complete records in `bytes`, which start at `base` in the
@@ -100,6 +107,7 @@ pub fn run<P: Parser>(
         }
     }
     parser.flush(parser_state, &mut output);
+    parser.check_context(parser_state)?;
     let counts = sink.finish()?;
     Ok(Step {
         output,
@@ -118,6 +126,7 @@ pub trait StepParser: Send {
         parser_state: Option<&Json>,
         bytes: &[u8],
         base: u64,
+        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, Json), ParseError>;
 }
 
@@ -127,12 +136,15 @@ impl<P: Parser + Send> StepParser for P {
         parser_state: Option<&Json>,
         bytes: &[u8],
         base: u64,
+        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, Json), ParseError> {
         let mut state = match parser_state {
             Some(c) => P::ParserState::deserialize(c).map_err(ParseError::ParserState)?,
             None => P::ParserState::default(),
         };
+        self.bind_context(&mut state, context.clone());
         let step = run(self, &mut state, bytes, base)?;
+        context.check().map_err(ParseError::Context)?;
         let parser_state = serde_json::to_value(&state).map_err(ParseError::ParserState)?;
         Ok((step, parser_state))
     }
@@ -210,12 +222,13 @@ impl Parse {
         parser_state: Option<&Json>,
         bytes: &[u8],
         base: u64,
+        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, Json), ParseError> {
         match self {
             Parse::Export(_) => Err(ParseError::Export),
-            Parse::Lines(p) => p.step(parser_state, bytes, base),
+            Parse::Lines(p) => p.step(parser_state, bytes, base, context),
             Parse::CaptureLog(_) => {
-                let (mut steps, parser_state) = self.steps(parser_state, bytes, base)?;
+                let (mut steps, parser_state) = self.steps(parser_state, bytes, base, context)?;
                 if steps.len() != 1 {
                     return Err(ParseError::CaptureLog(
                         "use steps for a range holding several captures".into(),
@@ -239,11 +252,12 @@ impl Parse {
         parser_state: Option<&Json>,
         bytes: &[u8],
         base: u64,
+        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Vec<Step>, Json), ParseError> {
         match self {
             Parse::CaptureLog(parser) => Ok((capture_steps(&**parser, bytes, base)?, Json::Null)),
             _ => self
-                .step(parser_state, bytes, base)
+                .step(parser_state, bytes, base, context)
                 .map(|(step, parser_state)| (vec![step], parser_state)),
         }
     }

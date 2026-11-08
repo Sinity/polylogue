@@ -1,0 +1,645 @@
+{
+  "kind": {
+    "name": "polylogue.parse_progress",
+    "version": 5
+  },
+  "declaring_producer": "polylogue",
+  "payload_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "record_key": {
+        "type": "string",
+        "minLength": 1
+      },
+      "record": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Product",
+        "description": "Complete parser and authored facts; rebuilding the cache requires no parsing.",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "product": {
+                "type": "string",
+                "const": "parse_progress"
+              },
+              "reading": {
+                "$ref": "#/$defs/Reading"
+              },
+              "counts": {
+                "$ref": "#/$defs/RecordCounts"
+              },
+              "reset": {
+                "type": "boolean"
+              },
+              "comparison": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Comparison"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "checkpoint": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ParserCheckpoint"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "semantic_event_ids": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": false,
+                "patternProperties": {
+                  "^\\d+$": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "required": [
+              "product",
+              "reading",
+              "counts",
+              "reset"
+            ]
+          }
+        ]
+      },
+      "text": {
+        "type": "string"
+      },
+      "query": {
+        "type": "string"
+      },
+      "rows": {},
+      "refs": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "at": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "started": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "record_key",
+      "record"
+    ],
+    "$defs": {
+      "Comparison": {
+        "description": "The row-dump records whose comparison hashes commit with this step.",
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "integer",
+                    "format": "uint8",
+                    "minimum": 0,
+                    "maximum": 255
+                  }
+                }
+              ],
+              "minItems": 3,
+              "maxItems": 3
+            }
+          },
+          "schema": true,
+          "from": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "length": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "rows",
+          "from",
+          "length"
+        ]
+      },
+      "ParserCheckpoint": {
+        "description": "Native parser continuation at one exact admitted cursor. This is not source,\nrevision or receipt evidence; the containing reading supplies that identity.",
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "reading_version": {
+            "type": "string"
+          },
+          "parsed_upto": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "parser_state": {
+            "description": "None is an explicitly stateless parser; an absent envelope is unknown."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "reading_version",
+          "parsed_upto"
+        ]
+      },
+      "Reading": {
+        "description": "The parser reading and exact source chain that produced a fact.",
+        "type": "object",
+        "properties": {
+          "source_length": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "delivery": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ExportDelivery"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "input": {
+            "$ref": "#/$defs/InputKey"
+          },
+          "chain": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "reading_version": {
+            "type": "string"
+          },
+          "order_from": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "repeats_whole_conversations": {
+            "type": "boolean"
+          },
+          "start": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "parsed_upto": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "progress": {
+            "$ref": "#/$defs/StepProgress"
+          }
+        },
+        "required": [
+          "input",
+          "chain",
+          "reading_version",
+          "repeats_whole_conversations",
+          "start",
+          "parsed_upto",
+          "progress"
+        ]
+      },
+      "ExportDelivery": {
+        "description": "One immutable callback body and its position in the delivery prefix.\n`ordinal` counts actual callbacks, independently of message display order or\nraw item position. The caller computes body_hash from the delivered semantics.",
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "ordinal": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "source": {
+            "$ref": "#/$defs/ExportDeliverySource"
+          },
+          "body_hash": {
+            "$ref": "#/$defs/BlobHash"
+          },
+          "previous_prefix": {
+            "$ref": "#/$defs/BlobHash"
+          },
+          "prefix_hash": {
+            "$ref": "#/$defs/BlobHash"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "ordinal",
+          "source",
+          "body_hash",
+          "previous_prefix",
+          "prefix_hash"
+        ]
+      },
+      "BlobHash": {
+        "type": "string"
+      },
+      "ExportDeliverySource": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "container_header"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "item"
+              },
+              "start": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "end": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "start",
+              "end"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "complete"
+              },
+              "length": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "item_count": {
+                "description": "Actual item callbacks, excluding the optional container header.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "delivery_count": {
+                "description": "Preceding header and item callbacks; equal to the final ordinal.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "length",
+              "item_count",
+              "delivery_count"
+            ]
+          }
+        ]
+      },
+      "InputKey": {
+        "description": "The input a batch belongs to, as `archive.db` names it.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "`archive.db` input id: a location's stable id, or the BLAKE3 of an\nimported file's bytes.",
+            "type": "string"
+          },
+          "format": {
+            "description": "The origin that parses it (`claude-code`).",
+            "type": "string"
+          },
+          "arrival_rank": {
+            "description": "How faithful the arrival is, for choosing between versions of a\nmessage: 0 live file, 1 spool, 2 import.",
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0,
+            "maximum": 255
+          }
+        },
+        "required": [
+          "id",
+          "format",
+          "arrival_rank"
+        ]
+      },
+      "RecordCounts": {
+        "description": "Outcomes and derived wire observations of one parse step. Outcome counts\nsum to its records; the writer refuses a step whose counts do not.",
+        "type": "object",
+        "properties": {
+          "wire_shapes": {
+            "description": "Derived observations travel with scratch steps through the writer boundary.",
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/$defs/WireShape"
+            }
+          },
+          "records": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "used": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "skipped": {
+            "description": "Keyed by `record kind: reason`.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "unreadable": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "unread_fields": {
+            "description": "Wire leaves neither read nor retained in parsed rows, by `record kind.path`. Not a\nfailure: it shows where a parser falls behind its format.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          }
+        },
+        "required": [
+          "records",
+          "used",
+          "skipped",
+          "unreadable",
+          "unread_fields"
+        ]
+      },
+      "StepProgress": {
+        "description": "How far one parse step read the chain's stored bytes, or why it stopped.",
+        "oneOf": [
+          {
+            "description": "The step stopped before the end of the stored bytes; more remain.",
+            "type": "string",
+            "const": "partway"
+          },
+          {
+            "description": "The step parsed through the end of the stored bytes. An unconsumed\nsuffix is a record still being written and waits for growth.",
+            "type": "string",
+            "const": "at_end"
+          },
+          {
+            "description": "The origin has no parser yet: the step's bytes are collected and kept,\nnot parsed, through the end of the stored bytes or not.",
+            "type": "object",
+            "properties": {
+              "no_parser_yet": {
+                "type": "object",
+                "properties": {
+                  "at_end": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "at_end"
+                ]
+              }
+            },
+            "required": [
+              "no_parser_yet"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "description": "The parser declined the bytes as a whole, for the stated reason; the\nstep carries no rows.",
+            "type": "object",
+            "properties": {
+              "refused": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason"
+                ]
+              }
+            },
+            "required": [
+              "refused"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "description": "The parser failed at the step's start, with its error; the step\ncarries no rows and the cursor stays where it was.",
+            "type": "object",
+            "properties": {
+              "failed": {
+                "type": "object",
+                "properties": {
+                  "error": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error"
+                ]
+              }
+            },
+            "required": [
+              "failed"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "WireShape": {
+        "description": "Derived wire observations contain shape and declared discriminator sets,\nnever scalar bodies from the input. The writer gives these their receipt time.",
+        "type": "object",
+        "properties": {
+          "record_kind": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "types": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "expected": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "dynamic_map": {
+            "type": "boolean"
+          },
+          "known_kinds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unknown_kind_count": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "unused_count": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "table": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unknown_table_count": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "record_kind",
+          "path",
+          "types",
+          "expected",
+          "dynamic_map",
+          "known_kinds",
+          "unknown_kind_count",
+          "unused_count",
+          "unknown_table_count"
+        ]
+      }
+    }
+  },
+  "normalization": "json",
+  "key_rule": {
+    "rule": "fields",
+    "fields": [
+      "record_key"
+    ]
+  },
+  "replace_rule": "replace_when_newer",
+  "time_rule": {
+    "rule": "first_present",
+    "fields": [
+      "at",
+      "started"
+    ],
+    "quality": "intrinsic"
+  },
+  "field_hints": [
+    {
+      "field": "/record",
+      "class": "guarded"
+    },
+    {
+      "field": "/text",
+      "class": "guarded"
+    },
+    {
+      "field": "/query",
+      "class": "guarded"
+    },
+    {
+      "field": "/rows",
+      "class": "guarded"
+    },
+    {
+      "field": "/refs",
+      "class": "guarded"
+    }
+  ],
+  "removed_rule": {
+    "rule": "never"
+  },
+  "keep_known": [],
+  "owned_blobs": [],
+  "search": "none"
+}

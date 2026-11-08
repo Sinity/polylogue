@@ -3,6 +3,7 @@
 //! Native fact identity remains the captured kind, definition and payload digest.
 //! The same structured-query conversion also owns the numbered archive upgrade.
 use super::{Product, decode};
+mod progress_v5;
 use crate::{Error, Result};
 use polylogue_model::query_objects::QueryObject;
 use serde_json::Value;
@@ -49,6 +50,12 @@ pub(crate) fn decode_source(
             ));
         }
         return decode(&kind.name, payload);
+    }
+    let progress_v5 = progress_v5::declaration();
+    if *kind == progress_v5.kind && definition_hash == progress_v5::definition_hash() {
+        // Its unchanged fields have the current typed representation. Absence
+        // of stopped_attempt stays unrecorded, never an inferred old attempt.
+        return progress_v5::project(payload);
     }
     if !known_historical_definition(kind, definition_hash) {
         return Err(Error::Invalid(format!(

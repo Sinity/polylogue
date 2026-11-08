@@ -395,6 +395,7 @@ fn apply_rows(
         },
         p,
     )?;
+    crate::parser_context::apply(tx, input_pk, chain, p)?;
     rows.write_parse_state(b, p)?;
     Ok(written)
 }

@@ -60,7 +60,7 @@ impl MessageSelection<'_, '_> {
     }
 
     pub fn message_key(&self, id: &polylogue_model::MessageId) -> Result<Option<i64>> {
-        let id = id.to_string();
+        let id = crate::parser_context::canonical_message(self.reader.conn()?, id)?.to_string();
         if let Some(keys) = &self.with_parents {
             return Ok(keys
                 .iter()

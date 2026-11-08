@@ -220,7 +220,7 @@ fn seed_restart(dir: &Path) {
         length += bytes.len() as u64;
         let (steps, _) = polylogue_sources::codex::database::open(&source)
             .unwrap()
-            .steps(None, &bytes, from)
+            .steps(None, &bytes, from, &Default::default())
             .unwrap();
         let mut parse: Vec<_> = steps
             .into_iter()

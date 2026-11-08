@@ -18,11 +18,12 @@ impl StepParser for Together {
         state: Option<&polylogue_model::Json>,
         bytes: &[u8],
         base: u64,
+        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, polylogue_model::Json), ParseError> {
         if STARTED.fetch_add(1, Ordering::SeqCst) < 2 {
             TOGETHER.wait();
         }
-        let result = self.0.step(state, bytes, base);
+        let result = self.0.step(state, bytes, base, context);
         PARSED.lock().unwrap().as_ref().unwrap().send(()).unwrap();
         result
     }
@@ -214,12 +215,13 @@ impl StepParser for LiveParser {
         state: Option<&polylogue_model::Json>,
         bytes: &[u8],
         base: u64,
+        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, polylogue_model::Json), ParseError> {
         if self.second {
             let resume = RESUME_SECOND.lock().unwrap().take().unwrap();
             resume.recv().unwrap();
         }
-        let result = self.parser.step(state, bytes, base);
+        let result = self.parser.step(state, bytes, base, context);
         if !self.second {
             let new = String::from_utf8_lossy(bytes).contains("\"later\"");
             let signal = if new { &LIVE_APPEND } else { &OLD_READING };

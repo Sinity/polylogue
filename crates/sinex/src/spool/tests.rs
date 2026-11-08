@@ -1452,3 +1452,50 @@ fn archive_only_replay_without_admitted_event_position_waits_for_completed_prefi
         .unwrap();
     assert_eq!(bytes, b"bytes");
 }
+
+#[test]
+fn source_five_pending_custody_keeps_opaque_context_and_original_material_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let bytes = b"original source bytes";
+    let mut capture = parsed_capture(bytes, "synthetic parser facts");
+    let Capture::Input(input) = &mut capture else {
+        unreachable!()
+    };
+    let cursor = input.parsed[0].parsed_upto;
+    input.parsed[0].checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
+        input.parsed[0].reading_version.clone(),
+        cursor,
+        Some(
+            serde_json::json!({"_polylogue_context":{"version":1,"base":0,"through":cursor,"entries":[{"key":{"kind":"alias","namespace":"","uuid":"native-later"},"value":{"kind":"alias","target":"codex:message"}}]}}),
+        ),
+    ));
+    let mut frame = capture_frame("old-context", bytes, &capture);
+    if let Ingress::Material { material, .. } = &mut frame {
+        material.source = sinex_protocol::SourceRef {
+            name: "polylogue".into(),
+            version: 5,
+        };
+    }
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    spool
+        .prepare_capture(frame.clone(), bytes.as_slice(), &capture)
+        .unwrap();
+    let raw_frame = fs::read(spool.operation("old-context").unwrap().join("frame.zst")).unwrap();
+    let descriptor = spool.encoded_body("old-context").unwrap().1;
+    drop(spool);
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    assert_eq!(spool.capture("old-context").unwrap(), capture);
+    assert_eq!(spool.decode_frame("old-context").unwrap(), frame);
+    assert_eq!(spool.encoded_body("old-context").unwrap().1, descriptor);
+    assert_eq!(
+        fs::read(spool.operation("old-context").unwrap().join("frame.zst")).unwrap(),
+        raw_frame
+    );
+    spool
+        .prepare_capture(frame, bytes.as_slice(), &capture)
+        .unwrap();
+    assert_eq!(
+        fs::read(spool.operation("old-context").unwrap().join("frame.zst")).unwrap(),
+        raw_frame
+    );
+}

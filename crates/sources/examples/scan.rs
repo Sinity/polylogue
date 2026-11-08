@@ -123,6 +123,7 @@ fn scan_file(origin: &str, path: &Path) -> Scanned {
 fn scan_reader(parser: &Parse, mut reader: impl Read) -> Scanned {
     let mut counts = Counts::default();
     let mut parser_state = None;
+    let context = polylogue_model::parser_context::Handle::default();
     let mut pending = Vec::new();
     let mut base = 0;
     let mut chunk = vec![0; STEP];
@@ -146,7 +147,7 @@ fn scan_reader(parser: &Parse, mut reader: impl Read) -> Scanned {
         if parser.is_document() && n != 0 {
             continue;
         }
-        let (steps, next) = match parser.steps(parser_state.as_ref(), &pending, base) {
+        let (steps, next) = match parser.steps(parser_state.as_ref(), &pending, base, &context) {
             Ok(result) => result,
             Err(error) => {
                 return Scanned {

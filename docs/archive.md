@@ -66,6 +66,12 @@ readers. Older records whose position was never recorded keep an unknown
 position; startup snapshots include them. This metadata does not change the
 query's sealed bytes, semantic hash or frozen dependencies.
 
+### Keyed continuation
+
+Claude response keys and record UUID aliases remain addressable for the whole input chain. Small in-memory windows cache them; Store retains compact mappings and reuses the existing message versions. The mappings and exact parser checkpoint commit in the same transaction. A rejected attempt leaves the admitted view unchanged.
+
+A new reading version reconstructs missing historical context from retained bytes through ordinary re-parse. Once recorded, an ordinary restart resumes directly at that checkpoint. Lost derived context can be rebuilt from the admitted prefix. An absent context record means unrecorded context, not a complete empty map.
+
 ## Format drift
 
 Providers change their formats without notice. Drift is found by field accounting during ordinary parsing, not by inferring and committing schemas.

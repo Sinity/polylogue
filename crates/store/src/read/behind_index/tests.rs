@@ -15,6 +15,8 @@ fn expected(
         input: input.into(),
         current,
         reading_changed: false,
+        stopped_attempt: None,
+        stopped_at_length: false,
         imported: imported.map(|(format, path)| ImportedAs {
             format: format.into(),
             path: path.map(str::to_owned),
@@ -238,4 +240,50 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
         (40, 140, false)
     );
     assert!(!fresh.input_progress("metadata").unwrap().unwrap().waiting);
+}
+
+#[test]
+fn stopped_selection_uses_actual_attempt_even_after_a_full_length_refusal() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let archive = Connection::open(fixture.archive.archive_db()).unwrap();
+    archive.execute_batch("INSERT INTO input VALUES('failed','claude-code'),('refused','claude-code'); INSERT INTO revision VALUES('failed',1,'first',1,10,1),('refused',1,'first',1,10,1);").unwrap();
+    let index = Connection::open(fixture.archive.index_db()).unwrap();
+    let attempt = polylogue_model::batch::StoppedAttempt {
+        executable: polylogue_model::BlobHash::of(b"first actual program"),
+        parser_settings: None,
+    };
+    index.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(71,'failed','claude-code'),(72,'refused','claude-code'); INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto,at_length,reason) VALUES(71,1,'reading','failed',0,10,'original failure'),(72,1,'reading','refused',10,10,'original refusal');").unwrap();
+    index
+        .execute(
+            "UPDATE parse_state SET stopped_attempt=?1 WHERE input_pk=71",
+            [crate::encoding::pack_json(&attempt).unwrap()],
+        )
+        .unwrap();
+    let reads = fixture.reads().unwrap();
+    let select = |attempt| {
+        reads
+            .reader()
+            .unwrap()
+            .chains_behind_index(&[], crate::StoppedChains::ForAttempt(attempt))
+            .unwrap()
+    };
+    let first = select(attempt);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].input, "refused");
+    assert!(first[0].stopped_at_length);
+    assert_eq!(first[0].progress.parsed_upto, 10);
+    assert_eq!(first[0].stopped_attempt, None);
+    index
+        .execute(
+            "UPDATE parse_state SET stopped_attempt=?1 WHERE input_pk=72",
+            [crate::encoding::pack_json(&attempt).unwrap()],
+        )
+        .unwrap();
+    assert!(select(attempt).is_empty());
+    let next = polylogue_model::batch::StoppedAttempt {
+        executable: polylogue_model::BlobHash::of(b"next actual program"),
+        parser_settings: None,
+    };
+    assert_eq!(select(next).len(), 2);
 }

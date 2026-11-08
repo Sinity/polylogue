@@ -18,7 +18,7 @@ fn every_schema_applies_to_an_empty_database() {
 #[test]
 fn every_database_starts_at_its_current_version() {
     assert_eq!(ARCHIVE_VERSION, 4);
-    assert_eq!(INDEX_VERSION, 4);
+    assert_eq!(INDEX_VERSION, 5);
     assert_eq!(ARCHIVE_MIGRATIONS.len(), 3);
     for (create, expected) in [
         (
@@ -447,9 +447,10 @@ fn primary_kept_output_upgrade_preserves_stored_values() {
         "DROP INDEX source_query_commit_seq; ALTER TABLE source_query DROP COLUMN commit_seq;",
     )
     .unwrap();
+    remove_context_schema(&conn);
     set_version(&conn, 2).unwrap();
     ensure_primary_index(&conn).unwrap();
-    assert_eq!(version(&conn).unwrap(), 4);
+    assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
     let body: String = conn
         .query_row(
             "SELECT rows_json FROM source_kept_result WHERE id='old'",
@@ -487,6 +488,9 @@ fn query_position_upgrade_preserves_unknown_original_objects() {
             rusqlite::params!["a".repeat(64), b"original sealed bytes".as_slice()],
         )
         .unwrap();
+        if primary {
+            remove_context_schema(&conn);
+        }
         set_version(&conn, 3).unwrap();
         if primary {
             ensure_primary_index(&conn).unwrap();
@@ -510,7 +514,53 @@ fn query_position_upgrade_preserves_unknown_original_objects() {
         } else {
             ensure_archive(&conn).unwrap();
         }
-        assert_eq!(version(&conn).unwrap(), 4);
+        assert_eq!(
+            version(&conn).unwrap(),
+            if primary {
+                INDEX_VERSION
+            } else {
+                ARCHIVE_VERSION
+            }
+        );
+    }
+}
+
+fn remove_context_schema(conn: &Connection) {
+    conn.execute_batch("DROP TABLE parser_context; DROP TABLE parser_context_state; ALTER TABLE parse_state DROP COLUMN stopped_attempt;").unwrap();
+}
+
+#[test]
+fn index_v5_keeps_rows_and_leaves_old_attempts_and_context_unrecorded() {
+    for primary in [false, true] {
+        let conn = Connection::open_in_memory().unwrap();
+        if primary {
+            ensure_primary_index(&conn).unwrap();
+        } else {
+            ensure_index(&conn).unwrap();
+        }
+        conn.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(991,'synthetic','claude-code'); INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto,at_length,reason) VALUES(991,1,'old-reading','failed',7,10,'original reason');").unwrap();
+        remove_context_schema(&conn);
+        set_version(&conn, 4).unwrap();
+        if primary {
+            ensure_primary_index(&conn).unwrap();
+        } else {
+            ensure_index(&conn).unwrap();
+        }
+        let row: (u64, String, Option<Vec<u8>>) = conn
+            .query_row(
+                "SELECT parsed_upto,reason,stopped_attempt FROM parse_state WHERE input_pk=991",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (7, "original reason".into(), None));
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM parser_context_state", [], |r| r
+                .get::<_, u64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
     }
 }
 

@@ -28,15 +28,15 @@
     "0ea7851b65c55d85e6fa8c6622ad118a85d2dda92938d1a8656ef3704f8c330e"
   ],
   "claude-code": [
-    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=3",
+    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=4",
     "d9f4194d5d3ebdcf3939c41adfadf040ef5c077b3e3aba62e3c04d4909ad10ac"
   ],
   "claude-code-history": [
-    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=3,crate::claude_code::side::VERSION=1",
+    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=4,crate::claude_code::side::VERSION=1",
     "92acebf5b2e325829b05a23fbae4b3dcbfdb4f354196541a71ca2f8c418e12f2"
   ],
   "claude-code-side": [
-    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=3,crate::claude_code::side::VERSION=1",
+    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=4,crate::claude_code::side::VERSION=1",
     "27ae0456023092a3d499b9990d3a91a86704b81e3cd6d9ba14a3a572bb2167a8"
   ],
   "claude-design": [

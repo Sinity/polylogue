@@ -88,6 +88,8 @@ fn job(
         at_end: true,
         length: size,
         parser_state: None,
+        stopped_attempt: None,
+        parser_chain: None,
         parser_deferred: false,
         priority: crate::pool::Priority::Bulk,
         source: crate::pool::Bytes::File,
@@ -261,4 +263,206 @@ fn declared_registry_keeps_absent_raw_only_origins_valid_and_real_row_dump_versi
             .find(|contract| contract.origin() == "export-file"),
         Some(ReadingContract::Kept { .. })
     ));
+}
+
+fn keyed_fragment(uuid: &str, key: &str, text: &str) -> String {
+    format!(
+        "{}\n",
+        serde_json::json!({"type":"assistant","uuid":uuid,"sessionId":"keyed","message":{"id":key,"role":"assistant","content":[{"type":"text","text":text}]}})
+    )
+}
+
+#[test]
+fn restart_reopens_an_evicted_response_and_resolves_its_native_record_alias() {
+    let home = ClaudeHome::new();
+    home.append(
+        "keyed.jsonl",
+        &keyed_fragment("first", "response-a", "first"),
+    );
+    for key in ["b", "c", "d", "e", "f"] {
+        home.append("keyed.jsonl", &keyed_fragment(key, key, key));
+    }
+    let prefix = std::fs::metadata(home.file("keyed.jsonl")).unwrap().len();
+    {
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{pass:?}");
+    }
+    home.append("keyed.jsonl", &keyed_fragment("late", "response-a", "last"));
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert!(
+        pass.bytes_read < prefix,
+        "ordinary restart reread the prefix: {pass:?}"
+    );
+    let reader = engine.reads.reader().unwrap();
+    let messages = reader
+        .messages(
+            &polylogue_model::SessionId::parse("claude-code:keyed").unwrap(),
+            false,
+        )
+        .unwrap();
+    assert_eq!(messages.len(), 6);
+    assert_eq!(
+        messages
+            .iter()
+            .find(|m| m.id.native().as_str() == "first")
+            .unwrap()
+            .text(),
+        "first\n\nlast"
+    );
+    let native_reference = polylogue_model::Reference::Message(
+        polylogue_model::MessageId::parse("claude-code:late").unwrap(),
+    );
+    let polylogue_model::Reference::Message(id) = &native_reference else {
+        unreachable!()
+    };
+    let resolved = reader.message_with_projection(id).unwrap().unwrap().0;
+    assert_eq!(resolved.id.native().as_str(), "first");
+    assert_eq!(native_reference.to_string(), "message:claude-code:late");
+    let options = polylogue_store::query::Options {
+        clock: query_language::time::Clock::new(
+            "2026-11-08T12:00:00Z".parse().unwrap(),
+            query_language::time::DaySetting::new(
+                jiff::tz::TimeZone::UTC,
+                jiff::civil::Time::midnight(),
+            )
+            .unwrap(),
+        ),
+        origins: vec!["claude-code".into()],
+        page_size: None,
+        random_seed: Some(1),
+        embeddings: false,
+        self_session: None,
+        saved: Default::default(),
+        kept: Default::default(),
+        fields: vec!["id".into()],
+        chat_pages: vec![],
+    };
+    let program = polylogue_store::query::compile(&native_reference.to_string(), &options).unwrap();
+    let parameters = program
+        .params
+        .iter()
+        .map(|value| match value {
+            polylogue_store::query::Param::Int(value) => polylogue_store::SqlValue::Int(*value),
+            polylogue_store::query::Param::Real(value) => polylogue_store::SqlValue::Real(*value),
+            polylogue_store::query::Param::Text(value) => {
+                polylogue_store::SqlValue::Text(value.clone())
+            }
+        })
+        .collect::<Vec<_>>();
+    let rows = reader
+        .with_clock(&program.clock, || reader.query(&program.sql, &parameters))
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], "claude-code:first");
+    drop(reader);
+    engine
+        .writer
+        .user(polylogue_model::user::UserRequest {
+            id: "0199d8a0-0000-7000-8000-000000000991".into(),
+            machine: "synthetic-machine".into(),
+            at: polylogue_model::Timestamp::from_unix_ms(1000).unwrap(),
+            authorship: polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            },
+            write: polylogue_model::user::UserWrite::Assert {
+                assertions: vec![polylogue_model::assertion::NewAssertion {
+                    kind: polylogue_model::assertion::AssertionKind::Note,
+                    key: None,
+                    value: Some(serde_json::json!("native-record note")),
+                    valid_until: None,
+                    links: vec![polylogue_model::assertion::NewAssertionLink {
+                        role: polylogue_model::assertion::LinkRole::About,
+                        reference: native_reference.clone(),
+                    }],
+                }],
+            },
+        })
+        .unwrap();
+    let mut before = Vec::new();
+    engine
+        .reads
+        .reader()
+        .unwrap()
+        .visit_authored(&mut |request| {
+            before.push(request.clone());
+            Ok(())
+        })
+        .unwrap();
+    let index = rusqlite::Connection::open(engine.archive.index_db()).unwrap();
+    index
+        .execute(
+            "UPDATE parse_state SET reading_version='earlier-reading'",
+            [],
+        )
+        .unwrap();
+    drop(index);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let reader = engine.reads.reader().unwrap();
+    let mut after = Vec::new();
+    reader
+        .visit_authored(&mut |request| {
+            after.push(request.clone());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        before, after,
+        "reparse changed an authored request or its native reference"
+    );
+    assert_eq!(
+        reader
+            .message_with_projection(id)
+            .unwrap()
+            .unwrap()
+            .0
+            .id
+            .native()
+            .as_str(),
+        "first"
+    );
+}
+
+#[test]
+fn loss_of_reconstructible_context_replays_stored_bytes_without_changing_message_ownership() {
+    let home = ClaudeHome::new();
+    home.append(
+        "keyed.jsonl",
+        &keyed_fragment("first", "response-a", "first"),
+    );
+    for key in ["b", "c", "d", "e", "f"] {
+        home.append("keyed.jsonl", &keyed_fragment(key, key, key));
+    }
+    {
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 512);
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+        let index = rusqlite::Connection::open(engine.archive.index_db()).unwrap();
+        index
+            .execute_batch("DELETE FROM parser_context; DELETE FROM parser_context_state;")
+            .unwrap();
+    }
+    home.append("keyed.jsonl", &keyed_fragment("late", "response-a", "last"));
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 512);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let reader = engine.reads.reader().unwrap();
+    let messages = reader
+        .messages(
+            &polylogue_model::SessionId::parse("claude-code:keyed").unwrap(),
+            false,
+        )
+        .unwrap();
+    assert_eq!(messages.len(), 6);
+    assert_eq!(
+        messages
+            .iter()
+            .find(|m| m.id.native().as_str() == "first")
+            .unwrap()
+            .text(),
+        "first\n\nlast"
+    );
 }

@@ -213,6 +213,9 @@ impl Reader<'_> {
     }
 
     fn tool_pair_fact(&self, message: &MessageId, ordinal: u64) -> Result<Option<PairFact>> {
+        let canonical = crate::parser_context::canonical_message(self.conn()?, message)?;
+        let message = &canonical;
+
         let conn = self.conn()?;
         let mut input = conn.prepare_cached(
             "SELECT b.pk,b.idx,coalesce(b.ordinal,cast(b.idx AS TEXT)),m.id,s.id,b.call_id,

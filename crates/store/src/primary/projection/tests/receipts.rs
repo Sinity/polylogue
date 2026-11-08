@@ -154,6 +154,7 @@ fn source(input: &str, message: &Message, ordinal: usize, position: i64) -> Vec<
                 reset: true,
                 comparison: None,
                 checkpoint: None,
+                stopped_attempt: None,
                 semantic_event_ids: None,
             },
         ),

@@ -90,7 +90,7 @@ impl Migration {
 pub const ARCHIVE_VERSION: u32 = 1 + ARCHIVE_MIGRATIONS.len() as u32;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 4;
+pub const INDEX_VERSION: u32 = 5;
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
 /// after the baseline ("PLG1"). A non-empty file without it was written by an
@@ -139,6 +139,7 @@ fn base_index(conn: &Connection) -> Result<()> {
     conn.execute_batch(INDEX)?;
     conn.execute_batch(crate::coverage::SCHEMA)?;
     conn.execute_batch(crate::variants::SCHEMA)?;
+    conn.execute_batch(crate::parser_context::SCHEMA)?;
     Ok(())
 }
 
@@ -197,6 +198,11 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         }
         if (1..=3).contains(&found) {
             crate::query_objects::evolution::index_v4(&tx, primary)?;
+            set_version(&tx, INDEX_VERSION)?;
+        }
+        if (1..=4).contains(&found) {
+            tx.execute_batch(crate::parser_context::SCHEMA)?;
+            tx.execute_batch("ALTER TABLE parse_state ADD COLUMN stopped_attempt BLOB CHECK(stopped_attempt IS NULL OR status IN ('refused','failed'));")?;
             set_version(&tx, INDEX_VERSION)?;
         }
         let matches = (1..=INDEX_VERSION).contains(&found)

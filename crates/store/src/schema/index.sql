@@ -340,6 +340,7 @@ CREATE TABLE parse_state (
   commit_seq INTEGER CHECK(commit_seq > 0), -- actual committed parse checkpoint, never a read position
   checkpoint BLOB,                        -- versioned opaque parser state at this exact cursor
   reason            TEXT,                   -- refused: the reason; failed: the error
+  stopped_attempt BLOB CHECK(stopped_attempt IS NULL OR status IN ('refused','failed')),
   PRIMARY KEY (input_pk, chain),
   CHECK((status IN ('waiting','refused','failed')) = (at_length IS NOT NULL)),
   CHECK((status IN ('refused','failed')) = (reason IS NOT NULL))

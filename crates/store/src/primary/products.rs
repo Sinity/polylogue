@@ -113,6 +113,8 @@ pub enum Product {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         semantic_event_ids: Option<std::collections::BTreeMap<usize, String>>,
     },
     AttachmentBinding {
@@ -240,6 +242,8 @@ pub struct CapturedReading {
     pub comparison: Option<crate::tool_databases::Comparison>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
 }
 impl CapturedReading {
     pub fn from_step(
@@ -271,6 +275,7 @@ impl CapturedReading {
         }
         step.counts.check()?;
         step.validate_export()?;
+        step.validate_stopped_attempt()?;
         Ok(Self {
             export_key,
             delivery: step.delivery,
@@ -285,6 +290,7 @@ impl CapturedReading {
             reset: step.reset,
             comparison: step.comparison.clone(),
             checkpoint: step.checkpoint.clone(),
+            stopped_attempt: step.stopped_attempt,
         })
     }
     pub fn into_step(self) -> crate::ParseStep {
@@ -302,6 +308,7 @@ impl CapturedReading {
         step.reset = self.reset;
         step.comparison = self.comparison;
         step.checkpoint = self.checkpoint;
+        step.stopped_attempt = self.stopped_attempt;
         step
     }
 }
@@ -456,6 +463,7 @@ pub fn parse(
         reset: step.reset,
         comparison: step.comparison.clone(),
         checkpoint: step.checkpoint.clone(),
+        stopped_attempt: step.stopped_attempt,
         semantic_event_ids,
     });
     Ok(products)

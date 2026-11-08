@@ -99,6 +99,12 @@ new provider head; several database inputs can share one provider path. Inline
 attachments decoded by that parser retain their own blob preparation. Durable
 product preparation advances the sampler's cached parser state only after the
 matching reading version and cursor reach the confirmed index.
+Compact keyed-context changes travel inside that existing opaque checkpoint;
+private preparation retains them until confirmed application. Missing historical
+context stays unrecorded. Source 5 materials and parse-progress version 5 facts
+retain their original custody and native identities; the exact stored declaration
+projects their absent stopped-attempt identity as unknown. New attempts use the
+successor declaration. Unknown definitions remain unreadable evidence.
 A batch waits for active local database work. Deferred parsing is local work,
 not a confirmation wait: successful parsing can start a database read in the
 same batch, while a failed parse stops that attempt. Errors in that attempt do

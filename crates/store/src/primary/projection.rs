@@ -572,6 +572,7 @@ fn finish_step(
     step.reset = facts.reset;
     step.comparison = facts.comparison;
     step.checkpoint = facts.checkpoint;
+    step.stopped_attempt = facts.stopped_attempt;
     step.source_prefix_missing = spans.missing || step.receipt.is_none();
     spans.through = spans.through.max(reading.parsed_upto);
     file.push_confirmed(&mut step)

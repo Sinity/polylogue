@@ -639,7 +639,7 @@ impl Reader<'_> {
         mut visit: impl FnMut(SessionId) -> crate::Result<ControlFlow<()>>,
     ) -> crate::Result<()> {
         let conn = self.conn()?;
-        let message = message.to_string();
+        let message = crate::parser_context::canonical_message(conn, message)?.to_string();
         let (sql, id) = crate::query::references::message_sessions(&message);
         let mut statement = conn.prepare_cached(sql)?;
         let mut rows = statement.query([id])?;

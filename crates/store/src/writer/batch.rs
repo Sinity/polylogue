@@ -70,6 +70,8 @@ pub struct ParseStep {
     pub reading_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
     #[serde(default)]
     pub(crate) receipt: Option<crate::wire_shapes::ReadingReceipt>,
     /// Confirmed surviving facts can omit source ranges despite a scratch reset.
@@ -104,6 +106,21 @@ mod prepared;
 pub(crate) use prepared::PreparedRows;
 
 impl ParseStep {
+    pub fn validate_stopped_attempt(&self) -> crate::Result<()> {
+        if self.stopped_attempt.is_some()
+            && !matches!(
+                self.progress,
+                polylogue_model::batch::StepProgress::Failed { .. }
+                    | polylogue_model::batch::StepProgress::Refused { .. }
+            )
+        {
+            return Err(crate::StoreError::Invalid(
+                "only a stopped parse step has a stopped attempt".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// The comparison hashes of the row-dump records parsed in this step.
     pub fn compare_records(&mut self, bytes: &[u8]) -> crate::Result<()> {
         let mut update = crate::tool_databases::Comparison::records(bytes)?;
@@ -135,6 +152,7 @@ impl ParseStep {
             order_from: None,
             reading_version: String::new(),
             checkpoint: None,
+            stopped_attempt: None,
             receipt: None,
             source_prefix_missing: false,
             confirmed_event_ids: None,

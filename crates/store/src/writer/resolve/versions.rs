@@ -403,10 +403,8 @@ impl<'a> Projection<'a> {
                 }
             });
             choices.keep_messages.push(keep);
-            if !keep && !previous.is_some_and(|n| sources[n].hash.as_slice() == prepared.hash) {
-                choices.message_mains.push(false);
-                continue;
-            }
+            // A non-selected source value still belongs to the archive. Keyed
+            // parser continuation can cite it without changing shown membership.
             let incoming_layout = crate::versions::message_layout(&prepared.projection)?;
             let prior_layout = message_layouts.get(prepared.hash.as_slice());
             // Complete values already proved this hash. Sparse values alone
