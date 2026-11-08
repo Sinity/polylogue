@@ -156,7 +156,7 @@ pub struct Collector {
     pub background: bool,
     /// Settles retained inputs against archive acceptance before fetching more.
     /// The callback verifies bytes, not parser completion or provider presence.
-    pub settle: Option<fn(&CollectorPaths<'_>, &CollectorAcceptance<'_>) -> Result<(), String>>,
+    pub settle: Option<SettleCollector>,
     /// Writes new inputs into the spool and returns the errors for the pass.
     /// Background collectors check the stop flag between files.
     pub sync: fn(&CollectorPaths<'_>, &std::sync::atomic::AtomicBool) -> Vec<String>,
@@ -166,6 +166,8 @@ pub struct Collector {
 /// mode this means confirmed application, not merely durable producer preparation.
 pub type CollectorAcceptance<'a> =
     dyn Fn(&Path, polylogue_model::BlobHash, u64) -> Result<bool, String> + 'a;
+
+pub type SettleCollector = fn(&CollectorPaths<'_>, &CollectorAcceptance<'_>) -> Result<(), String>;
 
 /// Configured directories a collector reads from and writes to.
 pub struct CollectorPaths<'a> {

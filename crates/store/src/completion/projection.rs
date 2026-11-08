@@ -230,13 +230,13 @@ impl Reader<'_> {
             Reference, RevisionReference,
             assertion::{AssertionKind, values},
         };
-        let (names, queries) = self
+        let saved = self
             .selection_saved_queries_for_family(family)
             .map_err(crate::selection::SelectionError::into_store_error)?;
         let mut change = DefinitionChange {
             family: family.into(),
-            names,
-            queries,
+            names: saved.names,
+            queries: saved.queries,
             saved: None,
             tag: None,
         };

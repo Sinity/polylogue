@@ -23,6 +23,12 @@ pub(crate) use prepare::{ProvisionalQueries, prepare_query_plan_on, saved_querie
 mod keyed;
 use std::{collections::BTreeMap, ops::ControlFlow, sync::Arc};
 
+/// A current assertion family's names and resolved query definitions.
+pub(crate) struct SavedFamily {
+    pub names: BTreeMap<String, usize>,
+    pub queries: BTreeMap<String, Vec<polylogue_query::SavedQuery>>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SelectionError {
     #[error(transparent)]
@@ -799,13 +805,7 @@ impl Reader<'_> {
     pub(crate) fn selection_saved_queries_for_family(
         &self,
         root: &str,
-    ) -> Result<
-        (
-            BTreeMap<String, usize>,
-            BTreeMap<String, Vec<polylogue_query::SavedQuery>>,
-        ),
-        SelectionError,
-    > {
+    ) -> Result<SavedFamily, SelectionError> {
         let values = prepare::saved_queries_for_family(self.conn()?, root)?;
         self.conn()?;
         Ok(values)

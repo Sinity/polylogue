@@ -259,12 +259,12 @@ pub(crate) fn apply(
                     "response context has another message identity".into(),
                 ));
             }
-            if let Key::Response { session, .. } = &entry.key {
-                if session != &body.session.to_string() {
-                    return Err(StoreError::Invalid(
-                        "response key has another source session".into(),
-                    ));
-                }
+            if let Key::Response { session, .. } = &entry.key
+                && session != &body.session.to_string()
+            {
+                return Err(StoreError::Invalid(
+                    "response key has another source session".into(),
+                ));
             }
             Some(version.0.to_vec())
         } else {
