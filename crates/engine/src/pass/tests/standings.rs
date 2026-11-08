@@ -240,7 +240,8 @@ fn an_unrecorded_failure_gets_one_real_attempt_then_stops_across_restart() {
         })
         .unwrap();
     assert!(engine.writer.flush().unwrap().errors.is_empty());
-    assert_eq!(stopped_reading(&engine, &path).stopped_attempt, None);
+    let unrecorded = stopped_reading(&engine, &path);
+    assert_eq!(unrecorded.stopped_attempt, None);
     let config = engine.config.clone();
     let archive = engine.archive.clone();
     let attempt = engine.stopped_attempt;
@@ -249,12 +250,24 @@ fn an_unrecorded_failure_gets_one_real_attempt_then_stops_across_restart() {
     fault::arm("parse", "unrecorded-stop", Action::Fail, 0, u32::MAX);
     let retry = engine.run_pass().unwrap();
     fault::clear();
-    assert!(!retry.errors.is_empty(), "{retry:?}");
-    assert_eq!(retry.bytes_stored, 0, "{retry:?}");
-    assert_eq!(
-        stopped_reading(&engine, &path).stopped_attempt,
-        Some(attempt)
+    assert_eq!(retry.errors.len(), 1, "{retry:?}");
+    assert!(
+        retry.errors[0].contains("injected fault at parse"),
+        "{retry:?}"
     );
+    assert!(
+        retry.bytes_read > 0,
+        "the unrecorded stop got a real attempt: {retry:?}"
+    );
+    assert_eq!(retry.bytes_stored, 0, "{retry:?}");
+    let recorded = stopped_reading(&engine, &path);
+    assert_eq!(recorded.stopped_attempt, Some(attempt));
+    assert_eq!(
+        recorded.progress, unrecorded.progress,
+        "the admitted error remains intact"
+    );
+    assert_eq!(recorded.parsed_upto, unrecorded.parsed_upto);
+    assert_eq!(recorded.checkpoint, unrecorded.checkpoint);
     drop(engine);
     let mut engine = Engine::new(config, archive, attempt).unwrap();
     let settled = engine.run_pass().unwrap();

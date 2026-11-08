@@ -208,7 +208,7 @@ impl Engine {
                 }
                 self.reparse_live(&busy, &mut checked, pass);
                 let QueuedReading {
-                    plan,
+                    mut plan,
                     reply,
                     bytes_read,
                 } = match results.recv_timeout(every) {
@@ -229,9 +229,12 @@ impl Engine {
                     Err(error) => {
                         self.release_reading(&mut busy, &plan.path);
                         let message = format!("re-parse {}: {error}", plan.path.display());
-                        // Preparation has no admitted cursor to finish or fail.
-                        // The old reading remains intact and eligible for retry.
                         pass.errors.push(message);
+                        if matches!(error, EngineError::Parse(_))
+                            && let Err(error) = self.record_retried_stop(&mut plan, pass)
+                        {
+                            pass.errors.push(format!("record retried stop: {error}"));
+                        }
                     }
                 }
             }
@@ -256,6 +259,46 @@ impl Engine {
             }
         }
         result
+    }
+
+    /// A rejected private cursor cannot become progress. An existing admitted
+    /// stop at this exact cursor can retain its error and bind the actual retry.
+    fn record_retried_stop(&mut self, plan: &mut Plan, pass: &mut Pass) -> Result<(), EngineError> {
+        let Change::Reparse { chain } = plan.change else {
+            return Ok(());
+        };
+        let version = plan.origin.reading_version();
+        let stored = self
+            .reads
+            .reader()?
+            .parser_checkpoint(&plan.input.id, chain, &version)?;
+        let Some(stored) = stored.filter(|stored| {
+            stored.reading_version == version
+                && stored.parsed_upto == plan.parse_pos
+                && stored.progress.at_length() == Some(plan.size)
+        }) else {
+            return Ok(());
+        };
+        let progress = match stored.progress {
+            polylogue_model::batch::ParseProgress::Failed { error, .. } => {
+                polylogue_model::batch::StepProgress::Failed { error }
+            }
+            polylogue_model::batch::ParseProgress::Refused { reason, .. } => {
+                polylogue_model::batch::StepProgress::Refused { reason }
+            }
+            _ => return Ok(()),
+        };
+        self.record_stop(plan, progress, pass);
+        if self.archive.is_primary() && plan.failure_recorded {
+            match self.confirmed_reading(plan) {
+                Ok(confirmed) => pass.capture_pending |= !confirmed,
+                Err(error) => {
+                    pass.capture_pending = true;
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Durable preparation does not advance a cached parser cursor. Both

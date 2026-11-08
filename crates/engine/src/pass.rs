@@ -22,6 +22,20 @@ impl Engine {
     pub(crate) fn record_failure(&mut self, plan: &mut Plan, error: String, pass: &mut Pass) {
         pass.errors.push(error.clone());
         plan.failed = true;
+        self.record_stop(
+            plan,
+            polylogue_model::batch::StepProgress::Failed { error },
+            pass,
+        );
+    }
+
+    /// Publish stopped progress at the plan's existing source cursor.
+    pub(crate) fn record_stop(
+        &mut self,
+        plan: &mut Plan,
+        progress: polylogue_model::batch::StepProgress,
+        pass: &mut Pass,
+    ) {
         if plan.failure_recorded || plan.stored_upto == 0 {
             return;
         }
@@ -32,7 +46,7 @@ impl Engine {
             false,
         );
         step.reset = false;
-        step.progress = polylogue_model::batch::StepProgress::Failed { error };
+        step.progress = progress;
         step.reading_version = plan.origin.reading_version();
         step.stopped_attempt = Some(self.stopped_attempt);
         step.prepare();
