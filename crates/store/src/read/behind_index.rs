@@ -134,6 +134,19 @@ impl Reader<'_> {
                 .iter()
                 .find(|(name, _)| name == &origin)
                 .is_some_and(|(_, expected)| version.as_ref() != Some(expected));
+            let length = u64::try_from(row.get::<_, i64>(2)?)
+                .map_err(|_| StoreError::Invalid("stored chain length is negative".into()))?;
+            let parsed_upto = u64::try_from(row.get::<_, i64>(7)?)
+                .map_err(|_| StoreError::Invalid("stored parser cursor is negative".into()))?;
+            let progress = row
+                .get::<_, Option<String>>(11)?
+                .map(|status| {
+                    crate::read::stored_parse_progress(&status, row.get(12)?, row.get(13)?)
+                })
+                .transpose()?;
+            let stopped_at_length = progress
+                .as_ref()
+                .is_some_and(|progress| progress.stopped() && progress.at_length() == Some(length));
             let state = ChainState {
                 plan: BehindChain {
                     input: row.get(0)?,
@@ -147,11 +160,7 @@ impl Reader<'_> {
                         None
                     },
                     reading_changed,
-                    stopped_at_length: matches!(
-                        row.get::<_, Option<String>>(11)?.as_deref(),
-                        Some("failed" | "refused")
-                    ) && row.get::<_, Option<u64>>(12)?
-                        == Some(row.get::<_, u64>(2)?),
+                    stopped_at_length,
                     stopped_attempt: row
                         .get::<_, Option<Vec<u8>>>(14)?
                         .as_deref()
@@ -159,8 +168,8 @@ impl Reader<'_> {
                         .transpose()?,
                     progress: ChainProgress {
                         chain: row.get(1)?,
-                        length: row.get::<_, i64>(2)? as u64,
-                        parsed_upto: row.get::<_, i64>(7)? as u64,
+                        length,
+                        parsed_upto,
                         parsed: row.get(8)?,
                         waiting: row.get(9)?,
                         arrival_rank: if imported { 2 } else { 0 },
@@ -168,12 +177,7 @@ impl Reader<'_> {
                 },
                 origin,
                 version,
-                progress: row
-                    .get::<_, Option<String>>(11)?
-                    .map(|status| {
-                        crate::read::stored_parse_progress(&status, row.get(12)?, row.get(13)?)
-                    })
-                    .transpose()?,
+                progress,
             };
             if !all
                 && !state.plan.reading_changed

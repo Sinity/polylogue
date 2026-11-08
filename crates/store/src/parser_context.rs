@@ -29,10 +29,11 @@ impl Overlay {
         version: &str,
         base: u64,
     ) -> Result<Self> {
+        let sql_base = sql_cursor(base)?;
         let index = crate::archive::open_read(&archive.index_db())?;
         index.execute_batch("BEGIN")?;
         let selected = match chain {
-            Some(chain) => index.query_row("SELECT i.pk,p.chain FROM input_ref i JOIN parse_state p ON p.input_pk=i.pk WHERE i.id=?1 AND p.chain=?2 AND p.reading_version=?3 AND p.parsed_upto=?4",params![input,chain,version,base],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).optional()?,
+            Some(chain) => index.query_row("SELECT i.pk,p.chain FROM input_ref i JOIN parse_state p ON p.input_pk=i.pk WHERE i.id=?1 AND p.chain=?2 AND p.reading_version=?3 AND p.parsed_upto=?4",params![input,chain,version,sql_base],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).optional()?,
             None if base==0 => None,
             None => return Err(StoreError::Invalid("parser continuation has no selected chain identity".into())),
         };
@@ -40,7 +41,7 @@ impl Overlay {
         let mut replay_chain = None;
         if base > 0 {
             let complete = if let (Some(input), Some(chain)) = (input, chain) {
-                index.query_row("SELECT through FROM parser_context_state WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",params![input,chain,version],|r|r.get::<_,u64>(0)).optional()? == Some(base)
+                index.query_row("SELECT through FROM parser_context_state WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",params![input,chain,version],|r|r.get::<_,i64>(0)).optional()?.map(stored_cursor).transpose()? == Some(base)
             } else {
                 false
             };
@@ -134,10 +135,12 @@ impl Overlay {
         let (Some(input), Some(chain)) = (attempt.input, attempt.chain) else {
             return Ok(None);
         };
-        let row=attempt.index.query_row("SELECT value,version_hash FROM parser_context WHERE input_pk=?1 AND chain=?2 AND reading_version=?3 AND key=?4 AND cursor<=?5 ORDER BY cursor DESC LIMIT 1",params![input,chain,attempt.version,key,attempt.base],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,Option<Vec<u8>>>(1)?))).optional()?;
-        let Some((bytes, hash)) = row else {
+        let sql_base = sql_cursor(attempt.base)?;
+        let row=attempt.index.query_row("SELECT value,version_hash,cursor FROM parser_context WHERE input_pk=?1 AND chain=?2 AND reading_version=?3 AND key=?4 AND cursor<=?5 ORDER BY cursor DESC LIMIT 1",params![input,chain,attempt.version,key,sql_base],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,Option<Vec<u8>>>(1)?,r.get::<_,i64>(2)?))).optional()?;
+        let Some((bytes, hash, cursor)) = row else {
             return Ok(None);
         };
+        let cursor = stored_cursor(cursor)?;
         Ok(Some(
             match crate::encoding::unpack_json::<Reference>(&bytes)? {
                 Reference::Alias { target } => Value::Alias { target },
@@ -147,6 +150,11 @@ impl Overlay {
                     offset,
                     end,
                 } => {
+                    if offset > end || end > cursor {
+                        return Err(StoreError::Invalid(
+                            "response context range exceeds its recorded cursor".into(),
+                        ));
+                    }
                     let hash = hash.ok_or_else(|| {
                         StoreError::Invalid("response context has no message version".into())
                     })?;
@@ -201,10 +209,11 @@ pub(crate) fn apply(
             "parser context differs from its exact reading cursor".into(),
         ));
     }
+    let through = sql_cursor(delta.through)?;
     if step.source_prefix_missing {
         return Ok(());
     }
-    let prior=tx.query_row("SELECT through FROM parser_context_state WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",params![input,chain,step.reading_version],|r|r.get::<_,u64>(0)).optional()?;
+    let prior=tx.query_row("SELECT through FROM parser_context_state WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",params![input,chain,step.reading_version],|r|r.get::<_,i64>(0)).optional()?.map(stored_cursor).transpose()?;
     if delta.base != 0 && prior != Some(delta.base) {
         return Ok(());
     }
@@ -261,9 +270,9 @@ pub(crate) fn apply(
         } else {
             None
         };
-        tx.execute("INSERT INTO parser_context VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(input_pk,chain,reading_version,key,cursor) DO UPDATE SET value=excluded.value,version_hash=excluded.version_hash",params![input,chain,step.reading_version,delta.through,serde_json::to_string(&entry.key)?,crate::encoding::pack_json(&entry.value)?,hash])?;
+        tx.execute("INSERT INTO parser_context VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(input_pk,chain,reading_version,key,cursor) DO UPDATE SET value=excluded.value,version_hash=excluded.version_hash",params![input,chain,step.reading_version,through,serde_json::to_string(&entry.key)?,crate::encoding::pack_json(&entry.value)?,hash])?;
     }
-    tx.execute("INSERT INTO parser_context_state VALUES(?1,?2,?3,?4) ON CONFLICT(input_pk,chain,reading_version) DO UPDATE SET through=excluded.through",params![input,chain,step.reading_version,delta.through])?;
+    tx.execute("INSERT INTO parser_context_state VALUES(?1,?2,?3,?4) ON CONFLICT(input_pk,chain,reading_version) DO UPDATE SET through=excluded.through",params![input,chain,step.reading_version,through])?;
     Ok(())
 }
 
@@ -300,4 +309,15 @@ pub(crate) fn canonical_message(
         |r| r.get(0),
     )?;
     polylogue_model::MessageId::parse(&value).map_err(|e| StoreError::Invalid(e.to_string()))
+}
+
+fn sql_cursor(value: u64) -> Result<i64> {
+    i64::try_from(value).map_err(|_| {
+        StoreError::Invalid("parser context cursor exceeds SQLite's integer range".into())
+    })
+}
+
+fn stored_cursor(value: i64) -> Result<u64> {
+    u64::try_from(value)
+        .map_err(|_| StoreError::Invalid("parser context cursor is negative".into()))
 }

@@ -546,7 +546,7 @@ fn index_v5_keeps_rows_and_leaves_old_attempts_and_context_unrecorded() {
         } else {
             ensure_index(&conn).unwrap();
         }
-        let row: (u64, String, Option<Vec<u8>>) = conn
+        let row: (i64, String, Option<Vec<u8>>) = conn
             .query_row(
                 "SELECT parsed_upto,reason,stopped_attempt FROM parse_state WHERE input_pk=991",
                 [],
@@ -556,7 +556,7 @@ fn index_v5_keeps_rows_and_leaves_old_attempts_and_context_unrecorded() {
         assert_eq!(row, (7, "original reason".into(), None));
         assert_eq!(
             conn.query_row("SELECT count(*) FROM parser_context_state", [], |r| r
-                .get::<_, u64>(0))
+                .get::<_, i64>(0))
                 .unwrap(),
             0
         );

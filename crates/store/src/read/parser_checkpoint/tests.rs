@@ -250,6 +250,56 @@ fn rejected_context_and_stopped_attempt_roll_back_with_the_reading_cursor() {
         Some(Value::Alias { target: None })
     ));
     drop(overlay);
+    assert!(matches!(
+        crate::parser_context::Overlay::open(
+            &archive,
+            "context-rollback",
+            Some(stored.chain),
+            "synthetic=1",
+            u64::MAX,
+        ),
+        Err(crate::StoreError::Invalid(_))
+    ));
+    index
+        .execute("UPDATE parser_context_state SET through=-1", [])
+        .unwrap();
+    assert!(matches!(
+        crate::parser_context::Overlay::open(
+            &archive,
+            "context-rollback",
+            Some(stored.chain),
+            "synthetic=1",
+            cursor,
+        ),
+        Err(crate::StoreError::Invalid(_))
+    ));
+    let sql_cursor = i64::try_from(cursor).unwrap();
+    index
+        .execute("UPDATE parser_context_state SET through=?1", [sql_cursor])
+        .unwrap();
+    index
+        .execute("UPDATE parser_context SET cursor=-1", [])
+        .unwrap();
+    let mut overlay = crate::parser_context::Overlay::open(
+        &archive,
+        "context-rollback",
+        Some(stored.chain),
+        "synthetic=1",
+        cursor,
+    )
+    .unwrap();
+    assert!(
+        overlay
+            .get(&Key::Alias {
+                namespace: "".into(),
+                uuid: "event".into(),
+            })
+            .is_err()
+    );
+    drop(overlay);
+    index
+        .execute("UPDATE parser_context SET cursor=?1", [sql_cursor])
+        .unwrap();
     index
         .execute_batch("DROP TRIGGER reject_context_checkpoint")
         .unwrap();
