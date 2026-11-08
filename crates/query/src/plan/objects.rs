@@ -142,10 +142,7 @@ fn used_outputs(
     }
     Ok(outputs)
 }
-fn capture_outputs(
-    query: &Query,
-    catalog: &Catalog,
-) -> Result<Vec<SourceOutput>, QueryError> {
+fn capture_outputs(query: &Query, catalog: &Catalog) -> Result<Vec<SourceOutput>, QueryError> {
     used_outputs(query, catalog)?
         .into_iter()
         .map(|output| {
@@ -377,8 +374,7 @@ fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, Q
     let captured = std::sync::Arc::new(object.clone());
     for node in &object.definitions {
         let id = node.question.to_string();
-        let syntax =
-            query_language::format::format_query(&node.query, native).map_err(language)?;
+        let syntax = query_language::format::format_query(&node.query, native).map_err(language)?;
         let (text, body) = (
             syntax.clone(),
             crate::SavedQueryBody::Frozen {

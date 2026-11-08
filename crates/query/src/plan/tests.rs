@@ -86,13 +86,10 @@ fn object_validation_refuses_forged_ast_schema_and_missing_closure() {
         .query_object()
         .unwrap();
     let mut changed = object.clone();
-    changed
-        .query
-        .transforms
-        .push(Transform {
-            span: Span::default(),
-            kind: TransformKind::Limit { count: 1 },
-        });
+    changed.query.transforms.push(Transform {
+        span: Span::default(),
+        kind: TransformKind::Limit { count: 1 },
+    });
     assert!(validate_object(&changed).is_err());
     let mut changed = object.clone();
     changed.definitions.clear();
@@ -110,21 +107,17 @@ fn object_validation_refuses_forged_ast_schema_and_missing_closure() {
         .unwrap()
         .query_object()
         .unwrap();
-    changed
-        .query
-        .transforms
-        .push(Transform {
-            span: Span::default(),
-            kind: TransformKind::Sort {
-                keys: vec![SortKey {
-                    expression: Expression::field("invented"),
-                    descending: false,
-                }],
-            },
-        });
+    changed.query.transforms.push(Transform {
+        span: Span::default(),
+        kind: TransformKind::Sort {
+            keys: vec![SortKey {
+                expression: Expression::field("invented"),
+                descending: false,
+            }],
+        },
+    });
     let native = crate::catalog::catalog(&[]);
-    changed.normal_form =
-        identity::normal_form(&changed.query, &native).unwrap();
+    changed.normal_form = identity::normal_form(&changed.query, &native).unwrap();
     changed.id =
         identity::question_id_from_normal_form(&changed.normal_form, &changed.parameters).unwrap();
     assert!(validate_object(&changed).is_err());

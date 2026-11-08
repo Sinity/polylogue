@@ -1,7 +1,7 @@
 use super::*;
+use crate::fixture::{Fixture, MessageFacts, SessionFacts};
 use crate::fixture::{authored::operator_request, writer::WriterArchive};
 use polylogue_model::user::{Delivery, UserWrite};
-use crate::fixture::{Fixture, MessageFacts, SessionFacts};
 
 #[test]
 fn old_unacknowledged_notices_are_scoped_metadata_until_selected() {
