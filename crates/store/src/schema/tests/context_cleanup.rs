@@ -89,22 +89,33 @@ fn repeated_source_upserts_keep_context_bodies_and_migrate_existing_markers() {
     }
 }
 
-fn snapshot(conn: &Connection) -> (Vec<u8>, Vec<u8>, i64, i64, String, Vec<u8>, Vec<u8>) {
+#[derive(Debug, PartialEq, Eq)]
+struct ContextSnapshot {
+    body: Vec<u8>,
+    value: Vec<u8>,
+    chain: i64,
+    cursor: i64,
+    reading_version: String,
+    checkpoint: Vec<u8>,
+    version_hash: Vec<u8>,
+}
+
+fn snapshot(conn: &Connection) -> ContextSnapshot {
     conn.query_row(
         "SELECT v.body,c.value,c.chain,c.cursor,p.reading_version,p.checkpoint,c.version_hash
          FROM parser_context c JOIN message_version v ON v.version_hash=c.version_hash
          JOIN parse_state p ON p.input_pk=c.input_pk AND p.chain=c.chain",
         [],
         |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-                r.get(6)?,
-            ))
+            Ok(ContextSnapshot {
+                body: r.get(0)?,
+                value: r.get(1)?,
+                chain: r.get(2)?,
+                cursor: r.get(3)?,
+                reading_version: r.get(4)?,
+                checkpoint: r.get(5)?,
+                version_hash: r.get(6)?,
+            })
         },
     )
     .unwrap()
