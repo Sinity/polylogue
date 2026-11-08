@@ -418,6 +418,7 @@ fn keyed_context_reuses_a_retained_message_version_without_changing_source_selec
             .text(),
         "first recorded value"
     );
+    writer.derive().unwrap();
     let mut overlay = crate::parser_context::Overlay::open(
         &archive,
         "context-copy",
@@ -431,4 +432,34 @@ fn keyed_context_reuses_a_retained_message_version_without_changing_source_selec
     };
     assert_eq!(row.message.text(), "later source copy");
     assert_eq!((row.offset, row.end), (1, 2));
+    drop(overlay);
+    // Retraction of the context releases the body that has no visible source.
+    let index = rusqlite::Connection::open(archive.index_db()).unwrap();
+    index
+        .execute_batch(
+            "BEGIN; DELETE FROM parser_context; DELETE FROM parser_context_state; COMMIT;",
+        )
+        .unwrap();
+    writer.derive().unwrap();
+    let hash = later.content_hash().unwrap();
+    assert!(
+        !index
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM message_version WHERE version_hash=?1)",
+                [hash.0.as_slice()],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .message_with_projection(&first.id)
+            .unwrap()
+            .unwrap()
+            .0
+            .text(),
+        "first recorded value"
+    );
 }

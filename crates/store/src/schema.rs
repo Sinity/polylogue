@@ -172,6 +172,8 @@ pub fn ensure_primary_index(conn: &Connection) -> Result<()> {
     ensure_index_in(conn, true)
 }
 fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
+    // ALTER TABLE validates views that read packed bodies through these functions.
+    crate::sql_functions::register(conn)?;
     check_format(conn, "index")?;
     let found = version(conn)?;
     if found > INDEX_VERSION {
@@ -234,6 +236,7 @@ pub fn building(conn: &Connection) -> Result<bool> {
 
 /// Creates `archive.db` in an empty file and brings an older one forward.
 pub fn ensure_archive(conn: &Connection) -> Result<()> {
+    crate::sql_functions::register(conn)?;
     check_format(conn, "archive")?;
     // An empty file takes the identity before its tables, so no crash can
     // leave a versioned archive without it.

@@ -1,4 +1,4 @@
-//! SQL functions registered on read connections, so compiled queries can
+//! SQL functions registered on read and schema connections, so compiled queries can
 //! read what the index stores compressed and group by the operator's
 //! logical day without a second pass in Rust:
 //!

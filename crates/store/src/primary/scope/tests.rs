@@ -5,12 +5,7 @@ fn cache(archive: &Archive) -> Connection {
     let index = Connection::open(archive.index_db()).unwrap();
     index.pragma_update(None, "journal_mode", "wal").unwrap();
     index.pragma_update(None, "foreign_keys", true).unwrap();
-    index.execute_batch(crate::schema::INDEX).unwrap();
-    index.execute_batch(crate::variants::SCHEMA).unwrap();
-    index
-        .execute_batch(&crate::source::schema().unwrap().ddl)
-        .unwrap();
-    index.execute_batch(projection::SCHEMA).unwrap();
+    crate::schema::ensure_primary_index(&index).unwrap();
     crate::archive::generation::create(&index).unwrap();
     index
         .execute(

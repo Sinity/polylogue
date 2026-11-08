@@ -2,13 +2,7 @@ use super::*;
 
 fn cache(path: &std::path::Path) -> Connection {
     let index = Connection::open(path).unwrap();
-    let tx = index.unchecked_transaction().unwrap();
-    tx.execute_batch(crate::schema::INDEX).unwrap();
-    tx.execute_batch(crate::variants::SCHEMA).unwrap();
-    tx.execute_batch(&crate::source::schema().unwrap().ddl)
-        .unwrap();
-    tx.execute_batch(SCHEMA).unwrap();
-    tx.commit().unwrap();
+    crate::schema::ensure_primary_index(&index).unwrap();
     index
 }
 
