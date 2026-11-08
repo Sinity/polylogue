@@ -309,14 +309,18 @@ fn failed_catalog_transaction_retries_the_same_committed_definition_delta() {
     let save = |id: &str, name: &str| {
         archive
             .writer
-            .user(polylogue_store::fixture::authored::operator_request(
-                id.into(),
-                UserWrite::SaveQuery {
-                    name: name.into(),
-                    text: "sessions | group by origin | count".into(),
-                    denominator: None,
-                },
-            ))
+            .user_preparing(
+                polylogue_store::fixture::authored::operator_request(
+                    id.into(),
+                    UserWrite::SaveQuery {
+                        name: name.into(),
+                        text: "sessions | group by origin | count".into(),
+                        denominator: None,
+                    },
+                ),
+                crate::daemon::service::authored_preparation(),
+                None,
+            )
             .unwrap()
     };
     save("definition-a", "alpha");
@@ -360,21 +364,24 @@ fn failed_catalog_transaction_retries_the_same_committed_definition_delta() {
 
 #[test]
 fn late_kept_custody_refreshes_a_saved_inline_dependency_without_a_child_record() {
-    use polylogue_model::{
-        Author, Timestamp,
-        assertion::{AssertionFact, AssertionKind},
-        authorship::Channel,
-        user::UserWrite,
-    };
+    use polylogue_model::user::UserWrite;
     let donor = polylogue_store::fixture::writer::WriterArchive::new();
+    let rows = serde_json::json!({"unit":"sessions","shape":"rows","columns":[{"name":"title","kind":"text"}],"rows":[],"identities":[]}).to_string();
     let keep = || {
-        polylogue_store::fixture::authored::operator_request("late-kept".into(), UserWrite::KeepResult {
-        name: None, query: "sessions".into(),
-        rows_json: serde_json::json!({"unit":"sessions","shape":"rows","columns":[{"name":"title","kind":"text"}],"rows":[],"identities":[]}).to_string(),
-        read_at: "{}".into(),
-    })
+        polylogue_store::fixture::authored::operator_request(
+            "late-kept".into(),
+            UserWrite::KeepResult {
+                name: None,
+                query: "sessions".into(),
+                rows_json: rows.clone(),
+                read_at: "{}".into(),
+            },
+        )
     };
-    donor.writer.user(keep()).unwrap();
+    donor
+        .writer
+        .user_preparing(keep(), crate::daemon::service::authored_preparation(), None)
+        .unwrap();
     let donor_reads = polylogue_store::ReadPool::open(&donor.archive).unwrap();
     let mut bindings = polylogue_query::Bindings {
         kept: donor_reads
@@ -386,6 +393,7 @@ fn late_kept_custody_refreshes_a_saved_inline_dependency_without_a_child_record(
     };
     let child = polylogue_query::plan::prepare("result:late-kept", &bindings, |_| Ok(())).unwrap();
     let child = child.query_object().unwrap();
+    let child_id = child.id;
     bindings.saved.insert(
         "child".into(),
         vec![polylogue_query::SavedQuery {
@@ -403,15 +411,42 @@ fn late_kept_custody_refreshes_a_saved_inline_dependency_without_a_child_record(
     );
     let parent = polylogue_query::plan::prepare("query:child", &bindings, |_| Ok(())).unwrap();
     let object = parent.query_object().unwrap();
-    let archive = polylogue_store::fixture::writer::WriterArchive::new();
-    archive.writer.restore_assertion(AssertionFact {
-        id: "dependent".into(), root: "dependent".into(), kind: AssertionKind::SavedQuery, key: Some("dependent".into()),
-        value: Some(serde_json::json!({"text":parent.text(),"hash":object.id.to_string(),"denominator":null})),
-        author: Author::Operator, via: Channel::Import, machine: "synthetic-machine".into(), created_at: Timestamp::from_unix_ms(1).unwrap(), valid_until: None, links: vec![],
-    }).unwrap();
-    archive.writer.query_object(object).unwrap();
-    let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
     let directory = tempfile::tempdir().unwrap();
+    let mut archive =
+        polylogue_store::fixture::Fixture::new(&directory.path().join("archive")).unwrap();
+    let writer = polylogue_store::Writer::start(&archive.archive).unwrap();
+    let error = writer.query_object(object).unwrap_err();
+    assert!(
+        matches!(&error, polylogue_store::StoreError::NotFound(what) if what == "canonical result schema result:late-kept"),
+        "{error:?}"
+    );
+    // A historical/partial read view can retain a formerly valid frozen query
+    // whose kept dependency is unavailable. New admission above must refuse it.
+    archive.saved_query("dependent", &parent).unwrap();
+    // Account for the fixture's seeded source record before measuring deltas.
+    writer
+        .user_preparing(
+            polylogue_store::fixture::authored::operator_request(
+                "seed-position".into(),
+                UserWrite::SetSetting {
+                    key: "browser.actions".into(),
+                    value: "on".into(),
+                    machine: None,
+                },
+            ),
+            crate::daemon::service::authored_preparation(),
+            None,
+        )
+        .unwrap();
+    let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
+    assert!(
+        reads
+            .reader()
+            .unwrap()
+            .query_object(&child_id.to_string(), None)
+            .unwrap()
+            .is_none()
+    );
     let path = directory.path().join("catalog");
     let mut state = State::new(false, super::super::tests::request_metadata());
     state
@@ -426,7 +461,19 @@ fn late_kept_custody_refreshes_a_saved_inline_dependency_without_a_child_record(
             .schema
             .is_none()
     );
-    archive.writer.user(keep()).unwrap();
+    let before = state.position.clone().unwrap();
+    writer
+        .user_preparing(keep(), crate::daemon::service::authored_preparation(), None)
+        .unwrap();
+    assert!(
+        reads
+            .reader()
+            .unwrap()
+            .completion_changed_queries(before.archive)
+            .unwrap()
+            .is_empty(),
+        "kept custody must invalidate this family without another query admission"
+    );
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();

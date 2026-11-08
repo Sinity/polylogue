@@ -180,7 +180,11 @@ fn authored_deltas_follow_only_affected_families_and_setting_keys() {
     let write = |id: &str, value| {
         archive
             .writer
-            .user(crate::fixture::authored::operator_request(id.into(), value))
+            .user_preparing(
+                crate::fixture::authored::operator_request(id.into(), value),
+                crate::user_writes::PreparationContext::new(vec!["codex".into()]),
+                None,
+            )
             .unwrap()
     };
     for (id, name) in [("saved-a", "alpha"), ("saved-b", "beta")] {
