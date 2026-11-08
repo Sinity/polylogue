@@ -219,13 +219,13 @@ fn delivery_filters_read_string_refs_and_structured_omissions_without_reparsing_
     let mut options = options();
     options.fields = vec!["id".into()];
     for (query, expected) in [
-        (r#"deliveries refs:"assertion:subject@revision""#, 1),
-        (r#"deliveries refs:"src/parser.rs""#, 1),
-        (r#"deliveries refs:"quote""#, 1),
-        (r#"deliveries refs:"missing""#, 0),
-        (r#"deliveries left_out:"codex:other""#, 1),
-        (r#"deliveries left_out:"budget""#, 0),
-        (r#"deliveries refs:"codex:other""#, 0),
+        (r#"deliveries where refs:"assertion:subject@revision""#, 1),
+        (r#"deliveries where refs:"src/parser.rs""#, 1),
+        (r#"deliveries where refs:"quote""#, 1),
+        (r#"deliveries where refs:"missing""#, 0),
+        (r#"deliveries where left_out:"codex:other""#, 1),
+        (r#"deliveries where left_out:"budget""#, 0),
+        (r#"deliveries where refs:"codex:other""#, 0),
     ] {
         let program = crate::query::compile(query, &options).unwrap();
         let page = reader
