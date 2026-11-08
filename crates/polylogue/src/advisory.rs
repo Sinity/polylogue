@@ -156,7 +156,7 @@ fn already_given(
             },
         )
         .and_then(|answer| answer.value.into_rows())
-        .map_err(|error| StoreError::Invalid(error.message))?;
+        .map_err(|error| StoreError::Invalid(error.error.message))?;
         if !page.incomplete.is_empty() || !page.notes.is_empty() {
             return Err(StoreError::Invalid(
                 "advisory delivery history is incomplete".into(),
