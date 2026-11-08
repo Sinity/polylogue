@@ -127,3 +127,139 @@ fn ordinary_reopen_observes_local_references_after_raw_commit_before_parse() {
         );
     }
 }
+
+#[test]
+fn regular_local_files_keep_exact_binary_bytes_empty_files_and_descriptor_facts() {
+    let home = ClaudeHome::new();
+    let (mut engine, _lock) = engine(&home, 64);
+    for (name, bytes) in [
+        ("binary", b"original\0bytes\xff".as_slice()),
+        ("empty", b"".as_slice()),
+    ] {
+        let path = home.dir.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        let facts = FileFacts::of(&std::fs::metadata(&path).unwrap());
+        let link = home.dir.path().join(format!("{name}-link"));
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        for reference in [&path, &link] {
+            let mut pass = Pass::default();
+            let id = engine
+                .capture_local_file(reference, &mut pass)
+                .unwrap()
+                .unwrap();
+            assert_eq!(id, polylogue_model::BlobHash::of(bytes).to_string());
+            assert_eq!(pass.bytes_read, bytes.len() as u64);
+            let reader = engine.reads.reader().unwrap();
+            let progress = reader.input_progress(&id).unwrap().unwrap();
+            assert_eq!(
+                reader
+                    .stored_range(&id, progress.chain, 0, progress.length, &engine.blobs)
+                    .unwrap(),
+                bytes
+            );
+            let observation = reader
+                .known_input_at("test-machine", reference.as_os_str().as_encoded_bytes())
+                .unwrap()
+                .unwrap();
+            assert_eq!(observation.facts, Some(facts));
+            assert_eq!(FileFacts::of(&std::fs::metadata(&path).unwrap()), facts);
+        }
+    }
+}
+
+#[test]
+fn fifo_local_reference_child() {
+    let Some(path) = std::env::var_os("POLYLOGUE_LOCAL_FIFO") else {
+        return;
+    };
+    let home = ClaudeHome::new();
+    let (mut engine, _lock) = engine(&home, 64);
+    let row = serde_json::json!({"local_images":[PathBuf::from(path)]});
+    let mut pass = Pass::default();
+    engine
+        .capture_local_files(
+            std::io::Cursor::new(format!("{row}\n")),
+            "fifo-source",
+            &mut pass,
+        )
+        .unwrap();
+    assert_eq!(pass.bytes_read, 0);
+    let reader = engine.reads.reader().unwrap();
+    assert_eq!(
+        reader
+            .query(
+                "SELECT count(*) AS n FROM a.input WHERE format='codex-local-file'",
+                &[]
+            )
+            .unwrap()[0]["n"],
+        0
+    );
+    let manifests = reader
+        .query("SELECT id FROM a.input WHERE format='tool-context'", &[])
+        .unwrap();
+    assert_eq!(manifests.len(), 1);
+    let id = manifests[0]["id"].as_str().unwrap();
+    let progress = reader.input_progress(id).unwrap().unwrap();
+    let bytes = reader
+        .stored_range(id, progress.chain, 0, progress.length, &engine.blobs)
+        .unwrap();
+    let observation: Json = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(observation["status"], "unreadable");
+    assert!(
+        observation["reason"]
+            .as_str()
+            .unwrap()
+            .contains("not a regular file")
+    );
+}
+
+#[test]
+#[allow(unsafe_code)]
+fn a_local_fifo_without_a_writer_is_reported_unreadable() {
+    use std::os::unix::ffi::OsStrExt;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let home = ClaudeHome::new();
+    let fifo = home.dir.path().join("unwritten-image.pipe");
+    let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let scratch = home.dir.path().join("child");
+    std::fs::create_dir(&scratch).unwrap();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "local_files::tests::fifo_local_reference_child",
+            "--nocapture",
+        ])
+        .env("POLYLOGUE_LOCAL_FIFO", &fifo)
+        .env("TMPDIR", &scratch)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // This watchdog bounds the regression itself, not capture throughput. The
+    // predecessor blocks in open forever because this fixture has no writer.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            let output = child.wait_with_output().unwrap();
+            panic!(
+                "FIFO capture did not return without a writer: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "FIFO child failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

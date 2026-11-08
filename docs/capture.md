@@ -67,7 +67,7 @@ Ignored: `.credentials.json`, `.claude.json`, `mcp-needs-auth-cache.json` (secre
 | rows of the `state_*`, `goals_*`, `memories_*` and `queue_*` databases | goals, memories and queued prompts as events |
 | `memories/**/*.md` (not `memories/.git`) | memory documents |
 | `attachments/**`, `shell_snapshots/**`, `ambient-suggestions/**` | attachments, context documents |
-| files named by `local_images` in a rollout line | attachment bytes, read when the line is observed ([sessions.md](sessions.md#attachments)) |
+| files named by `local_images` in a rollout line | attachment bytes, read when the line is observed; the opened descriptor must be a regular file, and a nonregular source is reported unreadable without waiting for a pipe writer ([sessions.md](sessions.md#attachments)) |
 
 Ignored: `logs_2.sqlite` (diagnostic log); `thread_history_*.sqlite` (a projection of the rollouts); `sqlite/codex-dev.db` (developer database); `worktrees/`, `packages/`, `plugins/`, `vendor_imports/`, `skills/`, `cache/`, `tmp/`, lock directories; `auth.json`; configuration files; backup tarballs left in the tree (importable by hand).
 

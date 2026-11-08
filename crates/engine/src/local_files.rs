@@ -3,6 +3,7 @@
 use crate::*;
 use polylogue_model::Json;
 use std::io::{BufRead, Seek, Write};
+use std::os::unix::fs::OpenOptionsExt;
 
 fn visit(value: &Json, emit: &mut impl FnMut(&str) -> std::io::Result<()>) -> std::io::Result<()> {
     match value {
@@ -201,7 +202,13 @@ impl Engine {
         let origin =
             polylogue_sources::origin::by_name("codex-local-file").expect("declared origin");
         let context = self.sampling_context(path, origin.name, &origin.reading_version())?;
-        let mut file = match std::fs::File::open(path) {
+        // A FIFO can block during open, before metadata can reject it. Check
+        // the opened descriptor so replacing the path cannot bypass the check.
+        let mut file = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+        {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
