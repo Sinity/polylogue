@@ -170,23 +170,44 @@ pub(crate) fn append(
     boot: &str,
     lines: &[Value],
 ) -> std::io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
     if lines.is_empty() {
         return Ok(());
     }
-    let dir = spool.join(route);
-    std::fs::create_dir_all(&dir)?;
     let mut bytes = Vec::new();
     for l in lines {
         serde_json::to_writer(&mut bytes, l)?;
         bytes.push(b'\n');
     }
+    spool_file(spool, route, boot)?.write_all(&bytes)
+}
+
+fn spool_file(spool: &Path, route: &str, boot: &str) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let dir = spool.join(route);
+    std::fs::create_dir_all(&dir)?;
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
-        .open(dir.join(format!("{boot}.ndjson")))?
-        .write_all(&bytes)
+        .open(dir.join(format!("{boot}.ndjson")))
+}
+
+/// Retain only the unwritten suffix when an owned spool write fails.
+fn write_pending(bytes: &mut Vec<u8>, writer: &mut impl Write) -> std::io::Result<()> {
+    let mut written = 0;
+    let result = loop {
+        if written == bytes.len() {
+            break Ok(());
+        }
+        match writer.write(&bytes[written..]) {
+            Ok(0) => break Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => written += n,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => break Err(error),
+        }
+    };
+    bytes.drain(..written);
+    result
 }
 
 fn identity_payload(identity: &ProcessIdentity) -> Value {
@@ -208,9 +229,11 @@ pub(crate) struct Watcher {
     boot: String,
     boot_time_ms: Option<i64>,
     watched: BTreeMap<String, Watched>,
-    /// Roots already written gone, until their `RootGone` is committed and
+    /// Roots already queued gone, until their `RootGone` is committed and
     /// the evidence stops naming them.
     reported_gone: BTreeSet<(String, ProcessIdentity)>,
+    /// Exact process observations not yet appended, including a partial line.
+    pending: Vec<u8>,
 }
 
 impl Watcher {
@@ -221,7 +244,22 @@ impl Watcher {
             boot_time_ms,
             watched: BTreeMap::new(),
             reported_gone: BTreeSet::new(),
+            pending: Vec::new(),
         }
+    }
+
+    /// The process spool has one writer. Failed appends retain the original
+    /// bytes, so later samples retry without changing times or line identities.
+    fn append_process(&mut self, spool: &Path, lines: &[Value]) -> std::io::Result<()> {
+        for line in lines {
+            serde_json::to_writer(&mut self.pending, line)?;
+            self.pending.push(b'\n');
+        }
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let mut file = spool_file(spool, "process", &self.boot)?;
+        write_pending(&mut self.pending, &mut file)
     }
 
     /// Brings the watched set in line with the roots the evidence names
@@ -1122,7 +1160,9 @@ pub(crate) fn run(
         }
         let mut process_lines = watcher.update_roots(&roots, now);
         process_lines.extend(watcher.sample(now));
-        let _ = append(&paths.spool, "process", &boot, &process_lines);
+        if let Err(error) = watcher.append_process(&paths.spool, &process_lines) {
+            eprintln!("polylogue: process spool append failed; retained for retry: {error}");
+        }
         let _ = append(
             &paths.spool,
             "registry",
@@ -1148,7 +1188,9 @@ pub(crate) fn run(
             BTreeSet::new()
         };
         let gone = watcher.exited(&ready, clock.now());
-        let _ = append(&paths.spool, "process", &boot, &gone);
+        if let Err(error) = watcher.append_process(&paths.spool, &gone) {
+            eprintln!("polylogue: process spool append failed; retained for retry: {error}");
+        }
         match stop.recv_timeout(if polled { Duration::ZERO } else { wake }) {
             Err(RecvTimeoutError::Timeout) => {}
             Ok(()) | Err(RecvTimeoutError::Disconnected) => {

@@ -267,6 +267,7 @@ A subagent's live state is its parent's process plus its own `SubagentStart`/`Su
 **The process watcher.**
 - Its **roots** are the root processes that sessions' evidence says are alive. Each root gets a pidfd; its exit writes `RootGone` at once. A root already gone when first seen is written gone then; a root of an earlier boot is written gone at that boot's end.
 - **Descendants** are read from `/proc/<pid>/task/*/children`, every second while the session has an open tool call and every 15 seconds otherwise; only differences are written to the process spool (`process/<boot>.ndjson`): `Started` (pid, parent pid, start, `comm`, `argv`, `cwd`, role), `Ended`, `RootGone`.
+- Failed process-spool appends retain the unwritten bytes for retry with their original observation times and identities. A partial line resumes at its unwritten suffix. Completion means the bytes were appended; this writer does not sync the file.
 - With no roots nothing under `/proc` is read; a sample with no change writes nothing; `environ` is never read.
 - **`processes` rows:** session, identity, parent pid, `comm`, `argv`, `cwd`, `started_at`, `ended_at`, `role` (`harness` or `child`), and `tool_call`, the call that was open when the child was first seen, by time only. A session's end closes the rows of its processes.
 
