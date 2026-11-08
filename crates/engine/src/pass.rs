@@ -207,7 +207,7 @@ impl Engine {
             .map(|(pass, _)| pass)
     }
 
-    fn discard_confirmed_state(&mut self) {
+    pub(super) fn discard_confirmed_state(&mut self) {
         for state in self.inputs.values_mut() {
             state.discard_confirmed();
         }
