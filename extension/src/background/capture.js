@@ -159,6 +159,10 @@ export class Capturer {
     if (!conversation) throw new CaptureError("no_conversation_on_page");
     const key = `${provider}:${conversation}`;
     const raw = page.body;
+    // A capture without the provider's JSON or page turns holds no
+    // conversation. Storing it would archive an empty session, and its
+    // fingerprint (of nothing) would make every later read look unchanged.
+    if (!raw && !(info.session?.turns?.length > 0)) throw new CaptureError("no_conversation_content");
     const now = await fingerprint(raw, info.session);
     const seenKey = `seen ${key}`;
     const known = await this.seen.get({ [seenKey]: null });
