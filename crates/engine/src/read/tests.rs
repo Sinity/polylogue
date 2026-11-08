@@ -252,7 +252,17 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
     for result in completed {
         assert!(result.error.is_none(), "{:?}", result.error);
         let plan = plans.iter_mut().find(|p| p.path == result.path).unwrap();
+        let Change::Reparse { chain } = plan.change else {
+            unreachable!()
+        };
+        assert_eq!(plan.parser_chain, Some(chain));
+        assert_eq!(
+            result.chain,
+            Some(chain),
+            "the writer acknowledges the selected stored chain"
+        );
         plan.apply(result, true);
+        assert_eq!(plan.parser_chain, Some(chain));
     }
     let (done, received) = channel();
     let pool = Pool::start(
@@ -271,7 +281,17 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
     for result in received {
         assert!(result.error.is_none(), "{:?}", result.error);
         let plan = plans.iter_mut().find(|p| p.path == result.path).unwrap();
+        let Change::Reparse { chain } = plan.change else {
+            unreachable!()
+        };
+        assert_eq!(plan.parser_chain, Some(chain));
+        assert_eq!(
+            result.chain,
+            Some(chain),
+            "the writer acknowledges the selected stored chain"
+        );
         plan.apply(result, true);
+        assert_eq!(plan.parser_chain, Some(chain));
         assert!(plan.finished());
     }
     for (_, session, first, last, _) in &expected {

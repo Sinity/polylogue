@@ -758,6 +758,10 @@ impl Engine {
         } else {
             (parse_pos, parser_state)
         };
+        let parser_chain = match change {
+            Change::Appended { .. } => st.chain,
+            _ => None,
+        };
         Ok(Some(Plan {
             raw: None,
             basis: Some(snapshot.basis),
@@ -779,6 +783,7 @@ impl Engine {
             storing_started: false,
             parser_deferred: source_uncertain || never_parsed && st.stored > 0,
             parser_state,
+            parser_chain,
             tail: None,
             span: span(st.origin, path, self.config.chunk),
             chunk: self.config.chunk,

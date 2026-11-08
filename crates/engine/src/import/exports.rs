@@ -235,6 +235,7 @@ impl Engine {
                 plan.stored_upto = 0;
                 plan.parse_pos = 0;
                 plan.parser_state = None;
+                plan.parser_chain = None;
                 plan.checkpoint = None;
             }
         }
@@ -325,6 +326,7 @@ impl Engine {
         plan.change = Change::Reparse {
             chain: progress.chain,
         };
+        plan.parser_chain = Some(progress.chain);
         plan.stored_upto = plan.size;
         plan.storing_started = true;
         plan.parse_pos = 0;

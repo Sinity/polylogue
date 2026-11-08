@@ -482,6 +482,7 @@ impl Engine {
             self.config.chunk,
             false,
         );
+        plan.parser_chain = Some(stored.chain);
         // The operator is waiting on an import.
         plan.priority = Priority::Live;
         Ok(Some(plan))

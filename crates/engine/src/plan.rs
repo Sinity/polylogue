@@ -17,9 +17,8 @@ pub(crate) struct InputState {
     pub(crate) parsed_upto: u64,
     /// Whether the current chain was parsed at all.
     pub(crate) parsed: bool,
-    /// The chain is not read again until its bytes grow: a parse reached
-    /// source EOF with an incomplete last record, or this engine recorded a
-    /// refusal or failure at the stored length (a restart reads it again).
+    /// Current progress waits at this length: an incomplete record at source
+    /// EOF, or a recorded stop. The stored-chain planner selects stop retries.
     pub(crate) waiting: bool,
     pub(crate) parser_state: Option<Json>,
     pub(crate) tail: Option<Vec<u8>>,
@@ -133,6 +132,8 @@ pub(crate) struct Plan {
     /// Capture continues while a missing same-version continuation defers parsing.
     pub(crate) parser_deferred: bool,
     pub(crate) parser_state: Option<Json>,
+    /// Actual selected source chain for parser context, retained across jobs.
+    pub(crate) parser_chain: Option<i64>,
     pub(crate) tail: Option<Vec<u8>>,
     pub(crate) span: u64,
     pub(crate) chunk: u64,
@@ -171,6 +172,13 @@ impl Plan {
         chunk: u64,
         tracked: bool,
     ) -> Plan {
+        let parser_chain = match (&change, &source) {
+            (Change::First | Change::Rewritten, _) => None,
+            (Change::Reparse { chain }, _) | (_, pool::Bytes::Unloaded { chain, .. }) => {
+                Some(*chain)
+            }
+            _ => None,
+        };
         Plan {
             basis: None,
             pending: None,
@@ -189,6 +197,7 @@ impl Plan {
             storing_started: false,
             parser_deferred: false,
             parser_state: None,
+            parser_chain,
             tail: None,
             chunk,
             priority: Priority::Bulk,
@@ -273,6 +282,7 @@ impl Plan {
             at_end: end == self.size,
             length,
             parser_state: self.parser_state.take(),
+            parser_chain: self.parser_chain,
             parser_deferred: self.parser_deferred,
             priority: self.priority,
             source: self.source.clone(),
@@ -280,6 +290,9 @@ impl Plan {
     }
 
     pub(crate) fn apply(&mut self, d: Done, parsed: bool) {
+        if let Some(chain) = d.chain {
+            self.parser_chain = Some(chain);
+        }
         self.pending = d.pending.clone();
         if d.checkpoint.is_some() {
             self.checkpoint = d.checkpoint.clone();
