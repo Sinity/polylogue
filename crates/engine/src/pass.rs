@@ -233,8 +233,7 @@ impl Engine {
             self.discard_confirmed_state();
         }
         let result = (|| {
-            let scope = self.archive.scope_token()?;
-            self.read_scope = Some(scope.clone());
+            let scope = self.cached_scope()?;
             let result = self.read_turn(discover || !self.loaded, paths)?;
             // A completed reset can race the last SQL read. Its cached progress
             // cannot establish completion in the new scope.

@@ -506,6 +506,21 @@ impl Engine {
         h.finalize().to_hex()[..32].to_owned()
     }
 
+    /// Cached confirmed state keeps its original token until invalidation.
+    /// A reset between the caller's entry check and this call must not bind
+    /// old state to a newly acquired token.
+    fn cached_scope(&mut self) -> Result<polylogue_store::ReadScopeToken, EngineError> {
+        let scope = match &self.read_scope {
+            Some(scope) => scope.clone(),
+            None => self.archive.scope_token()?,
+        };
+        scope.check()?;
+        if self.read_scope.is_none() {
+            self.read_scope = Some(scope.clone());
+        }
+        Ok(scope)
+    }
+
     fn load(&mut self) -> Result<(), EngineError> {
         if self
             .read_scope
@@ -514,11 +529,10 @@ impl Engine {
         {
             self.discard_confirmed_state();
         }
+        let scope = self.cached_scope()?;
         if self.loaded {
             return Ok(());
         }
-        let scope = self.archive.scope_token()?;
-        self.read_scope = Some(scope.clone());
         let reader = self.reads.reader()?;
 
         let known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;

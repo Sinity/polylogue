@@ -60,6 +60,41 @@ fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
     );
 }
 
+#[test]
+fn a_cached_scope_cannot_be_rebound_after_its_entry_check() {
+    let home = ClaudeHome::new();
+    home.append(
+        "scope-race.jsonl",
+        &claude_user("one", "scope-race", "admitted before the reset"),
+    );
+    let path = home.file("scope-race.jsonl");
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    let input = engine.inputs[&path].input_id.clone();
+    let captured = source_rows(&engine, &input);
+    // This is the valid entry check, followed by a complete reset before
+    // the shared load/turn token-acquisition seam runs.
+    engine.read_scope.as_ref().unwrap().check().unwrap();
+    engine.archive.advance_generation_for_test().unwrap();
+    engine.archive.scope_token().unwrap().check().unwrap();
+    assert!(matches!(
+        engine.cached_scope(),
+        Err(EngineError::Store(
+            polylogue_store::StoreError::ScopeChanged
+        ))
+    ));
+    assert!(matches!(
+        engine.read_scope.as_ref().unwrap().check(),
+        Err(polylogue_store::StoreError::ScopeChanged)
+    ));
+    let resumed = engine.run_pass().unwrap();
+    assert!(resumed.errors.is_empty(), "{resumed:?}");
+    assert_eq!((resumed.bytes_read, resumed.bytes_stored), (0, 0));
+    assert_eq!(source_rows(&engine, &input), captured);
+    assert_eq!(engine.inputs[&path].input_id, input);
+    engine.read_scope.as_ref().unwrap().check().unwrap();
+}
+
 struct Control {
     started: Sender<()>,
     release: Receiver<()>,
