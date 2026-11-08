@@ -208,7 +208,7 @@ impl Engine {
                 }
                 self.reparse_live(&busy, &mut checked, pass);
                 let QueuedReading {
-                    mut plan,
+                    plan,
                     reply,
                     bytes_read,
                 } = match results.recv_timeout(every) {
@@ -229,12 +229,9 @@ impl Engine {
                     Err(error) => {
                         self.release_reading(&mut busy, &plan.path);
                         let message = format!("re-parse {}: {error}", plan.path.display());
-                        if matches!(error, EngineError::Parse(_)) {
-                            self.record_failure(&mut plan, message, pass);
-                            self.finish_plan(plan);
-                        } else {
-                            pass.errors.push(message);
-                        }
+                        // Preparation has no admitted cursor to finish or fail.
+                        // The old reading remains intact and eligible for retry.
+                        pass.errors.push(message);
                     }
                 }
             }
@@ -421,16 +418,28 @@ fn prepare(
             plan.failure_recorded = true;
         }
     } else {
+        let context = if plan.origin.name == "claude-code" {
+            Some(polylogue_store::parser_context::Overlay::open(
+                archive,
+                &plan.input.id,
+                plan.parser_chain,
+                &plan.origin.reading_version(),
+                plan.parse_pos,
+            )?)
+        } else {
+            None
+        };
         while !plan.finished() {
-            let job = plan.next_job(stopped_attempt);
+            let mut job = plan.next_job(stopped_attempt);
+            job.parser_context = context.clone();
             let bytes = job.end - job.start;
             let _charge = memory.take(bytes);
             *bytes_read += bytes;
             let (batch, done) = pool::run(job, archive, blobs, false);
             if done.continuation_missing {
-                return Err(EngineError::Parse(
-                    "native parser continuation is unavailable at the admitted cursor".into(),
-                ));
+                return Err(EngineError::Parse(done.error.unwrap_or_else(|| {
+                    "native parser continuation is unavailable at the admitted cursor".into()
+                })));
             }
             if let Some(error) = &done.error {
                 return Err(if error.starts_with("parse ") {

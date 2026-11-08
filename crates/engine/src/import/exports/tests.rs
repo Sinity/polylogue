@@ -131,7 +131,7 @@ fn claude_array_keeps_message_order_separate_from_one_conversation_span() {
 
 #[cfg(feature = "faults")]
 #[test]
-fn interrupted_array_delivery_replays_stored_bytes_and_resets_record_counts() {
+fn stopped_array_delivery_replays_stored_bytes_when_the_executable_changes() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("conversations.json");
     let bytes = serde_json::to_vec(&vec![
@@ -158,8 +158,20 @@ fn interrupted_array_delivery_replays_stored_bytes_and_resets_record_counts() {
     }
     fs::remove_file(&path).unwrap();
     let (mut e, _lock) = engine(&w, 8);
+    let unchanged = e.run_pass().unwrap();
+    assert!(unchanged.errors.is_empty(), "{unchanged:?}");
+    assert_eq!(unchanged.bytes_read, 0, "{unchanged:?}");
+    assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 2);
+    assert!(texts(&w, "chatgpt:new").is_empty());
+    let config = e.config.clone();
+    let archive = e.archive.clone();
+    let mut attempt = e.stopped_attempt;
+    attempt.executable = polylogue_model::BlobHash::of(b"changed export reader executable");
+    drop(e);
+    let mut e = Engine::new(config, archive, attempt).unwrap();
     let retry = e.run_pass().unwrap();
     assert!(retry.errors.is_empty(), "{:?}", retry.errors);
+    assert_eq!(retry.bytes_stored, 0, "{retry:?}");
     assert_eq!(texts(&w, "chatgpt:old"), ["old"]);
     assert_eq!(texts(&w, "chatgpt:new"), ["new"]);
     assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 4);

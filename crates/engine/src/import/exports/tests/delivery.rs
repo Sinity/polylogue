@@ -351,7 +351,7 @@ fn trailing_whitespace_is_consumed_before_complete() {
 
 #[cfg(feature = "faults")]
 #[test]
-fn ordinary_reopen_extends_the_committed_export_prefix_without_recounting() {
+fn changed_executable_extends_the_committed_export_prefix_without_recounting() {
     use polylogue_store::fault::{self, Action};
     let home = ClaudeHome::new();
     let path = home.dir.path().join("conversations.json");
@@ -384,8 +384,21 @@ fn ordinary_reopen_extends_the_committed_export_prefix_without_recounting() {
     };
     fs::remove_file(&path).unwrap();
     let (mut engine, _lock) = engine(&home, 16);
+    let unchanged = engine.run_pass().unwrap();
+    assert!(unchanged.errors.is_empty(), "{unchanged:?}");
+    assert_eq!(unchanged.bytes_read, 0, "{unchanged:?}");
+    assert_eq!(texts(&home, "chatgpt:old"), ["old body"]);
+    assert!(texts(&home, "chatgpt:new").is_empty());
+    assert_eq!(home.count("SELECT sum(records) AS n FROM parse_state"), 2);
+    let config = engine.config.clone();
+    let archive = engine.archive.clone();
+    let mut attempt = engine.stopped_attempt;
+    attempt.executable = polylogue_model::BlobHash::of(b"changed export reader executable");
+    drop(engine);
+    let mut engine = Engine::new(config, archive, attempt).unwrap();
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(pass.bytes_stored, 0, "{pass:?}");
     assert_eq!(texts(&home, "chatgpt:old"), ["old body"]);
     assert_eq!(texts(&home, "chatgpt:new"), ["new body"]);
     assert_eq!(home.count("SELECT sum(records) AS n FROM parse_state"), 4);

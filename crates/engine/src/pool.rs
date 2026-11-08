@@ -44,6 +44,8 @@ pub struct Job {
     pub parser_state: Option<Json>,
     pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
     pub parser_chain: Option<i64>,
+    /// One privately staged replacement keeps its own context between jobs.
+    pub(crate) parser_context: Option<polylogue_store::parser_context::Overlay>,
     pub(crate) parser_deferred: bool,
     pub priority: Priority,
     /// Where the bytes come from.
@@ -491,7 +493,21 @@ pub(crate) fn run(
             }
         });
     out.raw_acquisition = acquisition.clone();
-    let context_overlay = if job.origin.name == "claude-code"
+    let context_overlay = if let Some(context) = job.parser_context.take() {
+        match context.check_source(
+            &job.input.id,
+            job.parser_chain,
+            &job.origin.reading_version(),
+            job.start,
+        ) {
+            Ok(()) => Some(context),
+            Err(error) => {
+                out.error = Some(error.to_string());
+                out.continuation_missing = true;
+                None
+            }
+        }
+    } else if job.origin.name == "claude-code"
         && !job.parser_deferred
         && (job.start == 0 || out.parser_state.is_some())
     {
@@ -632,22 +648,24 @@ pub(crate) fn run(
                         add(Stage::Store, packed.elapsed());
                         parsed.push(p);
                     }
-                    if let Some(overlay) = &context_overlay {
-                        match overlay.delta(out.parsed_upto).and_then(|delta| serde_json::to_value(delta).map_err(Into::into)) {
-                            Ok(delta) => {
-                                if let Some(state) = out.parser_state.as_mut().and_then(Json::as_object_mut) {
-                                    state.insert(polylogue_model::parser_context::FIELD.into(), delta);
-                                }
-                            }
-                            Err(error) => {
-                                out.error = Some(error.to_string());
-                                out.failure_recorded = true;
-                                return vec![failed_step(&job, error.to_string(), prepare)];
-                            }
-                        }
-                    }
                     if let Some(last) = parsed.last_mut()
                         && !matches!(last.progress, polylogue_model::batch::StepProgress::NoParserYet { .. }) {
+                        if let Some(overlay) = &context_overlay {
+                            let Some(state) = out.parser_state.as_mut().and_then(Json::as_object_mut) else {
+                                let error = "keyed parser continuation has no object state";
+                                out.error = Some(error.into());
+                                out.failure_recorded = true;
+                                return vec![failed_step(&job, error.into(), prepare)];
+                            };
+                            match overlay.checkpoint_delta(out.parsed_upto).and_then(|delta| serde_json::to_value(delta).map_err(Into::into)) {
+                                Ok(delta) => { state.insert(polylogue_model::parser_context::FIELD.into(), delta); }
+                                Err(error) => {
+                                    out.error = Some(error.to_string());
+                                    out.failure_recorded = true;
+                                    return vec![failed_step(&job, error.to_string(), prepare)];
+                                }
+                            }
+                        }
                         last.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
                             last.reading_version.clone(), last.parsed_upto, out.parser_state.clone().filter(|state| !state.is_null())));
                     }

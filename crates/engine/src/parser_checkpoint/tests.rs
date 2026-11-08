@@ -90,6 +90,7 @@ fn job(
         parser_state: None,
         stopped_attempt: None,
         parser_chain: None,
+        parser_context: None,
         parser_deferred: false,
         priority: crate::pool::Priority::Bulk,
         source: crate::pool::Bytes::File,
@@ -289,7 +290,9 @@ fn restart_reopens_an_evicted_response_and_resolves_its_native_record_alias() {
         assert!(pass.errors.is_empty(), "{pass:?}");
     }
     home.append("keyed.jsonl", &keyed_fragment("late", "response-a", "last"));
-    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+    // The later replacement spans chunks: its evicted response key must
+    // remain in the private context until the whole reading commits.
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 128);
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert!(

@@ -283,6 +283,7 @@ impl Plan {
             length,
             parser_state: self.parser_state.take(),
             parser_chain: self.parser_chain,
+            parser_context: None,
             parser_deferred: self.parser_deferred,
             priority: self.priority,
             source: self.source.clone(),

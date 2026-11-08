@@ -15,7 +15,12 @@ struct Attempt {
     index: Connection,
     input: Option<i64>,
     chain: Option<i64>,
+    source: String,
+    source_chain: Option<i64>,
     version: String,
+    /// Fixed cutoff of the admitted snapshot selected when this attempt opened.
+    lookup_through: u64,
+    /// Cursor through which this private attempt has emitted staged deltas.
     base: u64,
     replay_chain: Option<i64>,
 }
@@ -29,6 +34,8 @@ impl Overlay {
         version: &str,
         base: u64,
     ) -> Result<Self> {
+        let source = input.to_owned();
+        let source_chain = chain;
         let sql_base = sql_cursor(base)?;
         let index = crate::archive::open_read(&archive.index_db())?;
         index.execute_batch("BEGIN")?;
@@ -55,13 +62,20 @@ impl Overlay {
             }
         }
         let scratch = Connection::open("")?;
-        scratch.execute_batch("PRAGMA cache_size=-256; PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA journal_mode=OFF; CREATE TABLE changed(key TEXT PRIMARY KEY,value BLOB NOT NULL) WITHOUT ROWID;")?;
+        scratch.execute_batch("PRAGMA cache_size=-256; PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA journal_mode=OFF; CREATE TABLE entry(key TEXT PRIMARY KEY,value BLOB NOT NULL,dirty INTEGER NOT NULL) WITHOUT ROWID; CREATE INDEX entry_dirty ON entry(key) WHERE dirty=1;")?;
         Ok(Self(Arc::new(Mutex::new(Attempt {
             scratch,
             index,
-            input: if replay_chain.is_some() { None } else { input },
+            input: if base == 0 || replay_chain.is_some() {
+                None
+            } else {
+                input
+            },
             chain,
+            source,
+            source_chain,
             version: version.into(),
+            lookup_through: base,
             base: if replay_chain.is_some() { 0 } else { base },
             replay_chain,
         }))))
@@ -69,14 +83,45 @@ impl Overlay {
     pub fn replay_chain(&self) -> Option<i64> {
         self.0.lock().expect("parser context lock").replay_chain
     }
-    pub fn delta(&self, through: u64) -> Result<Delta> {
+    /// Reuse only the private continuation belonging to this exact attempt.
+    pub fn check_source(
+        &self,
+        input: &str,
+        chain: Option<i64>,
+        version: &str,
+        base: u64,
+    ) -> Result<()> {
         let attempt = self
             .0
             .lock()
             .map_err(|_| StoreError::Invalid("parser context lock poisoned".into()))?;
+        if attempt.source != input
+            || attempt.source_chain != chain
+            || attempt.version != version
+            || attempt.base != base
+        {
+            return Err(StoreError::Invalid(
+                "private parser context differs from its selected source cursor".into(),
+            ));
+        }
+        Ok(())
+    }
+    /// Seal this slice's changes while retaining prior private values for lookup.
+    /// Advancing this scratch view never advances the admitted checkpoint.
+    pub fn checkpoint_delta(&self, through: u64) -> Result<Delta> {
+        let mut attempt = self
+            .0
+            .lock()
+            .map_err(|_| StoreError::Invalid("parser context lock poisoned".into()))?;
+        sql_cursor(through)?;
+        if through < attempt.base {
+            return Err(StoreError::Invalid(
+                "private parser context cursor moved backward".into(),
+            ));
+        }
         let mut statement = attempt
             .scratch
-            .prepare("SELECT key,value FROM changed ORDER BY key")?;
+            .prepare("SELECT key,value FROM entry WHERE dirty=1 ORDER BY key")?;
         let mut rows = statement.query([])?;
         let mut entries = Vec::new();
         while let Some(row) = rows.next()? {
@@ -93,9 +138,17 @@ impl Overlay {
             };
             entries.push(Entry { key, value });
         }
+        drop(rows);
+        drop(statement);
+        let base = attempt.base;
+        attempt
+            .scratch
+            .execute("UPDATE entry SET dirty=0 WHERE dirty=1", [])?;
+        attempt.base = through;
+        attempt.replay_chain = None;
         Ok(Delta {
             version: 1,
-            base: attempt.base,
+            base,
             through,
             entries,
         })
@@ -112,7 +165,7 @@ impl Context for Overlay {
             .map_err(|_| "parser context lock poisoned".to_owned())?;
         let key = serde_json::to_string(&key).map_err(|e| e.to_string())?;
         let bytes = crate::encoding::pack_json(&value).map_err(|e| e.to_string())?;
-        attempt.scratch.execute("INSERT INTO changed VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,bytes]).map_err(|e|e.to_string())?;
+        attempt.scratch.execute("INSERT INTO entry VALUES(?1,?2,1) ON CONFLICT(key) DO UPDATE SET value=excluded.value,dirty=1",params![key,bytes]).map_err(|e|e.to_string())?;
         Ok(())
     }
 }
@@ -125,9 +178,7 @@ impl Overlay {
         let key = serde_json::to_string(key)?;
         let changed: Option<Vec<u8>> = attempt
             .scratch
-            .query_row("SELECT value FROM changed WHERE key=?1", [&key], |r| {
-                r.get(0)
-            })
+            .query_row("SELECT value FROM entry WHERE key=?1", [&key], |r| r.get(0))
             .optional()?;
         if let Some(bytes) = changed {
             return Ok(Some(crate::encoding::unpack_json(&bytes)?));
@@ -135,7 +186,7 @@ impl Overlay {
         let (Some(input), Some(chain)) = (attempt.input, attempt.chain) else {
             return Ok(None);
         };
-        let sql_base = sql_cursor(attempt.base)?;
+        let sql_base = sql_cursor(attempt.lookup_through)?;
         let row=attempt.index.query_row("SELECT value,version_hash,cursor FROM parser_context WHERE input_pk=?1 AND chain=?2 AND reading_version=?3 AND key=?4 AND cursor<=?5 ORDER BY cursor DESC LIMIT 1",params![input,chain,attempt.version,key,sql_base],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,Option<Vec<u8>>>(1)?,r.get::<_,i64>(2)?))).optional()?;
         let Some((bytes, hash, cursor)) = row else {
             return Ok(None);
