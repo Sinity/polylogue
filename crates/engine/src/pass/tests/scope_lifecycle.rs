@@ -32,6 +32,35 @@ fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
             &engine.inputs[&path].origin.reading_version(),
         )
         .unwrap();
+    let admitted_state = checkpoint
+        .as_ref()
+        .and_then(|stored| stored.checkpoint.as_ref())
+        .and_then(|checkpoint| checkpoint.parser_state.as_ref())
+        .expect("Claude continuation is admitted with its cursor")
+        .clone();
+    assert_eq!(
+        engine.inputs[&path].parser_state.as_ref(),
+        Some(&admitted_state)
+    );
+    // Fault only the process-local cache, leaving the admitted continuation
+    // untouched. Exact equality after reset distinguishes restoration from reuse.
+    engine
+        .inputs
+        .get_mut(&path)
+        .unwrap()
+        .parser_state
+        .as_mut()
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "_scope_test_stale_cache".into(),
+            Json::String("previous scope".into()),
+        );
+    assert_ne!(
+        engine.inputs[&path].parser_state.as_ref(),
+        Some(&admitted_state)
+    );
     engine.archive.advance_generation_for_test().unwrap();
     let (resumed, _) = engine.one_pass(false, &Default::default()).unwrap();
     assert!(resumed.errors.is_empty(), "{resumed:?}");
@@ -40,9 +69,10 @@ fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
     assert_eq!(engine.inputs[&path].input_id, input);
     assert_eq!(engine.inputs[&path].chain, Some(chain));
     assert_eq!(engine.inputs[&path].parsed_upto, text.len() as u64);
-    assert!(
-        engine.inputs[&path].parser_state.is_none(),
-        "old parser cache was discarded"
+    assert_eq!(
+        engine.inputs[&path].parser_state.as_ref(),
+        Some(&admitted_state),
+        "the new scope restores admitted state instead of reusing the old cache"
     );
     assert_eq!(source_rows(&engine, &input), captured);
     assert_eq!(
