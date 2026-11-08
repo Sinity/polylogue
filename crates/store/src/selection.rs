@@ -139,8 +139,6 @@ pub struct SelectionRow {
     pub values: Value,
     pub position: OrderPosition,
     pub identity: Option<RowIdentity>,
-    /// The stored observation basis, never the current clock or event time.
-    pub first_seen: Option<i64>,
     pub aggregates: BTreeMap<String, Option<f64>>,
 }
 
@@ -506,7 +504,6 @@ impl Reader<'_> {
                 .clone()
                 .or_else(|| row_target(program, &row));
             let identity = RowIdentity::from_row(program, &row);
-            let first_seen = row["_first_seen"].as_i64();
             let aggregates = aggregate_values(program, &row);
             let row_identity = target
                 .as_ref()
@@ -522,7 +519,6 @@ impl Reader<'_> {
                 target,
                 values: row,
                 identity,
-                first_seen,
                 aggregates,
                 position: OrderPosition {
                     values: order,
@@ -898,11 +894,14 @@ fn decode_kept(
             row.get(7).map_err(|error| damaged("identities", &error))?;
         let native_identity = matches!(shape, Some(polylogue_query::Shape::Rows))
             && identity_kind.as_deref() == Some("array");
-        let metadata: String = row
+        let metadata: Option<String> = row
             .get(8)
             .map_err(|error| damaged("output_metadata", &error))?;
-        let output_metadata =
-            serde_json::from_str(&metadata).map_err(|error| damaged("output_metadata", &error))?;
+        let output_metadata = metadata
+            .map(|metadata| serde_json::from_str(&metadata))
+            .transpose()
+            .map_err(|error| damaged("output_metadata", &error))?
+            .unwrap_or_default();
         let kept = polylogue_query::Kept {
             output_metadata,
             shape,

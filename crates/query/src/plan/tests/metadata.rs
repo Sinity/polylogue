@@ -30,9 +30,20 @@ fn frozen_semantic_outputs_ignore_parser_atoms_and_replay_exactly() {
         )
         .unwrap();
         let object = plan.query_object().unwrap();
-        let fields = &object.source_outputs[0].schema.fields;
-        assert!(fields.iter().any(|field| field.name == "title"));
-        assert!(!fields.iter().any(|field| field.name == "codex"));
+        let expected_columns = crate::units::spec(crate::units::Unit::Sessions)
+            .columns
+            .iter()
+            .map(|column| column.name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            object.source_outputs[0]
+                .schema
+                .fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            expected_columns
+        );
         let bytes = serde_json::to_vec(&object).unwrap();
         assert!(!String::from_utf8_lossy(&bytes).contains("match_patterns"));
         let decoded = serde_json::from_slice(&bytes).unwrap();

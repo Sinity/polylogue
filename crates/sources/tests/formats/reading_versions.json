@@ -91,10 +91,6 @@
     "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::chatgpt::VERSION=1,crate::export::VERSION=2,crate::otel_genai::VERSION=1",
     "f290b2dc965bf30d63452dd1d965600c2481bb85136c5aad59019921f6075c95"
   ],
-  "polylogue-archive-rows": [
-    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::older_archive_rows::VERSION=1",
-    "ce61a3344614f03c80f02ca3af26c9f25de0c414f2b3261f418778141316ab97"
-  ],
   "polylogue-bundle": [
     "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::export::VERSION=2,crate::polylogue_bundle::VERSION=3,polylogue_model::bundle::VERSION=1",
     "4fcb59d67ad2417a78c0e8419f36e03c5b8bac09d07d09b3a73dfd2408426706"

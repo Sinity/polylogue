@@ -53,7 +53,6 @@ pub(super) fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosit
         None,
     );
     QueryRun {
-        historical_source: None,
         id: run_id(id),
         question: Some(object.id),
         at: Timestamp::from_unix_ms(at).unwrap(),
@@ -75,7 +74,7 @@ pub(super) fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosit
                     serde_json::json!({"id":"actual-accepted-id","operation":"query","arguments":{"target":"sessions"}}),
                 ),
                 replay: ReplayBinding {
-                    bound_ast: object.executable_ast().unwrap().clone(),
+                    bound_ast: object.query.clone(),
                     source_outputs: object.source_outputs.clone(),
                     definitions: vec![],
                     context: CursorContext {
@@ -404,10 +403,6 @@ fn result_output_schemas_require_the_canonical_kept_columns() {
         .unwrap();
     assert_eq!(forged.id, actual.id);
     assert!(archive.writer.query_object(forged.clone()).is_err());
-    let mut promoted = actual.clone();
-    promoted.source_outputs[0].unproven_fields = Some(vec![]);
-    assert_eq!(promoted.id, actual.id);
-    assert!(archive.writer.query_object(promoted).is_err());
     archive.writer.query_object(actual.clone()).unwrap();
     assert!(archive.writer.query_object(forged).is_err());
     let pool = crate::ReadPool::open(&archive.archive).unwrap();

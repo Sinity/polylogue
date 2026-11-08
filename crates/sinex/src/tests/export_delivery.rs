@@ -304,13 +304,6 @@ fn unknown_export_sidecars_retain_provider_bytes_and_refuse_semantic_pending_pro
             .read_to_end(&mut bytes)
             .unwrap();
         assert_eq!(bytes, b"source bytes");
-        // Whether a reading's export is unknown follows from the captured
-        // facts; the queue record stores only the bindings themselves.
-        let records = queue_records(root.path());
-        assert!(!records.is_empty());
-        for record in records {
-            assert!(!record.contains("exports_unknown"), "{record}");
-        }
         assert!(
             reopened
                 .visit_pending_export_readings(&key, &mut |_| {
@@ -319,21 +312,4 @@ fn unknown_export_sidecars_retain_provider_bytes_and_refuse_semantic_pending_pro
                 .is_err()
         );
     }
-}
-
-/// Every immutable queue record under `root`.
-fn queue_records(root: &std::path::Path) -> Vec<String> {
-    let mut found = Vec::new();
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(directory).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.file_name().is_some_and(|name| name == "metadata.json") {
-                found.push(std::fs::read_to_string(path).unwrap());
-            }
-        }
-    }
-    found
 }

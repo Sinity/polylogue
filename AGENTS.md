@@ -145,6 +145,18 @@ pre-push hook checks formatting and crate boundaries when Rust inputs
 changed. Both take seconds. There is no hosted CI for now; `nix flake check`
 and `cargo xtask test` are written so it can be added.
 
+**What a test checks.** A test exercises behaviour a caller can observe
+through a stable interface (a command, an operation, a reader, a stored
+format) and compares it with an expected result known independently of the
+code under test: a hand-written golden, a Morrow fact, an oracle such as the
+original SQL. Code that was replaced is deleted, and its absence needs no
+test; tests describe what the product does now. Unit tests live in
+`name/tests.rs` as [docs/testing.md](docs/testing.md#test-layout) lays out.
+Assertions are exact. When an expectation changes, the commit cites the doc
+section whose behaviour changed; a failing assertion is a finding to fix at
+its cause, never one to widen until it passes. A slow test has its slowness
+fixed rather than its wait extended.
+
 **Performance is a product goal.** The targets and the overlapped
 pipeline are in `docs/architecture.md`. Measure with paired `cargo xtask bench`
 runs (before and after, same host) and report hardware-independent figures

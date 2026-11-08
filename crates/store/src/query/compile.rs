@@ -331,13 +331,7 @@ pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Progr
         actual.validate_output_metadata()?;
         if [ResultPart::Rows, ResultPart::Matches]
             .into_iter()
-            .any(|part| {
-                kept.output_schema(part) != actual.output_schema(part)
-                    || kept.output_schema(part).fields.iter().any(|field| {
-                        kept.unproven_match_policy(part, &field.name)
-                            != actual.unproven_match_policy(part, &field.name)
-                    })
-            })
+            .any(|part| kept.output_schema(part) != actual.output_schema(part))
         {
             return Err(QueryError::Unavailable {
                 what: format!("kept result {id:?} differs from its bound columns"),

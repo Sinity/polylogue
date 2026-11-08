@@ -154,17 +154,6 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
         assert_eq!(declaration.search, sinex_model::kinds::Search::None);
     }
     assert!(kind_reference("polylogue.unknown").is_err());
-    for retired in [
-        "polylogue.note",
-        "polylogue.setting",
-        "polylogue.historical_query_run",
-        "polylogue.conserved_request",
-    ] {
-        assert!(
-            kind_reference(retired).is_err(),
-            "receive-only or retired kind was registered: {retired}"
-        );
-    }
 }
 
 #[test]

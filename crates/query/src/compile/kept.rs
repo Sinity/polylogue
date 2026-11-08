@@ -7,29 +7,13 @@ impl Kept {
             message,
             position: 0,
         };
-        self.output_metadata.validate().map_err(invalid)?;
-        for (proof, columns) in [
+        for (declared, columns) in [
             (&self.output_metadata.rows, &self.columns),
             (&self.output_metadata.matches, &self.match_columns),
         ] {
-            let Some(schema) = proof.schema() else {
+            let Some(schema) = declared else {
                 continue;
             };
-            if let polylogue_model::kept::SchemaProof::Captured {
-                unproven_fields, ..
-            } = proof
-            {
-                let unique: std::collections::BTreeSet<_> = unproven_fields.iter().collect();
-                if unique.len() != unproven_fields.len()
-                    || unproven_fields
-                        .iter()
-                        .any(|name| !schema.fields.iter().any(|field| &field.name == name))
-                {
-                    return Err(invalid(
-                        "unproven kept declarations must name distinct emitted fields".into(),
-                    ));
-                }
-            }
             let unique: std::collections::BTreeSet<_> =
                 schema.fields.iter().map(|field| &field.name).collect();
             if unique.len() != schema.fields.len() || schema.fields.len() != columns.len() {
@@ -66,12 +50,12 @@ impl Kept {
         ) && self
             .output_metadata
             .rows
-            .schema()
+            .as_ref()
             .is_some_and(|schema| schema.unit.is_some())
             || self
                 .output_metadata
                 .matches
-                .schema()
+                .as_ref()
                 .is_some_and(|schema| schema.unit.is_some())
         {
             return Err(invalid(
@@ -82,15 +66,14 @@ impl Kept {
     }
 
     pub fn output_schema(&self, part: ResultPart) -> OutputSchema {
-        let (proof, columns) = match part {
+        let (declared, columns) = match part {
             ResultPart::Rows => (&self.output_metadata.rows, &self.columns),
             ResultPart::Matches => (&self.output_metadata.matches, &self.match_columns),
         };
-        let mut schema = proof
-            .schema()
-            .cloned()
+        let mut schema = declared
+            .clone()
             .unwrap_or_else(|| physical_schema(&self.unit, columns));
-        if proof.schema().is_none()
+        if declared.is_none()
             && (part == ResultPart::Matches
                 || matches!(
                     self.shape,
@@ -99,34 +82,10 @@ impl Kept {
         {
             schema.unit = None;
         }
-        let physical = physical_schema(&self.unit, columns);
-        for field in &mut schema.fields {
-            if proof.unproven_field(&field.name)
-                && let Some(known) = physical
-                    .fields
-                    .iter()
-                    .find(|known| known.name == field.name)
-            {
-                *field = known.clone();
-            }
-        }
         // Logical declarations retain no native period or pattern evidence.
         schema.main_time = None;
         schema.match_units = None;
         schema
-    }
-
-    pub fn unproven_match_policy(&self, part: ResultPart, name: &str) -> bool {
-        let (proof, columns) = match part {
-            ResultPart::Rows => (&self.output_metadata.rows, &self.columns),
-            ResultPart::Matches => (&self.output_metadata.matches, &self.match_columns),
-        };
-        proof.unproven_field(name)
-            && columns.iter().any(|column| {
-                column.name == name
-                    && (column.kind == ColKind::Text && column.reference.is_none()
-                        || column.kind == ColKind::Json)
-            })
     }
 }
 
@@ -169,44 +128,5 @@ pub(super) fn physical_schema(unit: &str, columns: &[Column]) -> OutputSchema {
             .collect(),
         main_time: None,
         match_units: None,
-    }
-}
-
-pub fn unproven_match_policy(
-    info: &query_language::scope::FieldInfo,
-    kept: &std::collections::BTreeMap<String, Kept>,
-) -> Option<(String, String)> {
-    use query_language::{
-        catalog::OutputSource,
-        scope::{Origin, TypeRule},
-    };
-    match &info.origin {
-        Origin::Output {
-            source: OutputSource::Result { reference, part },
-            field,
-        } => {
-            let id = reference.strip_prefix("result:").unwrap_or(reference);
-            kept.get(id)
-                .filter(|kept| kept.unproven_match_policy(*part, field))
-                .map(|_| (reference.clone(), field.clone()))
-        }
-        Origin::Group { input, .. } | Origin::Matched { input } => {
-            unproven_match_policy(input, kept)
-        }
-        Origin::Function {
-            arguments,
-            rule: TypeRule::Input(index),
-            ..
-        } => arguments
-            .get(*index)
-            .and_then(|input| unproven_match_policy(input, kept)),
-        Origin::Aggregate {
-            inputs,
-            rule: TypeRule::Input(index),
-            ..
-        } => inputs
-            .get(*index)
-            .and_then(|input| unproven_match_policy(input, kept)),
-        _ => None,
     }
 }

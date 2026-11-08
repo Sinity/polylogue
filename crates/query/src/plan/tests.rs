@@ -87,9 +87,7 @@ fn object_validation_refuses_forged_ast_schema_and_missing_closure() {
         .unwrap();
     let mut changed = object.clone();
     changed
-        .body
-        .query_mut()
-        .unwrap()
+        .query
         .transforms
         .push(Transform {
             span: Span::default(),
@@ -113,9 +111,7 @@ fn object_validation_refuses_forged_ast_schema_and_missing_closure() {
         .query_object()
         .unwrap();
     changed
-        .body
-        .query_mut()
-        .unwrap()
+        .query
         .transforms
         .push(Transform {
             span: Span::default(),
@@ -128,7 +124,7 @@ fn object_validation_refuses_forged_ast_schema_and_missing_closure() {
         });
     let native = crate::catalog::catalog(&[]);
     changed.normal_form =
-        identity::normal_form(changed.executable_ast().unwrap(), &native).unwrap();
+        identity::normal_form(&changed.query, &native).unwrap();
     changed.id =
         identity::question_id_from_normal_form(&changed.normal_form, &changed.parameters).unwrap();
     assert!(validate_object(&changed).is_err());
@@ -383,94 +379,4 @@ fn the_catalog_fingerprint_is_computed_once_per_process() {
     assert!(std::ptr::eq(first, catalog_fingerprint()));
     let bytes = serde_json::to_vec(&crate::catalog::catalog(&[])).unwrap();
     assert_eq!(first, blake3::hash(&bytes).to_hex().as_str());
-}
-
-#[test]
-fn captured_dependency_reuses_proven_original_identity_after_representation_change() {
-    use polylogue_model::query_objects::QueryObject;
-    use serde_json::json;
-    let span = json!({"start":0,"end":1});
-    let ast = json!({"source":{"kind":"unit","unit":"sessions","implicit":false,"condition":{"span":span,"kind":{"kind":"exists","unit":"messages","condition":null}}},"attach":[],"stages":[{"span":span,"kind":{"kind":"matches"}}]});
-    let native = crate::catalog::catalog(&[]);
-    let form =
-        polylogue_model::query_objects::evolution::legacy_normal_form(&ast, &native).unwrap();
-    let id = identity::question_id_from_normal_form(&form, &BTreeMap::new()).unwrap();
-    let migrated = QueryObject::from_structured_v1(json!({"id":id,"normal_form":form,"parameters":{},"identity_ast":ast,"source_outputs":[],"definitions":[],"dependencies":[],"edges":[]})).unwrap();
-    assert_ne!(
-        identity::normal_form(migrated.executable_ast().unwrap(), &native).unwrap(),
-        migrated.normal_form
-    );
-    let captured = replay(&migrated, catalog_fingerprint()).unwrap();
-    let mut bindings = Bindings::default();
-    bindings
-        .add_saved(
-            "retained",
-            &captured,
-            "synthetic-revision",
-            "synthetic-root",
-        )
-        .unwrap();
-    let wrapper = prepare("query:retained | limit 1", &bindings, |_| Ok(())).unwrap();
-    let wrapper = wrapper.query_object().unwrap();
-    let dependency = wrapper
-        .definitions
-        .iter()
-        .find(|node| node.question == id)
-        .unwrap();
-    assert_eq!(dependency.body, migrated.body);
-    assert_eq!(dependency.normal_form, migrated.normal_form);
-    assert!(dependency.historical_source.is_some());
-    // The hash-keyed dependency is backed by the parent's validated closure,
-    // even when its current serialization no longer hashes to the original ID.
-    let selected = Bindings {
-        saved: saved_query_bindings(&wrapper).unwrap(),
-        ..Default::default()
-    };
-    let selected = prepare(&format!("query:{id}"), &selected, |_| Ok(())).unwrap();
-    assert_eq!(selected.definitions()[0].question_id, id);
-    let selected = selected.query_object().unwrap();
-    validate_object(&selected).unwrap();
-    assert!(
-        selected
-            .definitions
-            .iter()
-            .any(|node| node.question == id && node.historical_source.is_some())
-    );
-    let mut forged = wrapper;
-    forged.definitions[0]
-        .body
-        .query_mut()
-        .unwrap()
-        .transforms
-        .clear();
-    assert!(saved_query_bindings(&forged).is_err());
-}
-
-#[test]
-fn historical_inline_edges_keep_the_proven_original_subquery_id() {
-    use polylogue_model::query_objects::QueryObject;
-    use serde_json::json;
-    let span = json!({"start":0,"end":1});
-    let child = json!({"source":{"kind":"unit","unit":"sessions","implicit":false,"condition":null},"attach":[],"stages":[{"span":span,"kind":{"kind":"fields","fields":["id"]}},{"span":span,"kind":{"kind":"limit","count":1}}]});
-    let native = crate::catalog::catalog(&[]);
-    let child_form =
-        polylogue_model::query_objects::evolution::legacy_normal_form(&child, &native).unwrap();
-    let child_id = identity::question_id_from_normal_form(&child_form, &BTreeMap::new()).unwrap();
-    let root = json!({"source":{"kind":"unit","unit":"sessions","implicit":false,"condition":{"span":span,"kind":{"kind":"in","operand":{"kind":"field","name":"id"},"query":child}}},"attach":[],"stages":[]});
-    let root_form =
-        polylogue_model::query_objects::evolution::legacy_normal_form(&root, &native).unwrap();
-    let root_id = identity::question_id_from_normal_form(&root_form, &BTreeMap::new()).unwrap();
-    let object = QueryObject::from_structured_v1(json!({"id":root_id,"normal_form":root_form,"parameters":{},"identity_ast":root,"source_outputs":[],"definitions":[{"question":child_id,"normal_form":child_form,"parameters":{},"identity_ast":child,"source_outputs":[]}],"dependencies":[child_id],"edges":[{"how":"in","query":child_id}]})).unwrap();
-    assert_ne!(
-        identity::question_id(
-            object.definitions[0].executable_ast().unwrap(),
-            &native,
-            &BTreeMap::new()
-        )
-        .unwrap(),
-        child_id
-    );
-    let plan = replay(&object, catalog_fingerprint()).unwrap();
-    assert_eq!(plan.question_id(), root_id);
-    assert_eq!(plan.query_object().unwrap().edges, object.edges);
 }

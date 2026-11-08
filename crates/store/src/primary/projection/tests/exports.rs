@@ -275,6 +275,7 @@ fn export_completion_rebuilds_shapes_with_foreign_keys_and_original_receipts() {
         .unwrap();
     }
     let (item, complete) = callbacks("v2");
+    let (other_version, _) = callbacks("v1");
     apply(&mut index, &resolver, &callback(3, "other", &item)).unwrap();
     let independent = shapes(&index, "other", "v2");
     assert_eq!(independent.len(), 1);
@@ -318,6 +319,34 @@ fn export_completion_rebuilds_shapes_with_foreign_keys_and_original_receipts() {
     apply(&mut index, &resolver, &redelivery).unwrap();
     assert_eq!(checkpoint(&index).unwrap(), Some(5));
     assert_eq!(shapes(&index, "target", "v2"), completed);
+    assert_eq!(shapes(&index, "other", "v2"), independent);
+    apply(
+        &mut index,
+        &resolver,
+        &callback(6, "target", &other_version),
+    )
+    .unwrap();
+    let older = shapes(&index, "target", "v1");
+    assert_eq!(older.len(), 1);
+    // A later lifecycle reapplication rebuilds the same retained callback
+    // sequence without accumulating counts or replacing its source receipts.
+    apply(
+        &mut index,
+        &resolver,
+        &[
+            Confirmed {
+                position: 7,
+                event: "target-v2-5-0".into(),
+                output_index: 0,
+                native: None,
+                change: ConfirmedChange::Restored,
+            },
+            barrier(7),
+        ],
+    )
+    .unwrap();
+    assert_eq!(shapes(&index, "target", "v2"), completed);
+    assert_eq!(shapes(&index, "target", "v1"), older);
     assert_eq!(shapes(&index, "other", "v2"), independent);
     assert_eq!(
         index

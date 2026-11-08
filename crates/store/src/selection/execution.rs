@@ -67,12 +67,7 @@ impl PreparedSelection<'_> {
                     root: definition.root.clone(),
                     revision: definition.revision.clone(),
                     question: definition.question_id,
-                    ast: frozen
-                        .executable_ast()
-                        .map_err(|reason| QueryError::Unavailable {
-                            what: reason.to_string(),
-                        })?
-                        .clone(),
+                    ast: frozen.query.clone(),
                 })
             })
             .collect::<Result<Vec<_>, SelectionError>>()?;

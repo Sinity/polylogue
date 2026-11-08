@@ -9,7 +9,6 @@ publish.workspace = true
 [dependencies]
 shared-signals.workspace = true
 query-language.workspace = true
-historical-query-format-v1.workspace = true
 schemars = "1"
 tempfile.workspace = true
 serde.workspace = true

@@ -200,10 +200,10 @@ pub(super) fn capture(
 /// Every stored kept result passes here, so each one can be decoded by every
 /// later preparation.
 pub(crate) fn insert_kept(conn: &Connection, value: &KeptResult) -> Result<()> {
-    let rows_json = crate::kept::evolve_body(&value.id, &value.rows_json)?;
-    crate::selection::check_kept_body(conn, &value.id, &rows_json)?;
+    crate::kept::validate_body(&value.id, &value.rows_json)?;
+    crate::selection::check_kept_body(conn, &value.id, &value.rows_json)?;
     let source = Source::of(conn)?;
-    conn.execute(&source.sql("INSERT INTO @source.kept_result(id,name,query,ran_at,read_at,rows_json) VALUES(?1,?2,?3,?4,?5,?6)"),params![value.id,value.name,value.query,value.ran_at.unix_ms(),value.read_at,rows_json])?;
+    conn.execute(&source.sql("INSERT INTO @source.kept_result(id,name,query,ran_at,read_at,rows_json) VALUES(?1,?2,?3,?4,?5,?6)"),params![value.id,value.name,value.query,value.ran_at.unix_ms(),value.read_at,value.rows_json])?;
     Ok(())
 }
 pub(super) fn insert_delivery(

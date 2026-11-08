@@ -1,9 +1,8 @@
 use super::*;
 
 #[test]
-fn repeated_source_upserts_keep_context_bodies_and_migrate_existing_markers() {
+fn repeated_source_upserts_keep_context_bodies_and_their_cleanup_markers() {
     for primary in [false, true] {
-        for upgrade in [false, true] {
             let conn = Connection::open_in_memory().unwrap();
             conn.pragma_update(None, "foreign_keys", true).unwrap();
             let ensure = if primary {
@@ -12,12 +11,6 @@ fn repeated_source_upserts_keep_context_bodies_and_migrate_existing_markers() {
                 ensure_index
             };
             ensure(&conn).unwrap();
-            if upgrade {
-                conn.execute_batch(include_str!("../index_6.sql")).unwrap();
-                conn.execute_batch(include_str!("../fixtures/index_cleanup_5.sql"))
-                    .unwrap();
-                set_version(&conn, 5).unwrap();
-            }
             conn.execute_batch(
                 "INSERT INTO input_ref(pk,id,format) VALUES(1,'context-input','claude-code');
                  INSERT INTO session(pk,id,origin,native_id,kind,changed) VALUES(1,'claude-code:context','claude-code','context','main',1);
@@ -85,7 +78,6 @@ fn repeated_source_upserts_keep_context_bodies_and_migrate_existing_markers() {
                 0
             );
             ensure(&conn).unwrap();
-        }
     }
 }
 

@@ -123,8 +123,8 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     opts.page_size = None;
     let plan = polylogue_query::compile(ask.text, &opts)?;
     let program = polylogue_store::query::lower(&plan, &opts)?;
-    let schema = plan.output_proof_for_columns(&program.columns, &opts.kept)?;
-    let mut match_schema = polylogue_model::kept::SchemaProof::Unproven;
+    let schema = plan.output_schema_for_columns(&program.columns)?;
+    let mut match_schema = None;
     let mut match_columns = vec![];
     validate(reader, &program)?;
     let mut rows = with_similarity(reader, &program, ask.near, || {
@@ -159,7 +159,7 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         && let Ok(match_plan) = polylogue_query::compile(&format!("{} | matches", ask.text), &opts)
     {
         let m = polylogue_store::query::lower(&match_plan, &opts)?;
-        match_schema = match_plan.output_proof_for_columns(&m.columns, &opts.kept)?;
+        match_schema = Some(match_plan.output_schema_for_columns(&m.columns)?);
         validate(reader, &m)?;
         let mut matches = with_similarity(reader, &m, ask.near, || Ok(reader.query_rows(&m)?))?;
         for row in &mut matches {
@@ -169,11 +169,7 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         kept["match_columns"] = json!(m.columns);
         kept["matches"] = json!(matches);
     }
-    let output_metadata = polylogue_model::kept::OutputMetadata {
-        version: polylogue_model::kept::FORMAT_VERSION,
-        rows: schema,
-        matches: match_schema,
-    };
+    let output_metadata = polylogue_model::kept::OutputMetadata::captured(schema, match_schema);
     polylogue_query::Kept {
         output_metadata: output_metadata.clone(),
         shape: Some(program.shape),

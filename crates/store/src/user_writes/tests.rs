@@ -68,7 +68,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
         serde_json::from_str(stored[0]["rows_json"].as_str().unwrap()).unwrap();
     assert_eq!(
         body,
-        serde_json::json!({"unit":"sessions","columns":[],"rows":[],"output_metadata":{"version":2,"rows":{"kind":"unproven"},"matches":{"kind":"unproven"}}})
+        serde_json::json!({"unit":"sessions","columns":[],"rows":[],})
     );
     assert_eq!(
         reader
