@@ -506,3 +506,5 @@ fn read_derived_write_keeps_its_selected_scope_after_reader_release() {
             .is_some()
     );
 }
+
+mod advisory;

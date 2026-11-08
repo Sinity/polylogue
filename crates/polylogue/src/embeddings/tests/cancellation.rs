@@ -20,9 +20,18 @@ impl Drop for Cleanup {
 }
 
 fn stalled_provider(cancel: bool) {
-    let mut daemon = crate::test_daemon::start("provider cancellation");
-    daemon.pause_signals();
-    let _held = daemon.daemon.reads.reader().unwrap();
+    // This is the Provider/ReadPool contract, not daemon worker scheduling.
+    // Exactly two real slots make a third checkout prove the provider released
+    // its reader, without competing scope/catalog/count background work.
+    let archive = polylogue_store::fixture::writer::WriterArchive::new();
+    let reads = polylogue_store::ReadPool::with_budget(&archive.archive, 2, 32 << 20).unwrap();
+    let held = reads.reader().unwrap();
+    held.query("SELECT 1", &[]).unwrap();
+    // Open both connections before starting the provider/deadline fixture.
+    {
+        let warm = reads.reader().unwrap();
+        warm.query("SELECT 1", &[]).unwrap();
+    }
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let provider = Provider {
@@ -91,7 +100,7 @@ fn stalled_provider(cancel: bool) {
                 cancellation.child(),
             );
             let reader = setup.scope(|| -> Result<_, polylogue_store::StoreError> {
-                let reader = daemon.daemon.reads.reader()?;
+                let reader = reads.reader()?;
                 reader.query("SELECT 1", &[])?;
                 Ok(reader)
             })?;
@@ -108,7 +117,7 @@ fn stalled_provider(cancel: bool) {
             result
         });
         if let Err(error) = started.recv_timeout(Duration::from_secs(5)) {
-            let slots = daemon.daemon.reads.checked_out();
+            let slots = reads.checked_out();
             cancellation.cancel();
             let result = worker.join();
             panic!(
@@ -119,7 +128,19 @@ fn stalled_provider(cancel: bool) {
         if cancel {
             cancellation.cancel();
         }
-        let elapsed = daemon.assert_slot_freed();
+        let released = Instant::now();
+        scope
+            .spawn(|| {
+                let limit = polylogue_store::read::limit::ReadLimit::new(
+                    Duration::from_secs(2),
+                    Default::default(),
+                );
+                limit.scope(|| reads.reader().map(drop)).unwrap();
+            })
+            .join()
+            .unwrap();
+        let elapsed = released.elapsed();
+        assert!(elapsed < Duration::from_secs(2));
         let result = worker.join().unwrap();
         if cancel {
             assert!(

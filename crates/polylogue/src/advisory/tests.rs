@@ -9,7 +9,7 @@ use polylogue_model::{
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicI64, Ordering};
 
-const CWD: &str = "/synthetic/repo";
+pub(crate) const CWD: &str = "/synthetic/repo";
 fn authored(w: &TestDaemon, request: Request, author: Author) -> Value {
     crate::test_answers::ok(service::handle_with_caller(
         request,
@@ -21,7 +21,7 @@ fn authored(w: &TestDaemon, request: Request, author: Author) -> Value {
         },
     ))
 }
-fn operator(w: &TestDaemon, request: Request) -> Value {
+pub(crate) fn operator(w: &TestDaemon, request: Request) -> Value {
     authored(w, request, Author::Operator)
 }
 fn operation(w: &TestDaemon) -> Arc<crate::operation::Context> {
@@ -32,7 +32,7 @@ fn operation(w: &TestDaemon) -> Arc<crate::operation::Context> {
         })
         .unwrap()
 }
-fn statement(
+pub(crate) fn statement(
     w: &TestDaemon,
     id: &str,
     kind: AssertionKind,
@@ -101,7 +101,7 @@ fn judge(w: &TestDaemon, reference: &RevisionReference, id: &str) {
         },
     );
 }
-fn selected(w: &TestDaemon, prompt: &str, cwd: &str) -> Prepared {
+pub(crate) fn selected(w: &TestDaemon, prompt: &str, cwd: &str) -> Prepared {
     let reader = w.daemon.reads.reader().unwrap();
     prepare(
         &reader,
@@ -115,7 +115,7 @@ fn selected(w: &TestDaemon, prompt: &str, cwd: &str) -> Prepared {
     )
     .unwrap()
 }
-fn fixture() -> (TestDaemon, Arc<AtomicI64>) {
+pub(crate) fn fixture() -> (TestDaemon, Arc<AtomicI64>) {
     let now = Arc::new(AtomicI64::new(1_800_000_000_000));
     let clock = Arc::clone(&now);
     let daemon = test_daemon::start_with_clock(
@@ -187,120 +187,6 @@ fn unscoped_relative_files_are_not_inferred_global_and_absolute_files_match_exac
     );
     assert!(!selected(&w, "Inspect ./src/../src/parser.rs", CWD).empty);
     assert!(selected(&w, "Inspect src/parser.rs", "/synthetic/another").empty);
-}
-
-fn call(w: &TestDaemon, id: &str, session: &str) -> Value {
-    let table = crate::protocol::operations::table(Arc::clone(&w.daemon));
-    let request = command_surface::Request {
-        operation: "advisory".into(),
-        arguments: json!({"prompt":"Inspect src/parser.rs", "cwd":CWD,"session":session}),
-        request_id: id.into(),
-        deadline: command_surface::Deadline::None,
-        budget_tokens: Default::default(),
-        cursor: None,
-        fresh: false,
-        format: Default::default(),
-    };
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let answer =
-        runtime.block_on(table.call(request, command_surface::Via::Mcp, Default::default()));
-    crate::test_answers::ok(answer)
-}
-
-#[test]
-fn advisory_cooldown_and_once_pair_history_have_distinct_lifetimes() {
-    let (mut w, now) = fixture();
-    assert!(
-        w.daemon
-            .reads
-            .reader()
-            .unwrap()
-            .session(&SessionId::parse("codex:advisory-test").unwrap())
-            .unwrap()
-            .is_none(),
-        "first-prompt recipients need not have provider capture yet"
-    );
-    statement(
-        &w,
-        "cooldown-file",
-        AssertionKind::Decision,
-        "file:src/parser.rs@fixture-commit",
-        Some("cwd:/synthetic/repo"),
-        true,
-    );
-    // Warm the real selection without preparing a delivery or reserving cooldown.
-    assert!(!selected(&w, "Inspect src/parser.rs", CWD).empty);
-    let first = call(&w, "first-advisory", "codex:advisory-test");
-    assert_eq!(first["delivery"], "first-advisory");
-    assert_eq!(
-        first["prepared"]["text"].as_str().unwrap().lines().count(),
-        1
-    );
-    assert!(
-        first["prepared"]["text"]
-            .as_str()
-            .unwrap()
-            .contains("first-advisory")
-    );
-    assert_eq!(
-        call(&w, "second-advisory", "codex:advisory-test")["prepared"]["empty"],
-        true
-    );
-    // A synchronous authored write follows the off-writer handoff and proves it committed.
-    operator(
-        &w,
-        Request::Assert {
-            request_id: "after-advisory".into(),
-            assertions: vec![NewAssertion {
-                kind: AssertionKind::Note,
-                key: None,
-                value: Some(json!("synthetic barrier")),
-                valid_until: None,
-                links: vec![NewAssertionLink {
-                    role: LinkRole::About,
-                    reference: Reference::Repo("synthetic".into()),
-                }],
-            }],
-        },
-    );
-    let row = w
-        .daemon
-        .reads
-        .reader()
-        .unwrap()
-        .delivery("first-advisory")
-        .unwrap()
-        .unwrap()
-        .0;
-    assert!(row.events.is_empty(), "preparation is not emission");
-    assert_eq!(
-        call(&w, "different-prefix-recipient", "codex:advisory")["delivery"],
-        "different-prefix-recipient",
-        "a different exact identity is not a prefix alias of the original recipient"
-    );
-    w.restart();
-    assert_eq!(
-        call(&w, "after-restart", "codex:advisory-test")["prepared"]["empty"],
-        true
-    );
-    now.fetch_add(COOLDOWN_MS + 1, Ordering::SeqCst);
-    assert!(selected(&w, "Inspect src/parser.rs", CWD).empty);
-    statement(
-        &w,
-        "different-file-decision",
-        AssertionKind::Correction,
-        "file:src/parser.rs@fixture-commit",
-        Some("cwd:/synthetic/repo"),
-        true,
-    );
-    assert!(!selected(&w, "Inspect src/parser.rs", CWD).empty);
-    assert_eq!(
-        call(&w, "after-cooldown", "codex:advisory-test")["delivery"],
-        "after-cooldown"
-    );
 }
 
 #[test]
