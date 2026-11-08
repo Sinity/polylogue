@@ -128,7 +128,8 @@ run is recorded in devkit's history database.
 
 Designed and not built yet: `cargo xtask compile` and `coverage`.
 
-A host may queue these same commands through its own job runner; the
+Pull requests and master run `cargo xtask check` on GitHub Actions; read the
+result with `gh pr checks`. A host may queue these same commands through its own job runner; the
 operator's host does so with AgentCTL, whose descriptor in `.agentctl/`
 carries only host tuning. Use it where your environment provides it; the
 commands and their results are the same either way.
