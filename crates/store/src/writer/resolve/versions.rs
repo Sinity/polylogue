@@ -786,8 +786,9 @@ impl Assertions {
                     assertions.events.insert(row.pk, values);
                 }
                 Kind::Link => {
-                    let values=index.prepare("SELECT s.input_pk,i.id,s.chain,s.arrival_rank,s.value_pk FROM link_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.link_pk=?1")?.query_map([row.pk],|r|Ok(Assertion {input:r.get(0)?,id:r.get(1)?,chain:r.get(2)?,rank:r.get(3)?,value_pk:r.get(4)?,body:Vec::new(),event:None}))?.collect::<rusqlite::Result<Vec<_>>>()?;
-                    assertions.links.insert(row.pk, values);
+                    assertions
+                        .links
+                        .insert(row.pk, link_sources(index, row.pk)?);
                 }
                 _ => {}
             }
@@ -998,28 +999,7 @@ impl Assertions {
             .iter()
             .filter(|(pk, _)| touched_links.contains(pk))
         {
-            let choice = if let Some(winner) = sources
-                .iter()
-                .min_by_key(|s| (s.rank, &s.id, std::cmp::Reverse(s.chain)))
-            {
-                let mut link: Link =
-                    crate::encoding::unpack_json(&winner.body(index, Kind::LinkValue, values)?)?;
-                for source in sources {
-                    let other: Link = crate::encoding::unpack_json(&source.body(
-                        index,
-                        Kind::LinkValue,
-                        values,
-                    )?)?;
-                    link = merge_link(link, other);
-                }
-                Some(LinkChoice {
-                    input: winner.input,
-                    chain: winner.chain,
-                    link,
-                })
-            } else {
-                None
-            };
+            let choice = choose_link(index, sources, values)?;
             choices.links.insert(pk, choice);
         }
         if values.is_some() {
@@ -1103,4 +1083,68 @@ fn merge_link(mut link: Link, other: Link) -> Link {
     link.call_id = link.call_id.into_iter().chain(other.call_id).min();
     link.evidence = link.evidence.min(other.evidence);
     link
+}
+
+fn link_sources(index: &Connection, pk: i64) -> Result<Vec<Assertion>> {
+    Ok(index.prepare("SELECT s.input_pk,i.id,s.chain,s.arrival_rank,s.value_pk FROM link_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.link_pk=?1")?
+        .query_map([pk], |r| Ok(Assertion {
+            input: r.get(0)?, id: r.get(1)?, chain: r.get(2)?, rank: r.get(3)?,
+            value_pk: r.get(4)?, body: Vec::new(), event: None,
+        }))?.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn choose_link(
+    index: &Connection,
+    sources: &[Assertion],
+    values: Option<&dyn ValueSource>,
+) -> Result<Option<LinkChoice>> {
+    let Some(winner) = sources
+        .iter()
+        .min_by_key(|s| (s.rank, &s.id, std::cmp::Reverse(s.chain)))
+    else {
+        return Ok(None);
+    };
+    let mut link: Link =
+        crate::encoding::unpack_json(&winner.body(index, Kind::LinkValue, values)?)?;
+    for source in sources {
+        let other = crate::encoding::unpack_json(&source.body(index, Kind::LinkValue, values)?)?;
+        link = merge_link(link, other);
+    }
+    Ok(Some(LinkChoice {
+        input: winner.input,
+        chain: winner.chain,
+        link,
+    }))
+}
+
+/// Index 6 -> 7, inside the schema owner's transaction. Only relations with
+/// multiple contributors could retain source-winner-dependent evidence.
+pub(crate) fn reproject_link_evidence(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    let mut candidates = tx.prepare(
+        "SELECT link_pk FROM link_source GROUP BY link_pk HAVING count(*)>1 ORDER BY link_pk",
+    )?;
+    let mut rows = candidates.query([])?;
+    let mut counter = None;
+    while let Some(row) = rows.next()? {
+        let pk: i64 = row.get(0)?;
+        let sources = link_sources(tx, pk)?;
+        let choice = choose_link(tx, &sources, None)?
+            .ok_or_else(|| StoreError::Invalid("link lost its source contributions".into()))?;
+        let changed = tx.execute(
+            "UPDATE link SET evidence=?2 WHERE pk=?1 AND evidence IS NOT ?2",
+            params![pk, choice.link.evidence],
+        )?;
+        if changed != 0 {
+            let changed_at = match counter {
+                Some(value) => value,
+                None => {
+                    let value = crate::archive::bump_counter(tx)?;
+                    counter = Some(value);
+                    value
+                }
+            };
+            tx.execute("UPDATE session SET changed=?2 WHERE id IN (SELECT parent_id FROM link WHERE pk=?1 UNION SELECT child_id FROM link WHERE pk=?1)", params![pk, changed_at])?;
+        }
+    }
+    Ok(())
 }

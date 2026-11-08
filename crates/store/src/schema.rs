@@ -92,7 +92,7 @@ impl Migration {
 pub const ARCHIVE_VERSION: u32 = 1 + ARCHIVE_MIGRATIONS.len() as u32;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 6;
+pub const INDEX_VERSION: u32 = 7;
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
 /// after the baseline ("PLG1"). A non-empty file without it was written by an
@@ -212,6 +212,10 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         if (1..=5).contains(&found) {
             tx.execute_batch(include_str!("schema/index_6.sql"))?;
             tx.execute_batch(include_str!("schema/version_cleanup.sql"))?;
+            set_version(&tx, INDEX_VERSION)?;
+        }
+        if (1..=6).contains(&found) {
+            crate::writer::resolve::versions::reproject_link_evidence(&tx)?;
             set_version(&tx, INDEX_VERSION)?;
         }
         let matches = (1..=INDEX_VERSION).contains(&found)
