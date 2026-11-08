@@ -64,6 +64,28 @@ fn caller_sql_may_only_read() {
             .unwrap(),
         vec![serde_json::json!({"c": 3, "u": "A"})]
     );
+    let temp_objects = |reader: &crate::read::Reader<'_>| {
+        reader
+            .query(
+                "SELECT type, name FROM temp.sqlite_master ORDER BY type, name",
+                &[],
+            )
+            .unwrap()
+    };
+    let databases = |reader: &crate::read::Reader<'_>| {
+        reader
+            .query("SELECT name FROM pragma_database_list ORDER BY name", &[])
+            .unwrap()
+    };
+    // The reader keeps its own temp tables; refused statements must add nothing.
+    let query_only = |reader: &crate::read::Reader<'_>| {
+        reader
+            .query("SELECT query_only FROM pragma_query_only", &[])
+            .unwrap()
+    };
+    let temp_before = temp_objects(&reader);
+    let databases_before = databases(&reader);
+    let query_only_before = query_only(&reader);
     for refused in [
         "CREATE TEMP VIEW session AS SELECT 1 AS id",
         "CREATE TEMP TABLE scratch(x)",
@@ -78,10 +100,7 @@ fn caller_sql_may_only_read() {
     }
     // Refusal leaves the shared connection as it was for ordinary reads.
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
-    assert!(
-        reader
-            .query("SELECT * FROM temp.sqlite_master", &[])
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(temp_objects(&reader), temp_before);
+    assert_eq!(databases(&reader), databases_before);
+    assert_eq!(query_only(&reader), query_only_before);
 }
