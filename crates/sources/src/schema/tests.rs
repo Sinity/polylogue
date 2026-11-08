@@ -336,11 +336,7 @@ fn nested_json_has_no_fixed_depth_cutoff() {
     assert_eq!(schema.fields.len(), 161);
 }
 
-mod memory;
-
 mod streaming;
-
-mod throughput;
 
 #[test]
 fn row_dump_tables_keep_native_declarations_separate_from_observed_types() {

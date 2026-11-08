@@ -39,7 +39,11 @@ const MAIN: &[(&str, &str)] = &[
     ("codex/state_5.sqlite", ".codex/state_5.sqlite"),
     ("hooks", ".local/state/polylogue/hooks"),
 ];
-const CLAUDE_CODE_ONLY: &[(&str, &str)] = &[("claude-code-only/claude-code", ".claude")];
+/// The parents set adds its sessions to the main Claude Code sessions #1–#4.
+const CLAUDE_CODE_ONLY: &[(&str, &str)] = &[
+    ("claude-code", ".claude"),
+    ("claude-code-only/claude-code", ".claude"),
+];
 const LIVE: &[(&str, &str)] = &[
     ("live/claude-code", ".claude"),
     ("live/codex", ".codex"),

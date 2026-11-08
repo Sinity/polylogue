@@ -88,10 +88,10 @@ same note ID, so a note is never saved twice. Read notes with
 ## Develop
 
 ```bash
-agentctl job start polylogue extension -- ci
-agentctl job start polylogue extension -- test
-agentctl job start polylogue extension -- run lint
-agentctl job start polylogue extension -- run validate
+npm --prefix extension ci
+npm --prefix extension test
+npm --prefix extension run lint
+npm --prefix extension run validate
 ```
 
 The tests run the background against a fake Chrome whose native messaging

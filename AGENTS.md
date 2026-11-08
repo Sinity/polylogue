@@ -26,9 +26,7 @@ the target and closing the difference is the work. `docs/README.md` indexes
 the pages and defines how the operator's rulings are cited. Start with `docs/architecture.md` (purpose, principles, modes, stores,
 durability, pipeline, configuration and clocks), then read the page that owns
 the area you are changing. CLI help, MCP tool schemas and module
-documentation describe the current build; the
-[reference index](docs/reference/README.md) separates current artifacts from
-planned generated pages.
+documentation describe the current build.
 
 Plans, open questions, decisions and acceptance criteria live in Beads, the
 task tracker, outside this repository. A Bead points at the doc section it
@@ -76,7 +74,6 @@ copy.
 | `crates/sources` | one declaration and one parser per origin, reading versions, markup extraction |
 | `crates/store` | every SQLite connection and all SQL: inputs, chains, versioned rows, row codecs, plan execution, migrations |
 | `crates/query` | the catalog and units, compilation to a `Plan`. No SQL |
-| `crates/assertions` | the assertion store and variants: author computation, the revision graph, judgments, Pages, pings, annotation passes |
 | `crates/render` | text, markdown and HTML over typed answers |
 | `crates/engine` | discovery, the overlapped ingest pipeline, tool-database capture, recognition, derivations |
 | `crates/sinex` | primary mode: the ledger over Sinex's producer client, the confirmed-stream consumer, Polylogue's kind declarations (behind the `sinex` feature) |
@@ -86,8 +83,7 @@ copy.
 | `xtask/` | developer commands, built on `devkit` from polylogue-sinex-common |
 | `nix/` | the NixOS and Home Manager modules and their shared settings library |
 
-`crates/assertions` does not exist yet: until it does, authored records live
-in `crates/store` and `crates/polylogue`.
+Authored records live in `crates/store` and `crates/polylogue`.
 `cargo xtask boundaries` enforces which crates may depend on which; only the
 store touches SQLite.
 
@@ -130,8 +126,7 @@ enables primary mode when its dependencies are affected; the landing check
 always runs both configurations. Every xtask
 run is recorded in devkit's history database.
 
-Designed and not built yet: `cargo xtask compile` and `coverage`, and
-`cargo xtask docs`, which regenerates `docs/reference/`.
+Designed and not built yet: `cargo xtask compile` and `coverage`.
 
 A host may queue these same commands through its own job runner; the
 operator's host does so with AgentCTL, whose descriptor in `.agentctl/`
