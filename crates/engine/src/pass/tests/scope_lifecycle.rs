@@ -6,7 +6,7 @@ fn source_rows(engine: &Engine, input: &str) -> Vec<Json> {
     engine.reads.reader().unwrap().query(
         "SELECT 'revision' AS row,number AS n,chain,length,produced AS detail FROM a.revision WHERE input=?1
          UNION ALL SELECT 'extent',offset,chain,length,hex(blob) FROM a.extent WHERE input=?1 ORDER BY row,n",
-        &[input.into()],
+        &[polylogue_store::SqlValue::Text(input.to_owned())],
     ).unwrap()
 }
 
