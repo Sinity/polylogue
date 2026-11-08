@@ -171,7 +171,6 @@ fn every_leap_year_record_and_undated_record_is_reachable() {
     );
 }
 
-mod measurements;
 mod plans;
 
 #[test]

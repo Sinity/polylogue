@@ -3,9 +3,7 @@
 These pages are Polylogue's design: its behaviour, model, formats, and
 the reasons for them. They describe the product as designed. What exists in a
 given build is described by CLI help, MCP tool schemas and module
-documentation. The [reference index](reference/README.md) distinguishes
-current artifacts from planned generated pages; the difference is work,
-tracked outside the repository. How work is done in this repository is in
+documentation. How work is done in this repository is in
 [`AGENTS.md`](../AGENTS.md).
 
 Two current-build artifacts also live here: the embedded
@@ -79,13 +77,9 @@ Every locator resolves in a primary source.
 Sinex's and polylogue-sinex-common's documentation use the same conventions
 and link here.
 
-### Generated pages
+### Generated artifacts
 
-The [planned pages](reference/README.md#planned-pages) will be rendered from
-the declarations by `cargo xtask docs`, committed and checked as goldens.
-That generator is not implemented yet. Until a reference generator exists,
-its table stays in the area page that owns the subject. Existing generated
-artifacts are changed through their declarations, not by hand.
+Generated artifacts are changed through their declarations, not by hand.
 
 ### Links
 

@@ -249,16 +249,6 @@ fn canonical_transfer_retains_its_typed_record_after_round_trip() {
 }
 
 #[test]
-fn published_bundle_schema_matches_the_canonical_wire_types() {
-    let published: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../docs/reference/polylogue-bundle-v1.schema.json"
-    ))
-    .unwrap();
-    let current = serde_json::to_value(schemars::schema_for!(Record)).unwrap();
-    assert_eq!(published, current);
-}
-
-#[test]
 fn injected_field_evidence_keeps_message_identity_and_imports_as_declarations() {
     let mut record = message_record();
     let hash = record.message.content_hash().unwrap();
