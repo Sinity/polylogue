@@ -278,8 +278,11 @@ fn parse_progress_v5_retains_exact_source_fields_and_unknown_attempt() {
 }
 
 #[test]
-fn reconstructed_progress_candidate_matches_the_independent_old_type_snapshot() {
-    let candidate: sinex_model::KindDeclaration =
-        serde_json::from_str(include_str!("progress_v5.candidate.json")).unwrap();
-    assert_eq!(candidate, *progress_v5::declaration());
+fn frozen_progress_declaration_matches_the_qualified_hash_and_old_type_oracle() {
+    let frozen = progress_v5::declaration();
+    assert_eq!(
+        frozen.definition_hash(),
+        "171c3f2bb2e4ba678d4cd6f5d7c5ccca0a8382c51bbc5c02ff174f073441df2f"
+    );
+    assert_eq!(*frozen, progress_v5::source_type_oracle());
 }

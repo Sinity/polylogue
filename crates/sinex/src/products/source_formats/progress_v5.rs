@@ -1,14 +1,17 @@
 //! Exact stored parse-progress source shape, independent of the successor enum.
 use polylogue_model::RecordCounts;
 use polylogue_store::primary::Reading;
+#[cfg(test)]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::json;
 
 /// Complete parser and authored facts; rebuilding the cache requires no parsing.
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, Deserialize)]
+#[cfg_attr(test, derive(JsonSchema))]
 #[serde(tag = "product", rename_all = "snake_case")]
-#[schemars(rename = "Product")]
+#[cfg_attr(test, schemars(rename = "Product"))]
 enum Product {
     ParseProgress {
         reading: Reading,
@@ -22,7 +25,8 @@ enum Product {
     },
 }
 
-fn build_declaration() -> sinex_model::KindDeclaration {
+#[cfg(test)]
+pub(super) fn source_type_oracle() -> sinex_model::KindDeclaration {
     use sinex_model::kinds::{FieldHint, KeyRule, Normalization, RemovedRule, Search, TimeRule};
     use sinex_model::{Class, KindDeclaration, KindRef, ReplaceRule, TimeQuality};
     let mut facts = serde_json::to_value(schemars::schema_for!(Product)).expect("stored schema");
@@ -85,7 +89,9 @@ pub(super) fn project(
 
 static DECLARATION: std::sync::LazyLock<(sinex_model::KindDeclaration, String)> =
     std::sync::LazyLock::new(|| {
-        let declaration = build_declaration();
+        let declaration: sinex_model::KindDeclaration =
+            serde_json::from_str(include_str!("progress_v5.json"))
+                .expect("frozen parse-progress source declaration");
         let hash = declaration.definition_hash();
         (declaration, hash)
     });
