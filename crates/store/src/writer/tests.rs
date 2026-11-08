@@ -1375,6 +1375,7 @@ fn a_completed_empty_index_does_not_begin_another_first_build() {
                 crate::schema::INDEX,
                 crate::coverage::SCHEMA,
                 crate::variants::SCHEMA,
+                crate::parser_context::SCHEMA,
                 crate::schema::READ_INDEXES
             ]
         )

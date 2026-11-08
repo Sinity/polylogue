@@ -6,13 +6,6 @@ fn cache(archive: &Archive) -> Connection {
     index.pragma_update(None, "journal_mode", "wal").unwrap();
     index.pragma_update(None, "foreign_keys", true).unwrap();
     crate::schema::ensure_primary_index(&index).unwrap();
-    crate::archive::generation::create(&index).unwrap();
-    index
-        .execute(
-            "INSERT INTO meta VALUES ('primary_cache','persistent-cache')",
-            [],
-        )
-        .unwrap();
     index
 }
 
@@ -82,6 +75,7 @@ fn narrowing_and_widening_reset_cached_payloads_and_require_a_new_barrier() {
             row.get(0)
         })
         .unwrap();
+    let cache_identity = super::super::cache_identity(&index).unwrap();
     let token = archive.read_scope.token().unwrap();
     assert!(reset(&mut index, &archive, &resolver, "narrow").unwrap());
     assert!(matches!(token.check(), Err(StoreError::ScopeChanged)));
@@ -112,7 +106,7 @@ fn narrowing_and_widening_reset_cached_payloads_and_require_a_new_barrier() {
     );
     assert_eq!(
         super::super::cache_identity(&index).unwrap(),
-        "persistent-cache"
+        cache_identity
     );
     assert_eq!(current(&index).unwrap().as_deref(), Some("narrow"));
     assert_ne!(
