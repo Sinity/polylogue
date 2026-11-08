@@ -206,21 +206,3 @@ Sinex's lifecycle (archive, restore, tombstone) applies to Polylogue's
 materials as to any other source's
 ([Sinex lifecycle](https://github.com/Sinity/sinex/blob/master/docs/lifecycle.md)).
 (ruling 2026-10-28, cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-27T23:14:04Z).
-
-## Laws
-
-- **crash-leaves-only-resumable-states**: killing the daemon at any point
-  between append, sync, commit and truncate leaves only the states listed
-  under [durability](#durability), and the next open resumes each with no
-  repair step; checked by fault-point kill tests.
-- **index-rebuilds-equal**: an `index.db` rebuilt from the segment log and
-  `archive.db` equals the one built incrementally, row for row.
-- **no-blob-stored-twice**: appending a blob whose hash is in the index or in
-  an uncommitted group stores nothing new.
-- **settings-never-reread**: no component reads the environment, the system
-  zone or a setting's default outside `main`; checked by constructing every
-  component from an explicit configuration in tests.
-- **same-answer-every-transport**: one operation gives the same typed answer
-  over the CLI, the socket, HTTP and MCP.
-- **no-deleting-operation**: no operation in the command table removes an
-  input, a revision or an authored record.

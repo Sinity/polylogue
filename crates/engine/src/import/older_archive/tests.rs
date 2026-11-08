@@ -109,7 +109,6 @@ fn revision_bytes(
     out
 }
 
-/// law: older-archive-round-trip
 #[test]
 fn every_class_of_row_round_trips_with_its_identity_and_bytes() {
     let mut w = setup();
@@ -307,7 +306,6 @@ fn every_class_of_row_round_trips_with_its_identity_and_bytes() {
     );
 }
 
-/// law: older-archive-every-row-accounted
 #[test]
 fn every_row_lands_or_is_refused_with_its_reason() {
     let mut w = setup();
@@ -355,7 +353,6 @@ fn every_row_lands_or_is_refused_with_its_reason() {
     assert_eq!(counts["embedded"].stored, w.older.vectors);
 }
 
-/// law: older-archive-idempotent
 #[test]
 fn importing_the_same_older_archive_again_changes_nothing() {
     let mut w = setup();
@@ -405,7 +402,6 @@ fn importing_the_same_older_archive_again_changes_nothing() {
     assert_eq!(again.classes["embedded"].present, w.older.vectors);
 }
 
-/// law: older-archive-read-only
 #[test]
 fn neither_an_import_nor_a_dry_run_writes_in_the_older_folder() {
     let mut w = setup();
@@ -416,7 +412,6 @@ fn neither_an_import_nor_a_dry_run_writes_in_the_older_folder() {
     assert_eq!(fixture::file_hashes(&w.older.root), before);
 }
 
-/// law: older-archive-dry-run
 #[test]
 fn a_dry_run_counts_every_class_and_writes_nothing_here() {
     let mut w = setup();
@@ -457,7 +452,6 @@ fn a_dry_run_counts_every_class_and_writes_nothing_here() {
     );
 }
 
-/// law: older-archive-refusals
 #[test]
 fn bytes_that_do_not_verify_refuse_the_inputs_that_cite_them_and_nothing_else() {
     let mut w = setup();
@@ -522,7 +516,6 @@ fn bytes_that_do_not_verify_refuse_the_inputs_that_cite_them_and_nothing_else() 
     );
 }
 
-/// law: older-archive-refusals
 #[test]
 fn a_location_this_archive_already_watches_as_another_input_is_refused() {
     let mut w = setup();
@@ -550,7 +543,6 @@ fn a_location_this_archive_already_watches_as_another_input_is_refused() {
     assert!(input.reason.contains("already watches"), "{}", input.reason);
 }
 
-/// law: older-archive-every-row-accounted
 #[test]
 fn a_delivery_its_own_request_could_not_store_but_an_event_request_did_counts_as_stored() {
     let mut w = setup();
@@ -608,7 +600,6 @@ fn a_delivery_its_own_request_could_not_store_but_an_event_request_did_counts_as
     }
 }
 
-/// law: older-archive-refusals
 #[test]
 fn a_refused_input_is_set_aside_with_every_row_and_its_stored_bytes() {
     let mut w = setup();

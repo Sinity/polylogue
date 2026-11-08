@@ -1,4 +1,4 @@
-//! Hand-computed temporal laws through admitted bytes, the writer and sole compiler.
+//! Hand-computed temporal cases through admitted bytes, the writer and sole compiler.
 use super::*;
 use polylogue_model::{Precision, TimeEvidence, TimeQuality};
 

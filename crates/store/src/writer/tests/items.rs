@@ -20,7 +20,6 @@ fn message(id: &str, role: Role, text: &str) -> Message {
     text_message(id, "s", role, text, Some("end_turn"))
 }
 
-/// law: pl.read.idx-same-tx
 #[test]
 fn every_committed_batch_leaves_the_index_equal_to_the_rows() {
     let w = test_archive();
@@ -57,7 +56,6 @@ fn every_committed_batch_leaves_the_index_equal_to_the_rows() {
     assert_eq!(stored(&w, "s").entries.len(), 6);
 }
 
-/// law: pl.read.page-append-stable
 #[test]
 fn an_append_moves_only_the_append_counter() {
     let w = test_archive();
@@ -98,7 +96,6 @@ fn an_append_moves_only_the_append_counter() {
     assert_matches_rows(&w, "s");
 }
 
-/// law: pl.read.page-rewrite-stale
 #[test]
 fn a_changed_earlier_message_moves_the_rewrite_version() {
     let w = test_archive();
@@ -144,7 +141,6 @@ fn a_changed_earlier_message_moves_the_rewrite_version() {
     assert_matches_rows(&w, "s");
 }
 
-/// law: pl.read.page-rewrite-stale
 #[test]
 fn a_newly_stored_parent_link_moves_the_child_rewrite_version() {
     let w = test_archive();
@@ -210,7 +206,6 @@ fn a_growing_last_message_is_an_append() {
     assert_matches_rows(&w, "s");
 }
 
-/// law: pl.read.page-append-stable
 #[test]
 fn an_event_naming_no_message_keeps_later_messages_appends() {
     let w = test_archive();

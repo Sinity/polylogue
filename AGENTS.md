@@ -19,12 +19,11 @@ working rules that apply here.
 
 ## The design of record
 
-The pages in `docs/` are Polylogue's design: behaviour, model, formats and
-laws, one page per area, each fact on one page. They describe the product as
+The pages in `docs/` are Polylogue's design: behaviour, model and formats,
+one page per area, each fact on one page. They describe the product as
 designed, not the code as it is; when the code and a page differ, the page is
 the target and closing the difference is the work. `docs/README.md` indexes
-the pages and defines how the operator's rulings are cited and how laws are
-named. Start with `docs/architecture.md` (purpose, principles, modes, stores,
+the pages and defines how the operator's rulings are cited. Start with `docs/architecture.md` (purpose, principles, modes, stores,
 durability, pipeline, configuration and clocks), then read the page that owns
 the area you are changing. CLI help, MCP tool schemas and module
 documentation describe the current build; the
@@ -131,9 +130,8 @@ enables primary mode when its dependencies are affected; the landing check
 always runs both configurations. Every xtask
 run is recorded in devkit's history database.
 
-Designed and not built yet: `cargo xtask compile` and `coverage`;
-`cargo xtask laws`, which lists each law in `docs/` with the tests whose names
-carry its key; and `cargo xtask docs`, which regenerates `docs/reference/`.
+Designed and not built yet: `cargo xtask compile` and `coverage`, and
+`cargo xtask docs`, which regenerates `docs/reference/`.
 
 A host may queue these same commands through its own job runner; the
 operator's host does so with AgentCTL, whose descriptor in `.agentctl/`
@@ -289,10 +287,10 @@ deadline lifted. "Such arbitrary limits are themselves straight-up bugs."
 `cc:62be45f2-6c40-49ce-a88e-bc566948628c:4cc20d7c-9e62-4b7a-9550-7dd97f9d48e9`).
 
 **Tests that are better than the predecessor's.** Every specified behaviour
-and every law in the pages in `docs/` has a test
+in the pages in `docs/` has a test
 that fails when the production path breaks. The valuable kinds: independent
 oracles (goldens written from format knowledge, never re-blessed from parser
-output), law suites over the Morrow archive, crash tests at real durability
+output), tests over the Morrow archive, crash tests at real durability
 boundaries, and property tests at serialization boundaries. Port the
 predecessor's cases as cases (inputs and expected outcomes), then fill the
 gaps both suites had. A test that restates a helper, asserts a mock's value,
@@ -312,7 +310,7 @@ and cleanup before raising timeouts or cutting coverage.
 - Rust, four-space indent, `rustfmt`.
 - A module is `name.rs` with its children in `name/`; no `mod.rs`.
 - Tests live in their own files, never inline; `docs/testing.md` owns their
-  layout and law names. Use synthetic inputs,
+  layout. Use synthetic inputs,
   temporary directories and `polylogue-testkit`.
 - Comments state constraints and reasons, briefly. History, status, Bead IDs
   and section numbers belong in Git and Beads.

@@ -214,7 +214,6 @@ fn states(conn: &Connection, root: &str) -> Vec<(String, bool, bool)> {
         .unwrap()
 }
 
-/// law: currency.index-equals-function
 #[test]
 fn stored_currency_keeps_every_fork_head_and_follows_withdrawal_and_restoration() {
     let conn = archive();

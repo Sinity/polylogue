@@ -254,7 +254,6 @@ fn settings(index: &Connection) -> Vec<String> {
         .unwrap()
 }
 
-/// law: user-state-rebuilds-from-stream
 #[test]
 fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_authored_state() {
     let dir = tempfile::tempdir().unwrap();

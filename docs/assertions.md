@@ -54,7 +54,7 @@ CREATE INDEX assertion_root     ON assertion(root);
 ```
 
 - **One link table.** Target, evidence, scope, origin and every relation are the same fact: this assertion points at that reference, in this role.
-- **Nothing derived is stored except two indexes.** `revision_state` holds which revisions are current and withdrawn, and `assertion_slot` which uniqueness slots each revision holds. The write that adds a record recomputes them for exactly the roots it can affect, in the same transaction, so they always equal the rule over the links (law **currency-index-equals-function**). Conflicts, judgment state, target state and work-item state are computed when read.
+- **Nothing derived is stored except two indexes.** `revision_state` holds which revisions are current and withdrawn, and `assertion_slot` which uniqueness slots each revision holds. The write that adds a record recomputes them for exactly the roots it can affect, in the same transaction, so they always equal the rule over the links. Conflicts, judgment state, target state and work-item state are computed when read.
 - **Nothing expires by itself.** `valid_until` changes how an assertion is shown; it deletes nothing. Polylogue has no deletion ([architecture.md](architecture.md#deletion)); withdrawal is itself an authored statement.
 
 ## Kinds
@@ -355,43 +355,3 @@ Page verbs are listed in [pages.md](pages.md#agents-and-pages). Every write prin
 Standalone, `assertion`, `link`, `revision_state`, `assertion_slot`, `variant` and `variant_part` live in `archive.db` and are backed up with it; there is no separate file of user state. In primary mode every authored record travels to Sinex as a `polylogue.*` record and is applied locally from the confirmed stream like every other record ([primary-mode.md](primary-mode.md)); currency follows the same rule on every machine.
 
 Performance rules: currency, conflict and withdrawn state are read from `revision_state`, which the writing transaction recomputes for the affected roots only, never by scanning all assertions per row; an assertion write never waits behind a first build for more than one writer group; markup extraction costs a declared, measured share of parsing throughput; `toc` and the other assertion reads meet the latency classes in [interfaces.md](interfaces.md#latency-classes).
-
-## Laws
-
-- **kinds-round-trip**: every kind writes and reads back its key, value and links through the daemon, the `assertions` unit and `read assertion:`; a malformed value and an unknown kind are refused with the shape error (property test over generated assertions).
-- **links-by-role**: an assertion with `about`, `evidence`, `scope` and `origin` links reads back each in its role, and `kv:` matches only `about` links at the unit's grain.
-- **highlight-changed-since**: a `highlight` on a `span:` written from the web reader and one from `::highlight` both read back on the message; after a better version of the message merges, both show "changed since".
-- **waiting-target-attaches**: a reference written before its message is stored attaches on arrival with no rewrite and fills `seen_hash`; on a completed session whose ID never appears, it counts as missing.
-- **stale-base-refused**: two revisions of one base through the daemon: the second is refused `stale`, naming the first. The law runs standalone and in primary mode against a test Sinex with the first revision still unconfirmed; the memory adapter's `create` then `str_replace` on the unconfirmed `create` succeeds, and a second `str_replace` on the old base is refused.
-- **concurrent-revisions-conflict**: the same two revisions written on two archives and imported into one give a conflict; `conflict:true` matches; a single-valued read matches neither; a revision of both resolves it.
-- **withdraw-and-restore**: with R1←R2, withdrawing R2 makes R1 current; withdrawing that withdrawal makes R2 current; withdrawing the root hides the family except under `withdrawn:*`.
-- **exact-reference-holds**: a judgment and a question naming R1 stay on R1 after R2; `judged:` on R2 is unknown.
-- **currency-ignores-order**: permuting `commit_seq` and `created_at` on a generated history gives the same set of current revisions.
-- **currency-middle-withdrawal**: with R1←R2←R3, withdrawing R2 leaves exactly R3 current with no conflict; withdrawing R3 then makes R2's predecessor chain current from the newest revision not withdrawn; withdrawing the withdrawal of R2 restores it.
-- **currency-index-equals-function**: after every write of a generated history, `revision_state` equals the shared currency function over the stored links.
-- **single-valued-bulk**: `assert outcome solved` over a two-row query is refused `single_valued_bulk` and writes nothing; over one row it revises.
-- **relation-implies-about**: an assertion with a relation link (`answers`, `challenges`, `supports`, `qualifies`, `corrects`, `blocks`) also links `about` the same revision.
-- **cardinality**: two `title` writes give one root with two revisions; a `::title` marker never changes a command-written title; `assert tag research` twice writes one assertion.
-- **stack-shown**: an agent claim, the operator's question about it at R1 and the agent's answer that `challenges` R1 all appear in `--stack`, the question still on R1 after R2.
-- **work-item-state**: `::problem(blocks=assertion:g@1)` makes goal g blocked; answering the problem unblocks it; g is achieved only after an accepted judgment of an answer.
-- **repetition-not-support**: two summaries `derived_from` one assertion count as one support; a variant of a claim changes no support or judgment count.
-- **mcp-never-operator**: MCP never records `operator`; with `toolUseId` joined to a spooled `PreToolUse` carrying `agent_id`, the author is that subagent.
-- **nearest-harness-wins**: Codex run inside Claude, with both sets of variables, is attributed to the nearest harness ancestor.
-- **terminal-author**: the CLI with a terminal and no harness records `operator`; with no terminal and no harness, `script:<unit>` or `unattributed`.
-- **web-and-extension-author**: web and extension acts record `operator`; an extension chat send records its requester's author.
-- **caller-author-refused**: any request naming an author is refused; an agent's judgment is stored with the agent as author and does not count under the default `judged-by:operator`.
-- **pass-coverage**: a pass over a kept 20-row result with 3 abstentions reports coverage 20/20 and 17 values; a disallowed value is refused; withdrawing the pass removes all 20 in one withdrawal.
-- **bulk-one-per-row**: a query-targeted `assert tag` over five sessions writes five assertions in one request and replies 5; withdrawing one leaves four.
-- **import-bad-line**: an import file with one unresolvable line writes the others and reports that line.
-- **blind-judging-hides**: `judge --blind` shows no author, origin or model before the verdict, and the stored judgment records the shuffle.
-- **agreement-denominator**: agreement over a sample of 20 with 3 abstentions reports n = 17, excluded 3.
-- **comparison-ranking**: six comparisons over four items give Bradley-Terry ranks with counts; `abstain` adds no edge.
-- **checked-claim**: the Morrow claim that an edit made the tests pass, with a sequence check, reads `holds`; without the passing run it reads `fails`; on an incomplete answer, `unknown`.
-- **marker-idempotent**: one `::finding(answers=assertion:q@1)` arriving twice through two routes, and again after a reading-version re-parse, is one assertion.
-- **marker-placement**: a marker inside a fence, a tool result or a quoted line creates nothing; an unknown kind increases the markup-error count in `status`, and nothing is echoed.
-- **marker-order-independent**: extraction in reverse input order gives identical assertions and the same single-valued winner.
-- **variant-renders-structure**: a Polish session variant with 12 block parts renders the session's structure in Polish with marks; a block without a part shows untranslated; a summary with one part of the session renders as a summary; editing the source marks it as a rendition of an earlier text.
-- **variant-view-assertions**: on the Polish view, an English note on block 3 is not shown; its Polish variant is, pointing to the original; with no variant, "1 note in the original" is shown.
-- **variants-enabled-everywhere**: `reading.variants = [translation:pl]` gives identical swapped output in `read`, the web reader and `read --to DIR`.
-- **variant-search-separate**: a Polish word matches nothing without `variant:true` or `lang:pl`.
-- **predecessor-import**: the predecessor's assertions import with none authored `operator`, and one withdrawal removes them all.

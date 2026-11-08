@@ -10,7 +10,6 @@ fn probe(hosted: bool, hooks: bool, permission_hook: bool, headless_resume: bool
     }
 }
 
-/// law: pl.live.channel-pure
 /// The channel is a function of the act, the state and the probe; an
 /// unconfirmed mechanism is refused naming the harness, never replaced by
 /// another channel.
@@ -63,7 +62,6 @@ fn the_channel_is_a_function_of_act_state_and_probe() {
     );
 }
 
-/// law: sig.trigger-never-starts-agent
 /// A notice reaches running sessions only: to a session that ended or is
 /// stale it is refused, whatever the harness offers, and never resumes it.
 #[test]

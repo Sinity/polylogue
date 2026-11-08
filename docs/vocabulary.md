@@ -274,7 +274,6 @@ generated page of the thing they belong to, or on the area page that owns them.
 ## Development
 
 - **Morrow**: the synthetic example archive in `examples/morrow/`.
-- **law**: a property a page states and tests check, named `<page>/<key>`.
 - **fault point**: a named point where a test can stop a write.
 - **scenario**: an end-to-end test against the real daemon, CLI and MCP.
 - **paired run**: a base and a change benchmarked together on one sample.

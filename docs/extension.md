@@ -89,16 +89,3 @@ The operator or an agent asks the extension to draft or send a turn in a web cha
 ## Authorship from the extension
 
 Acts made in the extension's own UI (a selection note, approving or declining a drafted turn, capture now) are authored `operator` with `via: extension`. Acts the extension performs for a request (a chat send, a backfill, a rename) carry the requester's author from the request record. The rules for computing authors are [assertions.md](assertions.md#authorship).
-
-## Laws
-
-- **fetch-stops-on-rate-limit**: the extension's own fetch and scheduling code, run against synthetic provider responses for each site, stops all fetching from a provider for `Retry-After` after a 429.
-- **large-attachment-chunked**: a 100 MB attachment is fetched in chunks and stored with a matching hash.
-- **unchanged-tabs-add-nothing**: unchanged tabs add no spool bytes over two sweeps.
-- **capture-acknowledged-after-sync**: the native host acknowledges a capture only after its append is synced; a crash after the acknowledgement loses nothing.
-- **backfill-completes-with-backoff**: a synthetic backfill of 1,000 conversations in pages of 100, with a 429 at page 4, finishes with all 1,000 and honours the backoff; a cancelled job stops within one page.
-- **instances-never-overwrite**: captures from two browser instances of the same conversation are both kept.
-- **page-messages-ignored**: a message posted by the page's own scripts never produces a capture or an action.
-- **in-page-ui-keeps-layout**: the in-page elements mount in a Shadow DOM on a fixture provider page without changing the bounding boxes of the provider's elements, and fail open when the page's structure changes.
-- **chat-action-author-is-requester**: a `chat send` requested over MCP by session S records S as the action's author; the operator's approval is recorded with the operator as its author.
-- **sent-only-when-captured**: a chat action is reported sent only after a capture contains the turn.

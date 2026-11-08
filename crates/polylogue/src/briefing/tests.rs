@@ -481,7 +481,6 @@ fn scope_of(reader: &Reader<'_>) -> SharedScopeIndex {
     scope
 }
 
-/// law: brief-reads-bounded-by-result
 /// A brief's archive reads depend on what it reports, not on how much work
 /// happened under its directory: at `/`, under a prefix holding 30,000
 /// sessions and over a million messages, in one of its subdirectories and in
@@ -573,7 +572,6 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
     }
 }
 
-/// law: brief-partial-at-deadline
 /// A brief that meets its deadline answers with the sections it has, names
 /// each section it left out with reason `deadline`, and says how to get the
 /// whole brief; it is not empty while a section produced items.

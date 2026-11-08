@@ -205,7 +205,6 @@ fn hold_writer(
     (barrier, held)
 }
 
-/// law: brief-answers-before-delivery-commit
 #[test]
 fn a_brief_answers_while_the_writer_is_held_and_its_delivery_commits_after() {
     let d = daemon_with_a_project();
@@ -239,7 +238,6 @@ fn a_brief_answers_while_the_writer_is_held_and_its_delivery_commits_after() {
     assert!(recorded(&d));
 }
 
-/// law: delivery-event-once
 #[test]
 fn a_repeated_delivery_event_is_applied_once() {
     let d = daemon_with_a_project();
@@ -267,7 +265,6 @@ fn a_repeated_delivery_event_is_applied_once() {
     assert_eq!(row.events, ["delivered"]);
 }
 
-/// law: brief-delta-after-queued-delivery
 #[test]
 fn a_compaction_brief_right_after_a_startup_brief_reports_only_what_changed_since() {
     let d = daemon_with_a_project();
@@ -300,7 +297,6 @@ fn a_compaction_brief_right_after_a_startup_brief_reports_only_what_changed_sinc
     held.join().unwrap();
 }
 
-/// law: brief-never-waits-for-the-writer-queue
 #[test]
 fn a_brief_answers_while_the_writer_queue_is_full_and_its_delivery_commits_once_later() {
     use polylogue_model::user::UserWrite;

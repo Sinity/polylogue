@@ -82,7 +82,6 @@ fn compacted() -> Vec<IndexEntry> {
     out
 }
 
-/// law: pl.read.context-view-composes
 #[test]
 fn the_newest_boundary_replaces_everything_before_it() {
     let entries = compacted();
@@ -103,7 +102,6 @@ fn the_newest_boundary_replaces_everything_before_it() {
     assert!(early.evicted.is_empty());
 }
 
-/// law: pl.read.context-view-composes
 #[test]
 fn an_incomplete_newest_boundary_never_falls_back_to_an_older_summary() {
     let mut entries = compacted();
@@ -133,7 +131,6 @@ fn an_incomplete_newest_boundary_never_falls_back_to_an_older_summary() {
     );
 }
 
-/// law: pl.read.ctx-diff-partition
 #[test]
 fn context_at_a_minus_left_plus_entered_is_context_at_b() {
     let entries = compacted();
@@ -158,7 +155,6 @@ fn context_at_a_minus_left_plus_entered_is_context_at_b() {
     }
 }
 
-/// law: pl.read.ctx-meter-state
 #[test]
 fn the_meter_is_reported_then_estimated_never_zero_for_unknown() {
     let mut reported = message("one", 1, Role::Assistant);
@@ -220,7 +216,6 @@ fn result(n: u32, call: &str) -> Vec<IndexEntry> {
     out
 }
 
-/// law: pl.read.context-view-composes
 #[test]
 fn a_microcompaction_removes_the_results_it_names_before_it() {
     let data = serde_json::json!({
