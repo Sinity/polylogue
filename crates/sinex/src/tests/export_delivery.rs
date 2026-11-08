@@ -192,7 +192,7 @@ fn export_source_length_and_callback_coordinate_distinguish_native_keys() {
         crate::kinds::kind_reference("polylogue.parse_progress")
             .unwrap()
             .version,
-        5
+        6
     );
     assert_eq!(crate::source_reference().version, 6);
     assert_eq!(
