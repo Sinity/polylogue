@@ -20,6 +20,10 @@ jobs:
       - name: Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: taiki-e/install-action@nextest
+      - name: nats-server for the Sinex client tests
+        run: |
+          curl -sSfL https://github.com/nats-io/nats-server/releases/download/v2.10.22/nats-server-v2.10.22-linux-amd64.tar.gz | tar xz
+          sudo mv nats-server-v2.10.22-linux-amd64/nats-server /usr/local/bin/
       - uses: Swatinem/rust-cache@v2
       - name: cargo xtask check
         run: cargo xtask check
