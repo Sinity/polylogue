@@ -283,30 +283,38 @@ fn answer_difference(
             Some(Value::Object(value)) => format!("object(fields={})", value.len()),
         }
     }
-    fn first(expected: Option<&Value>, actual: Option<&Value>, path: String) -> Option<String> {
+    fn differences(
+        expected: Option<&Value>,
+        actual: Option<&Value>,
+        path: String,
+        changed: &mut Vec<String>,
+    ) {
         if expected == actual {
-            return None;
+            return;
         }
         match (expected, actual) {
             (Some(Value::Object(left)), Some(Value::Object(right))) => {
                 let keys: std::collections::BTreeSet<_> = left.keys().chain(right.keys()).collect();
-                keys.into_iter().find_map(|key| {
-                    first(
+                for key in keys {
+                    differences(
                         left.get(key),
                         right.get(key),
                         format!("{path}/{}", key.replace('~', "~0").replace('/', "~1")),
-                    )
-                })
+                        changed,
+                    );
+                }
             }
-            (Some(Value::Array(left)), Some(Value::Array(right))) if left.len() == right.len() => {
-                left.iter()
-                    .zip(right)
-                    .enumerate()
-                    .find_map(|(index, (left, right))| {
-                        first(Some(left), Some(right), format!("{path}/{index}"))
-                    })
+            (Some(Value::Array(left)), Some(Value::Array(right))) => {
+                for index in 0..left.len().max(right.len()) {
+                    differences(
+                        left.get(index),
+                        right.get(index),
+                        format!("{path}/{index}"),
+                        changed,
+                    );
+                }
             }
-            _ => Some(format!(
+            _ => changed.push(format!(
                 "{path}: expected {}, actual {}",
                 summary(expected),
                 summary(actual)
@@ -323,13 +331,14 @@ fn answer_difference(
         .filter(|id| !expected.contains_key(*id))
         .take(8)
         .collect();
-    let changed = expected.iter().find_map(|(id, value)| {
-        actual
-            .get(id)
-            .and_then(|actual| first(Some(value), Some(actual), id.clone()))
-    });
+    let mut changed = Vec::new();
+    for (id, value) in expected {
+        if let Some(actual) = actual.get(id) {
+            differences(Some(value), Some(actual), id.clone(), &mut changed);
+        }
+    }
     format!(
-        "sessions expected={}, actual={}; missing(first8)={missing:?}; extra(first8)={extra:?}; first changed={changed:?}",
+        "sessions expected={}, actual={}; missing(first8)={missing:?}; extra(first8)={extra:?}; changed={changed:?}",
         expected.len(),
         actual.len()
     )
@@ -395,7 +404,29 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
                 "{pass:?}; {}",
                 running.evidence(&sinex, &archive)
             );
-            if answers(&archive).0 == expected {
+            let applied = ReadPool::open(&archive)
+                .unwrap()
+                .reader()
+                .unwrap()
+                .confirmed_checkpoint()
+                .unwrap();
+            let status = sinex.status().unwrap();
+            let actual = answers(&archive).0;
+            // Session presence retains the declared-source discovery barrier.
+            // Once all work is confirmed, semantics are an assertion, not a wait.
+            if !pass.capture_pending
+                && expected.keys().all(|id| actual.contains_key(id))
+                && status.prepared_materials == 0
+                && status.prepared_writes == 0
+                && status.owner_position.is_some()
+                && applied == status.owner_position
+            {
+                assert!(
+                    actual == expected,
+                    "confirmed imported answers differ; before import: {before_import}; current: {}; {}",
+                    answer_difference(&expected, &actual),
+                    running.evidence(&sinex, &archive)
+                );
                 break;
             }
             commits

@@ -957,9 +957,7 @@ impl Assertions {
                     Kind::LinkValue,
                     values,
                 )?)?;
-                merged.at = merged.at.into_iter().chain(previous.at).min();
-                merged.call_id = merged.call_id.into_iter().chain(previous.call_id).min();
-                merged.evidence = merged.evidence.min(previous.evidence);
+                merged = merge_link(merged, previous);
             }
             let value = resolver.value(index, Kind::LinkValue, &merged)?;
             sources.retain(|s| s.input != input_pk || s.chain != chain);
@@ -1012,8 +1010,7 @@ impl Assertions {
                         Kind::LinkValue,
                         values,
                     )?)?;
-                    link.at = link.at.into_iter().chain(other.at).min();
-                    link.call_id = link.call_id.into_iter().chain(other.call_id).min();
+                    link = merge_link(link, other);
                 }
                 Some(LinkChoice {
                     input: winner.input,
@@ -1097,4 +1094,13 @@ impl Assertion {
             |r| r.get(0),
         )?)
     }
+}
+
+// A relation's optional coordinates and evidence merge independently of which
+// contributor supplies its source membership.
+fn merge_link(mut link: Link, other: Link) -> Link {
+    link.at = link.at.into_iter().chain(other.at).min();
+    link.call_id = link.call_id.into_iter().chain(other.call_id).min();
+    link.evidence = link.evidence.min(other.evidence);
+    link
 }

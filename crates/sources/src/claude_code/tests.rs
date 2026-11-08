@@ -200,6 +200,7 @@ fn subagent_and_sidechain_sessions_link_to_their_parent() {
     assert_eq!(out.sessions[0].kind, SessionKind::Subagent);
     assert_eq!(out.links[0].kind, LinkKind::Spawn);
     assert_eq!(out.links[0].parent.native().as_str(), "s1");
+    assert_eq!(out.links[0].evidence, "agentId");
 
     let records = vec![
         json!({"type":"user","uuid":"u","sessionId":"s1","isSidechain":true,
@@ -231,6 +232,7 @@ fn an_agent_calls_result_links_the_agent_it_started() {
     assert_eq!(l.parent.native().as_str(), "s1");
     assert_eq!(l.child.native().as_str(), "agent-a9");
     assert_eq!(l.call_id.as_deref(), Some("toolu_9"));
+    assert_eq!(l.evidence, "toolUseResult.agentId");
 }
 
 #[test]
