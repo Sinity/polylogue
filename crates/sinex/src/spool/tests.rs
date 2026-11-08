@@ -280,16 +280,24 @@ fn retries_keep_exact_bytes_and_later_equal_values_are_separate_operations() {
 fn acknowledgment_is_not_the_confirmed_application_barrier() {
     let directory = tempfile::tempdir().unwrap();
     let spool = Spool::open(directory.path(), "host-a").unwrap();
+    assert!(spool.is_known_empty());
     spool.prepare(events("write", "original")).unwrap();
+    assert!(!spool.is_known_empty());
     spool.acknowledge(ack("write", false, Some(18))).unwrap();
     drop(spool);
     let spool = Spool::open(directory.path(), "host-a").unwrap();
+    assert!(
+        !spool.is_known_empty(),
+        "restart retains unpublished/unapplied ownership"
+    );
     let page = spool.pending_after(None, 1).unwrap();
     assert!(page[0].phase.is_acknowledged());
     spool.retire(&crate::tests::applied(17)).unwrap();
     assert!(spool.get("write").unwrap().is_some());
+    assert!(!spool.is_known_empty());
     spool.retire(&crate::tests::applied(18)).unwrap();
     assert!(spool.get("write").unwrap().is_none());
+    assert!(spool.is_known_empty());
 }
 
 #[test]

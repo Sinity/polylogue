@@ -3,6 +3,7 @@
 //! schema diff compares explicit local artifacts. Commands
 //! requiring a stopped daemon exit with code 6 (`daemon_required`).
 
+mod advisory;
 mod briefing;
 mod browser;
 mod cli;

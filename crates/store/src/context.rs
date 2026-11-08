@@ -276,6 +276,20 @@ impl Reader<'_> {
         Ok(Some((row, text)))
     }
 
+    /// Exact references recorded with a delivery, without reading its body.
+    pub fn delivery_refs(&self, id: &str) -> Result<Option<Vec<String>>> {
+        let refs: Option<String> = self
+            .conn()?
+            .query_row(
+                "SELECT refs_json FROM source_delivery WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        refs.map(|refs| serde_json::from_str(&refs).map_err(crate::StoreError::from))
+            .transpose()
+    }
+
     fn deliveries(&self, filter: &str, arg: &str) -> Result<Vec<DeliveryRow>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(&format!(

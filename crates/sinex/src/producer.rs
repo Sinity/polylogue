@@ -16,6 +16,14 @@ mod reading;
 mod requests;
 
 impl Sinex {
+    /// Optional advice must not mistake unpublished or unapplied producer
+    /// ownership for empty delivery history, including after restart.
+    pub fn advisory_history_ready(&self) -> bool {
+        self.spool
+            .try_lock()
+            .is_ok_and(|queue| queue.is_known_empty())
+    }
+
     pub(crate) fn send_pending(&self) {
         let result = self
             .client_operation(async |client| client.retry_prepared().await)

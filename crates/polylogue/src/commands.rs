@@ -137,7 +137,7 @@ impl Tool {
     pub fn description(self) -> &'static str {
         match self {
             Tool::Read => "Query and read the archive",
-            Tool::Context => "Briefs, recall and takeovers",
+            Tool::Context => "Briefs, recall, takeovers and file advisories",
             Tool::Note => "Assertions, saved queries, watches, settings",
             Tool::Chat => "Web chats via the browser extension",
             Tool::Act => "Acts on live sessions: ping, answer, interrupt, start, hand-off",
@@ -939,6 +939,18 @@ const WRITTEN: &[Command] = &[
             },
         ],
         action: Action::Request(requests::brief),
+        print: print::context,
+        tool: Some(Tool::Context), http: true,
+        ..CLI
+    }),
+    typed_command!(AdvisoryOperation, crate::protocol::context::Advisory, crate::protocol::context::Answer, {
+        name: "advisory",
+        reason: "Offer one operator-judged file pointer without delaying the prompt",
+        latency: command_surface::LatencyClass::Read,
+        help: "One current operator-judged decision or correction for a file named in a prompt; silent when unavailable within 20 ms or on cooldown",
+        args: &[pos("prompt", Kind::Words, "The prompt naming a file"), CWD,
+            Arg { required: true, ..opt("session", Kind::Text, "The receiving session") }],
+        action: Action::Request(requests::advisory),
         print: print::context,
         tool: Some(Tool::Context), http: true,
         ..CLI

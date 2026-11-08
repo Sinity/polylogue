@@ -276,3 +276,79 @@ mod native_capture;
 mod custody_rebuild;
 
 mod export_delivery;
+
+#[test]
+fn advisory_readiness_is_nonblocking_and_retains_pending_advice_across_restart() {
+    use polylogue_model::authored::{
+        AuthoredEffect, DeliveryChange, DeliveryRecord, PreparedRequest,
+    };
+    use polylogue_model::user::{Delivery, UserOutcome, UserWrite};
+    let root = tempfile::tempdir().unwrap();
+    let sinex = client(root.path());
+    assert!(sinex.advisory_history_ready());
+    let queue = sinex.queue().unwrap();
+    assert!(
+        !sinex.advisory_history_ready(),
+        "a busy owner means uncertainty, not empty history"
+    );
+    drop(queue);
+    let delivery = Delivery {
+        recipient_kind: "session".into(),
+        recipient_id: Some("codex:recipient".into()),
+        sender: "hook".into(),
+        event: "advice".into(),
+        cwd: Some("/synthetic/repo".into()),
+        text: "one exact file pointer".into(),
+        refs: vec![
+            "assertion:root@revision".into(),
+            "file:src/parser.rs@commit".into(),
+        ],
+        left_out: vec![],
+    };
+    let request = polylogue_store::fixture::authored::operator_request(
+        "pending-advice".into(),
+        UserWrite::Deliver(delivery.clone()),
+    );
+    let at = request.at;
+    let prepared = PreparedRequest {
+        request,
+        outcome: UserOutcome {
+            id: "pending-advice".into(),
+            repeat: false,
+            pending: false,
+        },
+        effect: AuthoredEffect {
+            deliveries: vec![DeliveryChange {
+                delivery: DeliveryRecord {
+                    signal: None,
+                    id: "pending-advice".into(),
+                    prepared: delivery,
+                    at,
+                    events: vec![],
+                },
+                added_events: vec![],
+            }],
+            ..Default::default()
+        },
+    };
+    assert!(sinex.prepare_request(&prepared).unwrap().pending);
+    assert!(!sinex.advisory_history_ready());
+    let identity = "request:pending-advice";
+    let queue = sinex.queue().unwrap();
+    let receipt = serde_json::from_value(json!({
+        "number":1,"frame":identity,"material":crate::material_id("polylogue-test",identity),"material_extents":[],
+        "admitted":[],"outcome":{},"refusal":null,"commit_seq":18
+    })).unwrap();
+    queue.acknowledge(receipt).unwrap();
+    drop(queue);
+    assert!(
+        !sinex.advisory_history_ready(),
+        "publication ACK is not confirmed application"
+    );
+    drop(sinex);
+    let reopened = client(root.path());
+    assert!(
+        !reopened.advisory_history_ready(),
+        "restart must not offer the pair again from empty projected delivery history"
+    );
+}

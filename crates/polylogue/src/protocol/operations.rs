@@ -176,7 +176,9 @@ pub(crate) fn with_budget(
 ) -> Result<crate::daemon::Request, Failure> {
     if !budget.is_default() {
         match &mut request {
-            crate::daemon::Request::Context { budget_tokens, .. } => *budget_tokens = budget,
+            crate::daemon::Request::Context {
+                ask, budget_tokens, ..
+            } if !matches!(ask, crate::briefing::Ask::Advisory { .. }) => *budget_tokens = budget,
             _ => {
                 return Err(Failure::new(
                     FailureKind::BadRequest,

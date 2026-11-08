@@ -150,7 +150,7 @@ A prompt (`UserPromptSubmit`, Gemini `BeforeAgent`, Hermes `pre_llm_call`) that 
 ## Deliveries
 
 Every hand-over of prepared content to a model or a person is a **delivery**: briefs, takeovers, recalls, packs, advisories, notices to sessions, pings, live-control acts and chat actions. A delivery records:
-- `delivery:<id>`; sender (`hook`, `mcp`, `cli`, `web`, `signal`, `ping`, `chat`); event (`session_start`, `resume`, `compaction`, `takeover`, `recall`, `pack`, `advisory`, `notice`, `ping`, `control`, `chat`);
+- `delivery:<id>`; sender (`hook`, `mcp`, `cli`, `web`, `signal`, `ping`, `chat`); event (`session_start`, `resume`, `compaction`, `takeover`, `recall`, `pack`, `advice`, `notice`, `ping`, `control`, `chat`);
 - its computed author; recipient kind and reference (session, operator, web conversation); `cwd`;
 - the exact bytes, `refs`, `left_out`, `content_hash`, and its outcome events.
 
@@ -183,9 +183,11 @@ passage again.
 
 One kind of advisory exists: a prompt naming a file path (a token with `/` or a file extension) that an operator-judged decision or correction targets gets one pointer line.
 
-- Only judged assertions trigger it.
-- At most one advisory per prompt, with a 10-minute cooldown per session, kept in daemon memory.
-- Advisories never block: the daemon answers within 20 ms from warm state, or the hook says nothing.
+- Only current, unexpired decisions and corrections with the operator’s latest exact-revision judgment accepting them trigger it. Archived assertion text is not injected: the pointer names the file and a ready `read` command.
+- A relative file target requires an explicit matching cwd or repository scope. Absolute targets match normalized absolute prompt paths. Selection performs no filesystem or Git probes.
+- At most one advisory appears per prompt, with a 10-minute cooldown per recipient session, kept in daemon memory. A hook or MCP advisory preparation’s exact assertion revision and file target are recorded in its `refs`; that pair is offered only once to that session, including when delivery is unknown. After the cooldown, a different pair may trigger; a newly judged assertion revision is a distinct pair.
+- Hooks call the typed `advisory PROMPT --cwd PATH --session SESSION` operation. Its existing delivery event is `advice`. Preparation records `prepared`; only actual hook output is acknowledged as `delivered`. An uncertain send is not retried.
+- Advisories never block: preparation is capped at 20 ms, intersected with the caller’s bound, or the hook says nothing. Cold or incomplete selection also fails open. In primary mode, pending or uncertain local producer ownership suppresses optional advice until confirmed application retires it; this uses loaded spool metadata without waiting or scanning bodies. Ordinary prompts without filepath tokens make no advisory request; explicit archived-session references take precedence and retain takeover behavior.
 
 ## Agent manual
 

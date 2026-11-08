@@ -943,6 +943,12 @@ impl Spool {
             .map(Some)
     }
 
+    /// Conservative readiness from already loaded ownership metadata. Never
+    /// rebuilds indexes or reads files on an optional caller's budget.
+    pub(crate) fn is_known_empty(&self) -> bool {
+        !self.index_dirty.get() && self.first.get() == self.next.get()
+    }
+
     /// Page size bounds returned metadata only. It never bounds the source,
     /// frame size, or number of operations that may be queued.
     pub fn pending_after(&self, after: Option<u64>, limit: usize) -> Result<Vec<Prepared>> {

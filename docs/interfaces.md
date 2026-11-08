@@ -108,6 +108,8 @@ An MCP `_meta.deadline_ms` absolute bound travels separately from the unchanged 
 
 Ruling, 2026-05-12: "I expect invocation of something so trivial as help to be IDK 100ms … querying also should be subsecond" (cc-queued:64f29439-f42d-4128-88d5-1bc327cfdbf4@2026-05-12T01:49). A missed budget is a defect in the code, not a reason to relax the number. Budgets are measured as paired benchmark runs ([testing.md](testing.md#benchmarks)); no test asserts elapsed time.
 
+The read-class `advisory` operation has a stricter preparation cap of 20 ms, intersected with its caller’s bound on every surface. Hooks send a 20 ms request and emit nothing on failure; `--deadline none` does not lift this optional-advisory cap. The accepted request envelope and identity remain unchanged.
+
 Pure writes, including imports, await their durable result without a read deadline. Mixed operations retain deadlines for their read preparation; classification follows the admitted arguments, so reading a setting remains bounded while writing it keeps its result. The HTTP admission header above still applies.
 
 **Deadlines are interactive defaults.** The CLI's socket timeout is the deadline plus 50 ms, so a hung daemon never hangs a shell. Any caller lifts a deadline (`--deadline MS`, `--deadline none`; `deadline: null` over MCP and HTTP); deadline behaviour and cancellation are in [query.md](query.md#deadlines). A timed-out aggregate prints the narrower query the planner can serve and the same query with the deadline lifted:
