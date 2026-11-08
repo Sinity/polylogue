@@ -39,6 +39,10 @@ fn call(w: &TestDaemon, id: &str, session: &str) -> Value {
             &operation,
         )
     });
+    assert!(
+        answer.failure().is_none(),
+        "advisory request {id} for {session}: {answer:?}"
+    );
     crate::test_answers::ok(answer)
 }
 

@@ -177,3 +177,63 @@ fn native_time_missing_related_metadata_keeps_unknown_truth() {
         );
     }
 }
+
+#[test]
+fn delivery_filters_read_string_refs_and_structured_omissions_without_reparsing_strings() {
+    use polylogue_model::user::{Delivery, LeftOut, UserWrite};
+    let archive = crate::fixture::writer::WriterArchive::new();
+    for (id, refs, left_out) in [
+        (
+            "advice-with-refs",
+            vec![
+                "assertion:subject@revision".into(),
+                "file:src/parser.rs@commit".into(),
+                r#"a literal \"quote\" and slash\"#.into(),
+            ],
+            vec![LeftOut {
+                what: "session:codex:other".into(),
+                reason: "budget".into(),
+            }],
+        ),
+        ("advice-without-refs", vec![], vec![]),
+    ] {
+        archive
+            .writer
+            .user(crate::fixture::authored::operator_request(
+                id.into(),
+                UserWrite::Deliver(Delivery {
+                    recipient_kind: "session".into(),
+                    recipient_id: Some("codex:not-yet-captured".into()),
+                    sender: "hook".into(),
+                    event: "advice".into(),
+                    cwd: None,
+                    text: "synthetic pointer".into(),
+                    refs,
+                    left_out,
+                }),
+            ))
+            .unwrap();
+    }
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let mut options = options();
+    options.fields = vec!["id".into()];
+    for (query, expected) in [
+        (r#"deliveries refs:"assertion:subject@revision""#, 1),
+        (r#"deliveries refs:"src/parser.rs""#, 1),
+        (r#"deliveries refs:"quote""#, 1),
+        (r#"deliveries refs:"missing""#, 0),
+        (r#"deliveries left_out:"codex:other""#, 1),
+        (r#"deliveries left_out:"budget""#, 0),
+        (r#"deliveries refs:"codex:other""#, 0),
+    ] {
+        let program = crate::query::compile(query, &options).unwrap();
+        let page = reader
+            .query_page(&program, None)
+            .unwrap_or_else(|error| panic!("{query}: {error:?}"));
+        assert_eq!(page.count, expected, "{query}");
+        if expected == 1 {
+            assert_eq!(page.rows[0]["id"], "advice-with-refs", "{query}");
+        }
+    }
+}
