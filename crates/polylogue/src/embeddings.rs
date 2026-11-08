@@ -21,6 +21,7 @@ use polylogue_store::Reader;
 use polylogue_store::vectors::{Vector, Vectors};
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 use unicode_normalization::UnicodeNormalization;
 
@@ -211,30 +212,7 @@ impl Provider {
             return Err(EmbedError::Transport(format!("HTTP {code}")));
         }
         let v: Value = response.json().await.map_err(failed)?;
-        let data = v["data"]
-            .as_array()
-            .ok_or_else(|| EmbedError::Transport(format!("no `data` in the answer: {v}")))?;
-        if data.len() != inputs.len() {
-            return Err(EmbedError::Transport(format!(
-                "{} vectors for {} inputs",
-                data.len(),
-                inputs.len()
-            )));
-        }
-        let mut out = vec![Vec::new(); inputs.len()];
-        for (i, d) in data.iter().enumerate() {
-            let idx = d["index"].as_u64().map_or(i, |x| x as usize);
-            let values: Vec<f32> = d["embedding"]
-                .as_array()
-                .ok_or_else(|| EmbedError::Transport("an item has no `embedding`".into()))?
-                .iter()
-                .map(|x| x.as_f64().unwrap_or(0.0) as f32)
-                .collect();
-            if let Some(slot) = out.get_mut(idx) {
-                *slot = unit(values);
-            }
-        }
-        Ok(out)
+        batch_vectors(&v, inputs.len())
     }
 }
 
@@ -251,14 +229,77 @@ pub enum EmbedError {
     Store(#[from] polylogue_store::StoreError),
 }
 
-fn unit(mut v: Vec<f32>) -> Vec<f32> {
-    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if n > 0.0 {
-        for x in &mut v {
-            *x /= n;
-        }
+/// Validate the complete indexed response before any vector reaches storage.
+fn batch_vectors(response: &Value, inputs: usize) -> Result<Vec<Vec<f32>>, EmbedError> {
+    let invalid = |why: &str| EmbedError::Transport(format!("invalid embedding response: {why}"));
+    let data = response
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("missing data array"))?;
+    if data.len() != inputs {
+        return Err(invalid("vector count differs from input count"));
     }
-    v
+    let mut out = vec![None; inputs];
+    let mut dimensions = None;
+    for item in data {
+        let index = item
+            .get("index")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| invalid("missing or invalid input index"))?;
+        let index = usize::try_from(index).map_err(|_| invalid("input index is out of range"))?;
+        let slot = out
+            .get_mut(index)
+            .ok_or_else(|| invalid("input index is out of range"))?;
+        if slot.is_some() {
+            return Err(invalid("duplicate input index"));
+        }
+        let values = item
+            .get("embedding")
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid("missing embedding array"))?;
+        if dimensions.is_some_and(|dimensions| dimensions != values.len()) {
+            return Err(invalid("inconsistent vector dimensions"));
+        }
+        let mut vector = Vec::with_capacity(values.len());
+        for value in values {
+            let component = value
+                .as_f64()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| invalid("a component is not a finite number"))?
+                as f32;
+            if !component.is_finite() {
+                return Err(invalid("a component is outside finite f32 range"));
+            }
+            vector.push(component);
+        }
+        let vector = unit(vector)?;
+        dimensions = Some(vector.len());
+        *slot = Some(vector);
+    }
+    out.into_iter()
+        .map(|vector| vector.ok_or_else(|| invalid("missing input index")))
+        .collect()
+}
+
+fn unit(mut values: Vec<f32>) -> Result<Vec<f32>, EmbedError> {
+    // Squaring finite f32 values in f64 preserves tiny and large vectors.
+    let norm = values
+        .iter()
+        .map(|value| {
+            let value = f64::from(*value);
+            value * value
+        })
+        .sum::<f64>()
+        .sqrt();
+    if values.is_empty() || !norm.is_finite() || norm == 0.0 {
+        return Err(EmbedError::Transport(
+            "invalid embedding response: vector has no finite nonzero norm".into(),
+        ));
+    }
+    for value in &mut values {
+        *value = (f64::from(*value) / norm) as f32;
+    }
+    Ok(values)
 }
 
 /// The text a vector is computed from: NFC, cut into chunks.
@@ -299,46 +340,80 @@ pub struct Built {
     pub texts_per_second: f64,
 }
 
-/// Every prose text not yet embedded for this provider's model, page by
-/// page; `f` returns false to stop.
-fn each_pending(
+/// Every selected prose page; `f` returns false to stop.
+fn each_prose_page(
     reader: &Reader<'_>,
-    done: &std::collections::HashSet<Vec<u8>>,
     sessions: Option<&[String]>,
-    mut f: impl FnMut(polylogue_store::vectors::ProseText) -> Result<bool, EmbedError>,
-) -> Result<u64, EmbedError> {
+    mut f: impl FnMut(Vec<polylogue_store::vectors::ProseText>) -> Result<bool, EmbedError>,
+) -> Result<(), EmbedError> {
     let mut after = 0;
-    let mut skipped = 0;
     loop {
         let page = reader.prose_texts(after, PAGE, sessions)?;
         let Some(last) = page.last() else {
-            return Ok(skipped);
+            return Ok(());
         };
         after = last.id;
-        for t in page {
-            if done.contains(&t.hash) {
-                skipped += 1;
-                continue;
-            }
-            if !f(t)? {
-                return Ok(skipped);
-            }
+        if !f(page)? {
+            return Ok(());
         }
     }
 }
 
-/// Hashes already embedded under any dimension count of this model.
-fn done_for(
+fn rejected_for(
     vectors: &Vectors,
     provider: &Provider,
-) -> Result<std::collections::HashSet<Vec<u8>>, EmbedError> {
-    let mut out = std::collections::HashSet::new();
-    for k in vectors.status()?.keys {
-        if k.key.starts_with(&provider.key_prefix()) {
-            out.extend(vectors.done(&k.key)?);
-        }
+    key: Option<&str>,
+) -> Result<HashSet<Vec<u8>>, EmbedError> {
+    // A rejection before any vector was returned has no known dimension.
+    let mut rejected = vectors.rejected(&provider.key(0))?;
+    if let Some(key) = key {
+        rejected.extend(vectors.rejected(key)?);
     }
-    Ok(out)
+    Ok(rejected)
+}
+
+fn missing_for_page(
+    vectors: &Vectors,
+    provider: &Provider,
+    key: Option<&str>,
+    rejected: &HashSet<Vec<u8>>,
+    page: &[polylogue_store::vectors::ProseText],
+) -> Result<HashMap<Vec<u8>, HashSet<u32>>, EmbedError> {
+    // Existing text rows have no normalized length metadata. Count before
+    // allocating strings, and read purchased identities once for this page.
+    let texts = page
+        .iter()
+        .filter(|text| !rejected.contains(&text.hash))
+        .map(|text| {
+            (
+                text.hash.clone(),
+                text.text.nfc().count().div_ceil(CHUNK_CHARS).max(1),
+            )
+        })
+        .collect::<Vec<_>>();
+    let key = key.map(str::to_owned).unwrap_or_else(|| provider.key(0));
+    Ok(vectors.missing_chunks(&key, &texts)?)
+}
+
+fn pending_chunks(text: &str, missing: &HashSet<u32>) -> Result<Vec<(u32, String)>, EmbedError> {
+    if missing.is_empty() {
+        return Ok(Vec::new());
+    }
+    chunks(text)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, text)| {
+            let index = match u32::try_from(index) {
+                Ok(index) => index,
+                Err(_) => {
+                    return Some(Err(EmbedError::Transport(
+                        "embedding chunk identity is out of range".into(),
+                    )));
+                }
+            };
+            missing.contains(&index).then_some(Ok((index, text)))
+        })
+        .collect()
 }
 
 pub fn preview(
@@ -348,19 +423,36 @@ pub fn preview(
     limit: Option<u64>,
 ) -> Result<Preview, EmbedError> {
     let vectors = reader.vectors()?;
-    let done = done_for(&vectors, provider)?;
+    let key = vectors.key_with_prefix(&provider.key_prefix())?;
+    let rejected = rejected_for(&vectors, provider, key.as_deref())?;
     let mut p = Preview {
         provider: provider.name().into(),
         model: provider.model.clone(),
         ..Preview::default()
     };
-    let skipped = each_pending(reader, &done, sessions, |t| {
-        p.texts += 1;
-        p.characters += t.text.chars().count() as u64;
-        p.chunks += chunks(&t.text).len() as u64;
-        Ok(limit.is_none_or(|l| p.texts < l))
+    each_prose_page(reader, sessions, |page| {
+        let missing = missing_for_page(&vectors, provider, key.as_deref(), &rejected, &page)?;
+        for text in page {
+            let pending = match missing.get(&text.hash) {
+                Some(missing) => pending_chunks(&text.text, missing)?,
+                None => Vec::new(),
+            };
+            if pending.is_empty() {
+                p.already_embedded += 1;
+                continue;
+            }
+            p.texts += 1;
+            p.characters += pending
+                .iter()
+                .map(|(_, text)| text.chars().count() as u64)
+                .sum::<u64>();
+            p.chunks += pending.len() as u64;
+            if limit.is_some_and(|limit| p.texts >= limit) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     })?;
-    p.already_embedded = skipped;
     p.tokens_estimate = p.characters.div_ceil(4);
     p.cost_usd_estimate = provider
         .price_per_mtok
@@ -376,13 +468,15 @@ pub fn build(
 ) -> Result<Built, EmbedError> {
     let started = Instant::now();
     let mut vectors = reader.vectors_writer()?;
-    let done = done_for(&vectors, provider)?;
+    let mut key = vectors.key_with_prefix(&provider.key_prefix())?;
+    let rejected = rejected_for(&vectors, provider, key.as_deref())?;
     let mut out = Built::default();
     // (text hash, chunk number, chunk text)
     let mut batch: Vec<(Vec<u8>, u32, String)> = Vec::new();
     let flush = |batch: &mut Vec<(Vec<u8>, u32, String)>,
                  out: &mut Built,
-                 vectors: &mut Vectors|
+                 vectors: &mut Vectors,
+                 selected_key: &mut Option<String>|
      -> Result<(), EmbedError> {
         if batch.is_empty() {
             return Ok(());
@@ -415,7 +509,7 @@ pub fn build(
                             values: v.remove(0),
                         }),
                         Err(EmbedError::Rejected(why)) => {
-                            let key = out.key.clone().unwrap_or_else(|| provider.key(0));
+                            let key = selected_key.clone().unwrap_or_else(|| provider.key(0));
                             vectors.fail(&key, hash, &why)?;
                             out.failed += 1;
                         }
@@ -426,6 +520,23 @@ pub fn build(
         }
         if let Some(first) = stored.first() {
             let key = provider.key(first.values.len());
+            if stored
+                .iter()
+                .any(|vector| vector.values.len() != first.values.len())
+            {
+                return Err(EmbedError::Transport(
+                    "provider returned inconsistent vector dimensions across requests".into(),
+                ));
+            }
+            if selected_key
+                .as_ref()
+                .is_some_and(|selected| selected != &key)
+            {
+                return Err(EmbedError::Transport(
+                    "provider vector dimensions differ from the selected embedding key".into(),
+                ));
+            }
+            selected_key.get_or_insert_with(|| key.clone());
             out.key.get_or_insert_with(|| key.clone());
             vectors.put(&key, &stored)?;
             out.vectors += stored.len() as u64;
@@ -433,17 +544,30 @@ pub fn build(
         batch.clear();
         Ok(())
     };
-    each_pending(reader, &done, sessions, |t| {
-        for (i, c) in chunks(&t.text).into_iter().enumerate() {
-            batch.push((t.hash.clone(), i as u32, c));
-            if batch.len() >= BATCH {
-                flush(&mut batch, &mut out, &mut vectors)?;
+    each_prose_page(reader, sessions, |page| {
+        let missing = missing_for_page(&vectors, provider, key.as_deref(), &rejected, &page)?;
+        for text in page {
+            let pending = match missing.get(&text.hash) {
+                Some(missing) => pending_chunks(&text.text, missing)?,
+                None => Vec::new(),
+            };
+            if pending.is_empty() {
+                continue;
+            }
+            for (chunk, input) in pending {
+                batch.push((text.hash.clone(), chunk, input));
+                if batch.len() >= BATCH {
+                    flush(&mut batch, &mut out, &mut vectors, &mut key)?;
+                }
+            }
+            out.texts += 1;
+            if limit.is_some_and(|limit| out.texts >= limit) {
+                return Ok(false);
             }
         }
-        out.texts += 1;
-        Ok(limit.is_none_or(|l| out.texts < l))
+        Ok(true)
     })?;
-    flush(&mut batch, &mut out, &mut vectors)?;
+    flush(&mut batch, &mut out, &mut vectors, &mut key)?;
     out.seconds = started.elapsed().as_secs_f64();
     out.texts_per_second = if out.seconds > 0.0 {
         out.texts as f64 / out.seconds

@@ -102,21 +102,63 @@ impl Vectors {
         Ok(read)
     }
 
-    /// Text hashes that already have a vector or a permanent failure for
-    /// `key`: the build skips them.
-    pub fn done(&self, key: &str) -> Result<HashSet<Vec<u8>>> {
+    /// Missing chunk identities for one exact key and a page of whole texts.
+    pub fn missing_chunks(
+        &self,
+        key: &str,
+        texts: &[(Vec<u8>, usize)],
+    ) -> Result<HashMap<Vec<u8>, HashSet<u32>>> {
         let _read = self.read_transaction()?;
-        let mut out = HashSet::new();
-        for sql in [
-            "SELECT DISTINCT text_hash FROM embedded WHERE model = ?1",
-            "SELECT text_hash FROM embed_failure WHERE model = ?1",
-        ] {
-            let mut stmt = self.conn.prepare(sql)?;
-            for h in stmt.query_map([key], |r| r.get::<_, Vec<u8>>(0))? {
-                out.insert(h?);
+        let mut missing = texts
+            .iter()
+            .map(|(hash, chunks)| {
+                let chunks = (0..*chunks)
+                    .map(|chunk| {
+                        u32::try_from(chunk).map_err(|_| {
+                            StoreError::Invalid("embedding chunk identity is out of range".into())
+                        })
+                    })
+                    .collect::<Result<HashSet<_>>>()?;
+                Ok((hash.clone(), chunks))
+            })
+            .collect::<Result<HashMap<_, _>>>()?;
+        if texts.is_empty() {
+            return Ok(missing);
+        }
+        let placeholders = (0..texts.len())
+            .map(|index| format!("?{}", index + 2))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut arguments = vec![rusqlite::types::Value::Text(key.into())];
+        arguments.extend(
+            texts
+                .iter()
+                .map(|(hash, _)| rusqlite::types::Value::Blob(hash.clone())),
+        );
+        let mut statement = self.conn.prepare_cached(&format!(
+            "SELECT text_hash,chunk FROM embedded WHERE model=?1 AND text_hash IN ({placeholders})"
+        ))?;
+        for row in statement.query_map(rusqlite::params_from_iter(arguments), |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, u32>(1)?))
+        })? {
+            let (hash, chunk) = row?;
+            if let Some(chunks) = missing.get_mut(&hash) {
+                chunks.remove(&chunk);
             }
         }
-        Ok(out)
+        Ok(missing)
+    }
+
+    /// Whole texts permanently refused for this exact embedding key.
+    pub fn rejected(&self, key: &str) -> Result<HashSet<Vec<u8>>> {
+        let _read = self.read_transaction()?;
+        let mut statement = self
+            .conn
+            .prepare_cached("SELECT text_hash FROM embed_failure WHERE model=?1")?;
+        let rejected = statement
+            .query_map([key], |row| row.get::<_, Vec<u8>>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rejected)
     }
 
     /// Stores every purchased vector, keyed by its content.

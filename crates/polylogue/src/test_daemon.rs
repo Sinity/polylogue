@@ -273,4 +273,4 @@ impl Drop for TestDaemon {
 }
 
 pub mod assets;
-mod embeddings;
+pub(crate) mod embeddings;
