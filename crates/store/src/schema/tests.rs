@@ -600,5 +600,4 @@ fn embeddings_revision_migration_preserves_paid_rows_and_rejections() {
     conn.execute("UPDATE embed_failure SET error='new rejection'", [])
         .unwrap();
     assert_eq!(revision("synthetic/1"), 4);
-
 }
