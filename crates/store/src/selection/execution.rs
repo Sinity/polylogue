@@ -80,12 +80,7 @@ impl PreparedSelection<'_> {
             );
         }
         let replay = ReplayBinding {
-            bound_ast: object
-                .body
-                .into_query()
-                .map_err(|reason| QueryError::Unavailable {
-                    what: reason.to_string(),
-                })?,
+            bound_ast: object.query,
             source_outputs: object.source_outputs,
             definitions,
             context: CursorContext {
