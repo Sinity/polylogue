@@ -150,7 +150,7 @@ fn main() -> ExitCode {
             };
         }
     }
-    let startup = match config::Startup::load(&process, overrides) {
+    let mut startup = match config::Startup::load(&process, overrides) {
         Ok(startup) => startup,
         Err(error) => return startup_error(error, process.output),
     };
@@ -164,7 +164,36 @@ fn main() -> ExitCode {
     let Some(cwd) = process.cwd.as_deref() else {
         return startup_error("the working directory is unavailable", process.output);
     };
+    if cli::needs_engine(&matches, &startup.mode) {
+        startup.stopped_attempt = match executable_attempt() {
+            Ok(attempt) => Some(attempt),
+            Err(error) => return startup_error(error, process.output),
+        };
+    }
     cli::run(&matches, &startup, cwd)
+}
+
+/// The process boundary captures the running image, rather than a build label.
+fn executable_attempt() -> std::io::Result<polylogue_model::batch::StoppedAttempt> {
+    // Opening the process image keeps the running executable even after an upgrade
+    // replaces its former path.
+    #[cfg(target_os = "linux")]
+    let file = std::fs::File::open("/proc/self/exe")?;
+    #[cfg(not(target_os = "linux"))]
+    let file = std::fs::File::open(std::env::current_exe()?)?;
+    attempt_from_executable(file)
+}
+
+fn attempt_from_executable(
+    file: std::fs::File,
+) -> std::io::Result<polylogue_model::batch::StoppedAttempt> {
+    let mut digest = blake3::Hasher::new();
+    digest.update_reader(file)?;
+    Ok(polylogue_model::batch::StoppedAttempt {
+        executable: polylogue_model::BlobHash(*digest.finalize().as_bytes()),
+        // Native parser selection currently has no configurable parser settings.
+        parser_settings: None,
+    })
 }
 
 /// The daemon and `polylogue host` write to peers that may go away, so a

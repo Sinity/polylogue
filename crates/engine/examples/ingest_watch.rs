@@ -1,5 +1,7 @@
 //! Paired ingest measurement. Run through AgentCTL's measure operation.
 //! The producer is a child process so its I/O is separate from the loop's.
+#[path = "support/mod.rs"]
+mod support;
 use polylogue_engine::{Config, Engine, LoopMsg, LoopStatus};
 use polylogue_store::{Archive, Batch, Change, InputKey, Observation, ParseStep, ReadPool, Writer};
 use serde_json::json;
@@ -76,7 +78,7 @@ fn watch(dir: &Path, seconds: u64) {
     let mut config = measurement_config(dir.join("home"));
     config.tool_dirs.clear();
     config.workers = 2;
-    let mut engine = Engine::new(config, archive).unwrap();
+    let mut engine = Engine::new(config, archive, support::stopped_attempt()).unwrap();
     let first = engine.run_pass().unwrap();
     assert!(first.errors.is_empty(), "{:?}", first.errors);
     let reads = polylogue_store::ReadPool::open(&engine.archive).unwrap();
@@ -281,7 +283,7 @@ fn restart(dir: &Path) {
     let before = io();
     let started = Instant::now();
     let (archive, _lock) = Archive::open_or_create(&dir.join("archive")).unwrap();
-    let mut engine = Engine::new(config(dir), archive).unwrap();
+    let mut engine = Engine::new(config(dir), archive, support::stopped_attempt()).unwrap();
     let result = engine.run_pass().unwrap();
     assert!(result.errors.is_empty(), "{:?}", result.errors);
     let elapsed = started.elapsed().as_secs_f64();

@@ -16,7 +16,13 @@ fn open(home: &ClaudeHome) -> (Engine, Archive, ArchiveLock, Arc<Sinex>) {
     let store = home.dir.path().join("sdk");
     let sdk = Arc::new(client(&store));
     let (archive, lock) = Archive::open_primary(&home.root, &store).unwrap();
-    let engine = Engine::on_sinex(home.config(CHUNK), archive.clone(), sdk.clone()).unwrap();
+    let engine = Engine::on_sinex(
+        home.config(CHUNK),
+        archive.clone(),
+        sdk.clone(),
+        polylogue_testkit::stopped_attempt(),
+    )
+    .unwrap();
     (engine, archive, lock, sdk)
 }
 
@@ -262,7 +268,8 @@ fn interrupted_native_capture_child() {
     )
     .unwrap();
     config.chunk = CHUNK;
-    let mut engine = Engine::on_sinex(config, archive, sdk).unwrap();
+    let mut engine =
+        Engine::on_sinex(config, archive, sdk, polylogue_testkit::stopped_attempt()).unwrap();
     engine.run_pass().unwrap();
     panic!("the actual acquisition publication boundary was not reached");
 }
@@ -792,8 +799,13 @@ fn a_deferred_database_read_error_preserves_another_files_confirmation_wait() {
         // A real stored-byte read fails. Its database must remain deferred,
         // without a new database acquisition or an active worker to wait on.
         std::fs::remove_file(store.join("segments/test.zst")).unwrap();
-        let mut engine =
-            Engine::on_sinex(home.config(CHUNK), archive.clone(), sdk.clone()).unwrap();
+        let mut engine = Engine::on_sinex(
+            home.config(CHUNK),
+            archive.clone(),
+            sdk.clone(),
+            polylogue_testkit::stopped_attempt(),
+        )
+        .unwrap();
         let pass = engine.run_pass().unwrap();
         assert!(
             pass.errors
@@ -1068,7 +1080,13 @@ fn a_gone_observation_waits_on_the_confirmed_input_through_the_capture_route() {
         .unwrap();
     drop(writer);
     std::fs::remove_file(&path).unwrap();
-    let mut engine = Engine::on_sinex(home.config(CHUNK), archive.clone(), sdk.clone()).unwrap();
+    let mut engine = Engine::on_sinex(
+        home.config(CHUNK),
+        archive.clone(),
+        sdk.clone(),
+        polylogue_testkit::stopped_attempt(),
+    )
+    .unwrap();
     let first = engine.run_pass().unwrap();
     assert!(first.capture_pending, "{first:?}");
     assert!(

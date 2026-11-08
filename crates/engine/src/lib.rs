@@ -22,6 +22,7 @@ mod watch;
 
 use databases::Databases;
 use plan::{InputState, Plan};
+use polylogue_model::batch::StoppedAttempt;
 use polylogue_sources::{ORIGINS, OriginSpec, Support};
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,
@@ -410,9 +411,8 @@ pub struct Engine {
     /// Rejected writes awaiting checkpoint reload after their plans finish.
     /// Paths excluded from every nested live scan until their readings commit.
     reparsing: HashMap<PathBuf, usize>,
-    /// Every chain whose refusal or failure the parse state records has been
-    /// offered one new read since this engine started.
-    stopped_offered: bool,
+    /// Actual executable and parser settings for stopped-work selection.
+    stopped_attempt: StoppedAttempt,
     loaded: bool,
     captures: Databases,
     wake: Option<Sender<LoopMsg>>,
@@ -435,9 +435,13 @@ impl Engine {
     }
 
     /// Starts the writer on an archive the caller has locked.
-    pub fn new(config: Config, archive: Archive) -> Result<Self, EngineError> {
+    pub fn new(
+        config: Config,
+        archive: Archive,
+        stopped_attempt: StoppedAttempt,
+    ) -> Result<Self, EngineError> {
         let writer = Writer::start(&archive)?;
-        Self::with_writer(config, archive, writer)
+        Self::with_writer(config, archive, writer, stopped_attempt)
     }
 
     /// Starts the writer on an archive Sinex holds (primary mode), opened
@@ -446,12 +450,18 @@ impl Engine {
         config: Config,
         archive: Archive,
         sinex: Arc<dyn polylogue_store::primary::Sinex>,
+        stopped_attempt: StoppedAttempt,
     ) -> Result<Self, EngineError> {
         let writer = Writer::start_on_sinex(&archive, sinex)?;
-        Self::with_writer(config, archive, writer)
+        Self::with_writer(config, archive, writer, stopped_attempt)
     }
 
-    fn with_writer(config: Config, archive: Archive, writer: Writer) -> Result<Self, EngineError> {
+    fn with_writer(
+        config: Config,
+        archive: Archive,
+        writer: Writer,
+        stopped_attempt: StoppedAttempt,
+    ) -> Result<Self, EngineError> {
         let reader_memory = config.reader_memory_per_connection()?;
         let reads = ReadPool::with_budget(&archive, 1, reader_memory)?;
         let blobs = Arc::new(archive.blobs()?);
@@ -463,7 +473,7 @@ impl Engine {
             blobs,
             inputs: HashMap::new(),
             reparsing: HashMap::new(),
-            stopped_offered: false,
+            stopped_attempt,
             loaded: false,
             captures: Databases::default(),
             wake: None,

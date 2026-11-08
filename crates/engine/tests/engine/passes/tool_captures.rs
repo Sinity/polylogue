@@ -76,7 +76,7 @@ fn daemon_continues_capture_without_a_watcher_event() {
     let w = ClaudeHome::new();
     let (archive, lock) = Archive::open_or_create(&w.root).unwrap();
     let config = w.config(64 << 20);
-    let mut engine = Engine::new(config, archive).unwrap();
+    let mut engine = Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap();
     // A first build captures whole; this one has nothing to capture.
     assert!(engine.run_pass().unwrap().errors.is_empty());
     database(&w, 4000);

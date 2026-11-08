@@ -35,6 +35,7 @@ pub(crate) fn start_runtime(
         engine,
         mode,
         polylogue_engine::Lifetime::UntilStopped,
+        Some(polylogue_testkit::stopped_attempt()),
     )
 }
 
@@ -127,6 +128,7 @@ fn start_with_clock_and_workers(
         config.clone(),
         service::ArchiveMode::Standalone,
         polylogue_engine::Lifetime::UntilStopped,
+        Some(polylogue_testkit::stopped_attempt()),
     )
     .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
@@ -185,6 +187,7 @@ impl TestDaemon {
             self.config.clone(),
             service::ArchiveMode::Standalone,
             polylogue_engine::Lifetime::UntilStopped,
+            Some(polylogue_testkit::stopped_attempt()),
         )
         .unwrap();
         self.daemon = Arc::clone(&self.runtime.daemon);

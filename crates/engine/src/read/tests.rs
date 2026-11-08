@@ -231,7 +231,7 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
     // Match the scheduler's read-ahead: retained plans are not advanced while
     // their completed jobs release the byte budget and later inputs enter.
     for plan in &mut plans {
-        pool.submit(plan.next_job());
+        pool.submit(plan.next_job(&polylogue_testkit::stopped_attempt()));
     }
     drop(pool);
     engine.writer.flush().unwrap();
@@ -264,7 +264,7 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
         done,
     );
     for plan in &mut plans {
-        pool.submit(plan.next_job());
+        pool.submit(plan.next_job(&polylogue_testkit::stopped_attempt()));
     }
     drop(pool);
     engine.writer.flush().unwrap();
@@ -333,7 +333,7 @@ fn a_new_empty_native_file_has_a_real_body_and_known_eof_without_parser_progress
         !plan.finished(),
         "an unrecorded observation is still local acquisition work"
     );
-    let mut job = plan.next_job();
+    let mut job = plan.next_job(&polylogue_testkit::stopped_attempt());
     assert_eq!(job.store_from, Some(0));
     let mut context = engine
         .sampling_context(&path, origin.name, &origin.reading_version())

@@ -116,7 +116,7 @@ impl Morrow {
     pub fn engine_with(&self, config: Config) -> (Engine, ArchiveLock) {
         let (archive, lock) = Archive::open_or_create(&self.root).expect("open the archive");
         (
-            Engine::new(config, archive).expect("start the engine"),
+            Engine::new(config, archive, crate::stopped_attempt()).expect("start the engine"),
             lock,
         )
     }

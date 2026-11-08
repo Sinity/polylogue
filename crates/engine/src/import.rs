@@ -445,7 +445,17 @@ impl Engine {
         let progress = reader
             .input_progress(&input.id)?
             .ok_or_else(|| std::io::Error::other("a stored import has no revision"))?;
-        if (progress.parsed_upto == size || progress.waiting) && progress.parsed {
+        let version = origin.reading_version();
+        let reading = reader.parser_checkpoint(&input.id, stored.chain, &version)?;
+        if (progress.parsed_upto == size || progress.waiting)
+            && progress.parsed
+            && reading.as_ref().is_some_and(|reading| {
+                reading.reading_version == version
+                    && (!reading.progress.stopped()
+                        || (reading.progress.at_length() == Some(size)
+                            && reading.stopped_attempt == Some(self.stopped_attempt)))
+            })
+        {
             return Ok(None);
         }
         let chain = reader.stored_chain(&input.id, stored.chain, size)?;

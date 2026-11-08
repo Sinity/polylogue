@@ -168,7 +168,13 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
     let (archive, _lock) = Archive::open_primary(&example.root, &running.config.store).unwrap();
     let mut settings = example.config();
     settings.home = home.to_path_buf();
-    let mut engine = Engine::on_sinex(settings, archive.clone(), sinex.clone()).unwrap();
+    let mut engine = Engine::on_sinex(
+        settings,
+        archive.clone(),
+        sinex.clone(),
+        polylogue_testkit::stopped_attempt(),
+    )
+    .unwrap();
     let commits = engine.writer().unwrap().completion_commits();
     let started = Instant::now();
     loop {
@@ -360,8 +366,13 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     phase("built on Sinex");
     {
         let (archive, _lock) = Archive::open_primary(&example.root, &running.config.store).unwrap();
-        let mut engine =
-            Engine::on_sinex(example.config(), archive.clone(), sinex.clone()).unwrap();
+        let mut engine = Engine::on_sinex(
+            example.config(),
+            archive.clone(),
+            sinex.clone(),
+            polylogue_testkit::stopped_attempt(),
+        )
+        .unwrap();
         let commits = engine.writer().unwrap().completion_commits();
         let before_import = answer_difference(&expected, &answers(&archive).0);
         let imported = example.import_exports(&mut engine).unwrap();

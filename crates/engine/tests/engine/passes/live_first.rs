@@ -31,7 +31,7 @@ fn a_spool_file_arriving_mid_pass_is_stored_before_the_backlog_ends() {
     config.live_every = std::time::Duration::ZERO;
     let spool = config.spool_dir(polylogue_sources::hook_spool::ORIGIN);
     let (archive, lock) = Archive::open_or_create(&w.root).unwrap();
-    let mut engine = Engine::new(config, archive).unwrap();
+    let mut engine = Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap();
     let pass = std::thread::spawn(move || {
         let pass = engine.run_pass();
         drop(lock);

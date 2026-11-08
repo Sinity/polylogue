@@ -34,6 +34,7 @@ impl Engine {
         step.reset = false;
         step.progress = polylogue_model::batch::StepProgress::Failed { error };
         step.reading_version = plan.origin.reading_version();
+        step.stopped_attempt = Some(self.stopped_attempt);
         step.prepare();
         let batch = polylogue_store::Batch {
             required_disposition: None,
@@ -816,11 +817,7 @@ impl Engine {
                     | polylogue_store::ReadingContract::RawOnly { .. } => None,
                 })
                 .collect::<Vec<_>>(),
-            if std::mem::replace(&mut self.stopped_offered, true) {
-                polylogue_store::StoppedChains::Settled
-            } else {
-                polylogue_store::StoppedChains::Retry
-            },
+            polylogue_store::StoppedChains::ForAttempt(self.stopped_attempt),
         )?;
         let mut replacements = Vec::new();
         let mut rounds: Vec<Vec<Plan>> = Vec::new();
@@ -862,10 +859,11 @@ impl Engine {
                         continue;
                     };
                     let st = &self.inputs[path];
-                    // A chain whose failure or refusal the parse state records
-                    // at this length is not behind; one no record holds waits
-                    // for changed bytes.
-                    if c.current && (!c.reading_changed || st.unread.is_some()) {
+                    // Current ordinary work belongs to stored_plan. The query
+                    // also selects a stopped attempt whose dependencies changed.
+                    if c.current
+                        && ((!c.reading_changed && !c.stopped_at_length) || st.unread.is_some())
+                    {
                         continue;
                     }
                     (path.clone(), st.origin)
@@ -879,7 +877,9 @@ impl Engine {
                 .then(|| self.inputs.get(&path).and_then(|st| st.facts))
                 .flatten();
             let mut reading_state = state.clone();
-            if c.reading_changed {
+            if c.reading_changed || c.stopped_at_length {
+                // A newly eligible stopped attempt can have no checkpoint at
+                // its failed cursor. Replace its reading from retained bytes.
                 reading_state.parsed = false;
                 reading_state.parsed_upto = 0;
             }
@@ -902,7 +902,7 @@ impl Engine {
             if c.current && origin.arrival == polylogue_sources::Arrival::Live {
                 plan.priority = Priority::Live;
             }
-            if state.parsed && c.reading_changed {
+            if state.parsed && (c.reading_changed || c.stopped_at_length) {
                 replacements.push(plan);
                 continue;
             }
@@ -1196,7 +1196,7 @@ impl Engine {
                 if !self.load_stored(&mut plan)? {
                     continue;
                 }
-                let mut job = plan.next_job();
+                let mut job = plan.next_job(&self.stopped_attempt);
                 if matches!(job.source, pool::Bytes::File) {
                     let mut context =
                         if plan.raw.is_none() && !plan.storing_started && plan.basis.is_some() {

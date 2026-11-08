@@ -1,5 +1,7 @@
 //! Compare a first build and one origin's re-parse in separate processes.
 //! Run through AgentCTL's measure operation over an isolated sample home.
+#[path = "support/mod.rs"]
+mod support;
 use polylogue_engine::{Config, Engine};
 use polylogue_store::{Archive, ReadPool};
 use serde_json::{Value, json};
@@ -59,7 +61,7 @@ fn main() {
         .and_then(|out| String::from_utf8(out.stdout).ok())
         .and_then(|out| out.trim().parse::<u64>().ok());
     let setup = Instant::now();
-    let mut engine = Engine::new(config, archive.clone()).unwrap();
+    let mut engine = Engine::new(config, archive.clone(), support::stopped_attempt()).unwrap();
     let setup_seconds = setup.elapsed().as_secs_f64();
     let before = io();
     let load_before = fs::read_to_string("/proc/loadavg").ok();

@@ -81,7 +81,7 @@ fn engine(w: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
         live_every: Duration::from_secs(2),
         reads_sources: true,
     };
-    let engine = Engine::new(config, archive).unwrap();
+    let engine = Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap();
     (engine, _lock)
 }
 

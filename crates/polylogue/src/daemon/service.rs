@@ -1829,6 +1829,18 @@ pub enum ArchiveMode {
     },
 }
 
+impl ArchiveMode {
+    pub(crate) fn needs_engine(&self) -> bool {
+        match self {
+            Self::Standalone => true,
+            #[cfg(feature = "sinex")]
+            Self::Primary { .. } => true,
+            #[cfg(feature = "sinex")]
+            Self::Blocked { .. } => false,
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 enum ModeState {
@@ -1888,6 +1900,7 @@ pub fn start(
     config: Config,
     mode: ArchiveMode,
     lifetime: Lifetime,
+    stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
 ) -> std::io::Result<Runtime> {
     let root = deployment.archive.as_path();
     let completion_path = deployment.paths.completion_catalog(root);
@@ -1895,11 +1908,17 @@ pub fn start(
     let pointer = polylogue_store::completion::CatalogPointer::new(completion_path.clone());
     let invalidate = move || pointer.invalidate();
     let settings = config.clone();
+    let attempt = || {
+        stopped_attempt.ok_or_else(|| {
+            std::io::Error::other("the executable identity is required to start the Engine")
+        })
+    };
     let (archive, lock, mode, engine, completion_scope) = match mode {
         ArchiveMode::Standalone => {
+            let attempt = attempt()?;
             let (archive, lock, scope) = Archive::open_or_create_with_invalidator(root, invalidate)
                 .map_err(std::io::Error::other)?;
-            let engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
+            let engine = Engine::new(config, archive.clone(), attempt).map_err(|e| to_io(&e))?;
             (archive, lock, ModeState::Standalone, Some(engine), scope)
         }
         #[cfg(feature = "sinex")]
@@ -1920,6 +1939,7 @@ pub fn start(
         }
         #[cfg(feature = "sinex")]
         ArchiveMode::Primary { config: sinex, .. } => {
+            let attempt = attempt()?;
             let (archive, lock, scope) =
                 Archive::open_primary_with_invalidator(root, &sinex.store, invalidate)
                     .map_err(std::io::Error::other)?;
@@ -1927,7 +1947,7 @@ pub fn start(
                 polylogue_sinex::Sinex::open(&sinex, &deployment.primary_auth, &settings.host)
                     .map_err(std::io::Error::other)?,
             );
-            let engine = Engine::on_sinex(config, archive.clone(), connection.clone())
+            let engine = Engine::on_sinex(config, archive.clone(), connection.clone(), attempt)
                 .map_err(|error| to_io(&error))?;
             (
                 archive,

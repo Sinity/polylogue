@@ -32,7 +32,7 @@ fn parser(plan: &Plan) -> Box<dyn ExportParser> {
 fn collect(engine: &Engine, plan: &Plan) -> Vec<ParseStep> {
     let mut steps = Vec::new();
     parse_export(plan, &mut *parser(plan), &engine.blobs, |item| {
-        let (mut step, cursor) = item.into_parse(plan, &engine.blobs)?;
+        let (mut step, cursor) = item.into_parse(plan, &engine.blobs, &engine.stopped_attempt)?;
         step.prepare();
         steps.push(step);
         Ok(cursor)
@@ -113,7 +113,7 @@ fn interrupted_delivery_replays_the_same_sealed_prefix_from_archived_bytes() {
     let mut prefix = Vec::new();
     let mut first_item = true;
     let result = parse_export(&plan, &mut *parser(&plan), &engine.blobs, |item| {
-        let (mut step, cursor) = item.into_parse(&plan, &engine.blobs)?;
+        let (mut step, cursor) = item.into_parse(&plan, &engine.blobs, &engine.stopped_attempt)?;
         step.prepare();
         let delivery = step.delivery.unwrap();
         if matches!(delivery.source, ExportDeliverySource::Item { .. }) {
@@ -142,6 +142,10 @@ fn interrupted_delivery_replays_the_same_sealed_prefix_from_archived_bytes() {
 }
 
 fn assert_refusal(step: &ParseStep) {
+    assert_eq!(
+        step.stopped_attempt,
+        Some(polylogue_testkit::stopped_attempt())
+    );
     assert!(matches!(
         step.delivery.unwrap().source,
         ExportDeliverySource::ContainerHeader
@@ -320,7 +324,8 @@ fn successful_short_scans_cannot_complete_even_after_a_full_rewound_pass() {
         let (engine, _lock, plan) = plan(&home, &raw);
         let mut steps = Vec::new();
         let read = parse_export(&plan, &mut ShortSuccess { rewind }, &engine.blobs, |item| {
-            let (mut step, cursor) = item.into_parse(&plan, &engine.blobs)?;
+            let (mut step, cursor) =
+                item.into_parse(&plan, &engine.blobs, &engine.stopped_attempt)?;
             step.prepare();
             steps.push(step);
             Ok(cursor)

@@ -20,7 +20,12 @@ fn a_reparse_write_failure_retries_without_changed_source_bytes() {
                 .0,
             1
         );
-        let mut engine = Engine::new(w.config(64 << 20), archive).unwrap();
+        let mut engine = Engine::new(
+            w.config(64 << 20),
+            archive,
+            polylogue_testkit::stopped_attempt(),
+        )
+        .unwrap();
         fault::arm(point, "", Action::Fail, 0, 1);
         let failed = engine.run_pass().unwrap();
         assert!(!failed.errors.is_empty());

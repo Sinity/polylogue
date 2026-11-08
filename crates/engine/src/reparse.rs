@@ -76,6 +76,7 @@ impl Engine {
         let (queued, results) = channel();
         let workers = self.config.workers.max(1).min(count);
         let read_memory = self.config.reader_memory_per_connection()?;
+        let stopped_attempt = self.stopped_attempt;
         let archive = self.archive.clone();
         let blobs = Arc::clone(&self.blobs);
         let writer = self.writer.sender()?;
@@ -108,6 +109,7 @@ impl Engine {
                                         read_memory,
                                         memory,
                                         &mut bytes_read,
+                                        &stopped_attempt,
                                     )
                                 }))
                                 .unwrap_or_else(|_| {
@@ -279,7 +281,11 @@ impl Engine {
             }
             if let Some(length) = cursor.progress.at_length() {
                 return length == plan.size
-                    && (cursor.progress.stopped() || cursor.parsed_upto >= plan.parse_pos);
+                    && if cursor.progress.stopped() {
+                        cursor.stopped_attempt == Some(self.stopped_attempt)
+                    } else {
+                        cursor.parsed_upto >= plan.parse_pos
+                    };
             }
             cursor.parsed_upto >= plan.parse_pos
                 && (!(plan.waiting || plan.failure_recorded) || cursor.parsed_upto >= plan.size)
@@ -361,6 +367,7 @@ fn prepare(
     read_memory: u64,
     memory: &Memory,
     bytes_read: &mut u64,
+    stopped_attempt: &StoppedAttempt,
 ) -> Result<Option<ChainReading>, EngineError> {
     if let pool::Bytes::Unloaded {
         chain,
@@ -399,7 +406,7 @@ fn prepare(
                 decoded.push(new);
                 files.extend(file);
             }
-            let (mut step, cursor) = item.into_parse(plan, blobs)?;
+            let (mut step, cursor) = item.into_parse(plan, blobs, stopped_attempt)?;
             polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
                 reading.push(&mut step)
             })?;
@@ -415,7 +422,7 @@ fn prepare(
         }
     } else {
         while !plan.finished() {
-            let job = plan.next_job();
+            let job = plan.next_job(stopped_attempt);
             let bytes = job.end - job.start;
             let _charge = memory.take(bytes);
             *bytes_read += bytes;

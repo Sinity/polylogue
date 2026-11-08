@@ -216,7 +216,10 @@ impl Plan {
                 && (self.waiting || self.parse_pos >= self.size))
     }
 
-    pub(crate) fn next_job(&mut self) -> Job {
+    pub(crate) fn next_job(
+        &mut self,
+        stopped_attempt: &polylogue_model::batch::StoppedAttempt,
+    ) -> Job {
         let start = if let Some(raw) = &self.raw {
             raw.cursor
                 .as_ref()
@@ -256,6 +259,7 @@ impl Plan {
             ),
         };
         Job {
+            stopped_attempt: Some(*stopped_attempt),
             acquisition: None,
             path: self.path.clone(),
             origin: self.origin,
