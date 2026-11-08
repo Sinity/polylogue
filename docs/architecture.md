@@ -29,25 +29,19 @@ It has two kinds of users with the same powers:
 recomputed.** Every revision of every captured file, export and tool database
 is stored as bytes; everything parsed from them is an index that can be built
 again by reading the bytes. Exports are kept whole, and a file a tool later
-deletes or rewrites stays in the archive. Ruling, 2026-07-22: "WE ARE
-SUPPOSED TO KEEP ALL DATA"
-(cc-queued:0398d7a3-0d3d-42e4-acd7-bca417e0c481@2026-07-22T12:20:09Z).
+deletes or rewrites stays in the archive. (ruling 2026-07-22, cc-queued:0398d7a3-0d3d-42e4-acd7-bca417e0c481@2026-07-22T12:20:09Z).
 
 **Agents are primary users.** Agents get every power the operator has: every
 command, every kind of authored record, every setting. What distinguishes the
 operator is authorship, which the daemon computes from the channel a write
 arrives on and which no caller supplies ([authorship](assertions.md#authorship)).
-Ruling, 2026-07-03: "I want agents to have more power / capabilites rather
-than less, more affordances"
-(cc-queued:30f5e650-7033-4423-9f91-2b66ebd1e6b2@2026-07-03T13:20:44Z).
+(ruling 2026-07-03, cc-queued:30f5e650-7033-4423-9f91-2b66ebd1e6b2@2026-07-03T13:20:44Z).
 
 **Valid input is never refused or truncated for size.** Page sizes are
 defaults, transfer units continue, and memory is bounded by streaming and
 read-ahead rather than by caps on what may be stored or asked for. A query
 that runs past its deadline names a narrower query and the same command with
-the deadline lifted ([deadlines](query.md#deadlines)). Ruling, 2026-09-27:
-"such arbitrary limits are themselves straight-up bugs"
-(cc:62be45f2-6c40-49ce-a88e-bc566948628c:4cc20d7c-9e62-4b7a-9550-7dd97f9d48e9).
+the deadline lifted ([deadlines](query.md#deadlines)). (ruling 2026-09-27, cc:62be45f2-6c40-49ce-a88e-bc566948628c:4cc20d7c-9e62-4b7a-9550-7dd97f9d48e9).
 
 **Invariants, not repair.** The code does not produce broken state, so there
 is nothing to repair: no repair, reconcile, reindex or verify-and-fix command,
@@ -211,9 +205,7 @@ as an exceptional act; both revisions stay in the archive. In primary mode,
 Sinex's lifecycle (archive, restore, tombstone) applies to Polylogue's
 materials as to any other source's
 ([Sinex lifecycle](https://github.com/Sinity/sinex/blob/master/docs/lifecycle.md)).
-Ruling, 2026-10-28: "probably just do not have deletion in the first place in
-polylogue, for now"
-(cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-27T23:14:04Z).
+(ruling 2026-10-28, cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-27T23:14:04Z).
 
 ## Laws
 

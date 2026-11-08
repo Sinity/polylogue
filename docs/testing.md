@@ -53,7 +53,7 @@ One end-to-end harness: the real `polylogue` binary runs as a daemon over a temp
 
 ## Fuzzing
 
-Fuzzing runs as tests. Ruling, 2026-03-12: fuzzing "MUST NOT be a separate command, it's all suposed to be work via test" (cc-queued:065c511c-e336-4e59-825b-eeefc71cdaae@2026-03-12T00:31:10). Each fuzz target's corpus is replayed, bounded, by the ordinary test run; longer runs are a test profile over the same harness, and a host may queue them through its own job runner.
+Fuzzing runs as tests. (ruling 2026-03-12, cc-queued:065c511c-e336-4e59-825b-eeefc71cdaae@2026-03-12T00:31:10). Each fuzz target's corpus is replayed, bounded, by the ordinary test run; longer runs are a test profile over the same harness, and a host may queue them through its own job runner.
 
 ## Benchmarks
 

@@ -291,7 +291,7 @@ budget. What a hand-over establishes is defined with
 
 ## Text as stored
 
-Reads serve archived text exactly as stored, on every surface (CLI, MCP, socket, HTTP, web, bundles, briefs). Nothing is detected as a secret, masked or held back for a reveal, so pages and cursors carry no masking state. Ruling, 2026-06-18: "never have any "sensitive" fields which we will censor "for users own good" without user having control over it. Never." (codex:019ed83d-c034-7070-84de-2b87c55affa1@2026-06-18T10:02:02Z).
+Reads serve archived text exactly as stored, on every surface (CLI, MCP, socket, HTTP, web, bundles, briefs). Nothing is detected as a secret, masked or held back for a reveal, so pages and cursors carry no masking state. (ruling 2026-06-18, codex:019ed83d-c034-7070-84de-2b87c55affa1@2026-06-18T10:02:02Z).
 
 - Agents get the same text and bytes as the operator; nothing is refused because a harness variable is set.
 - A secret in history that matters is edited out of its source by the operator, or by an agent asked to; both revisions stay in the archive ([archive.md](archive.md#stored-inputs)).
@@ -300,7 +300,7 @@ Reads serve archived text exactly as stored, on every surface (CLI, MCP, socket,
 
 ## Formats
 
-A format encodes a `ReadDocument` (transcripts) or a row table (query results). It never selects content, and it escapes archived text so that it stays data. The formats are terminal, Markdown, HTML, JSON and JSONL, plus the one-line citation. Ruling, 2026-10-18, on formats beyond Markdown and JSON: "probably not, maybe except html" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:bf0795f9-2369-4e04-8644-0c527af609bc).
+A format encodes a `ReadDocument` (transcripts) or a row table (query results). It never selects content, and it escapes archived text so that it stays data. The formats are terminal, Markdown, HTML, JSON and JSONL, plus the one-line citation. (ruling 2026-10-18, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:bf0795f9-2369-4e04-8644-0c527af609bc).
 
 - **`terminal`**, the default on a terminal: colour only when stdout is a terminal and `NO_COLOR` is unset, using the 16 ANSI colours so the terminal's palette applies; width from the terminal; control characters in archived text (C0 and C1 except tab and newline) shown escaped (`\x1b`). Piped output has no escape codes; there is no separate plain format.
 - **`markdown`**: `## HH:MM author` headings; tool lines as list items; output in fences longer than any fence run inside it; thinking in `<details>`; heading markers at line start in archived text escaped.
@@ -321,7 +321,7 @@ A format encodes a `ReadDocument` (transcripts) or a row table (query results). 
 
 ## Writing out
 
-Writing out a selection is reading it to a directory; there is no separate export command. Ruling, 2026-06-27: "export shouldn't even be a separate flow at all! it is supposed to be enabled by normal read, based on query results (selection)" (cc:7d2fd2f4-795f-4f2d-aeb2-9da411fae326:6f43de88-a007-47db-9a7d-389f036f38c2).
+Writing out a selection is reading it to a directory; there is no separate export command. (ruling 2026-06-27, cc:7d2fd2f4-795f-4f2d-aeb2-9da411fae326:6f43de88-a007-47db-9a7d-389f036f38c2).
 
 `polylogue QUERY read --to DIR [--format json|jsonl|markdown|html] [--view …] [--with-blobs] [--hide inherited,assertions]` writes a bundle; `read --to FILE` writes one document. Authored state is written out the same way (`polylogue 'assertions' read --to DIR`).
 

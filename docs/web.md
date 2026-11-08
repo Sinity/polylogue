@@ -4,14 +4,14 @@ The workbench is the web interface the daemon serves: reading, searching, measur
 
 ## Principles
 
-- **A full designed interface, built from the designs.** Every view below is specified to the fidelity its board draws; the [visual baselines](#visual-baselines) are built faithfully, and views without a board are drawn before they are built. Ruling, 2026-05-02: "I really want full aesthetic and functional webui" (chatgpt:69f4b473-d540-83eb-b0ad-ad26c9ea32b1:a8aa12ec-7b2b-4678-a766-b0f5e5a5a312). Ruling, 2026-10-27: "wasn't it actually designed? what happened to that? why it's so basic?" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3c3dd59f-4560-4fee-95d4-5c43b6c94ca5).
+- **A full designed interface, built from the designs.** Every view below is specified to the fidelity its board draws; the [visual baselines](#visual-baselines) are built faithfully, and views without a board are drawn before they are built. (ruling 2026-05-02, chatgpt:69f4b473-d540-83eb-b0ad-ad26c9ea32b1:a8aa12ec-7b2b-4678-a766-b0f5e5a5a312). (ruling 2026-10-27, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3c3dd59f-4560-4fee-95d4-5c43b6c94ca5).
 - **A shell over the same operations.** Every action is a command-table row reachable from the CLI and MCP; there is no web-only endpoint, and every view shows the CLI command that reproduces it.
-- **Where the operator works with agents.** Live sessions are followed, answered, approved, steered, interrupted, resumed and pinged from the web ([Running](#running-running), [live-session control](#live-session-control-panel)). Ruling, 2026-06-18: "ability to actually real-time interact with all sessions through (our) webui" (journal 2026-06-18 21:56).
-- **Live, never polling.** Views update from the change feed. Ruling, 2026-07-03: "lag from realtime of all sorts, especially in webui (things should feel ~instant)" (cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:e72e1c54-c67d-4f23-9649-c84390ffd442).
+- **Where the operator works with agents.** Live sessions are followed, answered, approved, steered, interrupted, resumed and pinged from the web ([Running](#running-running), [live-session control](#live-session-control-panel)). (ruling 2026-06-18, journal 2026-06-18 21:56).
+- **Live, never polling.** Views update from the change feed. (ruling 2026-07-03, cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:e72e1c54-c67d-4f23-9649-c84390ffd442).
 - **Every visible fact has provenance.** A chip, figure or line opens where it came from ([inspector](#inspector-and-provenance)).
 - **Pages are the centre of work, and optional.** The model is [pages.md](pages.md); the views are [Pages](#pages-pages-ppage).
 - **Durable state lives in the archive.** The browser holds only view state in progress ([what the browser holds](#what-the-browser-holds)).
-- **Verified by running it.** Checks drive a real browser against the real daemon. Ruling, 2026-05-03: "I do not believe you can implemtn full aesthetics as they should be, full fucniaolity, interactivity - without ever runnign thigns." (cc-queued:d227b344-a871-4be1-bdf0-30c59ff1db7d@2026-05-03T18:16:47Z).
+- **Verified by running it.** Checks drive a real browser against the real daemon. (ruling 2026-05-03, cc-queued:d227b344-a871-4be1-bdf0-30c59ff1db7d@2026-05-03T18:16:47Z).
 - **Stored text is shown as it is.** No view masks, flags or reveals spans, and there is no delete action, because Polylogue has no deletion ([architecture.md](architecture.md#deletion)).
 - **No dependency on one desktop.** Desktop integration (opening an editor, a file manager, a terminal, the clipboard) goes through the desktop's own services; a desktop or window manager named on this page is an example of a deployment.
 
@@ -109,7 +109,7 @@ Parts of the canvas boards and mockups that do not bind, because the text decide
 
 ## Views without a board
 
-Views that no board draws are drawn in Claude Design before they are built, with at least two variants wherever layout is a real choice; the operator picks one, and the chosen board becomes that view's baseline. Ruling, 2026-10-11: "I wnat you to mkae use of claude design all over the specs etc., for all UX, workbench design, CLI etc." (cc:56c7f026-fd50-4480-b484-72f1299a534c:f8272f95-186a-4719-8145-42140988f004).
+Views that no board draws are drawn in Claude Design before they are built, with at least two variants wherever layout is a real choice; the operator picks one, and the chosen board becomes that view's baseline. (ruling 2026-10-11, cc:56c7f026-fd50-4480-b484-72f1299a534c:f8272f95-186a-4719-8145-42140988f004).
 
 The views without a board: the heatmap, the firehose, the note page, triage, analysis, the live-session control panel, the context composer, the flow panel, and the extension's in-page UI. Their behaviour below binds; their layout does not until the board exists.
 
@@ -279,7 +279,7 @@ The rows are the shipped saved query `query:running`.
 - Order: waiting, working, idle, unknown. **Stopped** lists `stale` sessions with their evidence (`process gone at 13:40, no end event`).
 - Footer: the state legend and `Same rows as polylogue query:running`.
 
-**Work tree and context flow.** A row expands into its logical session's physical sessions (subagents, forks, continuations) with what flowed on each edge: subagent instruction and final answer; brief, takeover and ping deliveries (prepared, delivered, used; size; references; what was left out); compaction boundaries with what they evicted. The same graph is the reader's flow panel. Ruling, 2026-07-03: "how does context flow between them, what do subagents return" (cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:e72e1c54-c67d-4f23-9649-c84390ffd442).
+**Work tree and context flow.** A row expands into its logical session's physical sessions (subagents, forks, continuations) with what flowed on each edge: subagent instruction and final answer; brief, takeover and ping deliveries (prepared, delivered, used; size; references; what was left out); compaction boundaries with what they evicted. The same graph is the reader's flow panel. (ruling 2026-07-03, cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:e72e1c54-c67d-4f23-9649-c84390ffd442).
 
 A row opens the reader at Latest with following on. Each live row carries the [live-session controls](#live-session-control-panel) inline, and a waiting row's pending permission shows **Approve** and **Deny** directly. **Open in terminal** appears when the harness's terminal is known through the desktop's services; otherwise the resume command is offered to copy. `x` selects rows for a stack. The view updates in place, recomputes at each state's `until`, reorders only when no row has focus, and announces "1 session now waiting" to screen readers.
 
@@ -326,7 +326,7 @@ The most important surface. Message rendering and read views are [reading.md](re
 | Pastes | typed text plain; a pasted span shaded with its evidence line; unknown authorship hatched; a paste over 20 lines folds as `paste · 214 lines · copy · copy typed-only` |
 | Attachments | images inline; other files `▣ name (media type, size)` with **Download** and **Reveal in file manager** (daemon rows using the desktop's services); SVG and HTML as links, never inline; the availability state and who supplied it ([sessions.md](sessions.md#attachments)) |
 
-**Tool families.** Each recognised tool family has its own expanded body, and every family still collapses to the one line above. A call's family comes from the tool-family table of the derived data ([measures.md](measures.md#catalog)); an unrecognised tool uses the generic body. Ruling, 2026-07-03: "custom rendering of various detected standard toolcalls … Think ambitiously" (cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:060b830b-16dc-4ac6-b463-7dd5deea1830).
+**Tool families.** Each recognised tool family has its own expanded body, and every family still collapses to the one line above. A call's family comes from the tool-family table of the derived data ([measures.md](measures.md#catalog)); an unrecognised tool uses the generic body. (ruling 2026-07-03, cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:060b830b-16dc-4ac6-b463-7dd5deea1830).
 
 | Family | Expanded body |
 |---|---|
@@ -470,7 +470,7 @@ Every table has its own CLI command. Dollars show two decimals in tables and the
 
 ### Analysis `/analysis?q=…`
 
-Renders any `| measure` or `| agg` query, or a kept figure, as **a chart and its table**. The chart form follows the answer's shape: a series over time → bars per grain (lines for cumulative measures); a grouped count or sum → horizontal bars sorted by value; a distribution → a histogram or a percentile strip (nearest-rank percentiles); survival → a step curve; a comparison across groups → paired bars with denominators. Every chart shows its unit, denominator query, scope, the count of unknowns (hatched, never zero) and the product's validity note ([measures.md](measures.md#rules)); each bar or point opens the rows behind it. Charts are SVG rendered by the daemon from the typed answer, with the shell adding hover and selection; there is no charting script. **Keep as figure** turns the shown query into a citable figure for a page's figure slot. Shipped saved queries open here first: **where the time went** (time per session, repository or day split into model working, tool running by family, waiting on the operator and idle), **operator interventions**, and **context pressure** (context size per response and what each compaction dropped). Ruling, 2026-08-02: an HTML reporting skill is "best just thought of as a stopgap, and we'd build such capabilities into polylgoue webui, properly" (cc:72ace629-1777-4df9-ba71-9eb58505ea65:a622d056-3f3c-458a-b265-73eba5e904bd).
+Renders any `| measure` or `| agg` query, or a kept figure, as **a chart and its table**. The chart form follows the answer's shape: a series over time → bars per grain (lines for cumulative measures); a grouped count or sum → horizontal bars sorted by value; a distribution → a histogram or a percentile strip (nearest-rank percentiles); survival → a step curve; a comparison across groups → paired bars with denominators. Every chart shows its unit, denominator query, scope, the count of unknowns (hatched, never zero) and the product's validity note ([measures.md](measures.md#rules)); each bar or point opens the rows behind it. Charts are SVG rendered by the daemon from the typed answer, with the shell adding hover and selection; there is no charting script. **Keep as figure** turns the shown query into a citable figure for a page's figure slot. Shipped saved queries open here first: **where the time went** (time per session, repository or day split into model working, tool running by family, waiting on the operator and idle), **operator interventions**, and **context pressure** (context size per response and what each compaction dropped). (ruling 2026-08-02, cc:72ace629-1777-4df9-ba71-9eb58505ea65:a622d056-3f3c-458a-b265-73eba5e904bd).
 
 ### Pastes, attachments, topics
 

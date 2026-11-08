@@ -339,6 +339,10 @@ archive, `/home/op` paths). Credentials, real captures, private reports and
 real databases stay out of Git, and so do paths into a particular machine.
 Reading the operator's real files on the development machine for development
 and measurement is fine; report figures, not contents.
+Public docs state design intent in neutral language and cite rulings by date
+and locator, never quoting the operator's private sessions; PR bodies, review
+comments and commit messages carry no excerpts of captured data or private
+analyses.
 
 ## Cloud sessions and changes to polylogue-sinex-common
 

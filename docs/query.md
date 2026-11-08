@@ -6,7 +6,7 @@ The grammar, its spelling, the AST's three-valued semantics, time expressions, t
 
 ## Principles
 
-- **One expressive language instead of small features.** No surface re-implements filtering, totals or paging; a new need is met by the language or a stage, not by a command. Ruling, 2026-06-17: "The whole point of expressive query DSL is to make such funcitonality alwasy within reach. I don't want tons of specific weird little features" (chatgpt:6a2ea930-87a8-83eb-adb7-4cf38ccaa6a3:3f4ec96c-1c94-48aa-9ae6-ceeaaed5eddc). Ruling, 2026-07-02: "dont build one-off silos, build things that powerfully compose" (cc-queued:3437c3ea-5b13-45b4-9b88-8786223f0fa7@2026-07-02T18:20).
+- **One expressive language instead of small features.** No surface re-implements filtering, totals or paging; a new need is met by the language or a stage, not by a command. (ruling 2026-06-17, chatgpt:6a2ea930-87a8-83eb-adb7-4cf38ccaa6a3:3f4ec96c-1c94-48aa-9ae6-ceeaaed5eddc). (ruling 2026-07-02, cc-queued:3437c3ea-5b13-45b4-9b88-8786223f0fa7@2026-07-02T18:20).
 - **Unknown is not zero; scopes are strict.** An unknown value matches neither a condition nor its `NOT`. A query never widens itself, and never falls back to searching its own text.
 - **No arbitrary limits.** Page sizes are defaults, deadlines can be lifted by any caller, and nothing truncates a valid answer.
 - **Discoverable without shrinking the language.** `explain`, `read_as`, completion and runnable corrections teach the language; every string an agent might pass returns rows, a refusal with a correction, or a typed error.
@@ -143,7 +143,7 @@ Stages apply in the order written:
 
 ## Query objects
 
-Queries, their runs, kept results, figures and findings are stored objects with identities, so a question and its answer can be cited, reused and compared over time. Ruling, 2026-07-09: "what if Polylogue tracked its own use? … saving a query in a database, and returning that as a result -- with proper ids … THIS. THIS IS WHAT I MEANT" (cc-queued:3b0038ec-234c-44b8-bb88-fe222b44fe0f@2026-07-09T20:06).
+Queries, their runs, kept results, figures and findings are stored objects with identities, so a question and its answer can be cited, reused and compared over time. (ruling 2026-07-09, cc-queued:3b0038ec-234c-44b8-bb88-fe222b44fe0f@2026-07-09T20:06).
 
 ### Identity
 
