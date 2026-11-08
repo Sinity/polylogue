@@ -115,6 +115,9 @@ fn a_recorded_failure_stays_stopped_across_restart_until_the_executable_changes(
         "the successful prefix owns a real continuation"
     );
     home.append(name, &second);
+    // This stop must cover the complete append. If custody later adds even
+    // one byte, changed stored length legitimately makes the next attempt eligible.
+    engine.config.chunk = second.len() as u64;
     fault::arm("parse", "dependency-stop", Action::Fail, 0, u32::MAX);
     let failed = engine.run_pass().unwrap();
     fault::clear();
@@ -127,6 +130,19 @@ fn a_recorded_failure_stays_stopped_across_restart_until_the_executable_changes(
         "the failure follows a real parsed prefix"
     );
     assert_eq!(stopped.stopped_attempt, Some(attempt));
+    let stored_length = engine
+        .reads
+        .reader()
+        .unwrap()
+        .input_progress(&engine.inputs[&path].input_id)
+        .unwrap()
+        .unwrap()
+        .length;
+    assert_eq!(
+        stopped.progress.at_length(),
+        Some(stored_length),
+        "the stopped attempt must already name all retained bytes before an unchanged restart"
+    );
     assert_eq!(stopped.parsed_upto, prefix.parsed_upto);
     assert_eq!(
         stopped.checkpoint, prefix.checkpoint,
