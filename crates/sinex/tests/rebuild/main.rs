@@ -208,12 +208,14 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
     }
     // The idle writer follows the confirmed stream until it reaches Sinex's head.
     loop {
-        let applied = ReadPool::open(&archive)
-            .unwrap()
-            .reader()
-            .unwrap()
-            .confirmed_checkpoint()
-            .unwrap();
+        // Replay can reset the new cache's scope between opening the pool and
+        // taking its snapshot. The next iteration acquires a fresh snapshot.
+        let applied =
+            match ReadPool::open(&archive).and_then(|pool| pool.reader()?.confirmed_checkpoint()) {
+                Ok(applied) => applied,
+                Err(polylogue_store::StoreError::ScopeChanged) => None,
+                Err(error) => panic!("read confirmed replay checkpoint: {error}"),
+            };
         let head = sinex.status().unwrap().owner_position;
         if head.is_some() && applied == head {
             break;
