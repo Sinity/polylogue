@@ -30,7 +30,7 @@ class Client:
 
     def __init__(self, archive=None, *, executable="polylogue"):
         self.executable = os.fspath(executable)
-        self.archive = None if archive is None else str(Path(archive).expanduser().resolve())
+        self.archive = None if archive is None else str(Path(archive).expanduser().absolute())
 
     def _arguments(self, *arguments):
         command = [self.executable]

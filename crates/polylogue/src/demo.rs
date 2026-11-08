@@ -65,7 +65,9 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
     let preparing = Instant::now();
     // Creation is exclusive: a tour never changes an existing directory.
     fs::create_dir(directory).map_err(|e| format!("create a new tour directory: {e}"))?;
-    let directory = directory.canonicalize().map_err(|e| e.to_string())?;
+    // Keep a declared short alias usable by the daemon's Unix socket.
+    // Archive identity is resolved separately by its owning configuration.
+    let directory = std::path::absolute(directory).map_err(|e| e.to_string())?;
     let home = directory.join("home");
     for (name, bytes) in files::FILES {
         let path = home.join(name);

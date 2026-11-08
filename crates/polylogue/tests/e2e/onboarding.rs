@@ -24,6 +24,7 @@ fn public_morrow_tour_matches_current_query_examples() {
     let text = std::str::from_utf8(&output.stdout).unwrap();
     assert!(!text.contains(['\u{9b}', '\x7f', '\u{202e}']));
     let tour: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let declared_directory = directory.clone();
     let directory = directory.canonicalize().unwrap();
     let steps = tour["steps"].as_array().unwrap();
     assert_eq!(steps.len(), 10);
@@ -142,9 +143,11 @@ fn public_morrow_tour_matches_current_query_examples() {
     bundled.retain(|p| !p.starts_with(home.join("exports")));
     assert_eq!(bundled.len(), main.provider_files().len());
 
-    // The README daemon uses this machine's identity and the same absolute paths.
-    let archive = directory.join("archive");
-    let config = directory.join("config");
+    // The README daemon uses the same declared absolute aliases as the tour.
+    // Canonical paths above are only for inspecting the bundled bytes.
+    let home = declared_directory.join("home");
+    let archive = declared_directory.join("archive");
+    let config = declared_directory.join("config");
     let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let before = {
         let pool =

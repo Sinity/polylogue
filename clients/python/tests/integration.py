@@ -33,16 +33,33 @@ class ClientTests(unittest.TestCase):
             "raise SystemExit(result.returncode)\n"
         )
         proxy.chmod(0o700)
-        self.client = Client(ARCHIVE, executable=proxy)
-        self.direct = Client(ARCHIVE, executable=EXECUTABLE)
+        self.archive_alias = Path(directory.name) / "a"
+        self.archive_alias.symlink_to(Path(ARCHIVE), target_is_directory=True)
+        self.client = Client(self.archive_alias, executable=proxy)
+        self.direct = Client(self.archive_alias, executable=EXECUTABLE)
+        self.assertEqual(self.client.archive, str(self.archive_alias.absolute()))
 
     def checked(self, call):
         answer = call().json()
         # Compare the complete output of this very execution, including its
         # own captured clock, durable Run identity and observed archive position.
         self.assertEqual(answer, json.loads(self.capture.read_bytes()))
-        self.assertEqual(json.loads(self.arguments.read_text())[:2], ["--archive", str(Path(ARCHIVE).resolve())])
+        self.assertEqual(json.loads(self.arguments.read_text())[:2], ["--archive", str(self.archive_alias.absolute())])
         return answer
+
+    def test_declared_archive_alias_is_preserved_for_calls_and_feeds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            actual = root / ("long-archive-target-" * 8)
+            actual.mkdir()
+            alias = root / "short"
+            alias.symlink_to(actual, target_is_directory=True)
+            client = Client(alias, executable=EXECUTABLE)
+            declared = str(alias.absolute())
+            self.assertNotEqual(declared, str(alias.resolve()))
+            self.assertEqual(client.archive, declared)
+            self.assertEqual(client._arguments("status")[:3], [EXECUTABLE, "--archive", declared])
+            self.assertEqual(client._arguments("changes")[:3], [EXECUTABLE, "--archive", declared])
 
     def test_query_and_read_match_cli_json(self):
         query = self.checked(lambda: self.client.query("sessions"))
