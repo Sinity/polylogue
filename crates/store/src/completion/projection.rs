@@ -1,5 +1,6 @@
 //! Bounded projections from one authoritative read, consumed by the catalog publisher.
 use super::catalog::Session;
+use crate::source::Source;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::ChangePosition;
 use rusqlite::OptionalExtension;
@@ -170,7 +171,7 @@ impl Reader<'_> {
         {
             return Err(StoreError::Invalid("completion generation changed".into()));
         }
-        if !self.pool.archive.is_primary() {
+        if matches!(Source::of(self.conn()?)?, Source::Ledger) {
             return Ok(false);
         }
         Ok(self.conn()?.query_row(
@@ -181,7 +182,7 @@ impl Reader<'_> {
     /// Changed objects and their exact retained dependents, not current names.
     /// Older NULL admissions belong to the startup snapshot, never to a guessed cut.
     pub fn completion_changed_queries(&self, after: i64) -> Result<BTreeSet<String>> {
-        let lifecycle = if self.pool.archive.is_primary() {
+        let lifecycle = if matches!(Source::of(self.conn()?)?, Source::Cache) {
             "UNION SELECT substr(reference,7) FROM primary_fact WHERE kind='query' AND changed!=admitted AND changed>?1 AND reference GLOB 'query:*'"
         } else {
             ""
