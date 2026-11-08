@@ -48,19 +48,17 @@ one README per crate. Sinex's pages are in
 
 ### The operator's words
 
-Only the operator's own words are labelled. Everything unlabelled is the
-design. A ruling is cited once, on the page that owns the rule it binds, after
-the sentence that states the rule:
+A ruling is cited once, on the page that owns the rule it binds, after the
+sentence that states the rule, as `(ruling DATE, LOCATOR)`:
 
-> **Polylogue has no deletion.** Ruling, 2026-10-28: "probably just do not
-> have deletion in the first place in polylogue, for now"
-> (cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-27T23:14:04Z).
+> **Polylogue has no deletion.**
+> (ruling 2026-10-28, cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-27T23:14:04Z)
 
-The date is the operator's local date; a locator's time is UTC. The quote is
-verbatim, with the operator's spelling, cut with "…", normally under thirty
-words. When the design sentence already says everything, the citation is
-`(ruling DATE, LOCATOR)` with no quote. Only
-the latest deliberate statement is cited. A rule that rests on a default the
+The date is the operator's local date; a locator's time is UTC. The page states
+the decided behaviour in its own words. These pages are public, so the
+operator's private sessions are never quoted; the locator lets anyone with the
+archive read the original. Only the latest deliberate statement is cited.
+Everything unlabelled is the design. A rule that rests on a default the
 operator may still change says "(default; open operator question)".
 
 ### Locators

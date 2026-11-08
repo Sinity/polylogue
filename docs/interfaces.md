@@ -11,7 +11,7 @@ The generic mechanics (the `Operation` trait, the failure-to-exit-and-HTTP table
 - **Finite transfers use the shared server-sent-event framing** on the socket and HTTP: a begin event, record events and a completion event from one read. A failure before HTTP headers uses the shared failure status; a later failure ends with an error event and no completion. A client writes a directory bundle into place, and `changes` advances its saved position, only after the completion event.
 - **Access belongs to the request.** The declared operation determines access from its typed arguments. MCP tool-family hints describe the family; the same operation and arguments have the same access on every surface.
 - **Answers are typed** and rendered from their types ([reading.md](reading.md)); each has one terminal printer and one JSON form, and no surface has features the others cannot reach.
-- **The daemon is required.** The command line is a thin client: it never opens archive files, and the daemon is the only writer. Ruling, 2026-10-27: "the CLI is supposed to be thin client for the daemon, which is supposed to have advanced caching, indexing whatnot to enalbe the CLI to be snappy" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:dad489d4-a1b8-48bd-bbc0-26262f34b262). Ruling, 2026-09-14: "there is no requirement or need for CLI to ever work 'standalone'. Daemon is the standard, not some sort of optional addon" (cc:652ae14f-a036-496b-abfa-42e7574c9ec9:b8a68d64-772f-4d8c-8e95-435ce601d245). Ruling, 2026-05-03: "we do not do non-daemonic writes" (cc-queued:d227b344-a871-4be1-bdf0-30c59ff1db7d@2026-05-03T18:55).
+- **The daemon is required.** The command line is a thin client: it never opens archive files, and the daemon is the only writer. (ruling 2026-10-27, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:dad489d4-a1b8-48bd-bbc0-26262f34b262). (ruling 2026-09-14, cc:652ae14f-a036-496b-abfa-42e7574c9ec9:b8a68d64-772f-4d8c-8e95-435ce601d245). (ruling 2026-05-03, cc-queued:d227b344-a871-4be1-bdf0-30c59ff1db7d@2026-05-03T18:55).
 - **No refusal depends on who the caller is.** No act is refused because the caller is an agent or has no terminal; the only terminal-dependent behaviours are the picker-based ones, and each names its non-interactive form ([Picker](#picker)).
 - There is no REPL or terminal reader; the interactive elements in a terminal are completion, `@N`, `next`, the pager and the picker, and interactive reading is the web reader. View data is typed, so a terminal reader stays a thin addition.
 
@@ -28,7 +28,7 @@ Query first, then what to do with the rows; there is no `do` or `query` verb in 
 
 1. If the first argument is a command name, it is that command.
 2. Otherwise the first argument must carry a **query signal**: a field condition (`repo:x`), a unit name (`sessions …`), a reference (an ID shape, a provider URL, `@N`, `@last`, `last`, `latest`, `self`, a typed reference such as `query:running`), or a single argument holding whitespace or query punctuation (`polylogue 'rate limit'`). `find` forces the query reading.
-3. **An unsignalled first word is refused,** exit 2, within the local budget, with the `find` form and nothing else; command names are not guessed. Ruling, 2026-07-05: "typo hint is actually unnecessary given we do not want bare query support anyway" (cc:900c6128-99a3-4986-8ed4-d5d7aacb38fe:e5f52f29-85e8-4cfc-9088-b5ea79b7bccc).
+3. **An unsignalled first word is refused,** exit 2, within the local budget, with the `find` form and nothing else; command names are not guessed. (ruling 2026-07-05, cc:900c6128-99a3-4986-8ed4-d5d7aacb38fe:e5f52f29-85e8-4cfc-9088-b5ea79b7bccc).
    ```console
    $ polylogue chrono
    polylogue: "chrono" is not a command or a query
@@ -44,7 +44,7 @@ Names are fixed once, with no aliases. `plg` and `plog` are shell-level names th
 
 ### Discipline
 
-A command or verb exists only when what it does cannot be expressed as a query plus an existing verb, or as a shipped saved query that completion offers. Each row states that reason, and `explain capabilities` prints it. Ruling, 2026-03-16: "I don't understand why would we have separate subcommands which do strictly a subset of another command" (cc-reject:d202c788-0043-4643-b7bf-1a9dac780739:a505ddb7-d4a3-441b-9c48-f386ad327765). Ruling, 2026-05-25: "randomly introduce new top-level command for that?" (cc-queued:c2404522-7bba-4de3-936d-e08deb14262c@2026-05-25T00:40). Ruling, 2026-07-29: "probably should be in CLI, unless clear reason not to, but CLI itself is supposed to be disciplined, not sprawling" (cc-queued:d6f4b0c3-840b-47b6-bd57-5f1bd6c9c7d4@2026-07-29T01:12).
+A command or verb exists only when what it does cannot be expressed as a query plus an existing verb, or as a shipped saved query that completion offers. Each row states that reason, and `explain capabilities` prints it. (ruling 2026-03-16, cc-reject:d202c788-0043-4643-b7bf-1a9dac780739:a505ddb7-d4a3-441b-9c48-f386ad327765). (ruling 2026-05-25, cc-queued:c2404522-7bba-4de3-936d-e08deb14262c@2026-05-25T00:40). (ruling 2026-07-29, cc-queued:d6f4b0c3-840b-47b6-bd57-5f1bd6c9c7d4@2026-07-29T01:12).
 
 So listing is the bare query; the running list, notices and resume candidates are the shipped saved queries `query:running`, `query:notices` and `query:resume_candidates`; a day is a query with the day's time condition; reports are the `| measure` and `| agg` stages; writing out is `read --to`; citing is `read --format citation`; opening in the browser is `read --to browser`; attachment bytes are `block:<message>#<n> read --to FILE`; the stored input behind a row is `trace`. Derived work is the daemon's, so there are no build, rebuild or repair commands ([architecture.md](architecture.md#principles)).
 
@@ -106,7 +106,7 @@ An MCP `_meta.deadline_ms` absolute bound travels separately from the unchanged 
 | **search** | word and phrase search, `pack recall`, `similar:` with a stored vector | ≤ 250 ms first page | 2,000 ms |
 | **aggregate** | `group by`, `| measure`, `| agg`, facet counts, `explain QUERY` with clause counts | ≤ 400 ms | 400 ms |
 
-Ruling, 2026-05-12: "I expect invocation of something so trivial as help to be IDK 100ms … querying also should be subsecond" (cc-queued:64f29439-f42d-4128-88d5-1bc327cfdbf4@2026-05-12T01:49). A missed budget is a defect in the code, not a reason to relax the number. Budgets are measured as paired benchmark runs ([testing.md](testing.md#benchmarks)); no test asserts elapsed time.
+Help answers in about 100 ms and queries in under a second. (ruling 2026-05-12, cc-queued:64f29439-f42d-4128-88d5-1bc327cfdbf4@2026-05-12T01:49). A missed budget is a defect in the code, not a reason to relax the number. Budgets are measured as paired benchmark runs ([testing.md](testing.md#benchmarks)); no test asserts elapsed time.
 
 Pure writes, including imports, await their durable result without a read deadline. Mixed operations retain deadlines for their read preparation; classification follows the admitted arguments, so reading a setting remains bounded while writing it keeps its result. The HTTP admission header above still applies.
 
@@ -148,7 +148,7 @@ The daemon keeps derived state warm so the classes hold. Each item is keyed by w
 
 ## Completion
 
-Completion is advanced and works with the daemon down. Ruling, 2026-05-01: "CLI in particular _CERTAINLY_ requires advanced autocomplete, otherwise it is going to be ~pointless. Ideally that includes integrated fuzzyfinding somehow" (chatgpt:69f4b473-d540-83eb-b0ad-ad26c9ea32b1:06788182-5f1d-4763-9ee8-139dad3aed1e). Ruling, 2026-09-14, on completion with the daemon down: "yes. everything is supposed to be usable." (cc:652ae14f-a036-496b-abfa-42e7574c9ec9:473cc86c-de9a-40aa-bd32-30659f66bd71).
+Completion is advanced and works with the daemon down. (ruling 2026-05-01, chatgpt:69f4b473-d540-83eb-b0ad-ad26c9ea32b1:06788182-5f1d-4763-9ee8-139dad3aed1e). (ruling 2026-09-14, cc:652ae14f-a036-496b-abfa-42e7574c9ec9:473cc86c-de9a-40aa-bd32-30659f66bd71).
 
 - **It runs in the CLI process,** against a catalog file the daemon publishes, so it never waits on the daemon. The `complete` operation serves MCP `completion/complete`, HTTP and the web query box from the same catalog. MCP supplies the whole query in `argument.value`, with an optional UTF-8 byte offset in `_meta["polylogue/position"]` (the end by default); each completion value is the whole query with the replacement applied, and `_meta["polylogue/completions"]` keeps the typed replacement range, kind and help.
 - **The grammar-position completer** is the shared `query-language` function: it takes the whole query text and a cursor offset and returns candidates with their replace range. Polylogue supplies the catalog.
@@ -167,7 +167,7 @@ Completion is advanced and works with the daemon down. Ruling, 2026-05-01: "CLI 
 | a reference argument | sessions by short ID with title, then rows of the last list; typed prefixes |
 | `setting KEY VALUE` | keys with current values; closed values |
 
-- **Order:** grammar candidates in declaration order, values by count descending, sessions by last activity. Ruling, 2026-01-24: "completions for id should likely be ordered by recency" (cc:1d6c0b33-94c7-4a2a-9957-347e5383f5c5:0e773aa3-b6f8-4cce-af2a-3f775d18e2f9). There are no fixed caps: the catalog holds every session and value, and the shell shows what fits.
+- **Order:** grammar candidates in declaration order, values by count descending, sessions by last activity. (ruling 2026-01-24, cc:1d6c0b33-94c7-4a2a-9957-347e5383f5c5:0e773aa3-b6f8-4cce-af2a-3f775d18e2f9). There are no fixed caps: the catalog holds every session and value, and the shell shows what fits.
 - **Descriptions** (zsh, fish): `origin:codex  4,927 sessions`; `7f3a2c10  next friday returns the same day · 2h ago`; `group by  one row per value of a field`. Bash shows values only.
 - **Title matching** at a reference position (zsh, fish): a word that is not a prefix of any ID is matched against titles with the fuzzy matcher, and those sessions' IDs are offered with the title as description.
 - **Quoting:** the completer rebuilds query text and cursor offset from the shell's words and the open quote, and inserts candidates without closing the quote.

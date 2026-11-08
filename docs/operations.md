@@ -6,7 +6,7 @@ Neighbouring facts live elsewhere: the durability order and pipeline are [archit
 
 ## The daemon
 
-Polylogue runs as one resident daemon per archive. The daemon is the only process that opens the archive; every client (CLI, MCP, hooks, the web UI, the browser host) is a thin client of its socket, for reads as well as writes. It exists so that Polylogue answers at interactive speed and so that what should be happening can be seen happening. Ruling, 2026-09-14: "Daemon is the standard, not some sort of optional addon" (cc:652ae14f-a036-496b-abfa-42e7574c9ec9:b8a68d64-772f-4d8c-8e95-435ce601d245).
+Polylogue runs as one resident daemon per archive. The daemon is the only process that opens the archive; every client (CLI, MCP, hooks, the web UI, the browser host) is a thin client of its socket, for reads as well as writes. It exists so that Polylogue answers at interactive speed and so that what should be happening can be seen happening. (ruling 2026-09-14, cc:652ae14f-a036-496b-abfa-42e7574c9ec9:b8a68d64-772f-4d8c-8e95-435ce601d245).
 
 **Start.** `polylogue daemon` runs in the foreground under a service manager (a systemd user unit on Linux). In order, it:
 1. raises the open-file limit;
@@ -105,7 +105,7 @@ There is no repair, reconcile, reindex or reset command and no scheduled check: 
 
 ## Notices
 
-Polylogue's signals use the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) rule schema, evaluator, interrupt budget and desktop notifications. Ruling, 2026-10-28, on desktop notifications: "just needs to be designed elegantly to not be a kludgy mess. most/all of things you listed should be notifications" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3ae3257e-e70a-433a-be97-d1222670c284).
+Polylogue's signals use the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) rule schema, evaluator, interrupt budget and desktop notifications. (ruling 2026-10-28, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3ae3257e-e70a-433a-be97-d1222670c284).
 
 What is Polylogue's:
 - **Storage.** A rule is a `signal` assertion ([assertions.md#kinds](assertions.md#kinds)); each firing is a delivery naming the rule and revision, the triggering occurrences with their observation, the time, the channel, and the route decision with its holds and the attention it was decided under ([agents.md#deliveries](agents.md#deliveries)). Deliveries survive an index rebuild and reach Sinex in primary mode.
@@ -154,9 +154,9 @@ Sinex's own notices are Sinex's and reach the operator through Sinex's deliverer
 
 ## Configuration
 
-Configuration exists only where the operator's choice is genuinely open. Ruling, 2026-07-29: "we do not ever want optionals in the codebase where one option is clearly dominant over alternatives -- just wipe out the alternatives" (cc-queued:d6f4b0c3-840b-47b6-bd57-5f1bd6c9c7d4@2026-07-29T09:22:39).
+Configuration exists only where the operator's choice is genuinely open. (ruling 2026-07-29, cc-queued:d6f4b0c3-840b-47b6-bd57-5f1bd6c9c7d4@2026-07-29T09:22:39).
 
-Deployment configuration is loaded once by `main`, from the config file, then flags, then environment where meaningful, into one typed value ([architecture.md#configuration-and-clocks](architecture.md#configuration-and-clocks)). It is set through the Nix module options, the files under `$XDG_CONFIG_HOME/polylogue/`, or environment variables. Ruling, 2026-10-28: "project should be configurable enough (in nix mainly, btw, tho this should boil donwn to actual config file and possibly envvars I guess)" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3ae3257e-e70a-433a-be97-d1222670c284).
+Deployment configuration is loaded once by `main`, from the config file, then flags, then environment where meaningful, into one typed value ([architecture.md#configuration-and-clocks](architecture.md#configuration-and-clocks)). It is set through the Nix module options, the files under `$XDG_CONFIG_HOME/polylogue/`, or environment variables. (ruling 2026-10-28, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3ae3257e-e70a-433a-be97-d1222670c284).
 
 | What | Where | Why it is a choice |
 |---|---|---|

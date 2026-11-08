@@ -5,12 +5,12 @@ What Polylogue stores and how it reads it: stored inputs and their chains, why n
 ## Stored inputs
 
 - **`input → chain → extent → blob`.** An *input* is one source object: a file, a capture log, a container member, or a row-dump stream. Each read of it that adds bytes extends its *chain* (a revision that appends to the previous one continues the chain; a rewritten file starts a new one). *Extents* name byte ranges in *blobs*.
-- **Blobs** are content-addressed and live in the shared segment container: one sync per write group, extents committed in the same transaction as the rows that cite them, a torn tail truncated on open. The blob store is the durable record of every acquired input, not a cache of bytes that still exist at the source, because tools prune and rewrite their own files. Ruling, 2026-10-11: "blob store is supposed to hold session logs … this is THE REASAON TO HAVE BLOBSTOER" (cc-queued:56c7f026-fd50-4480-b484-72f1299a534c@2026-10-11T12:58:04.056Z).
+- **Blobs** are content-addressed and live in the shared segment container: one sync per write group, extents committed in the same transaction as the rows that cite them, a torn tail truncated on open. The blob store is the durable record of every acquired input, not a cache of bytes that still exist at the source, because tools prune and rewrite their own files. (ruling 2026-10-11, cc-queued:56c7f026-fd50-4480-b484-72f1299a534c@2026-10-11T12:58:04.056Z).
 - **Observations** record each time an input was seen, with the machine and path: `seen`, `changed`, `renamed`, `gone`, `back`. **A file that disappears is an observation, never a deletion.**
 - **Currency is local receipt order** (`commit_seq`), never wall-clock time.
 - **Export containers are kept whole.** A ZIP or tar import stores the container exactly as given as one input and each member as its own input, addressed `container!/member`; identical member bytes are stored once with every observation kept. An exact retry at the same receiving location, with the same machine, author and member bytes, keeps its import namespace and adds no observation; a change to any of those establishes a new namespace.
 - **Tool databases** are inputs of row dumps ([capture.md](capture.md#tool-databases)).
-- **The archive is complete.** It holds every original input the user has, including the predecessor's hook spools, browser captures and their attachments, imported as declared older formats ([capture.md](capture.md#import)). Ruling, 2026-07-22: "WE ARE SUPPOSED TO KEEP ALL DATA." (cc-queued:0398d7a3-0d3d-42e4-acd7-bca417e0c481@2026-07-22T12:20:09.836Z).
+- **The archive is complete.** It holds every original input the user has, including the predecessor's hook spools, browser captures and their attachments, imported as declared older formats ([capture.md](capture.md#import)). (ruling 2026-07-22, cc-queued:0398d7a3-0d3d-42e4-acd7-bca417e0c481@2026-07-22T12:20:09.836Z).
 
 ## No deletion
 
@@ -38,7 +38,7 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 ### Parsers
 
 - **One parser per origin, written from format knowledge.** Each parser carries the full knowledge of its origin's formats in every era (Claude Code todos, history and orchestration; Codex; Hermes; the Antigravity RPC; Gemini CLI sidecars; ChatGPT attachment resolution) and reads records as they are; there are no repair passes over parsed rows.
-- **A malformed record is presumed to be Polylogue's bug.** It is counted per input with its reason, never skipped silently. Ruling, 2026-01-30: skipping malformed lines "presumes they actualy are malformed rather than, say, we handle the data wrongly" (cc-queued:e8b61976-2304-4d1c-8529-aba01037683d@2026-01-30T04:10:14.572Z).
+- **A malformed record is presumed to be Polylogue's bug.** It is counted per input with its reason, never skipped silently. (ruling 2026-01-30, cc-queued:e8b61976-2304-4d1c-8529-aba01037683d@2026-01-30T04:10:14.572Z).
 - **Origin, format, route and harness are separate coordinates.** A record's model field is trusted over the harness name: a DeepSeek model running under the Claude Code harness is DeepSeek.
 - **Markup** (`::kind(args)` in transcripts) is extracted at parse time into assertions authored by the message's author, with IDs derived from the message and position so a re-parse writes the same assertions ([assertions.md](assertions.md#markup)).
 

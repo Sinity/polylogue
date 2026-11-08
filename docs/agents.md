@@ -6,7 +6,7 @@ Neighbouring facts live elsewhere: who wrote a record and how the author is comp
 
 ## Purpose and principles
 
-Polylogue is the working memory the operator and his agents share: an agent starts from what is already known instead of exploring it again. Ruling, 2026-07-09: "the point of such context injections isn't quite to improve agent's results, it's to reduce its workload, to bring it up to speed so it can avoid need to explore things" (cc:3b0038ec-234c-44b8-bb88-fe222b44fe0f:82523eee-66ce-42da-847e-f95585c4ae51).
+Polylogue is the working memory the operator and his agents share: an agent starts from what is already known instead of exploring it again. (ruling 2026-07-09, cc:3b0038ec-234c-44b8-bb88-fe222b44fe0f:82523eee-66ce-42da-847e-f95585c4ae51).
 
 - **Context arrives without anyone asking.** Agents rarely call history tools on their own, so the brief and takeover are injected by hooks.
 - **Context that saves exploration is not economised.** The measure is exploration saved. Budgets are named, and what a budget leaves out is named with the command that shows it.
@@ -60,7 +60,7 @@ Sending a pack creates a delivery ([Deliveries](#deliveries)); preparing one wit
 
 ## Budgets
 
-A budget is a request-envelope field (`budget_tokens` on the socket, HTTP and MCP, `--budget N` on the CLI; a token counts as 4 bytes), with a default per named pack. Defaults are product values, not settings, adjusted by measured exploration saved. Ruling, 2026-07-03: "I said 10K but frankly … 30K or 50K even" (cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:6698988f-5446-4512-b9a3-3767899bd73d).
+A budget is a request-envelope field (`budget_tokens` on the socket, HTTP and MCP, `--budget N` on the CLI; a token counts as 4 bytes), with a default per named pack. Defaults are product values, not settings, adjusted by measured exploration saved. (ruling 2026-07-03, cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:6698988f-5446-4512-b9a3-3767899bd73d).
 
 | Pack | Default budget |
 |---|---|
@@ -91,7 +91,7 @@ The session-start brief is injected by the `SessionStart` hook (and Hermes's fir
 
 1. Header ([Trust rendering](#trust-rendering)).
 2. The agent manual ([Agent manual](#agent-manual)), on `startup`, `clear` and `compact` only.
-3. **Assertions:** the operator's assertions and operator-accepted agent assertions (decisions, lessons, handoffs, problems, goals, questions, findings) scoped to the repository, the directory and the listed sessions. Unjudged agent, script and unattributed assertions are counted, with the query that lists them, and not inlined. Ruling, 2026-10-18: "for now, I think acutally don't inject those" (cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-18T14:13:05). The way to have them inlined is judgment: by the operator, or by a calibrated annotation pass.
+3. **Assertions:** the operator's assertions and operator-accepted agent assertions (decisions, lessons, handoffs, problems, goals, questions, findings) scoped to the repository, the directory and the listed sessions. Unjudged agent, script and unattributed assertions are counted, with the query that lists them, and not inlined. (ruling 2026-10-18, cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-18T14:13:05). The way to have them inlined is judgment: by the operator, or by a calibrated annotation pass.
 4. **Other agents working in this repository now** ([Live sessions](#live-sessions)): worktree, live state, task, last event; the caller excluded; "⚠ 2 agents in this worktree" when a peer shares the worktree.
 5. **Observed task claims here:** last-observed claims with no observed close or release, without an age cutoff. Their observation time and unknown external tracker state are labelled; Polylogue does not infer verified current activity.
 6. **Recent sessions**, newest first, until the budget is full: title; time and harness; tool-call status; commits, pull requests and files changed; the task it still holds open; the latest observed prose request with its recorded authorship and message reference, before the stored model answer; the first lines of the last answer, datamarked.
@@ -189,7 +189,7 @@ One kind of advisory exists: a prompt naming a file path (a token with `/` or a 
 
 ## Agent manual
 
-Ruling, 2026-10-18: "CLAUDE/AGENTS/skills -- yes … almost defintely we do want that one" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:12f1a067-cc5b-41b7-9209-297099d6b0c1).
+Polylogue ships instruction material for agents (instruction files and skills) generated from its own design. (ruling 2026-10-18, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:12f1a067-cc5b-41b7-9209-297099d6b0c1).
 
 - **One source:** a hand-written card (`docs/agent-manual.md`, at most 800 bytes), the hand-written guide (`docs/agent-guide.md`) and the operation reference generated from the command table (operation, its MCP tool, CLI form, help, and every argument, unlisted ones included).
 - **Delivered four ways:** as the brief's first section on `startup`, `clear` and `compact`; as the MCP server's instructions, which are the card alone, because every MCP session pays for them; as `polylogue manual` and the resource `polylogue://agent/manual`, the card, the guide and the reference; and as a skill (`SKILL.md`), generated by `polylogue manual --skill` and installed by `install-agent`.
@@ -200,7 +200,7 @@ Ruling, 2026-10-18: "CLAUDE/AGENTS/skills -- yes … almost defintely we do want
 
 `polylogue mcp` (stdio) is a thin proxy: each tool call goes to the daemon as the request the CLI sends for the same operation, with the caller identity of [assertions.md#authorship](assertions.md#authorship). It holds no archive state.
 
-**Complete for writes.** Ruling, 2026-10-27: "presumably agents would use properly designed MCP anyway" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:271c00a1-b795-4d0f-aed3-96acc2dff1ec). Every operation in the command table is reachable over MCP: `assert` of every kind, `revise`, `withdraw`, `judge`, `setting`, `keep`, `save`, `watch`, `pack`, `ping`, live-session control, chat actions, `backfill`, `import` and `memory`. Only local commands stay CLI-only: `web`, `daemon`, `hook`, `hooks`, `install-agent`, `browser-host`, `mcp`, `completions`, `demo`.
+**Complete for writes.** (ruling 2026-10-27, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:271c00a1-b795-4d0f-aed3-96acc2dff1ec). Every operation in the command table is reachable over MCP: `assert` of every kind, `revise`, `withdraw`, `judge`, `setting`, `keep`, `save`, `watch`, `pack`, `ping`, live-session control, chat actions, `backfill`, `import` and `memory`. Only local commands stay CLI-only: `web`, `daemon`, `hook`, `hooks`, `install-agent`, `browser-host`, `mcp`, `completions`, `demo`.
 
 **Tools.** Every agent session pays for the tool list and the instructions before it asks anything, so the declarations stay compact while describing every operation and argument. Five tools are generated from the command table, each a family of rows with the same access; the shape is the common `command-surface` tool family's:
 

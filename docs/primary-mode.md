@@ -180,7 +180,7 @@ The predecessor's authored records are imported as a declared older format ([ass
 
 ## Cutover
 
-Moving an archive to primary mode is an ordinary technical act, run by whoever builds it once the comparison passes. Ruling, 2026-10-27: "you _did_ create current storage in the first place while developing. why would you now require my approval?" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:f1f39c29-7c7d-42e0-99ec-0c7a1b10b751).
+Moving an archive to primary mode is an ordinary technical act, run by whoever builds it once the comparison passes. (ruling 2026-10-27, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:f1f39c29-7c7d-42e0-99ec-0c7a1b10b751).
 
 `polylogue sinex cutover`:
 1. checks that the primary daemon has collected every provider location and is idle;

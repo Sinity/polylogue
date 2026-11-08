@@ -12,18 +12,18 @@ Measurement options are one query scalar. Quote an option containing commas, for
 - **Unknown is never zero.** Every sum states its known part and how many items it could not count, in the items' own unit. A partial value is a lower bound ("at least"); a missing time is never placed.
 - **One definition per figure, one function per rule.** One cost function prices a response; every other cost is a sum of its results. Surfaces never recompute.
 - **Denominators and grain are part of the answer.** Every rate names its denominator, every count names its unit, and figures from different definitions are labelled not comparable.
-- **Computed, not interpreted.** Counts, sums, durations, joins and statistics over recorded structure are in scope. Labels inferred from prose (work kind, phases, success, abandonment) are not, because they would claim what the records do not show. Ruling, 2026-03-27: "I think 'confidence' stuff is menaningless slop" (cc-queued:14ea730a-aa86-433a-9bba-8be973977d5c@2026-03-27T08:47).
-- **No umbrella category.** Users see fields, units, measures and reports. The code's name for a stored or computed product is *derivation*, and the current generated reference page is [Derived data](derived.md). Ruling, 2026-08-31: "aggressively dissolve the insights concept … there shouldn't be some soprt of separte step called 'insights' in the convergence" (cc-queued:62b956ba-3ea3-4693-8d71-9a36321c37a9@2026-08-31T05:41).
+- **Computed, not interpreted.** Counts, sums, durations, joins and statistics over recorded structure are in scope. Labels inferred from prose (work kind, phases, success, abandonment) are not, because they would claim what the records do not show. (ruling 2026-03-27, cc-queued:14ea730a-aa86-433a-9bba-8be973977d5c@2026-03-27T08:47).
+- **No umbrella category.** Users see fields, units, measures and reports. The code's name for a stored or computed product is *derivation*, and the current generated reference page is [Derived data](derived.md). (ruling 2026-08-31, cc-queued:62b956ba-3ea3-4693-8d71-9a36321c37a9@2026-08-31T05:41).
 - **Measurement is the query language plus named computations.** Anything a pipeline can express is a pipeline. A measure exists only for what pipelines cannot express: windows, forecasts, survival, level changes, transitions, ranking.
 - **Every number reaches every surface the same way,** through the command table; `explain` prints the pipeline behind a report.
-- **Precise accounting with existing libraries.** Ruling, 2026-05-04: "we want to have precise tokenization, token counts, cost tracking, model etc." (cc:c1cf89f2-c4ff-48de-9459-599c2e8d04ff:c6cfe879-70d5-42e4-8913-989d114ce0ff); token counting and cost tracking "should actually be pretty much solved problems" (ruling 2026-06-27, cc:1944721d-4531-41be-8093-13454b62ebd6:cb4115e5-9b91-4d6d-938d-bfe842e10c14).
+- **Precise accounting with existing libraries.** (ruling 2026-05-04, cc:c1cf89f2-c4ff-48de-9459-599c2e8d04ff:c6cfe879-70d5-42e4-8913-989d114ce0ff); token counting and cost tracking "should actually be pretty much solved problems" (ruling 2026-06-27, cc:1944721d-4531-41be-8093-13454b62ebd6:cb4115e5-9b91-4d6d-938d-bfe842e10c14).
 - **Reports are general.** No report is specific to one person's own tools or setup.
 
 ## Rules
 
 ### Validity
 
-Each product declares one validity kind, which decides the evidence it needs before it ships. Ruling, 2026-10-27: "construct validity very important, and the way things are converged, avoiding the issues of old codebase where these things were some weid separate stage" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:2f5be8f0-e636-4b96-860c-1c1ca4f3e930).
+Each product declares one validity kind, which decides the evidence it needs before it ships. (ruling 2026-10-27, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:2f5be8f0-e636-4b96-860c-1c1ca4f3e930).
 
 | Kind | What it is | Evidence required before it ships |
 |---|---|---|
@@ -36,14 +36,14 @@ Labelled samples are private judgment notes and kept results in the operator's a
 
 ### Grain and storage
 
-Analyses are computed when their data arrives, and at read only when that cannot be done accurately. Ruling, 2026-06-27: "we are supposed to materialize such analyses into proper schema we have. I mean, basically compute these when we read the underlying data. not dynamically (ofc if it cant be done (accurately, correctly))" (cc-queued:1944721d-4531-41be-8093-13454b62ebd6@2026-06-27T17:03).
+Analyses are computed when their data arrives, and at read only when that cannot be done accurately. (ruling 2026-06-27, cc-queued:1944721d-4531-41be-8093-13454b62ebd6@2026-06-27T17:03).
 
 - **Stored grains are row and session only.** A stored product is a column on a parsed row (`message`, `tool_call`, `event`), or a session column or session-keyed table.
 - **Session-grain values are stored as their data arrives** when a query filters, sorts or groups on them across the archive, or when they are costly per read (graph walks, interval unions).
 - **Grouped figures are computed at read** from stored session rows: logical session, day, week, repository, project. Grouping stored rows is exact, so a late import, a re-parse or a newly arrived link changes them with nothing stale to invalidate. A grouped figure measured too slow at read may be stored as well, keyed by session (for example by session and UTC quarter hour), so it changes with its session; nothing is keyed by day, repository or root.
 - **Read-time products** are those that depend on the clock (live state, windows, forecasts, "quiet for 6 hours"), on a setting (logical day, plan) or on an arbitrary selection (aggregates, comparisons, rankings), and per-turn or per-pair computations no archive-wide query sorts on.
 - **Stored products read only parsed rows,** never assertions, settings or the clock, so a note or a setting change never makes a stored product stale.
-- **Storing a product does not make it citable.** Citation is served by [kept results](#citation-and-figures). Whether a product that is neither stored nor a field is best served as a named query is decided per product. Ruling, 2026-10-27, on that rule: "this might not be universal neccessarily" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:109d583d-02c8-43d4-9ea0-0db79c3f5ed4).
+- **Storing a product does not make it citable.** Citation is served by [kept results](#citation-and-figures). Whether a product that is neither stored nor a field is best served as a named query is decided per product. (ruling 2026-10-27, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:109d583d-02c8-43d4-9ea0-0db79c3f5ed4).
 
 **Two storage forms:**
 
