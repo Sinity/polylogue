@@ -82,6 +82,7 @@ impl Failure {
                 ParseError::CaptureLog(_) => "capture_log",
                 ParseError::Counts(_) => "counts",
                 ParseError::ParserState(_) => "parser_state",
+                ParseError::Context(_) => "context",
             },
         }
     }
