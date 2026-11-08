@@ -51,3 +51,37 @@ fn counts_read_aggregate_columns_by_position() {
     );
     assert_eq!(reader.query_counts("SELECT count(*), count(*) FILTER (WHERE x IS NULL) FROM (SELECT NULL AS x WHERE 0)", &[]).unwrap(), (0, 0));
 }
+
+#[test]
+fn caller_sql_may_only_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        reader
+            .query_untrusted("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<3) SELECT count(*) AS c, upper('a') AS u FROM n")
+            .unwrap(),
+        vec![serde_json::json!({"c": 3, "u": "A"})]
+    );
+    for refused in [
+        "CREATE TEMP VIEW session AS SELECT 1 AS id",
+        "CREATE TEMP TABLE scratch(x)",
+        "ATTACH DATABASE ':memory:' AS other",
+        "PRAGMA query_only = 0",
+        "DETACH DATABASE main",
+    ] {
+        assert!(
+            reader.query_untrusted(refused).is_err(),
+            "{refused} was not refused"
+        );
+    }
+    // Refusal leaves the shared connection as it was for ordinary reads.
+    assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
+    assert!(
+        reader
+            .query("SELECT * FROM temp.sqlite_master", &[])
+            .unwrap()
+            .is_empty()
+    );
+}
