@@ -30,7 +30,7 @@ fn native_authored_replacement_and_query_recovery_use_only_completed_owner_posit
     index
         .execute_batch("DROP INDEX primary_fact_changed")
         .unwrap();
-    crate::schema::ensure_primary_index(&mut index).unwrap();
+    crate::schema::ensure_primary_index(&index).unwrap();
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-a").unwrap();
     let a = setting(&index, "request-a", "drive.ai-studio");
