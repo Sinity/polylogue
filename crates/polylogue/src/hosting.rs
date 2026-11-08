@@ -479,6 +479,11 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
     // Wakes the accept loop so it sees it should stop.
     let _ = UnixStream::connect(&config.socket);
     let _ = accept.join();
+    // The client reader holds another descriptor and an Arc to the relay.
+    // Closing both directions releases that reader and lets the daemon see EOF.
+    if let Some(client) = lock(&relay).client.take() {
+        let _ = client.shutdown(std::net::Shutdown::Both);
+    }
     if let Some(dir) = config.socket.parent()
         && let Some(key) = config.socket.file_stem().and_then(|s| s.to_str())
     {

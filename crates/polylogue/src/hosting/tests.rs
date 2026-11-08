@@ -166,7 +166,8 @@ fn a_hosted_session_survives_its_daemon_connection() {
     assert!(lock(&second.state.0).turn, "the hello says a turn runs");
     let (sent, outcomes) = std::sync::mpsc::channel();
     second.on_sent(Arc::new(move |delivery, result| {
-        sent.send((delivery.to_owned(), result)).unwrap();
+        // A failed test may already have dropped its observer during unwind.
+        let _ = sent.send((delivery.to_owned(), result));
     }));
     // A message sent while the turn runs waits for it.
     assert!(!second.send("second turn", Some("queued-success")).unwrap());
@@ -213,7 +214,8 @@ fn acp_eof_reports_unsent_queued_deliveries_once() {
         HostedStdio::connect(&hosting.config.socket, HostProtocol::Acp, "s1".into()).unwrap();
     let (sent, outcomes) = std::sync::mpsc::channel();
     client.on_sent(Arc::new(move |delivery, result| {
-        sent.send((delivery.to_owned(), result)).unwrap();
+        // A failed test may already have dropped its observer during unwind.
+        let _ = sent.send((delivery.to_owned(), result));
     }));
     assert!(
         client
