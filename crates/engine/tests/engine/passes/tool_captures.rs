@@ -44,7 +44,10 @@ fn ordinary_inputs_are_serviced_while_a_database_is_read() {
     assert_eq!(w.texts("live"), ["before capture"]);
     w.append("live.jsonl", &user("u2", "live", "during capture"));
     let second = engine.run_turn().unwrap();
-    assert!(second.errors.is_empty());
+    assert!(
+        second.errors.is_empty(),
+        "ordinary append during database capture: {second:?}"
+    );
     assert_eq!(w.texts("live"), ["before capture", "during capture"]);
     // The active batch is independent of later discovery results.
     fs::remove_file(&db).unwrap();

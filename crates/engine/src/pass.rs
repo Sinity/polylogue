@@ -1395,9 +1395,12 @@ impl Engine {
                 st.stored = plan.stored_upto;
                 st.parsed_upto = 0;
                 st.parsed = false;
-                st.chain = None;
+                st.chain = plan.parser_chain;
             } else {
                 st.stored = plan.stored_upto.max(st.stored);
+                if let Some(chain) = plan.parser_chain {
+                    st.chain = Some(chain);
+                }
             }
             if plan.failure_recorded {
                 // The parse state holds the failure at the stored length, so

@@ -22,8 +22,8 @@ pub(crate) struct InputState {
     pub(crate) waiting: bool,
     pub(crate) parser_state: Option<Json>,
     pub(crate) tail: Option<Vec<u8>>,
-    /// The revision chain whose bytes are stored, when known from the
-    /// archive; `None` once this run stored a new chain.
+    /// The revision chain whose bytes are stored, from confirmed metadata
+    /// or an actual writer acknowledgment. Unknown until one supplies it.
     pub(crate) chain: Option<i64>,
     /// The file facts a read failed at when no parse state could record the
     /// failure (nothing of the file was stored, or the record itself failed):

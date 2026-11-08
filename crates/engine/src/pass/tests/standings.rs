@@ -104,13 +104,21 @@ fn a_recorded_failure_stays_stopped_across_restart_until_the_executable_changes(
     let name = "dependency-stop.jsonl";
     let first = claude_user("one", "dependency-stop", "first retained body");
     let second = claude_user("two", "dependency-stop", "second retained body");
-    home.append(name, &(first.clone() + &second));
+    home.append(name, &first);
     let (mut engine, lock) = crate::import::tests::engine(&home, first.len() as u64);
-    fault::arm("parse", "dependency-stop", Action::Fail, 1, u32::MAX);
+    let seeded = engine.run_pass().unwrap();
+    assert!(seeded.errors.is_empty(), "{seeded:?}");
+    let path = home.file(name);
+    let prefix = stopped_reading(&engine, &path);
+    assert!(
+        prefix.checkpoint.is_some(),
+        "the successful prefix owns a real continuation"
+    );
+    home.append(name, &second);
+    fault::arm("parse", "dependency-stop", Action::Fail, 0, u32::MAX);
     let failed = engine.run_pass().unwrap();
     fault::clear();
     assert!(!failed.errors.is_empty(), "{failed:?}");
-    let path = home.file(name);
     let attempt = engine.stopped_attempt;
     let stopped = stopped_reading(&engine, &path);
     assert!(stopped.progress.stopped());
@@ -119,9 +127,10 @@ fn a_recorded_failure_stays_stopped_across_restart_until_the_executable_changes(
         "the failure follows a real parsed prefix"
     );
     assert_eq!(stopped.stopped_attempt, Some(attempt));
-    assert!(
-        stopped.checkpoint.is_none(),
-        "a failure invents no continuation"
+    assert_eq!(stopped.parsed_upto, prefix.parsed_upto);
+    assert_eq!(
+        stopped.checkpoint, prefix.checkpoint,
+        "the failed suffix preserves only the genuine checkpoint already confirmed at this cursor"
     );
     let config = engine.config.clone();
     let archive = engine.archive.clone();

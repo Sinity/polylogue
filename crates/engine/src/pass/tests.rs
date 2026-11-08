@@ -336,13 +336,32 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
     let old = "original body ".repeat(40);
     home.append("checkpoint.jsonl", &claude_user("one", "session", &old));
     let (mut engine, _lock) = crate::import::tests::engine(&home, 256);
-    assert!(engine.run_pass().unwrap().errors.is_empty());
+    let seeded = engine.run_pass().unwrap();
+    assert!(seeded.errors.is_empty(), "initial capture: {seeded:?}");
+    let path = home.file("checkpoint.jsonl");
+    let selected = engine
+        .reads
+        .reader()
+        .unwrap()
+        .input_progress(&engine.inputs[&path].input_id)
+        .unwrap()
+        .unwrap()
+        .chain;
+    let cached_chain = engine.inputs[&path].chain;
     home.append(
         "checkpoint.jsonl",
         &claude_user("two", "session", "second body"),
     );
-    assert!(engine.run_pass().unwrap().errors.is_empty());
-    let path = home.file("checkpoint.jsonl");
+    let appended = engine.run_pass().unwrap();
+    assert!(
+        appended.errors.is_empty(),
+        "append before rewrite: {appended:?}"
+    );
+    assert_eq!(
+        cached_chain,
+        Some(selected),
+        "the next append retains the acknowledged source chain"
+    );
     let inode = std::fs::metadata(&path).unwrap().ino();
     // Touch the same file so planning selects a rewrite, then make only that
     // planned read fail. Moving it aside preserves its inode and bytes.

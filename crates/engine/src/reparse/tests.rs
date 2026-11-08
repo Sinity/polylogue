@@ -297,18 +297,30 @@ fn a_committed_live_path_can_append_while_another_chain_is_still_parsing() {
     *OLD_READING.lock().unwrap() = Some(old);
     *LIVE_APPEND.lock().unwrap() = Some(new);
     *RESUME_SECOND.lock().unwrap() = Some(resumed);
-    std::thread::scope(|scope| {
+    let (result, pass, appended) = std::thread::scope(|scope| {
         let w = &w;
-        scope.spawn(move || {
-            old_ready.recv().unwrap();
-            w.append("a.jsonl", &claude_user("later", "a", "later text"));
-            new_ready.recv().unwrap();
-            resume.send(()).unwrap();
+        let append = scope.spawn(move || {
+            let appended = old_ready
+                .recv_timeout(Duration::from_secs(10))
+                .and_then(|()| {
+                    w.append("a.jsonl", &claude_user("later", "a", "later text"));
+                    new_ready.recv_timeout(Duration::from_secs(10))
+                });
+            // Release the other parser even when live work failed, so the
+            // production pass can return its actual errors to the assertion.
+            let _ = resume.send(());
+            appended
         });
         let mut pass = Pass::default();
-        engine.replace_readings(plans, &mut pass).unwrap();
-        assert!(pass.errors.is_empty(), "{pass:?}");
+        let result = engine.replace_readings(plans, &mut pass);
+        (result, pass, append.join().unwrap())
     });
+    assert!(result.is_ok(), "replacement result: {result:?}; {pass:?}");
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert!(
+        appended.is_ok(),
+        "live append signal: {appended:?}; {pass:?}"
+    );
     *OLD_READING.lock().unwrap() = None;
     *LIVE_APPEND.lock().unwrap() = None;
     assert_eq!(w.texts("a"), ["first", "later text"]);
