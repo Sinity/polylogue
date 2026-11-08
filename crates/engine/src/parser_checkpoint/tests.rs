@@ -342,7 +342,8 @@ fn restart_reopens_an_evicted_response_and_resolves_its_native_record_alias() {
     };
     // Select the message grain so the row's id names the canonical message.
     let program =
-        polylogue_store::query::compile(&format!("messages where {native_reference}"), &options).unwrap();
+        polylogue_store::query::compile(&format!("messages where {native_reference}"), &options)
+            .unwrap();
     let parameters = program
         .params
         .iter()
