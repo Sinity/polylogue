@@ -213,6 +213,16 @@ fn call(w: &TestDaemon, id: &str, session: &str) -> Value {
 #[test]
 fn advisory_cooldown_and_once_pair_history_have_distinct_lifetimes() {
     let (mut w, now) = fixture();
+    assert!(
+        w.daemon
+            .reads
+            .reader()
+            .unwrap()
+            .session(&SessionId::parse("codex:advisory-test").unwrap())
+            .unwrap()
+            .is_none(),
+        "first-prompt recipients need not have provider capture yet"
+    );
     statement(
         &w,
         "cooldown-file",
@@ -266,6 +276,11 @@ fn advisory_cooldown_and_once_pair_history_have_distinct_lifetimes() {
         .unwrap()
         .0;
     assert!(row.events.is_empty(), "preparation is not emission");
+    assert_eq!(
+        call(&w, "different-prefix-recipient", "codex:advisory")["delivery"],
+        "different-prefix-recipient",
+        "a different exact identity is not a prefix alias of the original recipient"
+    );
     w.restart();
     assert_eq!(
         call(&w, "after-restart", "codex:advisory-test")["prepared"]["empty"],

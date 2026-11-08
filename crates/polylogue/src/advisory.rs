@@ -132,8 +132,10 @@ fn already_given(
     target: &str,
     context: &Arc<crate::operation::Context>,
 ) -> Result<bool, StoreError> {
+    // This recipient is an exact typed identity supplied by the hook, not an
+    // archive prefix: the first prompt can precede provider capture.
     let text = format!(
-        "deliveries where event:advice bytes > 0 recipient:{} refs:{} refs:{}",
+        "deliveries where event:advice bytes > 0 text(recipient) = {} refs:{} refs:{}",
         query::assertions::quoted(&session.to_string()),
         query::assertions::quoted(reference),
         query::assertions::quoted(target)
