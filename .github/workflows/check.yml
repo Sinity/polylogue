@@ -14,7 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
+      # A pull request's checkout is its merge commit; the first parent is the
+      # base branch's tip, the base `xtask check` selects tests against.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - name: Free disk space for the test build
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc
@@ -29,5 +33,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
+      # Master checks its own tree (no changes), so every test runs there.
       - name: cargo xtask check
-        run: cargo xtask check
+        run: cargo xtask check --base ${{ github.event_name == 'pull_request' && 'HEAD^1' || 'HEAD' }}

@@ -328,6 +328,16 @@ fn selections_run_through_the_real_runner_in_the_one_build() {
 }
 
 #[test]
+fn check_runs_every_test_for_an_unchanged_tree_and_the_affected_ones_otherwise() {
+    assert_eq!(check_filterset(&Selection::Nothing), None);
+    assert_eq!(check_filterset(&Selection::Workspace), None);
+    assert_eq!(
+        check_filterset(&Selection::Packages(vec!["polylogue-store".into()])),
+        Some("rdeps(=polylogue-store)".to_owned())
+    );
+}
+
+#[test]
 fn feature_flags_are_refused_rather_than_building_a_second_feature_set() {
     for flag in [
         &["--features", "faults"][..],

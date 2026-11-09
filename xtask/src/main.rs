@@ -39,8 +39,16 @@ enum Cli {
     /// Formatting, crate boundaries and clippy (warnings denied) of every
     /// target.
     Fast,
-    /// Formatting, crate boundaries, both clippy configurations and all tests.
-    Check,
+    /// Formatting, crate boundaries, both clippy configurations, and the
+    /// tests that the changes since the merge base with BASE can affect: the
+    /// changed packages and every package that depends on them, through
+    /// devkit's selection. Every test runs when nothing changed (master
+    /// checking itself) and when a change selects the whole workspace (the
+    /// lockfile, a manifest, the toolchain, files outside packages).
+    Check {
+        #[arg(long, default_value = "origin/master")]
+        base: String,
+    },
     /// Build every test binary and both clippy configurations without
     /// running any test: the warm target that new checkouts copy.
     Warm,
@@ -214,22 +222,6 @@ fn clippy(run: &mut Run) -> devkit::Result {
     )
 }
 
-/// A type check of every target with the one feature list: test-code errors
-/// surface here in a minute instead of after code generation.
-fn type_check(run: &mut Run) -> devkit::Result {
-    run.cargo(
-        "type check",
-        &[
-            "check",
-            "--locked",
-            "--workspace",
-            "--all-targets",
-            "--features",
-            FEATURES,
-        ],
-    )
-}
-
 fn build_tests(run: &mut Run) -> devkit::Result {
     let mut command = vec!["test".to_owned(), "--no-run".to_owned()];
     command.extend(test_arguments(&[], None).expect("the full selection is valid"));
@@ -358,6 +350,15 @@ fn test_arguments(args: &[String], required: Option<String>) -> Result<Vec<Strin
     Ok(arguments)
 }
 
+/// The tests `check` runs for a selection: `None` (every test) when nothing
+/// changed, since an unchanged tree is checked whole.
+fn check_filterset(selection: &Selection) -> Option<String> {
+    match selection {
+        Selection::Nothing => None,
+        selection => selection.filterset(),
+    }
+}
+
 fn run(command: &str, args: &[String], steps: impl FnOnce(&mut Run) -> devkit::Result) -> ExitCode {
     let mut run = Run::start("polylogue", command, args);
     let _ = steps(&mut run);
@@ -381,11 +382,23 @@ fn main() -> ExitCode {
             boundaries_step(run)?;
             clippy(run)
         }),
-        Cli::Check => run("check", &[], |run| {
+        Cli::Check { base } => run("check", &["--base".into(), base.clone()], |run| {
             fmt_check(run)?;
             boundaries_step(run)?;
             clippy(run)?;
-            let arguments = test_arguments(&[], None).expect("the full selection is valid");
+            let mut required = None;
+            run.step("selection", |run| {
+                let selection = devkit::select::changed(&run.root, &base)?;
+                required = check_filterset(&selection);
+                match &required {
+                    Some(filterset) => {
+                        eprintln!("tests affected by changes since {base}: {filterset}");
+                    }
+                    None => eprintln!("every test runs ({selection:?} since {base})"),
+                }
+                Ok(())
+            })?;
+            let arguments = test_arguments(&[], required).expect("the selection is valid");
             run.nextest("test", &nextest(arguments))
         }),
         Cli::Warm => run("warm", &[], |run| {
@@ -423,7 +436,6 @@ fn main() -> ExitCode {
                 }
             };
             run("test", &args, |run| {
-                type_check(run)?;
                 run.nextest("test", &nextest(arguments))
             })
         }
