@@ -1483,12 +1483,40 @@ impl Inner {
             for (reply, _) in flushes.drain(..) {
                 let _ = reply.send(std::mem::take(&mut self.report));
             }
+            self.restart_full_logs();
 
             if stopping {
                 break;
             }
         }
         let _ = self.finish_build();
+    }
+
+    /// Between transactions, starts over a write-ahead log grown past its
+    /// checkpoint size ([`crate::archive::restart_full_log`]). A log still in
+    /// use by a reader is tried again after the next transaction.
+    fn restart_full_logs(&mut self) {
+        let wait = std::time::Duration::from_millis(100);
+        let limit = crate::archive::WAL_AUTOCHECKPOINT;
+        let index =
+            crate::archive::restart_full_log(&self.index, &self.location.index_db(), limit, wait);
+        let archive = if self.sinex.is_none() {
+            crate::archive::restart_full_log(
+                &self.archive,
+                &self.location.archive_db(),
+                limit,
+                wait,
+            )
+        } else {
+            Ok(false)
+        };
+        // A failed checkpoint loses nothing: the log stays and is copied by
+        // a later one.
+        for result in [index, archive] {
+            if let Err(error) = result {
+                eprintln!("polylogue: writer: checkpoint: {error}");
+            }
+        }
     }
 
     /// Gives each named session a new live change counter. In primary mode

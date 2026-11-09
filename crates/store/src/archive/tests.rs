@@ -433,3 +433,88 @@ fn opening_clears_prepared_output_left_by_a_stop() {
     let (_archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     assert!(!output.exists());
 }
+
+/// Readers that take a snapshot after each commit and finish before the
+/// next keep the automatic checkpoint from ever starting the log over; the
+/// writer's restart between transactions holds the log near its limit.
+#[test]
+fn the_log_stays_near_its_limit_while_readers_follow_every_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("log.db");
+    let writer = open_write(&path, cache::SETUP).unwrap();
+    writer
+        .execute_batch("CREATE TABLE row(n INTEGER PRIMARY KEY, body BLOB)")
+        .unwrap();
+    let reader = open_read(&path).unwrap();
+    let page: u64 = writer
+        .query_row("PRAGMA page_size", [], |r| r.get::<_, i64>(0))
+        .unwrap() as u64;
+    let limit = 64;
+    let wait = std::time::Duration::from_millis(100);
+    let log = dir.path().join("log.db-wal");
+    let mut largest = 0;
+    let mut restarts = 0;
+    for n in 0..400 {
+        // A reader that started after the last commit is still reading as
+        // the next transaction begins.
+        reader.execute_batch("BEGIN").unwrap();
+        reader
+            .query_row("SELECT count(*) FROM row", [], |r| r.get::<_, i64>(0))
+            .unwrap();
+        writer
+            .execute("INSERT INTO row(n, body) VALUES (?1, zeroblob(8192))", [n])
+            .unwrap();
+        reader.execute_batch("COMMIT").unwrap();
+        if restart_full_log(&writer, &path, limit, wait).unwrap() {
+            restarts += 1;
+        }
+        largest = largest.max(std::fs::metadata(&log).unwrap().len());
+    }
+    // One commit past the limit at most: the log header, then frames of a
+    // page header plus a page each.
+    let frames = limit as u64 + 8;
+    assert!(
+        largest <= 32 + frames * (24 + page),
+        "the log reached {largest} bytes"
+    );
+    assert!(restarts > 0);
+    let rows: i64 = writer
+        .query_row("SELECT count(*) FROM row", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 400);
+}
+
+/// A reader still in the log keeps it: the restart gives up after its wait
+/// and the next one, after the reader finished, starts it over.
+#[test]
+fn a_log_in_use_is_kept_until_its_reader_finishes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("log.db");
+    let writer = open_write(&path, cache::SETUP).unwrap();
+    writer
+        .execute_batch("CREATE TABLE row(n INTEGER PRIMARY KEY, body BLOB)")
+        .unwrap();
+    writer
+        .execute("INSERT INTO row(n, body) VALUES (1, zeroblob(65536))", [])
+        .unwrap();
+    let reader = open_read(&path).unwrap();
+    reader.execute_batch("BEGIN").unwrap();
+    reader
+        .query_row("SELECT count(*) FROM row", [], |r| r.get::<_, i64>(0))
+        .unwrap();
+    writer
+        .execute("INSERT INTO row(n, body) VALUES (2, zeroblob(65536))", [])
+        .unwrap();
+    let log = dir.path().join("log.db-wal");
+    let before = std::fs::metadata(&log).unwrap().len();
+    let wait = std::time::Duration::from_millis(50);
+    assert!(!restart_full_log(&writer, &path, 4, wait).unwrap());
+    assert_eq!(std::fs::metadata(&log).unwrap().len(), before);
+    reader.execute_batch("COMMIT").unwrap();
+    assert!(restart_full_log(&writer, &path, 4, wait).unwrap());
+    assert_eq!(std::fs::metadata(&log).unwrap().len(), 0);
+    let rows: i64 = reader
+        .query_row("SELECT count(*) FROM row", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 2);
+}

@@ -171,9 +171,17 @@ impl Engine {
         if matches!(plan.source, pool::Bytes::File) {
             self.store_plan(plan, pass)?;
         }
+        let mut pending = ExportBatch::default();
+        // Items parsed after the last sent batch are not committed when the
+        // parse fails; the next parse replays the committed prefix of
+        // deliveries and continues after it.
         let read = parse_export(plan, parser, &self.blobs.clone(), |step| {
-            self.write_export_step(plan, step, pass)
+            self.write_export_step(plan, step, &mut pending, pass)
         })?;
+        if !pending.steps.is_empty() {
+            self.send_export_batch(plan, pending, pass)?;
+        }
+        self.export_batch_committed(pass)?;
         pass.bytes_read += read.bytes_read;
         if read.complete {
             plan.parse_pos = plan.size;
@@ -348,33 +356,54 @@ impl Engine {
         Ok(())
     }
 
+    /// Items join the pending batch until it covers `chunk` bytes of the
+    /// export, the same unit a line input is read and committed in. One
+    /// transaction per item would rewrite the input's reading state and sync
+    /// once per record; each delivery is still admitted in order inside the
+    /// batch's transaction, with its cursor, so a commit never holds part of
+    /// a record and a later parse resumes after the last committed one.
     fn write_export_step(
         &mut self,
         plan: &Plan,
         mut item: ExportStep,
+        pending: &mut ExportBatch,
         pass: &mut Pass,
     ) -> Result<Option<ExportCursor>, EngineError> {
-        let mut blobs = Vec::new();
-        let mut files = Vec::new();
-        {
-            for blob in std::mem::take(&mut item.output.blobs) {
-                let (new_blob, file) = self.archive.prepare_decoded(&blob.bytes)?;
-                if new_blob.hash != blob.hash || new_blob.size != blob.size {
-                    return Err(std::io::Error::other(
-                        "decoded export bytes differ from their declared hash or length",
-                    )
-                    .into());
-                }
-                files.extend(file);
-                blobs.push(new_blob);
+        for blob in std::mem::take(&mut item.output.blobs) {
+            let (new_blob, file) = self.archive.prepare_decoded(&blob.bytes)?;
+            if new_blob.hash != blob.hash || new_blob.size != blob.size {
+                return Err(std::io::Error::other(
+                    "decoded export bytes differ from their declared hash or length",
+                )
+                .into());
             }
+            pending.files.extend(file);
+            pending.blobs.push(new_blob);
         }
         let done = item.done;
+        pending.bytes += item.source_bytes();
         let (mut parse, cursor) = item.into_parse(plan, &self.blobs, &self.stopped_attempt)?;
         if done && plan.origin.is_row_dump(&plan.path) {
             pass.bytes_read += plan.size;
         }
         parse.prepare();
+        pending.steps.push(parse);
+        if done || pending.bytes >= self.config.chunk {
+            self.send_export_batch(plan, std::mem::take(pending), pass)?;
+        }
+        Ok(cursor)
+    }
+
+    /// Queues one batch of export items. The previous batch commits while
+    /// this one is parsed; waiting for it first reports its errors before
+    /// later deliveries, which extend its cursor, are queued.
+    fn send_export_batch(
+        &mut self,
+        plan: &Plan,
+        pending: ExportBatch,
+        pass: &mut Pass,
+    ) -> Result<(), EngineError> {
+        self.export_batch_committed(pass)?;
         let batch = Batch {
             required_disposition: None,
             input: plan.input.clone(),
@@ -382,30 +411,48 @@ impl Engine {
             observation: None,
             continues: false,
             new_blob: None,
-            blobs,
+            blobs: pending.blobs,
             length: plan.size,
-            parse: vec![parse],
+            parse: pending.steps,
             acquisition: None,
             basis: None,
             release: Default::default(),
         };
-        if files.is_empty() {
+        if pending.files.is_empty() {
             self.writer.send(batch)?;
         } else {
             for result in self.writer.sender()?.store_group(
-                vec![polylogue_store::staging::PreparedBatch { batch, files }],
+                vec![polylogue_store::staging::PreparedBatch {
+                    batch,
+                    files: pending.files,
+                }],
                 Arc::clone(&self.blobs),
             )? {
                 result?;
             }
         }
+        Ok(())
+    }
+
+    /// Waits until every queued export batch has committed.
+    fn export_batch_committed(&mut self, pass: &mut Pass) -> Result<(), EngineError> {
         let written = self.flush_writes()?;
         pass.messages_written += written.messages;
         if !written.errors.is_empty() {
             return Err(std::io::Error::other(written.errors.join("; ")).into());
         }
-        Ok(cursor)
+        Ok(())
     }
+}
+
+/// Export items parsed but not yet queued for the writer.
+#[derive(Default)]
+struct ExportBatch {
+    steps: Vec<ParseStep>,
+    blobs: Vec<polylogue_store::NewBlob>,
+    files: Vec<polylogue_store::staging::PreparedBytes>,
+    /// Bytes of the export the batch's items were read from.
+    bytes: u64,
 }
 
 pub(crate) struct ExportStep {
@@ -423,6 +470,14 @@ pub(crate) struct ExportStep {
 }
 
 impl ExportStep {
+    /// Bytes of the stored export this delivery was read from.
+    fn source_bytes(&self) -> u64 {
+        match self.source {
+            Some(ExportDeliverySource::Item { start, end }) => end.saturating_sub(start),
+            _ => 0,
+        }
+    }
+
     /// Extracted blobs are prepared by the caller before sealing. Delivery
     /// metadata is identical for ordinary parsing and archived replacement.
     /// The completing step of a row dump also commits the comparison of the

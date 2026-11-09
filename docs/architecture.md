@@ -157,6 +157,20 @@ Building the archive overlaps every stage:
   parallel, with the archive searchable before the trigram index finishes;
 - live inputs ahead of bulk work.
 
+The writer commits in transactions bounded by what they cover, never one
+per record and never one per input: a growing file is read and committed in
+chunks (64 MiB by default), queued batches share a transaction up to a row and
+byte bound, and the items of an export or tool-database dump commit in
+batches of about one chunk of its bytes. Each record lies whole inside one
+transaction, together with the position it advances (a parser checkpoint, or
+an export's delivery cursor), so readers never see part of a record and an
+interrupted parse resumes after the last committed batch. A whole-chain
+replacement is the exception: it commits once, because readers must see
+either the old reading or the new one. Between transactions the writer starts
+a write-ahead log over once it passes its checkpoint size (about 1 GB),
+waiting briefly for readers still reading it, so the log stays bounded while
+readers follow every commit.
+
 **Targets**, on the full corpus of an active user (about 40 GB): at least
 40 MB/s; searchable in about 25 minutes; at most 0.6 bytes written per input
 byte; no stage idle while another holds a queue for it. Results are reported

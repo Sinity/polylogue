@@ -440,3 +440,5 @@ mod openrouter;
 mod input_events;
 
 mod delivery;
+
+mod batches;

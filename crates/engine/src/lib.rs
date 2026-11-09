@@ -113,7 +113,8 @@ pub struct Config {
     pub machine: String,
     pub host: String,
     /// The range one job reads at most (default 64 MiB), so a large file
-    /// is stored and parsed in steps. Not a limit: a record longer than
+    /// is stored and parsed in steps; an export's items commit in batches
+    /// of about this many of its bytes. Not a limit: a record longer than
     /// this doubles the range for its input until it fits.
     pub chunk: u64,
     /// While a pass runs, its spools and recently written files are looked
