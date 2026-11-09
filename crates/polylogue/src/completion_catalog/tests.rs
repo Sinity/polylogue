@@ -448,7 +448,7 @@ fn observation_literals_roundtrip_and_terminal_controls_never_enter_candidates()
     let polylogue_query::ast::ConditionKind::Match {
         value: polylogue_query::ast::Value::Scalar { text, .. },
         ..
-    } = condition.kind
+    } = &condition.kind
     else {
         panic!()
     };

@@ -57,7 +57,7 @@ fn every_spec_example_parses_through_the_product_catalog() {
 
 #[test]
 fn shared_tree_retains_boolean_modes_values_and_spans() {
-    let ConditionKind::And { conditions } = cond("repo:x \"a b\" refactor*") else {
+    let ConditionKind::And { conditions } = &cond("repo:x \"a b\" refactor*") else {
         panic!()
     };
     assert_eq!(conditions.len(), 3);
@@ -73,31 +73,31 @@ fn shared_tree_retains_boolean_modes_values_and_spans() {
         Some("cats AND dogs")
     );
     assert!(
-        matches!(cond("cats \"and\" dogs"), ConditionKind::And { conditions } if conditions.len() == 3)
+        matches!(&cond("cats \"and\" dogs"), ConditionKind::And { conditions } if conditions.len() == 3)
     );
-    assert!(matches!(cond("a OR b"), ConditionKind::Or { .. }));
+    assert!(matches!(&cond("a OR b"), ConditionKind::Or { .. }));
     for text in ["NOT tag:x", "-tag:x"] {
-        assert!(matches!(cond(text), ConditionKind::Not { .. }));
+        assert!(matches!(&cond(text), ConditionKind::Not { .. }));
     }
     assert!(
-        matches!(cond("origin:(a|b|c)"), ConditionKind::Match { value: Value::Set { values }, .. } if values.len() == 3)
+        matches!(&cond("origin:(a|b|c)"), ConditionKind::Match { value: Value::Set { values }, .. } if values.len() == 3)
     );
     assert!(matches!(
-        cond("kind:*"),
+        &cond("kind:*"),
         ConditionKind::Match {
             value: Value::Any,
             ..
         }
     ));
     assert!(matches!(
-        cond("cost:unknown"),
+        &cond("cost:unknown"),
         ConditionKind::Match {
             value: Value::Unknown,
             ..
         }
     ));
     assert!(
-        matches!(cond("tag:project:morrow"), ConditionKind::Match { value: Value::Scalar { text, .. }, .. } if text == "project:morrow")
+        matches!(&cond("tag:project:morrow"), ConditionKind::Match { value: Value::Scalar { text, .. }, .. } if text == "project:morrow")
     );
 }
 
@@ -116,13 +116,13 @@ fn compact_comparisons_and_unknown_fields_have_executable_corrections() {
 #[test]
 fn references_calls_and_sequences_keep_structural_identity() {
     for text in ["https://chatgpt.com/c/abc", "@3.2"] {
-        assert!(matches!(cond(text), ConditionKind::Reference { reference } if reference == text));
+        assert!(matches!(&cond(text), ConditionKind::Reference { reference } if reference == text));
     }
     assert!(
-        matches!(cond("weekday_offset()"), ConditionKind::Text { text, .. } if text == "weekday_offset()")
+        matches!(&cond("weekday_offset()"), ConditionKind::Text { text, .. } if text == "weekday_offset()")
     );
     assert!(
-        matches!(cond("parse(x) fails"), ConditionKind::And { conditions } if conditions.len() == 2)
+        matches!(&cond("parse(x) fails"), ConditionKind::And { conditions } if conditions.len() == 2)
     );
     let Source::Unit {
         condition:
@@ -137,7 +137,7 @@ fn references_calls_and_sequences_keep_structural_identity() {
                 ..
             }),
         ..
-    } = p("tool_calls where seq(tool:Bash -> [next] tool:Edit -> [within 5m] tool:Bash)").source
+    } = &p("tool_calls where seq(tool:Bash -> [next] tool:Edit -> [within 5m] tool:Bash)").source
     else {
         panic!()
     };
@@ -145,7 +145,7 @@ fn references_calls_and_sequences_keep_structural_identity() {
     assert!(!all);
     assert_eq!(steps.len(), 3);
     assert_eq!(
-        gaps,
+        *gaps,
         vec![
             Gap::Next,
             Gap::Within {
@@ -175,7 +175,7 @@ fn shared_units_stages_and_nested_queries_use_product_names() {
     let error = parse("message where role:user").unwrap_err();
     assert_eq!(error.suggestion(), Some("messages where role:user"));
     assert!(matches!(
-        cond("messages >= 10"),
+        &cond("messages >= 10"),
         ConditionKind::Compare { .. }
     ));
     let source = "tool_calls | group by day(at), tool | agg count, sum(duration), p90(duration), count_distinct(session) | sort by count desc | where count >= 3 | limit 5 | offset 10";
@@ -207,10 +207,10 @@ fn shared_units_stages_and_nested_queries_use_product_names() {
         p("origin:codex | union (repo:morrow | where cost > 1) | except (sessions where chrono)");
     assert_eq!(nested.transforms.len(), 2);
     assert!(
-        matches!(cond("count(tool_calls where outcome:error) >= 3"), ConditionKind::Count { unit, op: Op::Ge, count: 3, condition: Some(_), .. } if unit == "tool_calls")
+        matches!(&cond("count(tool_calls where outcome:error) >= 3"), ConditionKind::Count { unit, op: Op::Ge, count: 3, condition: Some(_), .. } if unit == "tool_calls")
     );
     assert!(
-        matches!(cond("id in (messages where chrono | group by session)"), ConditionKind::In { query, .. } if query.transforms.len() == 1)
+        matches!(&cond("id in (messages where chrono | group by session)"), ConditionKind::In { query, .. } if query.transforms.len() == 1)
     );
 }
 
@@ -249,7 +249,7 @@ fn former_semantic_spelling_refuses_with_the_canonical_correction() {
     assert_eq!(error.kind(), "unknown_field");
     assert_eq!(error.suggestion(), Some("similar:dates"));
     assert!(matches!(
-        cond("similar:dates"),
+        &cond("similar:dates"),
         ConditionKind::Rank {
             list: RankList::Similar,
             ..
@@ -260,15 +260,15 @@ fn former_semantic_spelling_refuses_with_the_canonical_correction() {
 #[test]
 fn shorthand_time_bounds_keep_their_shared_typed_meaning() {
     assert!(matches!(
-        cond("since:2026-10-05"),
+        &cond("since:2026-10-05"),
         ConditionKind::Since { .. }
     ));
     assert!(matches!(
-        cond("until:2026-10-05"),
+        &cond("until:2026-10-05"),
         ConditionKind::Until { .. }
     ));
     assert!(matches!(
-        cond("messages where at < 2026-10-05"),
+        &cond("messages where at < 2026-10-05"),
         ConditionKind::Compare { op: Op::Lt, .. }
     ));
 }
@@ -313,14 +313,14 @@ fn native_time_companion_catalog_keeps_closed_precision_and_literal_unknown_dist
         assert!(parse(text).is_err(), "{text}");
     }
     assert!(matches!(
-        cond("events where at.time_quality:unknown"),
+        &cond("events where at.time_quality:unknown"),
         ConditionKind::Match {
             value: Value::Unknown,
             ..
         }
     ));
     assert!(
-        matches!(cond("events where at.time_quality:\"unknown\""), ConditionKind::Match { value: Value::Scalar { text, quoted: true }, .. } if text == "unknown")
+        matches!(&cond("events where at.time_quality:\"unknown\""), ConditionKind::Match { value: Value::Scalar { text, quoted: true }, .. } if text == "unknown")
     );
     let catalog = crate::catalog::catalog(&[]);
     let text = "events where at.time_quality:unk";
@@ -336,7 +336,7 @@ fn native_time_companion_catalog_keeps_closed_precision_and_literal_unknown_dist
         &text[literal.replace.end..]
     );
     assert!(
-        matches!(cond(&completed), ConditionKind::Match { value: Value::Scalar { text, quoted: true }, .. } if text == "unknown")
+        matches!(&cond(&completed), ConditionKind::Match { value: Value::Scalar { text, quoted: true }, .. } if text == "unknown")
     );
 }
 
