@@ -19,78 +19,80 @@ impl Expressions<'_> {
         scope: &RowContext,
         at: usize,
     ) -> Result<(String, ColKind), QueryError> {
-        let lower = field.to_ascii_lowercase();
-        let span = Span { start: at, end: at };
-        let a = &scope.a;
-        if lower == "session" && fields::has_session(scope.unit) {
-            return Ok((format!("{}.id", a.s), ColKind::Text));
-        }
-        if let Some((prefix, rest)) = lower.split_once('.')
-            && let Some(rel) = units::spec(scope.unit).relation(prefix)
-        {
-            let sub = match rel.via {
-                Via::Same => RowContext {
-                    unit: rel.target,
-                    a: a.clone(),
-                },
-                Via::Session(alias) => RowContext {
-                    unit: Unit::Sessions,
-                    a: Aliases {
-                        s: a.expand(alias),
-                        ..a.clone()
+        query_language::depth::deeper(|| {
+            let lower = field.to_ascii_lowercase();
+            let span = Span { start: at, end: at };
+            let a = &scope.a;
+            if lower == "session" && fields::has_session(scope.unit) {
+                return Ok((format!("{}.id", a.s), ColKind::Text));
+            }
+            if let Some((prefix, rest)) = lower.split_once('.')
+                && let Some(rel) = units::spec(scope.unit).relation(prefix)
+            {
+                let sub = match rel.via {
+                    Via::Same => RowContext {
+                        unit: rel.target,
+                        a: a.clone(),
                     },
-                },
-                Via::Exists {
-                    value: Some(template),
-                    ..
-                } => {
-                    let n = self.fresh();
-                    let (e, k) = self.expr(
-                        rest,
-                        &RowContext {
-                            unit: rel.target,
-                            a: n.clone(),
+                    Via::Session(alias) => RowContext {
+                        unit: Unit::Sessions,
+                        a: Aliases {
+                            s: a.expand(alias),
+                            ..a.clone()
                         },
-                        at,
-                    )?;
-                    return Ok((
-                        relation_sql(template, a, &n, rel.target, "").replace("{e}", &e),
-                        k,
-                    ));
-                }
-                Via::Exists { value: None, .. } => {
-                    return Err(not_built(&format!(
-                        "grouping or sorting by {prefix}.{rest} on {}",
-                        scope.unit.name()
-                    )));
-                }
+                    },
+                    Via::Exists {
+                        value: Some(template),
+                        ..
+                    } => {
+                        let n = self.fresh();
+                        let (e, k) = self.expr(
+                            rest,
+                            &RowContext {
+                                unit: rel.target,
+                                a: n.clone(),
+                            },
+                            at,
+                        )?;
+                        return Ok((
+                            relation_sql(template, a, &n, rel.target, "").replace("{e}", &e),
+                            k,
+                        ));
+                    }
+                    Via::Exists { value: None, .. } => {
+                        return Err(not_built(&format!(
+                            "grouping or sorting by {prefix}.{rest} on {}",
+                            scope.unit.name()
+                        )));
+                    }
+                };
+                return self.expr(rest, &sub, at);
+            }
+            let def = if let Some(d) = fields::lookup(scope.unit, &lower) {
+                d
+            } else if fields::has_session(scope.unit)
+                && let Some(d) = fields::lookup(Unit::Sessions, &lower)
+            {
+                d
+            } else {
+                return Err(self.unknown_field(field, scope.unit, span));
             };
-            return self.expr(rest, &sub, at);
-        }
-        let def = if let Some(d) = fields::lookup(scope.unit, &lower) {
-            d
-        } else if fields::has_session(scope.unit)
-            && let Some(d) = fields::lookup(Unit::Sessions, &lower)
-        {
-            d
-        } else {
-            return Err(self.unknown_field(field, scope.unit, span));
-        };
-        let Some(expr) = def.expr(a, self.now) else {
-            scalar(def.column_kind(), def.name, at)?;
-            return Err(QueryError::Invalid {
-                message: format!("{} cannot be grouped or sorted by", def.name),
-                position: span.start,
-            });
-        };
-        let expr = match def.stored_unknown {
-            Some(word) => format!(
-                "CASE WHEN lower({expr}) = '{}' THEN NULL ELSE ({expr}) END",
-                word.replace('\'', "''")
-            ),
-            None => expr,
-        };
-        Ok((expr, def.column_kind()))
+            let Some(expr) = def.expr(a, self.now) else {
+                scalar(def.column_kind(), def.name, at)?;
+                return Err(QueryError::Invalid {
+                    message: format!("{} cannot be grouped or sorted by", def.name),
+                    position: span.start,
+                });
+            };
+            let expr = match def.stored_unknown {
+                Some(word) => format!(
+                    "CASE WHEN lower({expr}) = '{}' THEN NULL ELSE ({expr}) END",
+                    word.replace('\'', "''")
+                ),
+                None => expr,
+            };
+            Ok((expr, def.column_kind()))
+        })
     }
 }
 pub(super) fn expression(
@@ -133,7 +135,7 @@ impl Compiler<'_> {
     where
         F: FnMut(&mut Self, &str, usize) -> Result<(String, ColKind), QueryError>,
     {
-        match value {
+        query_language::depth::deeper(|| match value {
             Expression::Field { name } => field(self, name, at),
             Expression::Value { value } => self.expression_literal(value, None, at),
             Expression::Arithmetic {
@@ -268,7 +270,7 @@ impl Compiler<'_> {
                     _ => Err(not_built(&format!("function {name}"))),
                 }
             }
-        }
+        })
     }
 
     fn expression_pair<F>(

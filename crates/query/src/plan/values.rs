@@ -13,97 +13,101 @@ pub(super) fn check(bound: &BoundQuery) -> Result<(), QueryError> {
 }
 
 fn query(node: &Query, typing: &Typing, path: NodePath) -> Result<(), QueryError> {
-    match &node.source {
-        Source::Unit {
-            condition: Some(c), ..
+    query_language::depth::deeper(|| {
+        match &node.source {
+            Source::Unit {
+                condition: Some(c), ..
+            }
+            | Source::Saved {
+                condition: Some(c), ..
+            }
+            | Source::Result {
+                condition: Some(c), ..
+            } => condition(c, typing, path.field("source").field("condition"))?,
+            _ => {}
         }
-        | Source::Saved {
-            condition: Some(c), ..
-        }
-        | Source::Result {
-            condition: Some(c), ..
-        } => condition(c, typing, path.field("source").field("condition"))?,
-        _ => {}
-    }
-    for (index, attachment) in node.attach.iter().enumerate() {
-        let at = path.field("attach").index(index);
-        for (index, window) in attachment.windows.iter().enumerate() {
-            if let Window::Where(c) = window {
-                condition(c, typing, at.field("windows").index(index).field("where"))?;
+        for (index, attachment) in node.attach.iter().enumerate() {
+            let at = path.field("attach").index(index);
+            for (index, window) in attachment.windows.iter().enumerate() {
+                if let Window::Where(c) = window {
+                    condition(c, typing, at.field("windows").index(index).field("where"))?;
+                }
             }
         }
-    }
-    for (index, stage) in node.transforms.iter().enumerate() {
-        let at = path.field("transforms").index(index).field("kind");
-        match &stage.kind {
-            TransformKind::Where { condition: c }
-            | TransformKind::Scope {
+        for (index, stage) in node.transforms.iter().enumerate() {
+            let at = path.field("transforms").index(index).field("kind");
+            match &stage.kind {
+                TransformKind::Where { condition: c }
+                | TransformKind::Scope {
+                    condition: Some(c), ..
+                } => condition(c, typing, at.field("condition"))?,
+                TransformKind::Combine { query: q, .. }
+                | TransformKind::Join { query: q, .. }
+                | TransformKind::Diff { query: q } => query(q, typing, at.field("query"))?,
+                TransformKind::Extension { arguments, .. } => {
+                    extension(arguments, typing, at.field("arguments"))?
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    })
+}
+
+fn condition(c: &Condition, typing: &Typing, path: NodePath) -> Result<(), QueryError> {
+    query_language::depth::deeper(|| {
+        let at = path.field("kind");
+        let position = c.span.start;
+        match &c.kind {
+            ConditionKind::And { conditions } | ConditionKind::Or { conditions } => {
+                for (index, c) in conditions.iter().enumerate() {
+                    condition(c, typing, at.field("conditions").index(index))?;
+                }
+            }
+            ConditionKind::Not { condition: c } => condition(c, typing, at.field("condition"))?,
+            ConditionKind::Match { value, .. } => {
+                values(typing, &at.field("field"), value, position)?;
+            }
+            ConditionKind::Compare {
+                left: Expression::Field { .. },
+                right: Expression::Value { value },
+                ..
+            } => values(typing, &at.field("left"), value, position)?,
+            ConditionKind::Compare {
+                left: Expression::Value { value },
+                right: Expression::Field { .. },
+                ..
+            } => values(typing, &at.field("right"), value, position)?,
+            ConditionKind::Between {
+                left: Expression::Field { .. },
+                from,
+                to,
+                ..
+            } => {
+                values(typing, &at.field("left"), from, position)?;
+                values(typing, &at.field("left"), to, position)?;
+            }
+            ConditionKind::In { query: q, .. } | ConditionKind::Order { query: q, .. } => {
+                query(q, typing, at.field("query"))?
+            }
+            ConditionKind::Exists {
+                condition: Some(c), ..
+            }
+            | ConditionKind::Count {
                 condition: Some(c), ..
             } => condition(c, typing, at.field("condition"))?,
-            TransformKind::Combine { query: q, .. }
-            | TransformKind::Join { query: q, .. }
-            | TransformKind::Diff { query: q } => query(q, typing, at.field("query"))?,
-            TransformKind::Extension { arguments, .. } => {
+            ConditionKind::Sequence { steps, .. } => {
+                for (index, c) in steps.iter().enumerate() {
+                    condition(c, typing, at.field("steps").index(index))?;
+                }
+            }
+            ConditionKind::Extension { arguments, .. } => {
                 extension(arguments, typing, at.field("arguments"))?
             }
             _ => {}
         }
-    }
-    Ok(())
-}
-
-fn condition(c: &Condition, typing: &Typing, path: NodePath) -> Result<(), QueryError> {
-    let at = path.field("kind");
-    let position = c.span.start;
-    match &c.kind {
-        ConditionKind::And { conditions } | ConditionKind::Or { conditions } => {
-            for (index, c) in conditions.iter().enumerate() {
-                condition(c, typing, at.field("conditions").index(index))?;
-            }
-        }
-        ConditionKind::Not { condition: c } => condition(c, typing, at.field("condition"))?,
-        ConditionKind::Match { value, .. } => {
-            values(typing, &at.field("field"), value, position)?;
-        }
-        ConditionKind::Compare {
-            left: Expression::Field { .. },
-            right: Expression::Value { value },
-            ..
-        } => values(typing, &at.field("left"), value, position)?,
-        ConditionKind::Compare {
-            left: Expression::Value { value },
-            right: Expression::Field { .. },
-            ..
-        } => values(typing, &at.field("right"), value, position)?,
-        ConditionKind::Between {
-            left: Expression::Field { .. },
-            from,
-            to,
-            ..
-        } => {
-            values(typing, &at.field("left"), from, position)?;
-            values(typing, &at.field("left"), to, position)?;
-        }
-        ConditionKind::In { query: q, .. } | ConditionKind::Order { query: q, .. } => {
-            query(q, typing, at.field("query"))?
-        }
-        ConditionKind::Exists {
-            condition: Some(c), ..
-        }
-        | ConditionKind::Count {
-            condition: Some(c), ..
-        } => condition(c, typing, at.field("condition"))?,
-        ConditionKind::Sequence { steps, .. } => {
-            for (index, c) in steps.iter().enumerate() {
-                condition(c, typing, at.field("steps").index(index))?;
-            }
-        }
-        ConditionKind::Extension { arguments, .. } => {
-            extension(arguments, typing, at.field("arguments"))?
-        }
-        _ => {}
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn extension(
@@ -111,19 +115,23 @@ fn extension(
     typing: &Typing,
     path: NodePath,
 ) -> Result<(), QueryError> {
-    for (index, argument) in arguments.iter().enumerate() {
-        let at = path.index(index);
-        match argument {
-            ExtensionArgument::Condition(c) => condition(c, typing, at.field("condition"))?,
-            ExtensionArgument::Query(q) => query(q, typing, at.field("query"))?,
-            ExtensionArgument::Optional(arguments) => {
-                extension(arguments, typing, at.field("optional"))?
+    query_language::depth::deeper(|| {
+        for (index, argument) in arguments.iter().enumerate() {
+            let at = path.index(index);
+            match argument {
+                ExtensionArgument::Condition(c) => condition(c, typing, at.field("condition"))?,
+                ExtensionArgument::Query(q) => query(q, typing, at.field("query"))?,
+                ExtensionArgument::Optional(arguments) => {
+                    extension(arguments, typing, at.field("optional"))?
+                }
+                ExtensionArgument::List(arguments) => {
+                    extension(arguments, typing, at.field("list"))?
+                }
+                _ => {}
             }
-            ExtensionArgument::List(arguments) => extension(arguments, typing, at.field("list"))?,
-            _ => {}
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Checks a value compared with a catalog field of a numeric kind. Other
@@ -134,36 +142,38 @@ fn values(
     value: &Value,
     position: usize,
 ) -> Result<(), QueryError> {
-    let Some(typed) = typing.operand(operand) else {
-        return Ok(());
-    };
-    if !matches!(typed.result.origin, Origin::Catalog { .. }) {
-        return Ok(());
-    }
-    let kind = match typed.result.field.kind {
-        FieldKind::Money => Kind::Money,
-        FieldKind::Duration => Kind::Duration,
-        FieldKind::Number | FieldKind::Integer => Kind::Number,
-        _ => return Ok(()),
-    };
-    let name = typed.result.field.name.as_str();
-    match value {
-        Value::Scalar { text, .. } => {
-            kind.scalar(name, text)
-                .map(|_| ())
-                .map_err(|message| QueryError::BadValue {
-                    field: name.to_owned(),
-                    value: text.clone(),
-                    position,
-                    message,
-                })
+    query_language::depth::deeper(|| {
+        let Some(typed) = typing.operand(operand) else {
+            return Ok(());
+        };
+        if !matches!(typed.result.origin, Origin::Catalog { .. }) {
+            return Ok(());
         }
-        Value::Set { values: members } => {
-            for member in members {
-                values(typing, operand, member, position)?;
+        let kind = match typed.result.field.kind {
+            FieldKind::Money => Kind::Money,
+            FieldKind::Duration => Kind::Duration,
+            FieldKind::Number | FieldKind::Integer => Kind::Number,
+            _ => return Ok(()),
+        };
+        let name = typed.result.field.name.as_str();
+        match value {
+            Value::Scalar { text, .. } => {
+                kind.scalar(name, text)
+                    .map(|_| ())
+                    .map_err(|message| QueryError::BadValue {
+                        field: name.to_owned(),
+                        value: text.clone(),
+                        position,
+                        message,
+                    })
             }
-            Ok(())
+            Value::Set { values: members } => {
+                for member in members {
+                    values(typing, operand, member, position)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
         }
-        _ => Ok(()),
-    }
+    })
 }

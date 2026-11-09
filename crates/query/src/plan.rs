@@ -148,193 +148,198 @@ fn prepare_inner(
     resolve: &mut impl FnMut(&mut ConditionKind) -> Result<(), QueryError>,
     stack: &mut Vec<String>,
 ) -> Result<Plan, QueryError> {
-    for kept in options.kept.values() {
-        kept.validate_output_metadata()?;
-    }
-    let mut catalog = options.catalog();
-    let mut query = crate::parse::with_catalog(text, &catalog)?;
-    let mut definitions = Vec::new();
-    let mut frozen: Vec<polylogue_model::query_objects::FrozenQueryDefinition> = Vec::new();
-    let mut identities = BTreeMap::<String, QuestionId>::new();
-    walk(
-        &mut query,
-        &mut |query| {
-            if let Source::Saved {
-                name, arguments, ..
-            } = &query.source
-            {
-                let mut source = query.clone();
-                source.transforms.clear();
-                source.attach.clear();
-                if let Source::Saved { condition, .. } = &mut source.source {
-                    *condition = None;
-                }
-                let source_text = query_language::format::format_query(&source, &catalog)
-                    .map_err(|e| QueryError::language(e, text))?;
-                let (_, schema) = options.output_metadata(&source_text)?;
-                let source = OutputSource::Saved {
-                    name: name.clone(),
-                    arguments: arguments.clone(),
-                };
-                if catalog.source_output(&query.source).is_none() {
-                    catalog.source_outputs.push(SourceOutput { source, schema });
-                }
-            }
-            Ok(())
-        },
-        &mut |_| Ok(()),
-    )?;
-    canonical_references(&mut query)?;
-
-    let bound =
-        query_language::bind::bind(&query, &catalog).map_err(|e| QueryError::language(e, text))?;
-    query = bound.query().clone();
-    walk(&mut query, &mut |_| Ok(()), &mut |condition| {
-        resolve(&mut condition.kind)
-    })?;
-    canonical_references(&mut query)?;
-    let original =
-        query_language::bind::bind(&query, &catalog).map_err(|e| QueryError::language(e, text))?;
-    values::check(&original)?;
-    let mut identity = original.query().clone();
-    let names = std::cell::RefCell::new(Vec::<String>::new());
-    walk(
-        &mut identity,
-        &mut |query| {
-            if let Source::Saved { name, .. } = &query.source {
-                names.borrow_mut().push(name.clone());
-            }
-            Ok(())
-        },
-        &mut |condition| {
-            if let ConditionKind::Saved { name, .. } = &condition.kind {
-                names.borrow_mut().push(name.clone());
-            }
-            Ok(())
-        },
-    )?;
-    for name in names.into_inner() {
-        if identities.contains_key(&name) {
-            continue;
+    query_language::depth::deeper(|| {
+        for kept in options.kept.values() {
+            kept.validate_output_metadata()?;
         }
-        if stack.contains(&name) {
-            return Err(QueryError::Invalid {
-                message: format!("recursive saved query {name:?}"),
-                position: 0,
-            });
-        }
-        let definition = crate::compile::saved_definition(text, 0, &name, options)?;
-        if let crate::SavedQueryBody::Frozen {
-            object: Some(object),
-            ..
-        } = &definition.body
-        {
-            let (node, closure) = objects::retained_definition(object, definition.hash)?;
-            for node in std::iter::once(node).chain(closure) {
-                if let Some(existing) = frozen
-                    .iter()
-                    .find(|existing| existing.question == node.question)
+        let mut catalog = options.catalog();
+        let mut query = crate::parse::with_catalog(text, &catalog)?;
+        let mut definitions = Vec::new();
+        let mut frozen: Vec<polylogue_model::query_objects::FrozenQueryDefinition> = Vec::new();
+        let mut identities = BTreeMap::<String, QuestionId>::new();
+        walk(
+            &mut query,
+            &mut |query| {
+                if let Source::Saved {
+                    name, arguments, ..
+                } = &query.source
                 {
-                    if *existing != node {
-                        return Err(QueryError::Invalid {
-                            message: "one retained question has conflicting captured bodies".into(),
-                            position: 0,
-                        });
+                    let mut source = query.clone();
+                    source.transforms.clear();
+                    source.attach.clear();
+                    if let Source::Saved { condition, .. } = &mut source.source {
+                        *condition = None;
                     }
-                } else {
-                    frozen.push(node);
+                    let source_text = query_language::format::format_query(&source, &catalog)
+                        .map_err(|e| QueryError::language(e, text))?;
+                    let (_, schema) = options.output_metadata(&source_text)?;
+                    let source = OutputSource::Saved {
+                        name: name.clone(),
+                        arguments: arguments.clone(),
+                    };
+                    if catalog.source_output(&query.source).is_none() {
+                        catalog.source_outputs.push(SourceOutput { source, schema });
+                    }
+                }
+                Ok(())
+            },
+            &mut |_| Ok(()),
+        )?;
+        canonical_references(&mut query)?;
+
+        let bound = query_language::bind::bind(&query, &catalog)
+            .map_err(|e| QueryError::language(e, text))?;
+        query = bound.query().clone();
+        walk(&mut query, &mut |_| Ok(()), &mut |condition| {
+            resolve(&mut condition.kind)
+        })?;
+        canonical_references(&mut query)?;
+        let original = query_language::bind::bind(&query, &catalog)
+            .map_err(|e| QueryError::language(e, text))?;
+        values::check(&original)?;
+        let mut identity = original.query().clone();
+        let names = std::cell::RefCell::new(Vec::<String>::new());
+        walk(
+            &mut identity,
+            &mut |query| {
+                if let Source::Saved { name, .. } = &query.source {
+                    names.borrow_mut().push(name.clone());
+                }
+                Ok(())
+            },
+            &mut |condition| {
+                if let ConditionKind::Saved { name, .. } = &condition.kind {
+                    names.borrow_mut().push(name.clone());
+                }
+                Ok(())
+            },
+        )?;
+        for name in names.into_inner() {
+            if identities.contains_key(&name) {
+                continue;
+            }
+            if stack.contains(&name) {
+                return Err(QueryError::Invalid {
+                    message: format!("recursive saved query {name:?}"),
+                    position: 0,
+                });
+            }
+            let definition = crate::compile::saved_definition(text, 0, &name, options)?;
+            if let crate::SavedQueryBody::Frozen {
+                object: Some(object),
+                ..
+            } = &definition.body
+            {
+                let (node, closure) = objects::retained_definition(object, definition.hash)?;
+                for node in std::iter::once(node).chain(closure) {
+                    if let Some(existing) = frozen
+                        .iter()
+                        .find(|existing| existing.question == node.question)
+                    {
+                        if *existing != node {
+                            return Err(QueryError::Invalid {
+                                message: "one retained question has conflicting captured bodies"
+                                    .into(),
+                                position: 0,
+                            });
+                        }
+                    } else {
+                        frozen.push(node);
+                    }
+                }
+                definitions.push(ResolvedDefinition {
+                    name: name.clone(),
+                    revision: definition.revision.clone(),
+                    root: definition.root.clone(),
+                    question_id: definition.hash,
+                });
+                identities.insert(name, definition.hash);
+                continue;
+            }
+            stack.push(name.clone());
+            let nested = prepare_inner(definition.executable_text()?, options, resolve, stack)?;
+            stack.pop();
+            if nested.question_id != definition.hash {
+                return Err(QueryError::Invalid {
+                    message: format!(
+                        "saved query {name:?} differs from its declared semantic hash"
+                    ),
+                    position: 0,
+                });
+            }
+            let object = nested.query_object()?;
+            frozen.push(objects::frozen_root(&object));
+            for dependency in object.definitions {
+                if !frozen
+                    .iter()
+                    .any(|known| known.question == dependency.question)
+                {
+                    frozen.push(dependency);
                 }
             }
             definitions.push(ResolvedDefinition {
                 name: name.clone(),
                 revision: definition.revision.clone(),
                 root: definition.root.clone(),
-                question_id: definition.hash,
+                question_id: nested.question_id,
             });
-            identities.insert(name, definition.hash);
-            continue;
+            for definition in nested.definitions {
+                if !definitions
+                    .iter()
+                    .any(|d| d.name == definition.name && d.revision == definition.revision)
+                {
+                    definitions.push(definition);
+                }
+            }
+            identities.insert(name, nested.question_id);
         }
-        stack.push(name.clone());
-        let nested = prepare_inner(definition.executable_text()?, options, resolve, stack)?;
-        stack.pop();
-        if nested.question_id != definition.hash {
-            return Err(QueryError::Invalid {
-                message: format!("saved query {name:?} differs from its declared semantic hash"),
-                position: 0,
-            });
-        }
-        let object = nested.query_object()?;
-        frozen.push(objects::frozen_root(&object));
-        for dependency in object.definitions {
-            if !frozen
-                .iter()
-                .any(|known| known.question == dependency.question)
+        walk(
+            &mut identity,
+            &mut |query| {
+                if let Source::Unit { implicit, .. } = &mut query.source {
+                    *implicit = false;
+                }
+                if let Source::Saved { name, .. } = &mut query.source {
+                    *name = identities[name].to_string();
+                }
+                Ok(())
+            },
+            &mut |condition| {
+                if let ConditionKind::Saved { name, .. } = &mut condition.kind {
+                    *name = identities[name].to_string();
+                }
+                Ok(())
+            },
+        )?;
+        let mut identity_catalog = catalog.clone();
+        for output in &mut identity_catalog.source_outputs {
+            if let OutputSource::Saved { name, .. } = &mut output.source
+                && let Some(hash) = identities.get(name)
             {
-                frozen.push(dependency);
+                *name = hash.to_string();
             }
         }
-        definitions.push(ResolvedDefinition {
-            name: name.clone(),
-            revision: definition.revision.clone(),
-            root: definition.root.clone(),
-            question_id: nested.question_id,
-        });
-        for definition in nested.definitions {
-            if !definitions
-                .iter()
-                .any(|d| d.name == definition.name && d.revision == definition.revision)
-            {
-                definitions.push(definition);
-            }
-        }
-        identities.insert(name, nested.question_id);
-    }
-    walk(
-        &mut identity,
-        &mut |query| {
-            if let Source::Unit { implicit, .. } = &mut query.source {
-                *implicit = false;
-            }
-            if let Source::Saved { name, .. } = &mut query.source {
-                *name = identities[name].to_string();
-            }
-            Ok(())
-        },
-        &mut |condition| {
-            if let ConditionKind::Saved { name, .. } = &mut condition.kind {
-                *name = identities[name].to_string();
-            }
-            Ok(())
-        },
-    )?;
-    let mut identity_catalog = catalog.clone();
-    for output in &mut identity_catalog.source_outputs {
-        if let OutputSource::Saved { name, .. } = &mut output.source
-            && let Some(hash) = identities.get(name)
-        {
-            *name = hash.to_string();
-        }
-    }
-    let question_id =
-        query_language::identity::question_id(&identity, &identity_catalog, &BTreeMap::new())
-            .map_err(|e| QueryError::language(e, text))?;
-    let (expanded, _) =
-        crate::compile::source::expand_ast(original.query().clone(), text, options)?;
+        let question_id =
+            query_language::identity::question_id(&identity, &identity_catalog, &BTreeMap::new())
+                .map_err(|e| QueryError::language(e, text))?;
+        let (expanded, _) =
+            crate::compile::source::expand_ast(original.query().clone(), text, options)?;
 
-    let expanded = query_language::bind::bind(&expanded, &catalog)
-        .map_err(|e| QueryError::language(e, text))?;
-    Ok(Plan {
-        retained_object: None,
-        expanded,
-        text: text.to_owned(),
-        original,
-        identity,
-        catalog,
-        definitions,
-        bindings: options.clone(),
-        frozen,
-        identity_catalog,
-        question_id,
+        let expanded = query_language::bind::bind(&expanded, &catalog)
+            .map_err(|e| QueryError::language(e, text))?;
+        Ok(Plan {
+            retained_object: None,
+            expanded,
+            text: text.to_owned(),
+            original,
+            identity,
+            catalog,
+            definitions,
+            bindings: options.clone(),
+            frozen,
+            identity_catalog,
+            question_id,
+        })
     })
 }
 
@@ -343,91 +348,97 @@ pub(crate) fn walk(
     on_query: &mut impl FnMut(&mut Query) -> Result<(), QueryError>,
     on_condition: &mut impl FnMut(&mut Condition) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
-    on_query(query)?;
-    match &mut query.source {
-        Source::Unit { condition, .. }
-        | Source::Saved { condition, .. }
-        | Source::Result { condition, .. } => {
-            if let Some(c) = condition {
-                visit_condition(c, on_query, on_condition)?;
+    query_language::depth::deeper(|| {
+        on_query(query)?;
+        match &mut query.source {
+            Source::Unit { condition, .. }
+            | Source::Saved { condition, .. }
+            | Source::Result { condition, .. } => {
+                if let Some(c) = condition {
+                    visit_condition(c, on_query, on_condition)?;
+                }
             }
         }
-    }
-    for attachment in &mut query.attach {
-        for window in &mut attachment.windows {
-            if let Window::Where(c) = window {
-                visit_condition(c, on_query, on_condition)?;
+        for attachment in &mut query.attach {
+            for window in &mut attachment.windows {
+                if let Window::Where(c) = window {
+                    visit_condition(c, on_query, on_condition)?;
+                }
             }
         }
-    }
-    for stage in &mut query.transforms {
-        match &mut stage.kind {
-            TransformKind::Where { condition: c }
-            | TransformKind::Scope {
-                condition: Some(c), ..
-            } => visit_condition(c, on_query, on_condition)?,
-            TransformKind::Combine { query, .. }
-            | TransformKind::Join { query, .. }
-            | TransformKind::Diff { query } => walk(query, on_query, on_condition)?,
-            TransformKind::Extension { arguments, .. } => {
-                visit_extensions(arguments, on_query, on_condition)?
+        for stage in &mut query.transforms {
+            match &mut stage.kind {
+                TransformKind::Where { condition: c }
+                | TransformKind::Scope {
+                    condition: Some(c), ..
+                } => visit_condition(c, on_query, on_condition)?,
+                TransformKind::Combine { query, .. }
+                | TransformKind::Join { query, .. }
+                | TransformKind::Diff { query } => walk(query, on_query, on_condition)?,
+                TransformKind::Extension { arguments, .. } => {
+                    visit_extensions(arguments, on_query, on_condition)?
+                }
+                _ => {}
             }
-            _ => {}
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 fn visit_condition(
     c: &mut Condition,
     on_query: &mut impl FnMut(&mut Query) -> Result<(), QueryError>,
     on_condition: &mut impl FnMut(&mut Condition) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
-    on_condition(c)?;
-    match &mut c.kind {
-        ConditionKind::And { conditions }
-        | ConditionKind::Or { conditions }
-        | ConditionKind::Sequence {
-            steps: conditions, ..
-        } => {
-            for c in conditions {
-                visit_condition(c, on_query, on_condition)?;
+    query_language::depth::deeper(|| {
+        on_condition(c)?;
+        match &mut c.kind {
+            ConditionKind::And { conditions }
+            | ConditionKind::Or { conditions }
+            | ConditionKind::Sequence {
+                steps: conditions, ..
+            } => {
+                for c in conditions {
+                    visit_condition(c, on_query, on_condition)?;
+                }
             }
+            ConditionKind::Not { condition: c }
+            | ConditionKind::Exists {
+                condition: Some(c), ..
+            }
+            | ConditionKind::Count {
+                condition: Some(c), ..
+            } => visit_condition(c, on_query, on_condition)?,
+            ConditionKind::In { query, .. } | ConditionKind::Order { query, .. } => {
+                walk(query, on_query, on_condition)?
+            }
+            ConditionKind::Extension { arguments, .. } => {
+                visit_extensions(arguments, on_query, on_condition)?
+            }
+            _ => {}
         }
-        ConditionKind::Not { condition: c }
-        | ConditionKind::Exists {
-            condition: Some(c), ..
-        }
-        | ConditionKind::Count {
-            condition: Some(c), ..
-        } => visit_condition(c, on_query, on_condition)?,
-        ConditionKind::In { query, .. } | ConditionKind::Order { query, .. } => {
-            walk(query, on_query, on_condition)?
-        }
-        ConditionKind::Extension { arguments, .. } => {
-            visit_extensions(arguments, on_query, on_condition)?
-        }
-        _ => {}
-    }
-    Ok(())
+        Ok(())
+    })
 }
 fn visit_extensions(
     arguments: &mut [ExtensionArgument],
     on_query: &mut impl FnMut(&mut Query) -> Result<(), QueryError>,
     on_condition: &mut impl FnMut(&mut Condition) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
-    for argument in arguments {
-        match argument {
-            ExtensionArgument::Query(query) => walk(query, on_query, on_condition)?,
-            ExtensionArgument::Condition(condition) => {
-                visit_condition(condition, on_query, on_condition)?
+    query_language::depth::deeper(|| {
+        for argument in arguments {
+            match argument {
+                ExtensionArgument::Query(query) => walk(query, on_query, on_condition)?,
+                ExtensionArgument::Condition(condition) => {
+                    visit_condition(condition, on_query, on_condition)?
+                }
+                ExtensionArgument::Optional(arguments) | ExtensionArgument::List(arguments) => {
+                    visit_extensions(arguments, on_query, on_condition)?
+                }
+                _ => {}
             }
-            ExtensionArgument::Optional(arguments) | ExtensionArgument::List(arguments) => {
-                visit_extensions(arguments, on_query, on_condition)?
-            }
-            _ => {}
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn canonical_references(query: &mut Query) -> Result<(), QueryError> {

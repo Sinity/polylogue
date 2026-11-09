@@ -102,77 +102,79 @@ impl Parameters {
         used: &mut Vec<String>,
         position: usize,
     ) -> Result<(), QueryError> {
-        match &mut query.source {
-            Source::Unit { condition, .. } | Source::Result { condition, .. } => {
-                if let Some(condition) = condition {
-                    self.cond(condition, used, position)?;
+        query_language::depth::deeper(|| {
+            match &mut query.source {
+                Source::Unit { condition, .. } | Source::Result { condition, .. } => {
+                    if let Some(condition) = condition {
+                        self.cond(condition, used, position)?;
+                    }
                 }
-            }
-            Source::Saved {
-                arguments,
-                condition,
-                ..
-            } => {
-                for argument in arguments {
-                    self.value(&mut argument.value, used, position)?;
-                }
-                if let Some(condition) = condition {
-                    self.cond(condition, used, position)?;
-                }
-            }
-        }
-        for child in &mut query.attach {
-            for window in &mut child.windows {
-                if let Window::Where(condition) = window {
-                    self.cond(condition, used, position)?;
-                }
-            }
-        }
-        for transform in &mut query.transforms {
-            match &mut transform.kind {
-                TransformKind::Where { condition }
-                | TransformKind::Scope {
-                    condition: Some(condition),
+                Source::Saved {
+                    arguments,
+                    condition,
                     ..
-                } => self.cond(condition, used, position)?,
-                TransformKind::Combine { query, .. } | TransformKind::Diff { query } => {
-                    self.query(query, used, position)?
+                } => {
+                    for argument in arguments {
+                        self.value(&mut argument.value, used, position)?;
+                    }
+                    if let Some(condition) = condition {
+                        self.cond(condition, used, position)?;
+                    }
                 }
-                TransformKind::Join { query, on } => {
-                    self.query(query, used, position)?;
-                    if let JoinOn::Order {
-                        within: Some(within),
+            }
+            for child in &mut query.attach {
+                for window in &mut child.windows {
+                    if let Window::Where(condition) = window {
+                        self.cond(condition, used, position)?;
+                    }
+                }
+            }
+            for transform in &mut query.transforms {
+                match &mut transform.kind {
+                    TransformKind::Where { condition }
+                    | TransformKind::Scope {
+                        condition: Some(condition),
                         ..
-                    } = on
-                    {
-                        self.distance(within, used, position)?;
+                    } => self.cond(condition, used, position)?,
+                    TransformKind::Combine { query, .. } | TransformKind::Diff { query } => {
+                        self.query(query, used, position)?
                     }
-                }
-                TransformKind::Group { keys: columns } | TransformKind::Fields { columns } => {
-                    for column in columns {
-                        self.expression(&mut column.expression, used, position)?;
-                    }
-                }
-                TransformKind::Sort { keys } => {
-                    for key in keys {
-                        self.expression(&mut key.expression, used, position)?;
-                    }
-                }
-                TransformKind::Aggregate { aggregates } => {
-                    for aggregate in aggregates {
-                        for expression in &mut aggregate.arguments {
-                            self.expression(expression, used, position)?;
+                    TransformKind::Join { query, on } => {
+                        self.query(query, used, position)?;
+                        if let JoinOn::Order {
+                            within: Some(within),
+                            ..
+                        } = on
+                        {
+                            self.distance(within, used, position)?;
                         }
                     }
+                    TransformKind::Group { keys: columns } | TransformKind::Fields { columns } => {
+                        for column in columns {
+                            self.expression(&mut column.expression, used, position)?;
+                        }
+                    }
+                    TransformKind::Sort { keys } => {
+                        for key in keys {
+                            self.expression(&mut key.expression, used, position)?;
+                        }
+                    }
+                    TransformKind::Aggregate { aggregates } => {
+                        for aggregate in aggregates {
+                            for expression in &mut aggregate.arguments {
+                                self.expression(expression, used, position)?;
+                            }
+                        }
+                    }
+                    TransformKind::AsOf { value, .. } => self.value(value, used, position)?,
+                    TransformKind::Extension { arguments, .. } => {
+                        self.extension(arguments, used, position)?
+                    }
+                    _ => {}
                 }
-                TransformKind::AsOf { value, .. } => self.value(value, used, position)?,
-                TransformKind::Extension { arguments, .. } => {
-                    self.extension(arguments, used, position)?
-                }
-                _ => {}
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     fn cond(
@@ -181,84 +183,86 @@ impl Parameters {
         used: &mut Vec<String>,
         position: usize,
     ) -> Result<(), QueryError> {
-        match &mut c.kind {
-            ConditionKind::And { conditions } | ConditionKind::Or { conditions } => {
-                for condition in conditions {
-                    self.cond(condition, used, position)?;
-                }
-            }
-            ConditionKind::Sequence { steps, gaps, .. } => {
-                for condition in steps {
-                    self.cond(condition, used, position)?;
-                }
-                for gap in gaps {
-                    if let Gap::Within { distance } = gap {
-                        self.distance(distance, used, position)?;
+        query_language::depth::deeper(|| {
+            match &mut c.kind {
+                ConditionKind::And { conditions } | ConditionKind::Or { conditions } => {
+                    for condition in conditions {
+                        self.cond(condition, used, position)?;
                     }
                 }
-            }
-            ConditionKind::Not { condition }
-            | ConditionKind::Exists {
-                condition: Some(condition),
-                ..
-            }
-            | ConditionKind::Count {
-                condition: Some(condition),
-                ..
-            } => self.cond(condition, used, position)?,
-            ConditionKind::In { left, query } => {
-                self.expression(left, used, position)?;
-                self.query(query, used, position)?;
-            }
-            ConditionKind::Order {
-                query,
-                within,
-                pick,
-                ..
-            } => {
-                self.query(query, used, position)?;
-                if let Some(within) = within {
-                    self.distance(within, used, position)?;
-                }
-                if let MatchChoice::FirstBy { keys } = pick {
-                    for key in keys {
-                        self.expression(&mut key.expression, used, position)?;
+                ConditionKind::Sequence { steps, gaps, .. } => {
+                    for condition in steps {
+                        self.cond(condition, used, position)?;
+                    }
+                    for gap in gaps {
+                        if let Gap::Within { distance } = gap {
+                            self.distance(distance, used, position)?;
+                        }
                     }
                 }
-            }
-            ConditionKind::Compare { left, right, .. } => {
-                self.expression(left, used, position)?;
-                self.expression(right, used, position)?;
-            }
-            ConditionKind::Match { value, .. }
-            | ConditionKind::Since { value, .. }
-            | ConditionKind::Until { value, .. }
-            | ConditionKind::Rank { value, .. } => self.value(value, used, position)?,
-            ConditionKind::TimeRange { left, value } => {
-                self.expression(left, used, position)?;
-                self.value(value, used, position)?;
-            }
-            ConditionKind::Between { left, from, to } => {
-                self.expression(left, used, position)?;
-                self.value(from, used, position)?;
-                self.value(to, used, position)?;
-            }
-            ConditionKind::Text { text, .. } => {
-                if let Some(argument) = self.argument(text, used, position)? {
-                    *text = value_text(&argument.value)?;
+                ConditionKind::Not { condition }
+                | ConditionKind::Exists {
+                    condition: Some(condition),
+                    ..
                 }
-            }
-            ConditionKind::Saved { arguments, .. } => {
-                for argument in arguments {
-                    self.value(&mut argument.value, used, position)?;
+                | ConditionKind::Count {
+                    condition: Some(condition),
+                    ..
+                } => self.cond(condition, used, position)?,
+                ConditionKind::In { left, query } => {
+                    self.expression(left, used, position)?;
+                    self.query(query, used, position)?;
                 }
+                ConditionKind::Order {
+                    query,
+                    within,
+                    pick,
+                    ..
+                } => {
+                    self.query(query, used, position)?;
+                    if let Some(within) = within {
+                        self.distance(within, used, position)?;
+                    }
+                    if let MatchChoice::FirstBy { keys } = pick {
+                        for key in keys {
+                            self.expression(&mut key.expression, used, position)?;
+                        }
+                    }
+                }
+                ConditionKind::Compare { left, right, .. } => {
+                    self.expression(left, used, position)?;
+                    self.expression(right, used, position)?;
+                }
+                ConditionKind::Match { value, .. }
+                | ConditionKind::Since { value, .. }
+                | ConditionKind::Until { value, .. }
+                | ConditionKind::Rank { value, .. } => self.value(value, used, position)?,
+                ConditionKind::TimeRange { left, value } => {
+                    self.expression(left, used, position)?;
+                    self.value(value, used, position)?;
+                }
+                ConditionKind::Between { left, from, to } => {
+                    self.expression(left, used, position)?;
+                    self.value(from, used, position)?;
+                    self.value(to, used, position)?;
+                }
+                ConditionKind::Text { text, .. } => {
+                    if let Some(argument) = self.argument(text, used, position)? {
+                        *text = value_text(&argument.value)?;
+                    }
+                }
+                ConditionKind::Saved { arguments, .. } => {
+                    for argument in arguments {
+                        self.value(&mut argument.value, used, position)?;
+                    }
+                }
+                ConditionKind::Extension { arguments, .. } => {
+                    self.extension(arguments, used, position)?
+                }
+                _ => {}
             }
-            ConditionKind::Extension { arguments, .. } => {
-                self.extension(arguments, used, position)?
-            }
-            _ => {}
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     fn expression(
@@ -267,20 +271,22 @@ impl Parameters {
         used: &mut Vec<String>,
         position: usize,
     ) -> Result<(), QueryError> {
-        match expression {
-            Expression::Value { value } => self.value(value, used, position)?,
-            Expression::Function { arguments, .. } => {
-                for argument in arguments {
-                    self.expression(argument, used, position)?;
+        query_language::depth::deeper(|| {
+            match expression {
+                Expression::Value { value } => self.value(value, used, position)?,
+                Expression::Function { arguments, .. } => {
+                    for argument in arguments {
+                        self.expression(argument, used, position)?;
+                    }
                 }
+                Expression::Arithmetic { left, right, .. } => {
+                    self.expression(left, used, position)?;
+                    self.expression(right, used, position)?;
+                }
+                Expression::Field { .. } => {}
             }
-            Expression::Arithmetic { left, right, .. } => {
-                self.expression(left, used, position)?;
-                self.expression(right, used, position)?;
-            }
-            Expression::Field { .. } => {}
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     fn distance(
@@ -323,29 +329,31 @@ impl Parameters {
         used: &mut Vec<String>,
         position: usize,
     ) -> Result<(), QueryError> {
-        match value {
-            Value::Parameter { name } => {
-                let marker = format!("${name}");
-                if let Some(argument) = self.argument(&marker, used, position)? {
-                    *value = argument.value.clone();
+        query_language::depth::deeper(|| {
+            match value {
+                Value::Parameter { name } => {
+                    let marker = format!("${name}");
+                    if let Some(argument) = self.argument(&marker, used, position)? {
+                        *value = argument.value.clone();
+                    }
                 }
-            }
-            Value::Scalar {
-                text,
-                quoted: false,
-            } => {
-                if let Some(argument) = self.argument(text, used, position)? {
-                    *value = argument.value.clone();
+                Value::Scalar {
+                    text,
+                    quoted: false,
+                } => {
+                    if let Some(argument) = self.argument(text, used, position)? {
+                        *value = argument.value.clone();
+                    }
                 }
-            }
-            Value::Set { values } => {
-                for value in values {
-                    self.value(value, used, position)?;
+                Value::Set { values } => {
+                    for value in values {
+                        self.value(value, used, position)?;
+                    }
                 }
+                _ => {}
             }
-            _ => {}
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// The value given for `$word`, or `None` when `text` is no parameter.
