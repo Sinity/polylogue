@@ -448,14 +448,17 @@ impl Engine {
         let version = origin.reading_version();
         let reading = reader.parser_checkpoint(&input.id, stored.chain, &version)?;
         // An import does not grow, so a reading that waits on its last
-        // record is unfinished and is read again.
-        if progress.parsed_upto == size
-            && progress.parsed
+        // record is unfinished and is read again; a recorded stop at its
+        // length stays settled for the same program.
+        if progress.parsed
             && reading.as_ref().is_some_and(|reading| {
                 reading.reading_version == version
-                    && (!reading.progress.stopped()
-                        || (reading.progress.at_length() == Some(size)
-                            && reading.stopped_attempt == Some(self.stopped_attempt)))
+                    && if reading.progress.stopped() {
+                        reading.progress.at_length() == Some(size)
+                            && reading.stopped_attempt == Some(self.stopped_attempt)
+                    } else {
+                        progress.parsed_upto == size
+                    }
             })
         {
             return Ok(None);
