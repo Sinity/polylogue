@@ -30,9 +30,42 @@ jobs:
         run: |
           curl -sSfL https://github.com/nats-io/nats-server/releases/download/v2.10.22/nats-server-v2.10.22-linux-amd64.tar.gz | tar xz
           sudo mv nats-server-v2.10.22-linux-amd64/nats-server /usr/local/bin/
-      - uses: Swatinem/rust-cache@v2
+      # Master builds from scratch and saves its whole target directory, the
+      # exact build of that commit; a pull request starts from it. Cargo
+      # decides freshness by file times, and a fresh checkout makes every
+      # source newer than the saved build, so every source is dated before
+      # the build and the files that differ from the saved commit are dated
+      # now: Cargo rebuilds the packages those files belong to and the ones
+      # depending on them, and reuses the rest.
+      - name: Restore master's build
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@v4
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: check-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: check-${{ hashFiles('rust-toolchain.toml') }}-
+      - name: Date sources against the restored build
+        if: github.event_name == 'pull_request'
+        run: |
+          built=$(cat target/source-commit 2>/dev/null) || exit 0
+          git fetch --no-tags --depth=1 origin "$built" || exit 0
+          git ls-files -z | xargs -0 touch -h -d '2000-01-01 00:00:00 UTC'
+          git diff --no-renames --name-only -z "$built" HEAD | xargs -0 -r touch -h -c
+          echo "restored build of $built; $(git diff --no-renames --name-only "$built" HEAD | wc -l) files differ"
       # Pull requests run the tests their changes can affect; master runs all.
       - name: cargo xtask check
         run: cargo xtask check ${{ github.event_name == 'pull_request' && '--changed-base HEAD^1' || '' }}
+      - name: Save master's build
+        if: github.ref == 'refs/heads/master'
+        run: git rev-parse HEAD > target/source-commit
+      - if: github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: check-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
