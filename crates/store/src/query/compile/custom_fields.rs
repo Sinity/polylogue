@@ -436,9 +436,11 @@ pub(crate) fn model(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
     ))
 }
 
-/// `outcome:` compares the stored column, so `tool_call_action` serves it;
-/// only `pending`, decided from the session's live state, needs more, and
-/// `unknown` leaves those calls out.
+/// `outcome:` compares the stored column through `NULLIF(outcome,
+/// 'unknown')`, the expression `tool_call_action` indexes, so a stored
+/// `unknown` stays unknown (neither the condition nor its NOT matches).
+/// Only `pending`, a stored `unknown` call the session's live state names
+/// open, is decided beside it.
 pub(crate) fn tool_call_outcome(
     c: &mut Compiler<'_>,
     x: &Call<'_, '_>,
@@ -448,36 +450,60 @@ pub(crate) fn tool_call_outcome(
     let pending = a.expand(fields::OPEN_CALL);
     let unknown = format!("({t}.outcome = 'unknown' AND NOT {pending})");
     let def = fields::lookup(x.unit, x.name).expect("outcome is declared");
-    let one = |value: &str| -> Result<String, QueryError> {
+    let values = match x.op {
+        FieldOp::Match(Value::Unknown) => return Ok(unknown),
+        FieldOp::Match(Value::Known) => return Ok(format!("NOT {unknown}")),
+        FieldOp::Match(Value::Scalar {
+            text,
+            quoted: false,
+        }) if text.eq_ignore_ascii_case("unknown") => return Ok(unknown),
+        FieldOp::Match(v) => alternatives(v),
+        FieldOp::Compare(Op::Eq, value) => vec![value.to_owned()],
+        FieldOp::Compare(Op::Ne, value) => {
+            let equal = Call {
+                op: FieldOp::Compare(Op::Eq, value),
+                ..*x
+            };
+            return Ok(format!("NOT {}", tool_call_outcome(c, &equal)?));
+        }
+        op => {
+            let expr = def
+                .expr(a, c.opts.clock.now.as_millisecond())
+                .expect("outcome has SQL");
+            return c.typed(def, &expr, op, x.span);
+        }
+    };
+    let mut listed = vec![];
+    let (mut with_unknown, mut with_pending) = (false, false);
+    for value in &values {
         match CallOutcome::NAMES
             .iter()
             .find(|name| name.eq_ignore_ascii_case(value))
             .copied()
         {
-            Some("pending") => Ok(pending.clone()),
-            Some("unknown") => Ok(unknown.clone()),
-            Some(stored) => Ok(format!("{t}.outcome = '{stored}'")),
-            None => Err(x.bad(value.to_owned(), closed_set_message(def, value))),
+            Some("unknown") => with_unknown = true,
+            Some(name) => {
+                with_pending |= name == "pending";
+                listed.push(format!("'{name}'"));
+            }
+            None => return Err(x.bad(value.clone(), closed_set_message(def, value))),
         }
-    };
-    match x.op {
-        FieldOp::Match(Value::Unknown) => Ok(unknown.clone()),
-        FieldOp::Match(Value::Known) => Ok(format!("NOT {unknown}")),
-        FieldOp::Match(v) => {
-            let parts = alternatives(v)
-                .iter()
-                .map(|value| one(value))
-                .collect::<Result<Vec<_>, _>>()?;
-            any_of(x, parts)
+    }
+    // `pending` is never stored, so listing it leaves a stored `unknown`
+    // unknown; the open call itself matches through the live state.
+    let stored = (!listed.is_empty()).then(|| {
+        let known = format!("NULLIF({t}.outcome, 'unknown') IN ({})", listed.join(", "));
+        if with_pending {
+            format!("({known} OR {pending})")
+        } else {
+            format!("({known} AND NOT {pending})")
         }
-        FieldOp::Compare(Op::Eq, value) => one(value),
-        FieldOp::Compare(Op::Ne, value) => Ok(format!("NOT {}", one(value)?)),
-        op => {
-            let expr = def
-                .expr(a, c.opts.clock.now.as_millisecond())
-                .expect("outcome has SQL");
-            c.typed(def, &expr, op, x.span)
-        }
+    });
+    match (stored, with_unknown) {
+        (Some(stored), false) => Ok(stored),
+        (Some(stored), true) => Ok(format!("({stored} OR {unknown})")),
+        (None, true) => Ok(unknown),
+        (None, false) => Err(x.need_value()),
     }
 }
 

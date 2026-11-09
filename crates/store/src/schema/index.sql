@@ -246,7 +246,7 @@ CREATE INDEX tool_call_session ON tool_call(session_pk, at);   -- exists, seq(..
 CREATE INDEX tool_call_pairing ON tool_call(session_pk, call_id) WHERE call_id IS NOT NULL;   -- result -> call
 CREATE INDEX block_call ON block(session_pk, call_id) WHERE call_id IS NOT NULL;   -- call -> earlier result
 CREATE INDEX tool_call_tool    ON tool_call(tool);
-CREATE INDEX tool_call_action  ON tool_call(action, outcome);
+CREATE INDEX tool_call_action  ON tool_call(action, NULLIF(outcome, 'unknown'));   -- action: and outcome: as compiled
 CREATE INDEX tool_call_path    ON tool_call(path) WHERE path IS NOT NULL;
 CREATE INDEX tool_call_repo_command ON tool_call(command_norm, at) WHERE command_norm IS NOT NULL;   -- failing commands
 CREATE INDEX tool_call_result  ON tool_call(result_block_pk) WHERE result_block_pk IS NOT NULL;   -- foreign-key check

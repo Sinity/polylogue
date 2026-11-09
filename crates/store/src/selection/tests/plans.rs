@@ -109,7 +109,7 @@ fn outcome_condition_uses_tool_call_action_index() {
     assert!(
         steps
             .iter()
-            .any(|step| step.contains("USING INDEX tool_call_action (action=? AND outcome=?)")),
+            .any(|step| step.contains("INDEX tool_call_action (action=? AND <expr>=?)")),
         "{steps:#?}"
     );
 }
@@ -242,7 +242,7 @@ fn model_filter_plans_unchanged() {
     assert!(
         steps
             .iter()
-            .any(|step| step.contains("USING INDEX message_model_at")),
+            .any(|step| step.contains("INDEX message_model_at")),
         "{steps:#?}"
     );
 }
