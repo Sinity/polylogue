@@ -271,7 +271,8 @@ impl Engine {
             }
         }
 
-        let mut vectors = self.reads.reader()?.vectors_writer()?;
+        let reader = self.reads.reader()?;
+        let mut vectors = reader.vectors_writer()?;
         let mut batch: Vec<polylogue_store::older_archive::StoredVector> = Vec::new();
         let mut seen = BTreeSet::new();
         let mut flush = |batch: &mut Vec<polylogue_store::older_archive::StoredVector>,
