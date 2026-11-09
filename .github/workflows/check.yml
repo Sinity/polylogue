@@ -5,6 +5,14 @@ on:
   push:
     branches: [master]
 
+# Test logs list slow and failing tests as they happen and repeat each
+# failure's full output at the end, after the summary.
+env:
+  CARGO_TERM_COLOR: always
+  NEXTEST_STATUS_LEVEL: slow
+  NEXTEST_FINAL_STATUS_LEVEL: fail
+  NEXTEST_FAILURE_OUTPUT: immediate-final
+
 concurrency:
   group: check-${{ github.ref }}
   cancel-in-progress: true

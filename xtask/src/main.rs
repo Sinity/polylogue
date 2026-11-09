@@ -40,10 +40,14 @@ enum Cli {
     /// target.
     Fast,
     /// Formatting, crate boundaries, both clippy configurations and every
-    /// test, or with `--changed-base=REF` the tests the changes since the
-    /// merge base with REF can affect (devkit's selection).
+    /// test, or with `--changed` the tests the changes since the merge base
+    /// with origin/master can affect (devkit's selection; `--changed-base`
+    /// names another base). Clippy reuses every unchanged crate's result, so
+    /// `check --changed` costs what the change touches: the loop while editing.
     Check {
-        #[arg(long, value_name = "REF")]
+        #[arg(long)]
+        changed: bool,
+        #[arg(long, value_name = "REF", conflicts_with = "changed")]
         changed_base: Option<String>,
     },
     /// Build every test binary and both clippy configurations without
@@ -368,11 +372,15 @@ fn main() -> ExitCode {
             boundaries_step(run)?;
             clippy(run)
         }),
-        Cli::Check { changed_base } => {
-            let args: Vec<String> = changed_base
-                .map(|base| format!("--changed-base={base}"))
-                .into_iter()
-                .collect();
+        Cli::Check {
+            changed,
+            changed_base,
+        } => {
+            let args: Vec<String> = match (changed, changed_base) {
+                (_, Some(base)) => vec![format!("--changed-base={base}")],
+                (true, None) => vec!["--changed".into()],
+                (false, None) => Vec::new(),
+            };
             run("check", &args, |run| {
                 fmt_check(run)?;
                 boundaries_step(run)?;
