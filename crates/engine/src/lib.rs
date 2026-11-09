@@ -22,6 +22,7 @@ mod watch;
 
 use databases::Databases;
 use plan::{InputState, Plan};
+use polylogue_model::batch::StoppedAttempt;
 use polylogue_sources::{ORIGINS, OriginSpec, Support};
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,
@@ -115,9 +116,6 @@ pub struct Config {
     /// is stored and parsed in steps. Not a limit: a record longer than
     /// this doubles the range for its input until it fits.
     pub chunk: u64,
-    /// The running loop scans every watched location at least this often,
-    /// even when no change is reported (four hours).
-    pub rescan_every: Duration,
     /// While a pass runs, its spools and recently written files are looked
     /// at this often, and what changed there goes ahead of the pass's
     /// remaining work (two seconds).
@@ -213,7 +211,6 @@ impl Config {
             machine,
             host,
             chunk: 64 << 20,
-            rescan_every: Duration::from_secs(4 * 3600),
             live_every: Duration::from_secs(2),
             reads_sources: true,
         })
@@ -409,14 +406,15 @@ pub struct Engine {
     pub archive: Archive,
     writer: Writer,
     reads: ReadPool,
+    /// The existing archive scope that admitted the cached confirmed state.
+    read_scope: Option<polylogue_store::ReadScopeToken>,
     blobs: Arc<polylogue_store::blobs::Blobs>,
     inputs: HashMap<PathBuf, InputState>,
     /// Rejected writes awaiting checkpoint reload after their plans finish.
     /// Paths excluded from every nested live scan until their readings commit.
     reparsing: HashMap<PathBuf, usize>,
-    /// Every chain whose refusal or failure the parse state records has been
-    /// offered one new read since this engine started.
-    stopped_offered: bool,
+    /// Actual executable and parser settings for stopped-work selection.
+    stopped_attempt: StoppedAttempt,
     loaded: bool,
     captures: Databases,
     wake: Option<Sender<LoopMsg>>,
@@ -439,9 +437,13 @@ impl Engine {
     }
 
     /// Starts the writer on an archive the caller has locked.
-    pub fn new(config: Config, archive: Archive) -> Result<Self, EngineError> {
+    pub fn new(
+        config: Config,
+        archive: Archive,
+        stopped_attempt: StoppedAttempt,
+    ) -> Result<Self, EngineError> {
         let writer = Writer::start(&archive)?;
-        Self::with_writer(config, archive, writer)
+        Self::with_writer(config, archive, writer, stopped_attempt)
     }
 
     /// Starts the writer on an archive Sinex holds (primary mode), opened
@@ -450,12 +452,18 @@ impl Engine {
         config: Config,
         archive: Archive,
         sinex: Arc<dyn polylogue_store::primary::Sinex>,
+        stopped_attempt: StoppedAttempt,
     ) -> Result<Self, EngineError> {
         let writer = Writer::start_on_sinex(&archive, sinex)?;
-        Self::with_writer(config, archive, writer)
+        Self::with_writer(config, archive, writer, stopped_attempt)
     }
 
-    fn with_writer(config: Config, archive: Archive, writer: Writer) -> Result<Self, EngineError> {
+    fn with_writer(
+        config: Config,
+        archive: Archive,
+        writer: Writer,
+        stopped_attempt: StoppedAttempt,
+    ) -> Result<Self, EngineError> {
         let reader_memory = config.reader_memory_per_connection()?;
         let reads = ReadPool::with_budget(&archive, 1, reader_memory)?;
         let blobs = Arc::new(archive.blobs()?);
@@ -464,10 +472,11 @@ impl Engine {
             archive,
             writer,
             reads,
+            read_scope: None,
             blobs,
             inputs: HashMap::new(),
             reparsing: HashMap::new(),
-            stopped_offered: false,
+            stopped_attempt,
             loaded: false,
             captures: Databases::default(),
             wake: None,
@@ -497,7 +506,30 @@ impl Engine {
         h.finalize().to_hex()[..32].to_owned()
     }
 
+    /// Cached confirmed state keeps its original token until invalidation.
+    /// A reset between the caller's entry check and this call must not bind
+    /// old state to a newly acquired token.
+    fn cached_scope(&mut self) -> Result<polylogue_store::ReadScopeToken, EngineError> {
+        let scope = match &self.read_scope {
+            Some(scope) => scope.clone(),
+            None => self.archive.scope_token()?,
+        };
+        scope.check()?;
+        if self.read_scope.is_none() {
+            self.read_scope = Some(scope.clone());
+        }
+        Ok(scope)
+    }
+
     fn load(&mut self) -> Result<(), EngineError> {
+        if self
+            .read_scope
+            .as_ref()
+            .is_some_and(|scope| scope.check().is_err())
+        {
+            self.discard_confirmed_state();
+        }
+        let scope = self.cached_scope()?;
         if self.loaded {
             return Ok(());
         }
@@ -505,8 +537,6 @@ impl Engine {
 
         let known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;
         drop(reader);
-        self.inputs
-            .retain(|path, state| !state.origin.is_row_dump(path));
         for mut k in known {
             let Some(path_bytes) = k.path_bytes.take() else {
                 // Historical display text cannot identify a native location.
@@ -514,14 +544,9 @@ impl Engine {
             };
             use std::os::unix::ffi::OsStringExt;
             let path = PathBuf::from(std::ffi::OsString::from_vec(path_bytes));
-            let Some(origin) = ORIGINS.iter().find(|o| o.name == k.format) else {
-                continue;
-            };
-            if !origin.is_row_dump(&path) && self.inputs.contains_key(&path) {
-                continue;
-            }
             self.adopt_watched_input(&path, k);
         }
+        scope.check()?;
         self.loaded = true;
         Ok(())
     }

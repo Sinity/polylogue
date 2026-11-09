@@ -93,7 +93,7 @@ fn historical_declarations_are_read_only_and_current_writes_select_successors() 
             historical.kind
         );
     }
-    assert_eq!(crate::source_reference().version, 5);
+    assert_eq!(crate::source_reference().version, 6);
 }
 
 #[test]
@@ -215,4 +215,74 @@ fn source_three_retired_continuation_preserves_source_position_without_current_r
     let mut wrong = payload;
     wrong["run_hash"] = json!("0".repeat(64));
     assert!(decode_source(&declaration.kind, &declaration.definition_hash(), wrong).is_err());
+}
+
+#[test]
+fn parse_progress_v5_retains_exact_source_fields_and_unknown_attempt() {
+    let old = progress_v5::declaration().clone();
+    let mut successor = crate::kinds::declarations("polylogue")
+        .into_iter()
+        .find(|d| d.kind.name == old.kind.name)
+        .unwrap();
+    assert_eq!(successor.kind.version, 6);
+    successor.kind.version = 5;
+    let schema = successor.payload_schema.as_mut().unwrap();
+    schema["properties"]["record"]["oneOf"][0]["properties"]
+        .as_object_mut()
+        .unwrap()
+        .remove("stopped_attempt");
+    let defs = schema["$defs"].clone();
+    schema["$defs"] = super::super::reachable_definitions(&schema["properties"]["record"], &defs);
+    assert_eq!(old, successor);
+    let product = Product::ParseProgress {
+        reading: polylogue_store::primary::Reading {
+            source_length: Some(1),
+            delivery: None,
+            input: polylogue_store::InputKey {
+                id: "synthetic".into(),
+                format: "claude-code".into(),
+                arrival_rank: 0,
+            },
+            chain: 1,
+            reading_version: "original-reading".into(),
+            order_from: None,
+            repeats_whole_conversations: false,
+            start: 0,
+            parsed_upto: 0,
+            progress: polylogue_model::batch::StepProgress::Failed {
+                error: "synthetic failure".into(),
+            },
+        },
+        counts: Default::default(),
+        reset: false,
+        comparison: None,
+        checkpoint: None,
+        stopped_attempt: None,
+        semantic_event_ids: None,
+    };
+    let payload = crate::products::payload(&product, 0).unwrap();
+    let restored = decode_source(&old.kind, &old.definition_hash(), payload.clone()).unwrap();
+    assert_eq!(restored, product);
+    let mut extension = payload.clone();
+    extension["record"]["stopped_attempt"] =
+        serde_json::to_value(polylogue_model::batch::StoppedAttempt {
+            executable: polylogue_model::BlobHash::of(b"not stated by version five"),
+            parser_settings: None,
+        })
+        .unwrap();
+    assert_eq!(
+        decode_source(&old.kind, &old.definition_hash(), extension).unwrap(),
+        product
+    );
+    assert!(decode_source(&old.kind, &"0".repeat(64), payload).is_err());
+}
+
+#[test]
+fn frozen_progress_declaration_matches_the_qualified_hash_and_old_type_oracle() {
+    let frozen = progress_v5::declaration();
+    assert_eq!(
+        frozen.definition_hash(),
+        "171c3f2bb2e4ba678d4cd6f5d7c5ccca0a8382c51bbc5c02ff174f073441df2f"
+    );
+    assert_eq!(*frozen, progress_v5::source_type_oracle());
 }

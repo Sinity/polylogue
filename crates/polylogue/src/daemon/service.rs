@@ -34,6 +34,7 @@ pub struct Daemon {
     pub(crate) scope: super::scope::SharedScopeIndex,
     /// Briefs answered whose delivery records are still queued.
     pub(crate) queued_deliveries: super::queued_deliveries::QueuedDeliveries,
+    pub(crate) advisories: crate::advisory::Cooldowns,
     /// User writes (notes, deliveries, settings) through the one writer.
     pub(crate) writes: Option<WriterSender>,
     /// Live-session acts: the mailbox, resumed runs and hosted sessions.
@@ -289,6 +290,46 @@ fn context(
     operation: &Arc<Context>,
 ) -> Answer<Value> {
     use polylogue_store::read::limit::ReadLimit;
+    let is_advisory = matches!(ask, Ask::Advisory { .. });
+    #[cfg(feature = "sinex")]
+    if is_advisory
+        && let ModeState::Primary { connection } = &d.mode
+        && !connection.advisory_history_ready()
+    {
+        return crate::protocol::written(
+            serde_json::json!({"delivery":null,"prepared":crate::advisory::empty()}),
+            false,
+        );
+    }
+    let mut cooldown = if let Ask::Advisory { session, .. } = ask {
+        match d
+            .advisories
+            .available(session, operation.clock.now.as_millisecond())
+        {
+            Some(cooldown) => Some(cooldown),
+            None => {
+                return crate::protocol::written(
+                    serde_json::json!({"delivery":null,"prepared":crate::advisory::empty()}),
+                    false,
+                );
+            }
+        }
+    } else {
+        None
+    };
+    let pending_advice = if let Ask::Advisory { session, .. } = ask {
+        match d.queued_deliveries.pending_advice(&session.to_string()) {
+            Some(pending) => pending,
+            None => {
+                return crate::protocol::written(
+                    serde_json::json!({"delivery":null,"prepared":crate::advisory::empty()}),
+                    false,
+                );
+            }
+        }
+    } else {
+        Vec::new()
+    };
     let request_limit = ReadLimit::current();
     let brief_limit = match (ask, &request_limit) {
         (Ask::SessionStart { .. }, Some(limit)) => limit.deadline().map(|deadline| {
@@ -302,18 +343,39 @@ fn context(
         }),
         _ => None,
     };
-    let queued = ask
-        .recipient()
-        .and_then(|recipient| d.queued_deliveries.latest(&recipient.to_string()));
+    let queued = (!is_advisory)
+        .then(|| {
+            ask.recipient()
+                .and_then(|recipient| d.queued_deliveries.latest(&recipient.to_string()))
+        })
+        .flatten();
     let prepare = || -> Result<_, Box<Answer<Value>>> {
         let reader = d.reads.reader().map_err(|e| Box::new(store_error(&e)))?;
-        let settings = reader
-            .settings_snapshot(&operation.machine)
-            .map_err(|e| Box::new(store_error(&e)))?;
-        let provider =
+        let mut applied_advice = Vec::new();
+        for (id, _) in &pending_advice {
+            if reader
+                .delivery_refs(id)
+                .map_err(|error| Box::new(store_error(&error)))?
+                .is_some()
+            {
+                applied_advice.push(id.clone());
+            }
+        }
+        d.queued_deliveries.advice_applied(&applied_advice);
+        let pending_refs: Vec<_> = pending_advice
+            .iter()
+            .map(|(_, refs)| refs.clone())
+            .collect();
+        let provider = if is_advisory {
+            None
+        } else {
+            let settings = reader
+                .settings_snapshot(&operation.machine)
+                .map_err(|error| Box::new(store_error(&error)))?;
             crate::embeddings::Provider::from_settings(&settings, &d.config.embedding_credentials)
                 .ok()
-                .flatten();
+                .flatten()
+        };
         let near = |q: &str| match &provider {
             Some(p) => d.warm.similarity(&reader, p, q),
             None => Err("embeddings are off".into()),
@@ -329,6 +391,7 @@ fn context(
             &reader,
             &d.scope,
             queued,
+            &pending_refs,
             ask,
             &request_id,
             operation,
@@ -401,12 +464,34 @@ fn context(
             at: request.at,
             seq: written_up_to,
         };
-        let recipient = ask.recipient().map(|r| (r.to_string(), since));
-        if let Err(e) = d
-            .queued_deliveries
-            .submit(writes, request, Some(selected_scope), recipient)
-        {
-            return store_error(&e);
+        if is_advisory {
+            // A positive preparation reserves this session while its record/ACK
+            // is unconfirmed. The stored outcome is still prepared until emitted.
+            let session = ask.recipient().expect("advisory recipient");
+            let recent = cooldown.as_mut().expect("advisory cooldown held");
+            recent.insert(session.to_string(), operation.clock.now.as_millisecond());
+            match d
+                .queued_deliveries
+                .try_submit(writes, request, Some(selected_scope))
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    recent.remove(&session.to_string());
+                    return crate::protocol::written(
+                        serde_json::json!({"delivery":null,"prepared":crate::advisory::empty()}),
+                        false,
+                    );
+                }
+                Err(error) => return store_error(&error),
+            }
+        } else {
+            let recipient = ask.recipient().map(|r| (r.to_string(), since));
+            if let Err(error) =
+                d.queued_deliveries
+                    .submit(writes, request, Some(selected_scope), recipient)
+            {
+                return store_error(&error);
+            }
         }
         delivery = Some(request_id);
     }
@@ -648,6 +733,21 @@ pub(crate) fn handle_with_invocation(
     limit: &polylogue_store::read::limit::ReadLimit,
     invocation: &crate::operation::Invocation,
 ) -> Answer<Value> {
+    let advisory_limit = matches!(
+        &request,
+        Request::Context {
+            ask: Ask::Advisory { .. },
+            ..
+        }
+    )
+    .then(|| {
+        let cap = Instant::now() + crate::advisory::BUDGET;
+        polylogue_store::read::limit::ReadLimit::at(
+            limit.deadline().map_or(cap, |parent| parent.min(cap)),
+            limit.cancellation.child(),
+        )
+    });
+    let limit = advisory_limit.as_ref().unwrap_or(limit);
     #[cfg(test)]
     let reader_acquired = Arc::new(AtomicBool::new(false));
     #[cfg(test)]
@@ -1831,6 +1931,18 @@ pub enum ArchiveMode {
     },
 }
 
+impl ArchiveMode {
+    pub(crate) fn needs_engine(&self) -> bool {
+        match self {
+            Self::Standalone => true,
+            #[cfg(feature = "sinex")]
+            Self::Primary { .. } => true,
+            #[cfg(feature = "sinex")]
+            Self::Blocked { .. } => false,
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 enum ModeState {
@@ -1890,6 +2002,7 @@ pub fn start(
     config: Config,
     mode: ArchiveMode,
     lifetime: Lifetime,
+    stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
 ) -> std::io::Result<Runtime> {
     let root = deployment.archive.as_path();
     let completion_path = deployment.paths.completion_catalog(root);
@@ -1897,11 +2010,17 @@ pub fn start(
     let pointer = polylogue_store::completion::CatalogPointer::new(completion_path.clone());
     let invalidate = move || pointer.invalidate();
     let settings = config.clone();
+    let attempt = || {
+        stopped_attempt.ok_or_else(|| {
+            std::io::Error::other("the executable identity is required to start the Engine")
+        })
+    };
     let (archive, lock, mode, engine, completion_scope) = match mode {
         ArchiveMode::Standalone => {
+            let attempt = attempt()?;
             let (archive, lock, scope) = Archive::open_or_create_with_invalidator(root, invalidate)
                 .map_err(std::io::Error::other)?;
-            let engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
+            let engine = Engine::new(config, archive.clone(), attempt).map_err(|e| to_io(&e))?;
             (archive, lock, ModeState::Standalone, Some(engine), scope)
         }
         #[cfg(feature = "sinex")]
@@ -1922,6 +2041,7 @@ pub fn start(
         }
         #[cfg(feature = "sinex")]
         ArchiveMode::Primary { config: sinex, .. } => {
+            let attempt = attempt()?;
             let (archive, lock, scope) =
                 Archive::open_primary_with_invalidator(root, &sinex.store, invalidate)
                     .map_err(std::io::Error::other)?;
@@ -1929,7 +2049,7 @@ pub fn start(
                 polylogue_sinex::Sinex::open(&sinex, &deployment.primary_auth, &settings.host)
                     .map_err(std::io::Error::other)?,
             );
-            let engine = Engine::on_sinex(config, archive.clone(), connection.clone())
+            let engine = Engine::on_sinex(config, archive.clone(), connection.clone(), attempt)
                 .map_err(|error| to_io(&error))?;
             (
                 archive,
@@ -1975,6 +2095,7 @@ pub fn start(
         warm: super::warm::Warm::default(),
         scope: super::scope::SharedScopeIndex::default(),
         queued_deliveries: super::queued_deliveries::QueuedDeliveries::default(),
+        advisories: crate::advisory::Cooldowns::default(),
         acts: crate::live_acts::Acts::new(
             mail,
             hosts,

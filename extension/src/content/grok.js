@@ -2,6 +2,7 @@
 // three answers (its metadata, its responses and their tree), joined into
 // one JSON object for the capture.
 (function () {
+  const request = (...args) => (globalThis.polylogueFetch || fetch)(...args);
   const PAGE_SIZE = 60;
 
   function conversationId(url) {
@@ -20,8 +21,8 @@
   }
 
   async function get(url, required = true) {
-    const response = await fetch(url, { credentials: "include", cache: "no-store" });
-    if (response.status === 429) return { failed: { status: 429, retry_after: response.headers.get("retry-after") } };
+    const response = await request(url, { credentials: "include", cache: "no-store" });
+    if (response.status === 429 || response.status >= 500) return { failed: { status: response.status, retry_after: response.headers.get("retry-after") } };
     if (!response.ok) {
       return required ? { failed: { status: response.status, error: `grok_http_${response.status}` } } : { response: null };
     }

@@ -30,6 +30,16 @@ const ASKED: &[(&str, &[&str])] = &[
     ("read", &["assertion:missing"]),
     ("continue", &["claude-code:s1"]),
     ("brief", &["--cwd", "/synthetic", "--source", "startup"]),
+    (
+        "advisory",
+        &[
+            "Review parser.rs",
+            "--cwd",
+            "/synthetic",
+            "--session",
+            "codex:parity",
+        ],
+    ),
     ("takeover", &["claude-code:s1"]),
     ("takeover", &["claude-code:missing"]),
     ("recall", &["parser", "--cwd", "/synthetic"]),
@@ -354,7 +364,7 @@ fn every_client_answers_the_same_request_identically() {
             assert_eq!(Ok(expected), http, "whole HTTP read answer");
             continue;
         }
-        if matches!(*name, "brief" | "takeover" | "recall")
+        if matches!(*name, "brief" | "takeover" | "recall" | "advisory")
             && let Ok(value) = &cli
         {
             // Session's protocol handler runs in this test process. The

@@ -63,6 +63,8 @@ The full-text indexes are contentless, keyed by text ID, with contentless delete
 - **With calls on,** a query text is embedded once and its vector stored, keyed by model and normalized text hash, so it is never paid for twice. New messages and assertions are embedded in the background at idle priority within a monthly budget, default up to $5 a month, with a preview and confirmation for paid providers (default; open operator question).
 - **Providers:** a local OpenAI-compatible endpoint (default model `qwen3-embedding:0.6b`) and Voyage. Vectors from different models are compared only where the provider documents a shared space. (ruling 2026-10-11, cc:e3e37f29-2490-47ae-89ef-fd40b6242e9a:07bbe1df-c4cd-4c59-b07e-540182d93fdd).
 - **Provider failures:** a transient failure leaves the text without a vector until the next round; a permanent rejection is recorded once and listed in `status`; a hybrid query with a failed side runs the other side and is `incomplete`.
+- Provider responses are validated as whole indexed batches before storage: exactly one nonempty, finite, nonzero vector of the same dimension per requested input, with unique indexes covering that request. Malformed responses are transient failures, never partial purchases or permanent input rejections. Normalization preserves finite tiny and large f32 components.
+- A stored chunk does not make its whole text complete. Preview and build use the missing chunk identities for the current exact embedding key; the existing key selection keeps dimension recipes separate. A retry requests only missing chunks, preserves purchased ones, and refuses returned dimensions that differ from the selected key. Permanent provider rejections remain recorded and skipped.
 
 ### What is embedded
 
@@ -70,6 +72,7 @@ The full-text indexes are contentless, keyed by text ID, with contentless delete
 - A vector's address is a function of the request only (domain, model and text, length-prefixed), so a vector once bought stays addressable whatever the index does. Vectors from earlier stores are imported by address, or by verified message identity where the address is missing; a vector that cannot be matched stays in its source file and is never dropped.
 - `embeddings.db` is written only by the daemon and backed up with `archive.db`: `embedded(id, address, key, chunk, dims, vector, embedded_at)`, `query_vector(key, text_hash, vector, embedded_at)`, `embed_failure(address, key, error, failed_at)`. `index.db` holds `message_embed_input(message, address)`, written with the message.
 - **Scan:** the daemon holds int8 copies of the configured model's vectors, scores the selected rows exactly in int8, then re-scores the top 200 in f32 from the stored rows.
+- **Warm vectors:** reusable vectors are identified by their model and the model revision in the same embeddings database snapshot as their rows. Loading and quantization do not hold the shared cache mutex; a superseded load may serve its original reader but cannot replace newer cached values. Clearing warm state also invalidates publication by loads already in flight.
 
 ## Fusion
 

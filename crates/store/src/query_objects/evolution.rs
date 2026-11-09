@@ -134,5 +134,23 @@ pub(crate) fn index_v2(conn: &Connection, primary: bool) -> Result<()> {
     Ok(())
 }
 
+/// Old objects have no recorded insertion position. Their first completion
+/// snapshot includes them; only newly admitted objects participate in deltas.
+pub(crate) fn archive_v4(conn: &Connection) -> Result<()> {
+    positions_v4(conn, crate::source::Source::Ledger)
+}
+pub(crate) fn index_v4(conn: &Connection, primary: bool) -> Result<()> {
+    if primary {
+        positions_v4(conn, crate::source::Source::Cache)
+    } else {
+        Ok(())
+    }
+}
+fn positions_v4(conn: &Connection, source: crate::source::Source) -> Result<()> {
+    conn.execute_batch(&source.sql("ALTER TABLE @source.query ADD COLUMN commit_seq INTEGER CHECK(commit_seq IS NULL OR commit_seq>0);
+        CREATE INDEX @source.query_commit_seq ON @source.query(commit_seq,hash);"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;

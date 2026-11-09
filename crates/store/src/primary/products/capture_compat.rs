@@ -20,6 +20,7 @@ struct Wire {
     reset: bool,
     comparison: Option<crate::tool_databases::Comparison>,
     checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
+    stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
 }
 
 #[derive(Deserialize)]
@@ -58,6 +59,7 @@ impl<'de> Deserialize<'de> for CapturedReading {
             reset: wire.reset,
             comparison: wire.comparison,
             checkpoint: wire.checkpoint,
+            stopped_attempt: wire.stopped_attempt,
         })
     }
 }

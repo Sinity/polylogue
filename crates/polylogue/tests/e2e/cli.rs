@@ -1,12 +1,14 @@
 //! End to end: the real binary as a daemon over a temporary archive and
 //! home directory, driven through the CLI.
 
-use std::io::{BufRead, BufReader};
 #[cfg(target_os = "linux")]
-use std::io::{Read, Write};
+use std::io::Write;
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
+
+const READY_DEADLINE: Duration = Duration::from_secs(60);
 
 pub(super) struct Daemon(Child);
 
@@ -21,11 +23,82 @@ pub(super) fn start_daemon(env: &crate::Fixture) -> Daemon {
     let mut command = command(env);
     command.arg("daemon").stderr(Stdio::piped());
     let mut daemon = Daemon(polylogue_testkit::spawn_daemon(&mut command).unwrap());
-    let mut first = String::new();
-    BufReader::new(daemon.0.stderr.as_mut().unwrap())
-        .read_line(&mut first)
-        .unwrap();
-    assert!(first.contains("serving"), "{first}");
+    use std::os::fd::AsRawFd;
+    let mut stderr = daemon.0.stderr.take().unwrap();
+    let mut startup = Vec::new();
+    let until = Instant::now() + READY_DEADLINE;
+    loop {
+        let left = until.saturating_duration_since(Instant::now());
+        assert!(
+            !left.is_zero(),
+            "daemon readiness timed out; status={:?}; stderr:\n{}",
+            daemon.0.try_wait().unwrap(),
+            String::from_utf8_lossy(&startup)
+        );
+        let mut event = libc::pollfd {
+            fd: stderr.as_raw_fd(),
+            events: libc::POLLIN | libc::POLLHUP,
+            revents: 0,
+        };
+        // SAFETY: event is writable, and this owned pipe stays open through poll.
+        #[allow(unsafe_code)]
+        let ready = unsafe {
+            libc::poll(
+                &mut event,
+                1,
+                left.as_millis().clamp(1, i32::MAX as u128) as i32,
+            )
+        };
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            panic!(
+                "daemon readiness pipe: {error}; stderr:\n{}",
+                String::from_utf8_lossy(&startup)
+            );
+        }
+        if ready == 0 {
+            continue;
+        }
+        let mut bytes = [0; 4096];
+        assert!(
+            event.revents & (libc::POLLIN | libc::POLLHUP) != 0,
+            "daemon readiness pipe events={}; status={:?}; stderr:\n{}",
+            event.revents,
+            daemon.0.try_wait().unwrap(),
+            String::from_utf8_lossy(&startup)
+        );
+        let count = match stderr.read(&mut bytes) {
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => panic!(
+                "daemon readiness read: {error}; stderr:\n{}",
+                String::from_utf8_lossy(&startup)
+            ),
+        };
+        if count == 0 {
+            panic!(
+                "daemon closed readiness output; status={:?}; stderr:\n{}",
+                daemon.0.try_wait().unwrap(),
+                String::from_utf8_lossy(&startup)
+            );
+        }
+        startup.extend_from_slice(&bytes[..count]);
+        if startup
+            .split_inclusive(|byte| *byte == b'\n')
+            .any(|line| line.ends_with(b"\n") && line.starts_with(b"polylogue: serving "))
+        {
+            assert!(
+                daemon.0.try_wait().unwrap().is_none(),
+                "daemon exited after readiness; stderr:\n{}",
+                String::from_utf8_lossy(&startup)
+            );
+            daemon.0.stderr = Some(stderr);
+            break;
+        }
+    }
     daemon
 }
 
@@ -37,7 +110,6 @@ pub(super) fn wait_status(
     env: &crate::Fixture,
     ready: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
-    const DEADLINE: Duration = Duration::from_secs(60);
     const PAUSE: Duration = Duration::from_millis(25);
     let started = Instant::now();
     loop {
@@ -51,8 +123,8 @@ pub(super) fn wait_status(
             return status;
         }
         assert!(
-            started.elapsed() < DEADLINE,
-            "the awaited status did not come within {DEADLINE:?}; last status: {status}"
+            started.elapsed() < READY_DEADLINE,
+            "the awaited status did not come within {READY_DEADLINE:?}; last status: {status}"
         );
         std::thread::sleep(PAUSE);
     }

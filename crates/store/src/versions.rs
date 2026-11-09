@@ -171,6 +171,10 @@ pub(crate) fn store_message(
         text_rows,
         replace,
     )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO changed_version(kind,version_hash) VALUES ('message',?1)",
+        [prepared.hash.as_slice()],
+    )?;
     let layout = message_layout(&prepared.projection)?;
     conn.execute(
         "INSERT INTO message_projection(version_hash,layout,admitted) VALUES (?1,?2,?3)
@@ -298,9 +302,19 @@ pub(crate) fn remove_readings(conn: &Connection) -> Result<()> {
             (format!("{name}_value"), "value_pk", "changed_value")
         };
         let stored_key = if kind.content() { "version_hash" } else { "pk" };
+        // Context retains exact earlier message bodies after the visible source
+        // advances. Keep their cleanup markers until that context is released.
+        let unreferenced = if matches!(kind, VersionKind::Message) {
+            " AND version_hash NOT IN (SELECT version_hash FROM parser_context WHERE version_hash IS NOT NULL)"
+        } else {
+            ""
+        };
         conn.execute(&format!("DELETE FROM {table} WHERE {stored_key} IN (SELECT {key} FROM {changed} WHERE kind=?1)
-            AND NOT EXISTS(SELECT 1 FROM {name}_source s WHERE s.{key}={table}.{stored_key})"), [name])?;
-        conn.execute(&format!("DELETE FROM {changed} WHERE kind=?1"), [name])?;
+            AND NOT EXISTS(SELECT 1 FROM {name}_source s WHERE s.{key}={table}.{stored_key}){unreferenced}"), [name])?;
+        conn.execute(
+            &format!("DELETE FROM {changed} WHERE kind=?1{unreferenced}"),
+            [name],
+        )?;
     }
     Ok(())
 }

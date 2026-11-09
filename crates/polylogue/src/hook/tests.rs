@@ -629,3 +629,79 @@ fn a_context_timeout_emits_an_unreferenced_notice_and_names_only_the_original_pr
     assert!(text.contains("timed out"));
     assert!(!text.contains("delivery:"));
 }
+
+#[test]
+fn file_advisory_hook_uses_the_canonical_request_and_silences_timeout() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    for timed_out in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let startup = Startup::for_test(startup().engine, dir.path());
+        let listener = UnixListener::bind(Archive::at(dir.path()).socket()).unwrap();
+        let (ready, listening) = std::sync::mpsc::sync_channel(0);
+        let peer = std::thread::spawn(move || {
+            ready.send(()).unwrap();
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["operation"], "advisory");
+            assert_eq!(
+                request["arguments"],
+                json!({"prompt":"Inspect src/parser.rs", "cwd":"/synthetic/project", "session":"codex:turn-1"})
+            );
+            assert_eq!(request["deadline"], 20);
+            assert!(request.get("budget_tokens").is_none());
+            let id = uuid::Uuid::parse_str(request["request_id"].as_str().unwrap()).unwrap();
+            assert_eq!(id.get_timestamp().unwrap().to_unix().0, 1767225600);
+            let answer = if timed_out {
+                command_surface::Answer::error(crate::protocol::failure(
+                    "deadline_exceeded",
+                    "fixture timeout",
+                ))
+            } else {
+                command_surface::Answer::ok(
+                    json!({"delivery":request["request_id"],"prepared":{"event":"advice","empty":false,"text":"one pointer", "refs":[],"left_out":[]}}),
+                )
+            };
+            writeln!(stream, "{}", serde_json::to_string(&answer).unwrap()).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            listener
+        });
+        listening.recv().unwrap();
+        let result = respond(
+            Harness::Codex,
+            "UserPromptSubmit",
+            &json!({"session_id":"turn-1","cwd":"/synthetic/project","prompt":"Inspect src/parser.rs"}),
+            &startup,
+        );
+        let listener = peer.join().unwrap();
+        if timed_out {
+            assert!(result.is_none(), "optional timeout must emit no notice");
+        } else {
+            assert_eq!(result.unwrap().1, "one pointer");
+        }
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "respond neither acknowledges emission nor retries preparation"
+        );
+    }
+}
+
+#[test]
+fn ordinary_prompt_without_a_path_needs_no_advisory_exchange() {
+    use std::os::unix::net::UnixListener;
+    let dir = tempfile::tempdir().unwrap();
+    let startup = Startup::for_test(startup().engine, dir.path());
+    let listener = UnixListener::bind(Archive::at(dir.path()).socket()).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    assert!(respond(Harness::Codex, "UserPromptSubmit", &json!({"session_id":"turn-1","cwd":"/synthetic/project","prompt":"Continue the current work"}), &startup).is_none());
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}

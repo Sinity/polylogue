@@ -137,6 +137,31 @@ describe("a capture", () => {
     expect(state.last.outcome).toBe("unchanged");
   });
 
+  it("is not stored, and does not count as seen, when the page answer holds no conversation", async () => {
+    const host = storingHost();
+    let withBody = false;
+    const answer = async (request) => {
+      if (request.type === "page") return { status: 200, info: { id: "c1", temporary: false } };
+      if (request.type === "conversation") {
+        return withBody
+          ? { status: 200, info: { id: "c1", temporary: false, url: "https://chatgpt.com/c/c1" }, body: new Blob([JSON.stringify(CONVERSATION)]) }
+          : { status: 200, info: { id: "c1", temporary: false, url: "https://chatgpt.com/c/c1" } };
+      }
+      return { status: 400, error: "unknown_request" };
+    };
+    const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const extension = start(chrome, { indexedDB: new IDBFactory() });
+
+    expect(await extension.captureTab(1, "changed")).toBeNull();
+    expect(host.stored).toHaveLength(0);
+    const state = await extension.pageState(await chrome.tabs.get(1));
+    expect(state.last).toMatchObject({ outcome: "failed", text: "no_conversation_content" });
+
+    withBody = true;
+    expect((await extension.captureTab(1, "changed")).outcome).toBe("stored");
+    expect(JSON.parse(host.stored[0]).raw_provider_payload).toEqual(CONVERSATION);
+  });
+
   it("keeps the conversation observation time when files finish later", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
@@ -228,8 +253,11 @@ describe("a capture", () => {
     await started;
     changed = true;
     files.push({ id: "second", message: "m1", inline: false });
-    await extension.captureTab(1, "changed");
+    const successor = extension.captureTab(1, "changed");
+    // The newer observation invalidates the in-flight generation before its
+    // provider request can acquire the shared lane. Release that lane first.
     release();
+    await successor;
     await extension.capturer.downloads();
     const final = JSON.parse(host.stored.at(-1));
     expect(final.raw_provider_payload.title).toBe("Newest");
@@ -490,4 +518,15 @@ it.each(["missing", "unknown"])("captures cached content when the daemon reports
   const after = start(chrome, { indexedDB: new IDBFactory() });
   expect((await after.captureTab(1, "sweep")).outcome).toBe("stored");
   expect(host.stored).toHaveLength(1);
+});
+
+it("confirms a submitted turn only from the exact durably stored provider snapshot", async () => {
+  const host = storingHost();
+  const page = chatgptPage();
+  const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+  const extension = start(chrome, { indexedDB: new IDBFactory() });
+  const capture = (turn, text) => extension.capturer.capture(1, "chatgpt", { force: true, confirm: { turn, text } });
+  expect(await capture("m1", "hello")).toMatchObject({ outcome: "stored", confirmedTurn: "m1" });
+  expect(await capture("other", "hello")).toMatchObject({ confirmedTurn: null });
+  expect(await capture("m1", "different")).toMatchObject({ confirmedTurn: null });
 });

@@ -479,6 +479,11 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
     // Wakes the accept loop so it sees it should stop.
     let _ = UnixStream::connect(&config.socket);
     let _ = accept.join();
+    // The client reader holds another descriptor and an Arc to the relay.
+    // Closing both directions releases that reader and lets the daemon see EOF.
+    if let Some(client) = lock(&relay).client.take() {
+        let _ = client.shutdown(std::net::Shutdown::Both);
+    }
     if let Some(dir) = config.socket.parent()
         && let Some(key) = config.socket.file_stem().and_then(|s| s.to_str())
     {
@@ -738,7 +743,16 @@ impl HostedStdio {
                     lock(&shared.0).absorb(message);
                     shared.1.notify_all();
                 }
-                lock(&shared.0).closed = true;
+                let mut state = lock(&shared.0);
+                state.closed = true;
+                // These prompts never left this connection's local queue.
+                // Already-written prompts keep their reported outcome.
+                for (_, delivery) in std::mem::take(&mut state.queued) {
+                    state.report(
+                        delivery.as_deref(),
+                        Err("the host connection closed before the queued prompt was sent".into()),
+                    );
+                }
                 shared.1.notify_all();
             })?;
         Ok(Self { state })

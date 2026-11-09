@@ -37,6 +37,7 @@ Span offsets count in the original stored text, before view filtering or variant
 
 ## Rules
 
+- A native Claude record UUID from a split response resolves through its recorded source association to the canonical message. Stored assertion targets keep the native reference as written across re-parse.
 - **Natural keys only.** No reference contains a row number, so a reference means the same thing in every archive that holds the same data and survives re-parse and rebuild.
 - **One parser resolves pasted provider URLs** through each origin's declaration: `chatgpt.com/c/<id>` becomes `session:chatgpt:<id>`.
 - **Ambiguity is an error.** A name that two current roots carry (`page:<name>`, `query:<name>`) is refused as `ambiguous`, listing both roots. Time never picks one, because a guess would silently change what an older reference meant.

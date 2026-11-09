@@ -2,6 +2,7 @@
 // conversation JSON its export holds and the conversation list of the
 // organization the page has selected.
 (function () {
+  const request = (...args) => (globalThis.polylogueFetch || fetch)(...args);
   const PAGE_SIZE = 100;
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -34,8 +35,8 @@
   }
 
   async function get(path) {
-    const response = await fetch(path, { credentials: "include", cache: "no-store" });
-    if (response.status === 429) return { failed: { status: 429, retry_after: response.headers.get("retry-after") } };
+    const response = await request(path, { credentials: "include", cache: "no-store" });
+    if (response.status === 429 || response.status >= 500) return { failed: { status: response.status, retry_after: response.headers.get("retry-after") } };
     if (!response.ok) return { failed: { status: response.status, error: `claude_http_${response.status}` } };
     return { response };
   }

@@ -164,7 +164,7 @@ fn native_capture_continues_the_input_at_the_observed_byte_path() {
         "source":{"machine":"test-machine","path":db.to_string_lossy()}
     });
     let expected_suffix_length = serde_json::to_vec(&expected_header).unwrap().len() + 1;
-    let mut engine = Engine::new(config, archive).unwrap();
+    let mut engine = Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap();
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(engine.inputs[&db].input_id, "stored-database");

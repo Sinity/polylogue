@@ -193,3 +193,133 @@ fn completion_request_preserves_full_text_offsets_and_reports_invalid_boundaries
         }
     }
 }
+
+#[test]
+fn vector_loading_leaves_the_cache_unlocked_and_clear_prevents_publication() {
+    let daemon = crate::test_daemon::start("vector cache ownership");
+    let warm = Warm::default();
+    let (started, entered) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let warm = &warm;
+        let daemon = &daemon;
+        let worker = scope.spawn(move || {
+            let reader = daemon.daemon.reads.reader().unwrap();
+            warm.cached_vectors(&reader, "synthetic/empty", 0, || {
+                started.send(()).unwrap();
+                released.recv().unwrap();
+                reader
+                    .vectors()
+                    .unwrap()
+                    .load("synthetic/empty")
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap()
+        });
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        let unlocked = warm.vectors.try_lock().is_ok();
+        if unlocked {
+            warm.clear();
+        }
+        release.send(()).unwrap();
+        let result = worker.join().unwrap();
+        assert!(unlocked, "loading must not hold the shared cache mutex");
+        assert_eq!(result.vectors(), 0);
+        assert!(
+            warm.vectors.lock().unwrap().loaded.is_none(),
+            "clear invalidates an in-flight publication"
+        );
+    });
+}
+
+#[test]
+fn older_vector_snapshot_does_not_replace_newer_cached_values() {
+    use polylogue_store::vectors::Vector;
+    let daemon = crate::test_daemon::start("vector snapshot ordering");
+    let warm = Warm::default();
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let key = "synthetic/model/2/document/unit";
+    let mut writer = reader.vectors_writer().unwrap();
+    writer
+        .put(
+            key,
+            &[Vector {
+                text_hash: vec![1],
+                chunk: 0,
+                values: vec![1., 0.],
+            }],
+        )
+        .unwrap();
+    let first = writer.load(key).unwrap();
+    writer
+        .put(
+            key,
+            &[Vector {
+                text_hash: vec![1],
+                chunk: 0,
+                values: vec![0., 1.],
+            }],
+        )
+        .unwrap();
+    let second = writer.load(key).unwrap();
+    drop(writer);
+    drop(reader);
+    let older = first.revision;
+    let newer = second.revision;
+    let (started, entered) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let warm = &warm;
+        let daemon = &daemon;
+        let worker = scope.spawn(move || {
+            let reader = daemon.daemon.reads.reader().unwrap();
+            warm.cached_vectors(&reader, key, older, || {
+                started.send(()).unwrap();
+                released.recv().unwrap();
+                Ok(first)
+            })
+            .unwrap()
+        });
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        let reader = daemon.daemon.reads.reader().unwrap();
+        let current = warm
+            .cached_vectors(&reader, key, newer, || Ok(second))
+            .unwrap();
+        release.send(()).unwrap();
+        let old = worker.join().unwrap();
+        assert_eq!(old.revision, older);
+        assert_eq!(current.revision, newer);
+        assert_eq!(
+            warm.vectors
+                .lock()
+                .unwrap()
+                .loaded
+                .as_ref()
+                .unwrap()
+                .revision,
+            newer
+        );
+        let reused = warm
+            .cached_vectors(&reader, key, newer, || {
+                panic!("current snapshot should reuse the cache")
+            })
+            .unwrap();
+        assert!(Arc::ptr_eq(&current, &reused));
+        assert!(
+            warm.cached_vectors(&reader, "synthetic/failure", 0, || Err(
+                "cancelled load".into()
+            ))
+            .is_err()
+        );
+        assert_eq!(
+            warm.vectors
+                .lock()
+                .unwrap()
+                .loaded
+                .as_ref()
+                .unwrap()
+                .revision,
+            newer
+        );
+    });
+}

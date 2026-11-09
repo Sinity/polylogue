@@ -27,10 +27,11 @@ struct Worker {
     progress: Receiver<()>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     bytes: Arc<std::sync::atomic::AtomicU64>,
+    scope: polylogue_store::ReadScopeToken,
 }
 #[derive(Default)]
 pub(super) struct Databases {
-    reader: Option<DatabaseReader>,
+    reader: Option<(DatabaseReader, polylogue_store::ReadScopeToken)>,
     worker: Option<Worker>,
 }
 impl Databases {
@@ -47,7 +48,13 @@ impl Databases {
         if self.pending() || inputs.is_empty() {
             return Ok(());
         }
-        let mut reader = self.reader.take().unwrap_or_default();
+        let scope = archive.scope_token()?;
+        let mut reader = self
+            .reader
+            .take()
+            .filter(|(_, scope)| scope.check().is_ok())
+            .map(|(reader, _)| reader)
+            .unwrap_or_default();
         let (tx, result) = sync_channel(1);
         let (notify, progress) = sync_channel(1);
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -152,6 +159,7 @@ impl Databases {
             progress,
             stop,
             bytes,
+            scope,
         });
         Ok(())
     }
@@ -170,7 +178,7 @@ impl Databases {
             Ok((reader, completed)) => {
                 let worker = self.worker.take().expect("active worker");
                 let _ = worker.thread.join();
-                self.reader = Some(reader);
+                self.reader = Some((reader, worker.scope));
                 Completed {
                     finished: true,
                     changed: changed || completed.changed,

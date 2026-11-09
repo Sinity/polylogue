@@ -1,4 +1,4 @@
-//! SQL functions registered on read connections, so compiled queries can
+//! SQL functions registered on read and schema connections, so compiled queries can
 //! read what the index stores compressed and group by the operator's
 //! logical day without a second pass in Rust:
 //!
@@ -31,6 +31,22 @@ const FLAGS: FunctionFlags = FunctionFlags::SQLITE_UTF8.union(FunctionFlags::SQL
 
 pub fn register(conn: &Connection) -> rusqlite::Result<()> {
     temporal::register(conn)?;
+    conn.create_scalar_function("pl_source_alias", 2, FLAGS, |ctx| {
+        let values: String = ctx.get(0)?;
+        let fallback: String = ctx.get(1)?;
+        let values: Vec<Option<String>> = serde_json::from_str(&values)
+            .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+        let targets = values
+            .into_iter()
+            .flatten()
+            .collect::<std::collections::BTreeSet<_>>();
+        if targets.len() > 1 {
+            return Err(rusqlite::Error::UserFunctionError(
+                "native record alias has conflicting canonical messages".into(),
+            ));
+        }
+        Ok(targets.into_iter().next().unwrap_or(fallback))
+    })?;
     conn.create_scalar_function("pl_glob", 2, FLAGS, |ctx| {
         let text: Option<String> = ctx.get(0)?;
         let pattern: Option<String> = ctx.get(1)?;

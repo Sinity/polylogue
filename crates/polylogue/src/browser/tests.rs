@@ -488,6 +488,36 @@ fn reading_a_captures_files_uses_the_capture_parser_without_writing_the_spool() 
     );
 }
 
+/// law: capture-holds-conversation
+#[test]
+fn a_capture_without_conversation_content_is_refused_and_not_spooled() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = host_without_daemon(dir.path());
+    // What a stale extension background sent: identity and provenance only.
+    let empty = json!({
+        "polylogue_capture_kind": "browser_llm_session",
+        "schema_version": 1,
+        "provenance": {"captured_at": "2026-11-02T16:20:59Z", "source_url": "https://chatgpt.com/c/empty"},
+        "session": {"provider": "chatgpt", "provider_session_id": "empty", "session_kind": "standard", "attachments": []}
+    });
+    let a = exchange(&host, "POST", "/v1/captures", empty.to_string().as_bytes());
+    assert_eq!(a.status, 400);
+    assert_eq!(a.json()["error"], "capture_has_no_conversation");
+    let mut empty_raw = empty.clone();
+    empty_raw["raw_provider_payload"] = json!({});
+    let b = exchange(
+        &host,
+        "POST",
+        "/v1/captures",
+        empty_raw.to_string().as_bytes(),
+    );
+    assert_eq!(b.json()["error"], "capture_has_no_conversation");
+    assert_eq!(
+        conversations(&host, &["empty"])["conversations"][0]["state"],
+        "unknown"
+    );
+}
+
 #[test]
 fn a_capture_larger_than_axums_default_body_limit_is_accepted() {
     let w = test_daemon::start("x");
@@ -645,3 +675,76 @@ fn the_reader_address_is_unavailable_when_no_reader_is_running() {
 
 mod notes;
 mod repeated_captures;
+
+#[test]
+fn an_expired_sending_action_accepts_only_its_owners_late_confirmation() {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let now = Arc::new(AtomicI64::new(1_800_000_000_000));
+    let clock = Arc::clone(&now);
+    let w = test_daemon::start_with_clock(
+        "synthetic chat context",
+        polylogue_model::WallClock::new(move || {
+            jiff::Timestamp::from_millisecond(clock.load(Ordering::SeqCst)).unwrap()
+        }),
+    );
+    w.set("browser.actions", "on");
+    let host = host(&w);
+    let queued = send(&w, "late-capture", chat_request(None, true), vec![]).unwrap();
+    let id = queued["id"].as_str().unwrap();
+    assert_eq!(
+        exchange(&host, "GET", "/v1/chat-actions?claim_by=tab-a", b"").json()["action"]["id"],
+        id
+    );
+    for phase in ["sending", "claimed"] {
+        let response = exchange(
+            &host,
+            "POST",
+            &format!("/v1/chat-actions/{id}/report"),
+            json!({
+                "by":"tab-a", "outcome":"progress", "phase":phase,
+            })
+            .to_string()
+            .as_bytes(),
+        );
+        assert_eq!(response.status, 200, "{}", response.json());
+    }
+    now.fetch_add(polylogue_model::user::CHAT_CLAIM_MS + 1, Ordering::SeqCst);
+    let listed = exchange(&host, "GET", "/v1/chat-actions", b"").json();
+    let action = &listed["actions"][0];
+    assert_eq!(action["status"], "outcome_unknown");
+    assert_eq!(action["phase"], "claimed");
+    assert_eq!(action["claimed_by"], Value::Null);
+    assert_eq!(action["claim_expires_at"], Value::Null);
+    assert_eq!(
+        exchange(&host, "GET", "/v1/chat-actions?claim_by=tab-b", b"").json()["action"],
+        Value::Null
+    );
+    assert_eq!(report(&host, id, "tab-a", "progress").status, 409);
+    let missing_receipt = report(&host, id, "tab-a", "submitted");
+    assert_eq!(missing_receipt.status, 400);
+    assert_eq!(
+        missing_receipt.json()["error"],
+        "submission_receipt_required"
+    );
+    let confirmation = |by| {
+        exchange(
+            &host,
+            "POST",
+            &format!("/v1/chat-actions/{id}/report"),
+            json!({
+                "by":by, "outcome":"submitted", "phase":"submitted",
+                "receipt":{"conversation":"conversation-1", "turn":"captured-turn"},
+            })
+            .to_string()
+            .as_bytes(),
+        )
+    };
+    assert_eq!(confirmation("tab-b").status, 409);
+    let response = confirmation("tab-a");
+    assert_eq!(response.status, 200, "{}", response.json());
+    assert_eq!(response.json()["action"]["status"], "submitted");
+    assert_eq!(
+        response.json()["action"]["receipt"]["turn"],
+        "captured-turn"
+    );
+}

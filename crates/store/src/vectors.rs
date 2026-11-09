@@ -5,8 +5,9 @@
 //!
 //! Search is a scan of every vector of one key held in memory ([`Loaded`]):
 //! a dot product against a unit query vector, the best chunk per text. The
-//! daemon keeps the loaded vectors and reloads them after [`writes`]
-//! changes.
+//! daemon keeps loaded vectors by model revision read from the same SQLite
+//! snapshot as their rows. [`writes`] is a coarse process-local invalidation
+//! counter for query continuations, not the identity of a loaded snapshot.
 
 use crate::archive::{Archive, open_read, open_write};
 use crate::read::Reader;
@@ -101,21 +102,63 @@ impl Vectors {
         Ok(read)
     }
 
-    /// Text hashes that already have a vector or a permanent failure for
-    /// `key`: the build skips them.
-    pub fn done(&self, key: &str) -> Result<HashSet<Vec<u8>>> {
+    /// Missing chunk identities for one exact key and a page of whole texts.
+    pub fn missing_chunks(
+        &self,
+        key: &str,
+        texts: &[(Vec<u8>, usize)],
+    ) -> Result<HashMap<Vec<u8>, HashSet<u32>>> {
         let _read = self.read_transaction()?;
-        let mut out = HashSet::new();
-        for sql in [
-            "SELECT DISTINCT text_hash FROM embedded WHERE model = ?1",
-            "SELECT text_hash FROM embed_failure WHERE model = ?1",
-        ] {
-            let mut stmt = self.conn.prepare(sql)?;
-            for h in stmt.query_map([key], |r| r.get::<_, Vec<u8>>(0))? {
-                out.insert(h?);
+        let mut missing = texts
+            .iter()
+            .map(|(hash, chunks)| {
+                let chunks = (0..*chunks)
+                    .map(|chunk| {
+                        u32::try_from(chunk).map_err(|_| {
+                            StoreError::Invalid("embedding chunk identity is out of range".into())
+                        })
+                    })
+                    .collect::<Result<HashSet<_>>>()?;
+                Ok((hash.clone(), chunks))
+            })
+            .collect::<Result<HashMap<_, _>>>()?;
+        if texts.is_empty() {
+            return Ok(missing);
+        }
+        let placeholders = (0..texts.len())
+            .map(|index| format!("?{}", index + 2))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut arguments = vec![rusqlite::types::Value::Text(key.into())];
+        arguments.extend(
+            texts
+                .iter()
+                .map(|(hash, _)| rusqlite::types::Value::Blob(hash.clone())),
+        );
+        let mut statement = self.conn.prepare_cached(&format!(
+            "SELECT text_hash,chunk FROM embedded WHERE model=?1 AND text_hash IN ({placeholders})"
+        ))?;
+        for row in statement.query_map(rusqlite::params_from_iter(arguments), |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, u32>(1)?))
+        })? {
+            let (hash, chunk) = row?;
+            if let Some(chunks) = missing.get_mut(&hash) {
+                chunks.remove(&chunk);
             }
         }
-        Ok(out)
+        Ok(missing)
+    }
+
+    /// Whole texts permanently refused for this exact embedding key.
+    pub fn rejected(&self, key: &str) -> Result<HashSet<Vec<u8>>> {
+        let _read = self.read_transaction()?;
+        let mut statement = self
+            .conn
+            .prepare_cached("SELECT text_hash FROM embed_failure WHERE model=?1")?;
+        let rejected = statement
+            .query_map([key], |row| row.get::<_, Vec<u8>>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rejected)
     }
 
     /// Stores every purchased vector, keyed by its content.
@@ -292,6 +335,19 @@ impl Vectors {
             .optional()?)
     }
 
+    /// Revision of a model in this handle's SQLite read snapshot.
+    pub fn revision(&self, key: &str) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT revision FROM embedding_revision WHERE model = ?1",
+                [key],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+    }
+
     /// Every vector of `key` in memory, for `near:`. Each value is kept as
     /// one signed byte scaled by its vector's largest value: a quarter of
     /// the size, and similarities within about 1% of the stored ones,
@@ -300,7 +356,7 @@ impl Vectors {
         let _read = self.read_transaction()?;
         let mut loaded = Loaded {
             key: key.to_owned(),
-            writes: writes(),
+            revision: self.revision(key)?,
             dims: 0,
             texts: HashMap::new(),
             owner: Vec::new(),
@@ -435,8 +491,8 @@ fn now_ms() -> i64 {
 /// Every vector of one embedding key, in memory.
 pub struct Loaded {
     pub key: String,
-    /// [`writes`] when loaded: the copy is current while it is unchanged.
-    pub writes: u64,
+    /// Model revision in the embeddings snapshot that supplied these rows.
+    pub revision: i64,
     pub dims: usize,
     /// Text hash to text number.
     texts: HashMap<Box<[u8]>, u32>,

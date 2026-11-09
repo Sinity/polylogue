@@ -1185,6 +1185,7 @@ fn hand_off(
         &reader,
         &d.scope,
         None,
+        &[],
         &crate::briefing::Ask::Takeover {
             session: h.source.clone(),
             for_session: None,

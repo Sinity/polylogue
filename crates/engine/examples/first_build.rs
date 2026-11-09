@@ -16,6 +16,8 @@
 //! Then one pass of the loop builds an archive from nothing, and the run
 //! prints input MB/s and the index size against the input.
 
+#[path = "support/mod.rs"]
+mod support;
 use polylogue_engine::{Config, Engine};
 use polylogue_store::Archive;
 use std::fs;
@@ -301,7 +303,7 @@ fn main() {
         config.workers = w.parse().unwrap();
     }
     let workers = config.workers;
-    let mut engine = Engine::new(config, archive.clone()).unwrap();
+    let mut engine = Engine::new(config, archive.clone(), support::stopped_attempt()).unwrap();
     let setup_seconds = started.elapsed().as_secs_f64();
     let ingest_started = Instant::now();
     // Seconds per stage so far, on stderr each minute: a run stopped before

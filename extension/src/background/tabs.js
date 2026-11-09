@@ -31,32 +31,44 @@ function once(chrome, tabId, request) {
     const port = chrome.tabs.connect(tabId, { name: "polylogue" });
     let facts = null;
     let hasBody = false;
+    let settled = false;
     const chunk = [];
-    port.onMessage.addListener((message) => {
-      if (message.type === "facts") {
-        const { type: _type, has_body: present, ...rest } = message;
-        if (typeof present !== "boolean") {
-          reject(new PageError("invalid_page_reply"));
-          port.disconnect();
-          return;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      port.onMessage.removeListener(onMessage);
+      port.onDisconnect.removeListener(onDisconnect);
+      try { port.disconnect(); } catch { /* Peer already closed. */ }
+      if (error) reject(error); else resolve(value);
+    };
+    const onMessage = (message) => {
+      try {
+        if (message?.type === "facts" && facts === null) {
+          const { type: _type, has_body: present, ...rest } = message;
+          if (typeof present !== "boolean" || !Number.isInteger(rest.status)) throw new PageError("invalid_page_reply");
+          hasBody = present;
+          facts = rest;
+        } else if (message?.type === "chunk" && facts !== null && hasBody) {
+          chunk.push(decode(message.data));
+        } else if (message?.type === "end" && facts !== null) {
+          finish(null, { ...facts, body: hasBody ? new Blob(chunk) : null });
+        } else if (message?.type === "failed") {
+          const error = new PageError(message.error);
+          error.until = message.until;
+          error.status = message.status;
+          error.retryAfter = message.retry_after;
+          finish(error);
+        } else {
+          finish(new PageError("invalid_page_reply"));
         }
-        hasBody = present;
-        facts = rest;
-      } else if (message.type === "chunk") {
-        chunk.push(decode(message.data));
-      } else if (message.type === "end") {
-        port.disconnect();
-        resolve({ ...facts, body: hasBody ? new Blob(chunk) : null });
-      } else if (message.type === "failed") {
-        port.disconnect();
-        reject(new PageError(message.error));
-      }
-    });
-    port.onDisconnect.addListener(() => {
-      // Chrome sets lastError when no page script listens.
-      const missing = Boolean(chrome.runtime.lastError) && !facts;
-      reject(new PageError(missing ? "no_page_script" : "page_closed"));
-    });
+      } catch (error) { finish(error); }
+    };
+    const onDisconnect = () => {
+      const missing = Boolean(chrome.runtime.lastError) && facts === null;
+      finish(new PageError(missing ? "no_page_script" : "page_closed"));
+    };
+    port.onMessage.addListener(onMessage);
+    port.onDisconnect.addListener(onDisconnect);
     port.postMessage(request);
   });
 }

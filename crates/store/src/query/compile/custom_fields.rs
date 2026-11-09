@@ -702,22 +702,24 @@ pub(crate) fn assertion_about(
     ))
 }
 
+// json_each exposes reference strings as text; they are not JSON documents.
 pub(crate) fn refs(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    delivery_ref(c, x, "refs_json")
+    delivery_member(c, x, "refs_json", "dj.value")
 }
 
 pub(crate) fn left_out(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    delivery_ref(c, x, "left_out_json")
+    delivery_member(c, x, "left_out_json", "json_extract(dj.value, '$.what')")
 }
 
-fn delivery_ref(
+fn delivery_member(
     c: &mut Compiler<'_>,
     x: &Call<'_, '_>,
     column: &str,
+    member: &str,
 ) -> Result<String, QueryError> {
     let p = c.text_param(&x.value()?);
     Ok(format!(
-        "EXISTS (SELECT 1 FROM json_each({r}.{column}) dj WHERE instr(COALESCE(json_extract(dj.value, '$.ref'), dj.value), {p}) > 0)",
+        "EXISTS (SELECT 1 FROM json_each({r}.{column}) dj WHERE instr({member}, {p}) > 0)",
         r = x.row()
     ))
 }

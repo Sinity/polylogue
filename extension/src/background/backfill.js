@@ -5,6 +5,7 @@
 // its position and totals. A restarted extension claims its job again and
 // continues from the last reported position.
 
+import { ProviderDeferred } from "./provider.js";
 import { askPage, workTab } from "./tabs.js";
 
 // Pause between two conversations, to stay well inside what the providers
@@ -12,6 +13,8 @@ import { askPage, workTab } from "./tabs.js";
 const PAUSE_MS = 2000;
 // Captures between two progress reports, which also renew the claim.
 const REPORT_EVERY = 10;
+
+class ClaimLost extends Error {}
 
 export class Backfill {
   constructor({ chrome, host, capturer, instance, log = () => {}, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
@@ -22,7 +25,7 @@ export class Backfill {
     this.log = log;
     this.sleep = sleep;
     this.running = null;
-    this.waitUntil = 0;
+    this.resumeAt = 0;
   }
 
   /**
@@ -30,7 +33,7 @@ export class Backfill {
    * provider asked to wait.
    */
   step() {
-    if (!this.running && Date.now() >= this.waitUntil) {
+    if (!this.running && Date.now() >= this.resumeAt) {
       this.running = (async () => {
         try {
           const { job } = await this.host.claimBackfill(await this.instance());
@@ -41,10 +44,6 @@ export class Backfill {
       })();
     }
     return this.running;
-  }
-
-  wait(retryAfter) {
-    this.waitUntil = Date.now() + Math.max(60_000, retryMs(retryAfter));
   }
 
   async run(job) {
@@ -65,9 +64,8 @@ export class Backfill {
     const { tab, opened } = await workTab(this.chrome, job.provider);
     try {
       for (;;) {
-        const page = await askPage(this.chrome, tab.id, { type: "list", position });
-        if (page.status === 429) {
-          this.wait(page.retry_after);
+        const page = await this.capturer.scheduler.run(job.provider, () => askPage(this.chrome, tab.id, { type: "list", position }), { background: true, owner: tab.id, before: async () => { if (!(await report("progress"))) throw new ClaimLost("backfill claim lost"); } });
+        if (page.status === 429 || page.status >= 500) {
           await report("progress", "The provider asked to wait; continuing later.");
           return;
         }
@@ -87,14 +85,20 @@ export class Backfill {
         for (const [i, conversation] of listed.entries()) {
           if (current(held[i], conversation)) {
             counts.unchanged += 1;
+            sinceReport += 1;
+            if (sinceReport >= REPORT_EVERY) {
+              sinceReport = 0;
+              if (!(await report("progress"))) return;
+            }
             continue;
           }
           try {
-            const done = await this.capturer.capture(tab.id, job.provider, { id: conversation.id, reason: "backfill" });
+            const done = await this.capturer.capture(tab.id, job.provider, { id: conversation.id, reason: "backfill", before: async () => { if (!(await report("progress"))) throw new ClaimLost("backfill claim lost"); } });
             counts[done.outcome === "unchanged" ? "unchanged" : "captured"] += 1;
           } catch (error) {
-            if (error.status === 429) {
-              this.wait(error.retryAfter);
+            if (error instanceof ClaimLost) throw error;
+            if (error.until) throw new ProviderDeferred(error.until, error.message);
+            if (error.status === 429 || error.status >= 500) {
               await report("progress", "The provider asked to wait; continuing later.");
               return;
             }
@@ -112,14 +116,19 @@ export class Backfill {
         // A list ordered by change time ends where it passes `since`.
         const passedSince = since && page.info.newest_first
           && page.info.conversations.some((c) => c.updated_at && Date.parse(c.updated_at) < since);
-        if (page.info.done || passedSince) {
+        if (page.info.done || (passedSince && !page.info.next_partition)) {
           position = page.info.next;
           await report("finished");
           return;
         }
-        position = page.info.next;
+        position = passedSince ? page.info.next_partition : page.info.next;
         if (!(await report("progress"))) return;
       }
+    } catch (error) {
+      if (error instanceof ClaimLost) return;
+      if (!(error instanceof ProviderDeferred) && !error.until) throw error;
+      this.resumeAt = error.until;
+      await report("progress", error.message);
     } finally {
       // Files download through the tab, after their conversation is stored.
       if (opened) {
@@ -128,14 +137,6 @@ export class Backfill {
       }
     }
   }
-}
-
-/** Seconds or an HTTP date, as a provider's Retry-After gives it. */
-function retryMs(value) {
-  const seconds = Number(value);
-  if (Number.isFinite(seconds)) return seconds * 1000;
-  const at = Date.parse(value || "");
-  return Number.isFinite(at) ? at - Date.now() : 0;
 }
 
 /** Whether the archive holds this conversation as the provider has it. */

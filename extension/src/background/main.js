@@ -9,6 +9,7 @@ import { Capturer } from "./capture.js";
 import { ChatActions } from "./chat_actions.js";
 import { Host } from "./host.js";
 import { notePayload } from "./notes.js";
+import { ProviderScheduler } from "./provider.js";
 import { Outbox } from "./outbox.js";
 import { addScripts, askPage, chatTabs, providerOf } from "./tabs.js";
 
@@ -48,11 +49,11 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
     return instancePromise;
   }
 
-  const capturer = new Capturer({ chrome, host, outbox, seen: local, log });
+  const capturer = new Capturer({ chrome, host, outbox, seen: local, scheduler: new ProviderScheduler({ storage: local }), log });
   const backfill = new Backfill({ chrome, host, capturer, instance, log });
   const chatActions = new ChatActions({
-    chrome, host, instance, log,
-    capture: (tabId) => captureTab(tabId, "chat action", true),
+    chrome, host, instance, log, scheduler: capturer.scheduler,
+    capture: (tabId, confirm) => capturer.capture(tabId, "chatgpt", { reason: "chat action", force: true, confirm }),
   });
 
   async function remember(provider, conversation, last) {
@@ -62,7 +63,6 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
   }
 
   const running = new Map();
-  const waitUntil = new Map();
 
   /** Captures a tab's conversation now; answers what happened. */
   async function captureTab(tabId, reason, force = false) {
@@ -79,10 +79,6 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
       await remember(provider, done.conversation, { at: new Date().toISOString(), outcome: done.outcome, text });
       return done;
     } catch (error) {
-      if (error.status === 429) {
-        const seconds = Number(error.retryAfter);
-        waitUntil.set(provider, Date.now() + Math.max(60_000, Number.isFinite(seconds) ? seconds * 1000 : 0));
-      }
       if (error.code === "no_conversation_on_page") return null;
       const page = await askPage(chrome, tabId, { type: "page" }).catch(() => null);
       const text = error.status === 429 ? "the provider asked to wait" : String(error.code || error.message);
@@ -98,7 +94,7 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
     const now = Date.now();
     const tab = await chrome.tabs.get(tabId).catch(() => null);
     const provider = tab && providerOf(tab.url);
-    if (!provider || (waitUntil.get(provider) || 0) > now) return;
+    if (!provider) return;
     const state = running.get(tabId);
     if (state?.busy) {
       state.again = reason;
@@ -191,6 +187,12 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
   }
 
   const handlers = {
+    "polylogue.provider-request": async (_message, sender) => {
+      const provider = providerOf(sender.tab?.url || "");
+      if (!provider || sender.frameId !== 0) return { error: "provider request is not from a chat page" };
+      try { await capturer.scheduler.authorize(provider, sender.tab.id); return { ok: true }; }
+      catch (error) { return { error: error.message, until: error.until ?? null }; }
+    },
     "polylogue.changed": (message, sender) => {
       if (sender.tab?.id !== undefined) void changed(sender.tab.id, message.reason);
       return { ok: true };

@@ -9,6 +9,7 @@ mod empty_source;
 mod extent_checkpoint;
 mod input_events;
 mod items;
+mod link_evolution;
 mod parent_order;
 mod resolution;
 mod saved;
@@ -1375,6 +1376,7 @@ fn a_completed_empty_index_does_not_begin_another_first_build() {
                 crate::schema::INDEX,
                 crate::coverage::SCHEMA,
                 crate::variants::SCHEMA,
+                crate::parser_context::SCHEMA,
                 crate::schema::READ_INDEXES
             ]
         )

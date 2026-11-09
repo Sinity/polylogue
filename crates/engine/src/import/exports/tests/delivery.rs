@@ -32,7 +32,7 @@ fn parser(plan: &Plan) -> Box<dyn ExportParser> {
 fn collect(engine: &Engine, plan: &Plan) -> Vec<ParseStep> {
     let mut steps = Vec::new();
     parse_export(plan, &mut *parser(plan), &engine.blobs, |item| {
-        let (mut step, cursor) = item.into_parse(plan, &engine.blobs)?;
+        let (mut step, cursor) = item.into_parse(plan, &engine.blobs, &engine.stopped_attempt)?;
         step.prepare();
         steps.push(step);
         Ok(cursor)
@@ -113,7 +113,7 @@ fn interrupted_delivery_replays_the_same_sealed_prefix_from_archived_bytes() {
     let mut prefix = Vec::new();
     let mut first_item = true;
     let result = parse_export(&plan, &mut *parser(&plan), &engine.blobs, |item| {
-        let (mut step, cursor) = item.into_parse(&plan, &engine.blobs)?;
+        let (mut step, cursor) = item.into_parse(&plan, &engine.blobs, &engine.stopped_attempt)?;
         step.prepare();
         let delivery = step.delivery.unwrap();
         if matches!(delivery.source, ExportDeliverySource::Item { .. }) {
@@ -142,6 +142,10 @@ fn interrupted_delivery_replays_the_same_sealed_prefix_from_archived_bytes() {
 }
 
 fn assert_refusal(step: &ParseStep) {
+    assert_eq!(
+        step.stopped_attempt,
+        Some(polylogue_testkit::stopped_attempt())
+    );
     assert!(matches!(
         step.delivery.unwrap().source,
         ExportDeliverySource::ContainerHeader
@@ -320,7 +324,8 @@ fn successful_short_scans_cannot_complete_even_after_a_full_rewound_pass() {
         let (engine, _lock, plan) = plan(&home, &raw);
         let mut steps = Vec::new();
         let read = parse_export(&plan, &mut ShortSuccess { rewind }, &engine.blobs, |item| {
-            let (mut step, cursor) = item.into_parse(&plan, &engine.blobs)?;
+            let (mut step, cursor) =
+                item.into_parse(&plan, &engine.blobs, &engine.stopped_attempt)?;
             step.prepare();
             steps.push(step);
             Ok(cursor)
@@ -346,7 +351,7 @@ fn trailing_whitespace_is_consumed_before_complete() {
 
 #[cfg(feature = "faults")]
 #[test]
-fn ordinary_reopen_extends_the_committed_export_prefix_without_recounting() {
+fn changed_executable_extends_the_committed_export_prefix_without_recounting() {
     use polylogue_store::fault::{self, Action};
     let home = ClaudeHome::new();
     let path = home.dir.path().join("conversations.json");
@@ -379,8 +384,21 @@ fn ordinary_reopen_extends_the_committed_export_prefix_without_recounting() {
     };
     fs::remove_file(&path).unwrap();
     let (mut engine, _lock) = engine(&home, 16);
+    let unchanged = engine.run_pass().unwrap();
+    assert!(unchanged.errors.is_empty(), "{unchanged:?}");
+    assert_eq!(unchanged.bytes_read, 0, "{unchanged:?}");
+    assert_eq!(texts(&home, "chatgpt:old"), ["old body"]);
+    assert!(texts(&home, "chatgpt:new").is_empty());
+    assert_eq!(home.count("SELECT sum(records) AS n FROM parse_state"), 2);
+    let config = engine.config.clone();
+    let archive = engine.archive.clone();
+    let mut attempt = engine.stopped_attempt;
+    attempt.executable = polylogue_model::BlobHash::of(b"changed export reader executable");
+    drop(engine);
+    let mut engine = Engine::new(config, archive, attempt).unwrap();
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(pass.bytes_stored, 0, "{pass:?}");
     assert_eq!(texts(&home, "chatgpt:old"), ["old body"]);
     assert_eq!(texts(&home, "chatgpt:new"), ["new body"]);
     assert_eq!(home.count("SELECT sum(records) AS n FROM parse_state"), 4);

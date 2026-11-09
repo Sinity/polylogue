@@ -49,7 +49,7 @@ fn accepting_preparation_uses_original_native_rows_and_scratch_definitions() {
         .unwrap();
     let archive = crate::archive::open_write(&fixture.archive.archive_db(), 1).unwrap();
 
-    crate::query_objects::apply_object(&archive, &object).unwrap();
+    crate::query_objects::apply_object(&archive, &object, 1).unwrap();
     let unnamed =
         polylogue_query::plan::prepare("sessions where repo:unnamed", &Bindings::default(), |_| {
             Ok(())
@@ -57,7 +57,7 @@ fn accepting_preparation_uses_original_native_rows_and_scratch_definitions() {
         .unwrap()
         .query_object()
         .unwrap();
-    crate::query_objects::apply_object(&archive, &unnamed).unwrap();
+    crate::query_objects::apply_object(&archive, &unnamed, 1).unwrap();
     drop(archive);
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();

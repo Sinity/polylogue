@@ -163,8 +163,13 @@ fn a_hosted_session_survives_its_daemon_connection() {
         "reattached within 2 s"
     );
     assert!(lock(&second.state.0).turn, "the hello says a turn runs");
+    let (sent, outcomes) = std::sync::mpsc::channel();
+    second.on_sent(Arc::new(move |delivery, result| {
+        // A failed test may already have dropped its observer during unwind.
+        let _ = sent.send((delivery.to_owned(), result));
+    }));
     // A message sent while the turn runs waits for it.
-    second.send("second turn", None).unwrap();
+    assert!(!second.send("second turn", Some("queued-success")).unwrap());
     assert_eq!(lock(&second.state.0).queued.len(), 1);
     second.answer(true, None).unwrap();
     // The first prompt finishes and the queued one is sent.
@@ -172,10 +177,19 @@ fn a_hosted_session_survives_its_daemon_connection() {
         std::fs::read_to_string(hosting.dir.path().join("log")).is_ok_and(|n| n.trim() == "2")
     });
     wait_until("its permission request", || second.request().is_some());
+    assert_eq!(
+        outcomes.try_recv().unwrap(),
+        ("queued-success".into(), Ok(()))
+    );
     second.answer(true, None).unwrap();
     wait_until("the second turn's end", || !lock(&second.state.0).turn);
     assert_eq!(hosting.log().trim(), "2", "every prompt ran exactly once");
     hosting.quit(&second);
+    wait_until("the closed host connection", || !second.open());
+    assert!(
+        outcomes.try_recv().is_err(),
+        "a sent prompt has no drop outcome"
+    );
     // The host wrote the session's statuses, then its end, and left.
     let lines = status_lines(&hosting.config.spool);
     let words: Vec<&str> = lines.iter().filter_map(|(_, w)| w.as_deref()).collect();
@@ -187,6 +201,55 @@ fn a_hosted_session_survives_its_daemon_connection() {
     );
     assert_eq!(lines.last().unwrap().0, "HostedEnded");
     assert!(!hosting.config.socket.exists());
+}
+
+/// A host that exits during a prompt never receives the local waiting
+/// prompts. Each waiting delivery gets one drop outcome; a prompt already
+/// written keeps its outcome and is never resent.
+#[test]
+fn acp_eof_reports_unsent_queued_deliveries_once() {
+    let mut hosting = Hosting::start("gemini-cli", HostProtocol::Acp, ACP_AGENT, None);
+    let client =
+        HostedStdio::connect(&hosting.config.socket, HostProtocol::Acp, "s1".into()).unwrap();
+    let (sent, outcomes) = std::sync::mpsc::channel();
+    client.on_sent(Arc::new(move |delivery, result| {
+        // A failed test may already have dropped its observer during unwind.
+        let _ = sent.send((delivery.to_owned(), result));
+    }));
+    assert!(
+        client
+            .send("running turn", Some("already-written"))
+            .unwrap()
+    );
+    wait_until("the running prompt's permission", || {
+        client.request().is_some()
+    });
+    assert!(!client.send("waiting one", Some("queued-one")).unwrap());
+    assert!(!client.send("waiting two", Some("queued-two")).unwrap());
+    assert!(!client.send("waiting without a delivery", None).unwrap());
+    hosting.quit(&client);
+    wait_until("EOF from the host", || !client.open());
+    assert_eq!(
+        hosting.log().trim(),
+        "1",
+        "only the running prompt reached the agent"
+    );
+    let reported: Vec<_> = outcomes.try_iter().collect();
+    assert_eq!(reported.len(), 2, "only queued deliveries are reported");
+    for ((delivery, result), expected) in reported.iter().zip(["queued-one", "queued-two"]) {
+        assert_eq!(delivery, expected);
+        assert_eq!(
+            result.as_ref().unwrap_err(),
+            "the host connection closed before the queued prompt was sent"
+        );
+    }
+    assert!(lock(&client.state.0).queued.is_empty());
+    assert!(client.send("after EOF", Some("rejected")).is_err());
+    drop(client);
+    assert!(
+        outcomes.try_recv().is_err(),
+        "closing twice reports nothing again"
+    );
 }
 
 /// ACP round trips: a ping prompts an idle agent, an interrupt cancels the

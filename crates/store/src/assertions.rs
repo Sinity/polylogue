@@ -17,7 +17,7 @@ mod saved;
 pub(crate) mod sql;
 pub(crate) use saved::{
     CurrentSavedDefinition, SavedInput, SavedPreparation, SavedResolver, saved_definition,
-    saved_queries, saved_query_snapshot,
+    saved_family, saved_queries, saved_query_snapshot,
 };
 mod read;
 mod settings;
@@ -127,8 +127,13 @@ pub fn visit(
         .transpose()
         .map_err(|_| invalid("assertion counter exceeds SQLite's integer range"))?;
     let source = Source::reading(conn)?;
+    let predicate = if after.is_some() {
+        "commit_seq>?1"
+    } else {
+        "?1 IS NULL"
+    };
     let mut statement = conn.prepare(&source.sql(&format!(
-        "SELECT {COLUMNS} FROM @source.assertion WHERE (?1 IS NULL OR commit_seq>?1) ORDER BY commit_seq,id",
+        "SELECT {COLUMNS} FROM @source.assertion WHERE {predicate} ORDER BY commit_seq,id",
     )))?;
     let mut rows = statement.query([after])?;
     while let Some(row) = rows.next()? {
@@ -137,6 +142,22 @@ pub fn visit(
         visit(assertion)?;
     }
     Ok(())
+}
+
+/// Families whose currency can change when these newly admitted facts arrive.
+/// Includes withdrawal/reinstatement targets through the owning link rules.
+pub(crate) fn changed_roots(conn: &Connection, after: i64) -> Result<BTreeSet<String>> {
+    let after = u64::try_from(after).map_err(|_| invalid("negative assertion cursor"))?;
+    let mut links = StoredLinks::new(conn)?;
+    let mut roots = BTreeSet::new();
+    visit(conn, Some(after), |assertion| {
+        roots.extend(authored::affected_roots(
+            &mut links,
+            &header(&assertion.fact),
+        )?);
+        Ok(())
+    })?;
+    Ok(roots)
 }
 
 pub(crate) fn canonical_fact(fact: &AssertionFact) -> Result<AssertionFact> {

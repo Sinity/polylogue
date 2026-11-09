@@ -16,6 +16,7 @@ impl StepParser for Held {
         _: Option<&Json>,
         bytes: &[u8],
         _: u64,
+        _: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, Json), polylogue_sources::ParseError> {
         let control = CONTROL.lock().unwrap().take();
         if let Some(Control { started, release }) = control {

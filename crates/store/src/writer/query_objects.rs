@@ -222,10 +222,10 @@ impl Inner {
             return Ok(QueryCustody::Queued);
         }
         let tx = self.archive.transaction()?;
+        let counter = bump_counter(&tx)?;
         let before = tx.total_changes();
-        crate::query_objects::apply_object(&tx, object)?;
+        crate::query_objects::apply_object(&tx, object, counter)?;
         if tx.total_changes() != before {
-            bump_counter(&tx)?;
             scoped::require_current(&self.location, scope)?;
             crate::write_lock::commit(tx)?;
             self.commits.committed();

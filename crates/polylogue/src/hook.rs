@@ -355,6 +355,12 @@ fn is_uuid(w: &str) -> bool {
 /// Asks for context and returns its text, recording it as delivered once
 /// it is handed to the harness by the caller.
 fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(String, String)> {
+    let advisory = matches!(&ask, Ask::Advisory { .. });
+    let allowance = if advisory {
+        crate::advisory::BUDGET
+    } else {
+        CONTEXT_BUDGET
+    };
     let request_id = request_id(startup.clock.now()).ok()?;
     let (operation, arguments, cursor) = match ask {
         Ask::SessionStart {
@@ -364,6 +370,15 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
         } => (
             "brief",
             json!({ "cwd": cwd, "session": session, "source": source }),
+            None,
+        ),
+        Ask::Advisory {
+            prompt,
+            cwd,
+            session,
+        } => (
+            "advisory",
+            json!({"prompt":prompt,"cwd":cwd,"session":session}),
             None,
         ),
         Ask::Takeover {
@@ -389,7 +404,7 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
         operation: operation.into(),
         arguments,
         request_id: request_id.clone(),
-        deadline: command_surface::Deadline::Milliseconds(CONTEXT_BUDGET.as_millis() as u64),
+        deadline: command_surface::Deadline::Milliseconds(allowance.as_millis() as u64),
         budget_tokens: budget_tokens.map_or(
             command_surface::TokenBudget::Default,
             command_surface::TokenBudget::Tokens,
@@ -401,7 +416,7 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
     let reply = crate::client::call_with_budget(
         &Archive::at(&startup.config.archive).socket(),
         &request,
-        CONTEXT_BUDGET,
+        allowance,
     );
     let timed_out = match &reply {
         Err(error) => error.kind() == std::io::ErrorKind::TimedOut,
@@ -410,6 +425,9 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
                 || error.kind == command_surface::FailureKind::Timeout
         }),
     };
+    if timed_out && advisory {
+        return None;
+    }
     if timed_out {
         // No prepared bytes were emitted. Only the daemon's existing queue
         // may confirm preparation; absent proof leaves acceptance unresolved.
@@ -538,6 +556,31 @@ fn takeovers(
     Some((deliveries.join(","), texts.join("\n\n")))
 }
 
+fn prompt_context(
+    harness: Harness,
+    payload: &Value,
+    prompt: &str,
+    startup: &Startup,
+) -> Option<(String, String)> {
+    if !pasted_session_ids(prompt).is_empty() {
+        return takeovers(harness, payload, prompt, startup);
+    }
+    if crate::advisory::paths(prompt).is_empty() {
+        return None;
+    }
+    let session = session_of(harness, payload, startup)?;
+    let cwd = payload.get("cwd").and_then(Value::as_str)?;
+    context(
+        startup,
+        Ask::Advisory {
+            prompt: prompt.into(),
+            cwd: cwd.into(),
+            session,
+        },
+        None,
+    )
+}
+
 /// Session-start and takeover context for an event, with its deliveries.
 pub fn respond(
     harness: Harness,
@@ -554,7 +597,7 @@ pub fn respond(
         ),
         (Harness::ClaudeCode | Harness::Codex, "UserPromptSubmit")
         | (Harness::GeminiCli, "BeforeAgent") => {
-            takeovers(harness, payload, payload["prompt"].as_str()?, startup)
+            prompt_context(harness, payload, payload["prompt"].as_str()?, startup)
         }
         // Hermes injects context only into a turn's prompt: the first
         // turn's carries the brief, and any turn's the takeovers it asks for.
@@ -564,7 +607,7 @@ pub fn respond(
             let brief = (extra["is_first_turn"].as_bool() == Some(true))
                 .then(|| start(harness, payload, StartSource::Startup, startup))
                 .flatten();
-            let takeover = takeovers(harness, payload, prompt, startup);
+            let takeover = prompt_context(harness, payload, prompt, startup);
             match (brief, takeover) {
                 (Some((d1, t1)), Some((d2, t2))) => {
                     Some((format!("{d1},{d2}"), format!("{t1}\n\n{t2}")))

@@ -32,6 +32,7 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 - **Fail closed.** A collected file that fails its origin's shape check is `refused`, with the reason, as a parse-state fact; it is never read as another origin's file. A Claude Code transcript found in Drive is not ingested as a Claude Code session, because it would duplicate the real one.
 - **A bad record is not a bad file.** A malformed line in a JSONL file is counted unreadable and the complete records after it are still read; a parser error stops that parser's rows at its last good record while the bytes keep being collected.
 - Hidden directories are entered only when a location names them. Symlinked roots resolve once. An unreadable directory is a reported state, never an empty result. A `.git` directory inside a root is ignored with its reason.
+- **Discovery follows source changes.** Full walks run at startup and when the watcher reports overflow or an error. Ordinary events schedule affected locations; idle time does not trigger a whole-tree walk. Collector schedules and live-file checks continue independently.
 - **The coverage table** `(root, class, pattern or reason, files, bytes, newest mtime)` is computed from the discovery walk the daemon already performs (the start-up walk plus file notifications). It is an index fact, rebuilt with the index; there is no separate scan.
 
 ### Live origins
@@ -66,7 +67,7 @@ Ignored: `.credentials.json`, `.claude.json`, `mcp-needs-auth-cache.json` (secre
 | rows of the `state_*`, `goals_*`, `memories_*` and `queue_*` databases | goals, memories and queued prompts as events |
 | `memories/**/*.md` (not `memories/.git`) | memory documents |
 | `attachments/**`, `shell_snapshots/**`, `ambient-suggestions/**` | attachments, context documents |
-| files named by `local_images` in a rollout line | attachment bytes, read when the line is observed ([sessions.md](sessions.md#attachments)) |
+| files named by `local_images` in a rollout line | attachment bytes, read when the line is observed; the opened descriptor must be a regular file, and a nonregular source is reported unreadable without waiting for a pipe writer ([sessions.md](sessions.md#attachments)) |
 
 Ignored: `logs_2.sqlite` (diagnostic log); `thread_history_*.sqlite` (a projection of the rollouts); `sqlite/codex-dev.db` (developer database); `worktrees/`, `packages/`, `plugins/`, `vendor_imports/`, `skills/`, `cache/`, `tmp/`, lock directories; `auth.json`; configuration files; backup tarballs left in the tree (importable by hand).
 
@@ -168,6 +169,7 @@ Hand-made Markdown chat dumps are not a structure: a flattened transcript is a d
 AI Studio stores its prompts in Google Drive, which is a known location like a tool's home directory.
 
 - The collector follows Drive's changes feed from a start page token, not folder relisting, and writes every Drive revision of each prompt, oldest first, into the spool.
+- A fetched revision has immutable pending bytes until the archive accepts the exact complete body at that prompt's stable input path. The committed revision cursor advances after acceptance; in primary mode, producer preparation remains pending until confirmed application. A retry or restart republishes the same retained bytes. Saving acceptance precedes pending-body cleanup, which leaves the watched prompt present and creates no source-gone observation. The predecessor's download cursor retains its last local body without assuming a revision identity, obtains archive acceptance, then enumerates retained Drive revisions from the beginning under this rule.
 - `driveDocument` and `driveImage` attachments are fetched by Drive ID as attachment bytes. Revision lineage and `branchParent` edges are recorded; a Drive mode that cannot give lineage fails closed.
 - The collector is on whenever the user has authorized a token; the one-time OAuth consent is the only gate, because a known location is never dark behind a setting. Without a token, status shows "not authorized" with the command to run.
 - A prompt deleted in Drive keeps its archived revisions and is marked gone.

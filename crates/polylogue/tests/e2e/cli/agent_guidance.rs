@@ -83,7 +83,7 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
         ),
         (
             "BeforeAgent",
-            json!({"session_id":"current","prompt":"Continue https://chatgpt.com/c/previous"}),
+            json!({"session_id":"current","prompt":"Continue https://chatgpt.com/c/previous and inspect src/parser.rs"}),
             "takeover",
             json!({"session":"chatgpt:previous","for_session":"gemini-cli:current"}),
         ),

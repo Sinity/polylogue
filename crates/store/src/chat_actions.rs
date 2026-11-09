@@ -288,11 +288,34 @@ pub(crate) fn report(
     if status.finished() {
         return Err(refused("action_finished"));
     }
-    if holder != Some(by) {
+    let late_confirmation =
+        next == Some(ChatStatus::Submitted) && action.unconfirmed_submitter(at) == Some(by);
+    if holder != Some(by) && !late_confirmation {
         return Err(refused("not_the_claimant"));
     }
     if action.stage_only && next == Some(ChatStatus::Submitted) {
         return Err(refused("stage_only_action_cannot_submit"));
+    }
+    if late_confirmation {
+        // This is the existing trusted extension's captured-turn report, not
+        // renewed permission to act or an independent proof from the index.
+        let field = |key| {
+            receipt
+                .and_then(|receipt| receipt.get(key))
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+        };
+        let (Some(conversation), Some(_turn)) = (field("conversation"), field("turn")) else {
+            return Err(refused("submission_receipt_required"));
+        };
+        if action
+            .request
+            .get("conversation")
+            .and_then(|value| value.as_str())
+            .is_some_and(|requested| requested != conversation)
+        {
+            return Err(refused("submission_conversation_mismatch"));
+        }
     }
     add_event(
         tx,

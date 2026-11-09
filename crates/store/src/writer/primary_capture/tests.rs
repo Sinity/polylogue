@@ -1373,3 +1373,69 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
         "mixed stored reading: {mixed:?}"
     );
 }
+
+#[test]
+fn a_failed_scope_reset_reports_its_original_error_before_reply_without_a_commit_cue() {
+    use crate::primary::{Confirmed, ConfirmedChange, ReplayControl};
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_primary(
+        &directory.path().join("cache"),
+        &directory.path().join("bytes"),
+    )
+    .unwrap();
+    let producer = Arc::new(OfflineProducer {
+        root: directory.path().join("producer"),
+    });
+    let writer = Writer::start_on_sinex(&archive, producer).unwrap();
+    let commits = writer.sender().unwrap().completion_commits();
+    let reset = |scope: &str| {
+        vec![Confirmed {
+            native: None,
+            position: 0,
+            output_index: 0,
+            event: String::new(),
+            change: ConfirmedChange::Control(Box::new(ReplayControl::Reset {
+                scope: scope.into(),
+            })),
+        }]
+    };
+    writer.apply_confirmed(reset("original")).unwrap();
+    while commits.try_recv().is_ok() {}
+    let index = rusqlite::Connection::open(archive.index_db()).unwrap();
+    index.execute_batch("CREATE TRIGGER fail_scope BEFORE INSERT ON meta WHEN new.key='confirmed_scope' AND new.value='changed' BEGIN SELECT raise(ABORT,'original scope reset failure'); END").unwrap();
+    let error = writer.apply_confirmed(reset("changed")).unwrap_err();
+    assert!(
+        error.to_string().contains("original scope reset failure"),
+        "{error}"
+    );
+    assert!(matches!(
+        archive.scope_token(),
+        Err(StoreError::ScopeChanged)
+    ));
+    let report = writer.flush_rows().unwrap();
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.starts_with("confirmed stream:")
+                && error.contains("original scope reset failure")),
+        "{report:?}"
+    );
+    assert!(matches!(
+        commits.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    index.execute_batch("DROP TRIGGER fail_scope").unwrap();
+    writer.apply_confirmed(reset("changed")).unwrap();
+    archive.scope_token().unwrap().check().unwrap();
+    assert_eq!(
+        crate::ReadPool::open(&archive)
+            .unwrap()
+            .reader()
+            .unwrap()
+            .confirmed_scope()
+            .unwrap()
+            .as_deref(),
+        Some("changed")
+    );
+}

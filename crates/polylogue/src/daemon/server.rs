@@ -434,6 +434,7 @@ pub fn serve(
         engine,
         startup.mode.clone(),
         run.lifetime,
+        startup.stopped_attempt,
     )?;
     let idle = runtime.idle();
     let server = Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))?;

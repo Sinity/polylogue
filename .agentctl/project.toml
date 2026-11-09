@@ -5,9 +5,9 @@ display_name = "Polylogue"
 root_markers = ["Cargo.toml", "crates"]
 [environment]
 kind = "direct"
-command = ["env"]
-inherit = ["HOME", "USER", "PATH", "LANG", "XDG_RUNTIME_DIR", "CARGO_TARGET_DIR"]
-unset = ["PYTHONPATH", "PYTHONHOME"]
+command = ["env", "-u", "CARGO_TARGET_DIR"]
+inherit = ["HOME", "USER", "PATH", "LANG", "XDG_RUNTIME_DIR"]
+unset = ["CARGO_TARGET_DIR", "PYTHONPATH", "PYTHONHOME"]
 
 [environment.values]
 # Share CPU and memory with other builds.
@@ -31,8 +31,6 @@ description = "Formatting, boundaries, both clippy configurations and all tests"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]
 pool = "bulk"
 result = "exit"
-# A cold standalone test build took 37 minutes, then primary mode still
-# compiled at the one-hour job limit. Keep both modes in one qualification.
 timeout_seconds = 7200
 scratch = "tmpfs"
 cache = "none"
@@ -169,13 +167,3 @@ pool = "codex"
 result = "exit"
 timeout_seconds = 28800
 cache = "none"
-
-[operations.sinex_client]
-description = "Build and test the Sinex client and primary-mode application"
-exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "sinex-client"]
-pool = "bulk"
-result = "exit"
-timeout_seconds = 3600
-scratch = "tmpfs"
-cache = "none"
-unit_properties = ["MemoryHigh=8G"]

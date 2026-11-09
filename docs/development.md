@@ -20,7 +20,7 @@ provides an unpacked Chrome extension; the overlay adds both packages. Package
 builds set `POLYLOGUE_REVISION` at compile time, and `--version` shows it.
 `--version` and `--help` load no deployment file.
 
-Native test commands select targets marked `test = true` by default, so examples without tests do not add links. An example with unit tests opts in through its Cargo manifest. Explicit Cargo target flags such as `--lib` or `--example NAME` retain their native selection. Standalone and primary-mode tests keep separate builds and both run in the landing check; Clippy still compiles every target.
+Native test commands select targets marked `test = true` by default, so examples without tests do not add links. An example with unit tests opts in through its Cargo manifest. Explicit Cargo target flags such as `--lib` or `--example NAME` retain their native selection. Every test command builds the whole workspace with the one feature list in `xtask/src/main.rs` (the Sinex client and the fault features), so a focused run reuses the landing check's units; selectors choose which tests run. Clippy compiles every target in that configuration and again without the Sinex client.
 
 The package, Clippy and nextest outputs share one Crane dependency build.
 Clippy checks the primary and standalone configurations separately. The
@@ -51,6 +51,13 @@ the compiler, SQLite, jq and the time zone database.
 toolchain or Nix files change. The git-ignored `.envrc.local` holds personal
 settings such as build-output placement, job counts and compiler wrappers.
 Cargo's output directory is `target/` unless `CARGO_TARGET_DIR` is set.
+
+Declared AgentCTL operations clear an ambient `CARGO_TARGET_DIR` before entering
+the actual workspace's shell. The shell selects that checkout's isolated host
+target when `sinnix-cargo-target` is available, with dependency artifacts seeded
+by the host helper. For an explicit target experiment, pass
+`exec -- env CARGO_TARGET_DIR=... cargo ...`; this assignment runs after shell
+selection. Keep the experimental target exclusive to the same checkout.
 
 To build against a local checkout of the shared crates, run
 `cargo xtask link-common PATH`, and `cargo xtask unlink-common` before

@@ -1,5 +1,13 @@
 use super::*;
 
+fn missing(vectors: &Vectors, key: &str, hash: &[u8], chunks: usize) -> HashSet<u32> {
+    vectors
+        .missing_chunks(key, &[(hash.to_vec(), chunks)])
+        .unwrap()
+        .remove(hash)
+        .unwrap()
+}
+
 /// Index text rows for `hashes`.
 fn texts(archive: &Archive, hashes: &[&[u8]]) {
     let index =
@@ -57,14 +65,16 @@ fn stores_scans_and_survives_reopening() {
     let v = reader.vectors().unwrap();
     let loaded = std::sync::Arc::new(v.load(key).unwrap());
     assert_eq!(loaded.vectors(), 3);
-    assert_eq!(loaded.writes, writes());
+    assert_eq!(loaded.revision, v.revision(key).unwrap());
     let near = loaded.similarity(&unit(&[1.0, 0.05, 0.0])).unwrap();
     let (one, two) = (near.of(&[1]).unwrap(), near.of(&[2]).unwrap());
     assert!(one > two, "{one} {two}");
     // Text 2's nearer second chunk counts, not its first.
     assert!(two > 0.9, "{two}");
     assert!(near.of(&[3]).is_none());
-    assert_eq!(v.done(key).unwrap().len(), 3);
+    assert!(missing(&v, key, &[1], 1).is_empty());
+    assert!(missing(&v, key, &[2], 2).is_empty());
+    assert_eq!(v.rejected(key).unwrap(), HashSet::from([vec![3]]));
     let s = v.status().unwrap();
     assert_eq!(s.keys[0].texts, 2);
     assert_eq!(s.keys[0].vectors, 3);
@@ -177,7 +187,13 @@ fn the_smallest_vector_writer_budget_keeps_its_total_cache_target() {
     vectors
         .fail("synthetic", &[2; 32], "synthetic failure")
         .unwrap();
-    assert_eq!(vectors.done("synthetic").unwrap().len(), 2);
+    assert!(missing(&vectors, "synthetic", &[1; 32], 1).is_empty());
+    assert!(
+        vectors
+            .rejected("synthetic")
+            .unwrap()
+            .contains(&vec![2; 32])
+    );
 }
 
 #[test]
@@ -231,6 +247,105 @@ fn purchased_vectors_are_kept_when_their_text_has_no_current_index_row() {
             }],
         )
         .unwrap();
-    assert!(vectors.done(key).unwrap().contains(&vec![9; 32]));
+    assert!(missing(&vectors, key, &[9; 32], 1).is_empty());
     assert_eq!(vectors.load(key).unwrap().vectors(), 1);
+}
+
+#[test]
+fn loaded_vectors_keep_their_database_snapshot_revision_after_a_concurrent_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
+    texts(&archive, &[&[1]]);
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let writer_reader = pool.reader().unwrap();
+    let key = "synthetic/model/2/document/unit";
+    let mut writer = writer_reader.vectors_writer().unwrap();
+    writer
+        .put(
+            key,
+            &[Vector {
+                text_hash: vec![1],
+                chunk: 0,
+                values: vec![1., 0.],
+            }],
+        )
+        .unwrap();
+    let old_reader = pool.reader().unwrap();
+    let old = old_reader.vectors().unwrap();
+    let revision = old.revision(key).unwrap();
+    writer
+        .put(
+            key,
+            &[Vector {
+                text_hash: vec![1],
+                chunk: 0,
+                values: vec![0., 1.],
+            }],
+        )
+        .unwrap();
+    let old_load = Arc::new(old.load(key).unwrap());
+    assert_eq!(old_load.revision, revision);
+    assert_eq!(old_load.similarity(&[1., 0.]).unwrap().of(&[1]), Some(1.));
+    let new_reader = pool.reader().unwrap();
+    let new_load = Arc::new(new_reader.vectors().unwrap().load(key).unwrap());
+    assert!(new_load.revision > revision);
+    assert_eq!(new_load.similarity(&[1., 0.]).unwrap().of(&[1]), Some(0.));
+}
+
+#[test]
+fn missing_chunks_keep_holes_and_dimension_keys_separate() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let mut vectors = reader.vectors_writer().unwrap();
+    let key = "local/synthetic/2/document/unit";
+    let other = "local/synthetic/3/document/unit";
+    vectors
+        .put(
+            key,
+            &[
+                Vector {
+                    text_hash: vec![1; 32],
+                    chunk: 0,
+                    values: vec![1.0, 0.0],
+                },
+                Vector {
+                    text_hash: vec![1; 32],
+                    chunk: 2,
+                    values: vec![0.0, 1.0],
+                },
+            ],
+        )
+        .unwrap();
+    vectors
+        .put(
+            other,
+            &[Vector {
+                text_hash: vec![1; 32],
+                chunk: 1,
+                values: vec![1.0, 0.0, 0.0],
+            }],
+        )
+        .unwrap();
+    assert_eq!(missing(&vectors, key, &[1; 32], 3), HashSet::from([1]));
+    assert_eq!(missing(&vectors, other, &[1; 32], 3), HashSet::from([0, 2]));
+    assert_eq!(
+        missing(&vectors, key, &[2; 32], 3),
+        HashSet::from([0, 1, 2])
+    );
+    let page = vectors
+        .missing_chunks(key, &[(vec![1; 32], 3), (vec![2; 32], 3)])
+        .unwrap();
+    assert_eq!(page[&vec![1; 32]], HashSet::from([1]));
+    assert_eq!(page[&vec![2; 32]], HashSet::from([0, 1, 2]));
+    vectors
+        .fail(key, &[2; 32], "permanent provider refusal")
+        .unwrap();
+    assert!(vectors.rejected(key).unwrap().contains(&vec![2; 32]));
+    assert!(!vectors.rejected(other).unwrap().contains(&vec![2; 32]));
+    assert_eq!(
+        missing(&vectors, key, &[2; 32], 3),
+        HashSet::from([0, 1, 2])
+    );
 }

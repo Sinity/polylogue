@@ -44,6 +44,17 @@ a failed attempt with no committed progress produces no commit notification.
 The capture loop returns queued writer errors on continuing passes even when
 there are no new inputs to parse, while keeping outstanding custody pending.
 
+A capture turn pins the existing read-scope token before using cached confirmed state and checks that same token before reporting completion. A reset during a turn, or between turns, discards reconstructible input progress, parser and discovery caches; watched identities and receiving custody remain owned until their actual acknowledgments settle. The next turn reloads confirmed facts under a fresh scope and repeats discovery. The outer loop retries a scope interruption as a failed turn; queued writer and reset failures remain errors.
+
+A failed capture turn cannot mark earlier pending custody settled. The loop
+keeps that continuation through a read or planning error until a completed
+pass observes its actual state; batch mode cannot report idle from that error.
+Affected paths remain scheduled through a failed turn and while confirmation
+is pending, including inputs with no confirmed file facts yet. A missing provider
+still consults its existing producer custody and scoped history. A gone observation
+waits for the exact confirmed input and no pending predecessor, uses the ordinary
+metadata acquisition route, and changes local file facts only after confirmation.
+
 Declarations validate the complete record and describe the outer projected
 fields used by privacy hints and time rules. The complete record remains guarded;
 the outer fields let Sinex join the record to its other domains.
@@ -91,6 +102,12 @@ new provider head; several database inputs can share one provider path. Inline
 attachments decoded by that parser retain their own blob preparation. Durable
 product preparation advances the sampler's cached parser state only after the
 matching reading version and cursor reach the confirmed index.
+Compact keyed-context changes travel inside that existing opaque checkpoint;
+private preparation retains them until confirmed application. Missing historical
+context stays unrecorded. Source 5 materials and parse-progress version 5 facts
+retain their original custody and native identities; the exact stored declaration
+projects their absent stopped-attempt identity as unknown. New attempts use the
+successor declaration. Unknown definitions remain unreadable evidence.
 A batch waits for active local database work. Deferred parsing is local work,
 not a confirmation wait: successful parsing can start a database read in the
 same batch, while a failed parse stops that attempt. Errors in that attempt do

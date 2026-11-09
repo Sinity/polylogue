@@ -42,6 +42,11 @@ impl SharedScopeIndex {
         Ok(())
     }
 
+    /// Optional hints never wait for scope publication or its lock.
+    pub fn try_read<T>(&self, read: impl FnOnce(&ScopeIndex) -> T) -> Option<T> {
+        self.index.try_lock().ok()?.as_ref().map(read)
+    }
+
     /// Runs `read` over the index, waiting for its first full read until
     /// `until` at most; `None` when that read has not finished by then.
     pub fn read<T>(

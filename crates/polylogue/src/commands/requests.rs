@@ -267,6 +267,19 @@ pub fn brief(_: &Command, v: &Values, caller: &Caller) -> Built {
     })
 }
 
+pub fn advisory(_: &Command, v: &Values, caller: &Caller) -> Built {
+    Ok(Request::Context {
+        budget_tokens: Default::default(),
+        request_id: v.request_id(),
+        ask: Ask::Advisory {
+            prompt: v.text("prompt").unwrap_or_default(),
+            cwd: cwd(v, caller)?,
+            session: v.session("session")?.ok_or("`session` is required")?,
+        },
+        sender: caller.sender(),
+    })
+}
+
 pub fn takeover(_: &Command, v: &Values, caller: &Caller) -> Built {
     Ok(Request::Context {
         budget_tokens: Default::default(),

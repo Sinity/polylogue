@@ -3,8 +3,11 @@ CREATE TABLE query (
     hash TEXT PRIMARY KEY CHECK(length(hash)=64),
     normal_form TEXT NOT NULL CHECK(json_valid(normal_form)),
     object BLOB NOT NULL,
-    first_run TEXT
+    first_run TEXT,
+    -- Insertion metadata, outside the sealed object identity; old rows stay unknown.
+    commit_seq INTEGER CHECK(commit_seq IS NULL OR commit_seq>0)
 ) STRICT, WITHOUT ROWID;
+CREATE INDEX query_commit_seq ON query(commit_seq,hash);
 
 CREATE TABLE query_edge (
     query TEXT NOT NULL REFERENCES query(hash),

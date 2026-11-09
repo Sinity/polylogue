@@ -389,21 +389,37 @@ pub struct ChatAction {
 }
 
 impl ChatAction {
-    /// The state at `now`, and the instance holding an unexpired claim.
-    pub fn status(&self, now: i64) -> (ChatStatus, Option<&str>) {
+    fn state(&self) -> ChatState<'_> {
         let mut status = if self.needs_approval {
             ChatStatus::AwaitingApproval
         } else {
             ChatStatus::Queued
         };
         let mut claim: Option<(&str, i64)> = None;
+        // A later display phase or lease renewal cannot undo a possible send.
+        let mut sending_by = None;
         for e in &self.events {
             match e.kind.as_str() {
                 "approved" => status = ChatStatus::Queued,
                 "declined" => status = ChatStatus::Cancelled,
-                "claimed" | "progress" => {
+                "claimed"
+                    if sending_by.is_none()
+                        && matches!(status, ChatStatus::Queued | ChatStatus::Claimed) =>
+                {
                     status = ChatStatus::Claimed;
                     claim = e.by.as_deref().map(|by| (by, e.at + CHAT_CLAIM_MS));
+                }
+                "progress" => {
+                    if status == ChatStatus::Claimed
+                        && let Some((by, until)) = claim
+                        && e.by.as_deref() == Some(by)
+                        && e.at <= until
+                    {
+                        if e.phase == "sending" {
+                            sending_by.get_or_insert(by);
+                        }
+                        claim = Some((by, e.at + CHAT_CLAIM_MS));
+                    }
                 }
                 kind => {
                     if let Some(Some(next)) = chat_outcome(kind) {
@@ -413,10 +429,42 @@ impl ChatAction {
                 }
             }
         }
-        match (status, claim) {
-            (ChatStatus::Claimed, Some((by, until))) if until >= now => (status, Some(by)),
+        ChatState {
+            status,
+            claim,
+            sending_by,
+        }
+    }
+
+    /// The state at `now`, and the instance holding an unexpired claim.
+    pub fn status(&self, now: i64) -> (ChatStatus, Option<&str>) {
+        self.state().status(now)
+    }
+
+    /// The original sending owner may confirm a fact, without renewing its lease.
+    pub fn unconfirmed_submitter(&self, now: i64) -> Option<&str> {
+        let state = self.state();
+        (state.status(now).0 == ChatStatus::OutcomeUnknown)
+            .then_some(state.sending_by)
+            .flatten()
+    }
+}
+
+struct ChatState<'a> {
+    status: ChatStatus,
+    claim: Option<(&'a str, i64)>,
+    sending_by: Option<&'a str>,
+}
+
+impl<'a> ChatState<'a> {
+    fn status(&self, now: i64) -> (ChatStatus, Option<&'a str>) {
+        match (self.status, self.claim) {
+            (ChatStatus::Claimed, Some((by, until))) if until >= now => (self.status, Some(by)),
+            (ChatStatus::Claimed, _) if self.sending_by.is_some() => {
+                (ChatStatus::OutcomeUnknown, None)
+            }
             (ChatStatus::Claimed, _) => (ChatStatus::Queued, None),
-            _ => (status, None),
+            _ => (self.status, None),
         }
     }
 }

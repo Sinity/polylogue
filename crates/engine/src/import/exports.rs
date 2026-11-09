@@ -235,6 +235,7 @@ impl Engine {
                 plan.stored_upto = 0;
                 plan.parse_pos = 0;
                 plan.parser_state = None;
+                plan.parser_chain = None;
                 plan.checkpoint = None;
             }
         }
@@ -325,6 +326,7 @@ impl Engine {
         plan.change = Change::Reparse {
             chain: progress.chain,
         };
+        plan.parser_chain = Some(progress.chain);
         plan.stored_upto = plan.size;
         plan.storing_started = true;
         plan.parse_pos = 0;
@@ -354,7 +356,7 @@ impl Engine {
             }
         }
         let done = item.done;
-        let (mut parse, cursor) = item.into_parse(plan, &self.blobs)?;
+        let (mut parse, cursor) = item.into_parse(plan, &self.blobs, &self.stopped_attempt)?;
         if done && plan.origin.is_row_dump(&plan.path) {
             pass.bytes_read += plan.size;
         }
@@ -416,6 +418,7 @@ impl ExportStep {
         self,
         plan: &Plan,
         blobs: &Arc<polylogue_store::blobs::Blobs>,
+        stopped_attempt: &polylogue_model::batch::StoppedAttempt,
     ) -> Result<(ParseStep, Option<ExportCursor>), EngineError> {
         let mut step = ParseStep::new(
             self.output,
@@ -437,6 +440,7 @@ impl ExportStep {
         step.reading_version = plan.origin.reading_version();
         if let Some(reason) = self.refused {
             step.progress = polylogue_model::batch::StepProgress::Refused { reason };
+            step.stopped_attempt = Some(*stopped_attempt);
         }
         if self.done {
             step.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(

@@ -37,6 +37,8 @@ fn failures_follow_the_shared_table() {
         ("unknown_chat_action", 4, Some(404)),
         ("attachment_unavailable", 4, Some(404)),
         ("unsupported_provider", 2, Some(400)),
+        ("submission_receipt_required", 2, Some(400)),
+        ("submission_conversation_mismatch", 2, Some(400)),
         ("io", 4, Some(500)),
         ("stopped_early", 5, Some(500)),
         ("daemon_required", 6, None),

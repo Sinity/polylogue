@@ -16,7 +16,13 @@ fn open(home: &ClaudeHome) -> (Engine, Archive, ArchiveLock, Arc<Sinex>) {
     let store = home.dir.path().join("sdk");
     let sdk = Arc::new(client(&store));
     let (archive, lock) = Archive::open_primary(&home.root, &store).unwrap();
-    let engine = Engine::on_sinex(home.config(CHUNK), archive.clone(), sdk.clone()).unwrap();
+    let engine = Engine::on_sinex(
+        home.config(CHUNK),
+        archive.clone(),
+        sdk.clone(),
+        polylogue_testkit::stopped_attempt(),
+    )
+    .unwrap();
     (engine, archive, lock, sdk)
 }
 
@@ -244,6 +250,63 @@ fn quiet_offline_native_file_finishes_all_chunks_and_reopens_without_provider_pr
 }
 
 #[test]
+fn a_scope_reset_keeps_disappeared_unconfirmed_native_custody_in_the_same_engine() {
+    let home = ClaudeHome::new();
+    let text = polylogue_testkit::claude_user(
+        "one",
+        "scope-custody",
+        &"retained source bytes ".repeat(40),
+    );
+    home.append("scope-custody.jsonl", &text);
+    let path = home.file("scope-custody.jsonl");
+    let (mut engine, archive, _lock, sdk) = open(&home);
+    let first = engine.run_pass().unwrap();
+    assert!(
+        first
+            .errors
+            .iter()
+            .all(|error| error.starts_with("confirmed stream:")
+                && error.contains("Connection refused")),
+        "{first:?}"
+    );
+    assert!(first.capture_pending);
+    assert_eq!(first.bytes_read, text.len() as u64);
+    let count = assert_complete(&sdk, &archive, &path, text.as_bytes());
+    let identities = || {
+        sdk.pending_captures()
+            .unwrap()
+            .into_iter()
+            .map(|capture| capture.identity)
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let before = identities();
+    let original_scope = archive.scope_token().unwrap();
+    // Reset after actual receiving custody, with no provider left to reacquire.
+    std::fs::remove_file(&path).unwrap();
+    archive.advance_generation_for_test().unwrap();
+    assert!(matches!(
+        original_scope.check(),
+        Err(polylogue_store::StoreError::ScopeChanged)
+    ));
+    let resumed = engine.run_pass().unwrap();
+    assert!(
+        resumed
+            .errors
+            .iter()
+            .all(|error| error.starts_with("confirmed stream:")
+                && error.contains("Connection refused")),
+        "{resumed:?}"
+    );
+    assert!(resumed.capture_pending);
+    assert_eq!((resumed.bytes_read, resumed.bytes_stored), (0, 0));
+    assert_eq!(identities(), before);
+    assert_eq!(
+        assert_complete(&sdk, &archive, &path, text.as_bytes()),
+        count
+    );
+}
+
+#[test]
 fn interrupted_native_capture_child() {
     let Some(root) = std::env::var_os("POLYLOGUE_NATIVE_CAPTURE_ROOT") else {
         return;
@@ -262,7 +325,8 @@ fn interrupted_native_capture_child() {
     )
     .unwrap();
     config.chunk = CHUNK;
-    let mut engine = Engine::on_sinex(config, archive, sdk).unwrap();
+    let mut engine =
+        Engine::on_sinex(config, archive, sdk, polylogue_testkit::stopped_attempt()).unwrap();
     engine.run_pass().unwrap();
     panic!("the actual acquisition publication boundary was not reached");
 }
@@ -792,8 +856,13 @@ fn a_deferred_database_read_error_preserves_another_files_confirmation_wait() {
         // A real stored-byte read fails. Its database must remain deferred,
         // without a new database acquisition or an active worker to wait on.
         std::fs::remove_file(store.join("segments/test.zst")).unwrap();
-        let mut engine =
-            Engine::on_sinex(home.config(CHUNK), archive.clone(), sdk.clone()).unwrap();
+        let mut engine = Engine::on_sinex(
+            home.config(CHUNK),
+            archive.clone(),
+            sdk.clone(),
+            polylogue_testkit::stopped_attempt(),
+        )
+        .unwrap();
         let pass = engine.run_pass().unwrap();
         assert!(
             pass.errors
@@ -836,7 +905,7 @@ fn an_idle_continuation_reports_queued_writer_errors_without_clearing_custody() 
         &db,
     )
     .unwrap();
-    let (mut engine, _archive, _lock, sdk) = open(&home);
+    let (mut engine, archive, _lock, sdk) = open(&home);
     let captured = engine.run_pass().unwrap();
     assert!(captured.capture_pending, "{captured:?}");
     let mut before: Vec<_> = sdk
@@ -872,6 +941,7 @@ fn an_idle_continuation_reports_queued_writer_errors_without_clearing_custody() 
             release: Default::default(),
         })
         .unwrap();
+    archive.advance_generation_for_test().unwrap();
     let continued = engine.run_pass().unwrap();
     assert!(
         continued.errors.iter().any(|error| {
@@ -900,4 +970,217 @@ fn an_idle_continuation_reports_queued_writer_errors_without_clearing_custody() 
             .iter()
             .all(|error| !error.contains("idle-continuation-error"))
     );
+}
+
+#[test]
+fn a_disappeared_pending_source_survives_reader_failure_and_no_event_continuations() {
+    use polylogue_engine::{Lifetime, LoopMsg, LoopStatus};
+    use std::sync::{Mutex, mpsc::channel};
+    use std::time::{Duration, Instant};
+
+    let home = ClaudeHome::new();
+    let bytes = polylogue_testkit::claude_user("u1", "pending", "owned before the reader failed");
+    home.append("pending-before-error.jsonl", &bytes);
+    let (mut engine, archive, _lock, sdk) = open(&home);
+    // This file capture starts no database worker. Only real SDK confirmation
+    // is outstanding when the next turn starts.
+    let captured = engine.run_pass().unwrap();
+    assert!(captured.capture_pending, "{captured:?}");
+    let identities = || {
+        let mut ids: Vec<_> = sdk
+            .pending_captures()
+            .unwrap()
+            .into_iter()
+            .map(|capture| capture.identity)
+            .collect();
+        ids.sort();
+        ids
+    };
+    let before = identities();
+    assert!(!before.is_empty());
+    assert_custody_complete(
+        &sdk,
+        &home.file("pending-before-error.jsonl"),
+        bytes.as_bytes(),
+    );
+    std::fs::remove_file(home.file("pending-before-error.jsonl")).unwrap();
+    // Preserve the actual index while making its next reader acquisition fail.
+    let held = archive.root.join("held-index.db");
+    std::fs::rename(archive.index_db(), &held).unwrap();
+    engine.config.live_every = Duration::from_millis(10);
+    let status = Arc::new(Mutex::new(LoopStatus::default()));
+    let shared = Arc::clone(&status);
+    let (tx, rx) = channel();
+    let worker_tx = tx.clone();
+    let worker = std::thread::spawn(move || {
+        let result = engine.run(worker_tx, &rx, &shared, Lifetime::UntilIdle, || {});
+        (engine, result)
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let observed = loop {
+        let now = status.lock().unwrap().clone();
+        if now.passes > 0 {
+            break Some(now);
+        }
+        if worker.is_finished() || Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    // Restore the same index, then require successful ordinary continuations
+    // to keep visiting the owned source without another watcher event.
+    std::fs::rename(&held, archive.index_db()).unwrap();
+    let recovered = loop {
+        let now = status.lock().unwrap().clone();
+        if now.passes > observed.as_ref().map_or(0, |s| s.passes) && now.last_pass.errors.is_empty()
+        {
+            break Some(now);
+        }
+        if worker.is_finished() || Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let continued = loop {
+        let now = status.lock().unwrap().clone();
+        if recovered
+            .as_ref()
+            .is_some_and(|s| now.passes >= s.passes + 2)
+            || worker.is_finished()
+            || Instant::now() >= deadline
+        {
+            break now;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let still_running = !worker.is_finished();
+    let _ = tx.send(LoopMsg::Stop);
+    let (engine, result) = worker.join().unwrap();
+    let summary = result.unwrap();
+    let observed = observed.expect("the failed turn must report its outcome");
+    assert!(!observed.last_pass.errors.is_empty(), "{observed:?}");
+    assert_eq!(observed.last_pass.inputs_changed, 0);
+    assert!(observed.last_pass.capture_pending, "{observed:?}");
+    assert!(observed.busy, "{observed:?}");
+    let recovered = recovered.expect("restoring the index must resume the same capture");
+    assert!(recovered.last_pass.capture_pending, "{recovered:?}");
+    assert!(continued.passes >= recovered.passes + 2, "{continued:?}");
+    assert!(continued.last_pass.capture_pending, "{continued:?}");
+    assert_eq!(continued.last_pass.bytes_read, 0);
+    assert_eq!(continued.last_pass.bytes_stored, 0);
+    assert!(
+        still_running,
+        "UntilIdle returned before confirmation: {summary:?}"
+    );
+    assert!(!summary.work.errors.is_empty(), "{summary:?}");
+    assert_eq!(identities(), before);
+    assert_custody_complete(
+        &sdk,
+        &home.file("pending-before-error.jsonl"),
+        bytes.as_bytes(),
+    );
+    drop(engine);
+}
+
+#[test]
+fn a_gone_observation_waits_on_the_confirmed_input_through_the_capture_route() {
+    use polylogue_store::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
+    use polylogue_store::{FileFacts, Writer};
+
+    let home = ClaudeHome::new();
+    let path = home.home.join(".pi/agent/sessions/retained.jsonl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"").unwrap();
+    let facts = FileFacts::of(&std::fs::metadata(&path).unwrap());
+    let store = home.dir.path().join("sdk");
+    let sdk = Arc::new(client(&store));
+    let (archive, _lock) = Archive::open_primary(&home.root, &store).unwrap();
+    let writer = Writer::start_on_sinex(&archive, sdk.clone()).unwrap();
+    let control = |control| Confirmed {
+        native: None,
+        position: 1,
+        output_index: 0,
+        event: String::new(),
+        change: ConfirmedChange::Control(Box::new(control)),
+    };
+    writer
+        .apply_confirmed(vec![control(ReplayControl::Reset {
+            scope: "confirmed-empty-source".into(),
+        })])
+        .unwrap();
+    let rows = serde_json::from_value(serde_json::json!({
+        "input":"retained-raw-input", "format":"pi",
+        "revision":{"number":1,"produced":"first","chain":1,"length":0},
+        "observation":{
+            "id":"original-empty-observation", "machine":"test-machine", "host":"test",
+            "path":path.to_string_lossy(), "path_bytes":path.as_os_str().as_encoded_bytes(),
+            "class":"first", "revision":1, "length":0,
+            "device":facts.device,"inode":facts.inode,"size":facts.size,
+            "mtime_ns":facts.mtime_ns,"ctime_ns":facts.ctime_ns,
+            "polylogue_version":"synthetic", "seen_at":1,"details_json":null
+        }
+    }))
+    .unwrap();
+    writer
+        .apply_confirmed(vec![
+            Confirmed {
+                native: None,
+                position: 1,
+                output_index: 0,
+                event: "original-empty-source".into(),
+                change: ConfirmedChange::Live(Box::new(Product::Input {
+                    rows: Box::new(rows),
+                    material: None,
+                })),
+            },
+            control(ReplayControl::Completion { position: 1 }),
+        ])
+        .unwrap();
+    drop(writer);
+    std::fs::remove_file(&path).unwrap();
+    let mut engine = Engine::on_sinex(
+        home.config(CHUNK),
+        archive.clone(),
+        sdk.clone(),
+        polylogue_testkit::stopped_attempt(),
+    )
+    .unwrap();
+    let first = engine.run_pass().unwrap();
+    assert!(first.capture_pending, "{first:?}");
+    assert!(
+        first
+            .errors
+            .iter()
+            .all(|error| error.starts_with("confirmed stream:")
+                && error.contains("Connection refused")),
+        "{first:?}"
+    );
+    let pending = sdk.pending_captures().unwrap();
+    assert_eq!(pending.len(), 1);
+    let Capture::Input(input) = &pending[0].captured else {
+        panic!("disappearance is an input observation");
+    };
+    assert_eq!(input.rows.input, "retained-raw-input");
+    assert_eq!(input.rows.observation.as_ref().unwrap().class, "deleted");
+    assert!(input.rows.revision.is_none());
+    assert!(input.rows.extent.is_none());
+    assert!(input.raw_range.is_none());
+    let reads = ReadPool::open(&archive).unwrap();
+    let known = reads
+        .reader()
+        .unwrap()
+        .known_watched_input_at("test-machine", path.as_os_str().as_encoded_bytes())
+        .unwrap()
+        .unwrap();
+    assert_eq!(known.input_id, "retained-raw-input");
+    assert_eq!(
+        known.facts,
+        Some(facts),
+        "preparation does not confirm Gone"
+    );
+    let next = engine.run_pass().unwrap();
+    assert!(next.capture_pending, "{next:?}");
+    assert_eq!(next.bytes_read, 0);
+    assert_eq!(next.bytes_stored, 0);
+    assert_eq!(sdk.pending_captures().unwrap(), pending);
 }

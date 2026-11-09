@@ -44,7 +44,10 @@ fn ordinary_inputs_are_serviced_while_a_database_is_read() {
     assert_eq!(w.texts("live"), ["before capture"]);
     w.append("live.jsonl", &user("u2", "live", "during capture"));
     let second = engine.run_turn().unwrap();
-    assert!(second.errors.is_empty());
+    assert!(
+        second.errors.is_empty(),
+        "ordinary append during database capture: {second:?}"
+    );
     assert_eq!(w.texts("live"), ["before capture", "during capture"]);
     // The active batch is independent of later discovery results.
     fs::remove_file(&db).unwrap();
@@ -65,7 +68,7 @@ fn ordinary_inputs_are_serviced_while_a_database_is_read() {
     assert!(!w.root.join("exports").exists());
 }
 
-/// With no change reported and no rescan due, only the loop's own
+/// With no change reported, only the loop's own
 /// continuation can finish a capture larger than one turn; a loop that
 /// stopped after the first turn would leave the test waiting.
 #[test]
@@ -75,9 +78,8 @@ fn daemon_continues_capture_without_a_watcher_event() {
     use std::time::Duration;
     let w = ClaudeHome::new();
     let (archive, lock) = Archive::open_or_create(&w.root).unwrap();
-    let mut config = w.config(64 << 20);
-    config.rescan_every = Duration::MAX;
-    let mut engine = Engine::new(config, archive).unwrap();
+    let config = w.config(64 << 20);
+    let mut engine = Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap();
     // A first build captures whole; this one has nothing to capture.
     assert!(engine.run_pass().unwrap().errors.is_empty());
     database(&w, 4000);

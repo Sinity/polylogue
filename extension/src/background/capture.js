@@ -7,6 +7,7 @@
 // whose bytes the archive already holds is named by its hash and not
 // downloaded again.
 
+import { ProviderScheduler } from "./provider.js";
 import { askPage, PageError } from "./tabs.js";
 
 const KIND = "browser_llm_session";
@@ -131,8 +132,9 @@ export class Capturer {
    * keeps captures until the host has them; `seen` remembers what each
    * conversation held when it was last captured across browser restarts; the daemon owns pending files.
    */
-  constructor({ chrome, host, outbox, seen, log = () => {} }) {
+  constructor({ chrome, host, outbox, seen, scheduler = new ProviderScheduler(), log = () => {} }) {
     this.chrome = chrome;
+    this.scheduler = scheduler;
     this.host = host;
     this.outbox = outbox;
     this.seen = seen;
@@ -142,6 +144,7 @@ export class Capturer {
     // `provider:conversation`. Downloads run one after another.
     this.downloading = new Map();
     this.lastDownload = Promise.resolve();
+    this.tabConversations = new Map();
   }
 
   /**
@@ -150,15 +153,43 @@ export class Capturer {
    * the outbox until the host takes it) or `unchanged`. Files the archive
    * lacks download afterwards (see `downloads`).
    */
-  async capture(tabId, provider, { id = null, reason = "changed", force = false } = {}) {
+  async capture(tabId, provider, options = {}) {
+    const key = options.id ? `${provider}:${options.id}` : this.tabConversations.get(tabId);
+    const downloading = this.downloading.get(key);
+    let resolve;
+    if (downloading) {
+      downloading.latest = null;
+      const previous = downloading.observed || Promise.resolve();
+      const observed = new Promise((done) => { resolve = done; });
+      downloading.observed = Promise.all([previous, observed]);
+    }
+    try { return await this.captureObserved(tabId, provider, options); }
+    finally { resolve?.(); }
+  }
+
+  async captureObserved(tabId, provider, { id = null, reason = "changed", force = false, confirm = null, before = null } = {}) {
     const capturedAt = new Date();
-    const page = await askPage(this.chrome, tabId, { type: "conversation", id });
+    const page = await this.scheduler.run(provider, () => askPage(this.chrome, tabId, { type: "conversation", id }), { background: reason === "backfill", owner: tabId, before });
     if (page.status !== 200) throw refused(page);
     const { info } = page;
     const conversation = info.id;
     if (!conversation) throw new CaptureError("no_conversation_on_page");
     const key = `${provider}:${conversation}`;
+    this.tabConversations.set(tabId, key);
     const raw = page.body;
+    // A capture without the provider's JSON or page turns holds no
+    // conversation. Storing it would archive an empty session, and its
+    // fingerprint (of nothing) would make every later read look unchanged.
+    if (!raw && !(info.session?.turns?.length > 0)) throw new CaptureError("no_conversation_content");
+    let confirmedTurn = null;
+    if (confirm && provider === "chatgpt" && raw) {
+      const snapshot = JSON.parse(await raw.text());
+      const normalize = (text) => String(text || "").replace(/\s+/g, " ").trim();
+      const message = Object.values(snapshot.mapping || {}).map((node) => node?.message)
+        .find((message) => message?.id === confirm.turn && message.author?.role === "user"
+          && normalize((message.content?.parts || []).filter((part) => typeof part === "string").join("\n")) === normalize(confirm.text));
+      if (message && snapshot.conversation_id === conversation) confirmedTurn = message.id;
+    }
     const now = await fingerprint(raw, info.session);
     const seenKey = `seen ${key}`;
     const known = await this.seen.get({ [seenKey]: null });
@@ -188,7 +219,7 @@ export class Capturer {
         // cannot list its files. Try discovery again on the next capture.
         const outcome = unchanged ? "unchanged" : (await this.keep(base, [])) ? "stored" : "waiting";
         this.log(`Files of ${key} could not be listed: ${error.code || error.message}`);
-        return { outcome, provider, conversation };
+        return { outcome, provider, conversation, confirmedTurn };
       }
       for (const file of read.files || []) {
         if (file.inline) continue;
@@ -206,7 +237,7 @@ export class Capturer {
       await this.seen.set({ [seenKey]: now });
     }
     if (missing.length || this.downloading.has(key)) this.download(tabId, key, base, files, missing);
-    return { outcome, provider, conversation };
+    return { outcome, provider, conversation, confirmedTurn };
   }
 
   /** Puts one capture in the outbox and delivers; whether it was taken. */
@@ -239,8 +270,9 @@ export class Capturer {
           job.next = null;
           try {
             const fetched = await this.fetchFiles(current.tabId, current.base.conversation,
-              current.missing.filter((file) => !job.available.has(file.id)));
+              current.missing.filter((file) => !job.available.has(file.id)), current.base.provider, current.base.reason === "backfill");
             for (const file of fetched) if (file.body) job.available.set(file.id, file);
+            await job.observed;
             // A newer conversation arrived during the download. Its files
             // can use the bytes just fetched, but its text must stay newest.
             if (job.latest !== current.base) continue;
@@ -273,11 +305,12 @@ export class Capturer {
   }
 
   /** The bytes of each listed file, or the reason it has none. */
-  async fetchFiles(tabId, conversation, listed) {
+  async fetchFiles(tabId, conversation, listed, provider, background = false) {
     const files = [];
     for (const file of listed) {
       try {
-        const answer = await askPage(this.chrome, tabId, { type: "file", file, conversation });
+        const answer = await this.scheduler.run(provider, () => askPage(this.chrome, tabId, { type: "file", file, conversation }), { background, owner: tabId });
+        if (answer.status === 429 || answer.status >= 500) throw refused(answer);
         if (answer.status !== 200 || !answer.body) {
           files.push({ ...file, error: answer.error || `http_${answer.status}` });
           this.log(`File ${file.name || file.id} of ${conversation} could not be downloaded: ${answer.error || answer.status}`);
@@ -291,7 +324,7 @@ export class Capturer {
           body: answer.body,
         });
       } catch (error) {
-        if (error instanceof PageError && error.code === "page_closed") throw error;
+        if ((error instanceof PageError && error.code === "page_closed") || error.until || error.status === 429 || error.status >= 500) throw error;
         files.push({ ...file, error: String(error.code || error.message || error) });
       }
     }

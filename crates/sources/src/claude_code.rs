@@ -15,7 +15,7 @@
 //! once, and the copying session gets a `copy` link.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 mod blocks;
 mod fields;
@@ -49,9 +49,7 @@ pub const LOCATIONS: &[&str] = &[
     "projects/*/*/subagents/workflows/*/journal.jsonl",
 ];
 
-/// How many closed responses stay reopenable. A continuation record can
-/// arrive after another message (3,117 of 1.2M continuations on the real
-/// archive); a few slots cover them without an unbounded ID set.
+/// Hot response cache. Eviction leaves the keyed continuation intact.
 const REOPEN_WINDOW: usize = 4;
 
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
@@ -159,6 +157,10 @@ pub struct ParserState {
     /// Session facts gathered so far, by native ID. A file touches a few
     /// sessions: its own, the ones it copies from, its sidechain.
     sessions: BTreeMap<String, Session>,
+    #[serde(skip)]
+    context: polylogue_model::parser_context::Handle,
+    #[serde(skip)]
+    namespace: String,
     /// Embedded transcripts use the same response assembly as separate files.
     #[serde(default)]
     agents: BTreeMap<String, Box<ParserState>>,
@@ -173,8 +175,8 @@ pub struct ParserState {
     /// Record uuids that are not a message's own: a split response's later
     /// records (its message carries the first one's uuid) and event records
     /// (compaction boundaries, attachments, progress), each mapped to the
-    /// message a child naming it as parent belongs under. Recent ones only:
-    /// children follow their parents closely.
+    /// message a child naming it as parent belongs under. This hot cache is
+    /// backed by the complete keyed continuation.
     #[serde(default)]
     aliases: VecDeque<(String, Option<MessageId>)>,
     /// The session-wide names (plan `slug`, `teamName`) last recorded, by
@@ -184,7 +186,7 @@ pub struct ParserState {
     names: BTreeMap<String, String>,
 }
 
-/// How many record aliases a parser keeps.
+/// Hot alias cache. Older aliases remain in the keyed continuation.
 const ALIASES: usize = 4096;
 
 impl ParserState {
@@ -192,6 +194,15 @@ impl ParserState {
         if self.aliases.len() == ALIASES {
             self.aliases.pop_front();
         }
+        self.context.put(
+            polylogue_model::parser_context::Key::Alias {
+                namespace: self.namespace.clone(),
+                uuid: uuid.to_owned(),
+            },
+            polylogue_model::parser_context::Value::Alias {
+                target: target.clone(),
+            },
+        );
         self.aliases.push_back((uuid.to_owned(), target));
     }
 
@@ -203,7 +214,15 @@ impl ParserState {
     fn resolve(&self, uuid: &str) -> Option<MessageId> {
         match self.aliases.iter().rev().find(|(u, _)| u == uuid) {
             Some((_, target)) => target.clone(),
-            None => message_id(uuid),
+            None => match self
+                .context
+                .get(&polylogue_model::parser_context::Key::Alias {
+                    namespace: self.namespace.clone(),
+                    uuid: uuid.to_owned(),
+                }) {
+                Some(polylogue_model::parser_context::Value::Alias { target }) => target,
+                _ => message_id(uuid),
+            },
         }
     }
 }
@@ -632,6 +651,25 @@ impl ClaudeCode {
                     .iter()
                     .position(same)
                     .and_then(|i| parser_state.recent.remove(i));
+                let reopened = reopened.or_else(|| {
+                    match parser_state.context.get(
+                        &polylogue_model::parser_context::Key::Response {
+                            namespace: parser_state.namespace.clone(),
+                            session: session.to_string(),
+                            key: key.clone(),
+                        },
+                    ) {
+                        Some(polylogue_model::parser_context::Value::Response { row }) => {
+                            Some(Response {
+                                key: key.clone(),
+                                offset: row.offset,
+                                end: row.end,
+                                message: row.message,
+                            })
+                        }
+                        _ => None,
+                    }
+                });
                 close(parser_state, out);
                 parser_state.open = reopened;
             }
@@ -849,6 +887,23 @@ fn link_at(
     }
 }
 
+fn remember(state: &ParserState, response: &Response) {
+    state.context.put(
+        polylogue_model::parser_context::Key::Response {
+            namespace: state.namespace.clone(),
+            session: response.message.session.to_string(),
+            key: response.key.clone(),
+        },
+        polylogue_model::parser_context::Value::Response {
+            row: Box::new(MessageRow {
+                offset: response.offset,
+                end: response.end,
+                message: response.message.clone(),
+            }),
+        },
+    );
+}
+
 /// Moves the open response to the output and keeps it reopenable.
 fn close(parser_state: &mut ParserState, out: &mut Output) {
     if let Some(open) = parser_state.open.take() {
@@ -857,6 +912,7 @@ fn close(parser_state: &mut ParserState, out: &mut Output) {
             end: open.end,
             message: open.message.clone(),
         });
+        remember(parser_state, &open);
         parser_state.recent.push_back(open);
         while parser_state.recent.len() > REOPEN_WINDOW {
             parser_state.recent.pop_front();
@@ -1163,6 +1219,29 @@ fn background_update(v: &Json) -> Option<(String, ToolOutcome, Option<String>, O
 }
 
 impl Parser for ClaudeCode {
+    fn check_context(&self, state: &ParserState) -> Result<(), crate::ParseError> {
+        state.context.check().map_err(crate::ParseError::Context)
+    }
+    fn bind_context(
+        &self,
+        state: &mut ParserState,
+        context: polylogue_model::parser_context::Handle,
+    ) {
+        state.context = context.clone();
+        fn bind(
+            state: &mut ParserState,
+            context: &polylogue_model::parser_context::Handle,
+            namespace: String,
+        ) {
+            state.context = context.clone();
+            state.namespace = namespace.clone();
+            for (native, agent) in &mut state.agents {
+                bind(agent, context, format!("{namespace}/{native}"));
+            }
+        }
+        bind(state, &context, String::new());
+    }
+
     type ParserState = ParserState;
 
     fn kind(&self, v: &Json) -> String {
@@ -1378,6 +1457,9 @@ impl Parser for ClaudeCode {
                                 .agents
                                 .entry(child.native().to_string())
                                 .or_default();
+                            state.context = parser_state.context.clone();
+                            state.namespace =
+                                format!("{}/{}", parser_state.namespace, child.native());
                             let mut embedded = embedded.clone();
                             if let Some(object) = embedded.as_object_mut() {
                                 // Some progress records wrap an API message; others hold
@@ -1449,6 +1531,7 @@ impl Parser for ClaudeCode {
             agent_sessions.append(&mut out.sessions);
         }
         if let Some(open) = &parser_state.open {
+            remember(parser_state, open);
             out.messages.push(MessageRow {
                 offset: open.offset,
                 end: open.end,
