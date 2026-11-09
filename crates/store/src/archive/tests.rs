@@ -315,9 +315,7 @@ fn opening_adds_model_completion_index_without_rebuilding_rows() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    index
-        .execute_batch("DROP INDEX message_model; DROP INDEX message_model_at;")
-        .unwrap();
+    index.execute_batch("DROP INDEX message_model_at;").unwrap();
     let completion_plan = |index: &Connection| -> Vec<String> {
         index
             .prepare("EXPLAIN QUERY PLAN SELECT DISTINCT model FROM message WHERE model IS NOT NULL ORDER BY model")
@@ -362,7 +360,7 @@ fn opening_adds_model_completion_index_without_rebuilding_rows() {
         let plan = completion_plan(&index);
         assert!(
             plan.iter()
-                .any(|step| step.contains("COVERING INDEX message_model")),
+                .any(|step| step.contains("COVERING INDEX message_model_at")),
             "{plan:?}"
         );
         assert!(

@@ -293,6 +293,9 @@ const ROWS_PER_TRANSACTION: usize = 50_000;
 /// Checked with `EXPLAIN QUERY PLAN` over the store's statements
 /// (2026-10-19).
 const READ_ONLY_INDEXES: &[&str] = &[
+    "message_order",
+    "tool_call_order",
+    "event_order",
     "message_at",
     "message_session_at",
     "message_model_at",
@@ -307,7 +310,6 @@ const READ_ONLY_INDEXES: &[&str] = &[
     "message_branch",
     "tool_call_tool",
     "tool_call_action",
-    "tool_call_failed",
     "tool_call_path",
     "tool_call_repo_command",
     "link_child",

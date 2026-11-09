@@ -18,11 +18,16 @@ fn names_are_unique_per_unit() {
     }
 }
 
+/// A special field is compiled only by its rule. Any other field compiles
+/// from its SQL, except one whose displayed value adds a read-time value
+/// to a stored column (`tool_calls.outcome` adds `pending`): its rule
+/// compares the stored column so the column's index serves the condition.
 #[test]
-fn exactly_the_special_fields_have_a_compile_rule() {
+fn special_fields_and_read_time_values_have_a_compile_rule() {
+    let read_time = [(Unit::ToolCalls, "outcome")];
     for f in FIELDS {
         assert_eq!(
-            f.kind == Kind::Special,
+            f.kind == Kind::Special || read_time.contains(&(f.unit, f.name)),
             f.compile.is_some(),
             "{:?}.{}",
             f.unit,

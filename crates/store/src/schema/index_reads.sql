@@ -1,4 +1,9 @@
-CREATE INDEX IF NOT EXISTS message_model ON message(model) WHERE model IS NOT NULL;
+-- A default page reads its unit's rows in the order of its first terms
+-- (`time IS NULL, time, ...`), so these indexes carry those exact
+-- expressions: the page stops after its rows instead of sorting the table.
+CREATE INDEX IF NOT EXISTS message_order ON message(at IS NULL, at, order_input_id, seq, record_position, id);
+CREATE INDEX IF NOT EXISTS tool_call_order ON tool_call(at IS NULL, at, call_block_pk);
+CREATE INDEX IF NOT EXISTS event_order ON event(at IS NULL, at, id);
 CREATE INDEX IF NOT EXISTS message_at ON message(at, id);
 CREATE INDEX IF NOT EXISTS message_session_at ON message(session_pk, at, id);
 CREATE INDEX IF NOT EXISTS message_model_at ON message(model, at, id);

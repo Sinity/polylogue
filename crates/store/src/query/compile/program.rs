@@ -305,14 +305,6 @@ impl<'a> Compiler<'a> {
                     scope.a.expand(expression)
                 ));
             }
-            if let Some(first_seen) = fields::sql(
-                unit,
-                "first_seen",
-                &scope.a,
-                self.opts.clock.now.as_millisecond(),
-            ) {
-                select.push(format!("{first_seen} AS _first_seen"));
-            }
             let without = self.near_rank.as_ref().map_or_else(
                 || "0".to_owned(),
                 |near| format!("count(*) FILTER (WHERE ({near}) IS NULL)"),

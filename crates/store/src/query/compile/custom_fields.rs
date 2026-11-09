@@ -4,7 +4,7 @@
 //! names its rule here, so a field without one cannot be declared.
 
 use super::*;
-use polylogue_model::{LINK_HOW_NAMES, LINK_KIND_NAMES};
+use polylogue_model::{CallOutcome, LINK_HOW_NAMES, LINK_KIND_NAMES};
 
 /// A special field's compile rule.
 pub(crate) type Custom = fn(&mut Compiler<'_>, &Call<'_, '_>) -> Result<String, QueryError>;
@@ -434,6 +434,77 @@ pub(crate) fn model(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
          THEN EXISTS (SELECT 1 FROM message x WHERE x.session_pk = {s}.pk AND lower(x.model) IN ({})) END",
         vs.join(", ")
     ))
+}
+
+/// `outcome:` compares the stored column through `NULLIF(outcome,
+/// 'unknown')`, the expression `tool_call_action` indexes, so a stored
+/// `unknown` stays unknown (neither the condition nor its NOT matches).
+/// Only `pending`, a stored `unknown` call the session's live state names
+/// open, is decided beside it.
+pub(crate) fn tool_call_outcome(
+    c: &mut Compiler<'_>,
+    x: &Call<'_, '_>,
+) -> Result<String, QueryError> {
+    let a = &x.scope.a;
+    let t = &a.t;
+    let pending = a.expand(fields::OPEN_CALL);
+    let unknown = format!("({t}.outcome = 'unknown' AND NOT {pending})");
+    let def = fields::lookup(x.unit, x.name).expect("outcome is declared");
+    let values = match x.op {
+        FieldOp::Match(Value::Unknown) => return Ok(unknown),
+        FieldOp::Match(Value::Known) => return Ok(format!("NOT {unknown}")),
+        FieldOp::Match(Value::Scalar {
+            text,
+            quoted: false,
+        }) if text.eq_ignore_ascii_case("unknown") => return Ok(unknown),
+        FieldOp::Match(v) => alternatives(v),
+        FieldOp::Compare(Op::Eq, value) => vec![value.to_owned()],
+        FieldOp::Compare(Op::Ne, value) => {
+            let equal = Call {
+                op: FieldOp::Compare(Op::Eq, value),
+                ..*x
+            };
+            return Ok(format!("NOT {}", tool_call_outcome(c, &equal)?));
+        }
+        op => {
+            let expr = def
+                .expr(a, c.opts.clock.now.as_millisecond())
+                .expect("outcome has SQL");
+            return c.typed(def, &expr, op, x.span);
+        }
+    };
+    let mut listed = vec![];
+    let (mut with_unknown, mut with_pending) = (false, false);
+    for value in &values {
+        match CallOutcome::NAMES
+            .iter()
+            .find(|name| name.eq_ignore_ascii_case(value))
+            .copied()
+        {
+            Some("unknown") => with_unknown = true,
+            Some(name) => {
+                with_pending |= name == "pending";
+                listed.push(format!("'{name}'"));
+            }
+            None => return Err(x.bad(value.clone(), closed_set_message(def, value))),
+        }
+    }
+    // `pending` is never stored, so listing it leaves a stored `unknown`
+    // unknown; the open call itself matches through the live state.
+    let stored = (!listed.is_empty()).then(|| {
+        let known = format!("NULLIF({t}.outcome, 'unknown') IN ({})", listed.join(", "));
+        if with_pending {
+            format!("({known} OR {pending})")
+        } else {
+            format!("({known} AND NOT {pending})")
+        }
+    });
+    match (stored, with_unknown) {
+        (Some(stored), false) => Ok(stored),
+        (Some(stored), true) => Ok(format!("({stored} OR {unknown})")),
+        (None, true) => Ok(unknown),
+        (None, false) => Err(x.need_value()),
+    }
 }
 
 pub(crate) fn tag(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {

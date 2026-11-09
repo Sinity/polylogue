@@ -103,7 +103,6 @@ fn kept_stages_use_captured_values_after_native_rows_change() {
         .visit_selection::<SelectionError>(&prepared, None, None, |row| {
             assert!(matches!(row.identity, Some(RowIdentity::Entity { .. })));
             assert!(row.target.is_some());
-            assert_eq!(row.first_seen, None);
             Ok(ControlFlow::Continue(()))
         })
         .unwrap();
@@ -133,7 +132,6 @@ fn duplicate_kept_items_have_distinct_stable_cursor_identity_without_entity_proo
         .visit_selection::<SelectionError>(&prepared, None, None, |row| {
             assert_eq!(row.values, json!({"label":"same"}));
             assert!(row.target.is_none());
-            assert_eq!(row.first_seen, None);
             assert!(matches!(row.identity, Some(RowIdentity::Distinct { .. })));
             identities.push(row.identity);
             after = Some(row.position);

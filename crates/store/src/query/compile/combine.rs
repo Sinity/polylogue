@@ -471,10 +471,6 @@ fn aligned_columns(
         },
     );
     columns.insert("_recency".into(), "r._recency".into());
-    if fields::lookup(relation.program.unit, "first_seen").is_some_and(|field| field.sql.is_some())
-    {
-        columns.insert("_first_seen".into(), "r._first_seen".into());
-    }
     for column in &relation.program.columns {
         if ranked && matches!(column.name.as_str(), "rank" | "found_in") {
             continue;

@@ -922,9 +922,6 @@ impl Relation {
         {
             names.insert("_near".into());
             names.insert("_recency".into());
-            if fields::lookup(self.program.unit, "first_seen").is_some_and(|f| f.sql.is_some()) {
-                names.insert("_first_seen".into());
-            }
         }
         names.extend(self.program.order.iter().map(|k| k.column.clone()));
         names.extend(self.sources.iter().map(|s| s.key.clone()));

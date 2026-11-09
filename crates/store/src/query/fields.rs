@@ -475,10 +475,7 @@ f(ToolCalls,"command_norm").sql("{t}.command_norm"),
 f(ToolCalls,"input").custom(custom::input),
 f(ToolCalls,"output").custom(custom::output),
 f(ToolCalls,"path").custom(custom::tool_call_text).sql("{t}.path"),
-f(ToolCalls,"outcome").sql(
-        "CASE WHEN {t}.result_block_pk IS NULL AND {t}.outcome = 'unknown' AND json_extract({s}.live_facts, '$.open_call.call_id') = {t}.call_id \
-             THEN 'pending' ELSE {t}.outcome END",
-    ),
+f(ToolCalls,"outcome").custom(custom::tool_call_outcome).sql_fn(call_outcome),
 f(ToolCalls,"exit_code").sql("{t}.exit_code"),
 f(ToolCalls,"at").sql("{t}.at"),
 f(ToolCalls,"result_at").sql("{t}.result_at"),
@@ -864,6 +861,19 @@ pub fn first_seen_of(m: &str) -> String {
          AND fr.length > fs.source_start AND fr.length >= fs.source_end \
          JOIN source_observation fo ON fo.input = fr.input AND fo.revision = fr.number \
          WHERE fs.message_pk = {m}.pk)"
+    )
+}
+
+/// A stored `unknown` call with no result that the session's live state
+/// names as its open call: the `pending` outcome, decided when read.
+pub(crate) const OPEN_CALL: &str = "({t}.result_block_pk IS NULL AND {t}.outcome = 'unknown' \
+     AND coalesce(json_extract({s}.live_facts, '$.open_call.call_id') = {t}.call_id, 0))";
+
+fn call_outcome(a: &Aliases) -> String {
+    format!(
+        "CASE WHEN {} THEN 'pending' ELSE {}.outcome END",
+        a.expand(OPEN_CALL),
+        a.t
     )
 }
 
