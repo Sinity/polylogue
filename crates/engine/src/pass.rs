@@ -838,7 +838,7 @@ impl Engine {
         } else {
             None
         };
-        let st = self.inputs.get_mut(path).expect("tracked input");
+        let mut st = self.inputs.get_mut(path).expect("tracked input");
         if st.unread == Some(now) {
             return Ok(None);
         }
@@ -848,6 +848,7 @@ impl Engine {
         let parsed = has_reading(st.origin);
         let mut change = polylogue_store::blobs::classify(st.facts, Some(now));
         let mut back = false;
+        let mut rejoined = None;
         if matches!(change, Change::First | Change::Rewritten) && !source_uncertain {
             // Another inode at the path, or the file back after it was gone:
             // when it still begins with every stored byte, it continues its
@@ -856,12 +857,30 @@ impl Engine {
             if let Some(progress) = reader.input_progress(&st.input_id)?
                 && progress.length > 0
                 && progress.length <= now.size
-                && read::stored_prefix_intact(
-                    path,
-                    &reader.stored_chain(&st.input_id, progress.chain, progress.length)?,
-                    &self.blobs,
-                )?
+                // An index behind this engine's own stored length has
+                // writes still to commit; continuing from it would start
+                // the append before them.
+                && progress.length >= st.stored
+                // A file or stored chain that cannot be read is not shown to
+                // hold the stored bytes; the file then starts a new chain.
+                && reader
+                    .stored_chain(&st.input_id, progress.chain, progress.length)
+                    .ok()
+                    .is_some_and(|chain| {
+                        read::stored_prefix_intact(path, &chain, &self.blobs).unwrap_or(false)
+                    })
             {
+                if st.chain != Some(progress.chain) {
+                    // The chain this path last read may not be the input's
+                    // latest (another path of a provider-named input read a
+                    // later one): take that chain's parser position, and its
+                    // state from its admitted checkpoint below.
+                    st.parsed_upto = progress.parsed_upto;
+                    st.parsed = progress.parsed;
+                    st.waiting = progress.waiting;
+                    st.parser_state = None;
+                    rejoined = Some((progress.chain, progress.parsed_upto));
+                }
                 st.stored = progress.length;
                 st.chain = Some(progress.chain);
                 st.tail = None;
@@ -874,6 +893,17 @@ impl Engine {
                     };
                 }
             }
+        }
+        if let Some((chain, upto)) = rejoined
+            && upto > 0
+        {
+            let (input, version) = (st.input_id.clone(), st.origin.reading_version());
+            let state = {
+                let reader = self.reads.reader()?;
+                self.restored_parser_state(&reader, &input, chain, upto, &version)?
+            };
+            st = self.inputs.get_mut(path).expect("tracked input");
+            st.parser_state = state;
         }
         if change == Change::Unchanged && st.facts != Some(now) && !back {
             st.facts = Some(now);
