@@ -149,6 +149,10 @@ pub struct ReadHeader {
     pub kind: HeaderKind,
     #[serde(default)]
     pub figures: Vec<Figure>,
+    /// The logical-day zone the reading shows clock times in (an IANA name).
+    /// Text views print times in it with their offset and say so once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]

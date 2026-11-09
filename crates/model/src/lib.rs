@@ -73,7 +73,9 @@ pub use message::{
 };
 pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};
-pub use time::{Precision, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp};
+pub use time::{
+    Precision, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp, local_minute, rfc3339_in,
+};
 pub mod text;
 pub use price::{Catalog, LongContext, Price};
 pub use quota::{QuotaLimit, QuotaReading, QuotaWindow};

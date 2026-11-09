@@ -50,6 +50,7 @@ fn header() -> ReadHeader {
             record_type: "test".into(),
         },
         figures: vec![],
+        zone: None,
     }
 }
 fn document(items: Vec<ReadItem>) -> ReadDocument {
@@ -2878,4 +2879,33 @@ fn html_relationship_links_encode_only_exact_recorded_session_references() {
     let inert = render("javascript:alert(1)", "message:claude-code:u1");
     assert!(!inert.contains("href="), "{inert}");
     assert!(inert.contains("javascript:alert(1)") && inert.contains("message:claude-code:u1"));
+}
+
+#[test]
+fn text_views_show_times_in_the_header_zone_and_say_which() {
+    let mut record = message(vec![Block::Text {
+        text: "hello".into(),
+    }]);
+    if let Record::Message(m) = &mut record {
+        m.message.at =
+            Some(polylogue_model::Timestamp::parse_rfc3339("2026-11-09T08:12:00Z").unwrap());
+        m.message.at_quality = TimeQuality::Intrinsic;
+        m.message.at_precision = Some(polylogue_model::Precision::Instant);
+        m.source_version = m.message.content_hash().unwrap();
+    }
+    let options = ReadOptions::default();
+    let items = layout(record, &options, &ProjectionEvidence::default());
+    let mut doc = ReadDocument {
+        header: header(),
+        items,
+        footer: ReadFooter::default(),
+    };
+    doc.header.zone = Some("Europe/Warsaw".into());
+    let text = encode(&doc, Format::Terminal);
+    assert!(text.contains("Times Europe/Warsaw."), "{text}");
+    assert!(text.contains("2026-11-09 09:12 +01:00"), "{text}");
+    doc.header.zone = None;
+    let text = encode(&doc, Format::Terminal);
+    assert!(!text.contains("Times "), "{text}");
+    assert!(text.contains("2026-11-09 08:12 +00:00"), "{text}");
 }

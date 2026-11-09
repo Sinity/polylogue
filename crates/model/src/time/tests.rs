@@ -92,3 +92,24 @@ fn source_time_evidence_distinguishes_unknown_instants_and_periods() {
     assert_eq!(decoded, (at, period));
     assert_eq!(decoded.0.unix_ns(), at.unix_ns());
 }
+
+#[test]
+fn times_in_a_zone_keep_the_instant_and_show_the_offset() {
+    let t = Timestamp::parse_rfc3339("2026-11-09T08:12:34.5Z").unwrap();
+    let warsaw = jiff::tz::TimeZone::get("Europe/Warsaw").unwrap();
+    assert_eq!(super::rfc3339_in(t, &warsaw), "2026-11-09T09:12:34.5+01:00");
+    assert_eq!(
+        super::rfc3339_in(t, &jiff::tz::TimeZone::UTC),
+        "2026-11-09T08:12:34.5Z"
+    );
+    assert_eq!(
+        Timestamp::parse_rfc3339(&super::rfc3339_in(t, &warsaw)),
+        Some(t)
+    );
+    assert_eq!(super::local_minute(t, &warsaw), "2026-11-09 09:12 +01:00");
+    let summer = Timestamp::parse_rfc3339("2026-07-01T08:00:00Z").unwrap();
+    assert_eq!(
+        super::local_minute(summer, &warsaw),
+        "2026-07-01 10:00 +02:00"
+    );
+}

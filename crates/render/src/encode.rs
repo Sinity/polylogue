@@ -31,6 +31,8 @@ pub struct Encoder<'a> {
     format: Format,
     options: EncodeOptions,
     first: bool,
+    /// Clock times print in this zone; UTC when the header names none.
+    zone: jiff::tz::TimeZone,
 }
 impl<'a> Encoder<'a> {
     pub fn new(
@@ -44,6 +46,11 @@ impl<'a> Encoder<'a> {
             format,
             options,
             first: true,
+            zone: header
+                .zone
+                .as_deref()
+                .and_then(|name| jiff::tz::TimeZone::get(name).ok())
+                .unwrap_or(jiff::tz::TimeZone::UTC),
         };
         match format {
             Format::Json => {
@@ -112,6 +119,9 @@ impl<'a> Encoder<'a> {
                             .unwrap_or_default()
                     );
                     encoder.line(&text)?;
+                }
+                if let Some(zone) = &header.zone {
+                    encoder.line(&format!("Times {zone}."))?;
                 }
                 writeln!(encoder.out)?;
             }
@@ -192,7 +202,7 @@ impl<'a> Encoder<'a> {
                 let time = header
                     .time
                     .at
-                    .map(|at| at.to_string())
+                    .map(|at| polylogue_model::local_minute(at, &self.zone))
                     .unwrap_or_else(|| "--:--".into());
                 let author = if self.options.model_facing
                     && header.author.value().is_some_and(|a| a == "you")

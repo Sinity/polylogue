@@ -132,6 +132,7 @@ fn execute<T>(
                     record_type: "accepted_request".into(),
                 },
                 figures: vec![],
+                zone: Some(operation.clock.day.zone_name().to_owned()),
             };
             let evidence = ProjectionEvidence {
                 authored: if matches!(&reference, Reference::Request(_)) {

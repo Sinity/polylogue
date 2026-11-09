@@ -57,6 +57,7 @@ fn page() -> ReadPage {
                     record_type: "test".into(),
                 },
                 figures: vec![],
+                zone: None,
             },
             items: vec![ReadItem {
                 source: Source::record("block:test:session:message#0"),

@@ -406,18 +406,13 @@ fn unjudged_other_assertions(
     )
 }
 
-fn day(t: Option<Timestamp>) -> String {
-    t.map(|t| {
-        t.to_string()
-            .chars()
-            .take(16)
-            .collect::<String>()
-            .replace('T', " ")
-    })
-    .unwrap_or_else(|| "unknown time".into())
+/// A clock time in the logical-day zone with its offset, to the minute.
+fn day(t: Option<Timestamp>, zone: &jiff::tz::TimeZone) -> String {
+    t.map(|t| polylogue_model::local_minute(t, zone))
+        .unwrap_or_else(|| "unknown time".into())
 }
 
-fn note_line(n: &Assertion) -> String {
+fn note_line(n: &Assertion, zone: &jiff::tz::TimeZone) -> String {
     let label = n.fact.key.as_deref().unwrap_or(n.fact.kind.as_str());
     let targets: Vec<String> = n.fact.about().map(ToString::to_string).collect();
     let by = if n.fact.author.is_agent() {
@@ -429,7 +424,7 @@ fn note_line(n: &Assertion) -> String {
         "- [{label}] {} ({}, {}{by})  assertion:{}@{}",
         n.fact.text().unwrap_or(""),
         targets.join(", "),
-        day(Some(n.fact.created_at)),
+        day(Some(n.fact.created_at), zone),
         n.fact.root,
         n.fact.id
     )
@@ -504,7 +499,7 @@ fn assertion_item(
             "Contrary evidence, author:{} via:{}; judgment {state}: {}",
             correction.fact.author,
             correction.fact.via.as_str(),
-            note_line(&correction)
+            note_line(&correction, context.clock.day.zone())
         );
         refs.push(format!(
             "assertion:{}@{}",
@@ -523,7 +518,7 @@ fn assertion_item(
                 .join(", ")
         );
     }
-    text.push_str(&note_line(note));
+    text.push_str(&note_line(note, context.clock.day.zone()));
     refs.push(reference.to_string());
     Ok(Item {
         expansion: None,
@@ -960,6 +955,7 @@ fn live_items(
     reader: &Reader<'_>,
     live: &[(ScopeSession, &'static str)],
     now: i64,
+    zone: &jiff::tz::TimeZone,
 ) -> Result<Vec<Item>, StoreError> {
     let ids: Vec<String> = live.iter().map(|(s, _)| s.session.id.to_string()).collect();
     let hidden = reader.hidden_sessions(&ids)?;
@@ -991,7 +987,7 @@ fn live_items(
                 let _ = write!(line, ", doing \"{}\"", todo);
             }
             if let Some(at) = s.last_event_at().and_then(Timestamp::from_unix_ms) {
-                let _ = write!(line, ", last event {}", day(Some(at)));
+                let _ = write!(line, ", last event {}", day(Some(at), zone));
             }
             Item {
                 expansion: None,
@@ -1005,7 +1001,11 @@ fn live_items(
 
 /// What a recent session did, in a few lines, from its stored summary and
 /// its live facts.
-fn session_item(s: &ScopeSession, summary: Option<&SessionSummary>) -> Item {
+fn session_item(
+    s: &ScopeSession,
+    summary: Option<&SessionSummary>,
+    zone: &jiff::tz::TimeZone,
+) -> Item {
     let id = s.session.id.to_string();
     let counted = s.session.messages.map_or_else(
         || "messages not counted yet".to_owned(),
@@ -1013,7 +1013,7 @@ fn session_item(s: &ScopeSession, summary: Option<&SessionSummary>) -> Item {
     );
     let mut text = format!(
         "- {}  recorded title: {}  ({counted})  {id}",
-        day(s.session.last_activity),
+        day(s.session.last_activity, zone),
         s.session
             .title
             .as_deref()
@@ -1081,7 +1081,7 @@ fn session_item(s: &ScopeSession, summary: Option<&SessionSummary>) -> Item {
             s.session
                 .messages
                 .map_or("unknown".into(), |count| count.to_string()),
-            day(s.session.last_activity)
+            day(s.session.last_activity, zone)
         )),
         text,
         refs: vec![format!("session:{id}")],
@@ -1178,7 +1178,7 @@ fn session_start(
         let _ = writeln!(
             header,
             "Changes since your last brief at {}.",
-            day(Some(p.at))
+            day(Some(p.at), context.clock.day.zone())
         );
     }
     // The operator's own words after compaction are never cut.
@@ -1198,7 +1198,7 @@ fn session_start(
                     protected_prompts,
                     "\n[written_by:human author:operator session:{s} message:{} at:{}]\n┃ {}",
                     p.message_id,
-                    day(p.at),
+                    day(p.at, context.clock.day.zone()),
                     archive_json(&serde_json::json!(&p.text))
                 );
                 prompt_refs.push(format!("message:{}", p.message_id));
@@ -1238,7 +1238,7 @@ fn session_start(
     );
     if let Some(live) = live.filter(|live| !live.is_empty())
         && let Some(items) = deadline.section(reader, "live sessions", || {
-            live_items(reader, &live, now.unix_ms())
+            live_items(reader, &live, now.unix_ms(), context.clock.day.zone())
         })?
     {
         fit.section(
@@ -1259,7 +1259,7 @@ fn session_start(
                 "- {}: last observed claim by {}; session last active {}; no close or release observed; current external state unverified",
                 b.id,
                 b.session,
-                day(b.since)
+                day(b.since, context.clock.day.zone())
             ),
             refs: vec![format!("session:{}", b.session)],
         })
@@ -1270,7 +1270,10 @@ fn session_start(
         "open Beads",
         "polylogue list task:",
     );
-    let sessions = recent.iter().map(|s| session_item(s, None)).collect();
+    let sessions = recent
+        .iter()
+        .map(|s| session_item(s, None, context.clock.day.zone()))
+        .collect();
     fit.section(
         "Recent sessions here, and what they did:",
         sessions,
@@ -1295,7 +1298,7 @@ fn session_start(
             expansion: Some(Expansion::Notice(row.id.clone())),
             provenance: Some(format!(
                 "sender:signal; last observed {}; no outcome recorded",
-                day(Some(row.at))
+                day(Some(row.at), context.clock.day.zone())
             )),
             text: format!("Signal notice {}; contents not expanded", row.id),
             refs: vec![format!("delivery:{}", row.id)],
@@ -1357,7 +1360,11 @@ fn session_start(
             return Ok(None);
         };
         reader.check()?;
-        let mut expanded = session_item(session, reader.session_summary(session.pk)?.as_ref());
+        let mut expanded = session_item(
+            session,
+            reader.session_summary(session.pk)?.as_ref(),
+            context.clock.day.zone(),
+        );
         let notes = operator_notes(
             reader,
             vec![Reference::Session(session.session.id.clone())],
@@ -1535,7 +1542,7 @@ fn takeover(
                 provenance: Some(format!(
                     "written_by:human; author:operator; session:{id}; message:{}; at:{}; contrary context: {correction_provenance}",
                     p.message_id,
-                    day(p.at)
+                    day(p.at, context.clock.day.zone())
                 )),
                 text: format!("{correction_prefix}\n{}", p.text),
                 refs: correction_refs.iter().cloned().chain(std::iter::once(format!("message:{}", p.message_id))).collect(),

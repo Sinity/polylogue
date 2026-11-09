@@ -166,6 +166,7 @@ fn header(id: &DocumentId) -> ReadHeader {
             record_type: "document".into(),
         },
         figures: vec![],
+        zone: None,
     }
 }
 

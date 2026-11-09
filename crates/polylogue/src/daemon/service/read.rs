@@ -325,6 +325,7 @@ fn prepared<T>(
                 title,
                 kind,
                 figures: Vec::new(),
+                zone: Some(operation.clock.day.zone_name().to_owned()),
             };
             polylogue_store::read::limit::ReadLimit::set_stage("read records");
             run(&selection, snapshot, header, Some(near))

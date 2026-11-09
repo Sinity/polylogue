@@ -2,7 +2,7 @@
 //! come from the caller's already resolved shared setting.
 use crate::{Result, StoreError};
 use jiff::{Timestamp, civil::Date};
-use query_language::time::DaySetting;
+use query_language::time::{DaySetting, label};
 
 fn invalid(error: impl ToString) -> StoreError {
     StoreError::Invalid(error.to_string())
@@ -43,45 +43,26 @@ pub fn month(day: &DaySetting, date: Date) -> Result<(i64, i64)> {
     Ok((start(day, first)?, start(day, next)?))
 }
 pub fn day_label(day: &DaySetting, ms: i64) -> Result<String> {
-    let date = date(day, ms)?;
-    Ok(format!(
-        "{}-{:02}-{:02}",
-        year_label(date.year()),
-        date.month(),
-        date.day()
-    ))
+    Ok(label::day(date(day, ms)?))
 }
 pub fn week_label(day: &DaySetting, ms: i64) -> Result<String> {
-    let week = date(day, ms)?.iso_week_date();
-    Ok(format!("{}-W{:02}", year_label(week.year()), week.week()))
+    Ok(label::week(date(day, ms)?))
 }
 pub fn month_label(day: &DaySetting, ms: i64) -> Result<String> {
-    let date = date(day, ms)?;
-    Ok(format!("{}-{:02}", year_label(date.year()), date.month()))
+    Ok(label::month(date(day, ms)?))
 }
 
 pub(crate) fn weekday_label(day: &DaySetting, ms: i64) -> Result<String> {
-    Ok(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-        [date(day, ms)?.weekday().to_monday_zero_offset() as usize]
-        .into())
+    Ok(label::weekday(date(day, ms)?).into())
 }
 pub(crate) fn month_day_label(day: &DaySetting, ms: i64) -> Result<String> {
-    let date = date(day, ms)?;
-    Ok(format!("{:02}-{:02}", date.month(), date.day()))
+    Ok(label::month_day(date(day, ms)?))
 }
 pub(crate) fn hour_number(day: &DaySetting, ms: i64) -> Result<i64> {
     Ok(i64::from(instant(ms)?.to_zoned(day.zone().clone()).hour()))
 }
 pub(crate) fn year_number(day: &DaySetting, ms: i64) -> Result<i64> {
     Ok(i64::from(date(day, ms)?.year()))
-}
-
-fn year_label(year: i16) -> String {
-    if year < 0 {
-        format!("-{:04}", year.unsigned_abs())
-    } else {
-        format!("{year:04}")
-    }
 }
 
 #[cfg(test)]

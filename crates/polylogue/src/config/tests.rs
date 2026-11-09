@@ -96,6 +96,22 @@ fn explicit_primary_configuration_resolves_credentials_beside_its_own_file() {
 }
 
 #[test]
+fn standalone_day_without_a_zone_uses_the_hosts_named_zone() {
+    let root = tempfile::tempdir().unwrap();
+    deployment(root.path(), "");
+    let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
+    let day = startup.config.standalone_day().unwrap();
+    let host = jiff::tz::TimeZone::system();
+    assert_eq!(Some(day.zone_name()), host.iana_name());
+    assert_eq!(day.start(), jiff::civil::Time::constant(4, 0, 0, 0));
+    deployment(root.path(), "[day]\nstart='06:00:00'\n");
+    let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
+    let day = startup.config.standalone_day().unwrap();
+    assert_eq!(Some(day.zone_name()), host.iana_name());
+    assert_eq!(day.start(), jiff::civil::Time::constant(6, 0, 0, 0));
+}
+
+#[test]
 fn standalone_day_uses_the_named_zone_across_dst_and_refuses_invalid_zones() {
     let root = tempfile::tempdir().unwrap();
     deployment(

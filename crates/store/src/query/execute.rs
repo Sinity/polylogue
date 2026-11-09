@@ -233,7 +233,11 @@ pub fn attach(
                 }
                 for c in &mut children {
                     for col in &a.columns {
-                        shape_value(col.kind, &mut c[col.name.as_str()])?;
+                        shape_value(
+                            col.kind,
+                            program.clock.day.zone(),
+                            &mut c[col.name.as_str()],
+                        )?;
                     }
                 }
                 row[a.name.as_str()] = Value::Array(children);
@@ -248,7 +252,7 @@ pub fn present(program: &Program, row: &mut Value) -> Result<(), SelectionError>
     let mut output = serde_json::Map::new();
     for col in &program.columns {
         let mut value = row[program.column_slot(&col.name)].clone();
-        shape_value(col.kind, &mut value)?;
+        shape_value(col.kind, program.clock.day.zone(), &mut value)?;
         output.insert(col.name.clone(), value);
     }
     for attachment in &program.attach {
@@ -266,7 +270,14 @@ pub fn present(program: &Program, row: &mut Value) -> Result<(), SelectionError>
     Ok(())
 }
 
-pub fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), SelectionError> {
+/// Times leave as RFC 3339 in `zone` (the question's logical-day zone), with
+/// its offset, so a person reads local clock times and a program still gets an
+/// exact instant. A zero offset is written `Z`.
+pub fn shape_value(
+    kind: ColKind,
+    zone: &jiff::tz::TimeZone,
+    v: &mut Value,
+) -> Result<(), SelectionError> {
     match kind {
         ColKind::Json => {
             if let Some(text) = v.as_str() {
@@ -305,8 +316,9 @@ pub fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), SelectionError> {
         }
         ColKind::Time => {
             if let Some(ms) = v.as_i64() {
-                *v = polylogue_model::Timestamp::from_unix_ms(ms)
-                    .map_or(Value::Null, |t| Value::String(t.to_string()));
+                *v = polylogue_model::Timestamp::from_unix_ms(ms).map_or(Value::Null, |t| {
+                    Value::String(polylogue_model::rfc3339_in(t, zone))
+                });
             }
         }
         ColKind::Bool => {
