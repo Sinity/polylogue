@@ -18,7 +18,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Free disk space for the test build
-        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc
+          sudo nohup rm -rf /usr/local/lib/android /opt/hostedtoolcache/CodeQL >/dev/null 2>&1 &
       - name: Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: taiki-e/install-action@nextest
