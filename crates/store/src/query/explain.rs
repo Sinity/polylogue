@@ -12,17 +12,19 @@ pub struct Explanation {
 
 /// Uses the same validation and compilation as execution.
 pub fn query(expression: &str, options: &Options) -> Result<Explanation, QueryError> {
-    let plan = polylogue_query::compile(expression, options)?;
-    let parsed = plan.bound_query().query().clone();
-    let program = crate::query::lower(&plan, options)?;
-    let mut units = selected_units(plan.expanded_query().query());
-    if !units.contains(&program.unit) {
-        units.insert(0, program.unit);
-    }
-    Ok(Explanation {
-        units,
-        parsed,
-        program,
+    query_language::depth::deeper(|| {
+        let plan = polylogue_query::compile(expression, options)?;
+        let parsed = plan.bound_query().query().clone();
+        let program = crate::query::lower(&plan, options)?;
+        let mut units = selected_units(plan.expanded_query().query());
+        if !units.contains(&program.unit) {
+            units.insert(0, program.unit);
+        }
+        Ok(Explanation {
+            units,
+            parsed,
+            program,
+        })
     })
 }
 

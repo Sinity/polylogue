@@ -207,14 +207,14 @@ struct GroupInput {
 }
 
 pub(super) fn contains_order(condition: &Condition) -> bool {
-    match &condition.kind {
+    query_language::depth::deeper(|| match &condition.kind {
         ConditionKind::Order { .. } => true,
         ConditionKind::And { conditions } | ConditionKind::Or { conditions } => {
             conditions.iter().any(contains_order)
         }
         ConditionKind::Not { condition } => contains_order(condition),
         _ => false,
-    }
+    })
 }
 
 pub(super) fn as_of_unavailable() -> QueryError {
@@ -629,190 +629,193 @@ impl<'a> Compiler<'a> {
         selected: Option<&Condition>,
         exposed: &mut Option<RelationOutput>,
     ) -> Result<String, QueryError> {
-        if input.open_fields
-            && !contains_order(condition)
-            && !materialized_condition(condition, &input.program.column_slots)
-            && input
-                .sources
-                .iter()
-                .filter(|source| source.prefix.is_empty())
-                .count()
-                == 1
-            && let Some(source) = input.sources.iter().find(|source| source.prefix.is_empty())
-        {
-            let context = RowContext {
-                unit: source.unit,
-                a: self.fresh(),
-            };
-            let predicate = self.cond(condition, &context, false)?;
-            let key = context.a.expand(units::spec(context.unit).key);
-            return Ok(format!(
-                "(SELECT ({predicate}) FROM {} WHERE {key} = r.{})",
-                base_from(context.unit, &context.a),
-                column_sql(&source.key)
-            ));
-        }
-        Ok(match &condition.kind {
-            ConditionKind::Order {
-                relation: order,
-                query,
-                within,
-                at,
-                scope,
-                pick,
-            } => {
-                let inner = Relation::new(self.other_query(
-                    query,
-                    input.program.unit,
-                    condition.span.start,
-                )?);
-                let predicate = self.rel_order_pair(
-                    relation,
-                    inner,
-                    *order,
-                    within.as_ref(),
-                    *at,
-                    scope.as_deref(),
-                    pick,
-                    condition.span.start,
-                )?;
-                if selected.is_some_and(|selected| std::ptr::eq(selected, condition)) {
-                    *exposed = Some(RelationOutput::capture(relation));
-                }
-                RelationOutput::capture(input).install(relation);
-                predicate
-            }
-            ConditionKind::And { conditions } | ConditionKind::Or { conditions } => {
-                let op = if matches!(condition.kind, ConditionKind::And { .. }) {
-                    " AND "
-                } else {
-                    " OR "
-                };
-                let values = conditions
+        query_language::depth::deeper(|| {
+            if input.open_fields
+                && !contains_order(condition)
+                && !materialized_condition(condition, &input.program.column_slots)
+                && input
+                    .sources
                     .iter()
-                    .enumerate()
-                    .map(|(index, c)| {
+                    .filter(|source| source.prefix.is_empty())
+                    .count()
+                    == 1
+                && let Some(source) = input.sources.iter().find(|source| source.prefix.is_empty())
+            {
+                let context = RowContext {
+                    unit: source.unit,
+                    a: self.fresh(),
+                };
+                let predicate = self.cond(condition, &context, false)?;
+                let key = context.a.expand(units::spec(context.unit).key);
+                return Ok(format!(
+                    "(SELECT ({predicate}) FROM {} WHERE {key} = r.{})",
+                    base_from(context.unit, &context.a),
+                    column_sql(&source.key)
+                ));
+            }
+            Ok(match &condition.kind {
+                ConditionKind::Order {
+                    relation: order,
+                    query,
+                    within,
+                    at,
+                    scope,
+                    pick,
+                } => {
+                    let inner = Relation::new(self.other_query(
+                        query,
+                        input.program.unit,
+                        condition.span.start,
+                    )?);
+                    let predicate = self.rel_order_pair(
+                        relation,
+                        inner,
+                        *order,
+                        within.as_ref(),
+                        *at,
+                        scope.as_deref(),
+                        pick,
+                        condition.span.start,
+                    )?;
+                    if selected.is_some_and(|selected| std::ptr::eq(selected, condition)) {
+                        *exposed = Some(RelationOutput::capture(relation));
+                    }
+                    RelationOutput::capture(input).install(relation);
+                    predicate
+                }
+                ConditionKind::And { conditions } | ConditionKind::Or { conditions } => {
+                    let op = if matches!(condition.kind, ConditionKind::And { .. }) {
+                        " AND "
+                    } else {
+                        " OR "
+                    };
+                    let values = conditions
+                        .iter()
+                        .enumerate()
+                        .map(|(index, c)| {
+                            self.relation_condition(
+                                relation,
+                                input,
+                                c,
+                                &ConditionScope {
+                                    fields: scope.fields,
+                                    path: scope.path.field("kind").field("conditions").index(index),
+                                },
+                                selected,
+                                exposed,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    format!("({})", values.join(op))
+                }
+                ConditionKind::Not { condition } => {
+                    format!(
+                        "NOT ({})",
                         self.relation_condition(
                             relation,
                             input,
-                            c,
+                            condition,
                             &ConditionScope {
                                 fields: scope.fields,
-                                path: scope.path.field("kind").field("conditions").index(index),
+                                path: scope.path.field("kind").field("condition")
                             },
                             selected,
-                            exposed,
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                format!("({})", values.join(op))
-            }
-            ConditionKind::Not { condition } => {
-                format!(
-                    "NOT ({})",
-                    self.relation_condition(
-                        relation,
-                        input,
-                        condition,
-                        &ConditionScope {
-                            fields: scope.fields,
-                            path: scope.path.field("kind").field("condition")
-                        },
-                        selected,
-                        exposed
-                    )?
-                )
-            }
-            ConditionKind::Compare { left, op, right } => {
-                let info = self
-                    .typing
-                    .as_ref()
-                    .and_then(|typing| typing.operand(&scope.path.field("kind").field("left")))
-                    .map(|operand| operand.result.clone());
-                let path = *op == Op::Prefix
-                    && info.as_ref().is_some_and(|info| {
-                        info.field.natural_match() == query_language::catalog::NaturalMatch::Subtree
-                    });
-                if path {
-                    self.natural_comparison(
-                        left,
-                        right,
-                        query_language::catalog::NaturalMatch::Subtree,
-                        condition.span.start,
-                        &mut |compiler, name, at| input.field(compiler, name, at),
-                    )?
-                } else {
-                    self.expression_comparison(
-                        left,
-                        *op,
-                        right,
-                        condition.span.start,
-                        &mut |compiler, name, at| input.field(compiler, name, at),
-                    )?
+                            exposed
+                        )?
+                    )
                 }
-            }
-            ConditionKind::Between { left, from, to } => {
-                let lo = self.expression_comparison(
-                    left,
-                    Op::Ge,
-                    &Expression::value(from.clone()),
-                    condition.span.start,
-                    &mut |compiler, name, at| input.field(compiler, name, at),
-                )?;
-                let hi = self.expression_comparison(
-                    left,
-                    Op::Le,
-                    &Expression::value(to.clone()),
-                    condition.span.start,
-                    &mut |compiler, name, at| input.field(compiler, name, at),
-                )?;
-                format!("({lo}) AND ({hi})")
-            }
-            ConditionKind::Match {
-                field,
-                value: Value::Unknown | Value::Known,
-            } => {
-                let (sql, _) = input.field(self, field, condition.span.start)?;
-                format!(
-                    "({sql}) IS {}NULL",
-                    if matches!(
-                        condition.kind,
-                        ConditionKind::Match {
-                            value: Value::Known,
-                            ..
-                        }
-                    ) {
-                        "NOT "
+                ConditionKind::Compare { left, op, right } => {
+                    let info = self
+                        .typing
+                        .as_ref()
+                        .and_then(|typing| typing.operand(&scope.path.field("kind").field("left")))
+                        .map(|operand| operand.result.clone());
+                    let path = *op == Op::Prefix
+                        && info.as_ref().is_some_and(|info| {
+                            info.field.natural_match()
+                                == query_language::catalog::NaturalMatch::Subtree
+                        });
+                    if path {
+                        self.natural_comparison(
+                            left,
+                            right,
+                            query_language::catalog::NaturalMatch::Subtree,
+                            condition.span.start,
+                            &mut |compiler, name, at| input.field(compiler, name, at),
+                        )?
                     } else {
-                        ""
+                        self.expression_comparison(
+                            left,
+                            *op,
+                            right,
+                            condition.span.start,
+                            &mut |compiler, name, at| input.field(compiler, name, at),
+                        )?
                     }
-                )
-            }
-            ConditionKind::Match { field, value } => {
-                let info = scope.fields.and_then(|scope| scope.field(field));
-                if !matches!(value, Value::Any)
-                    && info.is_some_and(|info| {
-                        matches!(info.field.kind, query_language::catalog::FieldKind::List(_))
-                    })
-                {
-                    return Err(not_built("natural matching on list-valued derived columns"));
                 }
-                let natural = info
-                    .map(|info| info.field.natural_match())
-                    .unwrap_or(query_language::catalog::NaturalMatch::Equal);
-                if matches!(value, Value::Any) {
-                    "1".into()
-                } else {
-                    self.natural_comparison(
-                        &Expression::field(field),
-                        &Expression::value(value.clone()),
-                        natural,
+                ConditionKind::Between { left, from, to } => {
+                    let lo = self.expression_comparison(
+                        left,
+                        Op::Ge,
+                        &Expression::value(from.clone()),
                         condition.span.start,
                         &mut |compiler, name, at| input.field(compiler, name, at),
-                    )?
+                    )?;
+                    let hi = self.expression_comparison(
+                        left,
+                        Op::Le,
+                        &Expression::value(to.clone()),
+                        condition.span.start,
+                        &mut |compiler, name, at| input.field(compiler, name, at),
+                    )?;
+                    format!("({lo}) AND ({hi})")
                 }
-            }
-            _ => return Err(not_built("this condition on a derived relation")),
+                ConditionKind::Match {
+                    field,
+                    value: Value::Unknown | Value::Known,
+                } => {
+                    let (sql, _) = input.field(self, field, condition.span.start)?;
+                    format!(
+                        "({sql}) IS {}NULL",
+                        if matches!(
+                            condition.kind,
+                            ConditionKind::Match {
+                                value: Value::Known,
+                                ..
+                            }
+                        ) {
+                            "NOT "
+                        } else {
+                            ""
+                        }
+                    )
+                }
+                ConditionKind::Match { field, value } => {
+                    let info = scope.fields.and_then(|scope| scope.field(field));
+                    if !matches!(value, Value::Any)
+                        && info.is_some_and(|info| {
+                            matches!(info.field.kind, query_language::catalog::FieldKind::List(_))
+                        })
+                    {
+                        return Err(not_built("natural matching on list-valued derived columns"));
+                    }
+                    let natural = info
+                        .map(|info| info.field.natural_match())
+                        .unwrap_or(query_language::catalog::NaturalMatch::Equal);
+                    if matches!(value, Value::Any) {
+                        "1".into()
+                    } else {
+                        self.natural_comparison(
+                            &Expression::field(field),
+                            &Expression::value(value.clone()),
+                            natural,
+                            condition.span.start,
+                            &mut |compiler, name, at| input.field(compiler, name, at),
+                        )?
+                    }
+                }
+                _ => return Err(not_built("this condition on a derived relation")),
+            })
         })
     }
 }
@@ -1594,7 +1597,7 @@ fn materialized_expression(
     value: &Expression,
     columns: &std::collections::BTreeMap<String, String>,
 ) -> bool {
-    match value {
+    query_language::depth::deeper(|| match value {
         Expression::Field { name } => columns.contains_key(name),
         Expression::Function { arguments, .. } => arguments
             .iter()
@@ -1603,13 +1606,13 @@ fn materialized_expression(
             materialized_expression(left, columns) || materialized_expression(right, columns)
         }
         Expression::Value { .. } => false,
-    }
+    })
 }
 fn materialized_condition(
     condition: &Condition,
     columns: &std::collections::BTreeMap<String, String>,
 ) -> bool {
-    match &condition.kind {
+    query_language::depth::deeper(|| match &condition.kind {
         ConditionKind::And { conditions } | ConditionKind::Or { conditions } => conditions
             .iter()
             .any(|condition| materialized_condition(condition, columns)),
@@ -1624,5 +1627,5 @@ fn materialized_condition(
         | ConditionKind::TimeRange { left, .. }
         | ConditionKind::In { left, .. } => materialized_expression(left, columns),
         _ => false,
-    }
+    })
 }
