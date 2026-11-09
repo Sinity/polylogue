@@ -144,9 +144,8 @@ operator's host does so with AgentCTL, whose descriptor in `.agentctl/`
 carries only host tuning. Use it where your environment provides it; the
 commands and their results are the same either way.
 
-The pre-commit hook checks whitespace and formatting of staged files; the
-pre-push hook checks formatting and crate boundaries when Rust inputs
-changed. Both take seconds.
+The pre-commit hook checks whitespace and formatting of staged files in
+seconds. Crate boundaries and everything else run in `cargo xtask check`.
 
 **Performance is a product goal.** The targets and the overlapped
 pipeline are in `docs/architecture.md`. Measure with paired `cargo xtask bench`
