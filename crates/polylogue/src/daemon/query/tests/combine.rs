@@ -153,7 +153,7 @@ fn fused_pages_concatenate_to_the_whole_answer() {
 #[test]
 fn counted_conditions_count_related_rows() {
     let w = morrow();
-    let failing = "sessions where count(tool_call where outcome:error) >= 1";
+    let failing = "sessions where count(tool_calls where outcome:error) >= 1";
     assert_eq!(ids(&q(&w, failing)), ["#4", "#2"]);
     assert_eq!(
         ids(&q(&w, "sessions where count(tool_calls) > 2")),
@@ -162,7 +162,7 @@ fn counted_conditions_count_related_rows() {
     // A count is known for every session: it and its NOT partition them.
     let not = q(
         &w,
-        "sessions where NOT count(tool_call where outcome:error) >= 1",
+        "sessions where NOT count(tool_calls where outcome:error) >= 1",
     );
     assert_eq!(
         count(&q(&w, failing)) + count(&not),
@@ -178,7 +178,7 @@ fn in_compares_with_the_values_a_query_groups_by() {
             &w,
             "sessions where id in (messages where chrono | group by session)"
         )),
-        ids(&q(&w, "sessions where exists message(chrono)"))
+        ids(&q(&w, "sessions where exists messages(chrono)"))
     );
     assert_eq!(
         error(&w, "sessions where id in (messages where chrono)").code(),

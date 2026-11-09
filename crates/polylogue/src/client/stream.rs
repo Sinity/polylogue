@@ -37,7 +37,7 @@ pub fn run_call(
         .unwrap_or(command_surface::LatencyClass::Local);
     let budget = request
         .deadline
-        .socket_timeout(crate::protocol::operations::deadlines().get(class));
+        .connection_timeout(crate::protocol::operations::deadlines().get(class));
     let outgoing = crate::protocol::wire::Outgoing {
         request,
         caller: crate::protocol::caller::evidence(),

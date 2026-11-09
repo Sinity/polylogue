@@ -120,7 +120,7 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
     let position = w.daemon.reads.reader().unwrap().change_position().unwrap();
     for expression in [
         "tool_calls where outcome:error | group by session | count".to_owned(),
-        "sessions where exists tool_call(outcome:error)".into(),
+        "sessions where exists tool_calls(outcome:error)".into(),
         "messages where written_by:human chrono".into(),
         "sessions where cost:unknown".into(),
         "tool_calls | union (outcome:error)".into(),

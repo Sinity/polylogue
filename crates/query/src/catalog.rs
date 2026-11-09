@@ -104,7 +104,6 @@ pub fn catalog(origins: &[String]) -> Catalog {
             }
             query_language::catalog::Unit {
                 name: spec.name.into(),
-                singular: Some(spec.singular.into()),
                 sequence_unit: Some("tool_calls".into()),
                 order_scope: (unit == Unit::ToolCalls).then(|| "session_tool_calls".into()),
                 fields: declarations,

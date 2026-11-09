@@ -28,14 +28,9 @@ impl Unit {
         crate::units::spec(self).name
     }
 
-    /// The singular form `exists` and `seq` use.
-    pub fn singular(self) -> &'static str {
-        crate::units::spec(self).singular
-    }
-
     pub fn from_name(name: &str) -> Option<Unit> {
         let name = name.to_ascii_lowercase();
-        Unit::all().find(|u| u.name() == name || u.singular() == name)
+        Unit::all().find(|u| u.name() == name)
     }
 }
 
@@ -48,7 +43,6 @@ pub struct ColumnSpec {
 pub struct UnitSpec {
     pub unit: Unit,
     pub name: &'static str,
-    pub singular: &'static str,
     pub in_session: bool,
     pub identity: &'static [&'static str],
     pub main_time: Option<&'static str>,
@@ -74,7 +68,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Sessions,
         name: "sessions",
-        singular: "session",
         in_session: false,
         identity: &["id"],
         main_time: Some("last_active"),
@@ -117,7 +110,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Documents,
         name: "documents",
-        singular: "document",
         in_session: false,
         identity: &["id"],
         main_time: Some("source_time"),
@@ -152,7 +144,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Messages,
         name: "messages",
-        singular: "message",
         in_session: true,
         identity: &["id"],
         main_time: Some("at"),
@@ -190,7 +181,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Blocks,
         name: "blocks",
-        singular: "block",
         in_session: true,
         identity: &["message", "idx"],
         main_time: Some("at"),
@@ -234,7 +224,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::ToolCalls,
         name: "tool_calls",
-        singular: "tool_call",
         in_session: true,
         identity: &["message", "idx"],
         main_time: Some("at"),
@@ -302,7 +291,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Files,
         name: "files",
-        singular: "file",
         in_session: true,
         identity: &["session", "path"],
         main_time: Some("first_at"),
@@ -344,7 +332,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Events,
         name: "events",
-        singular: "event",
         in_session: true,
         identity: &["id"],
         main_time: Some("at"),
@@ -386,7 +373,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Assertions,
         name: "assertions",
-        singular: "assertion",
         in_session: false,
         identity: &["id", "root"],
         main_time: Some("created_at"),
@@ -433,7 +419,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Links,
         name: "links",
-        singular: "link",
         in_session: false,
         identity: &["parent", "child", "kind", "how"],
         main_time: None,
@@ -477,7 +462,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Turns,
         name: "turns",
-        singular: "turn",
         in_session: true,
         identity: &["id"],
         main_time: Some("start"),
@@ -559,7 +543,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Deliveries,
         name: "deliveries",
-        singular: "delivery",
         in_session: true,
         identity: &["id"],
         main_time: Some("at"),
@@ -603,7 +586,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::LiveIntervals,
         name: "live_intervals",
-        singular: "live_interval",
         in_session: true,
         identity: &["session", "aspect", "start"],
         main_time: Some("start"),
@@ -645,7 +627,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Processes,
         name: "processes",
-        singular: "process",
         in_session: true,
         identity: &["session", "boot_id", "pid", "start"],
         main_time: Some("started_at"),
@@ -707,7 +688,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Changes,
         name: "changes",
-        singular: "change",
         in_session: false,
         identity: &["kind", "ref"],
         main_time: Some("seq"),

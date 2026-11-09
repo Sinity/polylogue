@@ -3,7 +3,7 @@ use crate::{
     commands::{Caller, Surface},
     daemon::{Request, service::Daemon},
 };
-use command_surface::{Answer, Operation, OperationFuture, OperationSpec, RequestContext};
+use command_surface::{Answer, Operation, OperationFuture, RequestContext};
 use serde_json::json;
 use std::{
     future::{Future, poll_fn},
@@ -26,9 +26,6 @@ struct HeldCatalog {
 impl Operation for HeldCatalog {
     type Request = crate::protocol::setting::Arguments;
     type Response = crate::protocol::setting::Answer;
-    fn spec(&self) -> OperationSpec {
-        crate::protocol::operations::specification(crate::commands::command("setting").unwrap())
-    }
 
     fn execute(
         &self,
@@ -57,9 +54,6 @@ impl Operation for HeldCatalog {
             self.release.acquire().await.unwrap().forget();
             Answer::ok(value)
         })
-    }
-    fn render_text(&self, answer: &Self::Response) -> String {
-        serde_json::to_string(answer).unwrap()
     }
 }
 fn admitted(
@@ -112,8 +106,9 @@ async fn each_request_publishes_only_under_its_own_native_scope() {
     let daemon = crate::test_daemon::start("native per-request publication scope");
     let release = Arc::new(Semaphore::new(0));
     let calls = Arc::new(AtomicUsize::new(0));
-    let mut table = command_surface::OperationTable::new("polylogue", Default::default());
-    table
+    let mut declarations =
+        command_surface::OperationDeclarations::builder("polylogue", Default::default());
+    declarations
         .declare_tool(command_surface::ToolFamily {
             name: "note".into(),
             description: "Settings".into(),
@@ -121,12 +116,24 @@ async fn each_request_publishes_only_under_its_own_native_scope() {
             idempotent: true,
         })
         .unwrap();
+    declarations
+        .declare::<crate::protocol::setting::Arguments, crate::protocol::setting::Answer>(
+            crate::protocol::operations::specification(
+                crate::commands::command("setting").unwrap(),
+            ),
+            |answer, _| serde_json::to_string(answer).unwrap(),
+        )
+        .unwrap();
+    let mut table = command_surface::OperationTable::new(declarations.finish());
     table
-        .register(HeldCatalog {
-            daemon: Arc::clone(&daemon.daemon),
-            release: Arc::clone(&release),
-            calls: Arc::clone(&calls),
-        })
+        .bind(
+            "setting",
+            HeldCatalog {
+                daemon: Arc::clone(&daemon.daemon),
+                release: Arc::clone(&release),
+                calls: Arc::clone(&calls),
+            },
+        )
         .unwrap();
     let envelope = command_surface::Request {
         operation: "setting".into(),

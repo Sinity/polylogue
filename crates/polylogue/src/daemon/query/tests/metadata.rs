@@ -35,14 +35,14 @@ fn empty_exists_and_scoped_matches_use_the_real_child_projection() {
         assert_eq!(
             q(
                 &archive,
-                &format!("{target} AND exists tool_call() | count")
+                &format!("{target} AND exists tool_calls() | count")
             )["rows"][0]["count"],
             u64::from(present)
         );
         assert_eq!(
             q(
                 &archive,
-                &format!("{target} AND NOT exists tool_call() | count")
+                &format!("{target} AND NOT exists tool_calls() | count")
             )["rows"][0]["count"],
             u64::from(!present)
         );
@@ -50,13 +50,13 @@ fn empty_exists_and_scoped_matches_use_the_real_child_projection() {
     assert_eq!(
         q(
             &archive,
-            "sessions where id:codex:empty-exists AND exists tool_call() | matches"
+            "sessions where id:codex:empty-exists AND exists tool_calls() | matches"
         )["count"],
         0
     );
     let matched = q(
         &archive,
-        &format!("{session} AND exists tool_call() | matches"),
+        &format!("{session} AND exists tool_calls() | matches"),
     );
     assert_eq!(matched["count"], 6);
     assert!(
@@ -68,7 +68,7 @@ fn empty_exists_and_scoped_matches_use_the_real_child_projection() {
     );
     let scoped = q(
         &archive,
-        &format!("{session} | messages where exists tool_call(action:shell) | matches | count"),
+        &format!("{session} | messages where exists tool_calls(action:shell) | matches | count"),
     );
     assert_eq!(scoped["rows"][0]["count"], 6);
 }

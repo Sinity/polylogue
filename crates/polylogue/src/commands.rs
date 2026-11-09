@@ -214,9 +214,7 @@ pub struct Command {
     pub reason: &'static str,
     pub latency: command_surface::LatencyClass,
     pub failures: &'static [command_surface::FailureKind],
-    pub register: Option<
-        fn(std::sync::Arc<crate::daemon::service::Daemon>, &mut command_surface::OperationTable),
-    >,
+    pub register: Option<crate::protocol::operations::Registration>,
     pub typed_schemas: Option<fn() -> (Value, Value)>,
     pub build_typed: Option<TypedRequestBuilder>,
     /// Decodes an answer's value as the operation's declared type, so a
@@ -473,7 +471,7 @@ macro_rules! typed_command {
         }
         Command {
             name: $name,
-            register: Some(crate::protocol::operations::register::<$marker>),
+            register: Some(crate::protocol::operations::registration::<$marker>()),
             build_typed: Some(crate::protocol::operations::build::<$marker>),
             typed_schemas: Some(|| (schemars::schema_for!($arguments).to_value(), schemars::schema_for!(command_surface::Answer<$answer>).to_value())),
             decode_answer: Some(decodes::<$answer>),

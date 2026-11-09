@@ -1,42 +1,17 @@
 use super::*;
-use command_surface::{
-    Answer, Deadline, JsonSchema, Operation, OperationFuture, OperationSpec, RequestContext,
-    ToolFamily,
-};
+use command_surface::{Deadline, JsonSchema, OperationDeclarations, OperationSpec, ToolFamily};
 use polylogue_model::{ChangePosition, Timestamp, read::*};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::Arc;
 #[derive(Serialize, Deserialize, JsonSchema)]
 struct Arguments {
     target: String,
     view: Option<View>,
 }
-struct Read;
-impl Operation for Read {
-    type Request = Arguments;
-    type Response = Value;
-    fn spec(&self) -> OperationSpec {
-        let mut spec = OperationSpec::request(
-            "read",
-            &["read"],
-            "read",
-            "Read a synthetic record",
-            "Test shared frame integration",
-        );
-        spec.http_route = Some("/api/v1/read".into());
-        spec.failures = vec![FailureKind::BadRequest];
-        spec
-    }
-    fn render_text(&self, answer: &Value) -> String {
-        answer.to_string()
-    }
-    fn execute(&self, _: Arguments, _: RequestContext) -> OperationFuture<'_, Answer<Value>> {
-        Box::pin(async { Answer::ok(Value::Null) })
-    }
-}
-fn read_table() -> OperationTable {
-    let mut table = OperationTable::new("polylogue", Default::default());
-    table
+fn read_table() -> Arc<OperationDeclarations> {
+    let mut declarations = OperationDeclarations::builder("polylogue", Default::default());
+    declarations
         .declare_tool(ToolFamily {
             name: "read".into(),
             description: "Read a synthetic record".into(),
@@ -44,8 +19,19 @@ fn read_table() -> OperationTable {
             idempotent: true,
         })
         .unwrap();
-    table.register(Read).unwrap();
-    table
+    let mut spec = OperationSpec::request(
+        "read",
+        &["read"],
+        "read",
+        "Read a synthetic record",
+        "Test shared frame integration",
+    );
+    spec.http_route = Some("/api/v1/read".into());
+    spec.failures = vec![FailureKind::BadRequest];
+    declarations
+        .declare::<Arguments, Value>(spec, |answer, _| answer.to_string())
+        .unwrap();
+    declarations.finish()
 }
 fn page() -> ReadPage {
     ReadPage {

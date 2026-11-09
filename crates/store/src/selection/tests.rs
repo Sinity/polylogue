@@ -1088,7 +1088,7 @@ fn matches_evaluate_selected_parents_once_and_keep_their_order() {
     for order in ["id desc", "random()"] {
         for _ in 0..8 {
             let selection = reader.prepare_query_selection(
-                &format!("sessions where exists message(role:assistant) | sort by {order} | limit 2 | matches"),
+                &format!("sessions where exists messages(role:assistant) | sort by {order} | limit 2 | matches"),
                 &options
             ).unwrap();
             let mut rows = Vec::new();

@@ -153,7 +153,7 @@ fn step_order_counts_every_call_before_filtering_and_ignores_message_sequence_ga
     assert_eq!(
         rows(
             &fixture,
-            "sessions where exists tool_call(command:last) | matches | fields step.command as command, step.position as ordinal"
+            "sessions where exists tool_calls(command:last) | matches | fields step.command as command, step.position as ordinal"
         ),
         [json!({"command":"last", "ordinal":3})]
     );
