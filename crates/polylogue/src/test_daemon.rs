@@ -145,6 +145,7 @@ fn start_with_clock_and_workers(
         data["store"]["messages"].as_u64() == Some(1)
             && data["store"]["search_pending"].as_u64() == Some(0)
     });
+    daemon.wait_for_signal_checkpoint();
     daemon
 }
 
@@ -169,6 +170,27 @@ impl TestDaemon {
         while status()["busy"] != false {
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// Waits until the signals worker's first evaluation has committed its
+    /// checkpoint to archive.db, then until the loop is idle. That commit is
+    /// asynchronous to the parse, so without this a test's first two calls
+    /// could see different archive positions (plnext-0sqw).
+    pub(crate) fn wait_for_signal_checkpoint(&self) {
+        let machine = self.config.machine.clone();
+        let committed = || {
+            self.daemon
+                .reads
+                .reader()
+                .unwrap()
+                .signal_checkpoint(&machine)
+                .unwrap()
+                .is_some()
+        };
+        while !committed() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.wait_for(|_| true);
     }
 
     /// Restarts the daemon over the same synthetic archive and home.

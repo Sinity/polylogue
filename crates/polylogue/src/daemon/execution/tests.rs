@@ -227,3 +227,27 @@ fn continued_read_is_a_page_with_an_ordinary_read_deadline() {
     let policy = policy(&request);
     assert!(policy.read_only && !policy.streaming && policy.default_deadline);
 }
+
+#[test]
+fn a_read_first_write_whose_deadline_passes_after_handoff_answers_its_write() {
+    let limit = ReadLimit::new(Duration::from_millis(50), Default::default());
+    let response = within_limit(&limit, true, false, "assert-query", None, || {
+        crate::daemon::handler::finish_read_phase("write").expect("handed over in time");
+        assert!(ReadLimit::current().is_none(), "the read phase ended");
+        // The writer's commit outlasts the read deadline.
+        std::thread::sleep(Duration::from_millis(100));
+        crate::daemon::service::ok(serde_json::json!({"written": true}))
+    });
+    assert_eq!(
+        crate::test_answers::ok(response),
+        serde_json::json!({"written": true})
+    );
+}
+
+#[test]
+fn a_read_phase_that_has_run_out_refuses_the_handoff() {
+    let limit = ReadLimit::new(Duration::ZERO, Default::default());
+    limit.scope(|| {
+        assert!(crate::daemon::handler::finish_read_phase("write").is_err());
+    });
+}

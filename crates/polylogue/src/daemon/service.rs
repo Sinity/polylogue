@@ -488,11 +488,11 @@ fn context(
             Ok(writes) => writes,
             Err(failure) => return failure.answer(),
         };
-        if let Err(error) = ReadLimit::finish_scope("record delivery") {
-            return store_error(&error);
-        }
         if let Err(error) = operation.check_parent_lifetime() {
             return store_error(&error);
+        }
+        if let Err(failure) = super::handler::finish_read_phase("record delivery") {
+            return failure.answer();
         }
         // Queued without the caller's lifetime: the text has been handed
         // over, so its record is written even when the caller has gone.
@@ -602,11 +602,9 @@ fn submit<T: serde::Serialize>(
     present: impl FnOnce(polylogue_model::user::UserOutcome) -> T,
 ) -> Answer<Value> {
     let accepted = || -> Result<_, Failure> {
-        if let Some(limit) = polylogue_store::read::limit::ReadLimit::current() {
-            limit.check()?;
-        }
         let writes = writer(d)?;
         invocation.check_parent_lifetime()?;
+        super::handler::finish_read_phase("write")?;
         Ok(writes)
     };
     let writes = match accepted() {

@@ -562,7 +562,9 @@ impl<H: Handler> Operation for Row<H> {
             let guard = CancelRead(cancellation.clone());
             let daemon = Arc::clone(&self.daemon);
             let row = self.row;
+            let table_context = context.clone();
             let worker = tokio::task::spawn_blocking(move || {
+                let _table = TableContext::enter(table_context);
                 let limit = match &parent {
                     Some(parent) => parent.read_limit(cancellation),
                     None if default_limit => super::execution::limit(None, cancellation),
@@ -697,6 +699,40 @@ pub(crate) fn within_limit(
             return super::execution::refusal(&error, stage, text, limit);
         }
         response
+    })
+}
+
+thread_local! {
+    /// The operation table's context of the request this thread is answering.
+    static TABLE_CONTEXT: std::cell::RefCell<Option<RequestContext>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Holds the table context for the request a worker thread answers, and
+/// forgets it when the answer is done.
+struct TableContext;
+impl TableContext {
+    fn enter(context: RequestContext) -> Self {
+        TABLE_CONTEXT.with(|current| current.replace(Some(context)));
+        Self
+    }
+}
+impl Drop for TableContext {
+    fn drop(&mut self) {
+        TABLE_CONTEXT.with(|current| current.replace(None));
+    }
+}
+
+/// Ends the read phase before a mutation is handed to its writer: the
+/// daemon's read limit stops applying, and the operation table no longer
+/// answers a timeout for this request. A read phase that has already run
+/// out refuses the handoff instead, so a write is never handed over and
+/// then reported as timed out.
+pub(crate) fn finish_read_phase(stage: &'static str) -> Result<(), Failure> {
+    ReadLimit::finish_scope(stage).map_err(Failure::from)?;
+    TABLE_CONTEXT.with(|current| match current.borrow().as_ref() {
+        Some(context) => context.finish_read_phase().map_err(Failure::from),
+        None => Ok(()),
     })
 }
 
