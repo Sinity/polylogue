@@ -815,9 +815,13 @@ fn replay_capture_group_retains_its_material_until_applied() {
         Payload::ReplaySequence { group: Some(_) }
     ));
     assert_eq!(spool.decode_frame("replacement").unwrap(), replay);
-    spool
-        .acknowledge(ack("replacement", false, Some(21)))
-        .unwrap();
+    let mut replayed = ack("replacement", false, Some(21));
+    replayed.result = FrameResult::Replayed {
+        operation: sinex_model::OperationId(uuid::Uuid::nil()),
+        admitted: vec![],
+        commit_seq: Some(21),
+    };
+    spool.acknowledge(replayed).unwrap();
     spool
         .retire(
             &crate::tests::applied(20),
