@@ -22,9 +22,9 @@ pub(crate) fn invalid(error: TextFragmentError) -> StoreError {
 }
 
 pub(crate) fn version_key(version: &TextSourceVersion) -> Result<String> {
-    let mut value = serde_json::to_value(version)?;
-    value.sort_all_objects();
-    Ok(serde_json::to_string(&value)?)
+    let bytes =
+        canonical_json::canonical_json(version).map_err(crate::encoding::identity_encoding)?;
+    String::from_utf8(bytes).map_err(|error| StoreError::Invalid(error.to_string()))
 }
 
 pub(crate) fn receipt(value: u64) -> Result<i64> {
@@ -53,12 +53,11 @@ impl PreparedFragments {
                         "invalid receiving fragment byte range".into(),
                     ));
                 }
-                let mut value = serde_json::to_value(&row.record)?;
-                value.sort_all_objects();
-                let bytes = serde_json::to_vec(&value)?;
-                let mut hash = blake3::Hasher::new();
-                hash.update(b"polylogue-text-fragment-record-v1\0");
-                hash.update(&bytes);
+                let hash = canonical_json::canonical_hash(
+                    "polylogue-text-fragment-record-v1",
+                    &row.record,
+                )
+                .map_err(crate::encoding::identity_encoding)?;
                 Ok(PreparedFragment {
                     row: row.clone(),
                     receipt: output
@@ -67,9 +66,9 @@ impl PreparedFragments {
                         .copied()
                         .map(receipt)
                         .transpose()?,
-                    hash: BlobHash(*hash.finalize().as_bytes()),
+                    hash: BlobHash(*hash.as_bytes()),
                     version: version_key(&row.record.fragment.source_version)?,
-                    body: crate::encoding::pack_json(&value)?,
+                    body: crate::encoding::pack_json(&row.record)?,
                 })
             })
             .collect::<Result<Vec<_>>>()

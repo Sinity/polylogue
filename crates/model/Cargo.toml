@@ -12,6 +12,7 @@ query-language.workspace = true
 schemars.workspace = true
 tempfile.workspace = true
 serde.workspace = true
+canonical-json.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 authored.workspace = true

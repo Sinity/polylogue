@@ -23,6 +23,7 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 
 - **Every version of a parsed row is stored**, and the shown versions form a total order. A growing file read again adds versions in receipt order.
 - **Reading the same bytes again changes nothing**: a row version's hash is a function of the bytes and the reading version.
+- **Every identity hash reads one JSON encoding**: the shared canonical JSON (a domain tag where the identity has one, object keys sorted, numbers as spelled), so no hash depends on map order or on the features serde_json was built with.
 - **Times keep their source precision.** A parsed time keeps the precision, quality and bounds the source gave it ([capture.md](capture.md#source-clocks)); millisecond columns used by queries are an index over it and never replace it.
 - **Message IDs are stable across re-parse.** A source without native message IDs gets a fallback ID from the input and record position (`<stem>@<offset>`), stable for the same bytes.
 - Which route's reading of a conversation is shown, field by field, is in [sessions.md](sessions.md#one-conversation-through-several-routes).

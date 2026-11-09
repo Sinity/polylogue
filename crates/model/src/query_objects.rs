@@ -172,7 +172,7 @@ impl ObjectExecutionBinding {
         validate_presentation(&self.presentation, Some(&self.reference))
     }
     pub fn hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
-        metadata_hash(b"polylogue-object-execution-binding-v1\0", self)
+        metadata_hash("polylogue-object-execution-binding-v1", self)
     }
 }
 
@@ -333,7 +333,7 @@ impl QueryRun {
     }
     /// Integrity of this exact invocation, including its position and envelope.
     pub fn record_hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
-        metadata_hash(b"polylogue-query-run-begin-v1\0", self)
+        metadata_hash("polylogue-query-run-begin-v1", self)
     }
 }
 
@@ -375,7 +375,7 @@ impl ExecutionBinding {
     }
     /// Stable identity across JSON map insertion orders and feature unions.
     pub fn hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
-        metadata_hash(b"polylogue-execution-binding-v1\0", self)
+        metadata_hash("polylogue-execution-binding-v1", self)
     }
 }
 fn validate_presentation(
@@ -403,30 +403,10 @@ fn validate_presentation(
     }
     Ok(())
 }
-fn metadata_hash(
-    domain: &[u8],
-    value: &impl Serialize,
-) -> Result<crate::BlobHash, serde_json::Error> {
-    fn ordered(value: serde_json::Value) -> serde_json::Value {
-        match value {
-            serde_json::Value::Object(fields) => {
-                let fields: BTreeMap<_, _> = fields.into_iter().collect();
-                serde_json::Value::Object(
-                    fields
-                        .into_iter()
-                        .map(|(key, value)| (key, ordered(value)))
-                        .collect(),
-                )
-            }
-            serde_json::Value::Array(values) => {
-                serde_json::Value::Array(values.into_iter().map(ordered).collect())
-            }
-            value => value,
-        }
-    }
-    let mut bytes = domain.to_vec();
-    bytes.extend(serde_json::to_vec(&ordered(serde_json::to_value(value)?))?);
-    Ok(crate::BlobHash::of(&bytes))
+fn metadata_hash(tag: &str, value: &impl Serialize) -> Result<crate::BlobHash, serde_json::Error> {
+    canonical_json::canonical_hash(tag, value)
+        .map(|hash| crate::BlobHash(*hash.as_bytes()))
+        .map_err(serde::ser::Error::custom)
 }
 
 /// Composition is recorded in semantic question coordinates, not mutable names.

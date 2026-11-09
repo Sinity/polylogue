@@ -64,9 +64,8 @@ pub(super) struct Observer {
 }
 
 pub(super) fn identity(value: &impl Serialize) -> String {
-    let mut value = serde_json::to_value(value).expect("serializable reading");
-    value.sort_all_objects();
-    BlobHash::of(&serde_json::to_vec(&value).expect("serializable reading")).to_string()
+    // Reading IDs are cited as event identities, so their bytes carry no tag.
+    BlobHash::of(&canonical_json::canonical_json(value).expect("serializable reading")).to_string()
 }
 
 impl Observer {

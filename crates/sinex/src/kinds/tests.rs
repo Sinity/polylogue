@@ -222,3 +222,29 @@ fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
         product
     );
 }
+
+#[test]
+fn message_hash_survives_sinex_round_trip() {
+    let facts: polylogue_model::MessageRow = serde_json::from_str(
+        r#"{"offset":0,"end":10,"message":{"id":"codex:m","session":"codex:s","role":"assistant","attrs":{"x":1.50},"blocks":[{"type":"text","text":"done"}]}}"#,
+    )
+    .unwrap();
+    let hash = facts.message.content_hash().unwrap();
+    let product = Product::Message {
+        native_fields: None,
+        declared_injections: None,
+        declared_attachment_bindings: None,
+        reading: reading("input-a", 0),
+        order: None,
+        projection: None,
+        facts: Box::new(facts),
+    };
+    let wire = serde_json::to_vec(&products::payload(&product, 0).unwrap()).unwrap();
+    let returned: serde_json::Value = serde_json::from_slice(&wire).unwrap();
+    let Product::Message { facts, .. } = products::decode("polylogue.message", returned).unwrap()
+    else {
+        panic!("a message product decodes as a message");
+    };
+    assert_eq!(facts.message.attrs["x"].to_string(), "1.50");
+    assert_eq!(facts.message.content_hash().unwrap(), hash);
+}

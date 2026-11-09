@@ -150,8 +150,9 @@ fn persist(
         outbox,
         events,
     };
-    let body = serde_json::to_vec(&commit).map_err(|e| e.to_string())?;
-    let id = format!("signal:{}", blake3::hash(&body).to_hex());
+    let id = canonical_json::canonical_hash("polylogue-signal-commit", &commit)
+        .map_err(|e| e.to_string())?;
+    let id = format!("signal:{}", id.to_hex());
     let request = context.request(id.clone(), UserWrite::SignalCommit(Box::new(commit)));
     #[cfg(test)]
     observations::emit(

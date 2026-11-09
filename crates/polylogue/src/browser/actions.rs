@@ -103,7 +103,11 @@ pub fn new_action(
     let request = serde_json::to_value(req).map_err(|_| Refused("invalid_action"))?;
     let mut hashed = request.clone();
     hashed["files"] = json!(files.iter().map(|f| f.blob.to_string()).collect::<Vec<_>>());
-    let request_hash = BlobHash::of(&serde_json::to_vec(&hashed).unwrap_or_default());
+    let request_hash = BlobHash(
+        *canonical_json::canonical_hash("polylogue-browser-action", &hashed)
+            .map_err(|_| Refused("invalid_action"))?
+            .as_bytes(),
+    );
     Ok(NewChatAction {
         id: uuid::Uuid::now_v7().to_string(),
         request_key: request_key.to_owned(),

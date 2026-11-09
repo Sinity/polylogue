@@ -27,6 +27,33 @@ fn event_identity_distinguishes_message_anchors_and_ignores_physical_ranges() {
 }
 
 #[test]
+fn event_id_independent_of_map_insertion_order() {
+    let event = |data: serde_json::Value| Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
+        session: Some(polylogue_model::SessionId::parse("chatgpt:example").unwrap()),
+        kind: "settings".into(),
+        at: None,
+        after: None,
+        range: None,
+        data,
+    };
+    // The workspace builds serde_json with preserve_order, so these two maps
+    // keep their members in the order written here.
+    let forward: serde_json::Value =
+        serde_json::from_str(r#"{"a": 1, "b": {"x": 1.50, "y": [true]}}"#).unwrap();
+    let reverse: serde_json::Value =
+        serde_json::from_str(r#"{"b": {"y": [true], "x": 1.50}, "a": 1}"#).unwrap();
+    assert_ne!(forward.to_string(), reverse.to_string());
+    let (id, _) = pack_event(&event(forward)).unwrap();
+    assert_eq!(id, pack_event(&event(reverse)).unwrap().0);
+    let respelled: serde_json::Value =
+        serde_json::from_str(r#"{"a": 1, "b": {"x": 1.5, "y": [true]}}"#).unwrap();
+    assert_ne!(id, pack_event(&event(respelled)).unwrap().0);
+}
+
+#[test]
 fn text_rows_read_older_compression_levels_and_reuse_a_packer() {
     let mut packer = RowPacker::new().unwrap();
     for text in ["", "Łódź café 🦀", "a repeated body", "a repeated body"] {
