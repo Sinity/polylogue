@@ -115,11 +115,19 @@ struct Queue {
     bulk: VecDeque<Job>,
     in_flight: u64,
     closed: bool,
+    /// Workers waiting for a job or handing their last group to the
+    /// writer, the most recently idle last.
+    idle: Vec<usize>,
 }
 
+/// A new job wakes the worker that went idle last. A worker's allocator
+/// keeps what its last job freed for its next one; handing consecutive jobs
+/// to one worker reuses that memory, where waking the longest-idle worker
+/// would leave a job's worth of freed memory with every worker in turn.
 struct Shared {
     queue: Mutex<Queue>,
-    work: Condvar,
+    /// One per worker, so a job wakes the chosen one.
+    wake: Vec<Condvar>,
     room: Condvar,
     limit: u64,
 }
@@ -139,14 +147,16 @@ impl Pool {
         archive: polylogue_store::Archive,
         done: Sender<Done>,
     ) -> Self {
+        let workers = workers.max(1);
         let shared = Arc::new(Shared {
             queue: Mutex::new(Queue {
                 live: VecDeque::new(),
                 bulk: VecDeque::new(),
                 in_flight: 0,
                 closed: false,
+                idle: Vec::with_capacity(workers),
             }),
-            work: Condvar::new(),
+            wake: (0..workers).map(|_| Condvar::new()).collect(),
             room: Condvar::new(),
             limit: bytes_in_flight.max(1),
         });
@@ -156,7 +166,7 @@ impl Pool {
             .name("polylogue-acknowledgments".into())
             .spawn(move || acknowledge_groups(pending, acknowledged))
             .expect("spawn acknowledgment reader");
-        let workers = (0..workers.max(1))
+        let workers = (0..workers)
             .map(|i| {
                 let shared = Arc::clone(&shared);
                 let writer = writer.clone();
@@ -165,7 +175,7 @@ impl Pool {
                 let acknowledge = acknowledge.clone();
                 std::thread::Builder::new()
                     .name(format!("polylogue-parse-{i}"))
-                    .spawn(move || work(&shared, &writer, &blobs, &archive, &acknowledge))
+                    .spawn(move || work(i, &shared, &writer, &blobs, &archive, &acknowledge))
                     .expect("spawn a parse worker")
             })
             .collect();
@@ -190,7 +200,9 @@ impl Pool {
             Priority::Live => q.live.push_back(job),
             Priority::Bulk => q.bulk.push_back(job),
         }
-        self.shared.work.notify_one();
+        if let Some(worker) = q.idle.pop() {
+            self.shared.wake[worker].notify_one();
+        }
     }
 }
 
@@ -199,7 +211,9 @@ impl Drop for Pool {
         if let Ok(mut q) = self.shared.queue.lock() {
             q.closed = true;
         }
-        self.shared.work.notify_all();
+        for wake in &self.shared.wake {
+            wake.notify_all();
+        }
         for w in self.workers.drain(..) {
             let _ = w.join();
         }
@@ -231,6 +245,7 @@ fn release(shared: &Shared, bytes: u64) {
 }
 
 fn work(
+    me: usize,
     shared: &Arc<Shared>,
     writer: &WriterSender,
     store: &Arc<polylogue_store::blobs::Blobs>,
@@ -245,6 +260,7 @@ fn work(
     loop {
         let job = {
             let mut q = shared.queue.lock().expect("pool lock");
+            let mut woken = false;
             loop {
                 if let Some(j) = q.live.pop_front().or_else(|| q.bulk.pop_front()) {
                     polylogue_store::timing::queue(polylogue_store::timing::Queue::Parse, -1);
@@ -252,13 +268,28 @@ fn work(
                 }
                 if !group.waiting.is_empty() {
                     // Nothing waiting: make the group durable and hand it on
-                    // now rather than hold it.
+                    // now rather than hold it. The next job, which may well
+                    // be this input's next range once the group commits, is
+                    // this worker's; it looks at the queue again after the
+                    // hand-over, so a wake sent meanwhile is not needed.
+                    q.idle.retain(|&worker| worker != me);
+                    q.idle.push(me);
                     break None;
                 }
                 if q.closed {
                     return;
                 }
-                q = shared.work.wait(q).expect("pool lock");
+                // A worker woken for a job another worker took first goes
+                // back as the least recently idle, so the one that ran the
+                // last job stays first; a spurious wake leaves it listed.
+                q.idle.retain(|&worker| worker != me);
+                if woken {
+                    q.idle.insert(0, me);
+                } else {
+                    q.idle.push(me);
+                }
+                q = shared.wake[me].wait(q).expect("pool lock");
+                woken = true;
             }
         };
         let Some(job) = job else {

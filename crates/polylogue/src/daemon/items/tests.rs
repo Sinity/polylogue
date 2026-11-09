@@ -159,3 +159,73 @@ fn a_cancelled_read_stops_waiting_for_another_reads_load() {
     pause.release();
     assert!(leader.join().unwrap().is_some());
 }
+
+fn event_entry(event: &str, cleared: Vec<String>) -> IndexEntry {
+    IndexEntry {
+        key: EntryKey::Event {
+            event: event.to_owned(),
+        },
+        kind: EntryKind::Event,
+        written_by: polylogue_model::WrittenBy::Harness,
+        prompt_kind: None,
+        active_path: None,
+        branch_point: false,
+        at: None,
+        body_bytes: 0,
+        tokens_line: 0,
+        tokens_full: 0,
+        output_lines: 0,
+        action: None,
+        target: None,
+        call_id: None,
+        event_kind: Some("microcompaction".to_owned()),
+        boundary: None,
+        context_tokens: None,
+        cleared,
+    }
+}
+
+/// The cache's size bound counts the strings an index holds, in its entries
+/// and again in its key map, not a fixed size per entry: a session whose
+/// entries hold large strings takes its real share of the bound.
+#[test]
+fn a_cached_index_is_sized_by_the_strings_it_holds() {
+    let index = |cleared: usize| {
+        CachedIndex::new(
+            sid("sized"),
+            1,
+            ItemVersions {
+                append_seq: 1,
+                rewrite_version: 1,
+            },
+            (0..100)
+                .map(|i| event_entry(&format!("event-{i:04}"), vec!["c".repeat(cleared)]))
+                .collect(),
+        )
+    };
+    let small = index(0);
+    let large = index(10_000);
+    // Each of the 100 entries holds 10,000 more bytes of cleared call IDs.
+    assert!(
+        large.bytes() - small.bytes() >= 100 * 10_000,
+        "{} vs {}",
+        large.bytes(),
+        small.bytes()
+    );
+    // Every entry's event ID is held twice: by the entry and by the key map.
+    let keyed = |event_bytes: usize| {
+        CachedIndex::new(
+            sid("sized"),
+            1,
+            ItemVersions {
+                append_seq: 1,
+                rewrite_version: 1,
+            },
+            (0..100)
+                .map(|i| event_entry(&format!("{i:0event_bytes$}"), Vec::new()))
+                .collect(),
+        )
+        .bytes()
+    };
+    assert!(keyed(1_000) - keyed(10) >= 2 * 100 * 990);
+}
