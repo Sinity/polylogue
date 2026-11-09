@@ -92,6 +92,12 @@ enum Msg {
         SyncSender<Result<BlobHash>>,
     ),
     ReplaceChain(InputKey, i64, u64, ChainReading, SyncSender<Result<u64>>),
+    /// Record older chains' readings from newer chains of the same inputs
+    /// holding the same bytes.
+    CopyReadings(
+        Vec<crate::ReadingCopy>,
+        SyncSender<Result<Vec<Result<bool>>>>,
+    ),
     Confirmed(Vec<crate::primary::Confirmed>, SyncSender<Result<i64>>),
     DrainPrimaryCaptures(SyncSender<Result<()>>),
     /// The stream follower handled a page, or failed to read one.
@@ -961,6 +967,19 @@ impl WriterSender {
         coverage_via(&self.0, coverage)
     }
 
+    /// Records each copy's older chain reading from its newer chain, which
+    /// holds the same bytes and was read under the copy's reading version,
+    /// in one transaction. Each answer is `false` when that copy would not
+    /// equal parsing the chain (and always in primary mode, where the index
+    /// follows Sinex); the caller then parses it.
+    pub fn copy_readings(&self, copies: Vec<crate::ReadingCopy>) -> Result<Vec<Result<bool>>> {
+        let (reply, wait) = sync_channel(1);
+        self.0
+            .send(Msg::CopyReadings(copies, reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
     /// Puts sessions whose live state changed with the clock alone on the
     /// change feed ([`crate::live`]).
     pub fn live_clock(&self, sessions: Vec<String>) -> Result<()> {
@@ -1216,6 +1235,7 @@ impl Inner {
         let mut assets = Vec::new();
         let mut coverage = Vec::new();
         let mut live_clock = Vec::new();
+        let mut copies = Vec::new();
         let mut confirmations = Vec::new();
         let mut capture_drains = Vec::new();
         let mut followed = Vec::new();
@@ -1269,6 +1289,10 @@ impl Inner {
                     }
                     Msg::LiveClock(sessions, reply) => {
                         live_clock.push((sessions, reply));
+                        false
+                    }
+                    Msg::CopyReadings(group, reply) => {
+                        copies.push((group, reply));
                         false
                     }
                     Msg::StoreBlob(blob, reply) => {
@@ -1432,6 +1456,9 @@ impl Inner {
             for (sessions, reply) in live_clock.drain(..) {
                 let _ = reply.send(self.write_live_clock(&sessions));
             }
+            for (group, reply) in copies.drain(..) {
+                let _ = reply.send(self.write_copy_readings(&group));
+            }
             for (query, reply) in raw_cursors.drain(..) {
                 let result = query.validate().and_then(|()| {
                     self.sinex
@@ -1536,6 +1563,29 @@ impl Inner {
         self.commits.committed();
         self.report.transactions += 1;
         Ok(())
+    }
+
+    fn write_copy_readings(&mut self, copies: &[crate::ReadingCopy]) -> Result<Vec<Result<bool>>> {
+        if self.sinex.is_some() {
+            return Ok(copies.iter().map(|_| Ok(false)).collect());
+        }
+        let mut tx = self.index.transaction()?;
+        let counter = bump_counter(&tx)?;
+        let mut answers = Vec::with_capacity(copies.len());
+        for copy in copies {
+            // A copy that cannot be exact leaves nothing behind.
+            let point = tx.savepoint()?;
+            let answer = crate::fault::check("write.copy_reading", &copy.input)
+                .and_then(|()| crate::same_bytes::copy_reading(&point, copy, counter));
+            if matches!(answer, Ok(true)) {
+                point.commit()?;
+            }
+            answers.push(answer);
+        }
+        crate::write_lock::commit(tx)?;
+        self.commits.committed();
+        self.report.transactions += 1;
+        Ok(answers)
     }
 
     fn write_coverage(&mut self, coverage: polylogue_model::capture::Coverage) -> Result<()> {

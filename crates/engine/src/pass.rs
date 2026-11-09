@@ -494,6 +494,7 @@ impl Engine {
             pass.errors.extend(report.errors);
         }
         self.execute(plans, &mut pass)?;
+        self.copy_same_bytes(&mut pass)?;
         if deferred_database && pass.errors.is_empty() && !self.captures.pending() {
             // Local parsing may have made a deferred database runnable. Start
             // that real work in this batch; a still-pending reading just yields.
@@ -888,7 +889,10 @@ impl Engine {
     /// which follows its file ([`Engine::stored_plan`]). The same loop builds
     /// the index from stored bytes as from files, so a rebuild needs no
     /// command of its own; older chains go through the ordinary parser and
-    /// writer, where a newer chain wins. `selected` limits it to some inputs.
+    /// writer, where a newer chain wins. An older chain that holds exactly
+    /// the bytes of a newer chain of its input is not parsed: its reading is
+    /// that chain's, copied once that chain is read ([`Engine::copy_same_bytes`]).
+    /// `selected` limits it to some inputs.
     ///
     /// The chains run on the parse pool together, in rounds that hold one
     /// chain per path, since the pool runs one plan per path at a time.
@@ -910,9 +914,10 @@ impl Engine {
                 .collect::<Vec<_>>(),
             polylogue_store::StoppedChains::ForAttempt(self.stopped_attempt),
         )?;
+        // Chains set aside by an earlier pass that ended early are found again.
+        self.same_bytes.clear();
         let mut replacements = Vec::new();
-        let mut rounds: Vec<Vec<Plan>> = Vec::new();
-        let mut chains_per_path: HashMap<PathBuf, usize> = HashMap::new();
+        let mut parse = Vec::new();
         let watched: HashMap<String, PathBuf> = self
             .inputs
             .iter()
@@ -1029,6 +1034,39 @@ impl Engine {
                 replacements.push(plan);
                 continue;
             }
+            if !c.current
+                && !state.parsed
+                && !self.archive.is_primary()
+                && !origin.is_row_dump(&plan.path)
+                && let Some(newer) = self
+                    .reads
+                    .reader()?
+                    .newest_identical_chain(&plan.input.id, state.chain)?
+            {
+                // Parsing the same bytes again gives the newer chain's
+                // reading; it is copied once that chain is read.
+                let copy = polylogue_store::ReadingCopy {
+                    input: plan.input.id.clone(),
+                    from: newer,
+                    to: state.chain,
+                    reading_version: origin.reading_version(),
+                };
+                self.same_bytes.push((plan, copy));
+                continue;
+            }
+            parse.push(plan);
+        }
+        self.replace_readings(replacements, pass)?;
+        self.execute_by_path(parse, pass)
+    }
+
+    /// Runs plans of stored chains on the parse pool together, in rounds that
+    /// hold one chain per path, since the pool runs one plan per path at a
+    /// time; within a path, plans keep their order.
+    fn execute_by_path(&mut self, plans: Vec<Plan>, pass: &mut Pass) -> Result<(), EngineError> {
+        let mut rounds: Vec<Vec<Plan>> = Vec::new();
+        let mut chains_per_path: HashMap<PathBuf, usize> = HashMap::new();
+        for plan in plans {
             let round = chains_per_path.entry(plan.path.clone()).or_default();
             if *round == rounds.len() {
                 rounds.push(Vec::new());
@@ -1036,11 +1074,38 @@ impl Engine {
             rounds[*round].push(plan);
             *round += 1;
         }
-        self.replace_readings(replacements, pass)?;
         for round in rounds {
             self.execute(round, pass)?;
         }
         Ok(())
+    }
+
+    /// Records each older chain set aside by [`Engine::reparse_behind`] from
+    /// its newer chain of the same bytes, now that the pass has read that
+    /// chain. A chain whose copy would not equal its parse (the newer chain
+    /// stopped, or its reading writes rows shared by the input's chains) is
+    /// parsed instead.
+    fn copy_same_bytes(&mut self, pass: &mut Pass) -> Result<(), EngineError> {
+        if self.same_bytes.is_empty() {
+            return Ok(());
+        }
+        let report = self.flush_writes()?;
+        pass.messages_written += report.messages;
+        pass.errors.extend(report.errors);
+        let (plans, copies): (Vec<Plan>, Vec<_>) =
+            std::mem::take(&mut self.same_bytes).into_iter().unzip();
+        let answers = self.writer.sender()?.copy_readings(copies)?;
+        let mut parse = Vec::new();
+        for (plan, answer) in plans.into_iter().zip(answers) {
+            // A copy that would not be exact, or failed, is parsed instead,
+            // which gives the same reading.
+            if matches!(answer, Ok(true)) {
+                pass.readings_copied += 1;
+            } else {
+                parse.push(plan);
+            }
+        }
+        self.execute_by_path(parse, pass)
     }
 
     /// The plan for a watched location whose current chain the index is
