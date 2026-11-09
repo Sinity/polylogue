@@ -387,7 +387,11 @@ impl Client {
         Ok(page)
     }
 
-    pub(crate) async fn acknowledge(&mut self, state: &ReplayState) -> Result<()> {
+    pub(crate) async fn acknowledge(
+        &mut self,
+        state: &ReplayState,
+        applied: &dyn Fn(&str) -> Result<bool>,
+    ) -> Result<()> {
         // A confirmed delivery may retire original producer bytes. Freeze must
         // cover that retirement until its immutable queue cut is acquired.
         let _publication = self.publication.enter().await;
@@ -424,7 +428,7 @@ impl Client {
         self.spool
             .lock()
             .map_err(|_| Error::Invalid("producer spool panicked".into()))?
-            .retire(&retirement)?;
+            .retire(&retirement, applied)?;
         Ok(())
     }
 }

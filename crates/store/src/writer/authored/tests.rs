@@ -308,7 +308,11 @@ impl crate::primary::Sinex for Producer {
         });
         Ok(events)
     }
-    fn acknowledge(&self, _: &crate::primary::ReplayState) -> Result<()> {
+    fn acknowledge(
+        &self,
+        _: &crate::primary::ReplayState,
+        _: &dyn Fn(&str) -> Result<bool>,
+    ) -> Result<()> {
         Ok(())
     }
 }

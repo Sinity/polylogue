@@ -35,7 +35,7 @@ mod replay;
 use crate::{Result, StoreError};
 #[cfg(test)]
 pub(crate) use replay::save as save_replay;
-pub(crate) use replay::{native_context, replay_state};
+pub(crate) use replay::{has_fact, native_context, replay_state};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet, HashMap};

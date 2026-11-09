@@ -101,6 +101,8 @@ fn follow_once(
         .map_err(|_| StoreError::WriterGone)?;
     wait.recv().map_err(|_| StoreError::WriterGone)??;
     let applied = crate::primary::projection::replay_state(index)?;
-    sinex.acknowledge(&applied)?;
+    sinex.acknowledge(&applied, &|event| {
+        crate::primary::projection::has_fact(index, event)
+    })?;
     Ok(applied.applied_position.unwrap_or(0))
 }

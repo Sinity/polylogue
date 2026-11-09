@@ -386,7 +386,11 @@ impl crate::primary::Sinex for OfflineProducer {
             Self::unavailable()
         }
     }
-    fn acknowledge(&self, _: &crate::primary::ReplayState) -> Result<()> {
+    fn acknowledge(
+        &self,
+        _: &crate::primary::ReplayState,
+        _: &dyn Fn(&str) -> Result<bool>,
+    ) -> Result<()> {
         if self.root.join("ready").exists() {
             Ok(())
         } else {
