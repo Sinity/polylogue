@@ -47,12 +47,12 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
             client.flush().await.unwrap();ready.send(()).unwrap();
             let request=hello.next().await.unwrap();let inbox=request.reply.unwrap();
             assert!(inbox.starts_with("_INBOX.polylogue."));
-            sinex_transport::replies::publish_json(&client,inbox.to_string(),ProducerWelcome{refusal:None,family:Some("polylogue".into()),canonical_publisher:true},Duration::from_secs(5)).await.unwrap();
+            sinex_transport::replies::publish_json(&client,inbox.to_string(),ProducerWelcome::Welcome{family:Some("polylogue".into()),canonical_publisher:true},Duration::from_secs(5)).await.unwrap();
             let frame=ingress.next().await.unwrap();
             let sinex_protocol::Ingress::RegisterKinds{frame,declarations}=serde_json::from_slice(&frame.payload).unwrap() else {panic!("kind registration expected")};
             let hashes:Vec<_>=declarations.iter().map(|declaration|(declaration.kind.clone(),declaration.definition_hash())).collect();
             let mut receipt=crate::tests::no_event_receipt(&sinex_protocol::Ingress::RegisterKinds{frame:frame.clone(),declarations:declarations.clone()});
-            receipt.outcome["registered_kinds"]=serde_json::to_value(hashes).unwrap();
+            receipt.result=sinex_protocol::FrameResult::KindsRegistered{kinds:hashes};
             client.publish("auth.ack.polylogue",serde_json::to_vec(&sinex_protocol::ReceiptHint{number:1,frame_hash:blake3::hash(frame.as_bytes()).to_hex().to_string()}).unwrap().into()).await.unwrap();
             let request=recorded.next().await.unwrap();
             let query:sinex_protocol::RecordedQuery=serde_json::from_slice(&request.payload).unwrap();assert_eq!(query.numbers,[1]);
@@ -74,7 +74,7 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
                     _ => panic!("unexpected no-event frame"),
                 }
                 let mut receipt=crate::tests::no_event_receipt(&frame);
-                receipt.number=Some(number);
+                receipt.number=number;
                 client.publish("auth.ack.polylogue",serde_json::to_vec(&sinex_protocol::ReceiptHint{number,frame_hash:blake3::hash(expected.as_bytes()).to_hex().to_string()}).unwrap().into()).await.unwrap();
                 let request=recorded.next().await.unwrap();
                 let query:sinex_protocol::RecordedQuery=serde_json::from_slice(&request.payload).unwrap();
@@ -85,12 +85,12 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
             let request=consumers.next().await.unwrap();
             let query:sinex_protocol::ConfirmedConsumer=serde_json::from_slice(&request.payload).unwrap();
             assert_eq!(query,sinex_protocol::ConfirmedConsumer{basis:None,after:42,cache:"cache-test".into(),status_only:false});
-            let reply=sinex_protocol::ConfirmedConsumerReply{position:Some(50),stream:subjects.confirmed_stream(),stream_instance:Some("instance".into()),consumer:"consumer".into(),scope:"test-scope".into(),refusal:None,gap:None};
+            let reply=sinex_protocol::ConfirmedConsumerReply::Provisioned{position:50,stream:subjects.confirmed_stream(),stream_instance:Some("instance".into()),consumer:"consumer".into(),scope:"test-scope".into()};
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),reply,Duration::from_secs(5)).await.unwrap();
             let request=consumers.next().await.unwrap();
             let query:sinex_protocol::ConfirmedConsumer=serde_json::from_slice(&request.payload).unwrap();
             assert_eq!(query.after,0,"an index that applied nothing reads the stream from its start");
-            let reply=sinex_protocol::ConfirmedConsumerReply{refusal:Some("synthetic refusal".into()),..Default::default()};
+            let reply=sinex_protocol::ConfirmedConsumerReply::Refused{reason:"synthetic refusal".into()};
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),reply,Duration::from_secs(5)).await.unwrap();
         });
     });
@@ -109,17 +109,20 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
                 declarations: Vec::new(),
             };
             let hash = sinex_transport::producer::content_hash(&frame).unwrap();
-            let receipt: sinex_protocol::Acknowledgment = serde_json::from_value(
-                serde_json::json!({"number":2,"frame":frame.frame(),"material":null,
-                    "admitted":[],"outcome":{"frame_content_hash":hash},
-                    "refusal":"exact owner declaration refusal","commit_seq":null}),
-            )
-            .unwrap();
+            let receipt = sinex_protocol::Acknowledgment {
+                number: 2,
+                frame: frame.frame().into(),
+                content_hash: Some(hash),
+                result: sinex_protocol::FrameResult::Refused {
+                    kind: sinex_model::FrameRefusal::Content,
+                    reason: "exact owner declaration refusal".into(),
+                },
+            };
             {
                 let spool = client.spool.lock().unwrap();
                 let prepared = spool.prepare(frame.clone()).unwrap();
                 let mut mismatch = receipt.clone();
-                mismatch.outcome["frame_content_hash"] = "different payload".into();
+                mismatch.content_hash = Some("different payload".into());
                 assert!(matches!(
                     super::verified_receipt(&prepared, mismatch),
                     Err(Error::ReceiptConflict { .. })
@@ -137,12 +140,11 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
                 declarations: Vec::new(),
             };
             let offered_hash = sinex_transport::producer::content_hash(&conflict).unwrap();
-            let receipt: sinex_protocol::Acknowledgment = serde_json::from_value(
-                serde_json::json!({"number":3,"frame":conflict.frame(),"material":null,
-                    "admitted":[],"outcome":{"frame_content_hash":"different payload"},
-                    "refusal":null,"commit_seq":null}),
-            )
-            .unwrap();
+            let receipt = sinex_protocol::Acknowledgment {
+                content_hash: Some("different payload".into()),
+                number: 3,
+                ..crate::tests::no_event_receipt(&conflict)
+            };
             {
                 let spool = client.spool.lock().unwrap();
                 spool.prepare(conflict.clone()).unwrap();
@@ -185,7 +187,7 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
                 },
             ] {
                 let receipt = client.send(frame.clone()).await?;
-                assert_eq!(receipt.commit_seq, None);
+                assert_eq!(receipt.commit_seq(), None);
                 assert_eq!(
                     client.spool.lock().unwrap().acknowledgment(frame.frame())?,
                     Some(receipt)
@@ -265,7 +267,7 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
     // The corresponding retry succeeds without changing bytes or identity.
     std::fs::write(&frame_path, original_frame).unwrap();
     let mut receipt = crate::tests::no_event_receipt(&pending);
-    receipt.number = Some(4);
+    receipt.number = 4;
     sinex.queue().unwrap().acknowledge(receipt).unwrap();
     sinex.send_pending();
     let read_error = sinex.status().unwrap().error.unwrap();

@@ -5,37 +5,27 @@ use polylogue_store::primary::{
 };
 use serde_json::json;
 
-/// The complete Core outcome for an accepted frame admitting no new events.
+/// The acknowledgment of an accepted frame that admitted no new events, as
+/// Sinex records it: an empty admission, also for a kind registration that
+/// declares nothing.
 pub(crate) fn no_event_receipt(frame: &sinex_protocol::Ingress) -> sinex_protocol::Acknowledgment {
-    let mut event_types = match frame {
-        sinex_protocol::Ingress::Events { events, .. } => events
-            .iter()
-            .map(|event| event.kind.name.clone())
-            .collect::<Vec<_>>(),
-        _ => Vec::new(),
-    };
-    event_types.sort();
-    event_types.dedup();
-    let source = match frame {
-        sinex_protocol::Ingress::Events { source, .. } => {
-            source.as_ref().map(|source| source.name.as_str())
-        }
-        sinex_protocol::Ingress::ReplaySequence { sequence, .. } => {
-            Some(sequence.source.name.as_str())
-        }
-        _ => None,
-    };
-    serde_json::from_value(json!({
-        "number":1,"frame":frame.frame(),"material":null,"admitted":[],
-        "outcome":{
-            "frame_content_hash":sinex_transport::producer::content_hash(frame).unwrap(),
-            "registered_kinds":[],"commit_range":null,"superseded_input":0,
-            "replay_archived":0,"removed_at_source":0,"dirty_keys":0,
-            "admitted":0,"repeats":0,"replaced":0,"older":0,"superseded":0,
-            "failures":0,"refusal_kind":null,"source":source,"event_types":event_types
-        },"refusal":null,"commit_seq":null
-    }))
-    .unwrap()
+    sinex_protocol::Acknowledgment {
+        number: 1,
+        frame: frame.frame().into(),
+        content_hash: Some(sinex_transport::producer::content_hash(frame).unwrap()),
+        result: sinex_protocol::FrameResult::Admitted {
+            material: None,
+            material_extents: vec![],
+            admitted: vec![],
+            counts: sinex_model::AdmissionCounts::default(),
+            commit_seq: None,
+        },
+    }
+}
+
+/// Admission counts that are all zero, as JSON for receipts written inline.
+pub(crate) fn zero_counts() -> serde_json::Value {
+    serde_json::to_value(sinex_model::AdmissionCounts::default()).unwrap()
 }
 
 /// An index that holds every event, for tests about positions and receipts.
@@ -187,7 +177,7 @@ fn grouped_capture_remains_pending_until_its_confirmed_barrier() {
         )
         .unwrap();
     let physical = extent(root.path(), bytes);
-    let receipt=serde_json::from_value(json!({"number":1,"frame":raw.identity,"material":crate::material_id("polylogue-test", &raw.identity),"material_extents":[physical.encode()],"admitted":[],"outcome":{},"refusal":null,"commit_seq":null})).unwrap();
+    let receipt=serde_json::from_value(json!({"number":1,"frame":raw.identity,"material":crate::material_id("polylogue-test", &raw.identity),"material_extents":[physical.encode()],"admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":null})).unwrap();
     sinex.spool.lock().unwrap().acknowledge(receipt).unwrap();
     let pending = sinex.pending_captures().unwrap();
     let material = pending[0].material.clone().unwrap();
@@ -205,7 +195,7 @@ fn grouped_capture_remains_pending_until_its_confirmed_barrier() {
         .complete_captures(std::slice::from_ref(&raw.identity), &[write])
         .unwrap();
     assert_eq!(sinex.pending_captures().unwrap()[0].identity, raw.identity);
-    sinex.spool.lock().unwrap().acknowledge(serde_json::from_value(json!({"number":2,"frame":grouped.identity,"material":null,"admitted":[],"outcome":{},"refusal":null,"commit_seq":10})).unwrap()).unwrap();
+    sinex.spool.lock().unwrap().acknowledge(serde_json::from_value(json!({"number":2,"frame":grouped.identity,"material":null,"admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":10})).unwrap()).unwrap();
     sinex
         .spool
         .lock()
@@ -348,7 +338,7 @@ fn advisory_readiness_is_nonblocking_and_retains_pending_advice_across_restart()
     let queue = sinex.queue().unwrap();
     let receipt = serde_json::from_value(json!({
         "number":1,"frame":identity,"material":crate::material_id("polylogue-test",identity),"material_extents":[],
-        "admitted":[],"outcome":{},"refusal":null,"commit_seq":18
+        "admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":18
     })).unwrap();
     queue.acknowledge(receipt).unwrap();
     drop(queue);

@@ -5,7 +5,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use hashed_blobs::{BlobReader, EncodedBlob, Preparation, ReadLimits};
 use polylogue_store::primary::{Capture, ReplayState};
 use serde::{Deserialize, Serialize};
-use sinex_protocol::{Acknowledgment, Ingress};
+use sinex_protocol::{Acknowledgment, FrameResult, Ingress};
 use std::cell::{Cell, RefCell};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, Write};
@@ -116,11 +116,11 @@ pub(crate) enum Phase {
 impl Phase {
     /// The phase an acknowledgment from the owner settles.
     fn settled_by(acknowledgment: &Acknowledgment) -> Self {
-        if acknowledgment.refusal.is_some() {
+        if acknowledgment.refusal().is_some() {
             Self::Refused
         } else {
             Self::Acknowledged {
-                commit_seq: acknowledgment.commit_seq,
+                commit_seq: acknowledgment.commit_seq(),
             }
         }
     }
@@ -1775,7 +1775,7 @@ fn remove_dot_entries(directory: &Path) -> Result<()> {
 }
 
 fn all_applied(receipt: &Acknowledgment, applied: &dyn Fn(&str) -> Result<bool>) -> Result<bool> {
-    for event in &receipt.admitted {
+    for event in receipt.admitted() {
         if !applied(&event.to_string())? {
             return Ok(false);
         }
@@ -1872,102 +1872,99 @@ fn material_facts(frame: &Ingress) -> Result<Option<MaterialFacts>> {
     }))
 }
 
+/// Checks an acknowledgment against the operation it answers: the identity,
+/// the result its kind of frame can have, and the values the prepared frame
+/// fixes. Serde has already refused every reply that is not one result.
 fn validate_ack(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<()> {
-    validate_ack_header(
-        prepared,
-        &acknowledgment.frame,
-        acknowledgment
-            .material
-            .as_ref()
-            .map(ToString::to_string)
-            .as_deref(),
-        acknowledgment.commit_seq,
-        acknowledgment.refusal.is_some(),
-    )?;
-    if acknowledgment.refusal.is_none()
-        && acknowledgment.commit_seq.is_none()
-        && matches!(
-            prepared.payload,
-            Payload::Events { .. } | Payload::ReplaySequence { .. } | Payload::RegisterKinds
-        )
-    {
-        validate_no_event_position(prepared, acknowledgment)?;
+    if acknowledgment.frame != prepared.identity {
+        return invalid("acknowledgment names another prepared operation");
     }
-    Ok(())
-}
-
-/// An absent admitted-event position is an explicit owner outcome, not an
-/// empty or partial receipt. Replay lifecycle changes can have their own stream
-/// positions without admitting new events in this frame.
-fn validate_no_event_position(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<()> {
-    if acknowledgment.number.is_none_or(|number| number <= 0)
-        || acknowledgment.content_hash() != Some(prepared.frame.blob.as_str())
-        || !acknowledgment.admitted.is_empty()
-        || acknowledgment.material.is_some()
-        || !acknowledgment.material_extents.is_empty()
+    if acknowledgment
+        .commit_seq()
+        .is_some_and(|position| position < 0)
     {
-        return invalid("unpositioned acknowledgment lacks exact durable frame evidence");
+        return invalid("acknowledgment has a negative confirmed position");
     }
-    let outcome = &acknowledgment.outcome;
-    for field in [
-        "admitted",
-        "repeats",
-        "replaced",
-        "older",
-        "superseded",
-        "superseded_input",
-        "failures",
-        "dirty_keys",
-        "replay_archived",
-        "removed_at_source",
-    ] {
-        if outcome
-            .get(field)
-            .and_then(serde_json::Value::as_u64)
-            .is_none()
+    match (&acknowledgment.result, &prepared.payload) {
+        (FrameResult::Refused { .. }, _) => Ok(()),
+        (FrameResult::KindsRegistered { .. }, Payload::RegisterKinds) => {
+            exact_frame(prepared, acknowledgment)
+        }
+        (FrameResult::KindsRegistered { .. }, _) => {
+            invalid("event acknowledgment claims kind registration")
+        }
+        // Sinex records a registration that declares nothing as an empty
+        // admission.
+        (
+            FrameResult::Admitted {
+                material: None,
+                material_extents,
+                admitted,
+                counts,
+                commit_seq: None,
+            },
+            Payload::RegisterKinds,
+        ) if material_extents.is_empty()
+            && admitted.is_empty()
+            && *counts == sinex_model::AdmissionCounts::default() =>
         {
-            return invalid("unpositioned acknowledgment omits a complete admission outcome");
+            exact_frame(prepared, acknowledgment)
+        }
+        (_, Payload::RegisterKinds) => {
+            invalid("kind registration acknowledgment claims an event admission outcome")
+        }
+        (FrameResult::Replayed { commit_seq, .. }, Payload::ReplaySequence { .. }) => {
+            if commit_seq.is_none() {
+                exact_frame(prepared, acknowledgment)?;
+                if !acknowledgment.admitted().is_empty() {
+                    return invalid("newly admitted or replaced events need a confirmed position");
+                }
+            }
+            Ok(())
+        }
+        (FrameResult::Replayed { .. }, _) | (_, Payload::ReplaySequence { .. }) => {
+            invalid("acknowledgment answers another kind of operation")
+        }
+        (
+            FrameResult::Admitted {
+                material,
+                material_extents,
+                admitted,
+                counts,
+                commit_seq,
+            },
+            payload,
+        ) => {
+            if let Some(expected) = prepared.material()
+                && material.as_ref().map(ToString::to_string).as_deref()
+                    != Some(expected.id.as_str())
+            {
+                return invalid("material acknowledgment has another material identity");
+            }
+            // An absent position is an explicit owner outcome, not an empty
+            // or partial receipt.
+            if commit_seq.is_none() && matches!(payload, Payload::Events { .. }) {
+                exact_frame(prepared, acknowledgment)?;
+                if !admitted.is_empty() || material.is_some() || !material_extents.is_empty() {
+                    return invalid(
+                        "unpositioned acknowledgment lacks exact durable frame evidence",
+                    );
+                }
+                if counts.admitted != 0 || counts.replaced != 0 {
+                    return invalid("newly admitted or replaced events need a confirmed position");
+                }
+            }
+            Ok(())
         }
     }
-    if outcome["admitted"] != 0 || outcome["replaced"] != 0 {
-        return invalid("newly admitted or replaced events need a confirmed position");
-    }
-    if outcome.get("commit_range") != Some(&serde_json::Value::Null)
-        || outcome.get("refusal_kind") != Some(&serde_json::Value::Null)
-        || !matches!(
-            outcome.get("source"),
-            Some(serde_json::Value::Null | serde_json::Value::String(_))
-        )
+}
+
+/// The receipt is the owner's durable record of this exact frame body.
+fn exact_frame(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<()> {
+    if acknowledgment.number <= 0
+        || acknowledgment.content_hash.as_deref() != Some(prepared.frame.blob.as_str())
     {
-        return invalid("unpositioned acknowledgment has inconsistent frame outcome metadata");
-    }
-    let kinds: Vec<(sinex_model::KindRef, String)> = serde_json::from_value(
-        outcome
-            .get("registered_kinds")
-            .cloned()
-            .ok_or_else(|| Error::Invalid("acknowledgment omits its kind outcome".into()))?,
-    )?;
-    let event_types: Vec<String> = serde_json::from_value(
-        outcome
-            .get("event_types")
-            .cloned()
-            .ok_or_else(|| Error::Invalid("acknowledgment omits its event types".into()))?,
-    )?;
-    if matches!(prepared.payload, Payload::Events { .. }) && !kinds.is_empty() {
-        return invalid("event acknowledgment claims kind registration");
-    }
-    if matches!(prepared.payload, Payload::RegisterKinds)
-        && (!event_types.is_empty()
-            || outcome["replay_archived"] != 0
-            || outcome["removed_at_source"] != 0
-            || outcome["dirty_keys"] != 0
-            || outcome["failures"] != 0
-            || outcome["repeats"] != 0
-            || outcome["older"] != 0
-            || outcome["superseded"] != 0
-            || outcome["superseded_input"] != 0)
-    {
-        return invalid("kind registration acknowledgment claims an event admission outcome");
+        return invalid("unpositioned acknowledgment lacks exact durable frame evidence");
     }
     Ok(())
 }
@@ -1975,34 +1972,10 @@ fn validate_no_event_position(prepared: &Prepared, acknowledgment: &Acknowledgme
 fn validate_conflict(prepared: &Prepared, offered: &str, receipt: &Acknowledgment) -> Result<()> {
     if receipt.frame != prepared.identity
         || offered != prepared.frame.blob
-        || receipt.number.is_none_or(|number| number <= 0)
-        || receipt.content_hash() == Some(offered)
+        || receipt.number <= 0
+        || receipt.content_hash.as_deref() == Some(offered)
     {
         return invalid("conflict evidence does not bind this exact offered operation");
-    }
-    Ok(())
-}
-fn validate_ack_header(
-    prepared: &Prepared,
-    frame: &str,
-    material: Option<&str>,
-    position: Option<i64>,
-    refused: bool,
-) -> Result<()> {
-    if frame != prepared.identity {
-        return invalid("acknowledgment names another prepared operation");
-    }
-    if refused && position.is_some() {
-        return invalid("refused frame claims a confirmed position");
-    }
-    if position.is_some_and(|position| position < 0) {
-        return invalid("acknowledgment has a negative confirmed position");
-    }
-    if !refused
-        && let Some(expected) = prepared.material()
-        && material != Some(expected.id.as_str())
-    {
-        return invalid("material acknowledgment has another material identity");
     }
     Ok(())
 }

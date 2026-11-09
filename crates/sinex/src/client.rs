@@ -126,7 +126,6 @@ impl Client {
             .await
             .map_err(|e| Error::Unreachable(e.to_string()))?;
         let family = welcome
-            .family
             .filter(|family| family == "polylogue")
             .ok_or_else(|| Error::Refused {
                 name: "connect".into(),
@@ -175,8 +174,11 @@ impl Client {
             declarations,
         };
         let ack = connected.send(registration).await?;
-        let registered: Vec<(sinex_model::KindRef, String)> =
-            serde_json::from_value(ack.outcome["registered_kinds"].clone())?;
+        let sinex_protocol::FrameResult::KindsRegistered { kinds: registered } = ack.result else {
+            return Err(Error::Invalid(
+                "Sinex answered the kind registration with another result".into(),
+            ));
+        };
         if registered != hashes {
             return Err(Error::Invalid(
                 "Sinex acknowledged different kind definitions".into(),
@@ -387,11 +389,12 @@ impl Client {
     }
 }
 
-/// Connects, authenticates and checks the producer welcome.
+/// Connects, authenticates and checks the producer welcome, returning the
+/// write family it configures.
 async fn transport(
     config: &Config,
     authentication: &Authentication,
-) -> Result<(async_nats::Client, Subjects, ProducerWelcome)> {
+) -> Result<(async_nats::Client, Subjects, Option<String>)> {
     let subjects = Subjects::new(config.subject_root.clone());
     let options = match authentication {
         Authentication::Password(password) => async_nats::ConnectOptions::with_user_and_password(
@@ -423,13 +426,13 @@ async fn transport(
     )
     .await
     .map_err(|error| Error::Unreachable(error.to_string()))?;
-    if let Some(reason) = &welcome.refusal {
-        return Err(Error::Refused {
+    match welcome {
+        ProducerWelcome::Refused { reason } => Err(Error::Refused {
             name: "connect".into(),
-            reason: reason.clone(),
-        });
+            reason,
+        }),
+        ProducerWelcome::Welcome { family, .. } => Ok((client, subjects, family)),
     }
-    Ok((client, subjects, welcome))
 }
 
 pub(crate) fn submit_error(error: sinex_transport::producer::SubmitError) -> Error {
@@ -467,12 +470,12 @@ pub(crate) fn verified_receipt(
 }
 
 pub(crate) fn checked(acknowledgment: Acknowledgment) -> Result<Acknowledgment> {
-    match &acknowledgment.refusal {
-        Some(reason) => Err(Error::Refused {
-            name: acknowledgment.frame.clone(),
-            reason: reason.clone(),
+    match acknowledgment.result {
+        sinex_protocol::FrameResult::Refused { reason, .. } => Err(Error::Refused {
+            name: acknowledgment.frame,
+            reason,
         }),
-        None => Ok(acknowledgment),
+        _ => Ok(acknowledgment),
     }
 }
 

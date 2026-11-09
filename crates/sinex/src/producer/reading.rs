@@ -210,15 +210,7 @@ impl Sinex {
                 let selection = selections.remove(0);
                 let mut source = None;
                 for material in &selection.materials {
-                    let fetched = client.fetch_material(material.id).await?;
-                    let actual = fetched
-                        .material
-                        .as_ref()
-                        .ok_or_else(|| {
-                            Error::Invalid("reading material has no registered source".into())
-                        })?
-                        .source
-                        .clone();
+                    let actual = client.fetch_material(material.id).await?.source;
                     if source.as_ref().is_some_and(|source| source != &actual) {
                         return Err(Error::Invalid(
                             "reading materials span different registered sources".into(),

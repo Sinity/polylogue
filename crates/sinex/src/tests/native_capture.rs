@@ -433,7 +433,7 @@ fn offline_empty_native_file_has_an_actual_body_and_eof_with_no_confirmed_source
         };
         let receipt = serde_json::from_value(serde_json::json!({
             "number":1,"frame":identity,"material":material.id,"material_extents":[physical.encode()],
-            "admitted":[],"outcome":{},"refusal":null,"commit_seq":null
+            "admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":null
         })).unwrap();
         queue.acknowledge(receipt).unwrap();
     }

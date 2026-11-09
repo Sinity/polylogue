@@ -215,22 +215,29 @@ impl Sinex {
         let Some(ack) = queue.acknowledgment(&entry.identity)? else {
             return Ok(None);
         };
-        crate::client::checked(ack.clone())?;
+        let ack = crate::client::checked(ack)?;
         let descriptor = entry
             .material()
             .ok_or_else(|| Error::Invalid("capture has no material descriptor".into()))?;
+        let sinex_protocol::FrameResult::Admitted {
+            material: Some(id),
+            material_extents,
+            ..
+        } = ack.result
+        else {
+            return Err(Error::Invalid(
+                "material acknowledgment has no material".into(),
+            ));
+        };
         let material = Material {
-            id: ack
-                .material
-                .ok_or_else(|| Error::Invalid("material acknowledgment has no material".into()))?
-                .to_string(),
+            id: id.to_string(),
             hash: descriptor
                 .blob
                 .strip_prefix("blake3:")
                 .and_then(|hash| BlobHash::parse(hash).ok())
                 .ok_or_else(|| Error::Invalid("invalid material digest".into()))?,
             length: descriptor.length,
-            extents: ack.material_extents,
+            extents: material_extents,
         };
         crate::material::validate(&material)?;
         Ok(Some(material))

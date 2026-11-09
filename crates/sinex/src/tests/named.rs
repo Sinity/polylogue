@@ -200,11 +200,11 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
         let physical_root = root.path().join(format!("receipt-{ordinal}"));
         std::fs::create_dir_all(&physical_root).unwrap();
         let physical = extent(&physical_root, &bytes);
-        sinex.queue().unwrap().acknowledge(serde_json::from_value(json!({"number":ordinal+1,"frame":observation,"material":crate::material_id("polylogue-test",&observation),"material_extents":[physical.encode()],"admitted":[],"outcome":{},"refusal":null,"commit_seq":null})).unwrap()).unwrap();
+        sinex.queue().unwrap().acknowledge(serde_json::from_value(json!({"number":ordinal+1,"frame":observation,"material":crate::material_id("polylogue-test",&observation),"material_extents":[physical.encode()],"admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":null})).unwrap()).unwrap();
     }
     sinex.drain_observations().unwrap();
     for (ordinal, (name, _)) in expected.iter().enumerate() {
-        sinex.queue().unwrap().acknowledge(serde_json::from_value(json!({"number":ordinal+10,"frame":name,"material":null,"admitted":[],"outcome":{},"refusal":null,"commit_seq":10})).unwrap()).unwrap();
+        sinex.queue().unwrap().acknowledge(serde_json::from_value(json!({"number":ordinal+10,"frame":name,"material":null,"admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":10})).unwrap()).unwrap();
     }
     sinex
         .queue()
