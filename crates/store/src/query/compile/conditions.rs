@@ -40,246 +40,258 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         top: bool,
     ) -> Result<String, QueryError> {
-        Ok(match &c.kind {
-            ConditionKind::And { conditions: all } => {
-                // Several words in one AND must occur in the same message.
-                let mut parts = vec![];
-                let mut words = vec![];
-                let native_bounds = if scope.unit != Unit::ToolCalls {
-                    fields::native_window(scope.unit, true, &scope.a).filter(|lower| {
-                        fields::native_window(scope.unit, false, &scope.a).is_some_and(|upper| {
-                            lower.bytes == upper.bytes && lower.storage == upper.storage
-                        })
-                    })
-                } else {
-                    None
-                };
-                let mut conjuncts = vec![];
-                if native_bounds.is_some() {
-                    fn flatten<'b>(conditions: &'b [Condition], output: &mut Vec<&'b Condition>) {
-                        for condition in conditions {
-                            if let ConditionKind::And { conditions } = &condition.kind {
-                                flatten(conditions, output);
-                            } else {
-                                output.push(condition);
-                            }
-                        }
-                    }
-                    flatten(all, &mut conjuncts);
-                } else {
-                    conjuncts.extend(all);
-                }
-                let all = conjuncts;
-                let combine_bounds = native_bounds.is_some()
-                    && all
-                        .iter()
-                        .any(|x| matches!(x.kind, ConditionKind::Since { .. }))
-                    && all
-                        .iter()
-                        .any(|x| matches!(x.kind, ConditionKind::Until { .. }));
-                let mut since = None;
-                let mut until = None;
-                for x in all {
-                    if combine_bounds {
-                        match &x.kind {
-                            ConditionKind::Since { value, .. } => {
-                                let at = self.time("since", value_text(value)?, x.span)?.start();
-                                since = Some(since.map_or(at, |old: jiff::Timestamp| old.max(at)));
-                                continue;
-                            }
-                            ConditionKind::Until { value, .. } => {
-                                let at = self
-                                    .time("until", value_text(value)?, x.span)?
-                                    .until_bound();
-                                until = Some(until.map_or(at, |old: jiff::Timestamp| old.min(at)));
-                                continue;
-                            }
-                            _ => {}
-                        }
-                    }
-                    match &x.kind {
-                        ConditionKind::Text { text, mode }
-                            if !self.is_reference(x, scope.unit) && text_unit(scope.unit) =>
-                        {
-                            words.push((
-                                search_word(text, *mode)?,
-                                *mode == TextMode::Phrase,
-                                x.span,
-                            ));
-                        }
-                        _ => parts.push(self.cond(x, scope, top)?),
-                    }
-                }
-                if combine_bounds {
-                    parts.push(self.native_time_test(
-                        &native_bounds.expect("combined direct native bounds"),
-                        time::NativePredicate::Overlap { since, until },
-                    ));
-                }
-                if !words.is_empty() {
-                    parts.push(self.text(&words, scope, Index::Prose, top)?);
-                }
-                format!("({})", parts.join(" AND "))
-            }
-            ConditionKind::Or { conditions: any } => {
-                let parts = any
-                    .iter()
-                    .map(|x| self.cond(x, scope, false))
-                    .collect::<Result<Vec<_>, _>>()?;
-                format!("({})", parts.join(" OR "))
-            }
-            ConditionKind::Not { condition: cond } => {
-                format!("NOT ({})", self.cond(cond, scope, false)?)
-            }
-            ConditionKind::Text { text, mode } => {
-                if self.is_reference(c, scope.unit) {
-                    self.reference_word(text, scope, c.span)?
-                } else {
-                    self.text(
-                        &[(search_word(text, *mode)?, *mode == TextMode::Phrase, c.span)],
-                        scope,
-                        Index::Prose,
-                        top,
-                    )?
-                }
-            }
-            ConditionKind::Reference { reference } => {
-                let native = matches!(
-                    reference.split_once(':').map(|(kind, _)| kind),
-                    Some("block" | "document" | "event" | "span" | "assertion" | "delivery")
-                );
-                if native || (reference.starts_with("message:") && reference.contains("..")) {
-                    return self.native_reference(reference, scope, c.span);
-                }
-                // Pages and commits are designed reference forms with no producer yet.
-                if let Some(kind @ ("page" | "file")) =
-                    reference.split_once(':').map(|(kind, _)| kind)
-                {
-                    return Err(QueryError::NotBuilt {
-                        what: format!("{kind} references"),
-                    });
-                }
-                if reference.starts_with("http") {
-                    self.url(reference, scope, c.span)?
-                } else if reference.starts_with('@') {
-                    return Err(QueryError::Invalid {
-                        message: "@N requires an interactive listing context".into(),
-                        position: c.span.start,
-                    });
-                } else if let Some((field, text)) = reference.split_once(':') {
-                    let value = Value::scalar(text);
-                    self.field_cond(field, FieldOp::Match(&value), scope, c.span, top)?
-                } else {
-                    self.reference_word(reference, scope, c.span)?
-                }
-            }
-            ConditionKind::Exists { unit, condition } => {
-                self.exists(bind_unit(unit)?, condition.as_deref(), scope, c.span)?
-            }
-            ConditionKind::Count {
-                unit,
-                condition,
-                op,
-                count,
-            } => self.counted(
-                bind_unit(unit)?,
-                condition.as_deref(),
-                *op,
-                *count,
-                scope,
-                c.span,
-            )?,
-            ConditionKind::In {
-                left: operand,
-                query,
-            } => self.member_of(field_operand(operand)?, query, scope, c.span)?,
-            ConditionKind::Saved { name, arguments } => {
-                self.saved_cond(name, arguments, scope, c.span)?
-            }
-            ConditionKind::Sequence {
-                steps,
-                gaps,
-                all: false,
-                unit,
-            } if bind_unit(unit)? == Unit::ToolCalls => self.seq(steps, gaps, scope, c.span)?,
-            ConditionKind::Match { field, value } => {
-                self.field_cond(field, FieldOp::Match(value), scope, c.span, top)?
-            }
-            ConditionKind::Compare { left, op, right } => {
-                if let (
-                    Expression::Field { name },
-                    Expression::Value {
-                        value: Value::Scalar { text, .. },
-                    },
-                ) = (left, right)
-                    && !matches!(op, Op::Contains | Op::Prefix)
-                    && (fields::lookup(scope.unit, name)
-                        .or_else(|| {
-                            fields::has_session(scope.unit)
-                                .then(|| fields::lookup(Unit::Sessions, name))
-                                .flatten()
-                        })
-                        .is_some_and(|field| {
-                            matches!(
-                                field.kind,
-                                Kind::Number | Kind::Money | Kind::Duration | Kind::Time
+        query_language::depth::deeper(|| {
+            Ok(match &c.kind {
+                ConditionKind::And { conditions: all } => {
+                    // Several words in one AND must occur in the same message.
+                    let mut parts = vec![];
+                    let mut words = vec![];
+                    let native_bounds = if scope.unit != Unit::ToolCalls {
+                        fields::native_window(scope.unit, true, &scope.a).filter(|lower| {
+                            fields::native_window(scope.unit, false, &scope.a).is_some_and(
+                                |upper| {
+                                    lower.bytes == upper.bytes && lower.storage == upper.storage
+                                },
                             )
                         })
-                        || self
-                            .expr(name, scope, c.span.start)
-                            .is_ok_and(|(_, kind)| kind == ColKind::Time))
-                {
-                    self.field_cond(name, FieldOp::Compare(*op, text), scope, c.span, top)?
-                } else {
-                    self.expression_comparison(
-                        left,
-                        *op,
-                        right,
-                        c.span.start,
-                        &mut |compiler, name, at| compiler.expr(name, scope, at),
-                    )?
+                    } else {
+                        None
+                    };
+                    let mut conjuncts = vec![];
+                    if native_bounds.is_some() {
+                        fn flatten<'b>(
+                            conditions: &'b [Condition],
+                            output: &mut Vec<&'b Condition>,
+                        ) {
+                            query_language::depth::deeper(|| {
+                                for condition in conditions {
+                                    if let ConditionKind::And { conditions } = &condition.kind {
+                                        flatten(conditions, output);
+                                    } else {
+                                        output.push(condition);
+                                    }
+                                }
+                            })
+                        }
+                        flatten(all, &mut conjuncts);
+                    } else {
+                        conjuncts.extend(all);
+                    }
+                    let all = conjuncts;
+                    let combine_bounds = native_bounds.is_some()
+                        && all
+                            .iter()
+                            .any(|x| matches!(x.kind, ConditionKind::Since { .. }))
+                        && all
+                            .iter()
+                            .any(|x| matches!(x.kind, ConditionKind::Until { .. }));
+                    let mut since = None;
+                    let mut until = None;
+                    for x in all {
+                        if combine_bounds {
+                            match &x.kind {
+                                ConditionKind::Since { value, .. } => {
+                                    let at =
+                                        self.time("since", value_text(value)?, x.span)?.start();
+                                    since =
+                                        Some(since.map_or(at, |old: jiff::Timestamp| old.max(at)));
+                                    continue;
+                                }
+                                ConditionKind::Until { value, .. } => {
+                                    let at = self
+                                        .time("until", value_text(value)?, x.span)?
+                                        .until_bound();
+                                    until =
+                                        Some(until.map_or(at, |old: jiff::Timestamp| old.min(at)));
+                                    continue;
+                                }
+                                _ => {}
+                            }
+                        }
+                        match &x.kind {
+                            ConditionKind::Text { text, mode }
+                                if !self.is_reference(x, scope.unit) && text_unit(scope.unit) =>
+                            {
+                                words.push((
+                                    search_word(text, *mode)?,
+                                    *mode == TextMode::Phrase,
+                                    x.span,
+                                ));
+                            }
+                            _ => parts.push(self.cond(x, scope, top)?),
+                        }
+                    }
+                    if combine_bounds {
+                        parts.push(self.native_time_test(
+                            &native_bounds.expect("combined direct native bounds"),
+                            time::NativePredicate::Overlap { since, until },
+                        ));
+                    }
+                    if !words.is_empty() {
+                        parts.push(self.text(&words, scope, Index::Prose, top)?);
+                    }
+                    format!("({})", parts.join(" AND "))
                 }
-            }
-            ConditionKind::Since { value, .. } | ConditionKind::Until { value, .. } => {
-                let field = if matches!(&c.kind, ConditionKind::Since { .. }) {
-                    "since"
-                } else {
-                    "until"
-                };
-                self.field_cond(field, FieldOp::Match(value), scope, c.span, top)?
-            }
-            ConditionKind::Between { left, from, to } => {
-                if let Expression::Field { name } = left {
-                    self.field_cond(
-                        name,
-                        FieldOp::Between(value_text(from)?, value_text(to)?),
-                        scope,
-                        c.span,
-                        top,
-                    )?
-                } else {
-                    let lower = self.expression_comparison(
-                        left,
-                        Op::Ge,
-                        &Expression::value(from.clone()),
-                        c.span.start,
-                        &mut |compiler, name, at| compiler.expr(name, scope, at),
-                    )?;
-                    let upper = self.expression_comparison(
-                        left,
-                        Op::Le,
-                        &Expression::value(to.clone()),
-                        c.span.start,
-                        &mut |compiler, name, at| compiler.expr(name, scope, at),
-                    )?;
-                    format!("({lower}) AND ({upper})")
+                ConditionKind::Or { conditions: any } => {
+                    let parts = any
+                        .iter()
+                        .map(|x| self.cond(x, scope, false))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    format!("({})", parts.join(" OR "))
                 }
-            }
-            ConditionKind::Rank {
-                list: RankList::Similar,
-                value,
-            } => self.field_cond("similar", FieldOp::Match(value), scope, c.span, top)?,
-            _ => return Err(not_built("this shared condition")),
+                ConditionKind::Not { condition: cond } => {
+                    format!("NOT ({})", self.cond(cond, scope, false)?)
+                }
+                ConditionKind::Text { text, mode } => {
+                    if self.is_reference(c, scope.unit) {
+                        self.reference_word(text, scope, c.span)?
+                    } else {
+                        self.text(
+                            &[(search_word(text, *mode)?, *mode == TextMode::Phrase, c.span)],
+                            scope,
+                            Index::Prose,
+                            top,
+                        )?
+                    }
+                }
+                ConditionKind::Reference { reference } => {
+                    let native = matches!(
+                        reference.split_once(':').map(|(kind, _)| kind),
+                        Some("block" | "document" | "event" | "span" | "assertion" | "delivery")
+                    );
+                    if native || (reference.starts_with("message:") && reference.contains("..")) {
+                        return self.native_reference(reference, scope, c.span);
+                    }
+                    // Pages and commits are designed reference forms with no producer yet.
+                    if let Some(kind @ ("page" | "file")) =
+                        reference.split_once(':').map(|(kind, _)| kind)
+                    {
+                        return Err(QueryError::NotBuilt {
+                            what: format!("{kind} references"),
+                        });
+                    }
+                    if reference.starts_with("http") {
+                        self.url(reference, scope, c.span)?
+                    } else if reference.starts_with('@') {
+                        return Err(QueryError::Invalid {
+                            message: "@N requires an interactive listing context".into(),
+                            position: c.span.start,
+                        });
+                    } else if let Some((field, text)) = reference.split_once(':') {
+                        let value = Value::scalar(text);
+                        self.field_cond(field, FieldOp::Match(&value), scope, c.span, top)?
+                    } else {
+                        self.reference_word(reference, scope, c.span)?
+                    }
+                }
+                ConditionKind::Exists { unit, condition } => {
+                    self.exists(bind_unit(unit)?, condition.as_deref(), scope, c.span)?
+                }
+                ConditionKind::Count {
+                    unit,
+                    condition,
+                    op,
+                    count,
+                } => self.counted(
+                    bind_unit(unit)?,
+                    condition.as_deref(),
+                    *op,
+                    *count,
+                    scope,
+                    c.span,
+                )?,
+                ConditionKind::In {
+                    left: operand,
+                    query,
+                } => self.member_of(field_operand(operand)?, query, scope, c.span)?,
+                ConditionKind::Saved { name, arguments } => {
+                    self.saved_cond(name, arguments, scope, c.span)?
+                }
+                ConditionKind::Sequence {
+                    steps,
+                    gaps,
+                    all: false,
+                    unit,
+                } if bind_unit(unit)? == Unit::ToolCalls => self.seq(steps, gaps, scope, c.span)?,
+                ConditionKind::Match { field, value } => {
+                    self.field_cond(field, FieldOp::Match(value), scope, c.span, top)?
+                }
+                ConditionKind::Compare { left, op, right } => {
+                    if let (
+                        Expression::Field { name },
+                        Expression::Value {
+                            value: Value::Scalar { text, .. },
+                        },
+                    ) = (left, right)
+                        && !matches!(op, Op::Contains | Op::Prefix)
+                        && (fields::lookup(scope.unit, name)
+                            .or_else(|| {
+                                fields::has_session(scope.unit)
+                                    .then(|| fields::lookup(Unit::Sessions, name))
+                                    .flatten()
+                            })
+                            .is_some_and(|field| {
+                                matches!(
+                                    field.kind,
+                                    Kind::Number | Kind::Money | Kind::Duration | Kind::Time
+                                )
+                            })
+                            || self
+                                .expr(name, scope, c.span.start)
+                                .is_ok_and(|(_, kind)| kind == ColKind::Time))
+                    {
+                        self.field_cond(name, FieldOp::Compare(*op, text), scope, c.span, top)?
+                    } else {
+                        self.expression_comparison(
+                            left,
+                            *op,
+                            right,
+                            c.span.start,
+                            &mut |compiler, name, at| compiler.expr(name, scope, at),
+                        )?
+                    }
+                }
+                ConditionKind::Since { value, .. } | ConditionKind::Until { value, .. } => {
+                    let field = if matches!(&c.kind, ConditionKind::Since { .. }) {
+                        "since"
+                    } else {
+                        "until"
+                    };
+                    self.field_cond(field, FieldOp::Match(value), scope, c.span, top)?
+                }
+                ConditionKind::Between { left, from, to } => {
+                    if let Expression::Field { name } = left {
+                        self.field_cond(
+                            name,
+                            FieldOp::Between(value_text(from)?, value_text(to)?),
+                            scope,
+                            c.span,
+                            top,
+                        )?
+                    } else {
+                        let lower = self.expression_comparison(
+                            left,
+                            Op::Ge,
+                            &Expression::value(from.clone()),
+                            c.span.start,
+                            &mut |compiler, name, at| compiler.expr(name, scope, at),
+                        )?;
+                        let upper = self.expression_comparison(
+                            left,
+                            Op::Le,
+                            &Expression::value(to.clone()),
+                            c.span.start,
+                            &mut |compiler, name, at| compiler.expr(name, scope, at),
+                        )?;
+                        format!("({lower}) AND ({upper})")
+                    }
+                }
+                ConditionKind::Rank {
+                    list: RankList::Similar,
+                    value,
+                } => self.field_cond("similar", FieldOp::Match(value), scope, c.span, top)?,
+                _ => return Err(not_built("this shared condition")),
+            })
         })
     }
 

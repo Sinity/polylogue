@@ -13,25 +13,6 @@ pub fn with_catalog(
     text: &str,
     catalog: &query_language::catalog::Catalog,
 ) -> Result<Query, QueryError> {
-    let (mut depth, mut quoted, mut escaped) = (0usize, false, false);
-    for c in text.chars() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match c {
-            '\\' if quoted => escaped = true,
-            '"' => quoted = !quoted,
-            '(' if !quoted => {
-                depth += 1;
-                if depth > 64 {
-                    return Err(QueryError::TooDeep { max: 64 });
-                }
-            }
-            ')' if !quoted => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-    }
     let mut query = query_language::parse::parse(text, catalog).map_err(|mut error| {
         if error.kind == query_language::ErrorKind::UnknownField
             && text

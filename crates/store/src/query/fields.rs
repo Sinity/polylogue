@@ -88,7 +88,7 @@ impl Field {
     }
 
     pub fn expr(&self, a: &Aliases, now: i64) -> Option<String> {
-        self.sql.map(|e| e.render(a, now))
+        query_language::depth::deeper(|| self.sql.map(|e| e.render(a, now)))
     }
 }
 /// Canonical native evidence behind a temporal field. The integer cache is

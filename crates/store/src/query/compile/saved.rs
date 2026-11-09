@@ -22,15 +22,17 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         span: Span,
     ) -> Result<String, QueryError> {
-        let (unit, cond) = self.saved_relation(name, arguments, span)?;
-        same_unit(name, unit, scope.unit, span)?;
-        let Some(cond) = cond else {
-            return Ok("1".into());
-        };
-        self.saved_stack.push(name.to_owned());
-        let sql = self.cond(&cond, scope, false);
-        self.saved_stack.pop();
-        Ok(format!("({})", sql?))
+        query_language::depth::deeper(|| {
+            let (unit, cond) = self.saved_relation(name, arguments, span)?;
+            same_unit(name, unit, scope.unit, span)?;
+            let Some(cond) = cond else {
+                return Ok("1".into());
+            };
+            self.saved_stack.push(name.to_owned());
+            let sql = self.cond(&cond, scope, false);
+            self.saved_stack.pop();
+            Ok(format!("({})", sql?))
+        })
     }
 
     /// Resolves and binds each saved relation once for both defaults and SQL.
@@ -40,69 +42,71 @@ impl<'a> Compiler<'a> {
         arguments: &[Argument],
         span: Span,
     ) -> Result<(Unit, Option<Condition>), QueryError> {
-        if self.saved_stack.iter().any(|n| n == name) {
-            return Err(QueryError::Invalid {
-                message: format!(
-                    "query:{name} refers to itself (through {})",
-                    self.saved_stack.join(" -> ")
-                ),
-                position: span.start,
-            });
-        }
-        if let Some(bound) = self
-            .saved_relations
-            .iter()
-            .find(|bound| bound.name == name && bound.arguments == arguments)
-        {
-            return Ok((bound.unit, bound.cond.clone()));
-        }
-        let definition = saved_definition(self.text, span.start, name, self.opts)?;
-        let mut query = parse_query(definition.executable_text()?, self.opts)?;
-        Parameters::new(name, arguments).bind(&mut query, span.start)?;
-        if !query.transforms.is_empty() || !query.attach.is_empty() {
-            return Err(QueryError::Invalid {
-                message: format!(
-                    "query:{name} is a shaped result (it has stages), so it cannot be a condition; \
-                     read it as `query:{name} | where …`"
-                ),
-                position: span.start,
-            });
-        }
-        let (unit, cond) = match query.source {
-            Source::Unit {
-                unit, condition, ..
-            } => (bind_unit(&unit)?, condition),
-            Source::Saved {
-                name: nested,
-                arguments,
-                condition,
-                ..
-            } => {
-                self.saved_stack.push(name.to_owned());
-                let relation = self.saved_relation(&nested, &arguments, span);
-                self.saved_stack.pop();
-                let (unit, base) = relation?;
-                let condition = match (base, condition) {
-                    (Some(base), Some(condition)) => Some(Condition {
-                        span: condition.span,
-                        kind: ConditionKind::And {
-                            conditions: vec![base, condition],
-                        },
-                    }),
-                    (base, condition) => base.or(condition),
-                };
-                (unit, condition)
+        query_language::depth::deeper(|| {
+            if self.saved_stack.iter().any(|n| n == name) {
+                return Err(QueryError::Invalid {
+                    message: format!(
+                        "query:{name} refers to itself (through {})",
+                        self.saved_stack.join(" -> ")
+                    ),
+                    position: span.start,
+                });
             }
-            _ => return Err(not_built("a saved source of this kind as a condition")),
-        };
-        self.used(name, definition);
-        self.saved_relations.push(BoundRelation {
-            name: name.to_owned(),
-            arguments: arguments.to_vec(),
-            unit,
-            cond: cond.clone(),
-        });
-        Ok((unit, cond))
+            if let Some(bound) = self
+                .saved_relations
+                .iter()
+                .find(|bound| bound.name == name && bound.arguments == arguments)
+            {
+                return Ok((bound.unit, bound.cond.clone()));
+            }
+            let definition = saved_definition(self.text, span.start, name, self.opts)?;
+            let mut query = parse_query(definition.executable_text()?, self.opts)?;
+            Parameters::new(name, arguments).bind(&mut query, span.start)?;
+            if !query.transforms.is_empty() || !query.attach.is_empty() {
+                return Err(QueryError::Invalid {
+                    message: format!(
+                        "query:{name} is a shaped result (it has stages), so it cannot be a condition; \
+                     read it as `query:{name} | where …`"
+                    ),
+                    position: span.start,
+                });
+            }
+            let (unit, cond) = match query.source {
+                Source::Unit {
+                    unit, condition, ..
+                } => (bind_unit(&unit)?, condition),
+                Source::Saved {
+                    name: nested,
+                    arguments,
+                    condition,
+                    ..
+                } => {
+                    self.saved_stack.push(name.to_owned());
+                    let relation = self.saved_relation(&nested, &arguments, span);
+                    self.saved_stack.pop();
+                    let (unit, base) = relation?;
+                    let condition = match (base, condition) {
+                        (Some(base), Some(condition)) => Some(Condition {
+                            span: condition.span,
+                            kind: ConditionKind::And {
+                                conditions: vec![base, condition],
+                            },
+                        }),
+                        (base, condition) => base.or(condition),
+                    };
+                    (unit, condition)
+                }
+                _ => return Err(not_built("a saved source of this kind as a condition")),
+            };
+            self.used(name, definition);
+            self.saved_relations.push(BoundRelation {
+                name: name.to_owned(),
+                arguments: arguments.to_vec(),
+                unit,
+                cond: cond.clone(),
+            });
+            Ok((unit, cond))
+        })
     }
 
     pub(super) fn saved_defaults(

@@ -39,8 +39,6 @@ pub enum QueryError {
         caret: String,
         suggestion: Option<String>,
     },
-    #[error("parentheses nest more than {max} deep")]
-    TooDeep { max: usize },
     #[error("unknown field {field:?} at position {position}{}", hint(.similar))]
     UnknownField {
         field: String,
@@ -120,9 +118,7 @@ impl QueryError {
     pub fn kind(&self) -> &'static str {
         match self {
             QueryError::Language { error, .. } => error.kind.code(),
-            QueryError::Syntax { .. } | QueryError::TooDeep { .. } | QueryError::Invalid { .. } => {
-                "invalid_query"
-            }
+            QueryError::Syntax { .. } | QueryError::Invalid { .. } => "invalid_query",
             QueryError::UnknownField { .. } => "unknown_field",
             QueryError::BadValue { .. } => "bad_value",
             QueryError::NotAQuery { .. } => "not_a_query",

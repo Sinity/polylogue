@@ -49,16 +49,18 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         at: usize,
     ) -> Result<(String, ColKind), QueryError> {
-        self.note_field(field);
-        expression::expression(
-            self.text,
-            scope.unit,
-            scope.a.clone(),
-            field,
-            self.opts.clock.now.as_millisecond(),
-            at,
-            &mut self.aliases,
-        )
+        query_language::depth::deeper(|| {
+            self.note_field(field);
+            expression::expression(
+                self.text,
+                scope.unit,
+                scope.a.clone(),
+                field,
+                self.opts.clock.now.as_millisecond(),
+                at,
+                &mut self.aliases,
+            )
+        })
     }
 
     pub(super) fn agg(

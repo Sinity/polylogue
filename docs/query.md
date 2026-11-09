@@ -26,7 +26,7 @@ SESSION-CONDITIONS | UNIT [where CONDITIONS] [| STAGE]...   tag:project:morrow |
 - **Atoms:** `field:value`; `field OP scalar`; `field between A and B`; `field ~ "text"` (contains); a text term (bare word or `"phrase"`, `word*` prefix, `word~` approximate, see [search.md](search.md)); `exists UNIT(…)`; `count(UNIT [where …]) OP N`; `FIELD in (QUERY)`; `in:result:<id>`; `seq(step -> [next|within:D] step …)`; `query:<hash>` or `query:NAME[(p=v,…)]`; `similar:TEXT|REF`; a reference.
 - **Values:** `word`, `"quoted"` with backslash escapes, `(a|b|c)`, `*` (names the field without restricting it and drops its default), `unknown`.
 - **Comparisons:** `> >= < <= = !=`; durations `ms s m h d w`; money `2.90` or `2.90usd`. There is one spelling: the compact `field:>=N` is refused with `field >= N` as its suggestion.
-- **Depth:** parenthesis and nesting depth is checked against 64 before evaluation, because a parser recursion has to stop somewhere; deeper is `invalid_query` with the reason. Saved-query expansion refuses a cycle and names the chain. No other depth or size limit exists.
+- **Depth:** nesting has no limit. Parsing, binding, compiling and evaluation grow their stack as a query nests (`query_language::depth::deeper`), so a deep query answers or is refused for what it says, never for how deep it is. Two negations cancel, and a set inside a set adds its values. Saved-query expansion refuses a cycle and names the chain. No depth or size limit exists.
 
 How the first word of a command line is read (command, query signal, `find`) is in [interfaces.md](interfaces.md#grammar).
 

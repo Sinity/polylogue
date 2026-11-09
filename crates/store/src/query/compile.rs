@@ -317,8 +317,10 @@ impl Program {
 }
 
 pub fn compile(text: &str, opts: &Options) -> Result<Program, QueryError> {
-    let plan = polylogue_query::compile(text, opts)?;
-    lower(&plan, opts)
+    query_language::depth::deeper(|| {
+        let plan = polylogue_query::compile(text, opts)?;
+        lower(&plan, opts)
+    })
 }
 pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Program, QueryError> {
     let mut captured = opts.clone();

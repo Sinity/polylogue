@@ -8,10 +8,12 @@ pub struct Explanation {
     pub definitions: Vec<crate::plan::ResolvedDefinition>,
 }
 pub fn query(text: &str, options: &Options) -> Result<Explanation, QueryError> {
-    let plan = crate::compile(text, options)?;
-    Ok(Explanation {
-        parsed: plan.bound_query().query().clone(),
-        output: options.output_schema(text)?,
-        definitions: plan.definitions().to_vec(),
+    query_language::depth::deeper(|| {
+        let plan = crate::compile(text, options)?;
+        Ok(Explanation {
+            parsed: plan.bound_query().query().clone(),
+            output: options.output_schema(text)?,
+            definitions: plan.definitions().to_vec(),
+        })
     })
 }

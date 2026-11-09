@@ -213,14 +213,10 @@ fn shared_units_stages_and_nested_queries_use_product_names() {
 }
 
 #[test]
-fn repairs_and_product_depth_guard_are_stable() {
+fn repairs_are_stable() {
     let error = parse("\"unclosed phrase").unwrap_err();
     assert_eq!(error.suggestion(), Some("\"unclosed phrase\""));
     assert!(parse("messages where").is_err());
-    let deep = format!("{}a{}", "(".repeat(65), ")".repeat(65));
-    assert!(matches!(parse(&deep), Err(QueryError::TooDeep { max: 64 })));
-    let allowed = format!("{}a{}", "(".repeat(64), ")".repeat(64));
-    assert!(parse(&allowed).is_ok());
     assert!(parse("kind:* where exists tool_call(outcome:error)").is_err());
     assert!(parse("kind:* \"where\"").is_ok());
 }
