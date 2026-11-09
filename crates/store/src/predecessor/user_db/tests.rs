@@ -2,11 +2,9 @@ use super::*;
 use crate::predecessor::fixture;
 use polylogue_model::assertion::LinkRole;
 
-fn mapped() -> (
-    Vec<Row>,
-    Vec<(String, Mapped<AssertionFact>)>,
-    RevisionReference,
-) {
+type Facts = Vec<(String, Mapped<AssertionFact>)>;
+
+fn mapped() -> (Vec<Row>, Facts, RevisionReference) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("user.db");
     fixture::user_db(&path);
@@ -68,14 +66,14 @@ fn every_predecessor_form_maps_with_its_author_and_history() {
     assert_eq!(promoted.root, fixture::ACCEPTED);
     assert_eq!(promoted.author, Author::Unattributed);
     let accepted = format!("assertion:{0}@{0}", fixture::ACCEPTED);
-    assert_eq!(links(promoted, LinkRole::Revises), [accepted.clone()]);
-    assert_eq!(links(promoted, LinkRole::Evidence), [accepted.clone()]);
+    assert_eq!(links(promoted, LinkRole::Revises), [accepted.as_str()]);
+    assert_eq!(links(promoted, LinkRole::Evidence), [accepted.as_str()]);
 
     let accept = fact(&facts, fixture::ACCEPT);
     assert_eq!(accept.kind, AssertionKind::Judgment);
     assert_eq!(accept.key.as_deref(), Some("accepted"));
     assert_eq!(accept.root, fixture::ACCEPT);
-    assert_eq!(links(accept, LinkRole::About), [accepted.clone()]);
+    assert_eq!(links(accept, LinkRole::About), [accepted.as_str()]);
     assert_eq!(
         links(accept, LinkRole::Evidence),
         // Links are stored in reference order.
