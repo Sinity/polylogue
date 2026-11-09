@@ -266,10 +266,18 @@ fn operator_edits_and_judgments_of_agent_revisions_keep_exact_evidence() {
             )
             .await;
         }
+        // Judging the revision again revises the operator's judgment of it.
+        let current = query(
+            &f,
+            "assertions where kind:judgment about:\"assertion:agent@agent\"",
+        )
+        .await;
+        assert_eq!(current["count"], 1, "{current}");
+        assert_eq!(current["rows"][0]["id"], "reject", "{current}");
         assert_eq!(
             query(
                 &f,
-                "assertions where kind:judgment about:\"assertion:agent@agent\""
+                "assertions where kind:judgment current:* about:\"assertion:agent@agent\""
             )
             .await["count"],
             2

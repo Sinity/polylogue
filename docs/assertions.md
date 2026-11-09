@@ -74,7 +74,7 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `decision` | optional label | text, optional `{alternatives, constraints, reverse_if}` | many | anything | `::decision` |
 | `lesson`, `question`, `goal`, `problem`, `handoff`, `correction` | optional label | text | many | anything (`correction`: exactly what it corrects) | `::<kind>` |
 | `forecast` | event name | `{probability, horizon, resolves_by}` | many | anything | `::forecast` |
-| `judgment` | `accepted`, `rejected` or `deferred` | optional reason; `blind` details | many | exactly one assertion at an exact revision | — |
+| `judgment` | `accepted`, `rejected` or `deferred` | optional reason; `blind` details | one per about and author | exactly one assertion at an exact revision | — |
 | `comparison` | dimension | `{verdict, rubric?}` | many | two or more references | — |
 | `rubric` | name | `{instructions, unit_query, fields, abstain, confidence}` | one per name | — | — |
 | `pass` | — | `{rubric, population: result:<id>, counts}` | many | — | — |
@@ -119,7 +119,7 @@ A setting's `machine` is its target host for a host-scoped key and null for an a
 - **Across machines** no host sees another's unconfirmed writes; concurrent revisions become two heads by the same rule. No winner is chosen by timestamp.
 - **A revision inherits** the kind, key and links of its base unless the write gives new ones.
 
-**Withdrawal.** A `withdrawal` links `withdraws` to one or more assertion revisions, roots (all their revisions), variant revisions or roots, or other withdrawals. An assertion is withdrawn while a non-withdrawn withdrawal names it or its root. Withdrawing the newest revision makes the one it revised current again; restoring is withdrawing the withdrawal. One withdrawal may name many assertions, so a whole pass is withdrawn at once. Withdrawn assertions leave results, briefs, pages and currency unless a query asks for them (`withdrawn:true`, `withdrawn:*`).
+**Withdrawal.** A `withdrawal` links `withdraws` to one or more assertion revisions, roots (all their revisions), variant revisions or roots, or other withdrawals. An assertion is withdrawn while a non-withdrawn withdrawal names it or its root. Withdrawing the newest revision makes the one it revised current again; restoring is withdrawing the withdrawal. A withdrawal is never revised: a revised withdrawal would go on withdrawing what the old one named, so `revise` of a withdrawal is refused. One withdrawal may name many assertions, so a whole pass is withdrawn at once. Withdrawn assertions leave results, briefs, pages and currency unless a query asks for them (`withdrawn:true`, `withdrawn:*`).
 
 **Exact references hold.** Judgments, questions, `fixed` slots, kept results and deliveries store `assertion:X@R`. A new revision never moves them, and a judgment of R says nothing about R+1.
 
@@ -212,7 +212,7 @@ Judgment is optional and never a gate: most agent assertions will never be seen 
 
 - A `judgment` is an assertion about one exact revision, keyed `accepted`, `rejected` or `deferred`, with an optional reason.
 - **Any author may judge,** and the judgment records its true author.
-- **Readers choose whose judgments count.** `judged:` and `judged-by:` default to the operator's judgments; `judged-by:agent:<…>` and `judged-by:*` widen it. The operator's judgment of a revision is the latest non-withdrawn operator judgment of exactly that revision. Operator-authored assertions need none.
+- **Readers choose whose judgments count.** `judged:` and `judged-by:` default to the operator's judgments; `judged-by:agent:<…>` and `judged-by:*` widen it. Judging a revision again revises the judge's earlier judgment of it, so which judgment is current follows the revision links, never the writers' clocks; the operator's judgment of a revision is the current operator judgment of exactly that revision, and two current ones that differ (written apart and merged) are a conflict. Operator-authored assertions need none.
 - No score, check result or count of agent judgments accepts anything; there is no promotion.
 - `judge` walks open items (assertions not by the operator, of the kinds named, whose current revision has no judgment by the counted judges), one key per verdict on a terminal.
 

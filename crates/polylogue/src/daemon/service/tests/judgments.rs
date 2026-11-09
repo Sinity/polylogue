@@ -321,3 +321,103 @@ fn a_structured_value_matches_by_its_text() {
         1
     );
 }
+
+#[test]
+fn second_judgment_by_same_author_revises_the_first_regardless_of_clock() {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    // The writer's clock steps back between the two judgments.
+    let now = std::sync::Arc::new(AtomicI64::new(4_000_000_000_000));
+    let clock = {
+        let now = now.clone();
+        polylogue_model::WallClock::new(move || {
+            jiff::Timestamp::from_millisecond(now.load(Ordering::SeqCst)).unwrap()
+        })
+    };
+    let d = test_daemon::start_with_clock("first prompt", clock);
+    let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
+    let agent = ok_as(
+        &d,
+        crate::test_daemon::Call::new(
+            "assert",
+            serde_json::json!({"assertions": [assertion(vec![session], "prefer the short path")]}),
+        )
+        .id("lesson"),
+        Author::Agent(None),
+    );
+    let target = format!("assertion:{}", agent["id"].as_str().unwrap());
+    ok(
+        &d,
+        crate::test_daemon::Call::new(
+            "judge",
+            serde_json::json!({"note": target.clone(), "accepted": true}),
+        )
+        .id("j1"),
+    );
+    now.store(3_000_000_000_000, Ordering::SeqCst);
+    ok(
+        &d,
+        crate::test_daemon::Call::new(
+            "judge",
+            serde_json::json!({"note": target.clone(), "accepted": false}),
+        )
+        .id("j2"),
+    );
+    assert_eq!(
+        crate::test_answers::ok(query(&d, "assertions where judged:rejected"))["count"],
+        1
+    );
+    assert_eq!(
+        crate::test_answers::empty(query(&d, "assertions where judged:accepted"))["count"],
+        0
+    );
+    // One current judgment: the second revised the first.
+    let current = crate::test_answers::ok(query(&d, "assertions where kind:judgment"));
+    assert_eq!(current["count"], 1, "{current}");
+    let revisions = crate::test_answers::ok(query(
+        &d,
+        "assertions where kind:judgment current:* | fields id, root, current | sort by id",
+    ));
+    assert_eq!(revisions["rows"][0]["root"], "j1", "{revisions}");
+    assert_eq!(revisions["rows"][1]["root"], "j1", "{revisions}");
+    assert_eq!(revisions["rows"][1]["id"], "j2", "{revisions}");
+}
+
+#[test]
+fn revising_a_withdrawal_is_refused() {
+    let d = test_daemon::start("first prompt");
+    let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
+    ok(
+        &d,
+        crate::test_daemon::Call::new(
+            "assert",
+            serde_json::json!({"assertions": [assertion(vec![session], "keep the old path")]}),
+        )
+        .id("note"),
+    );
+    ok(
+        &d,
+        crate::test_daemon::Call::new(
+            "withdraw",
+            serde_json::json!({"targets": ["assertion:note"], "reason": "superseded"}),
+        )
+        .id("withdrawal"),
+    );
+    let refused = send_as(
+        &d,
+        crate::test_daemon::Call::new(
+            "revise",
+            serde_json::json!({"bases": ["assertion:withdrawal@withdrawal"], "patch": {"value": {"change": "set", "value": "a new reason"}}}),
+        )
+        .id("revision"),
+        Author::Operator,
+    );
+    assert!(
+        matches!(&refused.outcome, command_surface::Outcome::Error(error) if error.message.contains("withdrawal cannot be revised")),
+        "{refused:?}"
+    );
+    // The note stays withdrawn.
+    assert_eq!(
+        crate::test_answers::empty(query(&d, "assertions where kind:lesson"))["count"],
+        0
+    );
+}

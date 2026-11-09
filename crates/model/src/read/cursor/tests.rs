@@ -2,6 +2,7 @@ use super::*;
 
 fn cursor() -> PageCursor {
     PageCursor {
+        variants: vec![],
         target: "session:test:one".into(),
         options: options_digest(&("transcript", 4000)),
         versions: PageCursor::version(&[SessionVersion {

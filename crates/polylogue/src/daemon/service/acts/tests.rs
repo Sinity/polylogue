@@ -351,3 +351,73 @@ fn role_addresses_and_role_starts() {
     .unwrap();
     assert_eq!(conflict["error"]["kind"], "bad_value");
 }
+
+/// Markup is not parsed yet, so the pack names the MCP operation that
+/// records an answer.
+#[test]
+fn ping_text_names_the_assert_tool() {
+    let text = ping_text("d1", "p1", "operator", "rebase please", None);
+    assert!(text.contains("`assert`"), "{text}");
+    assert!(text.contains("`polylogue_note`"), "{text}");
+    assert!(
+        text.contains("`about` and `answers` links both name `assertion:p1@p1`"),
+        "{text}"
+    );
+    assert!(!text.contains("::finding"), "{text}");
+    assert!(!text.contains("@["), "{text}");
+}
+
+/// An answer written the way the pack says is an assertion linked to the ping.
+#[test]
+fn ping_answer_through_assert_links_to_the_ping() {
+    use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+    let d = test_daemon::start_with_clock("answer through assert", at("2026-03-02T10:00:00Z"));
+    let sent = crate::test_answers::ok(
+        crate::test_daemon::Call::new(
+            "ping",
+            serde_json::json!({"target": "@[claude-code:s1]", "text": "is the rebase done?", "live": true}),
+        )
+        .answer_with(&d.daemon, &invocation(&d)),
+    );
+    let ping = sent["ping"].as_str().unwrap().to_owned();
+    let delivery = sent["deliveries"][0]["delivery"].as_str().unwrap();
+    let reader = d.daemon.reads.reader().unwrap();
+    let (_, text) = reader.delivery(delivery).unwrap().unwrap();
+    drop(reader);
+    let instruction = format!("`about` and `answers` links both name `assertion:{ping}@{ping}`");
+    assert!(text.contains(&instruction), "{text}");
+    let answer = NewAssertion {
+        kind: AssertionKind::Finding,
+        key: None,
+        value: Some(serde_json::json!("rebased onto master")),
+        valid_until: None,
+        links: [LinkRole::About, LinkRole::Answers]
+            .into_iter()
+            .map(|role| NewAssertionLink {
+                role,
+                reference: polylogue_model::Reference::parse(&format!("assertion:{ping}@{ping}"))
+                    .unwrap(),
+            })
+            .collect(),
+    };
+    let written = crate::test_answers::ok(
+        crate::test_daemon::Call::new("assert", serde_json::json!({"assertions": [answer]}))
+            .id("answer")
+            .answer_with(&d.daemon, &invocation(&d)),
+    );
+    let id = written["id"].as_str().unwrap();
+    let reader = d.daemon.reads.reader().unwrap();
+    let stored = reader
+        .assertion(&polylogue_model::RevisionReference::exact(
+            id.into(),
+            id.into(),
+        ))
+        .unwrap()
+        .unwrap();
+    assert!(
+        stored.fact.links.iter().any(|link| link.role == LinkRole::Answers
+            && matches!(&link.reference, polylogue_model::Reference::Assertion(target) if target.root == ping)),
+        "{:?}",
+        stored.fact.links
+    );
+}

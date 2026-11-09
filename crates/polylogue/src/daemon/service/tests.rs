@@ -104,6 +104,60 @@ fn a_read_honours_its_view_format_and_budget() {
     }
 }
 
+#[test]
+fn reading_variants_setting_is_the_default_and_is_bound_in_the_cursor() {
+    let w = test_daemon::start("a prompt long enough to need two pages of one token each");
+    let set = |value: &str| {
+        crate::test_answers::ok(
+            crate::test_daemon::Call::new(
+                "setting",
+                serde_json::json!({"key": "reading.variants", "value": value}),
+            )
+            .answer(&w.daemon),
+        );
+    };
+    let next = |page: &polylogue_model::read::ReadPage| -> command_surface::RunnableRequest {
+        let call = page.document.footer.next.as_ref().expect("another page");
+        serde_json::from_value(call.http.arguments.clone()).unwrap()
+    };
+    let variants = |call: &command_surface::RunnableRequest| -> Vec<String> {
+        serde_json::from_value::<crate::protocol::read::Arguments>(call.arguments.clone())
+            .unwrap()
+            .variant
+    };
+    set(r#"["translation:pl"]"#);
+    let first = next(&typed(read(&w.daemon, "transcript", "json", Some(1), None)));
+    assert_eq!(variants(&first), ["translation:pl"]);
+    // The setting changes; the reading keeps what its first page resolved,
+    // even when the continuation names no variant.
+    set("[]");
+    let mut bare = first.clone();
+    bare.arguments["variant"] = serde_json::json!([]);
+    let second = typed(read(&w.daemon, "transcript", "json", Some(1), Some(&bare)));
+    if second.document.footer.next.is_some() {
+        assert_eq!(variants(&next(&second)), ["translation:pl"]);
+    }
+    // A new reading follows the setting as it is now.
+    let fresh = next(&typed(read(&w.daemon, "transcript", "json", Some(1), None)));
+    assert!(variants(&fresh).is_empty());
+    // `none` asks for the originals whatever the setting holds.
+    set(r#"["translation:pl"]"#);
+    let originals = crate::test_daemon::read(crate::daemon::service::read::ReadRequest {
+        target: "session:claude-code:s1".into(),
+        options: polylogue_model::read::ReadOptions {
+            variants: vec!["none".into()],
+            ..Default::default()
+        },
+        delivery: polylogue_model::read::ReadDelivery::Page,
+        format: "json".into(),
+        budget: Some(1),
+        with_blobs: false,
+        cursor: None,
+    })
+    .answer(&w.daemon);
+    assert!(variants(&next(&typed(originals))).is_empty());
+}
+
 fn config(home: &std::path::Path) -> Config {
     let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = home.to_owned();

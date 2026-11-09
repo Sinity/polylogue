@@ -594,6 +594,13 @@ pub(crate) fn revision_statement(
         facts.push(exact_fact(conn, &Reference::Assertion(base.clone()))?);
     }
     let first = &facts[0];
+    // A revised withdrawal would keep withdrawing what the old one named;
+    // restoring is withdrawing the withdrawal.
+    if first.kind == polylogue_model::assertion::AssertionKind::Withdrawal {
+        return Err(invalid(
+            "a withdrawal cannot be revised; withdraw it to restore what it withdrew",
+        ));
+    }
     if facts
         .iter()
         .any(|fact| fact.root != first.root || fact.kind != first.kind)

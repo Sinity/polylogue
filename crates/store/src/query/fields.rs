@@ -813,11 +813,12 @@ fn notes_current(a: &Aliases) -> String {
     format!("({})", current_assertion(&a.row))
 }
 
-/// The operator's judgment of this exact revision: the key of the latest
-/// non-withdrawn operator `judgment` about it, latest by `(created_at, id)`.
+/// The operator's judgment of this exact revision: the key of the current
+/// operator `judgment` about it. Judging again revises the judgment, so one
+/// family holds it; several current values that differ are `conflict`.
 fn notes_judged(a: &Aliases) -> String {
     format!(
-        "(SELECT j.key FROM source_assertion j JOIN source_link jt ON jt.record=j.id AND jt.role='about' WHERE jt.ref='assertion:' || {r}.root || '@' || {r}.id AND j.kind='judgment' AND j.author='operator' AND {live} ORDER BY j.created_at DESC, j.id DESC LIMIT 1)",
+        "(SELECT CASE WHEN count(DISTINCT j.key) > 1 THEN 'conflict' ELSE min(j.key) END FROM source_assertion j JOIN source_link jt ON jt.record=j.id AND jt.role='about' WHERE jt.ref='assertion:' || {r}.root || '@' || {r}.id AND j.kind='judgment' AND j.author='operator' AND {live})",
         r = a.row,
         live = live_assertion("j"),
     )

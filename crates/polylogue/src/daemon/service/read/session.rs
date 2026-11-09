@@ -1111,6 +1111,7 @@ pub(super) fn page(
         let next = PageCursor {
             target: target.clone(),
             options: digest.clone(),
+            variants: request.options.variants.clone(),
             versions,
             position: PagePosition::Entry {
                 key: composed.entries(part)[entry].key.clone(),
@@ -1125,6 +1126,7 @@ pub(super) fn page(
             let cursor = PageCursor {
                 target: target.clone(),
                 options: digest.clone(),
+                variants: request.options.variants.clone(),
                 versions,
                 position: PagePosition::Entry {
                     key: composed.entries(part)[entry].key.clone(),
@@ -2080,6 +2082,7 @@ pub(super) fn links_page(
         let next = PageCursor {
             target: target.clone(),
             options: digest.clone(),
+            variants: request.options.variants.clone(),
             versions: PageCursor::version(&[]),
             position: PagePosition::Node { session },
             direction,

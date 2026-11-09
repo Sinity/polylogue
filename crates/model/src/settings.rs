@@ -20,7 +20,6 @@ pub enum Kind {
     Endpoint,
     NonnegativeNumber,
     Plan,
-    Price,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Declaration {
@@ -50,13 +49,6 @@ pub const CATALOG: &[Declaration] = &[
         key: "reading.variants",
         kind: Kind::Variants,
         default: Some("[]"),
-        scope: Scope::Archive,
-        standalone_only: false,
-    },
-    Declaration {
-        key: "fetch-links",
-        kind: Kind::Boolean,
-        default: Some("off"),
         scope: Scope::Archive,
         standalone_only: false,
     },
@@ -109,13 +101,6 @@ pub const CATALOG: &[Declaration] = &[
         scope: Scope::Archive,
         standalone_only: false,
     },
-    Declaration {
-        key: "price.*",
-        kind: Kind::Price,
-        default: None,
-        scope: Scope::Archive,
-        standalone_only: false,
-    },
 ];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Owner {
@@ -134,7 +119,6 @@ pub enum Value {
     Endpoint(String),
     NonnegativeNumber(#[serde(deserialize_with = "buffered_value")] f64),
     Plan(Plan),
-    Price(#[serde(deserialize_with = "buffered_value")] crate::price::Price),
 }
 // Tagged authored values pass through serde's buffered content. Normalize
 // arbitrary-precision JSON number representations before decoding f64 fields.
@@ -178,7 +162,6 @@ impl Value {
             Self::Text(value) | Self::Endpoint(value) => value.clone(),
             Self::NonnegativeNumber(value) => value.to_string(),
             Self::Plan(value) => serde_json::to_string(value)?,
-            Self::Price(value) => serde_json::to_string(value)?,
         })
     }
 }
@@ -367,29 +350,6 @@ pub fn parse(key: &str, text: &str, owner: Owner) -> Result<Value, Error> {
                 invalid("an unambiguous plan with valid anchor day, lane and nonnegative amounts")
             })?;
             Value::Plan(value)
-        }
-        Kind::Price => {
-            let value: crate::price::Price =
-                serde_json::from_str(text).map_err(|_| invalid("a typed model price"))?;
-            let mut rates = vec![value.input, value.output];
-            rates.extend(
-                [value.cached_input, value.cache_write, value.cache_write_1h]
-                    .into_iter()
-                    .flatten(),
-            );
-            rates.extend(value.tiers.values().copied());
-            if let Some(long) = &value.long {
-                rates.extend([long.input, long.output]);
-                rates.extend(
-                    [long.cached_input, long.cache_write, long.cache_write_1h]
-                        .into_iter()
-                        .flatten(),
-                );
-            }
-            if rates.iter().any(|rate| !rate.is_finite() || *rate < 0.0) {
-                return Err(invalid("finite nonnegative model prices"));
-            }
-            Value::Price(value)
         }
     })
 }

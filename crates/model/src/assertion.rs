@@ -25,6 +25,9 @@ const ANNOTATION: Option<Uniqueness> = Some(Uniqueness::new(
     &["about", "rubric", "key", "author"],
     WhenHeld::Revise,
 ));
+/// One judgment per judged revision and judge: judging again revises it, so
+/// which judgment is current follows revision links, never a clock.
+const JUDGMENT: Option<Uniqueness> = Some(Uniqueness::new(&["about", "author"], WhenHeld::Revise));
 /// One memory per path and scope.
 const MEMORY: Option<Uniqueness> = Some(Uniqueness::new(&["key", "scope"], WhenHeld::Revise));
 /// One setting per name and target host.
@@ -113,7 +116,7 @@ assertion_kinds! {
     Handoff => ("handoff",Text,MANY,Anything,Optional,true,true),
     Correction => ("correction",Text,MANY,Anything,Optional,true,true),
     Forecast => ("forecast",Forecast,MANY,Anything,Required,true,true),
-    Judgment => ("judgment",Judgment,MANY,ExactAssertion,Required,false,false),
+    Judgment => ("judgment",Judgment,JUDGMENT,ExactAssertion,Required,false,false),
     Comparison => ("comparison",Comparison,MANY,Several,Required,false,false),
     Rubric => ("rubric",Rubric,ONE_PER_NAME,None,Required,false,false),
     Pass => ("pass",Pass,MANY,None,None,false,false),

@@ -1013,7 +1013,7 @@ pub static FIELDS: &[Field] = &[
         Assertions,
         "judged",
         Match,
-        "the operator's judgment of this revision: accepted or rejected",
+        "the operator's judgment of this revision: accepted, rejected, deferred or conflict",
     ),
     sp(
         Assertions,
