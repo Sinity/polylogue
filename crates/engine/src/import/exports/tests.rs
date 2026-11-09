@@ -179,7 +179,10 @@ fn stopped_array_delivery_replays_stored_bytes_when_the_executable_changes() {
 }
 
 #[test]
-fn array_delivery_waits_for_the_previous_conversations_commit() {
+/// One batch commits while the next is parsed; the parse goes no further
+/// until that commit ends (docs/architecture.md, pipeline). With a one-byte
+/// chunk each conversation is its own batch.
+fn array_delivery_waits_for_the_previous_batchs_commit() {
     struct Probe(std::sync::mpsc::Sender<()>);
     impl ExportParser for Probe {
         fn order_key(&self, _: &serde_json::value::RawValue) -> Vec<u8> {
@@ -197,7 +200,7 @@ fn array_delivery_waits_for_the_previous_conversations_commit() {
     }
     let w = ClaudeHome::new();
     let path = w.dir.path().join("conversations.json");
-    fs::write(&path, "[{},{}]").unwrap();
+    fs::write(&path, "[{},{},{}]").unwrap();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let (go_tx, go_rx) = std::sync::mpsc::channel();
     let (item_tx, item_rx) = std::sync::mpsc::channel();
@@ -205,7 +208,7 @@ fn array_delivery_waits_for_the_previous_conversations_commit() {
         let w = &w;
         let path = path.clone();
         scope.spawn(move || {
-            let (mut e, _lock) = engine(w, 8);
+            let (mut e, _lock) = engine(w, 1);
             let captured =
                 Captured::stream(&e.archive, &mut fs::File::open(&path).unwrap()).unwrap();
             let origin = polylogue_sources::origin::by_name("chatgpt").unwrap();
@@ -223,6 +226,7 @@ fn array_delivery_waits_for_the_previous_conversations_commit() {
         let db = rusqlite::Connection::open(w.root.join("index.db")).unwrap();
         db.execute_batch("BEGIN IMMEDIATE").unwrap();
         go_tx.send(()).unwrap();
+        item_rx.recv().unwrap();
         item_rx.recv().unwrap();
         assert!(matches!(
             item_rx.recv_timeout(std::time::Duration::from_millis(100)),

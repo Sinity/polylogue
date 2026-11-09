@@ -18,7 +18,9 @@ fn equal_conversations() -> Vec<u8> {
 }
 
 fn write_counter(w: &ClaudeHome) -> i64 {
-    w.count("SELECT CAST(value AS INTEGER) AS n FROM meta WHERE key='write_counter'")
+    w.count(
+        "SELECT coalesce((SELECT CAST(value AS INTEGER) FROM meta WHERE key='write_counter'), 0) AS n",
+    )
 }
 
 fn all_texts(w: &ClaudeHome) -> Vec<Vec<String>> {

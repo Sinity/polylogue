@@ -157,14 +157,15 @@ Building the archive overlaps every stage:
   parallel, with the archive searchable before the trigram index finishes;
 - live inputs ahead of bulk work.
 
-The writer commits in transactions bounded by what they cover, never one
-per record and never one per input: a growing file is read and committed in
+The writer's transactions are sized by the bytes and rows they cover, not
+by record or input boundaries: a growing file is read and committed in
 chunks (64 MiB by default), queued batches share a transaction up to a row and
 byte bound, and the items of an export or tool-database dump commit in
 batches of about one chunk of its bytes. Each record lies whole inside one
 transaction, together with the position it advances (a parser checkpoint, or
 an export's delivery cursor), so readers never see part of a record and an
-interrupted parse resumes after the last committed batch. A whole-chain
+interrupted parse resumes after the last committed batch. An export holds
+at most two batches in memory: one committing while the next is parsed. A whole-chain
 replacement is the exception: it commits once, because readers must see
 either the old reading or the new one. Between transactions the writer starts
 a write-ahead log over once it passes its checkpoint size (about 1 GB),
