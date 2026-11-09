@@ -705,3 +705,24 @@ fn ordinary_prompt_without_a_path_needs_no_advisory_exchange() {
         std::io::ErrorKind::WouldBlock
     );
 }
+
+#[test]
+fn the_hook_spool_lives_under_the_state_directory() {
+    let engine = polylogue_engine::Config::new(
+        PathBuf::from("/synthetic/home"),
+        [(
+            "XDG_STATE_HOME".to_owned(),
+            PathBuf::from("/synthetic/state"),
+        )]
+        .into(),
+        "synthetic-machine".into(),
+        "synthetic-host".into(),
+        1,
+        polylogue_model::WallClock::fixed("2026-01-01T00:00:00Z".parse().unwrap()),
+    )
+    .unwrap();
+    assert_eq!(
+        engine.spool_dir(polylogue_sources::hook_spool::ORIGIN),
+        Path::new("/synthetic/state/polylogue/hooks")
+    );
+}
