@@ -67,7 +67,7 @@ pub fn peer(
     let credentials = rustix::net::sockopt::socket_peercred(stream)?;
     let root = PathBuf::from(format!("/proc/{}", credentials.pid.as_raw_pid()));
     let stat = std::fs::read_to_string(root.join("stat"))?;
-    let parent = parent(&stat).unwrap_or_default();
+    let parent = command_surface::parent_pid(&stat).unwrap_or_default();
     let terminal = stat
         .rsplit_once(')')
         .and_then(|(_, fields)| fields.split_whitespace().nth(4))
@@ -89,8 +89,14 @@ pub fn peer(
         .collect();
     let unit = std::fs::read_to_string(root.join("cgroup"))
         .ok()
-        .and_then(|value| unit(&value));
-    let mut evidence = select(machine, &environment, &ancestors(parent), terminal, unit);
+        .and_then(|value| command_surface::cgroup_unit(&value));
+    let mut evidence = select(
+        machine,
+        &environment,
+        &ancestors(parent, &environment),
+        terminal,
+        unit,
+    );
     let arguments = std::fs::read(root.join("cmdline"))?;
     let words = arguments
         .split(|byte| *byte == 0)
@@ -135,10 +141,10 @@ fn capture(snapshot: &crate::config::EnvSnapshot, machine: &str) -> CallerEviden
                 .map(|value| (name.to_owned(), value.to_owned()))
         })
         .collect::<BTreeMap<_, _>>();
-    let ancestors = ancestors(std::os::unix::process::parent_id());
+    let ancestors = ancestors(std::os::unix::process::parent_id(), &environment);
     let unit = std::fs::read_to_string("/proc/self/cgroup")
         .ok()
-        .and_then(|value| unit(&value));
+        .and_then(|value| command_surface::cgroup_unit(&value));
     let terminal = std::fs::OpenOptions::new()
         .read(true)
         .open("/dev/tty")
@@ -281,70 +287,14 @@ fn select(
     caller
 }
 
-fn ancestors(mut pid: u32) -> Vec<(u32, Origin)> {
-    let mut found = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    while pid > 1 && seen.insert(pid) {
-        let root = PathBuf::from(format!("/proc/{pid}"));
-        let executable = std::fs::read_link(root.join("exe")).ok();
-        let arguments = std::fs::read(root.join("cmdline")).ok();
-        if let Some(origin) = harness(executable.as_deref(), arguments.as_deref()) {
-            found.push((pid, origin));
-        }
-        let Some(parent) = std::fs::read_to_string(root.join("stat"))
-            .ok()
-            .and_then(|stat| parent(&stat))
-        else {
-            break;
-        };
-        pid = parent;
-    }
-    found
-}
-
-fn harness(executable: Option<&Path>, arguments: Option<&[u8]>) -> Option<Origin> {
-    let name = executable
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
-    let script = arguments
-        .and_then(|arguments| arguments.split(|byte| *byte == 0).nth(1))
-        .and_then(|value| std::str::from_utf8(value).ok())
-        .unwrap_or_default();
-    let origin = match name {
-        "claude" | "claude-code" => "claude-code",
-        "codex" => "codex",
-        "hermes" => "hermes",
-        "gemini" => "gemini-cli",
-        "node" | "nodejs" if script.contains("/@anthropic-ai/claude-code/") => "claude-code",
-        "node" | "nodejs" if script.contains("/@google/gemini-cli/") => "gemini-cli",
-        "python" | "python3"
-            if Path::new(script)
-                .file_name()
-                .is_some_and(|name| name == "hermes") =>
-        {
-            "hermes"
-        }
-        _ => return None,
-    };
-    Origin::new(origin).ok()
-}
-
-fn parent(stat: &str) -> Option<u32> {
-    stat.rsplit_once(')')?
-        .1
-        .split_whitespace()
-        .nth(1)?
-        .parse()
-        .ok()
-}
-fn unit(cgroup: &str) -> Option<String> {
-    cgroup
-        .lines()
-        .filter_map(|line| line.splitn(3, ':').nth(2))
-        .flat_map(|path| path.split('/'))
-        .rfind(|part| part.ends_with(".service") || part.ends_with(".scope"))
-        .map(str::to_owned)
+/// The harness processes from `pid` upward, nearest first, recognised by
+/// their executable or by the harness variables they set in the processes
+/// below them (`environment` holds the caller's).
+fn ancestors(pid: u32, environment: &BTreeMap<String, OsString>) -> Vec<(u32, Origin)> {
+    command_surface::harness_ancestors(pid, environment)
+        .into_iter()
+        .filter_map(|(pid, harness)| Some((pid, Origin::new(harness.as_str()).ok()?)))
+        .collect()
 }
 
 #[cfg(test)]

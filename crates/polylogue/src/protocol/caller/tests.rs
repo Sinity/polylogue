@@ -48,27 +48,6 @@ fn known_harness_without_session_remains_an_agent_identity() {
 }
 
 #[test]
-fn cgroup_and_parent_process_parsing_keep_native_identity() {
-    assert_eq!(
-        parent("17 (a command (with) parentheses) S 12 1 2 3"),
-        Some(12)
-    );
-    assert_eq!(
-        unit("0::/user.slice/user-1000.slice/user@1000.service/app.slice/task.scope\n").as_deref(),
-        Some("task.scope")
-    );
-    assert_eq!(
-        harness(
-            Some(Path::new("/tools/node")),
-            Some(b"node\0/tools/@anthropic-ai/claude-code/cli.js\0")
-        )
-        .unwrap()
-        .as_str(),
-        "claude-code"
-    );
-}
-
-#[test]
 fn a_query_word_named_mcp_does_not_change_the_observed_channel() {
     assert_eq!(channel(&["polylogue", "find", "mcp"]), Channel::Cli);
     assert_eq!(channel(&["polylogue", "--json", "mcp"]), Channel::Mcp);
