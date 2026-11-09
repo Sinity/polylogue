@@ -4,6 +4,28 @@
 use super::*;
 
 impl<'a> Compiler<'a> {
+    /// A reference that names a session rather than this unit's own rows:
+    /// `session:X`, `origin:native`, `last`, `latest`, `self`. Over another
+    /// unit it lifts only the session's visibility default; the unit's own
+    /// row defaults (duplicate copies, the active path) still apply, the
+    /// same as reading `X | unit`.
+    pub(super) fn names_a_session(&self, c: &Condition, unit: Unit) -> bool {
+        if unit == Unit::Sessions {
+            return false;
+        }
+        match &c.kind {
+            ConditionKind::Match { field, .. } => {
+                let f = field.to_ascii_lowercase();
+                f == "session" || self.opts.origins.contains(&f)
+            }
+            ConditionKind::Text {
+                text,
+                mode: TextMode::Word,
+            } => matches!(text.as_str(), "last" | "latest" | "self"),
+            _ => false,
+        }
+    }
+
     pub(super) fn is_reference(&self, c: &Condition, unit: Unit) -> bool {
         match &c.kind {
             ConditionKind::Reference { .. } => true,
@@ -471,7 +493,20 @@ impl<'a> Compiler<'a> {
         span: Span,
     ) -> Result<String, QueryError> {
         let s = self.session_alias(scope, span)?;
-        Ok(self.session_reference(&format!("{s}.id"), "id", id))
+        let key = if scope.unit == Unit::Sessions {
+            format!("{s}.pk")
+        } else {
+            match units::spec(scope.unit).session_pk {
+                "" | "NULL" => return Ok(self.session_reference(&format!("{s}.id"), "id", id)),
+                template => scope.a.expand(template),
+            }
+        };
+        // Resolve the reference to session keys once, so the row's own
+        // session key is matched through its index.
+        let resolved = self.session_reference("rs.id", "id", id);
+        Ok(format!(
+            "{key} IN (SELECT rs.pk FROM session rs WHERE {resolved})"
+        ))
     }
 
     /// The alias of the session a row of this unit belongs to.

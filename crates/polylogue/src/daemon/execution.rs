@@ -130,6 +130,17 @@ pub fn run(
         Request::StoredFiles { .. } => ("stored_files", None),
         request => unreachable!("{request:?} has no read phase"),
     };
+    // An advisory fails open: its handler answers with nothing when the
+    // limit runs out, the same on every surface, never with a timeout.
+    if matches!(
+        &request,
+        Request::Context {
+            ask: crate::briefing::Ask::Advisory { .. },
+            ..
+        }
+    ) {
+        return limit.scope(|| work(request));
+    }
     limit.scope(|| {
         if let Err(error) = limit.check() {
             return refusal(&error, stage, text.as_deref(), limit);

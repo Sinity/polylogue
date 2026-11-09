@@ -1022,6 +1022,38 @@ fn errors_point_at_the_problem_and_offer_a_fix() {
 }
 
 #[test]
+fn why_names_default_kind() {
+    let w = morrow();
+    // `--why` on an answer with rows still names each default it applied.
+    let mut a = ask("origin:claude-code");
+    a.why = true;
+    let v = run_q(&w, a).unwrap();
+    assert_eq!(ids(&v), ["#4", "#2", "#1"]);
+    let main = v["why"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["clause"].as_str().unwrap().contains("kind:"))
+        .expect("the main-session default is named");
+    assert!(main["clause"].as_str().unwrap().contains("id:"), "{main}");
+    assert_eq!(main["matches"], 7);
+    assert_eq!(main["of"], 8);
+}
+
+#[test]
+fn id_condition_finds_subagent_or_names_filter() {
+    let w = morrow();
+    // An exact id names its row: the main-session default does not hide
+    // subagent #3.
+    let v = q(
+        &w,
+        "sessions where id:claude-code:7f3a2c10-0003-4000-8000-000000000003",
+    );
+    assert_eq!(ids(&v), ["#3"]);
+    assert_eq!(v["rows"][0]["kind"], "subagent");
+}
+
+#[test]
 fn an_empty_result_explains_itself() {
     let w = morrow();
     // 34.
@@ -1029,9 +1061,22 @@ fn an_empty_result_explains_itself() {
     a.why = true;
     let v = run_q(&w, a).unwrap();
     assert_eq!(v["outcome"], "empty");
-    assert_same_question(v["why"][0]["clause"].as_str().unwrap(), "repo:other");
-    assert_eq!(v["why"][0]["matches"], 0);
-    assert_eq!(v["why"][0]["of"], 7);
+    let why = v["why"].as_array().unwrap();
+    let (defaults, clauses): (Vec<_>, Vec<_>) = why
+        .iter()
+        .partition(|w| w["clause"].as_str().unwrap().starts_with("default"));
+    assert_same_question(clauses[0]["clause"].as_str().unwrap(), "repo:other");
+    assert_eq!(clauses[0]["matches"], 0);
+    assert_eq!(clauses[0]["of"], 7);
+    // The defaults come first and name what they hid: the main-session
+    // default keeps 7 of the 8 sessions (subagent #3 is out).
+    assert!(why[0]["clause"].as_str().unwrap().starts_with("default"));
+    let main = defaults
+        .iter()
+        .find(|w| w["clause"].as_str().unwrap().contains("kind:"))
+        .expect("the main-session default is named");
+    assert_eq!(main["matches"], 7);
+    assert_eq!(main["of"], 8);
     // 33: semantic search is not enabled.
     let v = q(&w, "similar:\"ambiguous date formats\"");
     assert_eq!(v["outcome"], "incomplete");

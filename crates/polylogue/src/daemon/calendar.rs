@@ -419,7 +419,7 @@ pub fn cost(
         Ok(count) => json!({"count":count}),
         Err(error) => json!({"error":"store","message":error.to_string()}),
     };
-    let quota = match super::measure::run(reader, "quota", None, now, day, None) {
+    let quota = match super::measure::run(reader, "quota", None, (None, None), now, day, None) {
         Ok(data) => json!({"data":data}),
         Err(error) => json!({"error":error.kind,"message":error.message}),
     };

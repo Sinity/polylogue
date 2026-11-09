@@ -1122,3 +1122,97 @@ fn matches_evaluate_selected_parents_once_and_keep_their_order() {
         }
     }
 }
+
+/// Two sessions, each with two tool calls.
+fn sessions_with_calls() -> (tempfile::TempDir, Fixture) {
+    use crate::fixture::CallFacts;
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    for id in ["test:one", "test:two"] {
+        let s = f
+            .session(SessionFacts {
+                id,
+                last: Some(1),
+                ..Default::default()
+            })
+            .unwrap();
+        let m = f
+            .message(
+                s,
+                MessageFacts {
+                    id: &format!("{id}-m"),
+                    role: "assistant",
+                    written_by: "model",
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        for _ in 0..2 {
+            f.tool_call(
+                s,
+                m,
+                CallFacts {
+                    tool: "Bash",
+                    action: "shell",
+                    outcome: "ok",
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+    }
+    (dir, f)
+}
+
+#[test]
+fn session_field_uses_session_index() {
+    let (_dir, f) = sessions_with_calls();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let program = crate::query::compile("tool_calls where session:test:one", &options()).unwrap();
+    let plan: Vec<String> = reader
+        .query(
+            &format!("EXPLAIN QUERY PLAN {}", program.sql),
+            &values(&program.params),
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| row["detail"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        plan.iter()
+            .any(|step| step.contains("USING INDEX tool_call_session")
+                || step.contains("USING INDEX tool_call_failed")
+                || step.contains("USING INDEX tool_call_pairing")),
+        "{plan:#?}"
+    );
+    assert!(
+        !plan
+            .iter()
+            .any(|step| step == "SCAN t" || step.starts_with("SCAN t ")),
+        "{plan:#?}"
+    );
+}
+
+#[test]
+fn session_field_and_reference_return_same_rows() {
+    let (_dir, f) = sessions_with_calls();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut options = options();
+    options.page_size = None;
+    let rows = |text: &str| {
+        let program = crate::query::compile(text, &options).unwrap();
+        let mut keys: Vec<i64> = reader
+            .query(&program.sql, &values(&program.params))
+            .unwrap()
+            .into_iter()
+            .map(|row| row["_pk"].as_i64().unwrap())
+            .collect();
+        keys.sort_unstable();
+        keys
+    };
+    let by_field = rows("tool_calls where session:test:one");
+    assert_eq!(by_field.len(), 2);
+    assert_eq!(by_field, rows("test:one | tool_calls"));
+}

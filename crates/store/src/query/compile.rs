@@ -129,6 +129,9 @@ pub struct Program {
     /// rows the defaults alone keep.
     pub why: Vec<WhyClause>,
     pub why_of: String,
+    /// `--why`: each default the unit applied, with the count of rows
+    /// without that one default, so an answer names what its defaults hid.
+    pub why_defaults: Vec<WhyClause>,
     pub page_size: u64,
     /// `similar:`: the text to embed and rank by.
     pub near: Option<Near>,
@@ -216,6 +219,10 @@ pub struct Measure {
     pub selection_sql: String,
     /// The query named no conditions: the measurement covers every session.
     pub everything: bool,
+    /// Top-level `since:`/`until:` on the sessions, as Unix ms (`since`
+    /// inclusive). A measure over messages counts only the messages inside.
+    pub since: Option<i64>,
+    pub until: Option<i64>,
 }
 
 impl Program {
@@ -438,6 +445,8 @@ pub(crate) struct Compiler<'a> {
     near_unavailable: bool,
     /// Conditions at or after this position belong to a stage.
     transforms_start: usize,
+    /// Top-level `since:`/`until:` bounds on the sessions, for measures.
+    session_window: (Option<i64>, Option<i64>),
 }
 
 /// A fused ranking: the join that brings it to the rows, and the rank
@@ -481,6 +490,7 @@ impl<'a> Compiler<'a> {
             source_near_allowed: true,
             near_unavailable: false,
             transforms_start: usize::MAX,
+            session_window: (None, None),
         }
     }
 
