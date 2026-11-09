@@ -23,7 +23,7 @@ impl Compiler<'_> {
         within: Option<&Distance>,
         point: TimePoint,
         scope: Option<&str>,
-        pick: &WitnessChoice,
+        pick: &MatchChoice,
         at: usize,
     ) -> Result<String, QueryError> {
         outer.reserve(&inner);
@@ -40,13 +40,13 @@ impl Compiler<'_> {
             format!("{}, ", pair.ctes.join(", "))
         };
         let witness_order = match pick {
-            WitnessChoice::Nearest => format!(
+            MatchChoice::Nearest => format!(
                 "{}, {}, {}",
                 pair.coarse,
                 pair.distance_key,
                 identity_sql(&inner, "i")
             ),
-            WitnessChoice::FirstBy { keys } => {
+            MatchChoice::FirstBy { keys } => {
                 if keys.is_empty() {
                     return Err(order_invalid("pick first by requires a sort key", at));
                 }

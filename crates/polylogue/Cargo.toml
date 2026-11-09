@@ -60,6 +60,7 @@ rusqlite.workspace = true
 
 polylogue-store = { workspace = true, features = ["fixture", "faults"] }
 polylogue-testkit.workspace = true
+query-language = { workspace = true, features = ["conformance"] }
 proptest.workspace = true
 
 [lints]

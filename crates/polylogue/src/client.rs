@@ -251,7 +251,7 @@ pub(crate) async fn call_ready_as_bounded(
         admitted.as_ref(),
         request.deadline,
     )
-    .socket_timeout(crate::protocol::operations::deadlines().get(class));
+    .connection_timeout(crate::protocol::operations::deadlines().get(class));
     let budget = match (
         budget,
         parent_deadline_ms.map(|deadline| crate::daemon::execution::remaining(Some(deadline))),

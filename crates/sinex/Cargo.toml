@@ -17,10 +17,13 @@ hashed-blobs.workspace = true
 query-language.workspace = true
 shared-signals.workspace = true
 jiff.workspace = true
-sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "6c1ce551211212ffbcb5792216f01ba4a0e894fc" }
-sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "6c1ce551211212ffbcb5792216f01ba4a0e894fc" }
-sinex-model = { git = "https://github.com/Sinity/sinex", rev = "6c1ce551211212ffbcb5792216f01ba4a0e894fc" }
-async-nats = "0.47"
+sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "3bf6bdf89c23b1745bef16bc7c4cec6fb7e73980" }
+sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "3bf6bdf89c23b1745bef16bc7c4cec6fb7e73980" }
+sinex-model = { git = "https://github.com/Sinity/sinex", rev = "3bf6bdf89c23b1745bef16bc7c4cec6fb7e73980" }
+# The same features as Sinex: JetStream over ring TLS. Leaving out NKeys,
+# WebSockets, key-value, object store and service keeps their signing and
+# socket crates out of the build.
+async-nats = { version = "0.47", default-features = false, features = ["jetstream", "ring", "nuid", "server_2_10", "server_2_11", "server_2_12"] }
 tokio.workspace = true
 futures-util = "0.3"
 uuid.workspace = true

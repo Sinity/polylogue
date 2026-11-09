@@ -52,7 +52,7 @@ pub(crate) struct Client {
     pending: Vec<async_nats::jetstream::Message>,
     spool: std::sync::Arc<std::sync::Mutex<crate::spool::Spool>>,
     publication: sinex_transport::backup::Publication,
-    _backup: sinex_transport::backup::Participant,
+    _backup: sinex_transport::backup::BackupResponder,
 }
 
 impl Client {
@@ -137,7 +137,7 @@ impl Client {
         }
         let max_message = client.server_info().max_payload;
         let publication = sinex_transport::backup::Publication::default();
-        let backup = sinex_transport::backup::Participant::start(
+        let backup = sinex_transport::backup::BackupResponder::start(
             client.clone(),
             subjects.clone(),
             config.producer.clone(),

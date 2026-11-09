@@ -7,8 +7,8 @@ use query_language::cursor::{PageRequest, SealedCursor};
 use query_language::{
     Error, ErrorKind,
     ast::*,
-    laws,
-    semantics::{Answer, Dataset, Extent, Row, Scalar},
+    compiler_cases,
+    conformance::{Answer, Dataset, Extent, Row, Scalar},
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -40,7 +40,7 @@ fn options(fields: Vec<String>) -> Options {
         chat_pages: vec![],
     }
 }
-impl laws::Compiler for Product {
+impl compiler_cases::Compiler for Product {
     type Plan = Plan;
     fn compile(&self, value: &Query) -> Result<Plan, Error> {
         let Source::Unit { unit, .. } = &value.source else {
@@ -536,13 +536,13 @@ impl Loaded {
         Ok(row)
     }
 }
-impl laws::Executor<Plan> for Execution {
+impl compiler_cases::Executor<Plan> for Execution {
     fn execute(
         &mut self,
         plan: &Plan,
         fixture: &Dataset,
         request: &PageRequest,
-    ) -> Result<laws::Page, Error> {
+    ) -> Result<compiler_cases::Page, Error> {
         // Each changed enumeration is installed through the native fixture.
         // The three page sizes read that same immutable installation.
         if request.cursor.is_none()
@@ -634,7 +634,7 @@ impl laws::Executor<Plan> for Execution {
                 }
             })
             .collect::<Result<_, Error>>()?;
-        Ok(laws::Page {
+        Ok(compiler_cases::Page {
             answer: Answer {
                 rows,
                 total: answer["count"]
@@ -647,7 +647,7 @@ impl laws::Executor<Plan> for Execution {
 }
 #[test]
 fn shared_language_laws_run_through_product_compilation_and_keyset_pages() {
-    let cases = laws::cases(&laws::Vocabulary {
+    let cases = compiler_cases::cases(&compiler_cases::Vocabulary {
         outer: "sessions".into(),
         children: "tool_calls".into(),
         number: "input_tokens".into(),
@@ -656,6 +656,6 @@ fn shared_language_laws_run_through_product_compilation_and_keyset_pages() {
         text: "title".into(),
         end: "output_tokens".into(),
     });
-    let failures = laws::check(&Product, &mut Execution::default(), &cases);
+    let failures = compiler_cases::check(&Product, &mut Execution::default(), &cases);
     assert!(failures.is_empty(), "{failures:#?}");
 }

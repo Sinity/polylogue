@@ -238,10 +238,7 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_retirement() {
     assert!(reply.get("result").is_some(), "{reply}");
     let manifest: sinex_model::backup::Manifest =
         serde_json::from_slice(&std::fs::read(artifact.join("manifest.json")).unwrap()).unwrap();
-    assert_eq!(
-        manifest.producer_custody,
-        sinex_model::backup::ProducerCustody::Complete
-    );
+    assert!(manifest.producers_complete);
     assert!(
         manifest
             .required_producers
@@ -250,15 +247,15 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_retirement() {
             .iter()
             .any(|producer| producer == "polylogue")
     );
-    let cut = manifest
-        .producer_cuts
+    let snapshot = manifest
+        .producer_snapshots
         .iter()
-        .find(|cut| cut.producer == "polylogue")
+        .find(|snapshot| snapshot.producer == "polylogue")
         .unwrap();
-    assert!(cut.incarnation.is_some());
-    assert!(cut.unavailable.is_none());
-    assert!(!cut.files.is_empty());
-    for file in &cut.files {
+    assert!(snapshot.run_id.is_some());
+    assert!(snapshot.unavailable.is_none());
+    assert!(!snapshot.files.is_empty());
+    for file in &snapshot.files {
         let bytes = std::fs::read(artifact.join(&file.path)).unwrap();
         assert_eq!(bytes.len() as u64, file.bytes);
         assert_eq!(blake3::hash(&bytes).to_hex().as_str(), file.blake3);

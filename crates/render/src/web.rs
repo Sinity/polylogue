@@ -1,6 +1,6 @@
 //! The typed read page in the shared frame. Selection and ready calls are
 //! already resolved by the operation; this module formats no cursors.
-use command_surface::{Failure, FailureKind, OperationTable, RunnableRequest};
+use command_surface::{Failure, FailureKind, OperationDeclarations, RunnableRequest};
 use maud::{Markup, html};
 use polylogue_model::{
     currency::{CurrencyState, IndexCurrency},
@@ -10,7 +10,7 @@ use serde_json::Value;
 
 pub fn read(
     page: &ReadPage,
-    table: &OperationTable,
+    table: &OperationDeclarations,
     request: &RunnableRequest,
 ) -> Result<String, Failure> {
     let title = page

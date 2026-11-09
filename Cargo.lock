@@ -83,7 +83,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -94,7 +94,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -134,7 +134,6 @@ dependencies = [
  "bytes",
  "futures-util",
  "memchr",
- "nkeys",
  "nuid",
  "pin-project",
  "portable-atomic",
@@ -191,7 +190,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "authored"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8a84a4d9566c2d3b1c99507ed65c5fbfafeec59e"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#52118f1ed5ac104a27465ce12e6ca6aa058727d2"
 dependencies = [
  "blake3",
  "proptest",
@@ -267,12 +266,6 @@ name = "base64"
 version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
-
-[[package]]
-name = "base64ct"
-version = "1.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bit-set"
@@ -533,7 +526,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 [[package]]
 name = "command-surface"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8a84a4d9566c2d3b1c99507ed65c5fbfafeec59e"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#52118f1ed5ac104a27465ce12e6ca6aa058727d2"
 dependencies = [
  "http",
  "jiff",
@@ -543,14 +536,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
- "ts-rs",
 ]
-
-[[package]]
-name = "const-oid"
-version = "0.9.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
 name = "constant_time_eq"
@@ -654,32 +640,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "curve25519-dalek"
-version = "4.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97fb8b7c4503de7d6ae7b42ab72a5a59857b4c937ec27a3d4539dba95b5ab2be"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "curve25519-dalek-derive",
- "digest",
- "fiat-crypto",
- "rustc_version",
- "subtle",
-]
-
-[[package]]
-name = "curve25519-dalek-derive"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "data-encoding"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -717,17 +677,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "der"
-version = "0.7.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
-dependencies = [
- "const-oid",
- "pem-rfc7468",
- "zeroize",
-]
-
-[[package]]
 name = "deranged"
 version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -750,7 +699,7 @@ dependencies = [
 [[package]]
 name = "devkit"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8a84a4d9566c2d3b1c99507ed65c5fbfafeec59e"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#52118f1ed5ac104a27465ce12e6ca6aa058727d2"
 dependencies = [
  "blake3",
  "clap",
@@ -768,7 +717,7 @@ dependencies = [
 [[package]]
 name = "devkit-macros"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8a84a4d9566c2d3b1c99507ed65c5fbfafeec59e"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#52118f1ed5ac104a27465ce12e6ca6aa058727d2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -811,28 +760,6 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
-
-[[package]]
-name = "ed25519"
-version = "2.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
-dependencies = [
- "signature",
-]
-
-[[package]]
-name = "ed25519-dalek"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
-dependencies = [
- "curve25519-dalek",
- "ed25519",
- "sha2",
- "signature",
- "subtle",
-]
 
 [[package]]
 name = "email_address"
@@ -883,7 +810,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -934,12 +861,6 @@ name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
-
-[[package]]
-name = "fiat-crypto"
-version = "0.2.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
 name = "filetime"
@@ -1192,7 +1113,7 @@ dependencies = [
 [[package]]
 name = "hashed-blobs"
 version = "0.1.1"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8a84a4d9566c2d3b1c99507ed65c5fbfafeec59e"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#52118f1ed5ac104a27465ce12e6ca6aa058727d2"
 dependencies = [
  "blake3",
  "chacha20poly1305",
@@ -1223,18 +1144,6 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
-
-[[package]]
-name = "historical-query-format-v1"
-version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8a84a4d9566c2d3b1c99507ed65c5fbfafeec59e"
-dependencies = [
- "blake3",
- "jiff",
- "schemars",
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "hkdf"
@@ -1514,7 +1423,7 @@ version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82cb6a9f675da968c63b6208c641b9dca58fc0133ae53375736b1767b0cab8bd"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1804,21 +1713,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nkeys"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "879011babc47a1c7fdf5a935ae3cfe94f34645ca0cac1c7f6424b36fc743d1bf"
-dependencies = [
- "data-encoding",
- "ed25519",
- "ed25519-dalek",
- "getrandom 0.2.17",
- "log",
- "rand 0.8.8",
- "signatory",
-]
-
-[[package]]
 name = "notify"
 version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2008,15 +1902,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pem-rfc7468"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412"
-dependencies = [
- "base64ct",
-]
-
-[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2047,16 +1932,6 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
-
-[[package]]
-name = "pkcs8"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7"
-dependencies = [
- "der",
- "spki",
-]
 
 [[package]]
 name = "pkg-config"
@@ -2395,7 +2270,7 @@ checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
 [[package]]
 name = "query-language"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8a84a4d9566c2d3b1c99507ed65c5fbfafeec59e"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#52118f1ed5ac104a27465ce12e6ca6aa058727d2"
 dependencies = [
  "blake3",
  "jiff",
@@ -2611,7 +2486,7 @@ dependencies = [
 [[package]]
 name = "references"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8a84a4d9566c2d3b1c99507ed65c5fbfafeec59e"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#52118f1ed5ac104a27465ce12e6ca6aa058727d2"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -2746,15 +2621,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
-name = "rustc_version"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
-dependencies = [
- "semver",
-]
-
-[[package]]
 name = "rustix"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2764,7 +2630,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2913,12 +2779,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "semver"
-version = "1.0.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
-
-[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3046,7 +2906,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "signal-delivery"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8a84a4d9566c2d3b1c99507ed65c5fbfafeec59e"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#52118f1ed5ac104a27465ce12e6ca6aa058727d2"
 dependencies = [
  "futures-util",
  "serde_json",
@@ -3078,7 +2938,7 @@ dependencies = [
 [[package]]
 name = "signals"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8a84a4d9566c2d3b1c99507ed65c5fbfafeec59e"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#52118f1ed5ac104a27465ce12e6ca6aa058727d2"
 dependencies = [
  "blake3",
  "jiff",
@@ -3086,28 +2946,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "signatory"
-version = "0.27.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1e303f8205714074f6068773f0e29527e0453937fe837c9717d066635b65f31"
-dependencies = [
- "pkcs8",
- "rand_core 0.6.4",
- "signature",
- "zeroize",
-]
-
-[[package]]
-name = "signature"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
-dependencies = [
- "digest",
- "rand_core 0.6.4",
 ]
 
 [[package]]
@@ -3119,7 +2957,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 [[package]]
 name = "sinex-macros"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=6c1ce551211212ffbcb5792216f01ba4a0e894fc#6c1ce551211212ffbcb5792216f01ba4a0e894fc"
+source = "git+https://github.com/Sinity/sinex?rev=3bf6bdf89c23b1745bef16bc7c4cec6fb7e73980#3bf6bdf89c23b1745bef16bc7c4cec6fb7e73980"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3129,12 +2967,11 @@ dependencies = [
 [[package]]
 name = "sinex-model"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=6c1ce551211212ffbcb5792216f01ba4a0e894fc#6c1ce551211212ffbcb5792216f01ba4a0e894fc"
+source = "git+https://github.com/Sinity/sinex?rev=3bf6bdf89c23b1745bef16bc7c4cec6fb7e73980#3bf6bdf89c23b1745bef16bc7c4cec6fb7e73980"
 dependencies = [
  "authored",
  "blake3",
  "caseless",
- "historical-query-format-v1",
  "jiff",
  "query-language",
  "references",
@@ -3154,7 +2991,7 @@ dependencies = [
 [[package]]
 name = "sinex-protocol"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=6c1ce551211212ffbcb5792216f01ba4a0e894fc#6c1ce551211212ffbcb5792216f01ba4a0e894fc"
+source = "git+https://github.com/Sinity/sinex?rev=3bf6bdf89c23b1745bef16bc7c4cec6fb7e73980#3bf6bdf89c23b1745bef16bc7c4cec6fb7e73980"
 dependencies = [
  "query-language",
  "schemars",
@@ -3167,10 +3004,10 @@ dependencies = [
 [[package]]
 name = "sinex-transport"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=6c1ce551211212ffbcb5792216f01ba4a0e894fc#6c1ce551211212ffbcb5792216f01ba4a0e894fc"
+source = "git+https://github.com/Sinity/sinex?rev=3bf6bdf89c23b1745bef16bc7c4cec6fb7e73980#3bf6bdf89c23b1745bef16bc7c4cec6fb7e73980"
 dependencies = [
  "async-nats",
- "base64 0.22.1",
+ "base64 0.23.1",
  "blake3",
  "futures",
  "hashed-blobs",
@@ -3203,17 +3040,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "spki"
-version = "0.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
-dependencies = [
- "base64ct",
- "der",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3306,19 +3133,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "termcolor"
-version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
-dependencies = [
- "winapi-util",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3636,28 +3454,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ts-rs"
-version = "11.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4994acea2522cd2b3b85c1d9529a55991e3ad5e25cdcd3de9d505972c4379424"
-dependencies = [
- "thiserror 2.0.21",
- "ts-rs-macros",
-]
-
-[[package]]
-name = "ts-rs-macros"
-version = "11.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee6ff59666c9cbaec3533964505d39154dc4e0a56151fdea30a09ed0301f62e2"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
- "termcolor",
-]
-
-[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3671,7 +3467,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3933,14 +3729,13 @@ dependencies = [
 [[package]]
 name = "web-shell"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#8a84a4d9566c2d3b1c99507ed65c5fbfafeec59e"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#52118f1ed5ac104a27465ce12e6ca6aa058727d2"
 dependencies = [
  "command-surface",
  "http",
  "maud",
  "serde",
  "serde_json",
- "ts-rs",
 ]
 
 [[package]]
@@ -3987,7 +3782,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

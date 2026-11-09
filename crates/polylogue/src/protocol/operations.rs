@@ -2,8 +2,9 @@
 use crate::commands::{Action, Caller, Command, Surface, Values};
 use crate::daemon::service::Daemon;
 use command_surface::{
-    Answer, Failure, FailureKind, JsonSchema, LatencyClass, Operation, OperationFuture,
-    OperationSpec, OperationTable, RequestContext,
+    Answer, DeclarationsBuilder, Failure, FailureKind, JsonSchema, LatencyClass, Operation,
+    OperationDeclarations, OperationFuture, OperationSpec, OperationTable, RequestContext,
+    TextStyle,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -93,11 +94,12 @@ pub(crate) fn specification(command: &Command) -> OperationSpec {
         summary: command.help.into(),
         reason: command.reason.into(),
         kind: OperationKind::Request {
-            tool: tool
-                .name()
-                .strip_prefix("polylogue_")
-                .expect("product tool prefix")
-                .into(),
+            tool: Some(
+                tool.name()
+                    .strip_prefix("polylogue_")
+                    .expect("product tool prefix")
+                    .into(),
+            ),
         },
         http_route: Some(format!("/api/v1{}", command.http_path())),
         latency: command.latency,
@@ -122,6 +124,7 @@ pub(crate) fn specification(command: &Command) -> OperationSpec {
                 short: arg.short,
                 calling_process: arg.cli_only,
                 listed: !arg.unlisted,
+                value_delimiter: None,
             })
             .collect(),
         listed: true,
@@ -207,13 +210,47 @@ pub(crate) fn admit(
     )
 }
 
-pub fn register<C: CommandType>(daemon: Arc<Daemon>, table: &mut OperationTable) {
-    table
-        .register(TypedCommand::<C> {
-            daemon,
-            marker: PhantomData,
-        })
+/// The declaration and the handler of one typed command, registered together.
+#[derive(Clone, Copy)]
+pub struct Registration {
+    pub declare: fn(&mut DeclarationsBuilder),
+    pub bind: fn(Arc<Daemon>, &mut OperationTable),
+}
+
+pub const fn registration<C: CommandType>() -> Registration {
+    Registration {
+        declare: declare::<C>,
+        bind: bind::<C>,
+    }
+}
+
+fn declare<C: CommandType>(declarations: &mut DeclarationsBuilder) {
+    declarations
+        .declare::<C::Arguments, C::Answer>(
+            specification(crate::commands::command(C::NAME).expect("typed command exists")),
+            render::<C>,
+        )
         .expect("declared command is unique");
+}
+
+fn bind<C: CommandType>(daemon: Arc<Daemon>, table: &mut OperationTable) {
+    table
+        .bind(
+            C::NAME,
+            TypedCommand::<C> {
+                daemon,
+                marker: PhantomData,
+            },
+        )
+        .expect("typed command binds its declaration");
+}
+
+fn render<C: CommandType>(answer: &C::Answer, style: TextStyle) -> String {
+    let command = crate::commands::command(C::NAME).expect("typed command exists");
+    (command.print)(
+        &serde_json::to_value(answer).expect("typed answer serializes"),
+        style == TextStyle::Ansi,
+    )
 }
 
 struct TypedCommand<C> {
@@ -233,11 +270,12 @@ impl<C: CommandType> Operation for TypedCommand<C> {
     type Request = C::Arguments;
     type Response = C::Answer;
 
-    fn spec(&self) -> OperationSpec {
-        specification(crate::commands::command(C::NAME).expect("typed command exists"))
-    }
-
-    fn required_access(&self, arguments: &Self::Request) -> command_surface::Access {
+    fn required_access(
+        &self,
+        arguments: &Self::Request,
+        _declared: command_surface::Access,
+        _caller: &command_surface::Caller,
+    ) -> command_surface::Access {
         C::required_access(arguments)
     }
 
@@ -374,14 +412,6 @@ impl<C: CommandType> Operation for TypedCommand<C> {
             typed(answer, C::NAME)
         })
     }
-
-    fn render_text(&self, answer: &Self::Response) -> String {
-        let command = crate::commands::command(C::NAME).expect("typed command exists");
-        (command.print)(
-            &serde_json::to_value(answer).expect("typed answer serializes"),
-            false,
-        )
-    }
 }
 
 /// The daemon's answer decoded into the operation's declared answer type;
@@ -458,8 +488,8 @@ pub fn deadlines() -> command_surface::Deadlines {
     deadlines
 }
 
-pub fn table(daemon: Arc<Daemon>) -> OperationTable {
-    let mut table = OperationTable::new(PRODUCT, deadlines());
+pub fn declarations() -> Arc<OperationDeclarations> {
+    let mut table = OperationDeclarations::builder(PRODUCT, deadlines());
     table.accept(command_surface::RequestOption::Cursor);
     table.accept(command_surface::RequestOption::BudgetTokens);
     for (kind, codes) in super::FAILURE_CLASSES {
@@ -489,8 +519,18 @@ pub fn table(daemon: Arc<Daemon>) -> OperationTable {
         }
     }
     for command in crate::commands::COMMANDS.iter() {
-        if let Some(register) = command.register {
-            register(Arc::clone(&daemon), &mut table);
+        if let Some(registration) = command.register {
+            (registration.declare)(&mut table);
+        }
+    }
+    table.finish()
+}
+
+pub fn table(daemon: Arc<Daemon>) -> OperationTable {
+    let mut table = OperationTable::new(declarations());
+    for command in crate::commands::COMMANDS.iter() {
+        if let Some(registration) = command.register {
+            (registration.bind)(Arc::clone(&daemon), &mut table);
         }
     }
     table

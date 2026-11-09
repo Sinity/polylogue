@@ -220,7 +220,7 @@ impl Parameters {
                 if let Some(within) = within {
                     self.distance(within, used, position)?;
                 }
-                if let WitnessChoice::FirstBy { keys } = pick {
+                if let MatchChoice::FirstBy { keys } = pick {
                     for key in keys {
                         self.expression(&mut key.expression, used, position)?;
                     }
