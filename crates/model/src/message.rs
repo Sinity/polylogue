@@ -263,12 +263,13 @@ pub struct ApiError {
 }
 
 impl Message {
-    /// BLAKE3 of the source value's sorted canonical JSON, the message
-    /// version identity used by storage. Projection never redefines it.
+    /// BLAKE3 of the source value's canonical JSON, the message version
+    /// identity used by storage. Projection never redefines it. Stored
+    /// versions are checked against it on read, so its bytes carry no tag.
     pub fn content_hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
-        let mut value = serde_json::to_value(self)?;
-        value.sort_all_objects();
-        Ok(crate::BlobHash::of(&serde_json::to_vec(&value)?))
+        canonical_json::canonical_json(self)
+            .map(|bytes| crate::BlobHash::of(&bytes))
+            .map_err(serde::ser::Error::custom)
     }
 
     pub fn time_evidence(&self) -> crate::TimeEvidence {

@@ -1,7 +1,9 @@
 //! Embeddings, opt-in with a cost preview:
 //! Voyage, or a local model through an OpenAI-compatible endpoint. Vectors
-//! are keyed by embedding key and NFC text hash in `embeddings.db` and are
-//! never destroyed by a reindex.
+//! are keyed by embedding key and the BLAKE3 hash of the stored text bytes
+//! (the vector itself is computed from the NFC text) in `embeddings.db`, so a
+//! re-parse that yields the same text keeps them, and they are never
+//! destroyed by a reindex.
 //!
 //! Settings (`polylogue setting KEY VALUE`):
 //! - `embed.provider`: `local` or `voyage`; unset means embeddings are off;

@@ -41,7 +41,7 @@ impl ParseStep {
         output.event_receipts.clear();
         output.link_receipts.clear();
         output.fragment_receipts.clear();
-        let mut body = serde_json::to_value((
+        let body = (
             &self.reading_version,
             output,
             &self.counts,
@@ -53,12 +53,10 @@ impl ParseStep {
                 polylogue_model::batch::StepProgress::NoParserYet { .. }
             ),
             &self.checkpoint,
-        ))?;
-        body.sort_all_objects();
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"polylogue.export-delivery.body.v1\0");
-        hash.update(&serde_json::to_vec(&body)?);
-        Ok(BlobHash(*hash.finalize().as_bytes()))
+        );
+        let hash = canonical_json::canonical_hash("polylogue.export-delivery.body.v1", &body)
+            .map_err(crate::encoding::identity_encoding)?;
+        Ok(BlobHash(*hash.as_bytes()))
     }
 }
 

@@ -1479,7 +1479,8 @@ fn lay_out(
             length: crate::daemon::attachment::PAGE_BYTES as u64,
         })
         .map_err(|e| Failure::new("internal", e))?;
-        let identity = blake3::hash(arguments.to_string().as_bytes());
+        let identity = canonical_json::canonical_hash("polylogue-attachment-call", &arguments)
+            .map_err(|e| Failure::new("internal", e))?;
         d.ready_call(&command_surface::RunnableRequest {
             operation: "attachment".into(),
             arguments,

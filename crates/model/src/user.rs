@@ -175,28 +175,7 @@ impl UserWrite {
             _ => self.clone(),
         };
         match &mut intent {
-            Self::Assert { assertions } => {
-                for statement in assertions {
-                    if let Some(value) = &mut statement.value {
-                        value.sort_all_objects();
-                    }
-                }
-            }
-            Self::AssertQuery {
-                resolved,
-                assertion,
-                ..
-            } => {
-                resolved.clear();
-                if let Some(value) = &mut assertion.value {
-                    value.sort_all_objects();
-                }
-            }
-            Self::ReviseAssertions { patch, .. } => {
-                if let crate::assertion::Change::Set(value) = &mut patch.value {
-                    value.sort_all_objects();
-                }
-            }
+            Self::AssertQuery { resolved, .. } => resolved.clear(),
             Self::KeepResult {
                 rows_json, read_at, ..
             } => {

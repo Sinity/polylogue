@@ -556,7 +556,8 @@ fn attachment_call(
         length: crate::daemon::attachment::PAGE_BYTES as u64,
     })
     .map_err(|e| Failure::new("internal", e))?;
-    let identity = blake3::hash(arguments.to_string().as_bytes());
+    let identity = canonical_json::canonical_hash("polylogue-attachment-call", &arguments)
+        .map_err(|e| Failure::new("internal", e))?;
     d.ready_call(&command_surface::RunnableRequest {
         operation: "attachment".into(),
         arguments,
@@ -718,8 +719,8 @@ fn next_call(
         .map_err(|e| Failure::new("internal", e))?;
     let arguments = serde_json::to_value(arguments).map_err(|e| Failure::new("internal", e))?;
     let cursor = continued.cursor.clone();
-    let identity =
-        blake3::hash(&serde_json::to_vec(&(&arguments, &cursor)).expect("continuation serializes"));
+    let identity = canonical_json::canonical_hash("polylogue-read-call", &(&arguments, &cursor))
+        .map_err(|e| Failure::new("internal", e))?;
     d.ready_call(&command_surface::RunnableRequest {
         operation: "read".into(),
         arguments,

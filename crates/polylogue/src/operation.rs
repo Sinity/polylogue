@@ -193,7 +193,8 @@ impl Context {
         let value = serde_json::json!({"owner":owner,"day":self.clock.day.wire()});
         [(
             "operation_context".into(),
-            blake3::hash(value.to_string().as_bytes())
+            canonical_json::canonical_hash("polylogue-operation-context", &value)
+                .expect("a JSON value has a canonical form")
                 .to_hex()
                 .to_string(),
         )]

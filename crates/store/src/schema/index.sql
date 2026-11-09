@@ -140,7 +140,7 @@ CREATE TABLE message_source (
   seq               INTEGER NOT NULL DEFAULT 0,
   record_position   INTEGER NOT NULL DEFAULT 0,
   complete          INTEGER NOT NULL DEFAULT 1, -- 0 while the source marks it in progress (no stop reason yet)
-  version_hash      BLOB NOT NULL REFERENCES message_version(version_hash), -- BLAKE3 of the version's sorted-key JSON: the last tie-break
+  version_hash      BLOB NOT NULL REFERENCES message_version(version_hash), -- BLAKE3 of the version's canonical JSON: the last tie-break
   PRIMARY KEY (message_pk, input_pk, chain)
 ) STRICT;
 CREATE INDEX message_source_input ON message_source(input_pk, chain, source_start);   -- foreign-key check; the next record's start

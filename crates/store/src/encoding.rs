@@ -235,14 +235,9 @@ impl RowPacker {
             blocks: Vec::new(),
             metadata: document.metadata.clone(),
         };
-        let hash = {
-            let mut sorted = serde_json::to_value(document)?;
-            sorted.sort_all_objects();
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(b"polylogue-document-v1\0");
-            hasher.update(&serde_json::to_vec(&sorted)?);
-            *hasher.finalize().as_bytes()
-        };
+        let hash = *canonical_json::canonical_hash("polylogue-document-v1", document)
+            .map_err(identity_encoding)?
+            .as_bytes();
         Ok(PreparedDocument {
             id: document.id.clone(),
             time: time_bytes(document.source_time, document.time_evidence())?,
@@ -339,13 +334,17 @@ fn block_bytes(block: &Block) -> Result<Vec<u8>> {
     Ok(serde_json::to_vec(&body)?)
 }
 
-/// An event's id includes its message anchor: identical state recorded at
-/// different messages is distinct. Physical ranges do not change the fact's
-/// identity when another input supplies it.
+/// An event's id is its session, kind, time, data and the message it follows:
+/// identical state recorded after different messages is distinct. Physical
+/// ranges do not change the fact's identity when another input supplies it.
 #[cfg(test)]
 pub(crate) fn pack_event(e: &Event) -> Result<(String, Vec<u8>)> {
     let (id, data) = event_bytes(e)?;
     Ok((id, pack_bytes(&data)?))
+}
+
+pub(crate) fn identity_encoding(error: canonical_json::Error) -> StoreError {
+    StoreError::Invalid(error.to_string())
 }
 
 fn event_bytes(e: &Event) -> Result<(String, Vec<u8>)> {
@@ -368,13 +367,7 @@ fn event_bytes(e: &Event) -> Result<(String, Vec<u8>)> {
             .unwrap_or(i64::MIN)
             .to_le_bytes(),
     );
-    if e.session.is_none() {
-        let mut sorted = e.data.clone();
-        sorted.sort_all_objects();
-        h.update(&serde_json::to_vec(&sorted)?);
-    } else {
-        h.update(&data);
-    }
+    h.update(&canonical_json::canonical_json(&e.data).map_err(identity_encoding)?);
     if let Some(after) = &e.after {
         h.update(b"\0after\0");
         h.update(after.to_string().as_bytes());

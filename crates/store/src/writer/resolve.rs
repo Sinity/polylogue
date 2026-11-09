@@ -583,10 +583,11 @@ impl Resolver {
         kind: Kind,
         value: &impl serde::Serialize,
     ) -> Result<PackedValue> {
-        let mut sorted = serde_json::to_value(value)?;
-        sorted.sort_all_objects();
-        let hash = *blake3::hash(&serde_json::to_vec(&sorted)?).as_bytes();
-        let body = crate::encoding::RowPacker::new()?.pack_json(&sorted)?;
+        // Stored rows are found by this hash, so its bytes carry no tag.
+        let canonical =
+            canonical_json::canonical_json(value).map_err(crate::encoding::identity_encoding)?;
+        let hash = *blake3::hash(&canonical).as_bytes();
+        let body = crate::encoding::RowPacker::new()?.pack_json(value)?;
         let pk = index
             .query_row(
                 &format!("SELECT pk FROM {} WHERE hash=?1", kind.table()),

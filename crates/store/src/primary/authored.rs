@@ -13,14 +13,16 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use std::collections::HashMap;
 
 /// Semantic idempotence includes the accepting machine and authored intent;
-/// a retry timestamp does not change the admitted request.
+/// a retry timestamp does not change the admitted request. Stored requests
+/// keep this hash, so its bytes carry no tag.
 pub fn request_hash(request: &UserRequest) -> Result<[u8; 32]> {
-    Ok(*blake3::hash(&serde_json::to_vec(&(
+    let canonical = canonical_json::canonical_json(&(
         &request.machine,
         &request.authorship,
         request.write.intent(),
-    ))?)
-    .as_bytes())
+    ))
+    .map_err(crate::encoding::identity_encoding)?;
+    Ok(*blake3::hash(&canonical).as_bytes())
 }
 pub(crate) fn pack(value: &impl serde::Serialize) -> Result<Vec<u8>> {
     Ok(crate::encoding::pack_bytes(&serde_json::to_vec(value)?)?)

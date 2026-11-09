@@ -33,9 +33,9 @@ pub(super) fn profile(source: Option<&Json>) -> Result<Option<String>, &'static 
 }
 
 pub(super) fn hash(value: &Json) -> String {
-    let mut value = value.clone();
-    value.sort_all_objects();
-    BlobHash::of(value.to_string().as_bytes()).to_string()
+    // Message IDs are built from it, so its bytes carry no tag.
+    BlobHash::of(&canonical_json::canonical_json(value).expect("a JSON value has a canonical form"))
+        .to_string()
 }
 
 // Escape the category and occurrence delimiters without changing native bytes.
