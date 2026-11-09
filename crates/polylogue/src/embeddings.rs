@@ -82,8 +82,21 @@ fn is_loopback(endpoint: &str) -> bool {
     };
     let host = host.trim_start_matches('[').trim_end_matches(']');
     match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V6(ip)) => {
+            ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+        }
         Ok(ip) => ip.is_loopback(),
         Err(_) => host.eq_ignore_ascii_case("localhost"),
+    }
+}
+
+/// The HTTP client settings each provider needs. The local provider never
+/// goes through a proxy: its text must not leave the machine, and a proxy set
+/// in the environment would otherwise carry loopback requests too.
+fn client_for(kind: &ProviderKind, builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    match kind {
+        ProviderKind::Local => builder.no_proxy(),
+        ProviderKind::Voyage => builder,
     }
 }
 
@@ -229,7 +242,7 @@ impl Provider {
         }
         let url = format!("{}/embeddings", self.endpoint.trim_end_matches('/'));
         let failed = |error: reqwest::Error| EmbedError::Transport(error.to_string());
-        let mut client = reqwest::Client::builder();
+        let mut client = client_for(&self.kind, reqwest::Client::builder());
         if let Some(timeout) = timeout {
             client = client.timeout(timeout);
         }

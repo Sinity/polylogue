@@ -11,6 +11,7 @@ fn long_texts_are_chunked_and_normalized() {
 }
 
 mod cancellation;
+mod proxy;
 
 #[test]
 fn provider_consumes_typed_settings_and_captured_credentials() {
@@ -149,6 +150,8 @@ fn the_local_provider_only_uses_loopback_addresses() {
     assert!(is_loopback("http://127.0.0.1:11434/v1"));
     assert!(is_loopback("http://127.8.9.10:80/v1"));
     assert!(is_loopback("http://[::1]:11434/v1"));
+    assert!(is_loopback("http://[::ffff:127.0.0.1]:11434/v1"));
+    assert!(!is_loopback("http://[::ffff:192.0.2.1]:11434/v1"));
     assert!(is_loopback("http://localhost:11434/v1"));
     assert!(!is_loopback("http://192.168.1.5:11434/v1"));
     assert!(!is_loopback("https://example.com/v1"));
