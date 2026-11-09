@@ -3,6 +3,7 @@
 
 #[macro_use]
 mod stored_names;
+pub use stored_names::StoredName;
 
 pub mod assertion;
 pub mod atomic_write;

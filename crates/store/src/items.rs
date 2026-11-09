@@ -8,7 +8,7 @@
 //! the difference is only new units at the end, `append_seq` moves; when an
 //! indexed unit changed, moved or disappeared, or the links that compose the
 //! session changed, `rewrite_version` moves and outstanding cursors go stale.
-use crate::encoding::{restore_text, unpack_block, unpack_text};
+use crate::encoding::{NamedColumns, restore_text, unpack_block, unpack_text};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
     Message, MessageId, PromptKind, Role, SessionId, Usage,
@@ -236,14 +236,14 @@ fn message_body(conn: &Connection, pk: i64, id: &str) -> Result<(Message, Vec<u6
         .query_row([pk], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
+                row.name::<Role>(1)?,
+                row.optional_name::<PromptKind>(2)?,
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<i64>>(4)?,
                 [
-                    row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, Option<i64>>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<u64>>(5)?,
+                    row.get::<_, Option<u64>>(6)?,
+                    row.get::<_, Option<u64>>(7)?,
                 ],
             ))
         })?;
@@ -266,26 +266,23 @@ fn message_body(conn: &Connection, pk: i64, id: &str) -> Result<(Message, Vec<u6
                 .map_err(|_| invalid("a block has a negative position"))?,
         );
     }
-    let count = |value: Option<i64>| value.and_then(|value| u64::try_from(value).ok());
     let message = Message {
         id,
         session: SessionId::parse(&session)
             .map_err(|_| invalid("its session ID does not parse"))?,
         parent: None,
-        role: crate::read::parse_name(&role).unwrap_or(Role::User),
+        role,
         at: crate::read::ts(at),
         at_quality: polylogue_model::TimeQuality::Unknown,
         at_precision: None,
         at_until: None,
         model,
-        prompt_kind: prompt_kind
-            .as_deref()
-            .and_then(crate::read::parse_name::<PromptKind>),
+        prompt_kind,
         blocks,
         usage: Usage {
-            input: count(tokens[0]),
-            cached_input: count(tokens[1]),
-            cache_write: count(tokens[2]),
+            input: tokens[0],
+            cached_input: tokens[1],
+            cache_write: tokens[2],
             ..Usage::default()
         },
         stop_reason: None,
