@@ -82,7 +82,7 @@ fn a_session_takes_its_repository_from_the_nearest_lookup() {
     w.lookups.push(RepoLookup {
         path: "/r/project/x".into(),
         remote: Some("https://example.com/x".into()),
-        root_commit: Some("abc".into()),
+        root_commits: vec!["abc".into()],
     });
     w.write_session(s.clone(), prose("a", 1, 1_000, "hi"));
     assert_eq!(
@@ -93,7 +93,7 @@ fn a_session_takes_its_repository_from_the_nearest_lookup() {
     w.lookups.push(RepoLookup {
         path: "/r/project/x".into(),
         remote: Some("https://example.com/y".into()),
-        root_commit: Some("abc".into()),
+        root_commits: vec!["abc".into()],
     });
     w.write_session(s, vec![]);
     assert_eq!(
@@ -111,7 +111,7 @@ fn a_repository_the_records_name_wins_over_the_lookup() {
     w.lookups.push(RepoLookup {
         path: "/r/project/x".into(),
         remote: Some("https://example.com/x".into()),
-        root_commit: Some("abc".into()),
+        root_commits: vec!["abc".into()],
     });
     w.write_session(s, prose("a", 1, 1_000, "hi"));
     assert_eq!(

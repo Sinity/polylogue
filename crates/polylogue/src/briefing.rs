@@ -177,16 +177,11 @@ pub struct SearchSummary {
 /// inside a Git checkout, the checkout's root.
 pub fn scope_dirs(cwd: &Path) -> Vec<String> {
     let mut dirs = vec![cwd.to_string_lossy().into_owned()];
-    let mut at = Some(cwd);
-    while let Some(dir) = at {
-        if dir.join(".git").exists() {
-            let root = dir.to_string_lossy().into_owned();
-            if !dirs.contains(&root) {
-                dirs.push(root);
-            }
-            break;
+    if let Some(root) = git_identity::repository_of(cwd) {
+        let root = root.to_string_lossy().into_owned();
+        if !dirs.contains(&root) {
+            dirs.push(root);
         }
-        at = dir.parent();
     }
     dirs
 }

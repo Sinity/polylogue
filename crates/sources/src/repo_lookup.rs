@@ -4,7 +4,7 @@
 //! rebuild gives every session the same repository.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 use crate::document::{str_of, string_of};
 use crate::parse::{DocumentParser, Output, Parse};
@@ -46,7 +46,15 @@ impl DocumentParser for Lookup {
         out.repo_lookups.push(RepoLookup {
             path,
             remote: str_of(&v, "remote").map(str::to_owned),
-            root_commit: str_of(&v, "root_commit").map(str::to_owned),
+            root_commits: v["root_commits"]
+                .as_array()
+                .map(|roots| {
+                    roots
+                        .iter()
+                        .filter_map(|root| root.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default(),
         });
         records.record("repo_lookup", &RecordOutcome::Used);
     }

@@ -927,9 +927,7 @@ impl CommitWatcher {
         let mut by_worktree: BTreeMap<PathBuf, Vec<&polylogue_store::LiveFootprint>> =
             BTreeMap::new();
         for footprint in footprints {
-            if let Some(top) =
-                polylogue_engine::repo_lookup::repository_of(Path::new(&footprint.cwd))
-            {
+            if let Some(top) = git_identity::repository_of(Path::new(&footprint.cwd)) {
                 by_worktree.entry(top).or_default().push(footprint);
             }
         }

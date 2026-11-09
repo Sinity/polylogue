@@ -34,7 +34,7 @@ CREATE TABLE session (
                                             --   repo_lookup holding the session's cwd (derived: repository)
   mode              TEXT,                   -- harness mode as recorded, e.g. background
   record_repo       TEXT,                   -- the repository the session's own records name
-  repo_root         TEXT,                   -- the repository's identity, its root commit hash, from repo_lookup (derived)
+  repo_root         TEXT,                   -- the repository's identity: the first of its sorted root commits, from repo_lookup (derived)
   branch            TEXT,
   git_commit        TEXT,
   model_provider    TEXT,
@@ -404,7 +404,7 @@ CREATE INDEX pr_link_number ON pr_link(number);                 -- pr:
 CREATE TABLE repo_lookup (
   path              TEXT PRIMARY KEY,       -- the directory holding .git
   remote            TEXT,                   -- origin's URL without credentials; NULL when there is none
-  root_commit       TEXT,                   -- NULL when it could not be read (shallow clone)
+  root_commits      TEXT NOT NULL,          -- JSON array, sorted, shallow boundaries left out (common git-identity); [] when unread
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;

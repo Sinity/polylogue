@@ -1110,6 +1110,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "git-identity"
+version = "0.1.0"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#a40fa5a081f2551c8338540927a8386fbf2a2d15"
+dependencies = [
+ "serde",
+ "tempfile",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1989,6 +1998,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "command-surface",
+ "git-identity",
  "hashed-blobs",
  "jiff",
  "libc",
@@ -2032,6 +2042,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "flate2",
+ "git-identity",
  "hashed-blobs",
  "jiff",
  "libc",

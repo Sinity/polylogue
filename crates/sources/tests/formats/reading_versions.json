@@ -96,7 +96,7 @@
     "4fcb59d67ad2417a78c0e8419f36e03c5b8bac09d07d09b3a73dfd2408426706"
   ],
   "polylogue-repo-lookup": [
-    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::repo_lookup::VERSION=1",
-    "d9d36531539b83d25eb6fa1ee287a9946e54934ff3041677de36a4bfe8371ffe"
+    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::repo_lookup::VERSION=2",
+    "8448c4cabe1dac0d91f9d82d170e3e996fb7b87968bb77b6fd9fcf64a9c2c632"
   ]
 }

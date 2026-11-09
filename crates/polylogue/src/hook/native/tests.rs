@@ -1,4 +1,5 @@
 use super::*;
+use std::process::Command;
 
 #[test]
 fn terminal_identity_requires_the_native_adapter_process_and_window() {
@@ -79,6 +80,42 @@ fn git_snapshot_records_common_directory_roots_and_head_from_git() {
 }
 
 #[test]
+fn the_session_start_snapshot_never_stores_remote_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "native fixture command failed");
+    };
+    git(&["init", "--initial-branch=topic"]);
+    git(&[
+        "-c",
+        "user.name=Synthetic",
+        "-c",
+        "user.email=synthetic@example.test",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "root",
+    ]);
+    git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://user:secret@example.test/synthetic.git",
+    ]);
+    let (_, repository, _) = git_identity(dir.path(), Duration::from_secs(10)).unwrap();
+    assert_eq!(
+        repository.as_deref(),
+        Some("https://example.test/synthetic.git")
+    );
+}
+
+#[test]
 fn unavailable_git_stays_unknown_and_an_elapsed_budget_starts_no_probe() {
     let dir = tempfile::tempdir().unwrap();
     assert!(git_identity(dir.path(), Duration::ZERO).is_err());
@@ -139,4 +176,41 @@ fn captured_native_facts_survive_spooling_and_parsing_at_their_record_anchor() {
     assert_eq!(event.data["boot_id"], "synthetic-boot");
     assert_eq!(event.data["objectives"], payload["objectives"]);
     assert!(parsed.output.sessions.is_empty());
+}
+
+/// The same fixture Sinex's shell-session capture asserts: a repository whose
+/// history merges two unrelated roots. Both products read it through
+/// common's `git-identity`, so both record the sorted pair.
+#[test]
+fn git_identity_roots_equal_across_products() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "first"]);
+    let first = git(&["rev-parse", "HEAD"]);
+    git(&["checkout", "-q", "--orphan", "other"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "second"]);
+    let second = git(&["rev-parse", "HEAD"]);
+    git(&["checkout", "-q", "main"]);
+    git(&[
+        "merge",
+        "-q",
+        "--allow-unrelated-histories",
+        "--no-edit",
+        "other",
+    ]);
+    let mut both = vec![first, second];
+    both.sort();
+    let (identity, _, _) = git_identity(dir.path(), Duration::from_secs(20)).unwrap();
+    assert_eq!(identity["root_commits"], json!(both));
 }

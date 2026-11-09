@@ -813,7 +813,7 @@ fn lookup_batch(input: &str, path: &str, remote: Option<&str>, root: &str) -> Ba
     p.output.repo_lookups.push(polylogue_model::RepoLookup {
         path: path.into(),
         remote: remote.map(Into::into),
-        root_commit: Some(root.into()),
+        root_commits: vec![root.into()],
     });
     p.counts = counts(1);
     b

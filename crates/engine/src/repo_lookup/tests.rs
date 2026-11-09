@@ -51,7 +51,8 @@ fn a_lookup_is_written_once_and_again_only_when_it_changes() {
     let doc: serde_json::Value =
         serde_json::from_slice(&fs::read(files[0].as_ref().unwrap().path()).unwrap()).unwrap();
     assert_eq!(doc["path"], repo.display().to_string());
-    assert!(doc["remote"].is_null() && doc["root_commit"].is_null());
+    assert!(doc["remote"].is_null());
+    assert_eq!(doc["root_commits"], serde_json::json!([]));
     assert_eq!(doc["read_at"], "t1");
 }
 
@@ -65,10 +66,10 @@ fn the_checkout_this_crate_is_built_from_reads_as_a_repository() {
     // A shallow clone (cloud sessions, CI) does not hold the root commit, and
     // the lookup reports none rather than the shallow boundary.
     if git(&repo, &["rev-parse", "--is-shallow-repository"]) == "true" {
-        assert!(l.root_commit.is_none());
+        assert!(l.root_commits.is_empty());
     } else {
-        let root = l.root_commit.expect("a full clone has a root commit");
-        assert_eq!(root.len(), 40);
+        assert!(!l.root_commits.is_empty(), "a full clone has a root commit");
+        assert!(l.root_commits.iter().all(|root| root.len() == 40));
     }
     if let Some(remote) = l.remote {
         assert!(!remote.contains('@') || !remote.contains("://"), "{remote}");
@@ -129,11 +130,11 @@ fn linked_worktrees_packed_refs_and_conditional_config_are_read() {
         read(&repo, &mut cache),
         Lookup {
             remote: Some("https://example.invalid/team/project.git".into()),
-            root_commit: Some(root.clone())
+            root_commits: vec![root.clone()]
         }
     );
     git(&repo, &["pack-refs", "--all"]);
-    assert_eq!(read(&repo, &mut cache).root_commit, Some(root.clone()));
+    assert_eq!(read(&repo, &mut cache).root_commits, vec![root.clone()]);
     let linked = temp.path().join("linked");
     git(
         &repo,
@@ -172,28 +173,33 @@ fn linked_worktrees_packed_refs_and_conditional_config_are_read() {
         read(&linked, &mut cache),
         Lookup {
             remote: Some("git@example.invalid:team/project.git".into()),
-            root_commit: Some(root)
+            root_commits: vec![root]
         }
     );
 }
 
 #[test]
-fn roots_follow_first_parents_and_change_with_head() {
+fn roots_are_every_root_reachable_from_head() {
+    // The set common's git-identity defines, so Sinex attribution and the
+    // session hook name the same repository: a merge of an unrelated history
+    // adds its root instead of keeping only the first-parent one.
     let temp = tempfile::tempdir().unwrap();
     let repo = temp.path().join("repo");
     let root = repository(&repo);
     let mut cache = Cache::default();
-    assert_eq!(read(&repo, &mut cache).root_commit, Some(root.clone()));
+    assert_eq!(read(&repo, &mut cache).root_commits, vec![root.clone()]);
     git(&repo, &["checkout", "--orphan", "other"]);
     git(&repo, &["commit", "--allow-empty", "-m", "other root"]);
     let other = git(&repo, &["rev-parse", "HEAD"]);
-    assert_eq!(read(&repo, &mut cache).root_commit, Some(other));
+    assert_eq!(read(&repo, &mut cache).root_commits, vec![other.clone()]);
     git(&repo, &["checkout", "main"]);
     git(
         &repo,
         &["merge", "--allow-unrelated-histories", "--no-edit", "other"],
     );
-    assert_eq!(read(&repo, &mut cache).root_commit, Some(root));
+    let mut both = vec![root, other];
+    both.sort();
+    assert_eq!(read(&repo, &mut cache).root_commits, both);
 }
 
 #[test]
@@ -213,9 +219,9 @@ fn missing_shallow_history_stays_unknown() {
         ],
     );
     let mut cache = Cache::default();
-    assert_eq!(read(&clone, &mut cache).root_commit, None);
+    assert!(read(&clone, &mut cache).root_commits.is_empty());
     git(&clone, &["fetch", "--unshallow"]);
-    assert_eq!(read(&clone, &mut cache).root_commit, Some(root));
+    assert_eq!(read(&clone, &mut cache).root_commits, vec![root]);
 }
 
 #[test]
@@ -248,9 +254,8 @@ fn malformed_head_values_and_reference_paths_stay_unknown() {
         "ref: refs/../../outside",
     ] {
         fs::write(dir.join("HEAD"), head).unwrap();
-        assert_eq!(
-            read(&repo, &mut Cache::default()).root_commit,
-            None,
+        assert!(
+            read(&repo, &mut Cache::default()).root_commits.is_empty(),
             "{head}"
         );
     }
@@ -281,7 +286,7 @@ fn ownership_refusal_reports_the_repository_as_unavailable() {
         lookup,
         Lookup {
             remote: None,
-            root_commit: None
+            root_commits: Vec::new()
         }
     );
 }

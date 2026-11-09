@@ -13,6 +13,7 @@ polylogue-model.workspace = true
 polylogue-sources.workspace = true
 polylogue-store.workspace = true
 hashed-blobs.workspace = true
+git-identity.workspace = true
 blake3.workspace = true
 notify.workspace = true
 serde.workspace = true
