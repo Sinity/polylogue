@@ -334,10 +334,42 @@ fn every_client_answers_the_same_request_identically() {
         }
         argv.extend(*args);
         let (c, values) = crate::cli::parse(&argv).unwrap();
+        let observe = || w.daemon.reads.reader().unwrap().change_position().unwrap();
+        let runs = || {
+            w.daemon
+                .reads
+                .reader()
+                .unwrap()
+                .query("SELECT count(*) AS n FROM query_run", &[])
+                .map(|r| r[0]["n"].clone())
+                .unwrap_or_default()
+        };
+        eprintln!(
+            "DIAG {index} {name} before-cli now={:?} runs={:?}",
+            observe(),
+            runs()
+        );
         let cli_position = (*name == "read").then(|| read_position(&w));
         let (cli, cli_exit) = cli_answer(&w, &argv, &request_id);
+        eprintln!(
+            "DIAG {index} {name} after-cli now={:?} runs={:?}",
+            observe(),
+            runs()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        eprintln!(
+            "DIAG {index} {name} after-cli+500ms now={:?} runs={:?} settled={:?}",
+            observe(),
+            runs(),
+            read_position(&w)
+        );
         let mcp_position = (*name == "read").then(|| read_position(&w));
         let mcp = mcp_answer(&w, c, &values, &request_id);
+        eprintln!(
+            "DIAG {index} {name} after-mcp now={:?} runs={:?}",
+            observe(),
+            runs()
+        );
         let http_position = (*name == "read").then(|| read_position(&w));
         let (http, http_exit) = http_answer(&web, c, &values, &request_id);
         if cli_exit.is_some() {
