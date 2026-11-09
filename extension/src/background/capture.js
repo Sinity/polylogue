@@ -177,6 +177,10 @@ export class Capturer {
     const key = `${provider}:${conversation}`;
     this.tabConversations.set(tabId, key);
     const raw = page.body;
+    // A capture without the provider's JSON or page turns holds no
+    // conversation. Storing it would archive an empty session, and its
+    // fingerprint (of nothing) would make every later read look unchanged.
+    if (!raw && !(info.session?.turns?.length > 0)) throw new CaptureError("no_conversation_content");
     let confirmedTurn = null;
     if (confirm && provider === "chatgpt" && raw) {
       const snapshot = JSON.parse(await raw.text());

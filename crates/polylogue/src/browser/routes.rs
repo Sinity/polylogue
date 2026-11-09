@@ -118,6 +118,21 @@ fn capture_identity(v: &Value) -> Option<(String, String)> {
     (!provider.is_empty() && !session.is_empty()).then(|| (provider.to_owned(), session.to_owned()))
 }
 
+/// Whether a capture carries a conversation: the provider's own JSON, or
+/// turns read from the page. A capture with neither would become a session
+/// with no messages that reads as archived.
+fn holds_conversation(v: &Value) -> bool {
+    let raw = v
+        .get("raw_provider_payload")
+        .and_then(Value::as_object)
+        .is_some_and(|o| !o.is_empty());
+    let turns = v
+        .pointer("/session/turns")
+        .and_then(Value::as_array)
+        .is_some_and(|t| !t.is_empty());
+    raw || turns
+}
+
 /// Appends one capture to its conversation's capture log. Bytes the log
 /// already holds are not appended again. The answer is sent only after the
 /// file and its directory are synced: the extension may then forget it.
@@ -139,6 +154,13 @@ async fn store_capture(State(host): State<Arc<BrowserHost>>, body: Bytes) -> Htt
             "a capture names session.provider and session.provider_session_id",
         );
     };
+    if !holds_conversation(&value) {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "capture_has_no_conversation",
+            "a capture holds the provider's conversation JSON (raw_provider_payload) or session.turns",
+        );
+    }
     let path = host.capture_log(&provider, &conversation);
     let hash = blake3::hash(&body).to_hex().to_string();
     match blocking(move || super::captures::append(&path, &body)).await {
