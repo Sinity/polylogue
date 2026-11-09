@@ -1,5 +1,9 @@
-//! The predecessor's catalog supplies origin and append lineage. Only its
-//! declared byte blobs and source facts cross this boundary.
+//! The predecessor's source catalog (`--format predecessor-archive`): a
+//! folder with `source.db` and `blob/`. Each raw session becomes an input
+//! read by its origin's parser, with its source facts and append lineage;
+//! every row of every table of `source.db` is kept verbatim, and every blob
+//! no raw session cites (attachments, sidecars, hook payloads) is kept with
+//! its bytes checked against its name.
 use super::*;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -9,18 +13,15 @@ pub(super) fn stage(
     root: &Path,
     archive: &Archive,
 ) -> std::io::Result<Option<Vec<package::Member>>> {
-    let (catalog, inputs) = archive
-        .prepare_write(|mut catalog| {
-            polylogue_store::legacy_import::inputs(root, |row| {
-                serde_json::to_writer(&mut catalog, row)?;
-                std::io::Write::write_all(&mut catalog, b"\n")?;
-                Ok(())
-            })
-        })
-        .map_err(std::io::Error::other)?;
-    let Some(inputs) = inputs else {
+    let Some(catalog) = polylogue_store::legacy_import::Catalog::open(root, &archive.staging_dir())
+        .map_err(std::io::Error::other)?
+    else {
         return Ok(None);
     };
+    let (rows, _) = archive
+        .prepare_write(|out| catalog.write_rows(out))
+        .map_err(std::io::Error::other)?;
+    let inputs = catalog.inputs().map_err(std::io::Error::other)?;
     let mut declared = BTreeMap::new();
     let mut blobs = BTreeMap::new();
     for input in &inputs {
@@ -70,8 +71,8 @@ pub(super) fn stage(
     }
     let mut members = Vec::new();
     members.push(package::Member {
-        path: PathBuf::from(format!("{}!/raw_sessions/catalog.jsonl", root.display())),
-        bytes: catalog,
+        path: PathBuf::from(format!("{}!/source.db/rows.jsonl", root.display())),
+        bytes: rows,
         container: false,
         origin: polylogue_sources::origin::by_name(KEPT),
         parent: None,
@@ -79,12 +80,6 @@ pub(super) fn stage(
         member_path_bytes: None,
     });
     for input in &inputs {
-        let format = polylogue_store::predecessor::origin(&input.origin).ok_or_else(|| {
-            std::io::Error::other(format!("unsupported predecessor origin {}", input.origin))
-        })?;
-        let spec = polylogue_sources::origin::by_name(format).ok_or_else(|| {
-            std::io::Error::other(format!("no parser for predecessor origin {format}"))
-        })?;
         let name = Path::new(&input.source_path)
             .file_name()
             .and_then(|name| name.to_str())
@@ -154,20 +149,84 @@ pub(super) fn stage(
             root.display(),
             input.raw_id
         ));
+        // An origin the predecessor could not name ("unknown-export") is
+        // read by the declared structure its bytes have, or kept unparsed.
         let spec = if polylogue_sources::browser_capture::recognize(&at, &head[..n]) {
-            polylogue_sources::origin::by_name("browser-capture").expect("capture parser")
+            polylogue_sources::origin::by_name("browser-capture")
+        } else if let Some(name) = polylogue_store::predecessor::origin(&input.origin) {
+            polylogue_sources::origin::by_name(name)
         } else {
-            spec
-        };
+            let mut bytes = combined.reader().map_err(std::io::Error::other)?;
+            super::recognition::declared(&at, &mut bytes, None)?
+        }
+        .or_else(|| polylogue_sources::origin::by_name(KEPT));
         members.push(package::Member {
             path: at,
             bytes: combined,
             container: false,
-            origin: Some(spec),
+            origin: spec,
             parent: None,
             container_kind: None,
             member_path_bytes: None,
         });
+    }
+    // Every blob no raw session cites, checked against its name.
+    let cited: BTreeSet<String> = inputs
+        .iter()
+        .map(|input| input.blob_hash.iter().map(|b| format!("{b:02x}")).collect())
+        .collect();
+    let mut prefixes: Vec<_> =
+        std::fs::read_dir(root.join("blob"))?.collect::<std::io::Result<Vec<_>>>()?;
+    prefixes.sort_by_key(|entry| entry.file_name());
+    for prefix in prefixes {
+        if !prefix.file_type()?.is_dir() {
+            continue;
+        }
+        let mut files: Vec<_> =
+            std::fs::read_dir(prefix.path())?.collect::<std::io::Result<Vec<_>>>()?;
+        files.sort_by_key(|entry| entry.file_name());
+        for file in files {
+            let name = format!(
+                "{}{}",
+                prefix.file_name().to_string_lossy(),
+                file.file_name().to_string_lossy()
+            );
+            if cited.contains(&name) || !file.file_type()?.is_file() {
+                continue;
+            }
+            let mut source = std::fs::File::open(file.path())?;
+            let (bytes, ()) = archive
+                .prepare_write(|output| {
+                    let mut actual = Sha256::new();
+                    let mut buffer = [0; 64 * 1024];
+                    loop {
+                        let n = source.read(&mut buffer)?;
+                        if n == 0 {
+                            break;
+                        }
+                        actual.update(&buffer[..n]);
+                        output.write_all(&buffer[..n])?;
+                    }
+                    let actual: [u8; 32] = actual.finalize().into();
+                    let actual: String = actual.iter().map(|b| format!("{b:02x}")).collect();
+                    if actual != name {
+                        return Err(polylogue_store::StoreError::Invalid(format!(
+                            "predecessor blob {name} differs from its name"
+                        )));
+                    }
+                    Ok(())
+                })
+                .map_err(std::io::Error::other)?;
+            members.push(package::Member {
+                path: PathBuf::from(format!("{}!/blob/{name}", root.display())),
+                bytes,
+                container: false,
+                origin: polylogue_sources::origin::by_name(KEPT),
+                parent: None,
+                container_kind: None,
+                member_path_bytes: None,
+            });
+        }
     }
     Ok(Some(members))
 }

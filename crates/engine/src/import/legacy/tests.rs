@@ -135,3 +135,97 @@ fn predecessor_import_parses_native_sessions_and_rebuilds_after_the_old_archive_
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(w.texts("legacy"), ["one", "two"]);
 }
+
+fn blob(root: &Path, bytes: &[u8]) -> String {
+    let name = format!("{:x}", Sha256::digest(bytes));
+    std::fs::create_dir_all(root.join("blob").join(&name[..2])).unwrap();
+    std::fs::write(root.join("blob").join(&name[..2]).join(&name[2..]), bytes).unwrap();
+    name
+}
+
+#[test]
+fn every_catalog_row_and_every_uncited_blob_is_kept() {
+    let root = tempfile::tempdir().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    fixture(root.path());
+    let db = rusqlite::Connection::open(root.path().join("source.db")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE blob_refs(blob_hash BLOB, ref_id TEXT, ref_type TEXT);
+         INSERT INTO blob_refs VALUES (x'00', 'r1', 'attachment');",
+    )
+    .unwrap();
+    let attachment = blob(root.path(), b"an attachment no raw session cites");
+    let members = stage(root.path(), &Archive::at(scratch.path()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(members.len(), 5);
+    let rows: Vec<serde_json::Value> = decoded(&members[0])
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["table"], "blob_refs");
+    assert_eq!(rows[0]["row"]["ref_type"], "attachment");
+    assert!(members[0].path.ends_with("source.db/rows.jsonl"));
+    let kept = members.last().unwrap();
+    assert!(
+        kept.path
+            .to_string_lossy()
+            .ends_with(&format!("!/blob/{attachment}"))
+    );
+    assert_eq!(kept.origin.unwrap().name, KEPT);
+    assert_eq!(decoded(kept), b"an attachment no raw session cites");
+
+    // An uncited blob whose bytes do not hash to its name refuses the import.
+    let name = blob(root.path(), b"other bytes");
+    std::fs::write(
+        root.path().join("blob").join(&name[..2]).join(&name[2..]),
+        b"changed",
+    )
+    .unwrap();
+    let error = stage(root.path(), &Archive::at(scratch.path()))
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("differs from its name"), "{error}");
+}
+
+#[test]
+fn a_raw_session_of_an_unnamed_origin_is_read_by_its_structure_or_kept() {
+    let root = tempfile::tempdir().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    fixture(root.path());
+    let db = rusqlite::Connection::open(root.path().join("source.db")).unwrap();
+    let conversation = br#"{"mapping":{},"current_node":null,"conversation_id":"c1","title":"t"}"#;
+    let opaque = b"bytes of no declared structure";
+    for (id, bytes) in [("chat", &conversation[..]), ("opaque", &opaque[..])] {
+        let name = blob(root.path(), bytes);
+        let hash = Sha256::digest(bytes);
+        assert_eq!(format!("{hash:x}"), name);
+        db.execute(
+            "INSERT INTO raw_sessions VALUES (?1,'unknown-export','/home/op/inbox/x.json',?2,?3,NULL,'full',NULL,NULL,NULL)",
+            rusqlite::params![id, hash.as_slice(), bytes.len() as i64],
+        )
+        .unwrap();
+    }
+    let members = stage(root.path(), &Archive::at(scratch.path()))
+        .unwrap()
+        .unwrap();
+    let origin = |id: &str| {
+        members
+            .iter()
+            .find(|member| {
+                member
+                    .path
+                    .to_string_lossy()
+                    .contains(&format!("raw_sessions/{id}/"))
+            })
+            .unwrap()
+            .origin
+            .unwrap()
+            .name
+    };
+    assert_eq!(origin("chat"), "chatgpt");
+    assert_eq!(origin("opaque"), KEPT);
+}

@@ -143,8 +143,11 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 | OpenAI chat array | only with `--format openai-chat`, since the shape has no reliable structure | `openai-chat` |
 | aider | `.aider.llm.history` beside `.aider.chat.history.md` | `aider`: the LLM history is the session, the Markdown a companion document |
 | Polylogue export bundle | the bundle manifest ([reading.md](reading.md#writing-out)) | the bundle's own records |
-| The predecessor's spools | hook spool NDJSON in every old layout, `browser_llm_session` v1 envelopes, `raw_sessions` blobs | the payload's origin |
-| The predecessor's archive | its `source.db` with `raw_sessions` and their blob files, read without opening it for writing | each source's origin, with its original source facts and append lineage |
+| The predecessor's hook spool | only with `--format hook-spool`: hook spool lines in every old layout (per-session `.jsonl`, `carriers/<harness>/<date>/<pid>.ndjson`, and the dated one-event `pending/` and `acknowledged/` `.json` files) | the payload's origin |
+| The predecessor's browser captures | only with `--format browser-capture`: `browser_llm_session` v1 envelopes | the payload's origin |
+| The predecessor's archive | only with `--format predecessor-archive`: a folder with its `source.db` (`raw_sessions`) and their blob files, read without opening it for writing | each source's origin, with its original source facts and append lineage |
+| The predecessor's `user.db` | only with `--format predecessor-user-db`; every row is also kept verbatim as `user.db!/rows.jsonl` | its assertions ([assertions.md](assertions.md#write-path)) |
+| The predecessor's vector stores | only with `--format predecessor-vectors`: a sqlite-vec `message_embeddings` store, read through its backing tables | vectors ([search.md](search.md#what-is-embedded)) |
 | A live-origin file outside its root | only with `--format NAME`, or when the path keeps the tool's own layout | that origin |
 
 ### An archive from before the baseline
