@@ -18,7 +18,10 @@
       {
         "path": "/work/project",
         "remote": "https://example.invalid/repo.git",
-        "root_commit": "abc"
+        "root_commits": [
+          "abc",
+          "def"
+        ]
       }
     ],
     "sessions": []
