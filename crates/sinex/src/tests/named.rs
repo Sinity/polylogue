@@ -213,7 +213,10 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
     sinex
         .queue()
         .unwrap()
-        .retire(&crate::tests::applied(9))
+        .retire(
+            &crate::tests::applied(9),
+            &crate::tests::every_event_applied,
+        )
         .unwrap();
     drop(sinex);
     let sinex = client(root.path());
@@ -226,7 +229,10 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
     sinex
         .queue()
         .unwrap()
-        .retire(&crate::tests::applied(10))
+        .retire(
+            &crate::tests::applied(10),
+            &crate::tests::every_event_applied,
+        )
         .unwrap();
     for (name, _) in expected {
         assert!(retained(&sinex, NamedProductSelector::Exact(name)).is_empty());

@@ -67,7 +67,15 @@ JSON object keys return in a different order. The original callback body and
 its seal remain unchanged.
 
 The stream follower alone reads and acknowledges confirmed pages. It sends each
-page to the writer and acknowledges it after durable application. Preparing a
+page to the writer and acknowledges it after durable application.
+Acknowledging a page retires the producer spool's operations it confirmed. An
+operation whose events Sinex admitted retires only when every one of those
+events has a fact in `index.db`; the applied position alone is not enough,
+because the confirmed stream can lose its newest messages in a host crash while
+later positions still arrive. Such an operation stays in the spool, with its
+bytes, until the events reach `index.db`. Operations, acquisitions and receipts
+are prepared in dot-named directories and published by rename; opening the
+spool removes any such directory a crash left behind. Preparing a
 write does not start another stream read on the writer thread. Explicit
 synchronization asks the follower for a page, drains ready captures on the writer,
 then asks the follower again so newly prepared capture products can be applied.

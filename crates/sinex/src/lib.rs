@@ -420,8 +420,10 @@ impl polylogue_store::primary::Sinex for Sinex {
     fn acknowledge(
         &self,
         state: &polylogue_store::primary::ReplayState,
+        applied: &dyn Fn(&str) -> polylogue_store::Result<bool>,
     ) -> polylogue_store::Result<()> {
-        Ok(self.read_client(async |client| client.acknowledge(state).await)?)
+        let applied = |event: &str| Ok(applied(event)?);
+        Ok(self.read_client(async |client| client.acknowledge(state, &applied).await)?)
     }
 }
 

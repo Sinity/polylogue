@@ -140,7 +140,14 @@ pub trait Sinex: Send + Sync {
         products: &[ProductWrite],
     ) -> Result<PreparedWrite>;
     fn confirmed(&self, state: &ReplayState, cache: &str) -> Result<Vec<Confirmed>>;
-    fn acknowledge(&self, state: &ReplayState) -> Result<()>;
+    /// Acknowledges the applied page. `applied` answers whether `index.db`
+    /// holds a fact for one Sinex event; producer operations retire only when
+    /// all their admitted events are there.
+    fn acknowledge(
+        &self,
+        state: &ReplayState,
+        applied: &dyn Fn(&str) -> Result<bool>,
+    ) -> Result<()>;
 }
 
 /// What an input is, in words Sinex keeps: the origin that wrote it, its

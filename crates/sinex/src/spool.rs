@@ -442,6 +442,7 @@ impl Spool {
             retirement_dirty: Cell::new(true),
             _lock: lock,
         };
+        spool.remove_unpublished()?;
         spool.rebuild_indexes()?;
         for entry in fs::read_dir(spool.root.join("retired"))? {
             let path = entry?.path();
@@ -451,6 +452,36 @@ impl Spool {
         }
         sync(&spool.root.join("retired"))?;
         Ok(spool)
+    }
+
+    /// Operations, acquisitions and receipts are prepared in dot-named
+    /// directories and published by rename, so a dot-named directory left at
+    /// open belongs to a preparation that crashed before publication. The
+    /// spool lock means no other writer is preparing now. Some hold hard links
+    /// to large bodies, so they are removed rather than left to accumulate.
+    fn remove_unpublished(&self) -> Result<()> {
+        let operations = self.root.join("operations");
+        remove_dot_entries(&operations)?;
+        for entry in fs::read_dir(&operations)? {
+            let entry = entry?;
+            if !entry.file_name().to_str().is_some_and(hex_name) || !entry.file_type()?.is_dir() {
+                continue;
+            }
+            remove_dot_entries(&entry.path())?;
+            let members = entry.path().join("operations");
+            if entry.path().join("acquisition.json").try_exists()? && members.is_dir() {
+                remove_dot_entries(&members)?;
+                for member in fs::read_dir(&members)? {
+                    let member = member?;
+                    if member.file_name().to_str().is_some_and(hex_name)
+                        && member.file_type()?.is_dir()
+                    {
+                        remove_dot_entries(&member.path())?;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     fn operation(&self, identity: &str) -> Result<PathBuf> {
@@ -1143,7 +1174,17 @@ impl Spool {
 
     /// The caller supplies only a head verified after publication acknowledgments
     /// in this scope. Missing head evidence retains grouped source custody.
-    pub fn retire(&self, state: &ReplayState) -> Result<()> {
+    ///
+    /// `applied` answers whether `index.db` holds a fact for one Sinex event.
+    /// An operation whose events were admitted retires only when every one of
+    /// them is in `index.db`: the applied position alone can pass positions the
+    /// confirmed stream lost in a host crash, and retiring then would drop the
+    /// only local copy of writes the index never received.
+    pub fn retire(
+        &self,
+        state: &ReplayState,
+        applied: &dyn Fn(&str) -> Result<bool>,
+    ) -> Result<()> {
         if state.applied_position.is_some_and(|position| position < 0)
             || state.head.is_some_and(|position| position < 0)
         {
@@ -1195,9 +1236,12 @@ impl Spool {
                 continue;
             }
             // A summary phase cannot substitute for the immutable full receipt.
-            self.acknowledgment(&identity)?.ok_or_else(|| {
+            let receipt = self.acknowledgment(&identity)?.ok_or_else(|| {
                 Error::Invalid("settled operation has no verified receipt".into())
             })?;
+            if !all_applied(&receipt, applied)? {
+                continue;
+            }
             if prepared.group().is_some() {
                 self.visit_captures(&prepared.identity, |identity| {
                     self.remove(identity)?;
@@ -1692,6 +1736,34 @@ impl Spool {
         }
         Ok(())
     }
+}
+
+/// Removes the `.preparing-*` and `.ack-preparing-*` directories in `directory`.
+fn remove_dot_entries(directory: &Path) -> Result<()> {
+    let mut removed = false;
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let unpublished = entry.file_name().to_str().is_some_and(|name| {
+            name.starts_with(".preparing-") || name.starts_with(".ack-preparing-")
+        });
+        if unpublished && entry.file_type()?.is_dir() {
+            fs::remove_dir_all(entry.path())?;
+            removed = true;
+        }
+    }
+    if removed {
+        sync(directory)?;
+    }
+    Ok(())
+}
+
+fn all_applied(receipt: &Acknowledgment, applied: &dyn Fn(&str) -> Result<bool>) -> Result<bool> {
+    for event in &receipt.admitted {
+        if !applied(&event.to_string())? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn hex_name(name: &str) -> bool {

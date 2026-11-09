@@ -349,3 +349,18 @@ fn missing_chunks_keep_holes_and_dimension_keys_separate() {
         HashSet::from([0, 1, 2])
     );
 }
+
+#[test]
+fn embeddings_writer_uses_full_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let writer = reader.vectors_writer().unwrap();
+    // 2 is FULL: a committed batch of paid vectors is on disk before put returns.
+    let synchronous: i64 = writer
+        .conn
+        .pragma_query_value(None, "synchronous", |row| row.get(0))
+        .unwrap();
+    assert_eq!(synchronous, 2);
+}
