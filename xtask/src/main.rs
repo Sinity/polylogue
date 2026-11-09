@@ -2,7 +2,7 @@ mod bench;
 mod common_link;
 
 use clap::Parser;
-use devkit::{Nextest, Run, select::Selection};
+use devkit::{Nextest, Run};
 use serde_json::Value;
 use std::{path::Path, process::ExitCode};
 
@@ -39,26 +39,33 @@ enum Cli {
     /// Formatting, crate boundaries and clippy (warnings denied) of every
     /// target.
     Fast,
-    /// Formatting, crate boundaries, both clippy configurations and all tests.
-    Check,
+    /// Formatting, crate boundaries, both clippy configurations and every
+    /// test, or with `--changed` the tests the changes since the merge base
+    /// with origin/master can affect (devkit's selection; `--changed-base`
+    /// names another base). Clippy reuses every unchanged crate's result, so
+    /// `check --changed` costs what the change touches: the loop while editing.
+    Check {
+        #[arg(long)]
+        changed: bool,
+        #[arg(long, value_name = "REF", conflicts_with = "changed")]
+        changed_base: Option<String>,
+    },
     /// Build every test binary and both clippy configurations without
     /// running any test: the warm target that new checkouts copy.
     Warm,
     /// The end-to-end tests: the real daemon, CLI and MCP server.
     Scenarios,
-    /// Tests only: everything, or what changed since the merge base.
+    /// Tests only: everything, or a selection.
     Test {
-        /// Only packages changed since the merge base with origin/master, and
-        /// what depends on them.
-        #[arg(long)]
-        changed: bool,
         /// Build every test binary without running any (a cloud
         /// environment's warm build); selection does not apply.
-        #[arg(long, conflicts_with_all = ["changed", "args"])]
+        #[arg(long, conflicts_with = "args")]
         no_run: bool,
         /// Further `cargo nextest run` arguments: `-p` packages, `--exclude`
         /// and `-E` filtersets select which tests run (the whole workspace is
-        /// always built); names and runner flags pass through.
+        /// always built); devkit's `--changed` and `--changed-base=REF` select
+        /// the tests changes since the merge base can affect; names and runner
+        /// flags pass through.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -214,22 +221,6 @@ fn clippy(run: &mut Run) -> devkit::Result {
     )
 }
 
-/// A type check of every target with the one feature list: test-code errors
-/// surface here in a minute instead of after code generation.
-fn type_check(run: &mut Run) -> devkit::Result {
-    run.cargo(
-        "type check",
-        &[
-            "check",
-            "--locked",
-            "--workspace",
-            "--all-targets",
-            "--features",
-            FEATURES,
-        ],
-    )
-}
-
 fn build_tests(run: &mut Run) -> devkit::Result {
     let mut command = vec!["test".to_owned(), "--no-run".to_owned()];
     command.extend(test_arguments(&[], None).expect("the full selection is valid"));
@@ -381,13 +372,23 @@ fn main() -> ExitCode {
             boundaries_step(run)?;
             clippy(run)
         }),
-        Cli::Check => run("check", &[], |run| {
-            fmt_check(run)?;
-            boundaries_step(run)?;
-            clippy(run)?;
-            let arguments = test_arguments(&[], None).expect("the full selection is valid");
-            run.nextest("test", &nextest(arguments))
-        }),
+        Cli::Check {
+            changed,
+            changed_base,
+        } => {
+            let args: Vec<String> = match (changed, changed_base) {
+                (_, Some(base)) => vec![format!("--changed-base={base}")],
+                (true, None) => vec!["--changed".into()],
+                (false, None) => Vec::new(),
+            };
+            run("check", &args, |run| {
+                fmt_check(run)?;
+                boundaries_step(run)?;
+                clippy(run)?;
+                let arguments = test_arguments(&args, None).expect("the selection is valid");
+                run.nextest("test", &nextest(arguments))
+            })
+        }
         Cli::Warm => run("warm", &[], |run| {
             // A lint failure on master must not leave the test builds cold.
             let tests = build_tests(run);
@@ -400,22 +401,8 @@ fn main() -> ExitCode {
         }),
         Cli::Boundaries => run("boundaries", &[], boundaries_step),
         Cli::Test { no_run: true, .. } => run("test", &["--no-run".into()], build_tests),
-        Cli::Test { changed, args, .. } => {
-            let mut required = None;
-            if changed {
-                match devkit::select::changed(Path::new("."), "origin/master") {
-                    Ok(Selection::Nothing) => {
-                        eprintln!("no package changed since the merge base; nothing to test");
-                        return ExitCode::SUCCESS;
-                    }
-                    Ok(selection) => required = selection.filterset(),
-                    Err(error) => {
-                        eprintln!("{error}");
-                        return ExitCode::FAILURE;
-                    }
-                }
-            }
-            let arguments = match test_arguments(&args, required) {
+        Cli::Test { args, .. } => {
+            let arguments = match test_arguments(&args, None) {
                 Ok(arguments) => arguments,
                 Err(error) => {
                     eprintln!("{error}");
@@ -423,7 +410,6 @@ fn main() -> ExitCode {
                 }
             };
             run("test", &args, |run| {
-                type_check(run)?;
                 run.nextest("test", &nextest(arguments))
             })
         }

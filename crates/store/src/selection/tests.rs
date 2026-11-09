@@ -82,16 +82,27 @@ fn prepared_selection_streams_total_answer_and_stops_at_callback() {
         ["session:test:three", "session:test:two", "session:test:one"]
     );
 }
+fn targets(reader: &crate::Reader<'_>, text: &str, options: &Options) -> Vec<String> {
+    let prepared = reader.prepare_selection(text, options).unwrap();
+    let mut refs = vec![];
+    reader
+        .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+            refs.push(row.target.unwrap().to_string());
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    refs
+}
 #[test]
-fn prepared_selection_identity_resolves_latest_without_hashing_execution() {
+fn latest_is_the_newest_session_and_its_identity_ignores_execution() {
     let (_dir, f) = fixture();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
+    assert_eq!(
+        targets(&reader, "latest", &options()),
+        ["session:test:three"]
+    );
     let latest = reader.prepare_selection("latest", &options()).unwrap();
-    let explicit = reader
-        .prepare_selection("session:test:three", &options())
-        .unwrap();
-    assert_eq!(latest.question_id(), explicit.question_id());
     let mut changed = options();
     changed.page_size = Some(300);
     changed.random_seed = Some(999);
@@ -101,6 +112,39 @@ fn prepared_selection_identity_resolves_latest_without_hashing_execution() {
             .prepare_selection("latest", &changed)
             .unwrap()
             .question_id()
+    );
+}
+#[test]
+fn last_excludes_the_calling_session() {
+    let (_dir, f) = fixture();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut caller = options();
+    caller.self_session = Some("test:three".into());
+    for word in ["last", "latest"] {
+        assert_eq!(
+            targets(&reader, word, &caller),
+            ["session:test:two"],
+            "{word}"
+        );
+    }
+}
+#[test]
+fn last_respects_scope() {
+    let (_dir, f) = fixture();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    // The newest session that also meets the other conditions, not the
+    // newest session overall.
+    assert_eq!(
+        targets(&reader, "last AND NOT session:test:three", &options()),
+        ["session:test:two"]
+    );
+    let mut caller = options();
+    caller.self_session = Some("test:two".into());
+    assert_eq!(
+        targets(&reader, "last AND NOT session:test:three", &caller),
+        ["session:test:one"]
     );
 }
 #[test]

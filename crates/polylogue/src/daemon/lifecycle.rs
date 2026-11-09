@@ -402,7 +402,7 @@ async fn monitor(
             _ = &mut *listener_ended => return Stop::Listener,
             changed = workers.changed() => return worker_stop(changed, &mut workers),
             _ = idle.changed() => return Stop::Idle,
-            responsive = probe(&app.runtime, Duration::from_secs(2)) => responsive,
+            responsive = probe(&app.runtime.daemon.archive, READINESS_BUDGET) => responsive,
         };
         if !responsive {
             return Stop::Failed(io::Error::new(
@@ -428,7 +428,7 @@ async fn monitor(
                 return pending::<bool>().await;
             };
             ticker.tick().await;
-            probe(&app.runtime, *budget).await
+            probe(&app.runtime.daemon.archive, *budget).await
         };
         tokio::select! { biased;
             signal = signals.next() => return signal.map_or_else(Stop::Failed, Stop::Signal),
@@ -455,9 +455,12 @@ fn worker_stop(
     Stop::Failed(io::Error::other(failure))
 }
 
-async fn probe(runtime: &Runtime, budget: Duration) -> bool {
+/// How long readiness waits for the socket to answer `ping`.
+const READINESS_BUDGET: Duration = Duration::from_secs(2);
+
+async fn probe(archive: &polylogue_store::Archive, budget: Duration) -> bool {
     let request = command_surface::Request {
-        operation: "status".into(),
+        operation: super::server::PING.into(),
         arguments: serde_json::json!({}),
         request_id: "daemon-liveness".into(),
         deadline: command_surface::Deadline::None,
@@ -470,7 +473,7 @@ async fn probe(runtime: &Runtime, budget: Duration) -> bool {
         tokio::time::timeout(
             budget,
             crate::client::call_ready_as(
-                &runtime.daemon.archive,
+                archive,
                 &request,
                 &CancellationToken::new(),
                 Default::default(),

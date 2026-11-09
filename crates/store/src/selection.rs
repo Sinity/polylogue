@@ -789,13 +789,7 @@ impl Reader<'_> {
         condition: &mut ConditionKind,
         options: &Options,
     ) -> Result<(), QueryError> {
-        prepare::resolve_reference(
-            self.conn().map_err(|error| QueryError::Unavailable {
-                what: error.to_string(),
-            })?,
-            condition,
-            options.self_session.as_deref(),
-        )
+        prepare::resolve_reference(condition, options.self_session.as_deref())
     }
 
     pub(crate) fn selection_saved_queries_for_family(

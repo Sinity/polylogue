@@ -468,3 +468,24 @@ fn count(reader: &Reader<'_>, position: &str) -> Result<Counted, String> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+impl Warm {
+    /// A vector load that, once started, waits for `release` before it reads.
+    pub(crate) fn load_vectors_until(
+        &self,
+        reader: &Reader<'_>,
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        let _ = self.cached_vectors(reader, "synthetic/empty", 0, || {
+            started.send(()).unwrap();
+            let _ = release.recv();
+            reader
+                .vectors()
+                .map_err(|e| e.to_string())?
+                .load("synthetic/empty")
+                .map_err(|e| e.to_string())
+        });
+    }
+}

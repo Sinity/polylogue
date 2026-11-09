@@ -1,7 +1,7 @@
 //! One binder serves pinned reads and accepting original/scratch views.
 use super::*;
 use polylogue_query::{Bindings, SavedQuery, SavedQueryBody};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 
 /// Semantic objects prepared by the owner's one ordered preflight. This is
 /// neither canonical nor queued custody; final acceptance never supplies it.
@@ -84,7 +84,7 @@ pub(crate) fn prepare_query_plan_on(
     Ok(polylogue_query::plan::prepare(
         text,
         &bindings,
-        |condition| resolve_reference(original, condition, self_session),
+        |condition| resolve_reference(condition, self_session),
     )?)
 }
 
@@ -217,34 +217,26 @@ fn retained_bindings(
 }
 
 pub(super) fn resolve_reference(
-    original: &Connection,
     condition: &mut ConditionKind,
     self_session: Option<&str>,
 ) -> Result<(), QueryError> {
-    let word = match condition {
-        ConditionKind::Reference { reference }
-            if matches!(reference.as_str(), "last" | "latest" | "self") =>
-        {
-            Some(reference.clone())
-        }
+    // `last` and `latest` depend on the query's other conditions, so the
+    // compiler resolves them inside the query.
+    let is_self = match condition {
+        ConditionKind::Reference { reference } => reference == "self",
         ConditionKind::Text {
             text,
             mode: TextMode::Word,
-        } if matches!(text.as_str(), "last" | "latest" | "self") => Some(text.clone()),
-        _ => None,
+        } => text == "self",
+        _ => false,
     };
-    if let Some(word) = word {
-        let fail = |message: String| QueryError::Invalid {
-            message,
-            position: 0,
-        };
-        let id = if word == "self" {
-            self_session
-                .map(str::to_owned)
-                .ok_or_else(|| fail("self requires a calling session".into()))?
-        } else {
-            original.query_row("SELECT id FROM session WHERE kind='main' AND stub=0 ORDER BY last_activity_at IS NULL,last_activity_at DESC,pk DESC LIMIT 1", [], |row| row.get::<_, String>(0)).optional().map_err(|error| QueryError::Unavailable { what: error.to_string() })?.ok_or_else(|| fail("there is no latest session".into()))?
-        };
+    if is_self {
+        let id = self_session
+            .map(str::to_owned)
+            .ok_or_else(|| QueryError::Invalid {
+                message: "self requires a calling session".into(),
+                position: 0,
+            })?;
         *condition = ConditionKind::Reference {
             reference: format!("session:{id}"),
         };
