@@ -348,7 +348,7 @@ f(Documents,"versions").sql("(SELECT count(DISTINCT ds.version_hash) FROM docume
 f(Sessions,"id").sql("{s}.id"),
 f(Sessions,"origin").sql("{s}.origin"),
 f(Sessions,"kind").sql("{s}.kind"),
-f(Sessions,"title").sql("COALESCE({s}.title, {s}.derived_title)"),
+f(Sessions,"title").sql_fn(sessions_title),
 f(Sessions,"repo").custom(custom::repo).sql("{s}.repo"),
 f(Sessions,"branch").sql("{s}.branch"),
 f(Sessions,"commit").custom(custom::commit),
@@ -674,6 +674,10 @@ fn own_sum(s: &str, col: &str) -> String {
 
 fn sessions_hidden(a: &Aliases) -> String {
     hidden(&a.s)
+}
+
+fn sessions_title(a: &Aliases) -> String {
+    crate::session_sql::display_title(&a.s)
 }
 
 fn sessions_outcome(a: &Aliases) -> String {

@@ -411,7 +411,7 @@ impl<'a> Compiler<'a> {
         }
         relation.program.params = self.params;
         join(&mut relation.program.notes, &mut self.notes);
-        join(&mut relation.program.text_terms, &mut self.text_terms);
+        join(&mut relation.program.snippet_terms, &mut self.snippet_terms);
         join(&mut relation.program.incomplete, &mut self.incomplete);
         join(&mut relation.program.id_checks, &mut self.id_checks);
         join(&mut relation.program.definitions, &mut self.definitions);

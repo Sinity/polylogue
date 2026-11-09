@@ -62,13 +62,27 @@ impl Reader<'_> {
             return Err(StoreError::Invalid("completion generation changed".into()));
         }
         let conn = self.conn()?;
-        let mut statement=conn.prepare(if after.is_some() {
-            "SELECT pk,id,native_id,coalesce(title,derived_title,''),origin,repo,last_activity_at,cwd,branch,harness FROM session WHERE changed>?1 ORDER BY changed,pk"
+        let columns = format!(
+            "pk,id,native_id,coalesce({},''),origin,repo,last_activity_at,cwd,branch,harness",
+            crate::session_sql::display_title("session")
+        );
+        // A session changes when its rows do or when its authored title does.
+        let retitled = match after {
+            Some(after) => crate::read::retitled_sessions(conn, after.archive)?,
+            None => Default::default(),
+        };
+        let mut statement = conn.prepare(&if after.is_some() {
+            format!(
+                "SELECT {columns} FROM session WHERE changed>?1 OR id IN (SELECT value FROM json_each(?2)) ORDER BY changed,pk"
+            )
         } else {
-            "SELECT pk,id,native_id,coalesce(title,derived_title,''),origin,repo,last_activity_at,cwd,branch,harness FROM session ORDER BY pk"
+            format!("SELECT {columns} FROM session ORDER BY pk")
         })?;
         let mut rows = if let Some(after) = after {
-            statement.query([after.index])?
+            statement.query(rusqlite::params![
+                after.index,
+                serde_json::to_string(&retitled).map_err(|e| StoreError::Invalid(e.to_string()))?
+            ])?
         } else {
             statement.query([])?
         };

@@ -118,6 +118,25 @@ pub fn catalog(origins: &[String]) -> Catalog {
             }
         })
         .collect();
+    catalog
+        .units
+        .extend(units::DESIGNED_UNITS.iter().map(|designed| {
+            query_language::catalog::Unit {
+                name: designed.name.into(),
+                fields: designed
+                    .columns
+                    .iter()
+                    .map(|column| Field {
+                        name: column.name.into(),
+                        kind: crate::compile::source::column_kind(column.kind),
+                        help: format!("{} of a designed {} row", column.name, designed.name),
+                        ..Field::default()
+                    })
+                    .collect(),
+                help: format!("{} (not built yet)", designed.name),
+                ..query_language::catalog::Unit::default()
+            }
+        }));
     catalog.references = [
         ("@", None),
         ("session:", Some(":")),

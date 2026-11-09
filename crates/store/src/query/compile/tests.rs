@@ -296,6 +296,60 @@ fn change_selections_are_output_arrays_not_scalar_operands() {
 
 mod documents;
 
+fn not_built_what(text: &str) -> String {
+    match compile(text, &opts(&[])) {
+        Err(QueryError::NotBuilt { what }) => what,
+        other => panic!("{text}: expected not_built, got {other:?}"),
+    }
+}
+
+#[test]
+fn designed_units_answer_not_built() {
+    for (text, unit) in [
+        ("pastes", "pastes"),
+        ("pastes | group by hash | count", "pastes"),
+        ("variants where kind:translation", "variants"),
+        ("attachments where supplied_by:model", "attachments"),
+        ("origin:codex | attachments", "attachments"),
+    ] {
+        let what = not_built_what(text);
+        assert!(what.contains(unit), "{text}: {what}");
+    }
+    // A unit nobody designed is still a spelling error, with candidates.
+    assert!(!matches!(
+        compile("pasties", &opts(&[])),
+        Err(QueryError::NotBuilt { .. }) | Ok(_)
+    ));
+}
+
+#[test]
+fn in_result_answers_not_built() {
+    for text in [
+        "sessions where in:result:abc",
+        "messages where in:result:abc role:user",
+    ] {
+        assert!(not_built_what(text).contains("in:result"), "{text}");
+    }
+}
+
+#[test]
+fn similar_to_a_reference_answers_not_built() {
+    let mut options = opts(&[]);
+    options.embeddings = true;
+    for text in [
+        "similar:session:claude-code:abc",
+        "similar:claude-code:abc",
+        "messages where similar:message:codex:m1",
+    ] {
+        assert!(
+            matches!(compile(text, &options), Err(QueryError::NotBuilt { .. })),
+            "{text}"
+        );
+    }
+    compile("similar:dates", &options).unwrap();
+    compile("similar:\"timeout: retry later\"", &options).unwrap();
+}
+
 #[test]
 fn column_references_follow_fields_and_projection_owners() {
     let kinds = |program: Program| {
@@ -641,6 +695,10 @@ fn definition_metadata_uses_binding_visitor_and_preserves_quoted_dollars() {
 mod metadata;
 
 mod numeric;
+
+mod snippets;
+
+mod titles;
 
 mod relations;
 

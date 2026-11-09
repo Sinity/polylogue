@@ -135,8 +135,13 @@ pub struct ScopeIndex {
     by_directory: BTreeMap<String, BTreeSet<i64>>,
 }
 
-const COLUMNS: &str = "pk, id, kind, stub, coalesce(title, derived_title), started_at,
-    last_activity_at, cwd, cwd_json, repo, message_count, live_facts";
+fn columns() -> String {
+    format!(
+        "pk, id, kind, stub, {}, started_at, last_activity_at, cwd, cwd_json, repo, \
+         message_count, live_facts",
+        crate::session_sql::display_title("session")
+    )
+}
 
 fn scope_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ScopeRow> {
     let pk: i64 = r.get(0)?;
@@ -198,26 +203,35 @@ impl Reader<'_> {
     /// sessions removed after it.
     pub fn scope_changes(&self, after: Option<&ChangePosition>) -> Result<ScopeChanges> {
         let position = self.change_position()?;
-        let after = after
-            .filter(|after| after.generation == position.generation)
-            .map(|after| after.index);
+        let after = after.filter(|after| after.generation == position.generation);
         let conn = self.conn()?;
+        let columns = columns();
         let mut rows = Vec::new();
         let mut removed = Vec::new();
         match after {
             None => {
-                let mut statement = conn.prepare(&format!("SELECT {COLUMNS} FROM session"))?;
+                let mut statement = conn.prepare(&format!("SELECT {columns} FROM session"))?;
                 let mut found = statement.query([])?;
                 while let Some(row) = found.next()? {
                     rows.push(scope_row(row)?);
                 }
             }
-            Some(after) => {
+            Some(since) => {
+                let after = since.index;
                 for changed in ["changed", "live_changed"] {
                     let mut statement = conn.prepare_cached(&format!(
-                        "SELECT {COLUMNS} FROM session WHERE {changed} > ?1"
+                        "SELECT {columns} FROM session WHERE {changed} > ?1"
                     ))?;
                     let mut found = statement.query([after])?;
+                    while let Some(row) = found.next()? {
+                        rows.push(scope_row(row)?);
+                    }
+                }
+                // An authored title changes what the session is shown as.
+                let mut statement =
+                    conn.prepare_cached(&format!("SELECT {columns} FROM session WHERE id = ?1"))?;
+                for id in crate::read::retitled_sessions(conn, since.archive)? {
+                    let mut found = statement.query([id])?;
                     while let Some(row) = found.next()? {
                         rows.push(scope_row(row)?);
                     }

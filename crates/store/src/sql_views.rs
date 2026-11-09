@@ -9,11 +9,12 @@
 use rusqlite::Connection;
 
 /// Each view: its name and its query. Times are Unix milliseconds, costs
-/// dollars; an unknown value is NULL, never 0.
+/// dollars; an unknown value is NULL, never 0. `{title}` stands for the
+/// session's displayed title ([`crate::session_sql::display_title`]).
 pub const VIEWS: &[(&str, &str)] = &[
     (
         "v1_sessions",
-        "SELECT s.id, s.origin, s.kind, coalesce(s.title, s.derived_title) AS title, \
+        "SELECT s.id, s.origin, s.kind, {title} AS title, \
          s.cwd, s.repo, s.branch, s.harness, s.started_at, s.last_activity_at \
          FROM main.session s WHERE s.stub = 0",
     ),
@@ -50,6 +51,7 @@ pub const VIEWS: &[(&str, &str)] = &[
 /// Creates the views on a read connection with `archive.db` attached as `a`.
 pub fn create(conn: &Connection) -> rusqlite::Result<()> {
     for (name, query) in VIEWS {
+        let query = query.replace("{title}", &crate::session_sql::display_title("s"));
         conn.execute_batch(&format!("CREATE TEMP VIEW {name} AS {query}"))?;
     }
     Ok(())

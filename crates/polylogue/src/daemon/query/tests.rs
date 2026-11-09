@@ -921,7 +921,8 @@ fn text_search_ranks_and_cuts_snippets() {
         snippet["marks"][0][0].as_u64().unwrap() as usize,
         snippet["marks"][0][1].as_u64().unwrap() as usize,
     );
-    assert_eq!(&text[s..e].to_lowercase(), "chrono");
+    let shown: String = text.chars().skip(s).take(e - s).collect();
+    assert_eq!(shown.to_lowercase(), "chrono");
     // Punctuation inside a word searches its parts.
     assert_eq!(q(&w, "messages where weekday_offset()")["outcome"], "empty");
     let v = q(&w, "tool_calls where output:weekday_offset");

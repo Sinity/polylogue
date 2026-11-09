@@ -66,7 +66,7 @@ impl<'a> Compiler<'a> {
         // A condition is compiled again for `--why`: what it adds is kept once.
         join(&mut self.notes, &mut program.notes);
         join(&mut self.incomplete, &mut program.incomplete);
-        join(&mut self.text_terms, &mut program.text_terms);
+        join(&mut self.snippet_terms, &mut program.snippet_terms);
         join(&mut self.id_checks, &mut program.id_checks);
         join(&mut self.assertion_cutoffs, &mut program.assertion_cutoffs);
         join(

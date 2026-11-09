@@ -58,6 +58,68 @@ impl UnitSpec {
         self.relations.iter().find(|r| r.prefix == prefix)
     }
 }
+/// A unit the design declares whose rows have no producer yet. The catalog
+/// accepts it with its designed fields, so a query over it answers
+/// `not_built` instead of "not a unit" or an empty result.
+pub struct DesignedUnit {
+    pub name: &'static str,
+    pub columns: &'static [ColumnSpec],
+}
+impl DesignedUnit {
+    pub fn named(name: &str) -> Option<&'static DesignedUnit> {
+        let name = name.strip_prefix("pl.").unwrap_or(name);
+        DESIGNED_UNITS
+            .iter()
+            .find(|unit| unit.name.eq_ignore_ascii_case(name))
+    }
+}
+const fn column(name: &'static str, kind: ColKind) -> ColumnSpec {
+    ColumnSpec { name, kind }
+}
+pub static DESIGNED_UNITS: &[DesignedUnit] = &[
+    DesignedUnit {
+        name: "pastes",
+        columns: &[
+            column("hash", Text),
+            column("source", Text),
+            column("state", Text),
+            column("message", Text),
+            column("session", Text),
+        ],
+    },
+    DesignedUnit {
+        name: "variants",
+        columns: &[
+            column("id", Text),
+            column("root", Text),
+            column("base", Text),
+            column("source", Text),
+            column("kind", Text),
+            column("from_lang", Text),
+            column("to_lang", Text),
+            column("author", Text),
+            column("via", Text),
+            column("method", Text),
+            column("created_at", Time),
+        ],
+    },
+    DesignedUnit {
+        name: "attachments",
+        columns: &[
+            column("message", Text),
+            column("block", Text),
+            column("position", Number),
+            column("supplied_by", Text),
+            column("name", Text),
+            column("media_type", Text),
+            column("size", Number),
+            column("availability", Text),
+            column("blob", Text),
+            column("source_ref", Text),
+            column("session", Text),
+        ],
+    },
+];
 pub fn spec(unit: Unit) -> &'static UnitSpec {
     UNITS
         .iter()

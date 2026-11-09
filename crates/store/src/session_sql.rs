@@ -15,6 +15,20 @@ pub fn counts_as_action(t: &str) -> String {
     )
 }
 
+/// The title a session is shown with, everywhere: its current authored
+/// `title` assertions (several current families are a conflict, shown as
+/// every value joined by ` | `), else the recorded title, else the derived
+/// one. Withdrawn titles are not shown.
+pub fn display_title(s: &str) -> String {
+    format!(
+        "COALESCE((SELECT group_concat(tv.value, ' | ') FROM (SELECT DISTINCT json_extract(ta.value, '$') AS value FROM source_link tl \
+         JOIN source_assertion ta ON ta.id = tl.record AND ta.kind = 'title' \
+         JOIN source_revision_state ts ON ts.id = ta.id AND ts.current = 1 AND ts.withdrawn = 0 \
+         WHERE tl.ref = 'session:' || {s}.id AND tl.role = 'about' ORDER BY 1) tv), \
+         {s}.title, {s}.derived_title)"
+    )
+}
+
 pub fn current(s: &str, name: &str) -> String {
     format!(
         "EXISTS(SELECT 1 FROM derive_state ds WHERE ds.session_pk={s}.pk AND ds.name='{name}' AND ds.from_changed={s}.changed AND pl_derived_current(ds.name,ds.version))"

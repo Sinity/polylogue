@@ -36,12 +36,12 @@ pub fn words(text: &str) -> Vec<String> {
 const WINDOW: usize = 12;
 
 /// A query result's snippet: about 12 words around the first match, with
-/// the matches' byte ranges.
+/// the matches' character ranges.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Snippet {
     /// The cut text, with `…` where it was cut.
     pub text: String,
-    /// Byte ranges of the matches within `text`.
+    /// Character (code point) ranges of the matches within `text`.
     pub marks: Vec<(usize, usize)>,
     /// The session and message the text came from (a subagent's, when a
     /// session matched through one).
@@ -57,7 +57,27 @@ pub enum Within {
     Message(i64),
 }
 
+/// The index a snippet's terms search: prose (`text_fts`) or tool output
+/// (`output_fts`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnippetIndex {
+    Prose,
+    Output,
+}
+
+/// What a snippet looks for in one index: the FTS5 expression choosing the
+/// text and the words or phrases marked in it.
+#[derive(Debug, Clone)]
+pub struct SnippetQuery<'a> {
+    pub index: SnippetIndex,
+    pub fts: String,
+    pub words: Vec<&'a str>,
+}
+
 struct Hit {
+    /// Which of the queries found it.
+    query: usize,
     block: i64,
     session_pk: i64,
     session: String,
@@ -65,70 +85,61 @@ struct Hit {
 }
 
 impl Reader<'_> {
-    /// Cut the chosen source blocks around the raw FTS matches.
+    /// Cut the chosen source blocks around the raw FTS matches. The queries
+    /// are tried in order for each scope; the first that finds text cuts it.
     pub fn snippets(
         &self,
-        fts: &str,
+        queries: &[SnippetQuery<'_>],
         scopes: &[Within],
-        terms: &[String],
     ) -> Result<Vec<Option<Snippet>>> {
         let hits = scopes
             .iter()
-            .map(|scope| self.snippet_hit(fts, *scope))
+            .map(|scope| self.snippet_hit(queries, *scope))
             .collect::<Result<Vec<_>>>()?;
-        let mut sessions: BTreeMap<i64, HashMap<i64, Vec<usize>>> = BTreeMap::new();
+        let mut sessions: BTreeMap<i64, HashMap<(i64, usize), Vec<usize>>> = BTreeMap::new();
         for (index, hit) in hits.iter().enumerate() {
             if let Some(hit) = hit {
                 sessions
                     .entry(hit.session_pk)
                     .or_default()
-                    .entry(hit.block)
+                    .entry((hit.block, hit.query))
                     .or_default()
                     .push(index);
             }
         }
         let mut snippets = vec![None; scopes.len()];
-        let cut_from = |block: &polylogue_model::Block,
-                        indices: Vec<usize>,
-                        snippets: &mut Vec<Option<Snippet>>|
-         -> Result<()> {
-            let text = match block {
-                polylogue_model::Block::Text { text } => text.as_str(),
-                polylogue_model::Block::ToolResult {
-                    output: Some(text), ..
-                } => text.as_str(),
-                _ => {
-                    return Err(StoreError::Invalid(
-                        "selected snippet block has no matching source text".into(),
-                    ));
-                }
-            };
-            let (text, marks) = cut(text, terms);
-            for index in indices {
-                let hit = hits[index].as_ref().expect("chosen hit index");
-                snippets[index] = Some(Snippet {
-                    text: text.clone(),
-                    marks: marks.clone(),
-                    session: hit.session.clone(),
-                    message: hit.message.clone(),
-                });
-            }
-            Ok(())
-        };
         for (_, pending) in sessions {
-            for (block_pk, indices) in pending {
+            for ((block_pk, query), indices) in pending {
                 let block = crate::ordered_blocks::one(self.conn()?, block_pk)?;
-                cut_from(&block, indices, &mut snippets)?;
+                let text = match &block {
+                    polylogue_model::Block::Text { text } => text.as_str(),
+                    polylogue_model::Block::ToolResult {
+                        output: Some(text), ..
+                    } => text.as_str(),
+                    _ => {
+                        return Err(StoreError::Invalid(
+                            "selected snippet block has no matching source text".into(),
+                        ));
+                    }
+                };
+                let (text, marks) = cut(text, &queries[query].words);
+                for index in indices {
+                    let hit = hits[index].as_ref().expect("chosen hit index");
+                    snippets[index] = Some(Snippet {
+                        text: text.clone(),
+                        marks: marks.clone(),
+                        session: hit.session.clone(),
+                        message: hit.message.clone(),
+                    });
+                }
             }
         }
-
         Ok(snippets)
     }
 
-    /// The best-ranked text matching `fts` (an FTS5 expression) within
-    /// `within`: prose first, then tool output when no prose matches.
+    /// The best-ranked text the first matching query finds within `within`.
     /// Selection stays raw; chosen blocks are decoded after the batch.
-    fn snippet_hit(&self, fts: &str, within: Within) -> Result<Option<Hit>> {
+    fn snippet_hit(&self, queries: &[SnippetQuery<'_>], within: Within) -> Result<Option<Hit>> {
         let (scope, pk) = match within {
             Within::Session(pk) => (
                 "m.duplicate_of IS NULL AND COALESCE(m.on_active_path, 1) = 1 \
@@ -140,14 +151,15 @@ impl Reader<'_> {
             ),
             Within::Message(pk) => ("m.pk = ?2", pk),
         };
-        for (table, block, writer) in [
-            (
-                "text_fts",
-                "text",
-                " AND m.written_by IN ('human', 'model')",
-            ),
-            ("output_fts", "tool_result", ""),
-        ] {
+        for (query, SnippetQuery { index, fts, .. }) in queries.iter().enumerate() {
+            let (table, block, writer) = match index {
+                SnippetIndex::Prose => (
+                    "text_fts",
+                    "text",
+                    " AND m.written_by IN ('human', 'model')",
+                ),
+                SnippetIndex::Output => ("output_fts", "tool_result", ""),
+            };
             let sql = format!(
                 "SELECT b.pk, s.pk, s.id, m.id FROM {table} JOIN text tx ON tx.id = {table}.rowid \
                  JOIN block b ON b.text_id = tx.id AND b.kind = '{block}' \
@@ -160,6 +172,7 @@ impl Reader<'_> {
                 .prepare_cached(&sql)?
                 .query_row(params![fts, pk], |r| {
                     Ok(Hit {
+                        query,
                         block: r.get(0)?,
                         session_pk: r.get(1)?,
                         session: r.get(2)?,
@@ -176,14 +189,16 @@ impl Reader<'_> {
 }
 
 /// `text` cut to [`WINDOW`] words around the first word matching one of
-/// `terms`, and the byte ranges of every matching word in the cut.
-pub fn cut(text: &str, terms: &[String]) -> (String, Vec<(usize, usize)>) {
-    // Each term's words, as the index compares them; a trailing `*` makes
-    // the term's last word a prefix.
+/// `terms`, and the character ranges of every matching word in the cut. A
+/// term ending in `*` matches its last word as a prefix.
+pub fn cut(text: &str, terms: &[impl AsRef<str>]) -> (String, Vec<(usize, usize)>) {
+    // Each term's words, as the index compares them.
     let mut wanted: Vec<(String, bool)> = vec![];
     for term in terms {
+        let term = term.as_ref();
         let prefix = term.ends_with('*');
-        let words: Vec<(usize, usize)> = tokens(term.trim_end_matches('*'));
+        let term = term.trim_end_matches('*');
+        let words: Vec<(usize, usize)> = tokens(term);
         let n = words.len();
         for (i, (s, e)) in words.into_iter().enumerate() {
             wanted.push((key(&term[s..e]), prefix && i + 1 == n));
@@ -215,15 +230,17 @@ pub fn cut(text: &str, terms: &[String]) -> (String, Vec<(usize, usize)>) {
     if start > 0 {
         out.push('…');
     }
-    let offset = out.len();
+    let offset = out.chars().count();
     out.push_str(&text[from..to]);
     if end < words.len() {
         out.push('…');
     }
+    let cut = &text[from..to];
+    let chars = |bytes: usize| cut[..bytes].chars().count() + offset;
     let marks = words[start..end]
         .iter()
         .filter(|(s, e)| matches(&text[*s..*e]))
-        .map(|(s, e)| (s - from + offset, e - from + offset))
+        .map(|(s, e)| (chars(s - from), chars(e - from)))
         .collect();
     (out, marks)
 }

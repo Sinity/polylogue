@@ -100,7 +100,18 @@ pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
             position: x.span.start,
         });
     }
-    c.near_request = Some((Near { text: x.value()? }, x.scope.clone()));
+    let text = x.value()?;
+    // Ranking by a reference's own stored vectors is designed and not built;
+    // embedding the reference's spelling as text would be a wrong, paid answer.
+    let origin_reference = text.split_once(':').is_some_and(|(origin, rest)| {
+        !rest.is_empty() && c.opts.origins.iter().any(|known| known == origin)
+    });
+    if origin_reference || polylogue_model::Reference::parse(&text).is_ok() {
+        return Err(QueryError::NotBuilt {
+            what: "similar: by a reference".into(),
+        });
+    }
+    c.near_request = Some((Near { text }, x.scope.clone()));
     Ok("1".into())
 }
 

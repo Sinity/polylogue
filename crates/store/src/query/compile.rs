@@ -71,6 +71,57 @@ pub struct WhyClause {
     pub sql: String,
 }
 
+/// The positive terms of a top-level condition, which a ranked row's snippet
+/// looks for: bare words and phrases search prose, `output:` values tool
+/// output. Negated terms and reference words are not among them; an `OR`
+/// keeps its branches as alternatives.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnippetTerms {
+    /// A word or phrase as written, a trailing `*` marking a prefix.
+    Word {
+        text: String,
+        index: crate::search::SnippetIndex,
+    },
+    All(Vec<SnippetTerms>),
+    Any(Vec<SnippetTerms>),
+}
+
+impl SnippetTerms {
+    /// The FTS5 expression of the terms searching `index`.
+    pub fn fts(&self, index: crate::search::SnippetIndex) -> Option<String> {
+        let group = |parts: &[SnippetTerms], joiner: &str| {
+            let mut parts: Vec<String> = parts.iter().filter_map(|p| p.fts(index)).collect();
+            match parts.len() {
+                0 => None,
+                1 => parts.pop(),
+                _ => Some(format!("({})", parts.join(joiner))),
+            }
+        };
+        match self {
+            SnippetTerms::Word { text, index: own } if *own == index => {
+                polylogue_model::text::fts_phrase(text)
+            }
+            SnippetTerms::Word { .. } => None,
+            SnippetTerms::All(parts) => group(parts, " AND "),
+            SnippetTerms::Any(parts) => group(parts, " OR "),
+        }
+    }
+
+    /// The words and phrases searching `index`, for marking the cut text.
+    pub fn words<'t>(&'t self, index: crate::search::SnippetIndex, out: &mut Vec<&'t str>) {
+        match self {
+            SnippetTerms::Word { text, index: own } if *own == index => out.push(text),
+            SnippetTerms::Word { .. } => {}
+            SnippetTerms::All(parts) | SnippetTerms::Any(parts) => {
+                for part in parts {
+                    part.words(index, out);
+                }
+            }
+        }
+    }
+}
+
 /// A `similar:` term to rank by: the text whose similarity to each stored
 /// text the caller computes and supplies while the query runs
 /// (`pl_similarity`).
@@ -115,8 +166,9 @@ pub struct Program {
     time_text_columns: std::collections::BTreeSet<String>,
     /// Ordered by relevance to text terms.
     pub ranked: bool,
-    /// The full-text terms, for marking matches in snippets.
-    pub text_terms: Vec<String>,
+    /// What a ranked row's snippet looks for: the positive top-level prose
+    /// terms, all of them required.
+    pub snippet_terms: Vec<SnippetTerms>,
     pub id_checks: Vec<IdCheck>,
     /// Required change-feed generations, validated before any result stages.
     pub change_generations: Vec<String>,
@@ -410,7 +462,7 @@ pub(crate) struct Compiler<'a> {
     catalog: Option<std::sync::Arc<query_language::catalog::Catalog>>,
     notes: Vec<String>,
     incomplete: Vec<String>,
-    text_terms: Vec<String>,
+    snippet_terms: Vec<SnippetTerms>,
     id_checks: Vec<IdCheck>,
     change_generations: Vec<String>,
     assertion_cutoffs: Vec<i64>,
@@ -466,7 +518,7 @@ impl<'a> Compiler<'a> {
             catalog: None,
             notes: vec![],
             incomplete: vec![],
-            text_terms: vec![],
+            snippet_terms: vec![],
             resolved_times: Default::default(),
             id_checks: vec![],
             change_generations: vec![],

@@ -37,6 +37,9 @@ impl<'a> Compiler<'a> {
             }
             let sql = self.cond(c, &scope, true)?;
             where_sql.push(sql);
+            if let Some(terms) = self.positive_terms(c, scope.unit) {
+                self.snippet_terms.push(terms);
+            }
         }
         for c in &top {
             if relations::contains_order(c) {
@@ -121,8 +124,13 @@ impl<'a> Compiler<'a> {
                         self.session_link(&next, &sessions)?
                     };
                     w.push(link);
+                    // Snippets look for the terms of the rows shown.
+                    self.snippet_terms.clear();
                     if let Some(c) = cond {
                         w.push(self.cond(c, &next, true)?);
+                        if let Some(terms) = self.positive_terms(c, unit) {
+                            self.snippet_terms.push(terms);
+                        }
                     }
                     scope = next;
                     top = ntop;
@@ -443,7 +451,7 @@ impl<'a> Compiler<'a> {
             native_sources: None,
             time_text_columns: Default::default(),
             ranked,
-            text_terms: self.text_terms,
+            snippet_terms: self.snippet_terms,
             id_checks: self.id_checks,
             change_generations: self.change_generations,
             assertion_cutoffs: self.assertion_cutoffs,

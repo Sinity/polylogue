@@ -535,6 +535,9 @@ proptest! {
         if costs.iter().any(Option::is_some) {
             let sum = sum.unwrap_or(f64::NAN);
             prop_assert!((sum - known as f64 / 1e9).abs() < 1e-9, "{}: {} {}", sessions, sum, known);
+        } else if costs.is_empty() {
+            // A sum over no rows is 0 (docs/query.md, aggregates).
+            prop_assert_eq!(sum, Some(0.0), "{}", sessions);
         } else {
             prop_assert_eq!(sum, None, "{}", sessions);
         }

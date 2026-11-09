@@ -1,7 +1,8 @@
 //! Executing the one compiled query and shaping declared public values.
 use super::{ColKind, Program};
+use crate::search::{SnippetIndex, SnippetQuery, Within};
 use crate::selection::{sql_value, values};
-use crate::{Reader, SqlValue, search::Within, selection::SelectionError};
+use crate::{Reader, SqlValue, selection::SelectionError};
 use serde_json::Value;
 
 /// A transfer page; cardinality describes the complete selected answer.
@@ -169,24 +170,38 @@ fn invalid(message: &str) -> SelectionError {
     }
 }
 
-/// One snippet per row when text terms ranked the rows.
+/// One snippet per row when the query has positive text terms, ranked or
+/// not (an `OR` of words selects without ranking).
 pub fn snippets(
     reader: &Reader<'_>,
     program: &Program,
     rows: &mut [Value],
 ) -> Result<(), SelectionError> {
-    if !program.ranked {
-        return Ok(());
-    }
-    let fts: Vec<String> = program
-        .text_terms
-        .iter()
-        .filter_map(|t| polylogue_model::text::fts_phrase(t))
+    let queries: Vec<SnippetQuery<'_>> = [SnippetIndex::Prose, SnippetIndex::Output]
+        .into_iter()
+        .filter_map(|index| {
+            let fts: Vec<String> = program
+                .snippet_terms
+                .iter()
+                .filter_map(|terms| terms.fts(index))
+                .collect();
+            if fts.is_empty() {
+                return None;
+            }
+            let mut words = vec![];
+            for terms in &program.snippet_terms {
+                terms.words(index, &mut words);
+            }
+            Some(SnippetQuery {
+                index,
+                fts: fts.join(" AND "),
+                words,
+            })
+        })
         .collect();
-    if fts.is_empty() {
+    if queries.is_empty() {
         return Ok(());
     }
-    let fts = fts.join(" AND ");
     let scope: fn(i64) -> Within = match program.unit {
         polylogue_query::ast::Unit::Sessions => Within::Session,
         polylogue_query::ast::Unit::Messages => Within::Message,
@@ -197,11 +212,7 @@ pub fn snippets(
         .enumerate()
         .filter_map(|(index, row)| row["_pk"].as_i64().map(|pk| (index, scope(pk))))
         .unzip();
-    for (index, snippet) in
-        indices
-            .into_iter()
-            .zip(reader.snippets(&fts, &scopes, &program.text_terms)?)
-    {
+    for (index, snippet) in indices.into_iter().zip(reader.snippets(&queries, &scopes)?) {
         if let Some(snippet) = snippet {
             rows[index]["snippet"] = serde_json::to_value(snippet).unwrap_or(Value::Null);
         }
@@ -243,7 +254,7 @@ pub fn attach(
     })
 }
 
-/// Shape declared output columns and retain generated ranked snippets.
+/// Shape declared output columns and retain generated snippets.
 pub fn present(program: &Program, row: &mut Value) -> Result<(), SelectionError> {
     let mut output = serde_json::Map::new();
     for col in &program.columns {
@@ -257,7 +268,7 @@ pub fn present(program: &Program, row: &mut Value) -> Result<(), SelectionError>
             row[attachment.name.as_str()].clone(),
         );
     }
-    if program.ranked
+    if !program.snippet_terms.is_empty()
         && let Some(snippet) = row.get("snippet")
     {
         output.entry("snippet").or_insert_with(|| snippet.clone());

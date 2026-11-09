@@ -145,7 +145,7 @@ fn the_index_follows_sessions_changed_after_its_position() {
 /// The scope index reads the same folded facts as the query's live view.
 #[test]
 fn live_facts_are_read_from_the_session_live_columns() {
-    assert!(COLUMNS.contains("live_facts"));
+    assert!(columns().contains("live_facts"));
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     let pk = session(&mut f, "test:live", "/work/proj", None, NOW);
