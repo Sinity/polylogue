@@ -54,6 +54,11 @@ fn write_scoped_json(
     Ok(())
 }
 
+/// The liveness check readiness and the systemd watchdog send. The client's
+/// thread answers it with no reader and no cache, so a long vector load or a
+/// busy reader pool never fails it.
+pub(crate) const PING: &str = "ping";
+
 fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surface::OperationTable) {
     if stream
         .set_write_timeout(Some(Duration::from_secs(1)))
@@ -77,6 +82,19 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
             continue;
         }
         if let Some(incoming) = crate::protocol::wire::incoming(&line) {
+            if matches!(&incoming, Ok(incoming) if incoming.request.operation == PING) {
+                let answer = command_surface::Answer::ok(serde_json::json!({}));
+                if writeln!(
+                    out,
+                    "{}",
+                    serde_json::to_string(&answer).expect("answer serializes")
+                )
+                .is_err()
+                {
+                    return;
+                }
+                continue;
+            }
             let mut read_scope = None;
             let mut publication = crate::protocol::ReadScopes::default();
             let answer = match incoming {

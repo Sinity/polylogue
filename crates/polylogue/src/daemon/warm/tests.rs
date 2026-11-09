@@ -323,3 +323,27 @@ fn older_vector_snapshot_does_not_replace_newer_cached_values() {
         );
     });
 }
+
+#[test]
+fn summary_does_not_wait_for_a_load() {
+    let daemon = crate::test_daemon::start("status during a vector load");
+    let warm = Warm::default();
+    let before = serde_json::to_value(warm.summary()).unwrap();
+    let (started, entered) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let warm = &warm;
+        let daemon = &daemon;
+        let loading = scope.spawn(move || {
+            let reader = daemon.daemon.reads.reader().unwrap();
+            warm.load_vectors_until(&reader, started, released);
+        });
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        let (summary, summarized) = std::sync::mpsc::channel();
+        scope.spawn(move || summary.send(serde_json::to_value(warm.summary()).unwrap()));
+        let during = summarized.recv_timeout(Duration::from_secs(5));
+        release.send(()).unwrap();
+        loading.join().unwrap();
+        assert_eq!(during.expect("status waited for the vector load"), before);
+    });
+}
