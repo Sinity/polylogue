@@ -256,7 +256,7 @@ fn every_surface_preserves_query_words_unit_corrections_and_closed_sets() {
         }
         for (text, expected) in [
             ("messges cargo", "messages where cargo"),
-            ("sessin where repo:morrow", "sessions where repo:morrow"),
+            ("sesions where repo:morrow", "sessions where repo:morrow"),
         ] {
             let failure = answer(&env, &archive, &mut mcp, surface, text).unwrap_err();
             assert_eq!(failure.kind, command_surface::FailureKind::NotAQuery);

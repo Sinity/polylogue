@@ -254,10 +254,21 @@ fn projected_set_operands_refuse_reference_text_and_reference_target_mismatches(
     ] {
         compile(left, &options).unwrap();
         compile(right, &options).unwrap();
-        for operation in ["union", "intersect", "except", "diff"] {
+        for operation in ["union", "diff"] {
             let text = format!("{left} | {operation} ({right})");
             let error = compile(&text, &options).unwrap_err();
             assert_eq!(error.kind(), "invalid_query", "{text}: {error}");
+        }
+        // Over one native row domain, intersect and except compare row
+        // identities and keep the left operand's columns.
+        for operation in ["intersect", "except"] {
+            let text = format!("{left} | {operation} ({right})");
+            let left_columns = compile(left, &options).unwrap().columns;
+            assert_eq!(
+                compile(&text, &options).unwrap().columns,
+                left_columns,
+                "{text}"
+            );
         }
     }
 }

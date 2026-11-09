@@ -161,7 +161,6 @@ fn references_calls_and_sequences_keep_structural_identity() {
 fn shared_units_stages_and_nested_queries_use_product_names() {
     for (text, unit) in [
         ("messages where role:user", "messages"),
-        ("message where role:user", "messages"),
         ("TOOL_CALLS", "tool_calls"),
         ("deliveries | count", "deliveries"),
         ("", "sessions"),
@@ -172,6 +171,9 @@ fn shared_units_stages_and_nested_queries_use_product_names() {
             "{text}"
         );
     }
+    // A unit has one name; its singular is a misspelling with a correction.
+    let error = parse("message where role:user").unwrap_err();
+    assert_eq!(error.suggestion(), Some("messages where role:user"));
     assert!(matches!(
         cond("messages >= 10"),
         ConditionKind::Compare { .. }

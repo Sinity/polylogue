@@ -33,7 +33,7 @@ fn every_agent_string_gets_rows_or_a_corrected_query() {
         "(origin:codex OR origin:chatgpt",
         "reop:morrow",
         "messges where cargo",
-        "sessin where repo:morrow",
+        "sesions where repo:morrow",
     ] {
         let f = run_q(&w, ask(text))
             .map(|v| panic!("{text} was answered: {v}"))
