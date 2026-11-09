@@ -4,7 +4,7 @@ The parsed model every other area reads: sessions, messages and blocks, message 
 
 ## Sessions
 
-- **A message ID is `origin:native`** with the source's own ID where it gives one, otherwise a content ID ([archive.md](archive.md#versioned-rows)); authored records name messages by these IDs, so an unchanged message keeps its notes through a rewrite.
+- **A message ID is `origin:native`** with the source's own ID where it gives one, otherwise a content ID ([archive.md](archive.md#versioned-rows)); authored records name messages by these IDs, so an unchanged message keeps its notes through a rewrite (for repeated equal messages, see the numbering rule there).
 - **A session ID is `origin:native`**, with qualifiers for sub-sessions and installs (a Claude subagent, a sidechain, a Hermes profile); the qualifier spellings are in [vocabulary.md](vocabulary.md).
 - **Session kinds:** `main`, `subagent`, `sidechain`, including the older Claude sidechain layout.
 - **A pasted session ID or provider URL resolves to the archived session** in every surface, hooks included, through the one reference parser ([references.md](references.md#rules)).

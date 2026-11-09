@@ -66,3 +66,23 @@ fn carried_counts_continue_after_a_resumed_parse() {
         "an unused counter adds nothing to a parser's carried state"
     );
 }
+
+#[test]
+fn removing_an_earlier_equal_message_renumbers_the_later_copies() {
+    let a = json!(["A"]);
+    let x = json!(["X"]);
+    let ids = |contents: &[&serde_json::Value]| -> Vec<MessageId> {
+        let mut ids = ContentIds::default();
+        contents
+            .iter()
+            .map(|content| ids.next(&session("s"), Role::User, *content).unwrap())
+            .collect()
+    };
+    let before = ids(&[&a, &x, &a]);
+    let after = ids(&[&x, &a]);
+    // X keeps its ID; the remaining A takes the first A's number, and the
+    // second A's ID no longer names anything (docs/archive.md).
+    assert_eq!(after[0], before[1]);
+    assert_eq!(after[1], before[0]);
+    assert!(!after.contains(&before[2]));
+}

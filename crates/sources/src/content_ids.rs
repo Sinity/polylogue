@@ -5,8 +5,13 @@
 //! every later position, and notes on those messages lose their target. A
 //! message without a native ID is therefore named by what it says: its
 //! session, a hash of its role and content, and how many earlier messages of
-//! the same session had the same role and content. Unchanged messages keep
-//! their IDs across a rewrite; an edited message gets a new one.
+//! the same session had the same role and content. An edited message gets a
+//! new ID. An unchanged message keeps its ID unless an earlier equal message
+//! (same session, role and content) was removed or inserted: equal messages
+//! are numbered in order, so after `A X A` becomes `X A` the remaining `A`
+//! has the first `A`'s ID and the second ID is gone. Equal messages are
+//! interchangeable for identity; a note on the removed copy names the
+//! remaining one.
 
 use polylogue_model::{MessageId, Role, SessionId};
 use serde::{Deserialize, Serialize};
