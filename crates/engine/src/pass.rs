@@ -1526,7 +1526,7 @@ impl Engine {
             st.parsed = has_reading(plan.origin) && (!plan.parser_deferred || st.parsed);
             st.waiting = plan.waiting;
             st.parser_state = if recent { plan.parser_state } else { None };
-            st.tail = plan.tail;
+            st.tail = if recent { plan.tail } else { None };
         }
     }
 

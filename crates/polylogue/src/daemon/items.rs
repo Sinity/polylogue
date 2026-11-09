@@ -5,9 +5,13 @@ use polylogue_model::{
     SessionId,
     read::{EntryKey, EntryKind, FoldProfile, IndexEntry, RunningSums, Segment, visible_entries},
 };
+use polylogue_store::read::limit::ReadLimit;
 use polylogue_store::{Reader, items::ItemVersions};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 /// One session's entries and where each key sits.
 #[derive(Debug)]
@@ -120,7 +124,46 @@ const CACHE_BYTES: usize = 512 << 20;
 #[derive(Debug, Default)]
 pub(crate) struct ItemCache {
     held: Mutex<VecDeque<Arc<CachedIndex>>>,
+    /// Sessions being loaded now. A second read of the same session waits
+    /// for that load instead of loading the whole session again.
+    loading: Mutex<HashMap<SessionId, Arc<Load>>>,
+    #[cfg(test)]
+    loads: AtomicUsize,
+    #[cfg(test)]
+    pause: Mutex<Option<Arc<tests::Pause>>>,
 }
+
+/// One load in progress, the readers waiting for it, and how it ended.
+#[derive(Debug, Default)]
+struct Load {
+    state: Mutex<LoadState>,
+    ended: Condvar,
+    #[cfg(test)]
+    waiting: AtomicUsize,
+}
+
+#[derive(Debug, Default)]
+enum LoadState {
+    #[default]
+    Running,
+    /// The session's index, or `None` when the session is not stored.
+    Loaded(Option<Arc<CachedIndex>>),
+    /// The load stopped with an error; each waiter loads for itself.
+    Failed,
+}
+
+/// Counts a waiting reader for as long as it waits.
+#[cfg(test)]
+struct Waiting<'a>(&'a AtomicUsize);
+#[cfg(test)]
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// How often a waiting read checks its own deadline and cancellation.
+const WAIT_CHECK: Duration = Duration::from_millis(50);
 
 impl ItemCache {
     /// The current index of a session, or `None` when it is not stored.
@@ -153,19 +196,104 @@ impl ItemCache {
                     index.append(reader, now)?;
                     index
                 } else {
-                    load(reader, session)?.ok_or(polylogue_store::StoreError::NotFound(format!(
-                        "session {session}"
-                    )))?
+                    return self.load_once(reader, session)?.map(Some).ok_or_else(|| {
+                        polylogue_store::StoreError::NotFound(format!("session {session}"))
+                    });
                 }
             }
-            None => match load(reader, session)? {
-                Some(index) => index,
-                None => return Ok(None),
-            },
+            None => return self.load_once(reader, session),
         };
         let fresh = Arc::new(fresh);
         self.insert(Arc::clone(&fresh));
         Ok(Some(fresh))
+    }
+
+    /// Full loads started since the cache was created.
+    #[cfg(test)]
+    fn loads(&self) -> usize {
+        self.loads.load(Ordering::Relaxed)
+    }
+
+    /// Loads a whole session, or waits for a load of it already in progress.
+    /// A waiting read still stops at its own deadline or cancellation; if the
+    /// load it waited on fails, it loads the session itself.
+    fn load_once(
+        &self,
+        reader: &Reader<'_>,
+        session: &SessionId,
+    ) -> polylogue_store::Result<Option<Arc<CachedIndex>>> {
+        loop {
+            let (load, leader) = {
+                let mut loading = self.loading.lock().unwrap_or_else(|e| e.into_inner());
+                match loading.get(session) {
+                    Some(load) => (Arc::clone(load), false),
+                    None => {
+                        let load = Arc::new(Load::default());
+                        loading.insert(session.clone(), Arc::clone(&load));
+                        (load, true)
+                    }
+                }
+            };
+            if leader {
+                return self.lead(reader, session, &load);
+            }
+            if let Some(done) = self.follow(&load)? {
+                return Ok(done);
+            }
+        }
+    }
+
+    fn lead(
+        &self,
+        reader: &Reader<'_>,
+        session: &SessionId,
+        shared: &Load,
+    ) -> polylogue_store::Result<Option<Arc<CachedIndex>>> {
+        #[cfg(test)]
+        self.loads.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        if let Some(pause) = self.pause.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            pause.hold();
+        }
+        let result = load(reader, session).map(|index| index.map(Arc::new));
+        if let Ok(Some(index)) = &result {
+            self.insert(Arc::clone(index));
+        }
+        *shared.state.lock().unwrap_or_else(|e| e.into_inner()) = match &result {
+            Ok(index) => LoadState::Loaded(index.clone()),
+            Err(_) => LoadState::Failed,
+        };
+        self.loading
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session);
+        shared.ended.notify_all();
+        result
+    }
+
+    /// Waits for another read's load. `Ok(Some(_))` is its result; `Ok(None)`
+    /// means it failed and this read should load the session itself.
+    fn follow(&self, shared: &Load) -> polylogue_store::Result<Option<Option<Arc<CachedIndex>>>> {
+        #[cfg(test)]
+        shared.waiting.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        let _waiting = Waiting(&shared.waiting);
+        let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            match &*state {
+                LoadState::Loaded(index) => return Ok(Some(index.clone())),
+                LoadState::Failed => return Ok(None),
+                LoadState::Running => {}
+            }
+            if let Some(limit) = ReadLimit::current() {
+                limit.check()?;
+            }
+            state = shared
+                .ended
+                .wait_timeout(state, WAIT_CHECK)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
     }
 
     /// A physical session's shown positions and costs under this profile.

@@ -45,7 +45,7 @@ An idle daemon reads and writes about as much as actually changes:
 
 **Targets:** with nothing changing, under 1 MB/h read, no writes and under one wakeup per second; with live agents writing, read bytes at most about twice the bytes appended to watched files; memory idle and caught up under 1 GB excluding vectors (a target, not a cap). `status` shows the daemon's own I/O over the last minute and hour and the time and reason of the last full scan.
 
-**Interactive work never waits behind bulk work:** reads use a pool of connections, one reserved for the `status` and `completion` classes; an authored write waits at most one writer group; a client that goes away stops waiting without cancelling work another reader needs.
+**Interactive work never waits behind bulk work:** reads use a pool of connections, one reserved for the `status` and `completion` classes; an authored write waits at most one writer group; a client that goes away stops waiting without cancelling work another reader needs. A read whose client has gone stops at its next step, and reads of the same session share one load of its index instead of each loading it.
 
 **The halt state.** Every declared unit of work (a source location, a parser module, a derivation, the embedder, the sampler, the signal evaluator, the primary-mode sender) has exactly one halt state, read from one place:
 - **unschedulable:** a halted unit is left out when work is selected, so nothing downstream of it takes the writer, forms a group or spends a budget;
