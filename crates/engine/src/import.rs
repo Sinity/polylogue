@@ -96,12 +96,15 @@ impl Engine {
             );
             for (index, member) in members.into_iter().enumerate() {
                 let Some(origin) = member.origin else {
-                    recognition::refuse(&mut report, &member.path, "no declared structure matched");
+                    let reason = member
+                        .refusal
+                        .unwrap_or_else(|| "no declared structure matched".into());
+                    recognition::refuse(&mut report, &member.path, reason.clone());
                     report.members.push(ImportClassification {
                         path: member.path,
                         origin: None,
                         class: "refused".into(),
-                        reason: Some("no declared structure matched".into()),
+                        reason: Some(reason),
                     });
                     continue;
                 };

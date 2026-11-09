@@ -69,6 +69,16 @@ pub(super) fn stage(
             .map_err(std::io::Error::other)?;
         blobs.insert(input.raw_id.clone(), copy);
     }
+    // Revision names given to exactly one raw session.
+    let mut by_revision: BTreeMap<&str, Option<&Input>> = BTreeMap::new();
+    for input in &inputs {
+        if let Some(revision) = input.source_revision.as_deref() {
+            by_revision
+                .entry(revision)
+                .and_modify(|held| *held = None)
+                .or_insert(Some(input));
+        }
+    }
     let mut members = Vec::new();
     members.push(package::Member {
         path: PathBuf::from(format!("{}!/source.db/rows.jsonl", root.display())),
@@ -78,6 +88,7 @@ pub(super) fn stage(
         parent: None,
         container_kind: None,
         member_path_bytes: None,
+        refusal: None,
     });
     for input in &inputs {
         let name = Path::new(&input.source_path)
@@ -103,40 +114,38 @@ pub(super) fn stage(
                 parent: None,
                 container_kind: None,
                 member_path_bytes: None,
+                refusal: None,
             });
         }
-        let mut chain = Vec::new();
-        let mut seen = BTreeSet::new();
-        let mut current = input;
-        while current.revision_kind == "append" {
-            if !seen.insert(current.raw_id.clone()) {
-                return Err(std::io::Error::other(
-                    "predecessor append lineage has a cycle",
-                ));
+        let at = PathBuf::from(format!(
+            "{}!/raw_sessions/{}/{name}",
+            root.display(),
+            input.raw_id
+        ));
+        let chain = match lineage(input, &declared, &by_revision) {
+            Ok(chain) => chain,
+            Err(reason) => {
+                // The fragment above keeps the bytes; only the joined
+                // reading is refused.
+                members.push(package::Member {
+                    path: at,
+                    bytes: archive
+                        .prepare_bytes(std::io::empty())
+                        .map_err(std::io::Error::other)?,
+                    container: false,
+                    origin: None,
+                    parent: None,
+                    container_kind: None,
+                    member_path_bytes: None,
+                    refusal: Some(reason),
+                });
+                continue;
             }
-            chain.push(current);
-            let predecessor = current.predecessor.as_ref().ok_or_else(|| {
-                std::io::Error::other("predecessor append has no recorded predecessor")
-            })?;
-            current = declared.get(predecessor).copied().ok_or_else(|| {
-                std::io::Error::other("predecessor append names a missing revision")
-            })?;
-            if current.origin != input.origin {
-                return Err(std::io::Error::other("predecessor append changes origin"));
-            }
-        }
+        };
         let (combined, ()) = archive
             .prepare_write(|output| {
-                let mut length = std::io::copy(&mut blobs[&current.raw_id].reader()?, output)?;
-                for append in chain.into_iter().rev() {
-                    if append.append_start != Some(length)
-                        || append.append_end != length.checked_add(append.blob_size)
-                    {
-                        return Err(polylogue_store::StoreError::Invalid(
-                            "predecessor append offsets do not join its recorded bytes".into(),
-                        ));
-                    }
-                    length += std::io::copy(&mut blobs[&append.raw_id].reader()?, output)?;
+                for part in &chain {
+                    std::io::copy(&mut blobs[&part.raw_id].reader()?, output)?;
                 }
                 Ok(())
             })
@@ -144,11 +153,6 @@ pub(super) fn stage(
         let mut reader = combined.reader().map_err(std::io::Error::other)?;
         let mut head = [0; 64];
         let n = reader.read(&mut head)?;
-        let at = PathBuf::from(format!(
-            "{}!/raw_sessions/{}/{name}",
-            root.display(),
-            input.raw_id
-        ));
         // An origin the predecessor could not name ("unknown-export") is
         // read by the declared structure its bytes have, or kept unparsed.
         let spec = if polylogue_sources::browser_capture::recognize(&at, &head[..n]) {
@@ -168,6 +172,7 @@ pub(super) fn stage(
             parent: None,
             container_kind: None,
             member_path_bytes: None,
+            refusal: None,
         });
     }
     // Every blob no raw session cites, checked against its name.
@@ -225,10 +230,63 @@ pub(super) fn stage(
                 parent: None,
                 container_kind: None,
                 member_path_bytes: None,
+                refusal: None,
             });
         }
     }
     Ok(Some(members))
 }
+type Input = polylogue_store::legacy_import::Input;
+
+/// The raw sessions whose bytes, in order, make `input`'s source revision:
+/// its full baseline, then each append. An append names the revision it
+/// continues by row ID, or else by revision name; its recorded offsets must
+/// join the bytes before it. Otherwise the reason it cannot be joined.
+fn lineage<'a>(
+    input: &'a Input,
+    declared: &BTreeMap<String, &'a Input>,
+    by_revision: &BTreeMap<&str, Option<&'a Input>>,
+) -> Result<Vec<&'a Input>, String> {
+    let mut chain = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut current = input;
+    while current.revision_kind == "append" {
+        if !seen.insert(current.raw_id.as_str()) {
+            return Err("its append lineage has a cycle".into());
+        }
+        chain.push(current);
+        current = match (&current.predecessor, &current.predecessor_revision) {
+            (Some(id), _) => declared
+                .get(id)
+                .copied()
+                .ok_or_else(|| format!("it continues raw session {id}, which the catalog does not hold"))?,
+            (None, Some(revision)) => by_revision
+                .get(revision.as_str())
+                .copied()
+                .flatten()
+                .ok_or_else(|| format!("it continues revision {revision}, which no one raw session of the catalog is"))?,
+            (None, None) => return Err("it is an append with no recorded predecessor".into()),
+        };
+        if current.origin != input.origin {
+            return Err("its append lineage changes origin".into());
+        }
+    }
+    chain.push(current);
+    chain.reverse();
+    let mut length = chain[0].blob_size;
+    for append in &chain[1..] {
+        if append.append_start != Some(length)
+            || append.append_end != length.checked_add(append.blob_size)
+        {
+            return Err(format!(
+                "the recorded offsets of append {} do not join the bytes before it",
+                append.raw_id
+            ));
+        }
+        length += append.blob_size;
+    }
+    Ok(chain)
+}
+
 #[cfg(test)]
 mod tests;
