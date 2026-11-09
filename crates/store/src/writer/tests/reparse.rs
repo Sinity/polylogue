@@ -266,7 +266,7 @@ fn natural_rows(w: &TestArchive) -> Json {
     for (name, sql) in [
         (
             "sources",
-            "SELECT m.id,i.id AS input,s.chain,s.source_start,s.source_end,s.shown,hex(s.version_hash) AS version FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref i ON i.pk=s.input_pk ORDER BY m.id,i.id,s.chain",
+            "SELECT m.id,i.id AS input,s.chain,s.source_start,s.source_end,(s.input_pk=m.input_pk AND s.chain=m.source_chain) AS shown,hex(s.version_hash) AS version FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref i ON i.pk=s.input_pk ORDER BY m.id,i.id,s.chain",
         ),
         (
             "order",

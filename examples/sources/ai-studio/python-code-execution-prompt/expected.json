@@ -29,6 +29,7 @@
     "messages": [
       {
         "end": 144,
+        "id_kind": "content",
         "message": {
           "at": "2025-02-02T09:00:00Z",
           "blocks": [
@@ -37,7 +38,7 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:21:code_execution_prompt#position:1:0",
+          "id": "ai-studio:code_execution_prompt~user-3ee99c61ca2ea5cd-0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:code_execution_prompt",
@@ -48,6 +49,7 @@
       },
       {
         "end": 311,
+        "id_kind": "content",
         "message": {
           "at": "2025-02-02T09:00:05Z",
           "blocks": [
@@ -56,8 +58,8 @@
               "type": "thinking"
             }
           ],
-          "id": "ai-studio:21:code_execution_prompt#position:1:1",
-          "parent": "ai-studio:21:code_execution_prompt#position:1:0",
+          "id": "ai-studio:code_execution_prompt~assistant-762525a9282962ac-0",
+          "parent": "ai-studio:code_execution_prompt~user-3ee99c61ca2ea5cd-0",
           "role": "assistant",
           "session": "ai-studio:code_execution_prompt",
           "attrs": {
@@ -70,12 +72,13 @@
       },
       {
         "end": 468,
+        "id_kind": "content",
         "message": {
           "at": "2025-02-02T09:00:10Z",
           "blocks": [
             {
               "action": "code",
-              "call_id": "21:code_execution_prompt#position:1:2:code1",
+              "call_id": "code_execution_prompt~assistant-4242b6d2f2e867d5-0:code1",
               "command": "print(2+2)",
               "input": {
                 "code": "print(2+2)",
@@ -85,8 +88,8 @@
               "type": "tool_call"
             }
           ],
-          "id": "ai-studio:21:code_execution_prompt#position:1:2",
-          "parent": "ai-studio:21:code_execution_prompt#position:1:1",
+          "id": "ai-studio:code_execution_prompt~assistant-4242b6d2f2e867d5-0",
+          "parent": "ai-studio:code_execution_prompt~assistant-762525a9282962ac-0",
           "role": "assistant",
           "session": "ai-studio:code_execution_prompt",
           "at_quality": "intrinsic",
@@ -96,11 +99,12 @@
       },
       {
         "end": 628,
+        "id_kind": "content",
         "message": {
           "at": "2025-02-02T09:00:20Z",
           "blocks": [
             {
-              "call_id": "21:code_execution_prompt#position:1:2:code1",
+              "call_id": "code_execution_prompt~assistant-4242b6d2f2e867d5-0:code1",
               "data": {
                 "outcome": "OUTCOME_OK",
                 "output": "4\n"
@@ -112,8 +116,8 @@
               "type": "tool_result"
             }
           ],
-          "id": "ai-studio:21:code_execution_prompt#position:1:3",
-          "parent": "ai-studio:21:code_execution_prompt#position:1:2",
+          "id": "ai-studio:code_execution_prompt~assistant-01d68ed5eeb2004e-0",
+          "parent": "ai-studio:code_execution_prompt~assistant-4242b6d2f2e867d5-0",
           "role": "assistant",
           "session": "ai-studio:code_execution_prompt",
           "at_quality": "intrinsic",
@@ -123,6 +127,7 @@
       },
       {
         "end": 782,
+        "id_kind": "content",
         "message": {
           "at": "2025-02-02T09:00:45Z",
           "blocks": [
@@ -131,8 +136,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:21:code_execution_prompt#position:1:4",
-          "parent": "ai-studio:21:code_execution_prompt#position:1:3",
+          "id": "ai-studio:code_execution_prompt~assistant-47798064e1f03039-0",
+          "parent": "ai-studio:code_execution_prompt~assistant-01d68ed5eeb2004e-0",
           "role": "assistant",
           "session": "ai-studio:code_execution_prompt",
           "stop_reason": "STOP",

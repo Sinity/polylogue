@@ -328,3 +328,74 @@ fn a_truncated_compressed_rollout_stores_nothing_until_the_whole_file_arrives() 
         bytes.as_bytes()
     );
 }
+
+#[test]
+fn rollout_without_session_meta_grows_one_input() {
+    let w = ClaudeHome::new();
+    let dir = w.home.join(".codex/sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("rollout-growing.jsonl");
+    let complete = rollout("grow-native");
+    // Codex has created the file and not finished its first record.
+    std::fs::write(&path, &complete.as_bytes()[..20]).unwrap();
+    let (mut e, _lock) = engine(&w, 64);
+    let inputs = |w: &ClaudeHome| w.count("SELECT count(*) AS n FROM a.input");
+    let before = inputs(&w);
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(inputs(&w), before, "a rollout without its session ID waits");
+    std::fs::write(&path, &complete).unwrap();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(
+        captured(&e, "codex:rollout:grow-native"),
+        complete.as_bytes()
+    );
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    file.write_all(b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_aborted\"}}\n")
+        .unwrap();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(inputs(&w), before + 1);
+    assert_eq!(
+        w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:grow-native'"),
+        1
+    );
+}
+
+#[test]
+fn location_input_id_matches_documented_bytes() {
+    // archive.md and archive.sql: the first 32 hex digits of
+    // BLAKE3(machine, a zero byte, the path's bytes).
+    let path = std::path::Path::new("/home/op/.claude/projects/p/s.jsonl");
+    let expected = blake3::hash(b"synthetic-machine\0/home/op/.claude/projects/p/s.jsonl").to_hex();
+    assert_eq!(
+        crate::location_id("synthetic-machine", path),
+        &expected.as_str()[..32]
+    );
+}
+
+#[test]
+fn a_file_reached_through_a_linked_directory_is_one_location() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("config/claude/projects/p");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("s.jsonl"), b"{}\n").unwrap();
+    std::os::unix::fs::symlink(dir.path().join("config/claude"), dir.path().join("linked"))
+        .unwrap();
+    let through_link = dir.path().join("linked/projects/p/s.jsonl");
+    let direct = real.join("s.jsonl");
+    assert_eq!(
+        crate::location_id("synthetic-machine", &through_link),
+        crate::location_id("synthetic-machine", &direct)
+    );
+    // Once deleted, the file keeps its ID: only its directory is resolved.
+    std::fs::remove_file(&direct).unwrap();
+    assert_eq!(
+        crate::location_id("synthetic-machine", &through_link),
+        crate::location_id("synthetic-machine", &direct)
+    );
+}

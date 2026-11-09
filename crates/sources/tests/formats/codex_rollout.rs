@@ -250,3 +250,32 @@ fn a_second_session_meta_does_not_open_another_session() {
             .all(|m| m["session"] == format!("codex:{SID}"))
     );
 }
+
+#[test]
+fn codex_item_without_id_shown_once_after_offset_shift() {
+    // Response items carry no `id`. A rewritten rollout with an earlier
+    // record added moves every later item to another offset; each keeps
+    // its ID, so the session shows it once.
+    let ids = |records: &[Value]| -> Vec<String> {
+        let parsed = run(records);
+        parsed["output"]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                assert_eq!(row["id_kind"], "content");
+                row["message"]["id"].as_str().unwrap().to_owned()
+            })
+            .collect()
+    };
+    let before = ids(&[meta(json!({})), user("first"), user("second")]);
+    let after = ids(&[
+        meta(json!({})),
+        user("an earlier prompt"),
+        user("first"),
+        user("second"),
+    ]);
+    assert_eq!(before.len(), 2);
+    assert_eq!(after[1..], before[..]);
+    assert!(before[0].starts_with(&format!("codex:{SID}~user-")));
+}

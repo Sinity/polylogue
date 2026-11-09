@@ -9,6 +9,7 @@ fn messages_one_record_holds_read_in_record_order() {
     let record = |offset, ids: &[(&str, Role, &str)]| {
         ids.iter()
             .map(|(id, role, text)| MessageRow {
+                id_kind: polylogue_model::IdKind::Native,
                 offset,
                 end: offset + 100,
                 message: text_message(id, "s", *role, text, Some("end_turn")),

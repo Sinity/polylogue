@@ -108,6 +108,7 @@
       },
       {
         "end": 165,
+        "id_kind": "content",
         "message": {
           "at": "2026-01-05T09:00:00Z",
           "blocks": [
@@ -116,7 +117,7 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:14:current_export#position:1:0",
+          "id": "ai-studio:current_export~user-81a75783d27044b3-0",
           "parent": "ai-studio:14:current_export#system:0:",
           "prompt_kind": "prose",
           "role": "user",
@@ -135,6 +136,7 @@
       },
       {
         "end": 390,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -142,9 +144,9 @@
               "type": "thinking"
             }
           ],
-          "id": "ai-studio:14:current_export#position:1:1",
+          "id": "ai-studio:current_export~assistant-a4e5929523c426df-0",
           "model": "synthetic-model",
-          "parent": "ai-studio:14:current_export#position:1:0",
+          "parent": "ai-studio:current_export~user-81a75783d27044b3-0",
           "role": "assistant",
           "session": "ai-studio:current_export",
           "stop_reason": "STOP",
@@ -167,6 +169,7 @@
       },
       {
         "end": 695,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -174,9 +177,9 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:14:current_export#position:1:2",
+          "id": "ai-studio:current_export~assistant-9c03d09eea2e7d08-0",
           "model": "synthetic-model",
-          "parent": "ai-studio:14:current_export#position:1:1",
+          "parent": "ai-studio:current_export~assistant-a4e5929523c426df-0",
           "role": "assistant",
           "session": "ai-studio:current_export",
           "stop_reason": "STOP",
@@ -201,6 +204,7 @@
       },
       {
         "end": 809,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -209,8 +213,8 @@
               "type": "file"
             }
           ],
-          "id": "ai-studio:14:current_export#position:1:3",
-          "parent": "ai-studio:14:current_export#position:1:2",
+          "id": "ai-studio:current_export~user-5ea28700a13ad24b-0",
+          "parent": "ai-studio:current_export~assistant-9c03d09eea2e7d08-0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:current_export",
@@ -220,6 +224,7 @@
       },
       {
         "end": 917,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -228,8 +233,8 @@
               "type": "image"
             }
           ],
-          "id": "ai-studio:14:current_export#position:1:4",
-          "parent": "ai-studio:14:current_export#position:1:3",
+          "id": "ai-studio:current_export~user-71e5cb439abe0d4a-0",
+          "parent": "ai-studio:current_export~user-5ea28700a13ad24b-0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:current_export",
@@ -239,6 +244,7 @@
       },
       {
         "end": 1025,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -247,8 +253,8 @@
               "type": "file"
             }
           ],
-          "id": "ai-studio:14:current_export#position:1:5",
-          "parent": "ai-studio:14:current_export#position:1:4",
+          "id": "ai-studio:current_export~user-871a5e98ea7a4c81-0",
+          "parent": "ai-studio:current_export~user-71e5cb439abe0d4a-0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:current_export",
@@ -258,6 +264,7 @@
       },
       {
         "end": 1133,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -266,8 +273,8 @@
               "type": "file"
             }
           ],
-          "id": "ai-studio:14:current_export#position:1:6",
-          "parent": "ai-studio:14:current_export#position:1:5",
+          "id": "ai-studio:current_export~user-6cc2d9f6fbedfb0a-0",
+          "parent": "ai-studio:current_export~user-871a5e98ea7a4c81-0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:current_export",
@@ -277,6 +284,7 @@
       },
       {
         "end": 1435,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -287,8 +295,8 @@
               "type": "image"
             }
           ],
-          "id": "ai-studio:14:current_export#position:1:8",
-          "parent": "ai-studio:14:current_export#position:1:6",
+          "id": "ai-studio:current_export~user-e513a0a362368b22-0",
+          "parent": "ai-studio:current_export~user-6cc2d9f6fbedfb0a-0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:current_export",
@@ -298,6 +306,7 @@
       },
       {
         "end": 1559,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -308,8 +317,8 @@
               "type": "file"
             }
           ],
-          "id": "ai-studio:14:current_export#position:1:9",
-          "parent": "ai-studio:14:current_export#position:1:8",
+          "id": "ai-studio:current_export~user-5a2870f0774d8c50-0",
+          "parent": "ai-studio:current_export~user-e513a0a362368b22-0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:current_export",
@@ -319,11 +328,12 @@
       },
       {
         "end": 1693,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
               "action": "code",
-              "call_id": "14:current_export#position:2:10:code1",
+              "call_id": "current_export~assistant-af745c33d1f2fb19-0:code1",
               "command": "print(0)",
               "input": {
                 "code": "print(0)",
@@ -333,9 +343,9 @@
               "type": "tool_call"
             }
           ],
-          "id": "ai-studio:14:current_export#position:2:10",
+          "id": "ai-studio:current_export~assistant-af745c33d1f2fb19-0",
           "model": "synthetic-model",
-          "parent": "ai-studio:14:current_export#position:1:9",
+          "parent": "ai-studio:current_export~user-5a2870f0774d8c50-0",
           "role": "assistant",
           "session": "ai-studio:current_export",
           "usage": {
@@ -351,10 +361,11 @@
       },
       {
         "end": 1830,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
-              "call_id": "14:current_export#position:2:10:code1",
+              "call_id": "current_export~assistant-af745c33d1f2fb19-0:code1",
               "data": {
                 "outcome": "OUTCOME_OK",
                 "output": "0"
@@ -366,9 +377,9 @@
               "type": "tool_result"
             }
           ],
-          "id": "ai-studio:14:current_export#position:2:11",
+          "id": "ai-studio:current_export~assistant-37c2bfcda404d013-0",
           "model": "synthetic-model",
-          "parent": "ai-studio:14:current_export#position:2:10",
+          "parent": "ai-studio:current_export~assistant-af745c33d1f2fb19-0",
           "role": "assistant",
           "session": "ai-studio:current_export",
           "usage": {
@@ -384,6 +395,7 @@
       },
       {
         "end": 2004,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -391,9 +403,9 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:14:current_export#position:2:12",
+          "id": "ai-studio:current_export~assistant-94e90f9817ffc5f3-0",
           "model": "synthetic-model",
-          "parent": "ai-studio:14:current_export#position:2:11",
+          "parent": "ai-studio:current_export~assistant-37c2bfcda404d013-0",
           "role": "assistant",
           "session": "ai-studio:current_export",
           "stop_reason": "STOP",
@@ -415,6 +427,7 @@
       },
       {
         "end": 2114,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -423,9 +436,9 @@
               "type_name": "error"
             }
           ],
-          "id": "ai-studio:14:current_export#position:2:13",
+          "id": "ai-studio:current_export~assistant-4de48b947bfaa1b3-0",
           "model": "synthetic-model",
-          "parent": "ai-studio:14:current_export#position:2:12",
+          "parent": "ai-studio:current_export~assistant-94e90f9817ffc5f3-0",
           "role": "assistant",
           "session": "ai-studio:current_export",
           "stop_reason": "OTHER",
@@ -435,6 +448,7 @@
       },
       {
         "end": 2351,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -442,8 +456,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:14:current_export#position:2:14",
-          "parent": "ai-studio:14:current_export#position:2:13",
+          "id": "ai-studio:current_export~user-035cc2705126447d-0",
+          "parent": "ai-studio:current_export~assistant-4de48b947bfaa1b3-0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:current_export",

@@ -1,0 +1,64 @@
+//! Message IDs for records the source gives no ID.
+//!
+//! A byte offset, an ordinal or a time's text names a message only while the
+//! file keeps its shape: a rewrite, an inserted line or a deleted chunk moves
+//! every later position, and notes on those messages lose their target. A
+//! message without a native ID is therefore named by what it says: its
+//! session, a hash of its role and content, and how many earlier messages of
+//! the same session had the same role and content. Unchanged messages keep
+//! their IDs across a rewrite; an edited message gets a new one.
+
+use polylogue_model::{MessageId, Role, SessionId};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// Counts the messages named so far, per session, role and content. A parser
+/// keeps one in its carried state, so a resumed parse continues the counts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentIds {
+    /// Earlier messages, by session and content hash.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    seen: BTreeMap<String, u32>,
+}
+
+impl ContentIds {
+    /// The ID of the next message of `session` with this role and content.
+    /// `content` is what the message says, usually its blocks; it must not
+    /// hold the message's position or arrival time.
+    pub fn next(
+        &mut self,
+        session: &SessionId,
+        role: Role,
+        content: &impl Serialize,
+    ) -> Option<MessageId> {
+        let hash = canonical_json::canonical_hash("polylogue-message-content", &(role, content))
+            .ok()?
+            .to_hex();
+        let hash = &hash.as_str()[..16];
+        let occurrence = self.seen.entry(format!("{session}\0{hash}")).or_insert(0);
+        let native = format!(
+            "{}~{}-{hash}-{occurrence}",
+            session.native().as_str(),
+            role.as_str()
+        );
+        *occurrence += 1;
+        crate::document::message_id(session.origin().as_str(), &native)
+    }
+}
+
+/// The text blocks of a message, joined: the content of a message whose
+/// routes agree on its text but not on its other blocks (a page capture
+/// and an activity export of one Gemini turn).
+pub fn text(blocks: &[polylogue_model::Block]) -> String {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            polylogue_model::Block::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+#[cfg(test)]
+pub(crate) mod tests;

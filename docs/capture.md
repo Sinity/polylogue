@@ -81,7 +81,7 @@ Ignored: `logs_2.sqlite` (diagnostic log); `thread_history_*.sqlite` (a projecti
 5. IDE `.pb` conversations, through the language server's own RPC on a Unix socket or with a per-run token, never an unauthenticated loopback port; without the server, the session exists with its metadata and an event saying the transcript could not be read;
 6. `state.vscdb` rows.
 
-**Hermes** (root `$HERMES_HOME`, default `~/.hermes`, and each `profiles/<name>/` as a full home): `state.db` and `verification_evidence.db` as rows, every column; `sessions/session_*.json`, `sessions/saved/*.json`, `sessions/request_dump_*.json`; `observability/nemo-relay/atif/*.json`, `atof/*.jsonl`, `usage.json`; `pastes/*`, `.hermes_history`, `memories/*`, `checkpoints/*`, `cron/*`; `SOUL.md` and `config.yaml` as context documents. Ignored: `.env`, `auth*`, `hermes-agent/` (the program's checkout), `bin/`, `skills/`, caches, `logs/`, `sandboxes/`, `processes.json`. JSON snapshots and `state.db` sessions merge by native ID: the snapshot is the record and live events enrich it.
+**Hermes** (root `$HERMES_HOME`, default `~/.hermes`, and each `profiles/<name>/` as a full home): `state.db` and `verification_evidence.db` as rows, every column; `sessions/session_*.json`, `sessions/saved/*.json`, `sessions/request_dump_*.json`; `observability/nemo-relay/atif/*.json`, `atof/*.jsonl`, `usage.json`; `pastes/*`, `.hermes_history`, `memories/*`, `checkpoints/*`, `cron/*`; `SOUL.md` and `config.yaml` as context documents. Ignored: `.env`, `auth*`, `hermes-agent/` (the program's checkout), `bin/`, `skills/`, caches, `logs/`, `sandboxes/`, `processes.json`. JSON snapshots and `state.db` sessions merge by native ID: the snapshot is the record and live events enrich it. A session is `<native>@profile-<name>`, where the name is the profile's (`default` for the home itself), so moving the home or renaming the machine keeps every session ID.
 
 **Grok CLI** (root `~/.grok`): every file of each session directory `sessions/<cwd>/<id>/` (`chat_history.jsonl`, `updates.jsonl`, `events.jsonl`, `rewind_points.jsonl`, `usage.json`, `summary.json`, `signals.json`, `tool_definitions.json`, `prompt_context.json`, `resources_state.json`, `plan_mode.json`, `subagents/*/*.json`, `recap_requests/*.json`, `goal/*.md`, `terminal/*.log`); `sessions/*/prompt_history.jsonl`; `memory-v2/**` (Markdown, and SQLite as rows); `memtrace/**`; `worktrees.db` as rows. Rewind points are branch events, subagents are linked sessions, terminal logs are tool-output sidecars. Ignored: auth files, program and plugin directories, caches, docs, lock files.
 
@@ -137,7 +137,7 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 | claude.ai export | `conversations.json`, `users.json`, `projects/`, `memories.json`, `design_chats/` | `claude-ai`, `claude-design` |
 | claude.ai single conversation | the `chat_messages` and `uuid` shape | `claude-ai` |
 | Grok account export | `prod-grok-backend.json`, shape-checked while streaming | `grok` |
-| Google Takeout | `Takeout/My Activity/Gemini Apps/`; `Drive/Google AI Studio/*`; `Gemini/` (Gems); `NotebookLM/` | `gemini-app`; `ai-studio`, joined to Drive sessions by file ID; Gems as documents; NotebookLM stored without a parser. Other Takeout products are refused members, counted and not stored |
+| Google Takeout | `Takeout/My Activity/Gemini Apps/`; `Drive/Google AI Studio/*`; `Gemini/` (Gems); `NotebookLM/` | `gemini-app`; `ai-studio`, each prompt named by its content (its first chunk), never by its file name, which is its title; Gems as documents; NotebookLM stored without a parser. Other Takeout products are refused members, counted and not stored |
 | AI Studio archive | prompt JSON members, extensionless ones included | `ai-studio` |
 | OpenRouter chat-room export | its JSON shape | `openrouter` |
 | OpenTelemetry GenAI | OTLP-JSON `resourceSpans` | `otel-genai` |
@@ -164,7 +164,7 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 - `--dry-run` reads and checks everything, including every blob's bytes, and writes nothing; rows already present are not told apart and count as stored, and refusals only the writer can decide (an input held differently, a conflicting assertion or request, a vector different from one held) are only known on import, as the answer says.
 - **Counts follow what was stored.** A delivery is counted as stored when it is in the archive after the import, whichever of the requests carrying its record stored it.
 
-Aider's LLM log holds snapshots of the context sent and the response returned, with no native session or message IDs: the first recorded request fixes a content-derived session ID, and equal sent prefixes share message IDs. Its times carry no zone, so they stay unknown with the original strings kept. The paired Markdown is a companion document.
+Aider's LLM log holds snapshots of the context sent and the response returned, with no native session or message IDs: the first recorded request fixes a content-derived session ID, messages are named by their content, and a prefix sent again is not read again. Its times carry no zone, so they stay unknown with the original strings kept. The paired Markdown is a companion document.
 
 Hand-made Markdown chat dumps are not a structure: a flattened transcript is a degraded form of a conversation that has a real source.
 
@@ -178,6 +178,7 @@ AI Studio stores its prompts in Google Drive, which is a known location like a t
 - `driveDocument` and `driveImage` attachments are fetched by Drive ID as attachment bytes. Revision lineage and `branchParent` edges are recorded; a Drive mode that cannot give lineage fails closed.
 - The collector is on whenever the user has authorized a token; the one-time OAuth consent is the only gate, because a known location is never dark behind a setting. Without a token, status shows "not authorized" with the command to run.
 - A prompt deleted in Drive keeps its archived revisions and is marked gone.
+- The collector's prompts are named by Drive file ID, which the listing and `branchParent` also use. A Takeout or downloaded copy carries no file ID and is named by its content; joining such a copy to its Drive session is designed and not built.
 
 ## Source clocks
 

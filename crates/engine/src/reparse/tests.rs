@@ -40,6 +40,7 @@ const fn origin(open: fn(&Path) -> Option<Parse>) -> OriginSpec {
         harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Live,
+        input_identity: polylogue_sources::InputIdentity::Location,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,

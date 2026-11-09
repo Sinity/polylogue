@@ -72,22 +72,31 @@ fn hermes_native_capture_reads_roles_reasoning_and_zero_nonzero_tool_outcomes() 
 }
 
 #[test]
-fn two_same_named_tool_databases_keep_profile_identity_after_provider_removal_and_rebuild() {
+fn two_profiles_with_one_session_id_stay_apart_after_provider_removal_and_rebuild() {
+    // A Hermes session is named by its profile's name (docs/capture.md),
+    // so the home and a profile under it holding the same native ID are two
+    // sessions.
     let w = ClaudeHome::new();
-    let second_home = w.home.parent().unwrap().join("second-home");
     let first = w.home.join(".hermes/state.db");
-    let second = second_home.join(".hermes/state.db");
+    let second = w.home.join(".hermes/profiles/work/state.db");
     tool_database(&first, "same-native-id", "first profile text");
     tool_database(&second, "same-native-id", "second profile text");
     let before;
     {
         let (mut engine, _lock) = w.engine(64 << 20);
         assert!(engine.run_pass().unwrap().errors.is_empty());
-        engine.config.home = second_home;
-        assert!(engine.run_pass().unwrap().errors.is_empty());
         before = hermes_ids(&w);
         assert_eq!(before.len(), 2);
         assert_ne!(before[0], before[1]);
+        let mut names: Vec<_> = before.iter().map(ToString::to_string).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "hermes:same-native-id@profile-default",
+                "hermes:same-native-id@profile-work"
+            ]
+        );
         let bodies = before
             .iter()
             .map(|id| w.reads().reader().unwrap().messages(id, false).unwrap()[0].text())

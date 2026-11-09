@@ -65,11 +65,13 @@ fn independent_usage_is_measured_once_without_fabricating_response_or_missing_us
             sessions: vec![Session::new(sid("observed"), SessionKind::Main)],
             messages: vec![
                 MessageRow {
+                    id_kind: polylogue_model::IdKind::Native,
                     offset: 0,
                     end: 1,
                     message: item,
                 },
                 MessageRow {
+                    id_kind: polylogue_model::IdKind::Native,
                     offset: 1,
                     end: 2,
                     message: child,

@@ -15,7 +15,7 @@
 //! once, and the copying session gets a `copy` link.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 mod blocks;
 mod fields;
@@ -27,9 +27,9 @@ use crate::parse::{BackgroundUpdate, MessageRow, Output, Parse, Parser};
 use crate::time;
 use crate::{RecordOutcome, Records};
 use polylogue_model::{
-    ApiError, Attribution, Block, ErrorReason, Event, Json, Link, LinkKind, Message, MessageId,
-    NativeId, Origin, Production, PromptKind, QuotaLimit, QuotaReading, QuotaWindow, Role, Session,
-    SessionId, SessionKind, Timestamp, TitleSource, ToolOutcome, Usage,
+    ApiError, Attribution, Block, ErrorReason, Event, IdKind, Json, Link, LinkKind, Message,
+    MessageId, NativeId, Origin, Production, PromptKind, QuotaLimit, QuotaReading, QuotaWindow,
+    Role, Session, SessionId, SessionKind, Timestamp, TitleSource, ToolOutcome, Usage,
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -172,6 +172,9 @@ pub struct ParserState {
     links: BTreeSet<String>,
     /// The latest message, for placing events on the timeline.
     last: Option<MessageId>,
+    /// Names the messages of records without a `uuid`.
+    #[serde(default)]
+    ids: crate::content_ids::ContentIds,
     /// Record uuids that are not a message's own: a split response's later
     /// records (its message carries the first one's uuid) and event records
     /// (compaction boundaries, attachments, progress), each mapped to the
@@ -230,6 +233,8 @@ impl ParserState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Response {
     key: String,
+    #[serde(default)]
+    id_kind: IdKind,
     /// Where the response's first record starts and its latest one ends.
     offset: u64,
     end: u64,
@@ -496,10 +501,14 @@ impl ClaudeCode {
             let Some(session) = self.session(parser_state, v, out).map(|s| s.id.clone()) else {
                 return RecordOutcome::unreadable("session ID is empty");
             };
-            let native = str_field(v, "uuid")
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("{}@{}", self.file.stem(), record.offset));
-            let Some(id) = message_id(&native) else {
+            let (id, id_kind) = match str_field(v, "uuid") {
+                Some(uuid) => (message_id(uuid), IdKind::Native),
+                None => (
+                    parser_state.ids.next(&session, Role::System, &blocks),
+                    IdKind::Content,
+                ),
+            };
+            let Some(id) = id else {
                 return RecordOutcome::unreadable("message ID is empty");
             };
             // The summary records supplied feedback, including when the
@@ -525,6 +534,7 @@ impl ClaudeCode {
             out.messages.push(MessageRow {
                 offset: record.offset,
                 end: range(record).1,
+                id_kind,
                 message: {
                     let (at, time_evidence) =
                         crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
@@ -571,15 +581,20 @@ impl ClaudeCode {
         let Some(session) = self.session(parser_state, v, out).map(|s| s.id.clone()) else {
             return RecordOutcome::unreadable("session ID is empty");
         };
-        let native = str_field(v, "uuid")
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("{}@{}", self.file.stem(), record.offset));
-        let Some(id) = message_id(&native) else {
-            return RecordOutcome::unreadable("message ID is empty");
-        };
         let msg = v.get("message").unwrap_or(&Json::Null);
         let content = msg.get("content").unwrap_or(&Json::Null);
         let blocks = blocks::blocks(v, content, &mut out.blobs);
+        let (id, id_kind) = match str_field(v, "uuid") {
+            Some(uuid) => (message_id(uuid), IdKind::Native),
+            None => (
+                parser_state.ids.next(&session, role, &blocks),
+                IdKind::Content,
+            ),
+        };
+        let Some(id) = id else {
+            return RecordOutcome::unreadable("message ID is empty");
+        };
+        let native = id.native().as_str().to_owned();
         let usage = msg.get("usage").map(usage).unwrap_or_default();
         let stop_reason = str_field(msg, "stop_reason").map(str::to_owned);
         let model = str_field(msg, "model");
@@ -662,6 +677,7 @@ impl ClaudeCode {
                         Some(polylogue_model::parser_context::Value::Response { row }) => {
                             Some(Response {
                                 key: key.clone(),
+                                id_kind: row.id_kind,
                                 offset: row.offset,
                                 end: row.end,
                                 message: row.message,
@@ -699,6 +715,7 @@ impl ClaudeCode {
                 None => {
                     parser_state.open = Some(Response {
                         key,
+                        id_kind,
                         offset: record.offset,
                         end,
                         message: {
@@ -761,6 +778,7 @@ impl ClaudeCode {
                 }
             };
             out.messages.push(MessageRow {
+                id_kind,
                 offset: record.offset,
                 end,
                 message,
@@ -896,6 +914,7 @@ fn remember(state: &ParserState, response: &Response) {
         },
         polylogue_model::parser_context::Value::Response {
             row: Box::new(MessageRow {
+                id_kind: response.id_kind,
                 offset: response.offset,
                 end: response.end,
                 message: response.message.clone(),
@@ -908,6 +927,7 @@ fn remember(state: &ParserState, response: &Response) {
 fn close(parser_state: &mut ParserState, out: &mut Output) {
     if let Some(open) = parser_state.open.take() {
         out.messages.push(MessageRow {
+            id_kind: open.id_kind,
             offset: open.offset,
             end: open.end,
             message: open.message.clone(),
@@ -1541,6 +1561,7 @@ impl Parser for ClaudeCode {
         if let Some(open) = &parser_state.open {
             remember(parser_state, open);
             out.messages.push(MessageRow {
+                id_kind: open.id_kind,
                 offset: open.offset,
                 end: open.end,
                 message: open.message.clone(),

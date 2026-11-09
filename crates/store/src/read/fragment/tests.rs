@@ -370,6 +370,7 @@ fn sparse_message_metadata_and_complete_text_coverage_do_not_grant_canonical_att
     let mut output = Output {
         sessions: vec![Session::new(full.session.clone(), SessionKind::Main)],
         messages: vec![MessageRow {
+            id_kind: polylogue_model::IdKind::Native,
             offset: 0,
             end: 1,
             message: partial,

@@ -18,6 +18,7 @@ pub mod claude_ai;
 pub mod claude_code;
 pub mod codex;
 pub mod codex_cloud;
+pub mod content_ids;
 pub mod document;
 pub mod export;
 pub mod fields;
@@ -42,7 +43,7 @@ pub mod schema;
 pub mod time;
 
 pub use lines::Record;
-pub use origin::{Arrival, Capture, ORIGINS, OriginSpec, Root, Support};
+pub use origin::{Arrival, Capture, InputIdentity, ORIGINS, OriginSpec, Root, Support};
 pub use parse::{
     BackgroundUpdate, DocumentParser, ExtractedBlob, MessageRow, Output, Parse, ParseError, Parser,
     Step, StepParser, run, run_document,

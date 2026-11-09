@@ -62,7 +62,6 @@ pub fn accept(
 pub fn peer(
     stream: &std::os::unix::net::UnixStream,
     supplied: &CallerEvidence,
-    machine: &str,
 ) -> std::io::Result<(CallerEvidence, Channel)> {
     let credentials = rustix::net::sockopt::socket_peercred(stream)?;
     let root = PathBuf::from(format!("/proc/{}", credentials.pid.as_raw_pid()));
@@ -91,7 +90,6 @@ pub fn peer(
         .ok()
         .and_then(|value| command_surface::cgroup_unit(&value));
     let mut evidence = select(
-        machine,
         &environment,
         &ancestors(parent, &environment),
         terminal,
@@ -125,14 +123,14 @@ struct Identity {
 
 static CALLER: std::sync::OnceLock<CallerEvidence> = std::sync::OnceLock::new();
 
-pub fn initialize(environment: &crate::config::EnvSnapshot, machine: &str) {
-    let _ = CALLER.set(capture(environment, machine));
+pub fn initialize(environment: &crate::config::EnvSnapshot) {
+    let _ = CALLER.set(capture(environment));
 }
 pub fn evidence() -> CallerEvidence {
     CALLER.get().cloned().unwrap_or_default()
 }
 
-fn capture(snapshot: &crate::config::EnvSnapshot, machine: &str) -> CallerEvidence {
+fn capture(snapshot: &crate::config::EnvSnapshot) -> CallerEvidence {
     let environment = ENVIRONMENT
         .into_iter()
         .filter_map(|name| {
@@ -149,7 +147,7 @@ fn capture(snapshot: &crate::config::EnvSnapshot, machine: &str) -> CallerEviden
         .read(true)
         .open("/dev/tty")
         .is_ok();
-    select(machine, &environment, &ancestors, terminal, unit)
+    select(&environment, &ancestors, terminal, unit)
 }
 
 fn channel(words: &[&str]) -> Channel {
@@ -188,7 +186,6 @@ fn channel(words: &[&str]) -> Channel {
 }
 
 fn select(
-    machine: &str,
     environment: &BTreeMap<String, OsString>,
     ancestors: &[(u32, Origin)],
     terminal: bool,
@@ -241,7 +238,7 @@ fn select(
                             .get("HOME")
                             .map(|home| Path::new(home).join(".hermes/state.db"))
                     })?;
-                polylogue_sources::hermes::session_at(machine, &state, native)
+                polylogue_sources::hermes::session_at(&state, native)
             } else {
                 SessionId::parse(&format!("{origin}:{native}")).ok()
             }

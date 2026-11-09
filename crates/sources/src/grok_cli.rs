@@ -4,14 +4,14 @@
 //! The history is the model's message list, appended a line at a time:
 //! `system`, `user`, `reasoning`, `assistant` (with tool calls) and
 //! `tool_result`. Lines hold no IDs and no times, so a message is named by
-//! its byte offset in the file, a stable place in an append-only file;
-//! unknown times stay unknown. A `reasoning` line belongs to the assistant
+//! its content (`content_ids`), which a rewritten or edited history keeps for
+//! every unchanged message; unknown times stay unknown. A `reasoning` line belongs to the assistant
 //! message after it.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
-use crate::document::{first_key, message_id, session_id, str_of, string_of};
+use crate::document::{first_key, session_id, str_of, string_of};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::lines::Record;
@@ -91,6 +91,9 @@ pub struct ParserState {
     thinking: Vec<Block>,
     /// The session's facts were sent.
     announced: bool,
+    /// Names the messages; lines carry no IDs.
+    #[serde(default)]
+    ids: crate::content_ids::ContentIds,
 }
 
 static FIELDS: Fields = Fields::new(&[
@@ -295,8 +298,7 @@ impl Parser for GrokCli {
             ),
             other => return RecordOutcome::skipped(format!("record type {other}")),
         };
-        let Some(id) = message_id(ORIGIN, &format!("{}@{}", self.place.session, record.offset))
-        else {
+        let Some(id) = parser_state.ids.next(&sid, role, &blocks) else {
             return RecordOutcome::unreadable("unusable message ID");
         };
         let production = polylogue_model::Production {
@@ -304,6 +306,7 @@ impl Parser for GrokCli {
             ..Default::default()
         };
         out.messages.push(MessageRow {
+            id_kind: polylogue_model::IdKind::Content,
             offset: record.offset,
             end,
             message: {

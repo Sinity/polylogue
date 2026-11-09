@@ -81,6 +81,7 @@ impl Fixture {
                     SessionKind::Main,
                 )],
                 messages: vec![MessageRow {
+                    id_kind: polylogue_model::IdKind::Native,
                     offset: 0,
                     end: bytes.len() as u64,
                     message: record.message.clone(),

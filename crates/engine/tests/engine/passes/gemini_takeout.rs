@@ -202,7 +202,7 @@ fn a_turn_in_a_takeout_and_a_page_capture_is_shown_once() {
         );
         assert_eq!(
             w.count(
-                "SELECT count(*) AS n FROM message WHERE duplicate_of LIKE 'gemini-app:chat1#%'
+                "SELECT count(*) AS n FROM message WHERE duplicate_of LIKE 'gemini-app:chat1~%'
                  AND duplicate_reason IS NOT NULL"
             ),
             4

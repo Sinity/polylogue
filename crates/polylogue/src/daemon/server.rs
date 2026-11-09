@@ -124,13 +124,12 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
             parent_deadline_ms,
         } = incoming;
         let (evidence, channel) =
-            crate::protocol::caller::peer(&out, &caller, d.config.requests.machine())
-                .unwrap_or_else(|_| {
-                    (
-                        Default::default(),
-                        polylogue_model::authorship::Channel::Cli,
-                    )
-                });
+            crate::protocol::caller::peer(&out, &caller).unwrap_or_else(|_| {
+                (
+                    Default::default(),
+                    polylogue_model::authorship::Channel::Cli,
+                )
+            });
         let mut accepted =
             crate::protocol::caller::accept(&d.callers, &evidence, channel, cancellation.clone());
         accepted.parent = parent_deadline_ms.map(|deadline| {

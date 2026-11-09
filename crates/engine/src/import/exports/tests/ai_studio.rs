@@ -36,17 +36,22 @@ fn stored_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
         let pass = e.run_pass().unwrap();
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);
         let r = e.reads.reader().unwrap();
-        let sid = polylogue_model::SessionId::parse("ai-studio:Electrons").unwrap();
+        // An imported prompt carries no Drive file ID; it is named by its
+        // first chunk (BLAKE3 of the tag, a zero byte and the chunk's
+        // canonical JSON), and an ID-less chunk by its content.
+        let sid =
+            polylogue_model::SessionId::parse("ai-studio:content-712969f6f44e0e19c4f48ce5a97fad28")
+                .unwrap();
         let messages = r.messages(&sid, false).unwrap();
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[0].text(), "Answer briefly.");
         assert_eq!(
             messages[1].id.to_string(),
-            "ai-studio:9:Electrons#position:1:0"
+            "ai-studio:content-712969f6f44e0e19c4f48ce5a97fad28~user-38fe0b0b74f66011-0"
         );
         assert_eq!(
             messages[3].id.to_string(),
-            "ai-studio:9:Electrons#id:6:answer"
+            "ai-studio:40:content-712969f6f44e0e19c4f48ce5a97fad28#id:6:answer"
         );
         assert_eq!(messages[3].parent.as_ref(), Some(&messages[2].id));
         assert_eq!(messages[3].model.as_deref(), Some("gemini-example"));

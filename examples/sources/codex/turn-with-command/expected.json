@@ -90,7 +90,7 @@
         "at_precision": "instant"
       },
       {
-        "after": "codex:019a0000-0000-7000-8000-000000000001@1081",
+        "after": "codex:019a0000-0000-7000-8000-000000000001~user-009f44c21c3b0559-0",
         "at": "2026-03-01T10:00:06Z",
         "data": {
           "model_context_window": 400000,
@@ -246,7 +246,7 @@
         "at_precision": "instant"
       },
       {
-        "after": "codex:019a0000-0000-7000-8000-000000000001@3212",
+        "after": "codex:019a0000-0000-7000-8000-000000000001~assistant-52b2ccb18ee4c929-0",
         "at": "2026-03-01T10:00:15Z",
         "data": {
           "duration_ms": 9000,
@@ -274,6 +274,7 @@
     "messages": [
       {
         "end": 847,
+        "id_kind": "content",
         "message": {
           "at": "2026-03-01T10:00:03Z",
           "blocks": [
@@ -282,7 +283,7 @@
               "type": "text"
             }
           ],
-          "id": "codex:019a0000-0000-7000-8000-000000000001@632",
+          "id": "codex:019a0000-0000-7000-8000-000000000001~system-51dae9779b35182f-0",
           "role": "system",
           "session": "codex:019a0000-0000-7000-8000-000000000001",
           "at_quality": "intrinsic",
@@ -292,6 +293,7 @@
       },
       {
         "end": 1080,
+        "id_kind": "content",
         "message": {
           "at": "2026-03-01T10:00:04Z",
           "blocks": [
@@ -300,7 +302,7 @@
               "type": "text"
             }
           ],
-          "id": "codex:019a0000-0000-7000-8000-000000000001@848",
+          "id": "codex:019a0000-0000-7000-8000-000000000001~user-5efd3eace0d1d27f-0",
           "prompt_kind": "harness",
           "role": "user",
           "session": "codex:019a0000-0000-7000-8000-000000000001",
@@ -311,6 +313,7 @@
       },
       {
         "end": 1267,
+        "id_kind": "content",
         "message": {
           "at": "2026-03-01T10:00:05Z",
           "blocks": [
@@ -319,7 +322,7 @@
               "type": "text"
             }
           ],
-          "id": "codex:019a0000-0000-7000-8000-000000000001@1081",
+          "id": "codex:019a0000-0000-7000-8000-000000000001~user-009f44c21c3b0559-0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "codex:019a0000-0000-7000-8000-000000000001",
@@ -330,6 +333,7 @@
       },
       {
         "end": 1630,
+        "id_kind": "content",
         "message": {
           "at": "2026-03-01T10:00:07Z",
           "blocks": [
@@ -339,7 +343,7 @@
               "signature": "gAAAA"
             }
           ],
-          "id": "codex:019a0000-0000-7000-8000-000000000001@1419",
+          "id": "codex:019a0000-0000-7000-8000-000000000001~assistant-bcb9ad2f9163a078-0",
           "model": "gpt-6.1-sol",
           "production": {
             "effort": "medium",
@@ -354,6 +358,7 @@
       },
       {
         "end": 1852,
+        "id_kind": "content",
         "message": {
           "at": "2026-03-01T10:00:08Z",
           "blocks": [
@@ -369,7 +374,7 @@
               "type": "tool_call"
             }
           ],
-          "id": "codex:019a0000-0000-7000-8000-000000000001@1631",
+          "id": "codex:019a0000-0000-7000-8000-000000000001~assistant-e626bfa3827e1e0d-0",
           "model": "gpt-6.1-sol",
           "production": {
             "effort": "medium",
@@ -384,6 +389,7 @@
       },
       {
         "end": 3039,
+        "id_kind": "content",
         "message": {
           "at": "2026-03-01T10:00:11Z",
           "blocks": [
@@ -401,7 +407,7 @@
               "reported_duration_ms": 3250
             }
           ],
-          "id": "codex:019a0000-0000-7000-8000-000000000001@2752",
+          "id": "codex:019a0000-0000-7000-8000-000000000001~user-a99ea9f86b73b91a-0",
           "prompt_kind": "harness",
           "role": "user",
           "session": "codex:019a0000-0000-7000-8000-000000000001",
@@ -412,6 +418,7 @@
       },
       {
         "end": 3432,
+        "id_kind": "content",
         "message": {
           "at": "2026-03-01T10:00:13Z",
           "blocks": [
@@ -420,7 +427,7 @@
               "type": "text"
             }
           ],
-          "id": "codex:019a0000-0000-7000-8000-000000000001@3212",
+          "id": "codex:019a0000-0000-7000-8000-000000000001~assistant-52b2ccb18ee4c929-0",
           "model": "gpt-6.1-sol",
           "production": {
             "effort": "medium",

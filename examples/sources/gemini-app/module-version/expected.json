@@ -16,6 +16,7 @@
     "messages": [
       {
         "end": 279,
+        "id_kind": "content",
         "message": {
           "at": "2026-07-27T20:59:30Z",
           "blocks": [
@@ -24,7 +25,7 @@
               "type": "text"
             }
           ],
-          "id": "gemini-app:synthetic#1785185970000-prompt",
+          "id": "gemini-app:synthetic~user-d3c5438f24e29172-0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "gemini-app:synthetic",
@@ -38,6 +39,7 @@
       },
       {
         "end": 279,
+        "id_kind": "content",
         "message": {
           "at": "2026-07-27T20:59:30Z",
           "blocks": [
@@ -46,8 +48,8 @@
               "type": "text"
             }
           ],
-          "id": "gemini-app:synthetic#1785185970000-response",
-          "parent": "gemini-app:synthetic#1785185970000-prompt",
+          "id": "gemini-app:synthetic~assistant-031309dac5edae23-0",
+          "parent": "gemini-app:synthetic~user-d3c5438f24e29172-0",
           "role": "assistant",
           "session": "gemini-app:synthetic",
           "at_quality": "intrinsic",

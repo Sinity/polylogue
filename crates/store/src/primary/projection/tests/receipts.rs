@@ -130,6 +130,7 @@ fn source(input: &str, message: &Message, ordinal: usize, position: i64) -> Vec<
             Product::Message {
                 reading: reading.clone(),
                 facts: Box::new(MessageRow {
+                    id_kind: polylogue_model::IdKind::Native,
                     offset: 0,
                     end: 2,
                     message: subset,
@@ -311,6 +312,7 @@ fn sealed_export_callbacks_rebuild_from_confirmed_facts_without_recounting_or_re
                 .sessions
                 .push(Session::new(message.session.clone(), SessionKind::Main));
             output.messages.push(MessageRow {
+                id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
                 end: 2,
                 message: message.clone(),

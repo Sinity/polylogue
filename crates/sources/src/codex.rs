@@ -16,7 +16,7 @@
 //! and their parent session, and the rest is accounted as copied.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 pub mod database;
 mod fields;
@@ -31,7 +31,7 @@ use crate::time;
 use crate::{RecordOutcome, Records};
 use items::{Completed, str_field};
 use polylogue_model::{
-    Block, Event, Json, Link, LinkKind, Message, MessageId, NativeId, Origin, Production,
+    Block, Event, IdKind, Json, Link, LinkKind, Message, MessageId, NativeId, Origin, Production,
     PromptKind, QuotaLimit, QuotaReading, QuotaWindow, Role, Session, SessionId, SessionKind,
     TitleSource, ToolAction, ToolOutcome, Usage,
 };
@@ -217,6 +217,9 @@ pub struct ParserState {
     /// adjacent records; the second of the pair is the same prompt.
     #[serde(default)]
     prompt: Option<Prompt>,
+    /// Names the items that carry no `id`.
+    #[serde(default)]
+    ids: crate::content_ids::ContentIds,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -488,16 +491,20 @@ impl Rollout {
                 }
             }
         };
-        let native = str_field(item, "id")
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("{}@{}", session.native(), record.offset));
-        let Some(id) = message_id(&native) else {
-            return RecordOutcome::unreadable("item ID is empty");
-        };
         let Some((role, prompt_kind, blocks)) =
             self.item_blocks(parser_state, &session, ty, item, at, out)
         else {
             return RecordOutcome::skipped("item with no content");
+        };
+        let (id, id_kind) = match str_field(item, "id") {
+            Some(native) => (message_id(native), IdKind::Native),
+            None => (
+                parser_state.ids.next(&session, role, &blocks),
+                IdKind::Content,
+            ),
+        };
+        let Some(id) = id else {
+            return RecordOutcome::unreadable("item ID is empty");
         };
         let message = {
             let (at, time_evidence) = crate::time::parts(at);
@@ -531,6 +538,7 @@ impl Rollout {
             }
         };
         let row = MessageRow {
+            id_kind,
             offset: record.offset,
             end: record.offset + record.bytes.len() as u64,
             message,
@@ -818,6 +826,7 @@ impl Rollout {
                 };
                 let duration = items::completed(item).and_then(|c| c.duration_ms);
                 out.messages.push(MessageRow {
+                    id_kind: polylogue_model::IdKind::Native,
                     offset: record.offset,
                     end: record.offset + record.bytes.len() as u64,
                     message: {

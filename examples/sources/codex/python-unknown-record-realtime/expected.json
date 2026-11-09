@@ -63,6 +63,7 @@
     "messages": [
       {
         "end": 381,
+        "id_kind": "content",
         "message": {
           "at": "2026-09-01T10:00:01Z",
           "blocks": [
@@ -71,7 +72,7 @@
               "type": "text"
             }
           ],
-          "id": "codex:unknown-context-session@183",
+          "id": "codex:unknown-context-session~user-0da3f2ab3b2c84fc-0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "codex:unknown-context-session",
@@ -82,6 +83,7 @@
       },
       {
         "end": 640,
+        "id_kind": "content",
         "message": {
           "at": "2026-09-01T10:00:02Z",
           "blocks": [
@@ -99,7 +101,7 @@
               "type": "tool_call"
             }
           ],
-          "id": "codex:unknown-context-session@382",
+          "id": "codex:unknown-context-session~assistant-5f56c99e763696b8-0",
           "production": {
             "response_boundary_unknown": true
           },
@@ -112,6 +114,7 @@
       },
       {
         "end": 1128,
+        "id_kind": "content",
         "message": {
           "at": "2026-09-01T10:00:05.1Z",
           "blocks": [
@@ -124,7 +127,7 @@
               "type": "tool_result"
             }
           ],
-          "id": "codex:unknown-context-session@918",
+          "id": "codex:unknown-context-session~user-3977bdb28a8458a5-0",
           "prompt_kind": "harness",
           "role": "user",
           "session": "codex:unknown-context-session",
@@ -135,6 +138,7 @@
       },
       {
         "end": 1729,
+        "id_kind": "content",
         "message": {
           "at": "2026-09-01T10:00:10Z",
           "blocks": [
@@ -143,7 +147,7 @@
               "type": "text"
             }
           ],
-          "id": "codex:unknown-context-session@1536",
+          "id": "codex:unknown-context-session~assistant-081e8b0c38dba20d-0",
           "production": {
             "response_boundary_unknown": true
           },

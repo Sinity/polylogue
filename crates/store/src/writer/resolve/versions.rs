@@ -2,6 +2,7 @@
 //! merge compatible block observations before source selection; values stay shared by hash.
 use super::*;
 use crate::encoding::{PreparedDocument, PreparedMessage};
+use polylogue_model::IdKind;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct MessageChoice {
@@ -41,6 +42,9 @@ pub(crate) struct Choices {
     pub keep_documents: Vec<bool>,
     pub events: BTreeMap<i64, Option<EventChoice>>,
     pub links: BTreeMap<i64, Option<LinkChoice>>,
+    /// Older-chain rows of content-identified messages that the input's
+    /// latest chain, read to its end, no longer holds: (message, input, chain).
+    pub dropped_message_sources: Vec<(i64, i64, i64)>,
     pub event_values: Vec<PackedValue>,
     pub event_ids: Vec<String>,
     pub event_sources: Vec<(i64, EventChoice)>,
@@ -69,6 +73,8 @@ struct Source {
     position: i64,
     hash: Vec<u8>,
     time: Option<Timestamp>,
+    /// The message is named by its content, not by the source.
+    content: bool,
 }
 type MessagePriority<'a> = (
     std::cmp::Reverse<bool>,
@@ -165,6 +171,66 @@ fn known_message(
     }
 }
 
+/// A stored message's sources and its shown version: the row at the
+/// message's own input and chain.
+fn load_message(
+    index: &Connection,
+    pk: i64,
+    layouts: &mut BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+) -> Result<(Vec<Source>, Option<ShownMessage>)> {
+    let shown = index
+        .query_row(
+            "SELECT s.version_hash,m.session_pk,p.layout FROM message m
+             JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
+             LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE m.pk=?1",
+            [pk],
+            |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<Vec<u8>>>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let mut statement = index.prepare_cached(
+        "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.complete,s.arrival_rank,s.seq,s.record_position,s.version_hash,s.id_kind,p.layout
+         FROM message_source s JOIN input_ref i ON i.pk=s.input_pk
+         LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE message_pk=?1",
+    )?;
+    let rows = statement
+        .query_map([pk], |r| {
+            Ok((
+                Source {
+                    input: r.get(0)?,
+                    id: r.get(1)?,
+                    chain: r.get(2)?,
+                    start: r.get(3)?,
+                    end: r.get(4)?,
+                    session: r.get(5)?,
+                    main: r.get(6)?,
+                    complete: r.get(7)?,
+                    rank: r.get(8)?,
+                    seq: r.get(9)?,
+                    position: r.get(10)?,
+                    hash: r.get(11)?,
+                    time: None,
+                    content: r.get::<_, String>(12)? == IdKind::Content.as_str(),
+                },
+                r.get::<_, Option<Vec<u8>>>(13)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let sources = rows
+        .into_iter()
+        .map(|(source, layout)| {
+            layouts.insert(source.hash.clone(), layout);
+            source
+        })
+        .collect();
+    Ok((sources, shown))
+}
+
 pub(in crate::writer) struct Projection<'a> {
     resolver: &'a Resolver,
     index: &'a Connection,
@@ -210,70 +276,44 @@ impl<'a> Projection<'a> {
                 }
                 continue;
             }
-            let sql = if message {
-                "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.complete,s.arrival_rank,s.seq,s.record_position,s.version_hash,NULL,p.layout FROM message_source s JOIN input_ref i ON i.pk=s.input_pk LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE message_pk=?1"
-            } else {
-                "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,0,0,1,s.arrival_rank,0,0,s.version_hash,s.time FROM document_source s JOIN input_ref i ON i.pk=s.input_pk WHERE document_pk=?1"
-            };
             if message {
-                shown_messages.insert(row.pk,index.query_row("SELECT s.version_hash,m.session_pk,p.layout FROM message_source s JOIN message m ON m.pk=s.message_pk LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE s.message_pk=?1 AND s.shown=1",[row.pk],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,i64>(1)?,r.get::<_,Option<Vec<u8>>>(2)?))).optional()?);
-            } else {
-                shown_documents.insert(
-                    row.pk,
-                    index
-                        .query_row(
-                            "SELECT version_hash FROM document WHERE pk=?1",
-                            [row.pk],
-                            |r| r.get::<_, Vec<u8>>(0),
-                        )
-                        .optional()?,
-                );
+                let (sources, shown) = load_message(index, row.pk, &mut message_layouts)?;
+                shown_messages.insert(row.pk, shown);
+                messages.insert(row.pk, sources);
+                continue;
             }
+            shown_documents.insert(
+                row.pk,
+                index
+                    .query_row(
+                        "SELECT version_hash FROM document WHERE pk=?1",
+                        [row.pk],
+                        |r| r.get::<_, Vec<u8>>(0),
+                    )
+                    .optional()?,
+            );
             let values = index
-                .prepare(sql)?
+                .prepare("SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,s.arrival_rank,s.version_hash,s.time FROM document_source s JOIN input_ref i ON i.pk=s.input_pk WHERE document_pk=?1")?
                 .query_map([row.pk], |r| {
-                    Ok((
-                        Source {
-                            input: r.get(0)?,
-                            id: r.get(1)?,
-                            chain: r.get(2)?,
-                            start: r.get(3)?,
-                            end: r.get(4)?,
-                            session: r.get(5)?,
-                            main: r.get(6)?,
-                            complete: r.get(7)?,
-                            rank: r.get(8)?,
-                            seq: r.get(9)?,
-                            position: r.get(10)?,
-                            hash: r.get(11)?,
-                            time: if message {
-                                None
-                            } else {
-                                crate::encoding::read_time(r, 12)?.0
-                            },
-                        },
-                        if message {
-                            r.get::<_, Option<Vec<u8>>>(13)?
-                        } else {
-                            None
-                        },
-                    ))
+                    Ok(Source {
+                        input: r.get(0)?,
+                        id: r.get(1)?,
+                        chain: r.get(2)?,
+                        start: r.get(3)?,
+                        end: r.get(4)?,
+                        session: 0,
+                        main: false,
+                        complete: true,
+                        rank: r.get(5)?,
+                        seq: 0,
+                        position: 0,
+                        hash: r.get(6)?,
+                        time: crate::encoding::read_time(r, 7)?.0,
+                        content: false,
+                    })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            let values = values
-                .into_iter()
-                .map(|(source, layout)| {
-                    if message {
-                        message_layouts.insert(source.hash.clone(), layout);
-                    }
-                    source
-                })
-                .collect();
-            if message {
-                messages.insert(row.pk, values);
-            } else {
-                documents.insert(row.pk, values);
-            }
+            documents.insert(row.pk, values);
         }
         let assertions = Assertions::load(index, keys)?;
         Ok(Self {
@@ -505,6 +545,7 @@ impl<'a> Projection<'a> {
                 position,
                 hash: prepared.hash.to_vec(),
                 time: None,
+                content: row.id_kind == IdKind::Content,
             };
             if let Some(n) = previous {
                 sources[n] = source;
@@ -548,6 +589,7 @@ impl<'a> Projection<'a> {
                 position: 0,
                 hash: prepared.hash.to_vec(),
                 time,
+                content: false,
             };
             if let Some(n) = previous {
                 sources[n] = source;
@@ -560,17 +602,79 @@ impl<'a> Projection<'a> {
                 (row.document.clone(), prepared.clone()),
             );
         }
+        // Once an input's latest chain is read to its end, a message named by
+        // its content that the chain no longer holds is gone from that input:
+        // the rewrite deleted or edited it, and an edit has a new ID.
+        if matches!(step.progress, polylogue_model::batch::StepProgress::AtEnd) {
+            // A rebuild may read a newer chain before an older one; the
+            // input's latest chain is whichever is newest so far.
+            let stored_latest: Option<i64> = index
+                .prepare_cached("SELECT max(chain) FROM message_source WHERE input_pk=?1")?
+                .query_row([input], |r| r.get(0))?;
+            let latest = messages
+                .values()
+                .flatten()
+                .filter(|s| s.input == input)
+                .map(|s| s.chain)
+                .chain(stored_latest)
+                .chain([chain])
+                .max()
+                .unwrap_or(chain);
+            let mut stale = index
+                .prepare_cached(
+                    "SELECT DISTINCT message_pk FROM message_source
+                     WHERE input_pk=?1 AND chain<?2 AND id_kind='content'",
+                )?
+                .query_map(params![input, latest], |r| r.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<BTreeSet<i64>>>()?;
+            stale.extend(
+                messages
+                    .iter()
+                    .filter(|(_, sources)| {
+                        sources
+                            .iter()
+                            .any(|s| s.content && s.input == input && s.chain < latest)
+                    })
+                    .map(|(pk, _)| *pk),
+            );
+            for pk in stale {
+                let sources = match messages.entry(pk) {
+                    std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        let (sources, shown) = load_message(index, pk, message_layouts)?;
+                        shown_messages.insert(pk, shown);
+                        entry.insert(sources)
+                    }
+                };
+                if sources
+                    .iter()
+                    .any(|s| s.input == input && s.chain == latest)
+                {
+                    continue;
+                }
+                sources.retain(|s| {
+                    let gone = s.content && s.input == input && s.chain < latest;
+                    if gone {
+                        choices.dropped_message_sources.push((pk, s.input, s.chain));
+                        touched_messages.insert(pk);
+                    }
+                    !gone
+                });
+            }
+        }
         for (&pk, sources) in messages
             .iter()
             .filter(|(pk, _)| touched_messages.contains(pk))
         {
+            // Each input's newest chain among the message's sources.
+            let mut latest = BTreeMap::<i64, i64>::new();
+            for source in sources {
+                let newest = latest.entry(source.input).or_insert(source.chain);
+                *newest = (*newest).max(source.chain);
+            }
             let current: Vec<_> = sources
                 .iter()
-                .filter(|s| {
-                    !sources
-                        .iter()
-                        .any(|n| n.input == s.input && n.chain > s.chain)
-                })
+                .filter(|s| latest.get(&s.input) == Some(&s.chain))
                 .collect();
             let winner = current
                 .iter()

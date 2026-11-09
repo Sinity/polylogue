@@ -354,6 +354,7 @@ fn model_span(
         };
         let offset = sink.position();
         sink.out.messages.push(MessageRow {
+            id_kind: polylogue_model::IdKind::Native,
             offset,
             end: offset + 1,
             message,

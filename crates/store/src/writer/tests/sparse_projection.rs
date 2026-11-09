@@ -364,7 +364,7 @@ fn sparse_native_union_keeps_the_later_required_byte_admission() {
         .conn()
         .unwrap()
         .query_row(
-            "SELECT i.id FROM message_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.shown=1",
+            "SELECT i.id FROM message_source s JOIN input_ref i ON i.pk=s.input_pk JOIN message m ON m.pk=s.message_pk WHERE s.input_pk=m.input_pk AND s.chain=m.source_chain",
             [],
             |row| row.get(0),
         )

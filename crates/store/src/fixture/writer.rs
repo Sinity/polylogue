@@ -200,6 +200,7 @@ impl WriterArchive {
             .into_iter()
             .enumerate()
             .map(|(i, message)| MessageRow {
+                id_kind: polylogue_model::IdKind::Native,
                 offset: start + i as u64,
                 end: start + i as u64 + 1,
                 message,

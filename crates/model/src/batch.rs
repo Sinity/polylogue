@@ -179,7 +179,35 @@ pub struct FragmentRow {
 pub struct MessageRow {
     pub offset: u64,
     pub end: u64,
+    /// Whether the message's ID came from the source or from its content.
+    #[serde(default, skip_serializing_if = "IdKind::is_native")]
+    pub id_kind: IdKind,
     pub message: Message,
+}
+
+/// Where a message's ID came from. A content ID names a message by what it
+/// says (`content_ids` in the sources crate), so a rewritten input that no
+/// longer holds the message no longer shows it; a native ID stays shown from
+/// the older chain that held it.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum IdKind {
+    #[default]
+    Native,
+    Content,
+}
+
+stored_names!(IdKind {
+    Native => "native",
+    Content => "content",
+});
+
+impl IdKind {
+    pub fn is_native(&self) -> bool {
+        *self == Self::Native
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

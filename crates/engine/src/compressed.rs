@@ -5,13 +5,15 @@ use crate::*;
 use polylogue_store::staging::{PreparedBatch, PreparedBytes};
 use std::io::{BufRead, BufReader, Read, Seek};
 
+/// A file named by the session ID it states rather than by its place: a
+/// Codex rollout, plain or compressed. Codex's other files are locations.
 pub(crate) fn is_rollout(found: &collect::Found) -> bool {
-    found.origin.name == "codex-compressed"
-        || found.origin.name == "codex"
-            && matches!(
+    found.origin.input_identity == polylogue_sources::InputIdentity::ProviderId
+        && (found.origin.name == "codex-compressed"
+            || matches!(
                 polylogue_sources::codex::File::from_path(&found.path),
                 Some(polylogue_sources::codex::File::Rollout { .. })
-            )
+            ))
 }
 
 fn decoded(source: &std::fs::File, compressed: bool) -> std::io::Result<Box<dyn BufRead>> {
@@ -136,25 +138,29 @@ impl Engine {
         }
         let mut source = std::fs::File::open(path)?;
         let observed = crate::acquisition::file_snapshot(&source.metadata()?)?;
+        // A rollout is named by its session ID, which its first record
+        // states. Until that record is complete there is nothing to name the
+        // input by, so nothing is stored; the file is read again when it grows.
+        let Some(native) = polylogue_sources::codex::rollout_id(decoded(&source, compressed)?)?
+        else {
+            return Ok(None);
+        };
+        let id = format!("codex:rollout:{native}");
         let raw = if compressed {
+            // Reading the session ID moved the shared file offset.
+            source.rewind()?;
             Some(self.archive.prepare_bytes(&mut source)?)
         } else {
             None
         };
-        let native = polylogue_sources::codex::rollout_id(decoded(&source, compressed)?)?;
-        let native_id = native.map(|native| format!("codex:rollout:{native}"));
         let reader = self.reads.reader()?;
-        let mut previous = native_id
-            .as_ref()
-            .map(|id| reader.input_progress(id))
-            .transpose()?
-            .flatten();
+        let previous = reader.input_progress(&id)?;
         let mut stream = decoded(&source, compressed)?;
         let mut same = false;
         let mut appended = false;
         let mut historical = None;
-        if !has_pending && let (Some(id), Some(previous)) = (&native_id, &previous) {
-            let chain = reader.stored_chain(id, previous.chain, previous.length)?;
+        if !has_pending && let Some(previous) = &previous {
+            let chain = reader.stored_chain(&id, previous.chain, previous.length)?;
             let mut stored = chain.reader(Arc::clone(&self.blobs));
             let mut left = [0; 65536];
             let mut right = [0; 65536];
@@ -181,7 +187,7 @@ impl Engine {
                 same = stream.fill_buf()?.is_empty();
                 appended = !same;
             } else {
-                historical = recorded_copy(&reader, &self.blobs, id, &source, compressed)?;
+                historical = recorded_copy(&reader, &self.blobs, &id, &source, compressed)?;
                 stream = decoded(&source, compressed)?;
             }
         }
@@ -195,21 +201,6 @@ impl Engine {
                     stream
                 })?,
         );
-        let id = if let Some(id) = native_id {
-            id
-        } else {
-            prepared
-                .as_ref()
-                .expect("unidentified bytes prepared")
-                .hash()
-                .to_string()
-        };
-        if previous.is_none() {
-            previous = reader.input_progress(&id)?;
-            if previous.is_some() && !has_pending {
-                same = true;
-            }
-        }
         drop(reader);
         if FileFacts::of(&source.metadata()?) != facts
             || std::fs::metadata(path).map(|m| FileFacts::of(&m))? != facts

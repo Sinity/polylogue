@@ -1,6 +1,6 @@
 //! Aider's role-prefixed LLM log and its companion Markdown. Request
 //! snapshots repeat the sent context; equal prefixes are the same messages.
-use crate::document::{Sink, message_id, session_id};
+use crate::document::{Sink, session_id};
 use crate::export::{ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};
 use crate::parse::{DocumentParser, MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
@@ -10,7 +10,7 @@ use polylogue_model::{
 };
 use std::path::Path;
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 pub const ORIGIN: &str = "aider";
 pub const HISTORY: &str = ".aider.llm.history";
 pub const COMPANION: &str = ".aider.chat.history.md";
@@ -37,7 +37,7 @@ enum LogRole {
 pub struct History {
     native: Option<String>,
     context: Vec<(LogRole, String)>,
-    next: u64,
+    ids: crate::content_ids::ContentIds,
     last: Option<polylogue_model::MessageId>,
 }
 
@@ -104,6 +104,7 @@ impl ExportParser for History {
             .map_or((body, None), |(request, response)| {
                 (request, Some(response))
             });
+        let first = self.native.is_none();
         let native = self
             .native
             .get_or_insert_with(|| {
@@ -114,7 +115,7 @@ impl ExportParser for History {
             })
             .clone();
         let sid = session_id(ORIGIN, &native).ok_or("unusable Aider history identity")?;
-        if self.next == 0 {
+        if first {
             sink.out
                 .sessions
                 .push(Session::new(sid.clone(), SessionKind::Main));
@@ -152,9 +153,6 @@ impl History {
         logged_at: &str,
         sink: &mut Sink<'_>,
     ) -> Result<(), String> {
-        let id = message_id(ORIGIN, &format!("{}#{}", sid.native(), self.next))
-            .ok_or("unusable Aider message identity")?;
-        self.next += 1;
         let (role, prompt_kind, blocks) = match role {
             LogRole::Tool => (
                 Role::User,
@@ -180,8 +178,13 @@ impl History {
                 vec![Block::Text { text }],
             ),
         };
+        let id = self
+            .ids
+            .next(sid, role, &blocks)
+            .ok_or("unusable Aider message identity")?;
         let offset = sink.position();
         sink.out.messages.push(MessageRow {
+            id_kind: polylogue_model::IdKind::Content,
             offset,
             end: offset + 1,
             message: {

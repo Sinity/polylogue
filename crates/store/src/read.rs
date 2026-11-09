@@ -837,7 +837,7 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let id = crate::parser_context::canonical_message(conn, id)?;
         let hash = conn.query_row(
-            "SELECT s.version_hash FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.shown=1
+            "SELECT s.version_hash FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
              WHERE m.id=?1",
             [id.to_string()], |row| row.get::<_, Option<Vec<u8>>>(0),
         ).optional()?;
@@ -859,7 +859,7 @@ impl Reader<'_> {
         let admission = conn
             .query_row(
                 "SELECT p.admitted,i.id,s.chain,s.source_end FROM message m
-             JOIN message_source s ON s.message_pk=m.pk AND s.shown=1
+             JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
              JOIN input_ref i ON i.pk=s.input_pk
              LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE m.id=?1",
                 [id.to_string()],
@@ -986,7 +986,7 @@ impl Reader<'_> {
             CASE WHEN projection.layout IS NULL THEN
                 (SELECT count(*) FROM block WHERE message_pk=m.pk) ELSE 0 END,
             projection.admitted, source_input.id, shown.chain, shown.source_end";
-        const SOURCE: &str = "FROM message m LEFT JOIN message_source shown ON shown.message_pk=m.pk AND shown.shown=1
+        const SOURCE: &str = "FROM message m LEFT JOIN message_source shown ON shown.message_pk=m.pk AND shown.input_pk=m.input_pk AND shown.chain=m.source_chain
             LEFT JOIN message_projection projection ON projection.version_hash=shown.version_hash
             LEFT JOIN input_ref source_input ON source_input.pk=shown.input_pk";
         const ORDER: &str = "ORDER BY m.order_input_id, m.seq, m.record_position, m.id";

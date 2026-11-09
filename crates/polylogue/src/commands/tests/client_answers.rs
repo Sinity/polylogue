@@ -197,14 +197,9 @@ fn http_answer(
 
 // The socket peer is this actual fixture process; HTTP has the trusted Web
 // channel. Expectations come from those boundaries, never from an answer.
-fn socket_authorship(w: &test_daemon::TestDaemon) -> Authorship {
+fn socket_authorship() -> Authorship {
     let (_client, server) = std::os::unix::net::UnixStream::pair().unwrap();
-    let (evidence, via) = crate::protocol::caller::peer(
-        &server,
-        &Default::default(),
-        w.daemon.config.requests.machine(),
-    )
-    .unwrap();
+    let (evidence, via) = crate::protocol::caller::peer(&server, &Default::default()).unwrap();
     assert_eq!(via, Channel::Cli);
     polylogue_model::authorship::compute_authorship(via, &evidence, None)
 }
@@ -303,7 +298,7 @@ fn every_client_answers_the_same_request_identically() {
         token: "t0ken".into(),
         port: 8765,
     });
-    let socket_author = socket_authorship(&w);
+    let socket_author = socket_authorship();
     let web_author =
         polylogue_model::authorship::compute_authorship(Channel::Web, &Default::default(), None);
     for (index, (name, args)) in ASKED.iter().enumerate() {

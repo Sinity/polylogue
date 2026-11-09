@@ -20,6 +20,7 @@ fn output() -> Output {
     Output {
         sessions: vec![Session::new(message.session.clone(), SessionKind::Main)],
         messages: vec![MessageRow {
+            id_kind: polylogue_model::IdKind::Native,
             offset: 0,
             end: 0,
             message,

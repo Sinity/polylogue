@@ -404,7 +404,7 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
 }
 
 #[test]
-fn ai_studio_import_and_drive_title_read_identically_after_a_rebuild_from_stored_bytes() {
+fn ai_studio_drive_prompt_and_title_read_identically_after_a_rebuild_from_stored_bytes() {
     use polylogue_model::read::{ItemKind, ReadHeader, ReadItem, ReadPage, ValueState};
 
     fn reading(env: &crate::Fixture) -> (ReadHeader, Vec<ReadItem>) {
@@ -497,16 +497,15 @@ fn ai_studio_import_and_drive_title_read_identically_after_a_rebuild_from_stored
     let listing = dir.join("files.json");
     let listing_bytes = serde_json::to_vec(&serde_json::json!({"files":[{"id":"drive-id","name":"Electrons","createdTime":"2026-05-17T12:00:00Z"}]})).unwrap();
     std::fs::write(&listing, &listing_bytes).unwrap();
-    let prompt = w.dir.path().join("drive-id.json");
+    // The collector names a prompt's file by its Drive file ID, which joins
+    // it to the listing's title; an imported copy is named by its content.
+    let prompt = dir.join("drive-id.json");
     let prompt_bytes = serde_json::to_vec(&serde_json::json!({
         "chunkedPrompt":{"chunks":[{"role":"user","text":"What is an electron?"},{"role":"model","text":"A lepton.","tokenCount":3}]},
         "runSettings":{"model":"models/example"},"systemInstruction":{"text":"Be brief."}
     })).unwrap();
     std::fs::write(&prompt, &prompt_bytes).unwrap();
     let daemon = start_daemon(&env);
-    wait_status(&env, |s| s["store"]["sessions"].as_u64() == Some(1));
-    let imported = cli(&env, &["--json", "import", prompt.to_str().unwrap()]);
-    assert!(imported.status.success(), "{imported:?}");
     wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(3));
     let before = reading(&env);
     assert_eq!(before.0.title, ValueState::known("Electrons".to_owned()));
@@ -527,10 +526,12 @@ fn ai_studio_import_and_drive_title_read_identically_after_a_rebuild_from_stored
             _ => None,
         })
         .collect();
+    // Chunks without IDs are named by content: the first 16 hex digits of
+    // BLAKE3("polylogue-message-content", 0, ["user",{"role":"user",...}]).
     let expected_ids = [
         "ai-studio:8:drive-id#system:0:",
-        "ai-studio:8:drive-id#position:1:0",
-        "ai-studio:8:drive-id#position:1:1",
+        "ai-studio:drive-id~user-db51419c0768f7f8-0",
+        "ai-studio:drive-id~assistant-f18fd0cdf2acb700-0",
     ];
     assert_eq!(
         headers

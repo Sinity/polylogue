@@ -54,8 +54,8 @@ pub use variant::{
 };
 
 pub use batch::{
-    BackgroundUpdate, CountMismatch, DocumentRow, ExtractedBlob, MessageRow, OrderKey, Output,
-    RecordCounts, RecordOutcome, RepoLookup, WireShape,
+    BackgroundUpdate, CountMismatch, DocumentRow, ExtractedBlob, IdKind, MessageRow, OrderKey,
+    Output, RecordCounts, RecordOutcome, RepoLookup, WireShape,
 };
 pub use block::{
     Attachment, AttachmentDirection, Block, BlockKind, CallOutcome, ErrorReason, ToolAction,

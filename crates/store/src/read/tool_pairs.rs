@@ -222,7 +222,7 @@ impl Reader<'_> {
                     shown.version_hash,projection.layout,(SELECT count(*) FROM block WHERE message_pk=m.pk)
              FROM message m JOIN session s ON s.pk=m.session_pk
              JOIN block b ON b.message_pk=m.pk AND b.session_pk=m.session_pk
-             LEFT JOIN message_source shown ON shown.message_pk=m.pk AND shown.shown=1
+             LEFT JOIN message_source shown ON shown.message_pk=m.pk AND shown.input_pk=m.input_pk AND shown.chain=m.source_chain
              LEFT JOIN message_projection projection ON projection.version_hash=shown.version_hash
              WHERE m.id=?1 AND m.duplicate_of IS NULL AND coalesce(b.ordinal,cast(b.idx AS TEXT))=?2",
         )?;
@@ -251,12 +251,12 @@ impl Reader<'_> {
              JOIN block cb ON cb.pk=t.call_block_pk AND cb.session_pk=t.session_pk AND cb.kind='tool_call'
              JOIN message cm ON cm.pk=cb.message_pk AND cm.session_pk=t.session_pk
              JOIN session cs ON cs.pk=cm.session_pk
-             LEFT JOIN message_source shown ON shown.message_pk=cm.pk AND shown.shown=1
+             LEFT JOIN message_source shown ON shown.message_pk=cm.pk AND shown.input_pk=cm.input_pk AND shown.chain=cm.source_chain
              LEFT JOIN message_projection projection ON projection.version_hash=shown.version_hash
              LEFT JOIN block rb ON rb.pk=t.result_block_pk
              LEFT JOIN message rm ON rm.pk=rb.message_pk
              LEFT JOIN session rs ON rs.pk=rm.session_pk
-             LEFT JOIN message_source rshown ON rshown.message_pk=rm.pk AND rshown.shown=1
+             LEFT JOIN message_source rshown ON rshown.message_pk=rm.pk AND rshown.input_pk=rm.input_pk AND rshown.chain=rm.source_chain
              LEFT JOIN message_projection rprojection ON rprojection.version_hash=rshown.version_hash
              WHERE (t.call_block_pk=?1 OR t.result_block_pk=?1) AND cm.duplicate_of IS NULL AND t.call_id IS cb.call_id",
         )?;

@@ -733,3 +733,35 @@ fn synthetic_notices_do_not_join_real_response_fragments_even_without_a_model() 
         );
     }
 }
+
+#[test]
+fn claude_hook_summary_id_survives_rewrite() {
+    let summary = || {
+        let mut native = hook_summary(
+            "unused",
+            json!({"hookErrors": ["synthetic hook failed"], "hookCount": 1}),
+        );
+        native.as_object_mut().unwrap().remove("uuid");
+        native
+    };
+    let hook_id = |records: &[Value]| -> String {
+        let parsed = run(records);
+        let rows = parsed["output"]["messages"].as_array().unwrap().clone();
+        let hook = rows
+            .iter()
+            .find(|row| row["message"]["role"] == "system")
+            .unwrap();
+        assert_eq!(hook["id_kind"], "content");
+        hook["message"]["id"].as_str().unwrap().to_owned()
+    };
+    let before = hook_id(&[assistant("a1", text("first"), json!({})), summary()]);
+    // The rewritten file has another record before the summary, so the
+    // summary sits at another byte offset.
+    let after = hook_id(&[
+        assistant("a0", text("an earlier record"), json!({})),
+        assistant("a1", text("first"), json!({})),
+        summary(),
+    ]);
+    assert_eq!(before, after);
+    assert!(before.starts_with("claude-code:s1~system-"), "{before}");
+}
