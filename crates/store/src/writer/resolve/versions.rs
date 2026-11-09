@@ -606,12 +606,26 @@ impl<'a> Projection<'a> {
         // its content that the chain no longer holds is gone from that input:
         // the rewrite deleted or edited it, and an edit has a new ID.
         if matches!(step.progress, polylogue_model::batch::StepProgress::AtEnd) {
+            // A rebuild may read a newer chain before an older one; the
+            // input's latest chain is whichever is newest so far.
+            let stored_latest: Option<i64> = index
+                .prepare_cached("SELECT max(chain) FROM message_source WHERE input_pk=?1")?
+                .query_row([input], |r| r.get(0))?;
+            let latest = messages
+                .values()
+                .flatten()
+                .filter(|s| s.input == input)
+                .map(|s| s.chain)
+                .chain(stored_latest)
+                .chain([chain])
+                .max()
+                .unwrap_or(chain);
             let mut stale = index
                 .prepare_cached(
                     "SELECT DISTINCT message_pk FROM message_source
                      WHERE input_pk=?1 AND chain<?2 AND id_kind='content'",
                 )?
-                .query_map(params![input, chain], |r| r.get::<_, i64>(0))?
+                .query_map(params![input, latest], |r| r.get::<_, i64>(0))?
                 .collect::<rusqlite::Result<BTreeSet<i64>>>()?;
             stale.extend(
                 messages
@@ -619,7 +633,7 @@ impl<'a> Projection<'a> {
                     .filter(|(_, sources)| {
                         sources
                             .iter()
-                            .any(|s| s.content && s.input == input && s.chain < chain)
+                            .any(|s| s.content && s.input == input && s.chain < latest)
                     })
                     .map(|(pk, _)| *pk),
             );
@@ -632,11 +646,14 @@ impl<'a> Projection<'a> {
                         entry.insert(sources)
                     }
                 };
-                if sources.iter().any(|s| s.input == input && s.chain == chain) {
+                if sources
+                    .iter()
+                    .any(|s| s.input == input && s.chain == latest)
+                {
                     continue;
                 }
                 sources.retain(|s| {
-                    let gone = s.content && s.input == input && s.chain < chain;
+                    let gone = s.content && s.input == input && s.chain < latest;
                     if gone {
                         choices.dropped_message_sources.push((pk, s.input, s.chain));
                         touched_messages.insert(pk);

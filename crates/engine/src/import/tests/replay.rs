@@ -290,9 +290,12 @@ fn ai_studio_chunks_read_and_rebuild_from_stored_inputs_without_empty_sessions()
     let imported = e.import(&[path.clone(), empty.clone()]).unwrap();
     assert!(imported.pass.errors.is_empty(), "{imported:?}");
     let before = read(&w);
+    // An imported prompt is named by its first chunk, never by its file
+    // name: BLAKE3 of "polylogue-ai-studio-first-chunk", a zero byte and
+    // {"id":"ask","role":"user","text":"question"}.
     assert_eq!(
         before["sessions"],
-        serde_json::json!([{"id":"ai-studio:Chat"}])
+        serde_json::json!([{"id":"ai-studio:content-c58928695e9edda481843ae08d4ef183"}])
     );
     let messages = before["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 4);

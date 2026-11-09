@@ -147,6 +147,8 @@ impl Engine {
         };
         let id = format!("codex:rollout:{native}");
         let raw = if compressed {
+            // Reading the session ID moved the shared file offset.
+            source.rewind()?;
             Some(self.archive.prepare_bytes(&mut source)?)
         } else {
             None
