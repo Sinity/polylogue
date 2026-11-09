@@ -45,21 +45,24 @@ fn resume_uses_launch_directory_not_last_used() {
         assert!(pass.errors.is_empty(), "{pass:?}");
         let reads = home.reads();
         let reader = reads.reader().unwrap();
-        assert_eq!(
-            reader
-                .session(&session)
-                .unwrap()
-                .unwrap()
-                .cwd
-                .last()
-                .map(String::as_str),
-            Some("/home/op/launch/crates/sub"),
-            "the last directory used is still recorded"
-        );
+        let last = reader
+            .session(&session)
+            .unwrap()
+            .unwrap()
+            .cwd
+            .last()
+            .cloned();
         let plan = plan(&reader, &session).unwrap();
-        plan.harness_command.unwrap().cwd
+        (plan.harness_command.unwrap().cwd, last)
     };
-    assert_eq!(directory(&home).as_deref(), Some("/home/op/launch"));
+    // The last directory used stays recorded; resume uses the launch one.
+    assert_eq!(
+        directory(&home),
+        (
+            Some("/home/op/launch".to_owned()),
+            Some("/home/op/launch/crates/sub".to_owned())
+        )
+    );
     // A relocation by the tool moves where the session resumes.
     home.append(
         "s1.jsonl",
@@ -71,5 +74,11 @@ fn resume_uses_launch_directory_not_last_used() {
             record("u3", "/home/op/moved/crates/sub")
         ),
     );
-    assert_eq!(directory(&home).as_deref(), Some("/home/op/moved"));
+    assert_eq!(
+        directory(&home),
+        (
+            Some("/home/op/moved".to_owned()),
+            Some("/home/op/moved/crates/sub".to_owned())
+        )
+    );
 }

@@ -16,8 +16,8 @@
     "772aeaf490963ed1d9ba12440682a9730f823105dc2a36129b8433e3fe71cd64"
   ],
   "browser-capture": [
-    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::browser_capture::VERSION=1,crate::chatgpt::VERSION=1,crate::claude_ai::VERSION=1,crate::codex_cloud::VERSION=1,crate::grok::VERSION=1",
-    "5414692f1e06711391c21bd25c1c4e397c28c6384e6610c0bf0f6bac8262219b"
+    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::browser_capture::VERSION=2,crate::chatgpt::VERSION=1,crate::claude_ai::VERSION=1,crate::codex_cloud::VERSION=1,crate::grok::VERSION=1",
+    "d6a335042dd5569ab1604d86b368d2054783694dff33ba646846e832c3ab1d07"
   ],
   "chatgpt": [
     "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::chatgpt::VERSION=1,crate::export::VERSION=2",

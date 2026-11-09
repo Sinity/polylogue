@@ -22,7 +22,6 @@
       "session.model": 1,
       "session.provider_meta.capture_fidelity": 1,
       "session.provider_session_id": 1,
-      "session.session_kind": 1,
       "session.title": 1,
       "session.turns[].ordinal": 2,
       "session.turns[].provider_turn_id": 2,

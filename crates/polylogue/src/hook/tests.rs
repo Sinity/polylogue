@@ -525,7 +525,8 @@ fn newer_events_are_registered_only_for_a_confirmed_version() {
     let downgraded = merge_hooks(new.clone(), Harness::ClaudeCode, Some(&older), true).unwrap();
     assert_eq!(newer(&downgraded), 0);
     let removed = merge_hooks(new, Harness::ClaudeCode, None, false).unwrap();
-    assert!(removed["hooks"].as_object().unwrap().is_empty());
+    // A `hooks` object only Polylogue's commands filled goes with them.
+    assert_eq!(removed, json!({}));
 }
 
 /// Pings and notices are claimed only after a tool result or at a prompt,
