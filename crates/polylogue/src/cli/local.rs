@@ -77,16 +77,12 @@ pub fn mcp(_: &Command, _: &Values, startup: &crate::config::Startup, _: bool) -
     }
 }
 
-pub fn hook(_: &Command, v: &Values, startup: &crate::config::Startup, json: bool) -> ExitCode {
+pub fn hook(_: &Command, v: &Values, startup: &crate::config::Startup, _: bool) -> ExitCode {
     let name = v.text("harness").unwrap_or_else(|| "claude-code".into());
     let Some(harness) = crate::hook::Harness::parse(&name) else {
-        return fail(
-            startup.output,
-            json,
-            "bad_request",
-            &format!("unknown harness {name:?}"),
-            2,
-        );
+        // A non-zero exit would block the harness's tool call.
+        eprintln!("polylogue hook: unknown harness {name:?}");
+        return ExitCode::SUCCESS;
     };
     crate::hook::run(harness, &v.text("event").unwrap_or_default(), startup)
 }
@@ -165,13 +161,9 @@ pub fn hooks_uninstall(
 fn hooks(v: &Values, startup: &crate::config::Startup, json: bool, on: bool) -> ExitCode {
     let name = v.text("harness").unwrap_or_else(|| "claude-code".into());
     let Some(harness) = crate::hook::Harness::parse(&name) else {
-        return fail(
-            startup.output,
-            json,
-            "bad_request",
-            &format!("unknown harness {name:?}"),
-            2,
-        );
+        // A non-zero exit would block the harness's tool call.
+        eprintln!("polylogue hook: unknown harness {name:?}");
+        return ExitCode::SUCCESS;
     };
     let path = match v.text("settings") {
         Some(path) => std::path::PathBuf::from(path),

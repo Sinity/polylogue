@@ -70,6 +70,30 @@ impl<'a> Compiler<'a> {
                     conjuncts.extend(all);
                 }
                 let all = conjuncts;
+                // `last` beside other session conditions is the newest session
+                // that also meets them.
+                if scope.unit == Unit::Sessions
+                    && all.len() > 1
+                    && let Some(at) = all.iter().position(|x| newest_word(x))
+                {
+                    let rest = Condition {
+                        span: c.span,
+                        kind: ConditionKind::And {
+                            conditions: all
+                                .iter()
+                                .enumerate()
+                                .filter(|(i, _)| *i != at)
+                                .map(|(_, x)| (*x).clone())
+                                .collect(),
+                        },
+                    };
+                    let inner = RowContext {
+                        unit: Unit::Sessions,
+                        a: self.fresh(),
+                    };
+                    let within = self.cond(&rest, &inner, false)?;
+                    return Ok(self.newest_session(&scope.a.s, &inner.a, Some(within)));
+                }
                 let combine_bounds = native_bounds.is_some()
                     && all
                         .iter()
@@ -361,11 +385,10 @@ impl<'a> Compiler<'a> {
     ) -> Result<String, QueryError> {
         let s = self.session_alias(scope, span)?;
         Ok(match word {
-            "last" | "latest" => format!(
-                "{s}.pk = (SELECT pk FROM session WHERE kind = '{main}' AND stub = 0 \
-                 ORDER BY last_activity_at IS NULL, last_activity_at DESC, pk DESC LIMIT 1)",
-                main = polylogue_model::SessionKind::Main.as_str()
-            ),
+            "last" | "latest" => {
+                let inner = self.fresh();
+                self.newest_session(&s, &inner, None)
+            }
             "self" => {
                 let Some(me) = self.opts.self_session.clone() else {
                     return Err(QueryError::Invalid {
@@ -379,6 +402,30 @@ impl<'a> Compiler<'a> {
             }
             id => self.session_reference(&format!("{s}.native_id"), "native_id", id),
         })
+    }
+
+    /// `{outer}.pk` is the most recently active main session read through
+    /// `inner` that meets `within`, never the calling session: an agent
+    /// asking for the last session means the one before its own.
+    fn newest_session(&mut self, outer: &str, inner: &Aliases, within: Option<String>) -> String {
+        let n = &inner.s;
+        let mut conditions = vec![
+            format!(
+                "{n}.kind = '{}'",
+                polylogue_model::SessionKind::Main.as_str()
+            ),
+            format!("{n}.stub = 0"),
+        ];
+        if let Some(me) = self.opts.self_session.clone() {
+            conditions.push(format!("{n}.id <> {}", self.text_param(&me)));
+        }
+        conditions.extend(within);
+        format!(
+            "{outer}.pk = (SELECT {n}.pk FROM {} WHERE {} \
+             ORDER BY {n}.last_activity_at IS NULL, {n}.last_activity_at DESC, {n}.pk DESC LIMIT 1)",
+            base_from(Unit::Sessions, inner),
+            conditions.join(" AND ")
+        )
     }
 
     /// The one session whose `column` is `id`, or else starts with it: the
@@ -1088,5 +1135,17 @@ pub(super) fn unknown_field(text: &str, field: &str, unit: Unit, span: Span) -> 
         position: span.start,
         similar,
         suggestion,
+    }
+}
+
+/// `last` or `latest`: the newest session, resolved inside the query.
+fn newest_word(condition: &Condition) -> bool {
+    match &condition.kind {
+        ConditionKind::Reference { reference } => matches!(reference.as_str(), "last" | "latest"),
+        ConditionKind::Text {
+            text,
+            mode: TextMode::Word,
+        } => matches!(text.as_str(), "last" | "latest"),
+        _ => false,
     }
 }

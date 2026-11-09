@@ -334,7 +334,7 @@ pub enum PreparedInput {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedWrite {
     pub identity: String,
     pub pending: bool,

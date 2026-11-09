@@ -140,7 +140,7 @@ impl RawRange {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureMode {
     Immutable,
@@ -149,7 +149,7 @@ pub enum CaptureMode {
 
 /// Immutable packages deduplicate content intent. Mutable identity binds the
 /// intent to its ordered durable predecessors under the SDK's custody lock.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CapturePlan {
     pub intent: String,
@@ -221,7 +221,7 @@ pub struct SourceSnapshot {
 }
 
 /// Durable acquisition preparation is distinct from committed source semantics.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum CaptureReceipt {
     Accepted { write: super::PreparedWrite },

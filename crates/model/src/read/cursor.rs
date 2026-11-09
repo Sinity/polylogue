@@ -53,7 +53,7 @@ impl EntryKey {
 }
 
 /// The rewrite version a cursor saw for one session of its composition.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionVersion {
     pub session: SessionId,
@@ -63,7 +63,7 @@ pub struct SessionVersion {
 }
 
 /// Where the next page starts.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PagePosition {
     /// A place in a composed session reading. `inside` continues an entry
@@ -88,7 +88,7 @@ pub enum PagePosition {
 
 /// Everything a continuation needs, sealed by the daemon with the index
 /// generation's key so a caller cannot forge a position.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PageCursor {
     /// The reference or query text as the caller gave it.
@@ -213,7 +213,7 @@ impl ReadFraming {
 }
 
 /// Which way a page goes from its cursor's place.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadDirection {
     /// Resume at the place.

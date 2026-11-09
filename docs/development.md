@@ -43,8 +43,8 @@ characters in the Home Manager profile command path.
 The development shell installs the check tools and points Git at `.githooks`
 when no other hooks path is configured; it builds no VM. The commit hook checks
 staged whitespace and formats staged Rust files, including partial staging and
-renames; the push hook checks formatting and crate boundaries for changed Rust
-files. The shell also carries coverage and fuzzing tools, LLVM tools matching
+renames. There is no push hook: crate boundaries run in `cargo xtask check`,
+which GitHub Actions runs for every pull request. The shell also carries coverage and fuzzing tools, LLVM tools matching
 the compiler, SQLite, jq and the time zone database.
 
 `direnv allow` loads the same shell through `.envrc`, which reloads when the

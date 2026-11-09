@@ -53,10 +53,17 @@ pub const EXIT_DAEMON_REQUIRED: u8 = 6;
 pub const EXIT_SCHEMA_REFUSED: u8 = 78;
 
 fn main() -> ExitCode {
+    // A harness treats a non-zero hook exit as a refusal of its tool call, so
+    // a hook that cannot start says why on stderr and exits 0.
+    let hook = hook_invocation(&std::env::args_os().collect::<Vec<_>>());
     let process = match config::ProcessInputs::capture() {
         Ok(process) => process,
         Err(error) => {
-            return startup_error(error, config::OutputConfig::new(false, false, true, None));
+            return startup_error(
+                hook,
+                error,
+                config::OutputConfig::new(false, false, true, None),
+            );
         }
     };
     let arguments = std::env::args_os().collect::<Vec<_>>();
@@ -117,6 +124,9 @@ fn main() -> ExitCode {
         Ok(matches) => matches,
         Err(error) => {
             client_pipe_signal();
+            if hook {
+                return hook_startup_error(error);
+            }
             return cli::parse_error(error, process.output);
         }
     };
@@ -135,7 +145,7 @@ fn main() -> ExitCode {
     {
         let archive = match config::archive_location(&process, &overrides) {
             Ok(archive) => archive,
-            Err(error) => return startup_error(error, process.output),
+            Err(error) => return startup_error(hook, error, process.output),
         };
         let text = arguments
             .iter()
@@ -145,15 +155,16 @@ fn main() -> ExitCode {
             matches = match row_numbers::rewrite_args(text, &archive) {
                 Ok(arguments) => match cli::command().try_get_matches_from(arguments) {
                     Ok(matches) => matches,
+                    Err(error) if hook => return hook_startup_error(error),
                     Err(error) => return cli::parse_error(error, process.output),
                 },
-                Err(error) => return startup_error(error, process.output),
+                Err(error) => return startup_error(hook, error, process.output),
             };
         }
     }
     let mut startup = match config::Startup::load(&process, overrides) {
         Ok(startup) => startup,
-        Err(error) => return startup_error(error, process.output),
+        Err(error) => return startup_error(hook, error, process.output),
     };
     protocol::caller::initialize(&process.environment, startup.config.requests.machine());
     if native {
@@ -163,12 +174,12 @@ fn main() -> ExitCode {
         );
     }
     let Some(cwd) = process.cwd.as_deref() else {
-        return startup_error("the working directory is unavailable", process.output);
+        return startup_error(hook, "the working directory is unavailable", process.output);
     };
     if cli::needs_engine(&matches, &startup.mode) {
         startup.stopped_attempt = match executable_attempt() {
             Ok(attempt) => Some(attempt),
-            Err(error) => return startup_error(error, process.output),
+            Err(error) => return startup_error(hook, error, process.output),
         };
     }
     cli::run(&matches, &startup, cwd)
@@ -224,12 +235,53 @@ fn client_pipe_signal() {
     }
 }
 
-fn startup_error(error: impl std::fmt::Display, output: config::OutputConfig) -> ExitCode {
+fn startup_error(
+    hook: bool,
+    error: impl std::fmt::Display,
+    output: config::OutputConfig,
+) -> ExitCode {
+    if hook {
+        return hook_startup_error(error);
+    }
     eprint!(
         "{}",
         cli::print::diagnostic("", &error.to_string(), None, output.stderr_color())
     );
     ExitCode::from(2)
+}
+
+fn hook_startup_error(error: impl std::fmt::Display) -> ExitCode {
+    let text = error.to_string();
+    let line = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    eprintln!("polylogue hook: {}", line.trim_start_matches("error: "));
+    ExitCode::SUCCESS
+}
+
+/// Whether the command line names the `hook` command: its first word that is
+/// neither a global option nor that option's value.
+fn hook_invocation(arguments: &[std::ffi::OsString]) -> bool {
+    const VALUED: [&str; 8] = [
+        "--deadline",
+        "--timeout",
+        "--archive",
+        "--config",
+        "--listen",
+        "--auth-token-file",
+        "--request",
+        "--request-id",
+    ];
+    let mut words = arguments.iter().skip(1).filter_map(|word| word.to_str());
+    while let Some(word) = words.next() {
+        if VALUED.contains(&word) {
+            words.next();
+        } else if !word.starts_with('-') {
+            return word == "hook";
+        }
+    }
+    false
 }
 
 /// Completion resolves deployment flags without parsing unfinished query words.

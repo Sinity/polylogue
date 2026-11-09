@@ -42,8 +42,6 @@ memchr = "2"
 zstd = "0.13"
 jiff = { version = "0.2", default-features = false, features = ["std", "serde", "tz-system", "tzdb-zoneinfo", "tzdb-bundle-always"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "functions", "blob", "hooks"] }
-pest = "2.8"
-pest_derive = "2.8"
 clap = { version = "4.6", features = ["string"] }
 clap_complete = { version = "4.6", features = ["unstable-dynamic"] }
 notify = "8.2"
@@ -51,7 +49,7 @@ libc = "0.2"
 rustix = { version = "1", features = ["fs", "net", "process", "event"] }
 proptest = "1"
 tempfile = "3"
-base64 = "0.22"
+base64 = "0.23"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 uuid = { version = "1", features = ["v7", "v4"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "signal", "sync", "macros", "fs", "io-util"] }

@@ -19,7 +19,7 @@ pub struct Change {
     pub before: Option<Field>,
     pub after: Option<Field>,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sample {
     pub origin: String,
     pub sample: bool,
@@ -40,13 +40,13 @@ impl From<&Schema> for Sample {
         }
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableChange {
     pub table: String,
     pub before: Option<Table>,
     pub after: Option<Table>,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diff {
     pub rule_version: u32,
     pub before: Sample,

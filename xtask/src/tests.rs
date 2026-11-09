@@ -313,12 +313,16 @@ fn selections_run_through_the_real_runner_in_the_one_build() {
         "pub fn value() -> u32 { 40 + 2 }\n#[test] fn helper_test() {}\n",
     )
     .unwrap();
-    let selection = devkit::select::changed(root, "HEAD").unwrap();
-    assert_eq!(selection, Selection::Packages(vec!["helper".into()]));
-    let filter = selection.filterset().unwrap();
+    // devkit's selection reaches the store through its dependency on the
+    // changed helper, intersected with the explicit package and filterset.
     let (run, result) = execute(
-        &["-ppolylogue-store", "-E", "test(selected_read)"],
-        Some(&filter),
+        &[
+            "-ppolylogue-store",
+            "-E",
+            "test(selected_read)",
+            "--changed-base=HEAD",
+        ],
+        None,
     );
     result.unwrap();
     assert_eq!(

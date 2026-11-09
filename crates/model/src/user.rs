@@ -332,7 +332,7 @@ pub struct ChatEvent {
 }
 
 /// Where a chat action stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChatStatus {
     AwaitingApproval,
@@ -487,7 +487,7 @@ pub struct BackfillEvent {
 }
 
 /// Where a backfill job stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackfillStatus {
     /// Started and not held by an extension instance.

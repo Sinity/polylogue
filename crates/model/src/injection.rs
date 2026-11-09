@@ -42,7 +42,7 @@ pub struct InjectionEvidence {
 
 /// A producer's post-success emission claim. The invocation receipt is distinct
 /// from a native transcript reference; this does not attribute any Message.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HookContextEmission {
     pub invocation: String,

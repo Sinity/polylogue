@@ -28,7 +28,7 @@ pub struct ImportAttribution {
 }
 
 /// Locally observed ingress is distinct from claims carried by a bundle.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportHistory {
     pub observed: Vec<ImportAttribution>,
     pub declared: Vec<ImportAttribution>,
@@ -63,7 +63,7 @@ pub struct PreparedRequest {
 }
 
 /// A durable authored operation waiting for confirmation keeps its authority.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum PendingAuthored {
     Live {
