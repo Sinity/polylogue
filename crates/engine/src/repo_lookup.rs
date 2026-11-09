@@ -1,23 +1,31 @@
 //! Writing repository lookups. For each working directory the index holds that exists on this
 //! host, the nearest directory with `.git` above it supplies its `origin`
-//! remote, credentials removed, and Git supplies the root commit
-//! reached by first parents from `HEAD`. The result is a small JSON input in
-//! the lookup spool, written again only when the remote or root commit
-//! changes, so the loop stores and parses it like any input and a rebuild
-//! joins every session to the same repository.
+//! remote and its root commits, read by common's `git-identity` so Sinex and
+//! the session hook name the same repository: the remote without credentials,
+//! the roots as every root reachable from `HEAD`, sorted, shallow-clone
+//! boundaries left out. The result is a small JSON input in the lookup spool,
+//! written again only when the remote or the roots change, so the loop stores
+//! and parses it like any input and a rebuild joins every session to the same
+//! repository.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
+
+/// How long one repository may take to answer. A lookup is background
+/// enrichment, so the bound is generous; a repository that takes longer reads
+/// as unknown and is asked again on the next pass.
+const ANSWER_WITHIN: Duration = Duration::from_secs(60);
 
 /// What a repository directory says about itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Lookup {
     pub remote: Option<String>,
-    pub root_commit: Option<String>,
+    /// Sorted; empty when the history reaches no root this checkout holds.
+    pub root_commits: Vec<String>,
 }
 
 /// Repository results are reused while HEAD and the configuration files are
@@ -33,26 +41,7 @@ struct Cached {
     lookup: Lookup,
 }
 
-/// The nearest directory at or above `dir` holding `.git` (a directory, or
-/// the file a worktree has).
-pub fn repository_of(dir: &Path) -> Option<PathBuf> {
-    dir.ancestors()
-        .find(|d| d.join(".git").exists())
-        .map(Path::to_path_buf)
-}
-
-/// A remote URL without the user and password a `scheme://` URL may carry.
-/// An scp-like `git@host:path` names no secret and is kept.
-pub fn without_credentials(url: &str) -> String {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return url.to_owned();
-    };
-    let host_end = rest.find('/').unwrap_or(rest.len());
-    match rest[..host_end].rfind('@') {
-        Some(at) => format!("{scheme}://{}", &rest[at + 1..]),
-        None => url.to_owned(),
-    }
-}
+pub use git_identity::{repository_of, without_credentials};
 
 fn git(repo: &Path, args: &[&str]) -> Option<String> {
     let mut command = Command::new("git");
@@ -95,7 +84,7 @@ fn read_with(
 ) -> Lookup {
     let unavailable = Lookup {
         remote: None,
-        root_commit: None,
+        root_commits: Vec::new(),
     };
     let Some(config) = git(&["config", "--null", "--show-origin", "--name-only", "--list"]) else {
         cache.lookups.remove(repo);
@@ -116,14 +105,21 @@ fn read_with(
             }
         })
         .collect();
-    let shallow = git(&[
+    // Git names the shallow file's path in every repository it will read,
+    // whether or not the file exists, so no answer means Git refused the
+    // repository (unsafe ownership, unreadable `.git`): both fields stay
+    // unknown, as they do when the configuration cannot be listed.
+    let Some(shallow) = git(&[
         "rev-parse",
         "--path-format=absolute",
         "--git-path",
         "shallow",
     ])
-    .map(|text| PathBuf::from(text.trim()));
-    paths.extend(shallow.iter().cloned());
+    .map(|text| PathBuf::from(text.trim())) else {
+        cache.lookups.remove(repo);
+        return unavailable;
+    };
+    paths.insert(shallow);
     let files = paths
         .into_iter()
         .map(|path| {
@@ -136,26 +132,16 @@ fn read_with(
     if let Some(old) = cache.lookups.get(repo)
         && old.head == head
         && old.files == files
-        && old.lookup.root_commit.is_some()
+        && !old.lookup.root_commits.is_empty()
     {
         return old.lookup.clone();
     }
-    let remote = git(&["remote", "get-url", "origin"])
-        .map(|text| without_credentials(text.strip_suffix('\n').unwrap_or(&text)));
-    let root_commit = head.as_ref().and_then(|_| {
-        let root = git(&["rev-list", "--first-parent", "--max-parents=0", "HEAD"])?
-            .lines()
-            .next()?
-            .to_owned();
-        (!shallow
-            .as_ref()
-            .and_then(|path| fs::read_to_string(path).ok())
-            .is_some_and(|text| text.lines().any(|id| id == root)))
-        .then_some(root)
-    });
+    let deadline = Instant::now() + ANSWER_WITHIN;
+    let remote = git_identity::remote(repo, deadline).ok().flatten();
+    let root_commits = git_identity::root_commits(repo, deadline).unwrap_or_default();
     let lookup = Lookup {
         remote,
-        root_commit,
+        root_commits,
     };
     cache.lookups.insert(
         repo.to_path_buf(),
@@ -193,14 +179,14 @@ pub fn refresh(
             .ok()
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
             && old["remote"].as_str() == l.remote.as_deref()
-            && old["root_commit"].as_str() == l.root_commit.as_deref()
+            && old["root_commits"] == serde_json::json!(l.root_commits)
         {
             continue;
         }
         let doc = serde_json::json!({
             "path": path,
             "remote": l.remote,
-            "root_commit": l.root_commit,
+            "root_commits": l.root_commits,
             "read_at": read_at,
         });
         fs::create_dir_all(dir)?;

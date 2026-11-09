@@ -91,7 +91,7 @@ fn complete_callback_product_roundtrip_preserves_all_semantic_maps_and_generated
         repo_lookups: vec![RepoLookup {
             path: "/synthetic/project".into(),
             remote: None,
-            root_commit: None,
+            root_commits: Vec::new(),
         }],
         ..Default::default()
     };

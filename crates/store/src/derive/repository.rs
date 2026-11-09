@@ -1,8 +1,10 @@
 //! The repository a session belongs to, from the repo-lookup records: the
 //! lookup whose directory is the longest at or above its working directory,
 //! compared by whole path components. Its
-//! `repo_root` comes from that lookup; its `repo` too, unless a record of
-//! its own named the repository (`record_repo`).
+//! `repo_root` is the first of that lookup's sorted root commits, so a
+//! single-root repository is named by its root and a merged one by a stable
+//! member of its set; its `repo` comes from the lookup too, unless a record
+//! of its own named the repository (`record_repo`).
 
 use super::{Derivation, Version};
 use crate::Result;
@@ -11,7 +13,7 @@ use rusqlite::{OptionalExtension, Transaction, params};
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "repository",
     products: &[],
-    version: Version::Rules(1),
+    version: Version::Rules(2),
     // Reads the session's working directory and recorded repository.
     after: &["session"],
     run: |tx, pk, _| run(tx, pk),
@@ -25,7 +27,7 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     let lookup: Option<(Option<String>, Option<String>)> = match &cwd {
         Some(cwd) => tx
             .prepare_cached(
-                "SELECT remote, root_commit FROM repo_lookup
+                "SELECT remote, json_extract(root_commits, '$[0]') FROM repo_lookup
                  WHERE path = ?1 OR substr(?1, 1, length(path) + 1) = path || '/'
                  ORDER BY length(path) DESC LIMIT 1",
             )?

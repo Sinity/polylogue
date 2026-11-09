@@ -129,15 +129,18 @@ pub struct Output {
 }
 
 /// What a repository directory is, as read on this host: where its `.git`
-/// is, its `origin` remote and its first commit. Sessions whose working
+/// is, its `origin` remote and its root commits. Sessions whose working
 /// directory lies under `path` belong to it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RepoLookup {
     pub path: String,
     /// The remote's URL with any credentials removed.
     pub remote: Option<String>,
-    /// The repository's identity; `None` when it could not be read.
-    pub root_commit: Option<String>,
+    /// The repository's root commits as common's `git-identity` reads them:
+    /// every root reachable from `HEAD`, sorted, shallow-clone boundaries left
+    /// out. Empty when they could not be read.
+    #[serde(default)]
+    pub root_commits: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
