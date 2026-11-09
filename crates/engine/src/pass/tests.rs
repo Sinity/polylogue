@@ -436,6 +436,54 @@ fn open_engine(home: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
     )
 }
 
+/// An engine whose clock reads `ahead` past the real time the test files get.
+fn open_engine_ahead(
+    home: &ClaudeHome,
+    ahead: jiff::SignedDuration,
+) -> (Engine, polylogue_store::ArchiveLock) {
+    let mut config = crate::test_config();
+    config.home = home.home.clone();
+    config.tool_dirs.clear();
+    config.machine = "test-machine".into();
+    config.host = "test".into();
+    config.clock = polylogue_model::WallClock::fixed(jiff::Timestamp::now() + ahead);
+    let (archive, lock) = Archive::open_or_create(&home.root).unwrap();
+    (
+        Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap(),
+        lock,
+    )
+}
+
+#[test]
+fn only_recently_changed_inputs_keep_their_tail_and_others_reload_it_on_append() {
+    let home = ClaudeHome::new();
+    home.append("quiet.jsonl", &claude_user("one", "quiet", "first"));
+    let path = home.file("quiet.jsonl");
+
+    let (mut engine, lock) = open_engine_ahead(&home, jiff::SignedDuration::from_hours(24));
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert!(
+        engine.inputs[&path].tail.is_none(),
+        "an input unchanged for a day holds no tail in memory"
+    );
+    home.append("quiet.jsonl", &claude_user("two", "quiet", "second"));
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert_eq!(home.texts("quiet"), ["first", "second"]);
+    drop(engine);
+    drop(lock);
+
+    let live = ClaudeHome::new();
+    live.append("live.jsonl", &claude_user("one", "live", "first"));
+    let (mut engine, _lock) = open_engine_ahead(&live, jiff::SignedDuration::from_mins(1));
+    engine.run_pass().unwrap();
+    assert!(
+        engine.inputs[&live.file("live.jsonl")].tail.is_some(),
+        "an input changed a minute ago keeps its tail for the next append"
+    );
+}
+
 #[test]
 fn changed_paths_do_not_run_a_full_scan_and_a_rescan_finds_missed_files() {
     let home = ClaudeHome::new();

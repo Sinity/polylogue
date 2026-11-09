@@ -10,6 +10,7 @@ use super::{evidence, output};
 use crate::daemon::items::CachedIndex;
 use polylogue_model::{MessageId, Reference, SessionId, bundle::Record, read::*};
 use polylogue_store::Reader;
+use polylogue_store::read::limit::ReadLimit;
 use std::collections::HashSet;
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -409,6 +410,7 @@ fn children(
         let index = Arc::clone(&composed.indexes[at]);
         at += 1;
         for link in reader.child_links(&session)? {
+            still_wanted()?;
             if link.kind == "reference" {
                 continue;
             }
@@ -519,6 +521,7 @@ fn inline_spawns(
         let index = Arc::clone(&composed.indexes[at]);
         let mut spawned = Vec::new();
         for link in reader.child_links(&part.session)? {
+            still_wanted()?;
             if link.kind != "subagent" {
                 continue;
             }
@@ -542,6 +545,7 @@ fn inline_spawns(
         let mut pieces: Vec<(Part, Arc<CachedIndex>, u32, bool)> = Vec::new();
         let mut cut = part.start;
         for (entry, child, link) in spawned {
+            still_wanted()?;
             // The first level's cards come from composition; deeper levels
             // place their own.
             if level > 0 {
@@ -847,6 +851,15 @@ fn spans(places: &[Place]) -> Vec<(usize, usize, usize)> {
     spans
 }
 
+/// Stops a read whose client has gone or whose deadline has passed. SQLite
+/// steps are interrupted by the store; this covers the work between them.
+fn still_wanted() -> Result<(), Failure> {
+    if let Some(limit) = ReadLimit::current() {
+        limit.check()?;
+    }
+    Ok(())
+}
+
 /// A run of shown entries from one session, with their keys.
 struct PageEntries {
     part: usize,
@@ -896,6 +909,7 @@ pub(super) fn page(
         ..scope
     };
     let composed = compose(d, reader, &scope, options, target)?;
+    still_wanted()?;
     let read_session = reader
         .session(&scope.session)?
         .ok_or_else(|| Failure::new("not_found", format!("no session {}", scope.session)))?;
@@ -910,8 +924,11 @@ pub(super) fn page(
             ),
         ));
     }
+    still_wanted()?;
     let runs = runs(&composed, options)?;
+    still_wanted()?;
     let shown = ShownEntries::new(d, &composed, &runs, FoldProfile::of(options));
+    still_wanted()?;
     // The first shown entry at or after a key, and whether it is the key.
     let locate = |key: &EntryKey| -> Option<(usize, bool)> {
         let (part, entry) = composed
