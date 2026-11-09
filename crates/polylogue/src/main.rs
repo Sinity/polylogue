@@ -179,7 +179,7 @@ fn main() -> ExitCode {
     if cli::needs_engine(&matches, &startup.mode) {
         startup.stopped_attempt = match executable_attempt() {
             Ok(attempt) => Some(attempt),
-            Err(error) => return startup_error(error, process.output),
+            Err(error) => return startup_error(hook, error, process.output),
         };
     }
     cli::run(&matches, &startup, cwd)

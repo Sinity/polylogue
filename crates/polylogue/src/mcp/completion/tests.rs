@@ -44,9 +44,23 @@ fn completion_route_uses_full_query_cursor_and_preserves_the_suffix() {
     )
     .unwrap();
     assert!(!failed, "{direct}");
+    // The daemon may rewrite its completion catalog between the two calls;
+    // only the time the catalog was written, at the end of each value's help,
+    // may differ between the routes.
+    let without_catalog_time = |completions: &Value| -> Value {
+        let mut completions = completions.clone();
+        for completion in completions.as_array_mut().unwrap() {
+            if let Some(help) = completion["help"].as_str()
+                && let Some(at) = help.find("values as of ")
+            {
+                completion["help"] = json!(help[..at].trim_end_matches(" · "));
+            }
+        }
+        completions
+    };
     assert_eq!(
-        reply["result"]["_meta"]["polylogue/completions"],
-        direct["value"]
+        without_catalog_time(&reply["result"]["_meta"]["polylogue/completions"]),
+        without_catalog_time(&direct["value"])
     );
 }
 
