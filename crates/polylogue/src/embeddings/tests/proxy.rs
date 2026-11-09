@@ -38,15 +38,19 @@ fn recorder(wait: Duration) -> (String, std::thread::JoinHandle<bool>) {
 /// Sends one request to `target` through a client that starts with `proxy`
 /// configured, after the provider's own client settings are applied.
 fn send_through(kind: &ProviderKind, proxy: &str, target: &str) {
-    let builder = reqwest::Client::builder()
-        .proxy(reqwest::Proxy::all(proxy).unwrap())
-        .timeout(Duration::from_secs(5));
-    let client = client_for(kind, builder).build().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    let _ = runtime.block_on(client.post(format!("{target}/embeddings")).send());
+    // The client is built inside the runtime, as the provider's own request
+    // does: building it outside one panics for want of a reactor.
+    runtime.block_on(async {
+        let builder = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(proxy).unwrap())
+            .timeout(Duration::from_secs(5));
+        let client = client_for(kind, builder).build().unwrap();
+        let _ = client.post(format!("{target}/embeddings")).send().await;
+    });
 }
 
 #[test]
