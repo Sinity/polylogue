@@ -189,11 +189,31 @@ impl Engine {
             };
             report.tally("assertions", 1, &outcome, &id);
         }
+        // Annotation schemas become rubrics, dated by the newest assertion
+        // of the same store, since the predecessor recorded no time for the
+        // schemas it shipped.
+        let newest = rows.iter().map(|row| row.created_at).max();
+        for schema in db.schemas()? {
+            let row = format!("{}@{}", schema.id, schema.version);
+            let outcome = match newest {
+                None => Restored::Refused(
+                    "no time is recorded for it and its store holds no assertion to date it".into(),
+                ),
+                Some(at) => match user_db::rubric(&schema, &machine, &pass, at) {
+                    Ok(fact) => match writer.restore_assertion(fact) {
+                        Ok(outcome) => restored(&outcome),
+                        Err(error) => refusal(error)?,
+                    },
+                    Err(reason) => Restored::Refused(reason),
+                },
+            };
+            report.tally("annotation_schemas", 1, &outcome, &row);
+        }
         // Rows with no counterpart here are kept verbatim in the rows input:
-        // annotation schemas (a rubric here needs a unit query in this query
-        // language), the predecessor's query plans, result sets and receipts.
+        // the predecessor's query plans (selections run by its own analysis
+        // code, not queries of this language), result sets and receipts.
         for (table, n) in db.row_counts()? {
-            if table != "assertions" && n > 0 {
+            if !["assertions", "annotation_schemas"].contains(&table.as_str()) && n > 0 {
                 report.keep(&table, n);
             }
         }
