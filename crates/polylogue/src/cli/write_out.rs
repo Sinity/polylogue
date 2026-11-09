@@ -78,6 +78,105 @@ pub(crate) fn run(
         }
     }
 }
+/// One page as `format`, the first line bold on a colour terminal.
+fn encode_page(
+    startup: &crate::config::Startup,
+    answer: &command_surface::Answer<serde_json::Value>,
+    format: polylogue_render::Format,
+) -> Result<(Vec<u8>, Option<ReadyCall>), DeliveryError> {
+    let Some(value) = answer.value() else {
+        return Err(DeliveryError::Answer(Box::new(answer.clone())));
+    };
+    let page: ReadPage = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+    let mut encoded = Vec::new();
+    polylogue_render::encode_document(
+        &page.document,
+        format,
+        polylogue_render::EncodeOptions::default(),
+        &mut encoded,
+    )
+    .map_err(|e| e.to_string())?;
+    if format == polylogue_render::Format::Terminal {
+        let text = String::from_utf8(encoded).map_err(|e| e.to_string())?;
+        encoded = polylogue_render::terminal::bold_first_line(&text, startup.output.stdout_color())
+            .into_bytes();
+    }
+    Ok((encoded, page.document.footer.next))
+}
+
+/// Notes and degraded parts of an answer, on standard error.
+fn page_notes(
+    startup: &crate::config::Startup,
+    answer: &command_surface::Answer<serde_json::Value>,
+) {
+    for note in crate::protocol::notes(answer) {
+        eprint!(
+            "{}",
+            super::print::diagnostic("note", note, None, startup.output.stderr_color())
+        );
+    }
+}
+
+/// Not a terminal: the page on standard output, then its notes and the
+/// exact command that continues it on standard error.
+fn one_page(
+    startup: &crate::config::Startup,
+    answer: command_surface::Answer<serde_json::Value>,
+    format: polylogue_render::Format,
+) -> Result<u8, DeliveryError> {
+    let (encoded, next) = encode_page(startup, &answer, format)?;
+    io::stdout()
+        .lock()
+        .write_all(&encoded)
+        .map_err(|e| e.to_string())?;
+    page_notes(startup, &answer);
+    if let Some(next) = next {
+        eprintln!(
+            "continue: {}",
+            polylogue_render::terminal::escape(&next.cli)
+        );
+    }
+    Ok(answer.exit_code())
+}
+
+/// On a terminal: every page of the reading, following each page's `next`,
+/// written into the pager as it arrives, so the whole read is shown.
+fn through_pager(
+    archive: &Archive,
+    startup: &crate::config::Startup,
+    mut answer: command_surface::Answer<serde_json::Value>,
+    format: polylogue_render::Format,
+) -> Result<u8, DeliveryError> {
+    let mut pager = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&startup.pager)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("starting the pager `{}`: {e}", startup.pager))?;
+    let mut input = pager.stdin.take().expect("piped pager input");
+    let mut code = answer.exit_code();
+    let shown = (|| -> Result<(), DeliveryError> {
+        loop {
+            let (encoded, next) = encode_page(startup, &answer, format)?;
+            page_notes(startup, &answer);
+            // A pager closed before the end has shown what its reader wanted.
+            if input.write_all(&encoded).is_err() {
+                return Ok(());
+            }
+            let Some(next) = next else {
+                return Ok(());
+            };
+            let call: command_surface::RunnableRequest =
+                serde_json::from_value(next.http.arguments.clone()).map_err(|e| e.to_string())?;
+            answer = crate::client::call_ready(archive, &call).map_err(|e| e.to_string())?;
+            code = code.max(answer.exit_code());
+        }
+    })();
+    drop(input);
+    pager.wait().map_err(|e| e.to_string())?;
+    shown.map(|()| code)
+}
+
 fn invalid(message: impl ToString) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_string())
 }
@@ -116,30 +215,12 @@ fn deliver(
             );
             return Ok(code);
         }
-        let Some(value) = answer.value() else {
-            return Err(DeliveryError::Answer(Box::new(answer)));
-        };
-        let page: ReadPage = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
         let format = polylogue_render::Format::parse(format.name()).ok_or("unknown read format")?;
-        let mut encoded = Vec::new();
-        polylogue_render::encode_document(
-            &page.document,
-            format,
-            polylogue_render::EncodeOptions::default(),
-            &mut encoded,
-        )
-        .map_err(|e| e.to_string())?;
-        let mut stdout = io::stdout().lock();
-        if format == polylogue_render::Format::Terminal {
-            let text = String::from_utf8(encoded).map_err(|e| e.to_string())?;
-            let text =
-                polylogue_render::terminal::bold_first_line(&text, startup.output.stdout_color());
-            stdout.write_all(text.as_bytes())
+        return if startup.output.stdout_terminal {
+            through_pager(&archive, startup, answer, format)
         } else {
-            stdout.write_all(&encoded)
-        }
-        .map_err(|e| e.to_string())?;
-        return Ok(code);
+            one_page(startup, answer, format)
+        };
     }
     let target = &arguments.target;
     let format = polylogue_render::Format::parse(format.name()).ok_or("unknown read format")?;

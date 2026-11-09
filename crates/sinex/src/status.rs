@@ -12,6 +12,9 @@ pub(crate) struct Health {
     pub error: Option<String>,
     /// The last complete publication retry, independent of reads.
     pub publication_error: Option<String>,
+    /// This run's last acknowledgement on the monotonic clock, which
+    /// retirement compares with when the owner head was observed. Status
+    /// reads the spool's record instead, which survives a restart.
     pub last_ack: Option<Instant>,
     pub owner_position: Option<i64>,
     pub position_observed: Option<Instant>,
@@ -78,14 +81,7 @@ impl Sinex {
         .with_scope(applied_scope))
     }
     pub fn status(&self) -> Result<Status> {
-        let (
-            reachable,
-            error,
-            last_ack_seconds_ago,
-            owner_position,
-            owner_position_seconds_ago,
-            family,
-        ) = {
+        let (reachable, error, owner_position, owner_position_seconds_ago, family) = {
             let health = self
                 .health
                 .lock()
@@ -93,7 +89,6 @@ impl Sinex {
             (
                 health.reachable,
                 health.error(),
-                health.last_ack.map(|at| at.elapsed().as_secs_f64()),
                 health.owner_position,
                 health
                     .position_observed
@@ -105,6 +100,14 @@ impl Sinex {
             .spool
             .lock()
             .map_err(|_| crate::Error::Invalid("producer spool panicked".into()))?;
+        // From the spool, so a restart during an outage still says how long
+        // Sinex has been silent.
+        let last_ack_seconds_ago = queue.last_acknowledged()?.map(|at| {
+            std::time::SystemTime::now()
+                .duration_since(at)
+                .unwrap_or_default()
+                .as_secs_f64()
+        });
         let counts = queue.counts()?;
         let mut after = None;
         let mut refused_operations = 0;

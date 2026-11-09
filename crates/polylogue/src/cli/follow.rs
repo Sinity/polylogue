@@ -291,7 +291,13 @@ fn answer<T: serde::de::DeserializeOwned>(
     match answer.value() {
         Some(value) => serde_json::from_value(value.clone())
             .map_err(|error| ("internal".to_string(), error.to_string())),
-        None => Err(("read_failed".into(), format!("{answer:?}"))),
+        None => Err((
+            "read_failed".into(),
+            match &answer.outcome {
+                command_surface::Outcome::Error(error) => error.message.clone(),
+                _ => "the read returned no value".into(),
+            },
+        )),
     }
 }
 

@@ -258,7 +258,7 @@ impl<'a> Encoder<'a> {
                 self.line(&item.source.reference)?;
                 for assertion in &header.assertions {
                     self.line(&format!(
-                        "◆ {}: {} ({:?})",
+                        "◆ {}: {} ({})",
                         assertion.kind, assertion.value, assertion.author
                     ))?;
                 }
@@ -391,7 +391,7 @@ impl<'a> Encoder<'a> {
                 text,
                 expand,
             } => {
-                self.line(&format!("↳ {indicator:?}: {text}"))?;
+                self.line(&format!("↳ {}: {text}", indicator.as_str()))?;
                 if let Some(call) = expand {
                     self.line(&call.cli)?;
                 }
@@ -636,22 +636,51 @@ pub fn encode_document(
     }
     encoder.finish(&document.footer)
 }
+/// Archived text in Markdown: control characters shown escaped, `<`, `>`
+/// and `&` as entities so raw HTML stays text, and a line that Markdown
+/// would read as a heading (`#` after up to three spaces, or a setext
+/// underline of `=` or `-`) starts with a backslash. Other punctuation stays
+/// as written.
 pub(crate) fn markdown_escape(text: &str) -> String {
+    let text = html_entities(&terminal::escape(text));
     let mut out = String::with_capacity(text.len());
-    for c in terminal::escape(text).chars() {
-        match c {
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '&' => out.push_str("&amp;"),
-            '\\' | '`' | '*' | '_' | '{' | '}' | '[' | ']' | '(' | ')' | '#' | '+' | '-' | '.'
-            | '!' | '|' => {
-                out.push('\\');
-                out.push(c);
-            }
-            _ => out.push(c),
+    for (n, line) in text.split('\n').enumerate() {
+        if n > 0 {
+            out.push('\n');
+        }
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        let rest = &line[indent..];
+        let underline = rest.trim_end();
+        let heading = indent <= 3
+            && (rest.starts_with('#')
+                || (!underline.is_empty()
+                    && (underline.bytes().all(|b| b == b'=')
+                        || underline.bytes().all(|b| b == b'-'))));
+        if heading {
+            out.push_str(&line[..indent]);
+            out.push('\\');
+            out.push_str(rest);
+        } else {
+            out.push_str(line);
         }
     }
     out
+}
+
+fn html_entities(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// One Markdown table cell: as [`markdown_escape`] without the heading rule,
+/// with line breaks as spaces and `|` escaped so the cell stays one cell.
+pub(crate) fn markdown_cell(text: &str) -> String {
+    html_entities(&terminal::escape(text))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('|', "\\|")
 }
 pub(crate) fn fence(text: &str, language: &str) -> String {
     let text = terminal::escape(text);
@@ -667,7 +696,7 @@ pub(crate) fn fence(text: &str, language: &str) -> String {
 pub(crate) fn session_lines(session: &polylogue_model::Session) -> Vec<String> {
     vec![
         format!(
-            "{} · started {} ({:?})",
+            "{} · started {} ({})",
             session.kind.as_str(),
             session
                 .started

@@ -210,6 +210,16 @@ pub enum UnknownReason {
     RunningInBackground,
 }
 
+impl UnknownReason {
+    /// Why the outcome is unknown, in words for readers.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::StatusFieldUnreadable => "status field unreadable",
+            Self::RunningInBackground => "running in the background",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Attachment {
     #[serde(default, skip_serializing_if = "Option::is_none")]

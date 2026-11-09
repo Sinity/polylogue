@@ -216,7 +216,7 @@ fn markdown(
     if cells.is_empty() {
         return Ok(());
     }
-    let esc = crate::encode::markdown_escape;
+    let esc = crate::encode::markdown_cell;
     let with_snippet = rows.iter().any(|r| r["snippet"].is_object());
     let mut head: Vec<String> = columns.iter().map(|c| esc(c)).collect();
     if with_snippet {

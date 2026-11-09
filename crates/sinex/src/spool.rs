@@ -272,6 +272,9 @@ struct Receipt {
 
 /// Only pending operations live here. Ordered and capture-membership indexes
 /// are rebuildable from operation directories, never source progress.
+/// The file whose modification time records the last acknowledgement.
+const ACKNOWLEDGED: &str = "last-acknowledged";
+
 pub(crate) struct Spool {
     root: PathBuf,
     first: Cell<u64>,
@@ -1116,7 +1119,21 @@ impl Spool {
         sync(&directory)?;
         boundary("ack_published");
         self.retirement_dirty.set(true);
+        // The marker's modification time is when Sinex last acknowledged a
+        // write; it outlives a restart and the operations retirement removes.
+        // A crash may leave it at an earlier acknowledgement, never a later one.
+        fs::write(self.root.join(ACKNOWLEDGED), &acknowledgment.frame)?;
         Ok(())
+    }
+
+    /// When Sinex last acknowledged a write this spool sent, as recorded by
+    /// the acknowledgement marker; `None` before the first acknowledgement.
+    pub fn last_acknowledged(&self) -> Result<Option<std::time::SystemTime>> {
+        match fs::metadata(self.root.join(ACKNOWLEDGED)) {
+            Ok(metadata) => Ok(Some(metadata.modified()?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Conflict evidence retains the owner's prior receipt without acknowledging

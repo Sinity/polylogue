@@ -1626,3 +1626,33 @@ fn an_operation_whose_events_the_index_lacks_is_not_retired() {
         .unwrap();
     assert!(spool.get("lost-in-stream").unwrap().is_none());
 }
+
+#[test]
+fn last_acknowledgement_time_read_from_spool_after_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let before = std::time::SystemTime::now() - std::time::Duration::from_secs(1);
+    {
+        let spool = Spool::open(directory.path(), "host").unwrap();
+        assert_eq!(spool.last_acknowledged().unwrap(), None);
+        spool.prepare(events("acknowledged", "value")).unwrap();
+        spool
+            .acknowledge(ack("acknowledged", false, Some(3)))
+            .unwrap();
+    }
+    // A new process, after the operation has retired, still knows when
+    // Sinex last answered.
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    spool
+        .retire(
+            &crate::tests::applied(10),
+            &crate::tests::every_event_applied,
+        )
+        .unwrap();
+    assert!(spool.get("acknowledged").unwrap().is_none());
+    let at = spool
+        .last_acknowledged()
+        .unwrap()
+        .expect("a recorded acknowledgement");
+    assert!(at >= before, "{at:?}");
+    assert!(at <= std::time::SystemTime::now());
+}

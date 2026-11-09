@@ -82,6 +82,8 @@ A halt survives a restart and clears only when what it depends on changes: a new
 - Totals come from counters the writer keeps in the transaction of the rows they count, never from a recount.
 - An unmeasured figure is never shown as zero or healthy; a ratio with a zero denominator is `not_measured`.
 
+**Exit code.** `status`, with or without `--line` or `--json`, exits with its answer's code: 0 for a current answer, the degraded code when the answer is degraded (an index behind or a figure not measured), as every other command does ([interfaces.md](interfaces.md#exit-codes)).
+
 **Edge cases.** A fresh archive is `healthy`, with zero counts and the locations watched. An archive whose files cannot be opened is `unknown`. With the daemon down, the CLI prints one line naming the service to start and exits 6. A starting daemon makes the client wait within its deadline and say so. Status over HTTP and MCP carries no local paths in errors.
 
 ## Operation commands

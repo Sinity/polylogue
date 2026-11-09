@@ -528,7 +528,7 @@ pub fn status_output(
         } else {
             print!("{}", print::json(data, startup.output.stdout_color()));
         }
-        return ExitCode::SUCCESS;
+        return ExitCode::from(answer.exit_code());
     }
     let running: crate::protocol::status::Running =
         match serde_json::from_value(data["running"].clone()) {
@@ -543,7 +543,7 @@ pub fn status_output(
     } else {
         println!("{line}");
     }
-    ExitCode::SUCCESS
+    ExitCode::from(answer.exit_code())
 }
 
 /// `continue --exec`: replaces this process with the session's native

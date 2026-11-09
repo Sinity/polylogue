@@ -325,6 +325,8 @@ pub struct Startup {
     pub mode: crate::daemon::service::ArchiveMode,
     pub clock: WallClock,
     pub output: OutputConfig,
+    /// The pager a terminal read is shown through: `$PAGER`, else `less -R`.
+    pub pager: String,
     pub hook: crate::hook::Inputs,
     pub(crate) lifecycle: crate::daemon::lifecycle::Inputs,
 }
@@ -625,6 +627,12 @@ impl Startup {
             mode,
             clock: process.clock.clone(),
             output: process.output,
+            pager: process
+                .environment
+                .text("PAGER")?
+                .filter(|pager| !pager.trim().is_empty())
+                .unwrap_or("less -R")
+                .to_owned(),
             lifecycle: crate::daemon::lifecycle::Inputs::from_environment(
                 &process.environment,
                 std::process::id(),
@@ -700,6 +708,7 @@ impl Startup {
             engine,
             mode: crate::daemon::service::ArchiveMode::Standalone,
             output: OutputConfig::new(false, false, true, None),
+            pager: "cat".into(),
             lifecycle: crate::daemon::lifecycle::Inputs::from_environment(
                 &EnvSnapshot::from_values([]),
                 0,
