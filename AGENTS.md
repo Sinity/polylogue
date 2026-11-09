@@ -104,10 +104,10 @@ Put personal settings (`CARGO_TARGET_DIR`, job counts) in a git-ignored
 
 | Command | Does |
 |---|---|
-| `cargo xtask check [--base <ref>]` | formatting, crate boundaries, both Clippy configurations, and the tests the changes since the merge base with `<ref>` (default `origin/master`) can affect; every test when nothing changed or a change reaches the whole workspace |
+| `cargo xtask check [--changed-base <ref>]` | formatting, crate boundaries, both Clippy configurations and every test, or only the tests the changes since the merge base with `<ref>` can affect |
 | `cargo xtask fast` | formatting, boundaries and clippy, without tests |
 | `cargo xtask test -p <crate> -E 'test(<name>)'` | the selected tests under nextest |
-| `cargo xtask test --changed` | tests selected through changed packages and their dependents |
+| `cargo xtask test --changed` | tests selected through changed packages and their dependents (`--changed-base=<ref>` for another base than `origin/master`) |
 | `cargo xtask test --no-run` | build every test binary without running tests |
 | `cargo xtask warm` | build every test binary and both Clippy configurations without running tests: the warm target new checkouts copy |
 | `cargo xtask scenarios` | end-to-end tests of the real daemon, CLI and MCP server |
@@ -134,7 +134,8 @@ Designed and not built yet: `cargo xtask compile` and `coverage`.
 Pull requests and master run `cargo xtask check` on GitHub Actions; read the
 result with `gh pr checks`. A pull request runs the tests its changes can
 affect: devkit maps each changed file to its package and selects that package
-and every package depending on it. A change to the lockfile, a manifest, the
+and every package depending on it, or only the changed tests when a change is
+confined to test functions. A change to the lockfile, a manifest, the
 toolchain, the Cargo or AgentCTL configuration or any file outside the crates
 (documentation included, which tests read) selects every test. Master runs
 every test on each push. A host may queue these same commands through its own job runner; the

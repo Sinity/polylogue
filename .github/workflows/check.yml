@@ -33,6 +33,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      # Master checks its own tree (no changes), so every test runs there.
+      # Pull requests run the tests their changes can affect; master runs all.
       - name: cargo xtask check
-        run: cargo xtask check --base ${{ github.event_name == 'pull_request' && 'HEAD^1' || 'HEAD' }}
+        run: cargo xtask check ${{ github.event_name == 'pull_request' && '--changed-base HEAD^1' || '' }}

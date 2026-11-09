@@ -313,27 +313,21 @@ fn selections_run_through_the_real_runner_in_the_one_build() {
         "pub fn value() -> u32 { 40 + 2 }\n#[test] fn helper_test() {}\n",
     )
     .unwrap();
-    let selection = devkit::select::changed(root, "HEAD").unwrap();
-    assert_eq!(selection, Selection::Packages(vec!["helper".into()]));
-    let filter = selection.filterset().unwrap();
+    // devkit's selection reaches the store through its dependency on the
+    // changed helper, intersected with the explicit package and filterset.
     let (run, result) = execute(
-        &["-ppolylogue-store", "-E", "test(selected_read)"],
-        Some(&filter),
+        &[
+            "-ppolylogue-store",
+            "-E",
+            "test(selected_read)",
+            "--changed-base=HEAD",
+        ],
+        None,
     );
     result.unwrap();
     assert_eq!(
         ran(&run),
         expected(&[("selected_ignored", "ignored"), ("selected_read", "passed")])
-    );
-}
-
-#[test]
-fn check_runs_every_test_for_an_unchanged_tree_and_the_affected_ones_otherwise() {
-    assert_eq!(check_filterset(&Selection::Nothing), None);
-    assert_eq!(check_filterset(&Selection::Workspace), None);
-    assert_eq!(
-        check_filterset(&Selection::Packages(vec!["polylogue-store".into()])),
-        Some("rdeps(=polylogue-store)".to_owned())
     );
 }
 
