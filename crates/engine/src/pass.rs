@@ -705,6 +705,61 @@ impl Engine {
         Ok(plans)
     }
 
+    /// Records that a file came back holding exactly its stored chain (after
+    /// it was gone, or under another inode): an observation, no revision.
+    fn observe_back(
+        &mut self,
+        path: &Path,
+        now: FileFacts,
+        basis: polylogue_store::primary::SourceBasis,
+    ) -> Result<Option<Plan>, EngineError> {
+        let state = &self.inputs[path];
+        let batch = polylogue_store::Batch {
+            required_disposition: None,
+            input: InputKey {
+                id: state.input_id.clone(),
+                format: state.origin.name.into(),
+                arrival_rank: state.origin.arrival.rank(),
+            },
+            change: Change::Unchanged,
+            observation: Some(self.observation(path, Some(now))),
+            continues: false,
+            new_blob: None,
+            blobs: vec![],
+            length: state.stored,
+            parse: Vec::new(),
+            acquisition: None,
+            basis: Some(basis),
+            release: Default::default(),
+        };
+        if self.archive.is_primary() {
+            let result = self
+                .writer
+                .sender()?
+                .store_group(
+                    vec![polylogue_store::staging::PreparedBatch {
+                        batch,
+                        files: Vec::new(),
+                    }],
+                    Arc::clone(&self.blobs),
+                )?
+                .pop()
+                .expect("one observation");
+            match result {
+                Ok(_) => self.refresh_confirmed_input(path)?,
+                // Observed again on the next pass, once the source is settled.
+                Err(polylogue_store::StoreError::PrimaryPending { .. }) => return Ok(None),
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            self.writer.send(batch)?;
+        }
+        let st = self.inputs.get_mut(path).expect("tracked input");
+        st.facts = Some(now);
+        st.unread = None;
+        self.stored_plan(path)
+    }
+
     /// Decides what to read for one tracked path.
     fn plan(&mut self, path: &Path, now: FileFacts) -> Result<Option<Plan>, EngineError> {
         if self.archive.is_primary() {
@@ -792,6 +847,40 @@ impl Engine {
         }
         let parsed = has_reading(st.origin);
         let mut change = polylogue_store::blobs::classify(st.facts, Some(now));
+        let mut back = false;
+        if matches!(change, Change::First | Change::Rewritten) && !source_uncertain {
+            // Another inode at the path, or the file back after it was gone:
+            // when it still begins with every stored byte, it continues its
+            // chain (observed back, or appended) instead of starting one.
+            let reader = self.reads.reader()?;
+            if let Some(progress) = reader.input_progress(&st.input_id)?
+                && progress.length > 0
+                && progress.length <= now.size
+                && read::stored_prefix_intact(
+                    path,
+                    &reader.stored_chain(&st.input_id, progress.chain, progress.length)?,
+                    &self.blobs,
+                )?
+            {
+                st.stored = progress.length;
+                st.chain = Some(progress.chain);
+                st.tail = None;
+                if progress.length == now.size {
+                    back = true;
+                    change = Change::Unchanged;
+                } else {
+                    change = Change::Appended {
+                        from: progress.length,
+                    };
+                }
+            }
+        }
+        if change == Change::Unchanged && st.facts != Some(now) && !back {
+            st.facts = Some(now);
+        }
+        if back {
+            return self.observe_back(path, now, snapshot.basis);
+        }
         if change == Change::Unchanged && st.stored < now.size {
             // Stored only in part (a stop in the middle of a large file).
             change = Change::Appended { from: st.stored };
