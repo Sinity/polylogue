@@ -48,7 +48,7 @@ impl From<&ReadSnapshot> for ReadPageSnapshot {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadBegin {
     /// Effective output choice from the original acknowledged execution.
@@ -87,7 +87,7 @@ impl ReadRecord {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadComplete {
     pub footer: ReadFooter,
@@ -96,7 +96,7 @@ pub struct ReadComplete {
 
 /// A bounded slice of a declared content-addressed blob. The receiver validates
 /// contiguous offsets, declared size and the whole content hash before use.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadBlobChunk {
     pub hash: crate::BlobHash,

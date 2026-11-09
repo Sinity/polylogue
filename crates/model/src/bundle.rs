@@ -15,7 +15,7 @@ pub const VERSION: u32 = 1;
 
 /// One reader's immutable context. Streaming batches share this snapshot;
 /// delivery computes record counts without collecting the complete selection.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadSnapshot {
     pub query: String,
@@ -106,7 +106,7 @@ pub struct FileDescriptor {
 
 /// The primary manifest-bearing file and inventory itself are not inventory
 /// members: including either would make the pinned hashes recursive.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InventoryRecord {
     pub kind: MemberKind,
@@ -115,7 +115,7 @@ pub struct InventoryRecord {
     pub file: FileDescriptor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemberKind {
     Records,

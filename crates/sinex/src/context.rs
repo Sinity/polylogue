@@ -44,7 +44,7 @@ pub enum ContextFailureKind {
     Invalid,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, thiserror::Error)]
 #[error("{reason}")]
 pub struct ContextFailure {
     pub kind: ContextFailureKind,

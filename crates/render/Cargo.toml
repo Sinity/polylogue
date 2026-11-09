@@ -18,8 +18,8 @@ jiff.workspace = true
 web-shell.workspace = true
 maud = "0.27"
 http = "1"
-base64 = "0.22"
-pulldown-cmark = "0.13"
+base64.workspace = true
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 [lints]
 workspace = true
