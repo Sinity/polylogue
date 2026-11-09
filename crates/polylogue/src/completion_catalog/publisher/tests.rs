@@ -490,3 +490,67 @@ fn late_kept_custody_refreshes_a_saved_inline_dependency_without_a_child_record(
             .any(|field| field.name == "title")
     );
 }
+
+/// A commit that changes nothing the catalog holds leaves the published file
+/// as it was; the next change is published from where the last one left off.
+#[test]
+fn a_commit_without_catalog_changes_writes_nothing() {
+    use polylogue_store::fixture::writer::{WriterArchive, prose};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("catalog");
+    let mut archive = WriterArchive::new();
+    archive.write("first", prose("first", 1, 100, "The first prompt"));
+    let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
+    let mut state = State::new(false, super::super::tests::request_metadata());
+    state
+        .refresh(&reads.reader().unwrap(), &path, "synthetic")
+        .unwrap();
+    let published = reads.reader().unwrap().change_position().unwrap();
+    // A discovery walk commits to the index and moves its position.
+    archive
+        .writer
+        .coverage(polylogue_model::capture::Coverage {
+            version: 1,
+            machine: "synthetic-machine".into(),
+            observed_at: polylogue_model::Timestamp::from_unix_ms(1_700_000_000_000).unwrap(),
+            roots: Vec::new(),
+        })
+        .unwrap();
+    let moved = reads.reader().unwrap().change_position().unwrap();
+    assert_ne!(moved, published);
+    let files = |dir: &std::path::Path| {
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (entry.file_name(), std::fs::read(entry.path()).ok())
+            })
+            .collect();
+        files.sort();
+        files
+    };
+    let before = files(directory.path());
+    state
+        .refresh(&reads.reader().unwrap(), &path, "synthetic")
+        .unwrap();
+    assert_eq!(files(directory.path()), before);
+    let cache = completion::CatalogReader::open(&path, "synthetic")
+        .unwrap()
+        .unwrap();
+    assert_eq!(cache.metadata.position, published);
+    drop(cache);
+    archive.write("second", prose("second", 1, 200, "Another prompt"));
+    state
+        .refresh(&reads.reader().unwrap(), &path, "synthetic")
+        .unwrap();
+    let cache = completion::CatalogReader::open(&path, "synthetic")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cache.metadata.position,
+        reads.reader().unwrap().change_position().unwrap()
+    );
+    for id in ["claude-code:first", "claude-code:second"] {
+        assert!(cache.session_details(id).unwrap().is_some(), "{id}");
+    }
+}
