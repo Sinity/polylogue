@@ -39,6 +39,9 @@ pub struct Job {
     pub end: u64,
     /// This range reaches the observed source end, not merely a chunk boundary.
     pub at_end: bool,
+    /// This range reaches the end of an input that will not grow (an import,
+    /// an export member), so its last line is a record without a newline.
+    pub finished: bool,
     /// The input's stored length once this job is written.
     pub length: u64,
     pub parser_state: Option<Json>,
@@ -580,7 +583,7 @@ pub(crate) fn run(
                 polylogue_store::fault::check("parse", &job.path.to_string_lossy())
                     .map_err(|e| e.to_string())?;
                 time(Stage::Parse, || {
-                    parser.steps(out.parser_state.as_ref(), &bytes, job.start, &context)
+                    parser.steps(out.parser_state.as_ref(), &bytes, job.start, job.finished, &context)
                 })
                 .map_err(|e| e.to_string())
             }))
@@ -760,7 +763,7 @@ fn rebuild_context(
         );
         read = end;
         let (steps, next) = parser
-            .steps(state.as_ref(), &pending, cursor, context)
+            .steps(state.as_ref(), &pending, cursor, false, context)
             .map_err(|e| e.to_string())?;
         let consumed = steps.last().map_or(0, |step| step.consumed) as usize;
         if consumed > pending.len() {

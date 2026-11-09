@@ -86,6 +86,7 @@ fn job(
         store_from: Some(0),
         end: size,
         at_end: true,
+        finished: false,
         length: size,
         parser_state: None,
         stopped_attempt: None,

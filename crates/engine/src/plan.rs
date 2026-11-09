@@ -154,6 +154,9 @@ pub(crate) struct Plan {
     pub(crate) replace: bool,
     /// The bytes after `parse_pos` are an incomplete last record.
     pub(crate) waiting: bool,
+    /// The input will not grow (an import, an export member): the end of its
+    /// bytes ends its last record.
+    pub(crate) input_finished: bool,
     /// Where the input's bytes come from.
     pub(crate) source: pool::Bytes,
     pub(crate) basis: Option<polylogue_store::primary::SourceBasis>,
@@ -214,6 +217,7 @@ impl Plan {
             failure_recorded: false,
             replace: false,
             waiting: false,
+            input_finished: false,
             source,
         }
     }
@@ -288,6 +292,7 @@ impl Plan {
             store_from,
             end,
             at_end: end == self.size,
+            finished: self.input_finished && end == self.size,
             length,
             parser_state: self.parser_state.take(),
             parser_chain: self.parser_chain,

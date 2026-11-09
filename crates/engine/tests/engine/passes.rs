@@ -314,6 +314,51 @@ fn importing_the_same_bytes_twice_stores_them_once() {
 }
 
 #[test]
+fn import_without_final_newline_reads_last_record() {
+    let w = ClaudeHome::new();
+    let outside = w.dir.path().join("export/s8.jsonl");
+    fs::create_dir_all(outside.parent().unwrap()).unwrap();
+    let bytes = user("x1", "s8", "first") + &assistant("x2", "s8", "last");
+    fs::write(&outside, bytes.trim_end_matches('\n')).unwrap();
+    let (mut e, _lock) = w.engine(64 << 20);
+    let report = e
+        .import_with_options(
+            std::slice::from_ref(&outside),
+            &ImportOptions {
+                format: Some("claude-code".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(report.refused.is_empty(), "{report:?}");
+    assert!(report.pass.errors.is_empty(), "{report:?}");
+    assert_eq!(w.texts("s8"), ["first", "last"]);
+    assert_eq!(
+        w.count("SELECT COUNT(*) AS n FROM parse_state WHERE status = 'done'"),
+        1
+    );
+    assert_eq!(w.count("SELECT COUNT(*) AS n FROM parse_state"), 1);
+}
+
+#[test]
+fn growing_live_file_without_newline_still_waits() {
+    let w = ClaudeHome::new();
+    let bytes = user("u1", "s1", "first") + &assistant("a1", "s1", "last");
+    w.append("s1.jsonl", bytes.trim_end_matches('\n'));
+    let (mut e, _lock) = w.engine(64 << 20);
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(w.texts("s1"), ["first"]);
+    assert_eq!(
+        w.count("SELECT COUNT(*) AS n FROM parse_state WHERE status = 'waiting'"),
+        1
+    );
+    w.append("s1.jsonl", "\n");
+    e.run_pass().unwrap();
+    assert_eq!(w.texts("s1"), ["first", "last"]);
+}
+
+#[test]
 fn importing_a_directory_imports_every_file_under_it() {
     let w = ClaudeHome::new();
     let spool = w.dir.path().join("old-spool");

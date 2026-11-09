@@ -878,6 +878,7 @@ impl Engine {
             failure_recorded: false,
             replace: false,
             waiting: false,
+            input_finished: false,
             source: pool::Bytes::File,
         }))
     }
@@ -929,20 +930,51 @@ impl Engine {
                     else {
                         continue;
                     };
-                    let path = PathBuf::from(imported.path.clone().ok_or_else(|| {
-                        std::io::Error::other(format!(
-                            "stored import {} has no recorded parser path",
-                            c.input
-                        ))
-                    })?);
-                    if origin.support == Support::Parsed && (origin.open)(&path).is_none() {
-                        return Err(std::io::Error::other(format!(
-                            "stored import {} has no parser for its recorded path",
-                            c.input
-                        ))
-                        .into());
+                    // The recorded path chooses the parser. Without one, this
+                    // input is refused with its reason and the pass goes on.
+                    let path = match imported.path.clone().map(PathBuf::from) {
+                        None => Err((
+                            PathBuf::new(),
+                            "the stored import has no recorded path".to_owned(),
+                        )),
+                        Some(path)
+                            if origin.support == Support::Parsed
+                                && (origin.open)(&path).is_none() =>
+                        {
+                            let reason = format!(
+                                "no {} parser reads the recorded path {}",
+                                origin.name,
+                                path.display()
+                            );
+                            Err((path, reason))
+                        }
+                        Some(path) => Ok(path),
+                    };
+                    match path {
+                        Ok(path) => (path, origin),
+                        Err((path, reason)) => {
+                            let mut plan = self.reparse_plan(
+                                path,
+                                origin,
+                                InputKey {
+                                    id: c.input.clone(),
+                                    format: origin.name.into(),
+                                    arrival_rank: 2,
+                                },
+                                &state,
+                                None,
+                                false,
+                            );
+                            pass.errors
+                                .push(format!("refuse stored import {}: {reason}", c.input));
+                            self.record_stop(
+                                &mut plan,
+                                polylogue_model::batch::StepProgress::Refused { reason },
+                                pass,
+                            );
+                            continue;
+                        }
                     }
-                    (path, origin)
                 }
                 None => {
                     let Some(path) = watched.get(&c.input) else {
@@ -989,6 +1021,7 @@ impl Engine {
                 facts,
                 tracked,
             );
+            plan.input_finished = c.imported.is_some();
             if c.current && origin.arrival == polylogue_sources::Arrival::Live {
                 plan.priority = Priority::Live;
             }
