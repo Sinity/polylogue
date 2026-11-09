@@ -31,7 +31,7 @@ fn producer_backup_cut_keeps_original_frames_after_live_retirement() {
     let first = spool.prepare(events("before-core-cut", "first")).unwrap();
     let receipt: Acknowledgment = serde_json::from_value(serde_json::json!({
         "number":1,"frame":first.identity,"material":null,"admitted":[],
-        "outcome":{},"refusal":null,"commit_seq":10
+        "content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":10
     }))
     .unwrap();
     spool.acknowledge(receipt.clone()).unwrap();
@@ -248,10 +248,17 @@ fn material_with(identity: &str, blob: String, length: u64) -> Ingress {
     }
 }
 
+fn counts(receipt: &mut Acknowledgment) -> &mut sinex_model::AdmissionCounts {
+    match &mut receipt.result {
+        FrameResult::Admitted { counts, .. } => counts,
+        other => panic!("not an admission: {other:?}"),
+    }
+}
+
 fn ack(identity: &str, material: bool, position: Option<i64>) -> Acknowledgment {
     serde_json::from_value(serde_json::json!({
         "number":1, "frame":identity, "material":material.then(||crate::material_id("polylogue-test", identity)),"material_extents":[],
-        "admitted":[],"outcome":{},"refusal":null,"commit_seq":position
+        "admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":position
     })).unwrap()
 }
 
@@ -808,9 +815,13 @@ fn replay_capture_group_retains_its_material_until_applied() {
         Payload::ReplaySequence { group: Some(_) }
     ));
     assert_eq!(spool.decode_frame("replacement").unwrap(), replay);
-    spool
-        .acknowledge(ack("replacement", false, Some(21)))
-        .unwrap();
+    let mut replayed = ack("replacement", false, Some(21));
+    replayed.result = FrameResult::Replayed {
+        operation: sinex_model::OperationId(uuid::Uuid::nil()),
+        admitted: vec![],
+        commit_seq: Some(21),
+    };
+    spool.acknowledge(replayed).unwrap();
     spool
         .retire(
             &crate::tests::applied(20),
@@ -1175,7 +1186,7 @@ fn receipt_body_conflict_is_terminal_evidence_and_keeps_offered_bytes_after_rest
     let prepared = spool.prepare_material(frame, bytes.as_slice()).unwrap();
     let prior_frame = material("same-frame", b"previous different provider bytes");
     let mut receipt = ack("same-frame", false, Some(9));
-    receipt.outcome = serde_json::json!({"frame_content_hash":sinex_transport::producer::content_hash(&prior_frame).unwrap()});
+    receipt.content_hash = Some(sinex_transport::producer::content_hash(&prior_frame).unwrap());
     let Err(Error::ReceiptConflict {
         frame,
         offered_hash,
@@ -1265,7 +1276,7 @@ fn a_settled_operation_refuses_a_different_outcome_through_the_spool() {
     spool
         .record_conflict("write", &prepared.frame.blob, &{
             let mut receipt = foreign.clone();
-            receipt.outcome = serde_json::json!({"frame_content_hash":"blake3:other"});
+            receipt.content_hash = Some("blake3:other".into());
             receipt
         })
         .unwrap();
@@ -1306,8 +1317,7 @@ fn complete_no_position_outcomes_preserve_receipt_and_application_identity() {
     }
     spool.prepare(repeat.clone()).unwrap();
     let mut receipt = crate::tests::no_event_receipt(&repeat);
-    receipt.outcome["repeats"] = 1.into();
-    receipt.outcome["event_types"] = serde_json::json!(["fixture.value"]);
+    counts(&mut receipt).repeats = 1;
     spool.acknowledge(receipt.clone()).unwrap();
     assert_eq!(spool.acknowledgment(repeat.frame()).unwrap(), Some(receipt));
     assert_eq!(
@@ -1347,28 +1357,26 @@ fn incomplete_or_new_admission_without_position_cannot_settle_or_retire_raw_grou
     let frame = events("no-position", "known record");
     spool.prepare_group(frame.clone(), &["raw".into()]).unwrap();
     let complete = crate::tests::no_event_receipt(&frame);
-    for field in ["admitted", "replaced"] {
+    let new_events: [fn(&mut sinex_model::AdmissionCounts); 2] =
+        [|counts| counts.admitted = 1, |counts| counts.replaced = 1];
+    for count in new_events {
         let mut receipt = complete.clone();
-        receipt.outcome[field] = 1.into();
+        count(counts(&mut receipt));
         assert!(spool.acknowledge(receipt).is_err());
     }
     let mut receipt = complete.clone();
-    receipt.outcome.as_object_mut().unwrap().remove("repeats");
+    receipt.content_hash = Some("different original bytes".into());
     assert!(spool.acknowledge(receipt).is_err());
     let mut receipt = complete.clone();
-    receipt.outcome["frame_content_hash"] = "different original bytes".into();
-    assert!(spool.acknowledge(receipt).is_err());
-    let mut receipt = complete.clone();
-    receipt.outcome["refusal_kind"] = "partial-data".into();
-    receipt.outcome["failures"] = 1.into();
-    assert!(spool.acknowledge(receipt).is_err());
-    let mut receipt = complete.clone();
-    receipt
-        .admitted
-        .push(sinex_model::EventId(uuid::Uuid::from_bytes([1; 16])));
+    if let FrameResult::Admitted { admitted, .. } = &mut receipt.result {
+        admitted.push(sinex_model::EventId(uuid::Uuid::from_bytes([1; 16])));
+    }
     assert!(spool.acknowledge(receipt).is_err());
     let mut refused = complete;
-    refused.refusal = Some("owner refused data".into());
+    refused.result = FrameResult::Refused {
+        kind: sinex_model::FrameRefusal::Content,
+        reason: "owner refused data".into(),
+    };
     spool.acknowledge(refused).unwrap();
     spool
         .retire(
@@ -1402,7 +1410,7 @@ fn new_no_position_group_at_same_completed_head_invalidates_retirement_memo() {
     let frame = events("repeat", "known record");
     spool.prepare_group(frame.clone(), &["raw".into()]).unwrap();
     let mut receipt = crate::tests::no_event_receipt(&frame);
-    receipt.outcome["repeats"] = 1.into();
+    counts(&mut receipt).repeats = 1;
     spool.acknowledge(receipt).unwrap();
     spool
         .retire(&state, &crate::tests::every_event_applied)
@@ -1421,7 +1429,7 @@ fn new_no_position_group_at_same_completed_head_invalidates_retirement_memo() {
         .prepare_group(frame.clone(), &["raw-next".into()])
         .unwrap();
     let mut receipt = crate::tests::no_event_receipt(&frame);
-    receipt.outcome["repeats"] = 1.into();
+    counts(&mut receipt).repeats = 1;
     spool.acknowledge(receipt).unwrap();
     let mut behind = state.clone();
     behind.applied_position = Some(41);
@@ -1472,8 +1480,11 @@ fn archive_only_replay_without_admitted_event_position_waits_for_completed_prefi
         .prepare_group(replay.clone(), &["raw".into()])
         .unwrap();
     let mut receipt = crate::tests::no_event_receipt(&replay);
-    receipt.outcome["replay_archived"] = 1.into();
-    receipt.outcome["dirty_keys"] = 1.into();
+    receipt.result = FrameResult::Replayed {
+        operation: sinex_model::OperationId(uuid::Uuid::nil()),
+        admitted: vec![],
+        commit_seq: None,
+    };
     spool.acknowledge(receipt.clone()).unwrap();
     let mut state = crate::tests::applied(42);
     state.head = Some(43); // lifecycle commit belongs to the stream, not the event ACK
@@ -1608,10 +1619,10 @@ fn an_operation_whose_events_the_index_lacks_is_not_retired() {
     let receipt: Acknowledgment = serde_json::from_value(serde_json::json!({
         "number":1, "frame":"lost-in-stream", "material":null, "material_extents":[],
         "admitted":["01900000-0000-7000-8000-000000000001"],
-        "outcome":{}, "refusal":null, "commit_seq":10
+        "content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(), "commit_seq":10
     }))
     .unwrap();
-    let event = receipt.admitted[0].to_string();
+    let event = receipt.admitted()[0].to_string();
     spool.acknowledge(receipt).unwrap();
 
     // The applied position passed 10, but index.db never received the event:

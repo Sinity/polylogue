@@ -26,7 +26,12 @@ sending materials or events. Each event selects its declaration by name and
 version. A refused hello or frame returns Sinex's reason. Retrying an operation
 with a durable refusal returns the same reason from its verified receipt.
 
-A complete producer acknowledgment can carry no admitted-event position: an
+Each acknowledgment is one typed result (admitted, kinds registered, replayed
+or refused), and Polylogue checks that the result fits the operation it
+answers: a kind registration is answered by its registered kinds (or, when it
+declares nothing, by an empty admission), a replay by a replay, and every
+other frame by an admission whose material is the prepared one. A complete
+producer acknowledgment can carry no admitted-event position: an
 empty frame, a repeated event or kind registration may admit no new events;
 a replay may archive readings without admitting replacements. Polylogue keeps
 that absent position in the original receipt. New admissions and replacements

@@ -106,23 +106,22 @@ impl Client {
     pub(crate) async fn fetch_material(
         &self,
         material: sinex_model::MaterialId,
-    ) -> Result<FetchMaterialReply> {
+    ) -> Result<sinex_protocol::MaterialFrame> {
         let reply: FetchMaterialReply = self
             .request(
                 self.subjects.fetch_material(&self.producer),
                 FetchMaterial { material },
             )
             .await?;
-        if let Some(reason) = &reply.refusal {
-            return Err(Error::Refused {
-                name: format!("material {material}"),
-                reason: reason.clone(),
-            });
-        }
-        let metadata = reply
-            .material
-            .as_ref()
-            .ok_or_else(|| Error::Invalid("material fetch supplied no material".into()))?;
+        let (metadata, extents) = match reply {
+            FetchMaterialReply::Refused(refusal) => {
+                return Err(Error::Refused {
+                    name: format!("material {material}"),
+                    reason: refusal.reason,
+                });
+            }
+            FetchMaterialReply::Material { material, extents } => (*material, extents),
+        };
         if metadata.id != material {
             return Err(Error::Invalid("material fetch changed its identity".into()));
         }
@@ -135,9 +134,9 @@ impl Client {
             id: material.to_string(),
             hash,
             length: metadata.length,
-            extents: reply.extents.clone(),
+            extents,
         })?;
-        Ok(reply)
+        Ok(metadata)
     }
 
     /// The event a stream reference names, or `None` when Sinex erased it
@@ -153,27 +152,26 @@ impl Client {
                 FetchEvent { event: id },
             )
             .await?;
-        if let Some(reason) = reply.refusal {
-            return Err(Error::Refused {
-                name: format!("event {id}"),
-                reason,
-            });
-        }
-        if let Some(erased) = reply.erased {
-            if reply.event.is_some()
-                || erased.event != id
-                || erased.original_commit_seq != original_position
-                || erased.commit_seq <= original_position
-            {
-                return Err(Error::Invalid(
-                    "event erasure differs from its confirmed reference".into(),
-                ));
+        let event = match reply {
+            FetchEventReply::Refused(refusal) => {
+                return Err(Error::Refused {
+                    name: format!("event {id}"),
+                    reason: refusal.reason,
+                });
             }
-            return Ok(None);
-        }
-        let event = reply
-            .event
-            .ok_or_else(|| Error::Invalid("event fetch supplied no event".into()))?;
+            FetchEventReply::Erased(erased) => {
+                if erased.event != id
+                    || erased.original_commit_seq != original_position
+                    || erased.commit_seq <= original_position
+                {
+                    return Err(Error::Invalid(
+                        "event erasure differs from its confirmed reference".into(),
+                    ));
+                }
+                return Ok(None);
+            }
+            FetchEventReply::Event(event) => *event,
+        };
         if event.id != id || !event.projection.verifies(&event.payload) {
             return Err(Error::Invalid(
                 "event fetch changed identity or projected payload hash".into(),
@@ -224,42 +222,46 @@ impl Client {
                 },
             )
             .await?;
-        if reply.refusal.is_some() || reply.gap.is_some() {
-            return Err(Error::Refused {
-                name: "confirmed consumer".into(),
-                reason: reply.refusal.or(reply.gap).unwrap_or_default(),
-            });
-        }
-        if reply.stream != self.subjects.confirmed_stream()
-            || reply.consumer.is_empty()
-            || reply.scope.is_empty()
-        {
+        let (position, stream, stream_instance, consumer, scope) = match reply {
+            ConfirmedConsumerReply::Refused { reason }
+            | ConfirmedConsumerReply::Gap { reason, .. } => {
+                return Err(Error::Refused {
+                    name: "confirmed consumer".into(),
+                    reason,
+                });
+            }
+            ConfirmedConsumerReply::Provisioned {
+                position,
+                stream,
+                stream_instance,
+                consumer,
+                scope,
+            } => (position, stream, stream_instance, consumer, scope),
+        };
+        if stream != self.subjects.confirmed_stream() || consumer.is_empty() || scope.is_empty() {
             return Err(Error::Invalid(
                 "the confirmed consumer reply has no stream, consumer or scope".into(),
             ));
         }
         if let Ok(mut health) = self.health.lock() {
-            health.owner_position = reply.position;
+            health.owner_position = Some(position);
             health.position_observed = Some(std::time::Instant::now());
-            health.owner_scope = Some(reply.scope.clone());
+            health.owner_scope = Some(scope.clone());
         }
-        if state.scope.as_deref() != Some(reply.scope.as_str()) {
+        if state.scope.as_deref() != Some(scope.as_str()) {
             self.consumer = None;
             self.consumer_cache = None;
-            return Ok(vec![control_fact(ReplayControl::Reset {
-                scope: reply.scope,
-            })]);
+            return Ok(vec![control_fact(ReplayControl::Reset { scope })]);
         }
         if !provisioned {
-            let instance = reply
-                .stream_instance
+            let instance = stream_instance
                 .filter(|instance| !instance.is_empty())
                 .ok_or_else(|| {
                     Error::Invalid("confirmed stream incarnation is unavailable".into())
                 })?;
             self.consumer = Some(
                 jetstream::new(self.client.clone())
-                    .get_consumer_from_stream(reply.consumer, reply.stream)
+                    .get_consumer_from_stream(consumer, stream)
                     .await
                     .map_err(|error| Error::Unreachable(error.to_string()))?,
             );
@@ -281,9 +283,7 @@ impl Client {
             .await
             .map_err(|error| Error::Unreachable(error.to_string()))?;
         let mut page = Vec::new();
-        if let Some(position) = reply.position {
-            page.push(control_fact(ReplayControl::Head { position }));
-        }
+        page.push(control_fact(ReplayControl::Head { position }));
         let mut last = None;
         while let Some(message) = messages.next().await {
             let message = message.map_err(|error| Error::Unreachable(error.to_string()))?;

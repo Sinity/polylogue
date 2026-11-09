@@ -129,7 +129,7 @@ impl Sinex {
             .map(|identity| queue.acknowledgment(&identity))
             .transpose()?
             .flatten()
-            .and_then(|ack| ack.refusal);
+            .and_then(|ack| ack.refusal().map(|(_, reason)| reason.to_owned()));
         Ok(Status {
             endpoint: self.config.nats.clone(),
             family,

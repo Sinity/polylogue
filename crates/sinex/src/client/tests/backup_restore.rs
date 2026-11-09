@@ -84,11 +84,19 @@ fn publish_and_project(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]
             .acknowledgment(identity)
             .unwrap()
             .unwrap();
+        let sinex_protocol::FrameResult::Admitted {
+            material: Some(id),
+            material_extents,
+            ..
+        } = receipt.result
+        else {
+            panic!("material admitted: {receipt:?}")
+        };
         let material = Material {
-            id: receipt.material.unwrap().to_string(),
+            id: id.to_string(),
             hash: BlobHash::of(bytes),
             length: bytes.len() as u64,
-            extents: receipt.material_extents,
+            extents: material_extents,
         };
         sinex
             .complete_captures(
