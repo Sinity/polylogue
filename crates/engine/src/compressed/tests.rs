@@ -237,3 +237,94 @@ fn equal_decoded_acquisition_keeps_its_actual_body_without_an_extra_revision() {
         2
     );
 }
+
+fn frames(parts: &[&[u8]]) -> Vec<u8> {
+    parts
+        .iter()
+        .flat_map(|part| zstd::stream::encode_all(*part, 3).unwrap())
+        .collect()
+}
+
+#[test]
+fn codex_compressing_a_plain_rollout_in_place_keeps_one_input_and_its_newer_tail() {
+    let w = ClaudeHome::new();
+    let dir = w.home.join(".codex/sessions/2026/10/17");
+    std::fs::create_dir_all(&dir).unwrap();
+    let plain = dir.join("rollout-2026-10-17T07-27-03-in-place.jsonl");
+    let first = rollout("in-place-native");
+    std::fs::write(&plain, &first).unwrap();
+    let (mut e, _lock) = engine(&w, 64);
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let tail = b"{\"type\":\"response_item\",\"payload\":{\"id\":\"m2\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"written before compression\"}]}}\n";
+    let whole: Vec<u8> = first.bytes().chain(tail.iter().copied()).collect();
+    let encoded = zstd::stream::encode_all(whole.as_slice(), 3).unwrap();
+    std::fs::write(plain.with_extension("jsonl.zst"), &encoded).unwrap();
+    std::fs::remove_file(&plain).unwrap();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(captured(&e, "codex:rollout:in-place-native"), whole);
+    assert_eq!(
+        captured(&e, blake3::hash(&encoded).to_hex().as_ref()),
+        encoded
+    );
+    assert_eq!(
+        w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:in-place-native'"),
+        1
+    );
+    let id = polylogue_model::SessionId::parse("codex:in-place-native").unwrap();
+    assert_eq!(
+        e.reads
+            .reader()
+            .unwrap()
+            .messages(&id, false)
+            .unwrap()
+            .iter()
+            .map(polylogue_model::Message::text)
+            .collect::<Vec<_>>(),
+        ["independent payload", "written before compression"]
+    );
+}
+
+#[test]
+fn a_rollout_written_as_several_zstd_frames_decodes_across_every_frame() {
+    let w = ClaudeHome::new();
+    let dir = w.home.join(".codex/sessions/2026/10/18");
+    std::fs::create_dir_all(&dir).unwrap();
+    let head = rollout("multi-frame-native");
+    let tail = b"{\"type\":\"response_item\",\"payload\":{\"id\":\"m2\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"second frame\"}]}}\n";
+    let encoded = frames(&[head.as_bytes(), tail]);
+    std::fs::write(dir.join("rollout-multi-frame.jsonl.zst"), &encoded).unwrap();
+    let (mut e, _lock) = engine(&w, 64);
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let whole: Vec<u8> = head.bytes().chain(tail.iter().copied()).collect();
+    assert_eq!(captured(&e, "codex:rollout:multi-frame-native"), whole);
+    assert_eq!(
+        captured(&e, blake3::hash(&encoded).to_hex().as_ref()),
+        encoded
+    );
+}
+
+#[test]
+fn a_truncated_compressed_rollout_stores_nothing_until_the_whole_file_arrives() {
+    let w = ClaudeHome::new();
+    let dir = w.home.join(".codex/sessions/2026/10/19");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("rollout-truncated.jsonl.zst");
+    let bytes = rollout("truncated-native");
+    let encoded = zstd::stream::encode_all(bytes.as_bytes(), 3).unwrap();
+    std::fs::write(&path, &encoded[..encoded.len() - 4]).unwrap();
+    let (mut e, _lock) = engine(&w, 64);
+    let before = w.count("SELECT count(*) AS n FROM a.input");
+    let pass = e.run_pass().unwrap();
+    assert_eq!(pass.errors.len(), 1, "{pass:?}");
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.input"), before);
+    std::fs::write(&path, &encoded).unwrap();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(
+        captured(&e, "codex:rollout:truncated-native"),
+        bytes.as_bytes()
+    );
+}

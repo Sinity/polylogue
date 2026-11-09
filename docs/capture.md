@@ -62,7 +62,7 @@ Ignored: `.credentials.json`, `.claude.json`, `mcp-needs-auth-cache.json` (secre
 
 | Location | Parse |
 |---|---|
-| `sessions/**/rollout-*.jsonl` and `rollout-*.jsonl.zst`; `archived_sessions/**` | sessions. A compressed rollout is the same input as its plain form: identity is content and native ID, never the path |
+| `sessions/**/rollout-*.jsonl` and `rollout-*.jsonl.zst`; `archived_sessions/**` | sessions. A compressed rollout is the same input as its plain form: identity is content and native ID, never the path. When Codex replaces a plain rollout with its `.zst`, the decoded bytes continue the stored input and any lines written since are appended; the compressed file's own bytes are kept too. Every zstd frame in the file is decoded. A truncated or undecodable file is reported and stores nothing until a complete file is there |
 | `history.jsonl`, `session_index.jsonl` | prompt events, titles |
 | rows of the `state_*`, `goals_*`, `memories_*` and `queue_*` databases | goals, memories and queued prompts as events |
 | `memories/**/*.md` (not `memories/.git`) | memory documents |
