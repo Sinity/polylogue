@@ -23,7 +23,6 @@ pub(crate) struct ResumeRun {
     pub session: SessionId,
     pub delivery: String,
     pub text: String,
-    pub cwd: Option<String>,
 }
 
 /// The harness's headless resume command line for a session, when the

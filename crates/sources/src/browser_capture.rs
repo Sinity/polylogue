@@ -14,7 +14,7 @@
 //! by its blob hash instead.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
@@ -82,10 +82,12 @@ static CAPTURE_FIELDS: Fields = Fields::new(&[
 
 static NATIVE_SESSION_FIELDS: Fields = Fields::new(&[
     ("provider", Rule::Read(T::String)),
+    ("session_kind", Rule::Read(T::String)),
     ("attachments", Rule::Read(T::Array)),
 ]);
 static TURN_SESSION_FIELDS: Fields = Fields::new(&[
     ("provider", Rule::Read(T::String)),
+    ("session_kind", Rule::Read(T::String)),
     ("provider_session_id", Rule::Read(T::String)),
     ("title", Rule::Read(T::String)),
     ("turns", Rule::Read(T::Array)),
@@ -160,6 +162,10 @@ mod grok;
 pub use files::files;
 
 pub struct Capture;
+
+/// The session mode of a provider's temporary chat, which the provider does
+/// not keep: the capture may be its only copy.
+pub const TEMPORARY_MODE: &str = "temporary";
 
 impl DocumentParser for Capture {
     fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
@@ -237,6 +243,7 @@ impl DocumentParser for Capture {
             );
         }
         let first_message = sink.out.messages.len();
+        let first_session = sink.out.sessions.len();
         match (origin, raw) {
             ("codex-cloud", Some(raw)) if crate::codex_cloud::task_shape(raw) => {
                 let result = serde_json::to_vec(raw)
@@ -279,6 +286,16 @@ impl DocumentParser for Capture {
             let native = capture.pointer("/session/provider_session_id")?.as_str()?;
             session_id(origin, native)
         });
+        // A temporary chat is one the provider does not keep.
+        if capture
+            .pointer("/session/session_kind")
+            .and_then(Json::as_str)
+            == Some("temporary")
+        {
+            for row in &mut sink.out.sessions[first_session..] {
+                row.mode = Some(TEMPORARY_MODE.to_owned());
+            }
+        }
         if let Some(session) = session {
             let provenance = capture.get("provenance").cloned().unwrap_or(Json::Null);
             sink.out.events.push({ let (at,time_evidence)=crate::time::parts(provenance.get("captured_at").and_then(time_of).map(crate::time::SourceTime::captured)); Event {

@@ -432,7 +432,7 @@ fn ping(
                 recipient_id: Some(session.to_string()),
                 sender: DeliverySender::Ping.as_str().into(),
                 event: DeliveryEvent::Ping.as_str().into(),
-                cwd: cwd.clone(),
+                cwd,
                 text: pack.clone(),
                 refs: vec![format!("assertion:{ping}")],
                 left_out: Vec::new(),
@@ -456,7 +456,6 @@ fn ping(
                     session: session.clone(),
                     delivery: delivery.clone(),
                     text: pack,
-                    cwd,
                 });
                 json!({"session": session, "delivery": delivery, "channel": "resume",
                        "outcome": if started { "started" } else { "queued" }})
@@ -889,7 +888,9 @@ pub(crate) fn run_resume(acts: &crate::live_acts::Acts, run: ResumeRun) {
 
 /// One headless resume: `delivered` when the harness starts with the ping
 /// as its prompt, `failed` with the first line of its error output when it
-/// exits unsuccessfully.
+/// exits unsuccessfully. It runs in the session's resume directory, and is
+/// `not_sent` (`directory_unknown`, `directory_missing(DIR)`) without one:
+/// the daemon's own directory is never borrowed.
 fn resume_once(d: &Daemon, run: &ResumeRun) {
     let invocation = d.invocation(&crate::operation::Context::worker_authorship("resume"));
     let record = |what, detail: String| {
@@ -899,19 +900,39 @@ fn resume_once(d: &Daemon, run: &ResumeRun) {
         record(DeliveryOutcome::NotSent, "unsupported".into());
         return;
     };
+    let directory = match d
+        .reads
+        .reader()
+        .map_err(|e| e.to_string())
+        .and_then(|reader| {
+            reader
+                .resume_directory(&run.session)
+                .map_err(|e| e.to_string())
+        }) {
+        Ok(Some(dir)) if std::path::Path::new(&dir).is_dir() => dir,
+        Ok(Some(dir)) => {
+            record(
+                DeliveryOutcome::NotSent,
+                format!("directory_missing({dir})"),
+            );
+            return;
+        }
+        Ok(None) => {
+            record(DeliveryOutcome::NotSent, "directory_unknown".into());
+            return;
+        }
+        Err(e) => {
+            record(DeliveryOutcome::NotSent, format!("failed({e})"));
+            return;
+        }
+    };
     let mut command = std::process::Command::new(&argv[0]);
     command
         .args(&argv[1..])
+        .current_dir(directory)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
-    if let Some(cwd) = run
-        .cwd
-        .as_deref()
-        .filter(|c| std::path::Path::new(c).is_dir())
-    {
-        command.current_dir(cwd);
-    }
     let child = match command.spawn() {
         Ok(child) => child,
         Err(e) => {

@@ -168,7 +168,7 @@ impl Drive {
                 continue;
             }
             let head = f.get("headRevisionId").and_then(serde_json::Value::as_str);
-            if head.is_some() && state.get(id).map(String::as_str) == head {
+            if head.is_some() && state.revision(id) == head {
                 continue;
             }
             let rev_url = format!("{files_url}/{id}/revisions");
@@ -194,16 +194,20 @@ impl Drive {
                 }
             }
             revisions.sort_by(|a, b| a.modified.cmp(&b.modified));
-            let done = state.get(id);
-            let start = done
-                .and_then(|d| revisions.iter().position(|r| &r.id == d))
-                .map_or(0, |i| i + 1);
+            let start = state.next_revision(id, &revisions);
             let Some(next) = revisions.get(start) else {
                 continue;
             };
             let url = format!("{rev_url}/{}", next.id);
             let bytes = get(&url, &[("alt", "media")])?;
-            let revision = self.retain_revision(id, Some(&next.id), &bytes)?;
+            let revision = self.retain_revision(
+                id,
+                Some(Accepted {
+                    revision: next.id.clone(),
+                    modified: Some(next.modified.clone()),
+                }),
+                &bytes,
+            )?;
             self.publish(&revision)?;
             report.revisions_written += 1;
             report.pending += revisions.len() - start;
@@ -233,11 +237,11 @@ impl Drive {
             .ok_or_else(|| err("refresh reply has no access_token".into()))
     }
 
-    fn load_state(&self) -> Result<BTreeMap<String, String>, DriveError> {
+    fn load_state(&self) -> Result<Cursor, DriveError> {
         let bytes = match std::fs::read(self.spool.join(STATE)) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(BTreeMap::new());
+                return Ok(Cursor::default());
             }
             Err(error) => return Err(error.into()),
         };
@@ -248,7 +252,8 @@ impl Drive {
             RevisionState::Accepted {
                 version: 1,
                 accepted,
-            } => Ok(accepted),
+                modified,
+            } => Ok(Cursor { accepted, modified }),
             RevisionState::Accepted { .. } => {
                 Err(invalid("unsupported Drive revision state version").into())
             }
@@ -266,9 +271,9 @@ impl Drive {
                         Err(error) => return Err(error.into()),
                     }
                 }
-                let accepted = BTreeMap::new();
-                self.save_state(&accepted)?;
-                Ok(accepted)
+                let cursor = Cursor::default();
+                self.save_state(&cursor)?;
+                Ok(cursor)
             }
         }
     }
@@ -276,20 +281,33 @@ impl Drive {
     fn retain_revision(
         &self,
         id: &str,
-        revision: Option<&str>,
+        revision: Option<Accepted>,
         bytes: &[u8],
     ) -> Result<PendingRevision, DriveError> {
         self.prompt_path(id)?;
         let directory = self.spool.join(PENDING);
         std::fs::create_dir_all(&directory)?;
         std::fs::File::open(&self.spool)?.sync_all()?;
+        let name = match &revision {
+            Some(Accepted {
+                revision,
+                modified: Some(modified),
+            }) => format!(
+                "{}-{}-{}.json",
+                encode(id),
+                encode(revision),
+                encode(modified)
+            ),
+            Some(Accepted {
+                revision,
+                modified: None,
+            }) => format!("{}-{}.json", encode(id), encode(revision)),
+            None => format!("{}.json", encode(id)),
+        };
         let pending = PendingRevision {
             file: id.to_owned(),
-            revision: revision.map(str::to_owned),
-            body: directory.join(match revision {
-                Some(revision) => format!("{}-{}.json", encode(id), encode(revision)),
-                None => format!("{}.json", encode(id)),
-            }),
+            revision,
+            body: directory.join(name),
         };
         match std::fs::read(&pending.body) {
             Ok(original) if original == bytes => return Ok(pending),
@@ -328,12 +346,23 @@ impl Drive {
                 continue; // An unpublished atomic-write temporary file.
             };
             let revision = (|| {
-                let (file, revision) = match stem.split_once('-') {
-                    Some((file, revision)) => (file, Some(decode(revision)?)),
-                    None => (stem, None),
+                let mut parts = stem.split('-');
+                let file = decode(parts.next()?)?;
+                let revision = match (parts.next(), parts.next()) {
+                    (Some(revision), modified) => Some(Accepted {
+                        revision: decode(revision)?,
+                        modified: match modified {
+                            Some(modified) => Some(decode(modified)?),
+                            None => None,
+                        },
+                    }),
+                    (None, _) => None,
                 };
+                if parts.next().is_some() {
+                    return None;
+                }
                 Some(PendingRevision {
-                    file: decode(file)?,
+                    file,
                     revision,
                     body: entry.path(),
                 })
@@ -382,11 +411,9 @@ impl Drive {
         let mut changed = false;
         let mut retired = Vec::new();
         for revision in self.pending_revisions()?.into_values() {
-            if revision
-                .revision
-                .as_ref()
-                .is_none_or(|id| state.get(&revision.file) != Some(id))
-            {
+            if revision.revision.as_ref().is_none_or(|accepted| {
+                state.revision(&revision.file) != Some(accepted.revision.as_str())
+            }) {
                 let mut body = std::fs::File::open(&revision.body)?;
                 let mut hash = blake3::Hasher::new();
                 let length = std::io::copy(&mut body, &mut hash)?;
@@ -399,8 +426,8 @@ impl Drive {
                 {
                     continue;
                 }
-                if let Some(id) = revision.revision {
-                    state.insert(revision.file, id);
+                if let Some(accepted) = revision.revision {
+                    state.accept(revision.file, accepted);
                     changed = true;
                 }
             }
@@ -418,10 +445,11 @@ impl Drive {
         Ok(())
     }
 
-    fn save_state(&self, state: &BTreeMap<String, String>) -> Result<(), DriveError> {
+    fn save_state(&self, state: &Cursor) -> Result<(), DriveError> {
         let bytes = serde_json::to_vec_pretty(&RevisionState::Accepted {
             version: 1,
-            accepted: state.clone(),
+            accepted: state.accepted.clone(),
+            modified: state.modified.clone(),
         })
         .expect("map serializes");
         write_if_changed(&self.spool.join(STATE), &bytes)
@@ -434,13 +462,65 @@ enum RevisionState {
     Accepted {
         version: u32,
         accepted: BTreeMap<String, String>,
+        /// The accepted revision's Drive `modifiedTime`, per prompt, when
+        /// known: it places the cursor once Drive prunes that revision.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        modified: BTreeMap<String, String>,
     },
     Downloaded(BTreeMap<String, String>),
 }
 
+/// The last revision the archive accepted for each prompt.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct Cursor {
+    accepted: BTreeMap<String, String>,
+    modified: BTreeMap<String, String>,
+}
+
+impl Cursor {
+    fn revision(&self, file: &str) -> Option<&str> {
+        self.accepted.get(file).map(String::as_str)
+    }
+
+    fn accept(&mut self, file: String, accepted: Accepted) {
+        match accepted.modified {
+            Some(modified) => self.modified.insert(file.clone(), modified),
+            None => self.modified.remove(&file),
+        };
+        self.accepted.insert(file, accepted.revision);
+    }
+
+    /// Where the walk over `revisions` (oldest first) continues for `file`:
+    /// after the accepted revision, or, when Drive has pruned it, at the
+    /// first revision newer than it. Without a known time for a pruned
+    /// revision the walk starts again from the oldest; the archive stores
+    /// repeated bytes once.
+    fn next_revision(&self, file: &str, revisions: &[Revision]) -> usize {
+        let Some(accepted) = self.revision(file) else {
+            return 0;
+        };
+        if let Some(at) = revisions.iter().position(|r| r.id == accepted) {
+            return at + 1;
+        }
+        self.modified.get(file).map_or(0, |modified| {
+            revisions
+                .iter()
+                .position(|r| r.modified > *modified)
+                .unwrap_or(revisions.len())
+        })
+    }
+}
+
+/// A Drive revision of one prompt and its `modifiedTime`, when known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Accepted {
+    revision: String,
+    modified: Option<String>,
+}
+
 struct PendingRevision {
     file: String,
-    revision: Option<String>,
+    revision: Option<Accepted>,
     body: PathBuf,
 }
 

@@ -127,3 +127,120 @@ fn only_valid_installs_probe_the_version_and_keep_confirmed_events() {
         }
     }
 }
+
+/// Settings as a person wrote them: keys out of order, four-space indents,
+/// a foreign hook beside an event Polylogue also uses, and a number serde
+/// would print differently.
+const HAND_WRITTEN: &str = r#"{
+    "zeta": 1.50,
+    "hooks": {
+        "Stop": [
+            {
+                "matcher": "",
+                "hooks": [ { "type": "command", "command": "notify-send done" } ]
+            }
+        ],
+        "Custom": []
+    },
+    "alpha": "\u00e9"
+}
+"#;
+
+#[test]
+fn install_keeps_foreign_entries_byte_for_byte() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    std::fs::write(&path, HAND_WRITTEN).unwrap();
+    install(&path, Harness::ClaudeCode, || None, true).unwrap();
+    let installed = std::fs::read_to_string(&path).unwrap();
+    let foreign = r#"            {
+                "matcher": "",
+                "hooks": [ { "type": "command", "command": "notify-send done" } ]
+            }"#;
+    for kept in [
+        "{\n    \"zeta\": 1.50,\n    \"hooks\": {\n        \"Stop\": [\n",
+        foreign,
+        "\"Custom\": []",
+        "\n    \"alpha\": \"\\u00e9\"\n}\n",
+    ] {
+        assert!(installed.contains(kept), "{kept:?} lost from:\n{installed}");
+    }
+    assert!(installed.ends_with("    },\n    \"alpha\": \"\\u00e9\"\n}\n"));
+    let value: Value = serde_json::from_str(&installed).unwrap();
+    assert_eq!(
+        value["hooks"]["Stop"][1]["hooks"][0]["command"],
+        "polylogue hook Stop"
+    );
+    assert_eq!(
+        value["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+        "polylogue hook SessionStart"
+    );
+    // Installing again rewrites Polylogue's entries to the same bytes.
+    install(&path, Harness::ClaudeCode, || None, true).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), installed);
+    // Removal without the backup edits the text back to the original.
+    std::fs::remove_file(backup_path(&path)).unwrap();
+    install(&path, Harness::ClaudeCode, || None, false).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), HAND_WRITTEN);
+}
+
+#[test]
+fn install_writes_backup_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    std::fs::write(&path, HAND_WRITTEN).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    install(&path, Harness::ClaudeCode, || None, true).unwrap();
+    let backup = backup_path(&path);
+    assert_eq!(backup, dir.path().join("settings.json.polylogue-backup"));
+    assert_eq!(std::fs::read_to_string(&backup).unwrap(), HAND_WRITTEN);
+    assert_eq!(
+        std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    let edited = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("\"zeta\": 1.50", "\"zeta\": 2");
+    std::fs::write(&path, &edited).unwrap();
+    install(&path, Harness::ClaudeCode, || None, true).unwrap();
+    assert_eq!(std::fs::read_to_string(&backup).unwrap(), HAND_WRITTEN);
+    // A file that did not exist has no bytes to keep.
+    let fresh = dir.path().join("fresh.json");
+    install(&fresh, Harness::ClaudeCode, || None, true).unwrap();
+    assert!(!backup_path(&fresh).exists());
+}
+
+#[test]
+fn uninstall_restores_original_bytes() {
+    for version in [None, HarnessVersion::parse("2.1.316")] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let original = "{\"model\":\"example\",\"n\":1e2}";
+        std::fs::write(&path, original).unwrap();
+        install(&path, Harness::ClaudeCode, || version.clone(), true).unwrap();
+        install(
+            &path,
+            Harness::ClaudeCode,
+            || panic!("removal probes nothing"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        assert!(!backup_path(&path).exists());
+    }
+    // A change made after the install is kept; only Polylogue's entries go,
+    // with the `hooks` object they alone filled.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    std::fs::write(&path, "{\"model\":\"example\"}").unwrap();
+    install(&path, Harness::ClaudeCode, || None, true).unwrap();
+    let changed = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("\"example\"", "\"other\"");
+    std::fs::write(&path, changed).unwrap();
+    install(&path, Harness::ClaudeCode, || None, false).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "{\"model\":\"other\"}"
+    );
+}

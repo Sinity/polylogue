@@ -8,6 +8,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 mod parse;
+mod text;
 
 /// The events Gemini CLI calls hooks on.
 const GEMINI_EVENTS: &[&str] = &[
@@ -204,59 +205,156 @@ fn ours(hook: &Value) -> bool {
         && harness_ok
 }
 
-/// Merge Polylogue's commands, keeping other hooks and entry metadata.
-/// Refuse invalid containers instead of replacing their contents.
+/// One hook entry this installer writes for `event`.
+fn entry(harness: Harness, event: &str) -> Value {
+    let seconds = if matches!(event, "SessionStart" | "UserPromptSubmit" | "BeforeAgent") {
+        10
+    } else {
+        2
+    };
+    let timeout = if harness == Harness::GeminiCli {
+        seconds * 1000
+    } else {
+        seconds
+    };
+    json!({"hooks": [{"type": "command", "command": command(harness, event), "timeout": timeout}]})
+}
+
+/// Installs or removes Polylogue's commands in the settings `text`, editing
+/// only their own bytes: other hooks, entry metadata, key order, numbers
+/// and formatting stay as written. An entry, event or `hooks` object that
+/// removing Polylogue's commands leaves empty goes too; one that was empty
+/// before stays. Invalid containers are refused instead of replaced.
 /// `version` is the installed harness's, which decides the events of
 /// [`CONFIRMED_FROM`]; removal covers every event an install may have added.
+fn edit(
+    text: &str,
+    harness: Harness,
+    version: Option<&HarnessVersion>,
+    install: bool,
+) -> io::Result<String> {
+    use text::{Kind, splice};
+    validate(&parse::settings(text)?)?;
+    let root = text::read(text)?;
+    let Kind::Object(members) = &root.kind else {
+        return Err(invalid("settings", "an object"));
+    };
+    let wanted = harness_events(harness, version);
+    let mut edits = Vec::new();
+    let Some(hooks) = root.member("hooks") else {
+        if !install {
+            return Ok(text.to_owned());
+        }
+        let events: serde_json::Map<String, Value> = wanted
+            .iter()
+            .map(|event| ((*event).to_owned(), json!([entry(harness, event)])))
+            .collect();
+        let spans: Vec<_> = members
+            .iter()
+            .map(|(_, start, value)| *start..value.end)
+            .collect();
+        edits.extend(splice(
+            text,
+            &root,
+            &spans,
+            &vec![false; spans.len()],
+            |layout| vec![layout.member("hooks", &Value::Object(events.clone()))],
+        ));
+        return Ok(text::apply(text, edits));
+    };
+    let Kind::Object(events) = &hooks.kind else {
+        return Err(invalid("hooks", "an object"));
+    };
+    let is_ours = |hook: &text::Spanned| {
+        serde_json::from_str::<Value>(&text[hook.start..hook.end]).is_ok_and(|hook| ours(&hook))
+    };
+    let mut removed_events = vec![false; events.len()];
+    let mut added_events = Vec::new();
+    for event in every_event(harness) {
+        let install = install && wanted.contains(&event);
+        let Some(index) = events.iter().position(|(name, _, _)| name == event) else {
+            if install {
+                added_events.push(event);
+            }
+            continue;
+        };
+        let entries = &events[index].2;
+        let mut removed_entries = Vec::new();
+        let mut entry_edits = Vec::new();
+        for entry in entries.items() {
+            let hooks = entry.member("hooks").expect("validated hook array");
+            let mine: Vec<bool> = hooks.items().iter().map(is_ours).collect();
+            let all_mine = !mine.is_empty() && mine.iter().all(|m| *m);
+            removed_entries.push(all_mine);
+            if !all_mine && mine.contains(&true) {
+                let spans: Vec<_> = hooks.items().iter().map(|h| h.start..h.end).collect();
+                entry_edits.extend(splice(text, hooks, &spans, &mine, |_| Vec::new()));
+            }
+        }
+        let emptied = !removed_entries.is_empty() && removed_entries.iter().all(|r| *r);
+        if emptied && !install {
+            removed_events[index] = true;
+            continue;
+        }
+        edits.extend(entry_edits);
+        let spans: Vec<_> = entries.items().iter().map(|e| e.start..e.end).collect();
+        edits.extend(splice(text, entries, &spans, &removed_entries, |layout| {
+            if install {
+                vec![layout.render(&entry(harness, event))]
+            } else {
+                Vec::new()
+            }
+        }));
+    }
+    let every_event_removed = !events.is_empty() && removed_events.iter().all(|r| *r);
+    if every_event_removed && added_events.is_empty() {
+        let spans: Vec<_> = members
+            .iter()
+            .map(|(_, start, value)| *start..value.end)
+            .collect();
+        let removed: Vec<bool> = members.iter().map(|(name, _, _)| name == "hooks").collect();
+        edits.extend(splice(text, &root, &spans, &removed, |_| Vec::new()));
+        return Ok(text::apply(text, edits));
+    }
+    let spans: Vec<_> = events
+        .iter()
+        .map(|(_, start, value)| *start..value.end)
+        .collect();
+    edits.extend(splice(text, hooks, &spans, &removed_events, |layout| {
+        added_events
+            .iter()
+            .map(|event| layout.member(event, &json!([entry(harness, event)])))
+            .collect()
+    }));
+    Ok(text::apply(text, edits))
+}
+
+/// [`edit`] over a settings value, for callers that hold one.
+#[cfg(test)]
 pub(super) fn merge_hooks(
-    mut settings: Value,
+    settings: Value,
     harness: Harness,
     version: Option<&HarnessVersion>,
     install: bool,
 ) -> io::Result<Value> {
-    validate(&settings)?;
-    let settings_object = settings.as_object_mut().expect("validated settings object");
-    if !install && !settings_object.contains_key("hooks") {
-        return Ok(settings);
-    }
-    let events = settings_object
-        .entry("hooks")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .expect("validated hooks object");
-    let wanted = harness_events(harness, version);
-    for event in &every_event(harness) {
-        let install = install && wanted.contains(event);
-        if let Some(entries) = events.get_mut(*event) {
-            let entries = entries.as_array_mut().expect("validated event array");
-            let had_entries = !entries.is_empty();
-            entries.retain_mut(|entry| {
-                let hooks = entry["hooks"].as_array_mut().expect("validated hook array");
-                let before = hooks.len();
-                hooks.retain(|hook| !ours(hook));
-                // Keep entries that were already empty; only remove entries
-                // made empty by removing our commands.
-                before == hooks.len() || !hooks.is_empty()
-            });
-            if had_entries && entries.is_empty() && !install {
-                events.remove(*event);
-            }
-        }
-        if install {
-            events.entry(*event).or_insert_with(|| json!([]))
-                .as_array_mut().expect("validated event array").push(json!({
-                    "hooks": [{"type":"command", "command":command(harness, event),
-                        "timeout": (if *event=="SessionStart" || *event=="UserPromptSubmit" || *event=="BeforeAgent" {10} else {2}) * if harness == Harness::GeminiCli {1000} else {1}}]
-                }));
-        }
-    }
-    Ok(settings)
+    let text = edit(&settings.to_string(), harness, version, install)?;
+    serde_json::from_str(&text).map_err(io::Error::other)
 }
 
-/// Installs or removes the hooks in a settings file, atomically. A file
-/// that is a symlink (managed by Home Manager or similar) is refused: the
-/// hooks belong in the file's declared source. The version provider runs only
-/// for an install after the existing file has passed structural validation.
+/// The file the original settings bytes are kept in before the first edit.
+pub fn backup_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_owned();
+    name.push(".polylogue-backup");
+    path.with_file_name(name)
+}
+
+/// Installs or removes the hooks in a settings file, atomically, editing only
+/// Polylogue's entries. Before the first edit of an existing file its bytes
+/// are kept in [`backup_path`]; a removal restores them exactly when the file
+/// is still what installing into them produced. A file that is a symlink
+/// (managed by Home Manager or similar) is refused: the hooks belong in the
+/// file's declared source. The version provider runs only for an install
+/// after the existing file has passed structural validation.
 pub fn install(
     path: &Path,
     harness: Harness,
@@ -270,16 +368,35 @@ pub fn install(
         )));
     }
     let current = match std::fs::read_to_string(path) {
-        Ok(text) => parse::settings(&text)?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e),
     };
+    if current.is_none() && !install {
+        return Ok(());
+    }
+    let text = current.as_deref().unwrap_or("{}\n");
     // Refuse the settings before consulting an external harness launcher.
-    validate(&current)?;
-    let version = install.then(version).flatten();
-    let merged = merge_hooks(current, harness, version.as_ref(), install)?;
-    let mut text = serde_json::to_string_pretty(&merged).map_err(std::io::Error::other)?;
-    text.push('\n');
+    validate(&parse::settings(text)?)?;
+    let backup = backup_path(path);
+    let saved = match std::fs::read_to_string(&backup) {
+        Ok(saved) => Some(saved),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
+    let restore = !install
+        && saved
+            .as_deref()
+            .is_some_and(|saved| installed_from(saved, harness, text));
+    let new = if restore {
+        saved.clone().expect("a restore has its backup")
+    } else {
+        let version = install.then(version).flatten();
+        edit(text, harness, version.as_ref(), install)?
+    };
+    if current.as_deref() == Some(new.as_str()) {
+        return Ok(());
+    }
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -293,6 +410,33 @@ pub fn install(
         }
         Err(e) => return Err(e),
     };
-    polylogue_model::atomic_write::write_atomic(path, text.as_bytes(), Some(permissions))?;
+    if let Some(original) = &current
+        && saved.is_none()
+    {
+        polylogue_model::atomic_write::write_atomic(
+            &backup,
+            original.as_bytes(),
+            Some(permissions.clone()),
+        )?;
+    }
+    polylogue_model::atomic_write::write_atomic(path, new.as_bytes(), Some(permissions))?;
+    if restore {
+        std::fs::remove_file(&backup)?;
+    }
     Ok(())
+}
+
+/// Whether `current` is what an install into `saved` produces. The harness
+/// version decides only which [`CONFIRMED_FROM`] events are added, so each
+/// version that changes them is tried.
+fn installed_from(saved: &str, harness: Harness, current: &str) -> bool {
+    std::iter::once(None)
+        .chain(
+            CONFIRMED_FROM
+                .iter()
+                .map(|(_, from)| HarnessVersion::parse(from)),
+        )
+        .any(|version| {
+            edit(saved, harness, version.as_ref(), true).is_ok_and(|installed| installed == current)
+        })
 }

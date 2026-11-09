@@ -706,3 +706,27 @@ mod agent_guidance;
 mod terminal;
 
 mod index_open;
+
+#[test]
+fn continue_exec_without_recorded_directory_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let archive = dir.path().join("archive");
+    let config = dir.path().join("config");
+    let project = home.join(".claude/projects/-p");
+    std::fs::create_dir_all(&project).unwrap();
+    // The record names no working directory.
+    std::fs::write(project.join("s1.jsonl"), line("u1", "s1", "no directory")).unwrap();
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
+    let _daemon = start_daemon(&env);
+    wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(1));
+
+    let out = cli(&env, &["continue", "claude-code:s1", "--exec"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("directory_unknown"), "{stderr}");
+    assert!(
+        stderr.contains("polylogue takeover claude-code:s1"),
+        "{stderr}"
+    );
+}

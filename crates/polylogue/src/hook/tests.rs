@@ -231,7 +231,8 @@ fn codex_hooks_name_the_harness_and_replace_their_own() {
     let twice = merge_hooks(once.clone(), Harness::Codex, None, true).unwrap();
     assert_eq!(once, twice);
     let removed = merge_hooks(twice, Harness::Codex, None, false).unwrap();
-    assert!(removed["hooks"].as_object().unwrap().is_empty());
+    // A `hooks` object only Polylogue's commands filled goes with them.
+    assert_eq!(removed, json!({}));
 }
 
 #[test]
