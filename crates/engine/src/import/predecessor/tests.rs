@@ -509,9 +509,16 @@ fn predecessor_spool_tree_imports_every_hook_and_capture_file() {
     let hooks = engine
         .import_with_options(&[old.join("hooks")], &options("hook-spool"))
         .unwrap();
-    assert_eq!(hooks.imported.len(), 3, "{hooks:?}");
-    assert_eq!(hooks.refused.len(), 1);
-    assert!(hooks.refused[0].path.ends_with(".carrier-drain.lock"));
+    // Every spool file is parsed; the lock file beside them is kept as a
+    // member of the named package, as any member no parser reads is.
+    assert_eq!(hooks.imported.len(), 4, "{hooks:?}");
+    assert!(hooks.refused.is_empty(), "{hooks:?}");
+    let lock = hooks
+        .members
+        .iter()
+        .find(|member| member.path.ends_with(".carrier-drain.lock"))
+        .unwrap();
+    assert_eq!(lock.class, "asset");
     assert!(hooks.pass.errors.is_empty(), "{:?}", hooks.pass.errors);
     let captures = engine
         .import_with_options(&[old.join("browser-capture")], &options("browser-capture"))
@@ -535,5 +542,5 @@ fn predecessor_spool_tree_imports_every_hook_and_capture_file() {
         .import_with_options(&[old.join("hooks")], &options("hook-spool"))
         .unwrap();
     assert!(again.imported.is_empty(), "{again:?}");
-    assert_eq!(again.already_stored.len(), 3);
+    assert_eq!(again.already_stored.len(), 4);
 }

@@ -78,9 +78,10 @@ fn every_predecessor_form_maps_with_its_author_and_history() {
     assert_eq!(links(accept, LinkRole::About), [accepted.clone()]);
     assert_eq!(
         links(accept, LinkRole::Evidence),
+        // Links are stored in reference order.
         [
+            format!("assertion:{}@{}", fixture::ACCEPTED, fixture::PROMOTED),
             accepted,
-            format!("assertion:{}@{}", fixture::ACCEPTED, fixture::PROMOTED)
         ]
     );
     assert_eq!(
