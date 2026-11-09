@@ -1,3 +1,0 @@
-{"table":"note","row":{"id":"n1","first_note":"n0","kind":"tag","key":"topic","value":"synthetic","author":"agent:s1","machine":"synthetic","created_at":1000,"valid_until":null,"commit_seq":7}}
-{"table":"note_target","row":{"note_id":"n1","ref":"session:test:s1"}}
-{"table":"note_relation","row":{"note_id":"n1","kind":"withdraws","other":"note:n0"}}

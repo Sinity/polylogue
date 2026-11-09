@@ -313,8 +313,12 @@ impl Reader<'_> {
                 .transpose()?;
             let output_metadata = row.get::<_, Option<String>>(8)?;
             visit(NativeKept {
-                output_metadata: output_metadata
-                    .and_then(|value| serde_json::from_str(&value).ok()),
+                // A body without a declaration declares nothing; the rows
+                // then read with the types of their physical columns.
+                output_metadata: match output_metadata {
+                    None => Some(Default::default()),
+                    Some(value) => serde_json::from_str(&value).ok(),
+                },
                 shape,
                 native_identity: shape == Some(polylogue_query::Shape::Rows)
                     && row.get::<_, Option<bool>>(7)?.unwrap_or(false),

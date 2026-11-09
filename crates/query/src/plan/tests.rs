@@ -184,7 +184,13 @@ fn canonical_kept_replay_retains_its_immutable_typed_columns() {
     let plan = prepare("result:kept-one | where ready:true", &bindings, |_| Ok(())).unwrap();
     let object = plan.query_object().unwrap();
     let restored = replay(&object, catalog_fingerprint()).unwrap();
-    assert_eq!(restored.bindings().kept, bindings.kept);
+    // The canonical object stores the schema the rows were read with; a kept
+    // result without a declaration reads with its physical column types, so
+    // replay restores that schema as the declaration.
+    let mut expected = bindings.kept.clone();
+    let kept = expected.get_mut("kept-one").unwrap();
+    kept.output_metadata.rows = Some(kept.output_schema(ResultPart::Rows));
+    assert_eq!(restored.bindings().kept, expected);
     assert_eq!(restored.question_id(), plan.question_id());
 }
 
