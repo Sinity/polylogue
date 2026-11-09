@@ -117,12 +117,11 @@ fn every_catalog_key_changes_an_output() {
             .map(|declaration| declaration.key)
             .filter(|key| !key.ends_with('*'))
             .collect();
-        keys.extend(
-            overrides
-                .iter()
-                .map(|(key, _)| *key)
-                .filter(|key| !keys.contains(key)),
-        );
+        for (key, _) in overrides {
+            if !keys.contains(key) {
+                keys.push(key);
+            }
+        }
         Snapshot::new(keys.into_iter().map(|key| {
             let declaration = polylogue_model::settings::declaration(key).unwrap();
             let stored = overrides
