@@ -149,7 +149,11 @@ commit. `index.db` is rebuilt from those, so it commits with `NORMAL`.
 Building the archive overlaps every stage:
 - read-ahead, bounded by memory;
 - workers on every core that hash, compress, parse, and resolve keys and
-  versions against a read snapshot and an in-memory key map;
+  versions against a read snapshot and an in-memory key map; a new job
+  goes to the worker that went idle last, so the ranges of one large input
+  run on one worker and reuse the memory its previous range freed, and the
+  pass holds about one job's memory per job in flight rather than one per
+  worker;
 - one writer that only appends and commits;
 - consumers of committed positions: derived data, the request-log projection
   and the completion catalog;

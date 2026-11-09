@@ -22,6 +22,8 @@ pub(crate) struct CachedIndex {
     pub entries: Vec<IndexEntry>,
     pub places: HashMap<EntryKey, usize>,
     views: Mutex<Vec<(FoldProfile, Arc<RunningSums>)>>,
+    /// Memory held by `entries` and `places`, measured when they change.
+    held_bytes: usize,
 }
 impl CachedIndex {
     fn new(
@@ -35,14 +37,17 @@ impl CachedIndex {
             .enumerate()
             .map(|(at, entry)| (entry.key.clone(), at))
             .collect();
-        Self {
+        let mut index = Self {
             session,
             session_pk,
             versions,
             entries,
             places,
             views: Mutex::new(Vec::new()),
-        }
+            held_bytes: 0,
+        };
+        index.held_bytes = index.measure();
+        index
     }
     fn append(&mut self, reader: &Reader<'_>, now: ItemVersions) -> polylogue_store::Result<()> {
         // The last message can grow. Earlier entries and their key positions
@@ -88,11 +93,23 @@ impl CachedIndex {
             );
         }
         self.versions = now;
+        self.held_bytes = self.measure();
         Ok(())
+    }
+    /// The heap memory of the entries and the key map: their tables at
+    /// capacity and every string they own.
+    fn measure(&self) -> usize {
+        use std::mem::size_of;
+        let entries = self.entries.capacity() * size_of::<IndexEntry>()
+            + self.entries.iter().map(entry_heap_bytes).sum::<usize>();
+        // A hash table slot holds the pair and one control byte.
+        let places = self.places.capacity() * (size_of::<(EntryKey, usize)>() + 1)
+            + self.places.keys().map(key_heap_bytes).sum::<usize>();
+        entries + places
     }
     fn bytes(&self) -> usize {
         let views = self.views.lock().unwrap_or_else(|e| e.into_inner());
-        self.entries.len() * ENTRY_BYTES
+        self.held_bytes
             + views
                 .iter()
                 .map(|(_, sums)| {
@@ -111,12 +128,32 @@ impl Clone for CachedIndex {
             entries: self.entries.clone(),
             places: self.places.clone(),
             views: Mutex::new(self.views.lock().unwrap_or_else(|e| e.into_inner()).clone()),
+            held_bytes: self.held_bytes,
         }
     }
 }
 
-/// An estimate of one entry's memory, for the cache's size bound.
-const ENTRY_BYTES: usize = 192;
+/// Heap bytes an entry key owns outside its own struct.
+fn key_heap_bytes(key: &EntryKey) -> usize {
+    match key {
+        EntryKey::Message { message, .. } => {
+            message.origin().as_str().len() + message.native().as_str().len()
+        }
+        EntryKey::Event { event } => event.capacity(),
+    }
+}
+
+/// Heap bytes an entry owns outside its own struct.
+fn entry_heap_bytes(entry: &IndexEntry) -> usize {
+    let text = |value: &Option<String>| value.as_ref().map_or(0, String::capacity);
+    key_heap_bytes(&entry.key)
+        + text(&entry.target)
+        + text(&entry.call_id)
+        + text(&entry.event_kind)
+        + entry.cleared.capacity() * std::mem::size_of::<String>()
+        + entry.cleared.iter().map(String::capacity).sum::<usize>()
+}
+
 /// Memory the cache may hold. Host tuning belongs in configuration; this is
 /// the default a daemon starts with.
 const CACHE_BYTES: usize = 512 << 20;

@@ -14,6 +14,7 @@ mod export_round_trip;
 mod hook_events;
 mod large_sessions;
 mod live_first;
+mod one_worker;
 mod reading_version;
 mod tool_captures;
 
