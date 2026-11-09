@@ -75,13 +75,67 @@ fn predecessor_blobs_keep_original_fragments_and_join_only_recorded_append_offse
         [],
     )
     .unwrap();
+    // Only the joined reading is refused; the fragments stay.
+    let members = stage(root.path(), &Archive::at(scratch.path()))
+        .unwrap()
+        .unwrap();
+    let refused = members
+        .iter()
+        .find(|member| member.origin.is_none())
+        .unwrap();
     assert!(
-        stage(root.path(), &Archive::at(scratch.path()))
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("offsets")
+        refused
+            .path
+            .to_string_lossy()
+            .contains("raw_sessions/next/")
     );
+    assert!(
+        refused.refusal.as_deref().unwrap().contains("offsets"),
+        "{:?}",
+        refused.refusal
+    );
+    assert_eq!(decoded(&members[2]), APPEND);
+}
+
+#[test]
+fn an_append_naming_its_base_by_revision_joins_it_and_an_unknown_base_is_refused_alone() {
+    let root = tempfile::tempdir().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    fixture(root.path());
+    let db = rusqlite::Connection::open(root.path().join("source.db")).unwrap();
+    db.execute_batch(
+        "ALTER TABLE raw_sessions ADD COLUMN source_revision TEXT;
+         ALTER TABLE raw_sessions ADD COLUMN predecessor_source_revision TEXT;
+         UPDATE raw_sessions SET source_revision = 'rev-full' WHERE raw_id = 'full';
+         UPDATE raw_sessions SET predecessor_raw_id = NULL, predecessor_source_revision = 'rev-full' WHERE raw_id = 'next';",
+    )
+    .unwrap();
+    let members = stage(root.path(), &Archive::at(scratch.path()))
+        .unwrap()
+        .unwrap();
+    assert!(members.iter().all(|member| member.origin.is_some()));
+    assert_eq!(decoded(&members[3]), [FULL, APPEND].concat());
+
+    db.execute(
+        "UPDATE raw_sessions SET predecessor_source_revision = 'rev-gone' WHERE raw_id = 'next'",
+        [],
+    )
+    .unwrap();
+    let members = stage(root.path(), &Archive::at(scratch.path()))
+        .unwrap()
+        .unwrap();
+    let refused: Vec<_> = members
+        .iter()
+        .filter(|member| member.origin.is_none())
+        .collect();
+    assert_eq!(refused.len(), 1);
+    assert_eq!(
+        refused[0].refusal.as_deref(),
+        Some("it continues revision rev-gone, which no one raw session of the catalog is")
+    );
+    // The full revision still reads on its own.
+    assert_eq!(members[1].origin.unwrap().name, "claude-code");
+    assert_eq!(decoded(&members[1]), FULL);
 }
 #[test]
 fn missing_or_changed_legacy_blob_refuses_the_whole_import_without_archive_rows() {

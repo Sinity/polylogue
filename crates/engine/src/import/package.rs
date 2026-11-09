@@ -11,6 +11,9 @@ pub(super) struct Member {
     pub parent: Option<(usize, u64)>,
     pub container_kind: Option<String>,
     pub member_path_bytes: Option<Vec<u8>>,
+    /// Why a member with no origin is refused, when it is not that no
+    /// declared structure matched.
+    pub refusal: Option<String>,
 }
 
 pub(super) fn stage(
@@ -131,6 +134,7 @@ fn expand(
             parent,
             container_kind: None,
             member_path_bytes: None,
+            refusal: None,
         });
         return Ok(());
     }
@@ -143,6 +147,7 @@ fn expand(
             parent,
             container_kind: None,
             member_path_bytes: None,
+            refusal: None,
         });
         return Ok(());
     }
@@ -216,6 +221,7 @@ fn expand(
         parent,
         container_kind: None,
         member_path_bytes: None,
+        refusal: None,
     });
     let kind = if magic[..n].starts_with(ZIP_MAGIC) {
         "zip"

@@ -18,6 +18,11 @@ pub struct Input {
     pub predecessor: Option<String>,
     pub append_start: Option<u64>,
     pub append_end: Option<u64>,
+    /// The predecessor's name for this revision of its source.
+    pub source_revision: Option<String>,
+    /// The revision this append continues, by that name; read when the
+    /// predecessor recorded no `predecessor` row ID.
+    pub predecessor_revision: Option<String>,
 }
 
 /// The predecessor's source catalog: `source.db` beside its `blob/` folder.
@@ -100,12 +105,14 @@ impl Catalog {
             }
         };
         let sql = format!(
-            "SELECT raw_id,origin,source_path,blob_hash,blob_size,{},{},{},{},{} FROM raw_sessions ORDER BY raw_id",
+            "SELECT raw_id,origin,source_path,blob_hash,blob_size,{},{},{},{},{},{},{} FROM raw_sessions ORDER BY raw_id",
             optional("capture_mode", "NULL"),
             optional("revision_kind", "'unknown'"),
             optional("predecessor_raw_id", "NULL"),
             optional("append_start_offset", "NULL"),
-            optional("append_end_offset", "NULL")
+            optional("append_end_offset", "NULL"),
+            optional("source_revision", "NULL"),
+            optional("predecessor_source_revision", "NULL")
         );
         let mut rows = self.conn.prepare(&sql)?;
         let inputs = rows
@@ -135,6 +142,8 @@ impl Catalog {
                     predecessor: row.get(7)?,
                     append_start: start.map(|n| n as u64),
                     append_end: end.map(|n| n as u64),
+                    source_revision: row.get(10)?,
+                    predecessor_revision: row.get(11)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
