@@ -517,7 +517,7 @@ fn published_saved_qualifiers_drive_offline_matches_fields_and_closed_values() {
     let mut fixture = Fixture::new(&directory.path().join("archive")).unwrap();
     let mut bindings = polylogue_query::Bindings::default();
     for (name, text) in [
-        ("qualified", "sessions where exists tool_call()"),
+        ("qualified", "sessions where exists tool_calls()"),
         ("nested", "query:qualified"),
         ("calls", "tool_calls where outcome:error"),
         ("nested-calls", "query:calls"),
@@ -589,7 +589,7 @@ fn published_saved_qualifiers_drive_offline_matches_fields_and_closed_values() {
             .iter()
             .any(|text| text.ends_with("repo"))
     );
-    let native = "sessions where exists tool_call() | matches | where step.out";
+    let native = "sessions where exists tool_calls() | matches | where step.out";
     assert!(
         grammar(native, native.len())
             .iter()
@@ -603,7 +603,7 @@ fn frozen_plan_metadata_survives_cache_serialization_without_rebinding_names() {
     let path = directory.path().join("catalog");
     let mut bindings = polylogue_query::Bindings::default();
     let definition =
-        polylogue_query::plan::prepare("sessions where exists tool_call()", &bindings, |_| Ok(()))
+        polylogue_query::plan::prepare("sessions where exists tool_calls()", &bindings, |_| Ok(()))
             .unwrap();
     bindings
         .add_saved(

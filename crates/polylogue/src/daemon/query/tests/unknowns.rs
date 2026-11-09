@@ -61,9 +61,9 @@ fn a_negated_condition_never_matches_an_unknown_value() {
     );
     // `exists` is unknown when no child satisfies the condition and some
     // child is unknown for it, so its `NOT` leaves the session out.
-    assert!(has("kind:* exists tool_call(exit_code:unknown)"));
-    assert!(!has("kind:* exists tool_call(exit_code = 0)"));
-    assert!(!has("kind:* NOT exists tool_call(exit_code = 0)"));
+    assert!(has("kind:* exists tool_calls(exit_code:unknown)"));
+    assert!(!has("kind:* exists tool_calls(exit_code = 0)"));
+    assert!(!has("kind:* NOT exists tool_calls(exit_code = 0)"));
 }
 
 /// A tree whose subagent call names a child session that is not in the

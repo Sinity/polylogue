@@ -100,7 +100,7 @@
     },
     "18 tool_calls where tool:Bash | agg count": 13,
     "19 tool_calls where session.tag:project:morrow | agg count": 33,
-    "20 sessions where exists tool_call(action:shell AND outcome:error)": [
+    "20 sessions where exists tool_calls(action:shell AND outcome:error)": [
       "#4",
       "#2"
     ],

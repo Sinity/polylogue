@@ -273,7 +273,7 @@ impl Leaf {
             Leaf::StartedBefore(d) => format!("started < {}", day(*d)),
             Leaf::StartedFrom(d) => format!("started >= {}", day(*d)),
             Leaf::StartedUnknown => "started:unknown".into(),
-            Leaf::ExistsCall(c) => format!("exists tool_call({})", c.text()),
+            Leaf::ExistsCall(c) => format!("exists tool_calls({})", c.text()),
             Leaf::Role(r) => format!("role:{r}"),
             Leaf::WrittenBy(w) => format!("written_by:{w}"),
             Leaf::AtBefore(d) | Leaf::CallAtBefore(d) => format!("at < {}", day(*d)),

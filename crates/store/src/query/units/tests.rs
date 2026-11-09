@@ -12,7 +12,6 @@ fn every_unit_is_declared_once() {
 fn names_round_trip() {
     for s in UNITS {
         assert_eq!(Unit::from_name(s.name), Some(s.unit));
-        assert_eq!(Unit::from_name(s.singular), Some(s.unit));
     }
 }
 
@@ -74,9 +73,9 @@ fn the_grammar_names_every_unit() {
             s.name,
             q.source
         );
-        // `exists UNIT(…)` names the row units by their singular.
+        // `exists UNIT(…)` names the row units by their one name.
         if !matches!(s.unit, Unit::Sessions | Unit::Changes) {
-            let text = format!("exists {}(x)", s.singular);
+            let text = format!("exists {}(x)", s.name);
             crate::query::parse(&text).unwrap_or_else(|e| panic!("{text}: {e}"));
         }
     }

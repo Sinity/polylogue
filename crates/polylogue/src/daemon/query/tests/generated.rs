@@ -805,8 +805,8 @@ proptest! {
     ) {
         let (a, b) = (a.text(), b.text());
         let queries = [
-            over(Unit::Sessions, &format!("exists tool_call({a})")),
-            over(Unit::Sessions, &format!("exists tool_call({a}) | matches")),
+            over(Unit::Sessions, &format!("exists tool_calls({a})")),
+            over(Unit::Sessions, &format!("exists tool_calls({a}) | matches")),
             over(Unit::Sessions, &format!("seq(({a}) -> ({b}))")),
             over(Unit::Sessions, &format!("seq(({a}) -> ({b})) | matches")),
             over(Unit::Sessions, &format!("seq(({a}) -> [next] ({b})) | matches")),

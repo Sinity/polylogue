@@ -160,7 +160,7 @@ fn a_pipe_in_a_quoted_value_keeps_the_match_rows() {
         &d,
         Request::Keep {
             request_id: "quoted-pipe".into(),
-            text: "sessions where exists message(\"synthetic|prompt\")".into(),
+            text: "sessions where exists messages(\"synthetic|prompt\")".into(),
             name: None,
         },
     );

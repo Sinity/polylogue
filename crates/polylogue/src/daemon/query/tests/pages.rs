@@ -108,7 +108,7 @@ fn counts_preserve_selected_rows_across_limits_offsets_and_shapes() {
         "messages | sort by id | limit 2 | where written_by:human",
         "messages where parser | distinct",
         "messages where parser | group by written_by | count",
-        "sessions where exists tool_call(action:shell) | matches | limit 2",
+        "sessions where exists tool_calls(action:shell) | matches | limit 2",
         "messages where parser | union (messages where done)",
         "messages where parser | union (messages where done) | limit 2",
         "messages where parser | union (messages where done | limit 2)",
@@ -177,8 +177,8 @@ fn pages_cover_every_shape_and_allow_new_page_sizes_and_the_original_clock() {
         "messages | sort by model desc",
         "messages | distinct",
         "tool_calls | group by action | count",
-        "sessions where exists tool_call(action:shell) | matches",
-        "sessions where exists tool_call(action:shell) | matches | sort by step.command desc",
+        "sessions where exists tool_calls(action:shell) | matches",
+        "sessions where exists tool_calls(action:shell) | matches | sort by step.command desc",
         "sessions where seq(action:shell -> action:shell) | matches",
     ] {
         let mut request = ask(query);

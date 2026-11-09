@@ -271,7 +271,7 @@ fn derived_saved_pattern_codec_is_atomic_and_old_versions_are_invalidated() {
         family: "family".into(),
         revision: "revision".into(),
         name: "qualified".into(),
-        text: "sessions where exists tool_call()".into(),
+        text: "sessions where exists tool_calls()".into(),
         parameters: vec![],
         help: "Qualified sessions".into(),
         schema: Some(OutputSchema {

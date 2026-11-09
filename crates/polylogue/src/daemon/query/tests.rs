@@ -671,7 +671,7 @@ fn exists_and_seq_match_one_call_and_an_order() {
     assert_eq!(
         ids(&q(
             &w,
-            "sessions where exists tool_call(action:shell AND outcome:error)"
+            "sessions where exists tool_calls(action:shell AND outcome:error)"
         )),
         ["#4", "#2"]
     );
@@ -734,7 +734,7 @@ fn matches_return_the_rows_that_matched() {
     // exists: one row per parent row and matching child.
     let v = q(
         &w,
-        "sessions where exists tool_call(action:shell AND outcome:error) | matches",
+        "sessions where exists tool_calls(action:shell AND outcome:error) | matches",
     );
     assert_eq!(v["unit"], "matches");
     let rows = v["rows"].as_array().unwrap();
@@ -839,13 +839,13 @@ fn kept_results_read_back_as_they_were_kept() {
     };
     let kept = kept_of(
         &w,
-        "sessions where exists tool_call(action:shell AND outcome:error)",
+        "sessions where exists tool_calls(action:shell AND outcome:error)",
     );
     assert_eq!(ids(&kept), ["#4", "#2"]);
     assert!(kept["match_columns"].is_array(), "match rows kept too");
     w.fx.kept_result(
         "0199-kept",
-        "sessions where exists tool_call(action:shell AND outcome:error)",
+        "sessions where exists tool_calls(action:shell AND outcome:error)",
         &kept.to_string(),
     )
     .unwrap();

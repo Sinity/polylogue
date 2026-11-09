@@ -33,12 +33,12 @@ fn output_schema_uses_shared_bucket_names_types_and_closed_values() {
 #[test]
 fn matches_declarations_follow_actual_producer_columns_and_replay_frozen_saved_bodies() {
     for text in [
-        "sessions where exists tool_call() | matches",
+        "sessions where exists tool_calls() | matches",
         "sessions where seq(action:shell -> outcome:error) | matches",
-        "sessions where exists tool_call() | limit 1 | matches",
-        "sessions where exists tool_call() | distinct | matches",
-        "sessions where exists tool_call() | fields id as source, started as began | matches",
-        "sessions where exists tool_call() | fields repo as source.repo | matches",
+        "sessions where exists tool_calls() | limit 1 | matches",
+        "sessions where exists tool_calls() | distinct | matches",
+        "sessions where exists tool_calls() | fields id as source, started as began | matches",
+        "sessions where exists tool_calls() | fields repo as source.repo | matches",
     ] {
         let options = opts(&[]);
         let schema = options.output_schema(text).unwrap();
@@ -60,11 +60,11 @@ fn matches_declarations_follow_actual_producer_columns_and_replay_frozen_saved_b
     }
     for (definition, text) in [
         (
-            "sessions where exists tool_call(outcome:error) | matches",
+            "sessions where exists tool_calls(outcome:error) | matches",
             "query:matching | sort by step.command",
         ),
         (
-            "sessions where exists tool_call(outcome:error)",
+            "sessions where exists tool_calls(outcome:error)",
             "query:matching | matches | sort by step.command",
         ),
     ] {
@@ -144,7 +144,7 @@ fn matches_declarations_follow_actual_producer_columns_and_replay_frozen_saved_b
         ("distinct", vec!["a-first", "a-second", "b-only"]),
     ] {
         let text = format!(
-            "sessions where exists tool_call() | {selection} | matches | fields step.command as command | sort by command"
+            "sessions where exists tool_calls() | {selection} | matches | fields step.command as command | sort by command"
         );
         let program = compile(&text, &opts(&[])).unwrap();
         let mut rows = reader.query_rows(&program).unwrap();
@@ -393,7 +393,7 @@ fn canonical_replay_recovers_kept_declarations_and_lowers_matching() {
 
 #[test]
 fn match_parent_text_alias_keeps_explicit_absence_of_reference_metadata() {
-    let text = "sessions where exists tool_call() | fields text(id) as source | matches | fields parent.source";
+    let text = "sessions where exists tool_calls() | fields text(id) as source | matches | fields parent.source";
     let options = opts(&[]);
     let plan = polylogue_query::compile(text, &options).unwrap();
     let program = lower(&plan, &options).unwrap();
@@ -474,7 +474,7 @@ fn reference_targets_agree_between_catalog_native_columns_and_projections() {
             1
         );
     }
-    let matches = compile("sessions where exists tool_call() | matches", &options).unwrap();
+    let matches = compile("sessions where exists tool_calls() | matches", &options).unwrap();
     for name in ["parent", "step"] {
         assert_eq!(
             matches

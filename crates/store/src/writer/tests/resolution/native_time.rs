@@ -268,7 +268,7 @@ fn native_time_spans_overlap_bounds_and_comparisons_preserve_unknown_and_nanosec
     assert_eq!(
         values(
             &reader,
-            "sessions where exists event(kind:missing-time at:unknown)",
+            "sessions where exists events(kind:missing-time at:unknown)",
             "id"
         ),
         ["claude-code:temporal"]
@@ -276,7 +276,7 @@ fn native_time_spans_overlap_bounds_and_comparisons_preserve_unknown_and_nanosec
     assert!(
         values(
             &reader,
-            "sessions where exists event(kind:missing-time NOT at < 2026-10-29T11:00:00Z)",
+            "sessions where exists events(kind:missing-time NOT at < 2026-10-29T11:00:00Z)",
             "id"
         )
         .is_empty()
@@ -284,7 +284,7 @@ fn native_time_spans_overlap_bounds_and_comparisons_preserve_unknown_and_nanosec
     assert!(
         values(
             &reader,
-            "sessions where NOT exists event(kind:missing-time at >= 2026-10-29T11:00:00Z)",
+            "sessions where NOT exists events(kind:missing-time at >= 2026-10-29T11:00:00Z)",
             "id"
         )
         .is_empty()
@@ -292,7 +292,7 @@ fn native_time_spans_overlap_bounds_and_comparisons_preserve_unknown_and_nanosec
     assert_eq!(
         values(
             &reader,
-            "sessions where exists event(kind:calendar-no-boundary NOT at:unknown)",
+            "sessions where exists events(kind:calendar-no-boundary NOT at:unknown)",
             "id"
         ),
         ["claude-code:temporal"]

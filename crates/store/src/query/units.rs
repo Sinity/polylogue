@@ -19,8 +19,6 @@ pub use polylogue_query::units::Unit;
 pub struct UnitSpec {
     pub unit: Unit,
     pub name: &'static str,
-    /// The singular form `exists` and `seq` use.
-    pub singular: &'static str,
     pub from: Expr,
     /// The row key, `_pk` in the output. It can change when the index is
     /// rebuilt.
@@ -401,7 +399,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Sessions,
         name: "sessions",
-        singular: "session",
         from: Expr::Template("session {s}"),
         key: "{s}.pk",
         identity: &["{s}.id"],
@@ -442,7 +439,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Documents,
         name: "documents",
-        singular: "document",
         from: Expr::Template("document {r}"),
         key: "{r}.pk",
         identity: &["{r}.id"],
@@ -473,7 +469,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Messages,
         name: "messages",
-        singular: "message",
         from: Expr::Template("message {m} JOIN session {s} ON {s}.pk = {m}.session_pk"),
         key: "{m}.pk",
         identity: &["{m}.id"],
@@ -504,7 +499,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Blocks,
         name: "blocks",
-        singular: "block",
         from: Expr::Template(
             "block {b} JOIN message {m} ON {m}.pk = {b}.message_pk JOIN session {s} ON {s}.pk = {b}.session_pk",
         ),
@@ -547,7 +541,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::ToolCalls,
         name: "tool_calls",
-        singular: "tool_call",
         from: Expr::Template(
             "tool_call {t} JOIN block {cb} ON {cb}.pk = {t}.call_block_pk \
              JOIN message {m} ON {m}.pk = {cb}.message_pk JOIN session {s} ON {s}.pk = {t}.session_pk",
@@ -626,7 +619,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Files,
         name: "files",
-        singular: "file",
         from: Expr::Template(
             "(SELECT ft.session_pk AS session_pk, ft.path AS path, min(ft.pk) AS pk, \
              sum(ft.action = 'file_read') AS reads, sum(ft.action = 'file_write') AS writes, \
@@ -662,7 +654,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Events,
         name: "events",
-        singular: "event",
         from: Expr::Template(
             "event {r} LEFT JOIN session {s} ON {s}.pk = {r}.session_pk JOIN input_ref {r}i ON {r}i.pk={r}.input_pk",
         ),
@@ -697,7 +688,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Assertions,
         name: "assertions",
-        singular: "assertion",
         from: Expr::Template("source_assertion {r}"),
         key: "{r}.rowid",
         identity: &["{r}.id", "{r}.root"],
@@ -768,7 +758,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Links,
         name: "links",
-        singular: "link",
         from: Expr::Template(
             "link {r} LEFT JOIN session {r}p ON {r}p.id = {r}.parent_id LEFT JOIN session {r}c ON {r}c.pk = {r}.child_pk",
         ),
@@ -801,7 +790,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Turns,
         name: "turns",
-        singular: "turn",
         from: Expr::Fn(turns_from),
         key: "{r}.pk",
         identity: &["{r}.id"],
@@ -840,7 +828,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Deliveries,
         name: "deliveries",
-        singular: "delivery",
         from: Expr::Template(
             "source_delivery {r} LEFT JOIN session {s} ON {s}.id = {r}.recipient_id",
         ),
@@ -877,7 +864,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::LiveIntervals,
         name: "live_intervals",
-        singular: "live_interval",
         from: Expr::Template("live_interval {r} JOIN session {s} ON {s}.pk = {r}.session_pk"),
         key: "{r}.rowid",
         identity: &["{s}.id", "{r}.aspect", "{r}.start_at"],
@@ -906,7 +892,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Processes,
         name: "processes",
-        singular: "process",
         from: Expr::Template("process {r} JOIN session {s} ON {s}.pk = {r}.session_pk"),
         key: "{r}.rowid",
         identity: &["{s}.id", "{r}.boot_id", "{r}.pid", "{r}.start"],
@@ -944,7 +929,6 @@ pub static UNITS: &[UnitSpec] = &[
     UnitSpec {
         unit: Unit::Changes,
         name: "changes",
-        singular: "change",
         from: Expr::Template(
             "(SELECT 'session' AS kind, cs.id AS ref, cs.pk AS session_pk, \
                MAX(cs.changed, COALESCE(cs.live_changed, 0)) AS seq, cs.changed AS changed, \

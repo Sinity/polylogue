@@ -114,7 +114,7 @@ fn matches_keep_only_entering_parent_columns_with_aliases_and_metadata() {
     let started = &source["rows"][0]["started"];
     for predicate in [
         "seq(command:\"cargo test\" AND outcome:error -> command:\"cargo test\" AND outcome:ok)",
-        "exists tool_call(outcome:error)",
+        "exists tool_calls(outcome:error)",
     ] {
         let text =
             format!("sessions where {predicate} | fields id as source, started as began | matches");

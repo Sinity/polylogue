@@ -59,7 +59,7 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
         format!("changes where after:{cursor} AND kind:session"),
         format!("changes where after:{cursor} | limit 1"),
         format!("changes where after:{cursor} | group by kind | count"),
-        format!("sessions where exists change(after:{cursor}) | count"),
+        format!("sessions where exists changes(after:{cursor}) | count"),
         format!("changes where NOT after:{cursor} OR kind:assertion"),
         "query:old-feed".into(),
     ] {

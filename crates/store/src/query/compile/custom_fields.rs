@@ -253,10 +253,10 @@ pub(crate) fn evidence_until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<S
         other => {
             return Err(QueryError::Invalid {
                 message: format!(
-                    "evidence_until asks for rows as Polylogue had them; {} figures are not recomputed \
+                    "evidence_until asks for rows as Polylogue had them; figures of {} are not recomputed \
                      as they stood then: ask for the session's messages, tool calls or notes \
                      (`messages where session:ID evidence_until:…`)",
-                    other.singular()
+                    other.name()
                 ),
                 position: x.span.start,
             });

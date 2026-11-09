@@ -151,19 +151,23 @@ fn three_valued_filters_partition() {
         );
     }
     let top: BTreeSet<String> = ids(&q(&r, "sessions")).into_iter().collect();
-    let has: BTreeSet<String> = ids(&q(&r, "sessions where exists tool_call(outcome:error)"))
+    let has: BTreeSet<String> = ids(&q(&r, "sessions where exists tool_calls(outcome:error)"))
         .into_iter()
         .collect();
-    let hasnt: BTreeSet<String> = ids(&q(&r, "sessions where NOT exists tool_call(outcome:error)"))
-        .into_iter()
-        .collect();
+    let hasnt: BTreeSet<String> = ids(&q(
+        &r,
+        "sessions where NOT exists tool_calls(outcome:error)",
+    ))
+    .into_iter()
+    .collect();
     assert!(has.is_disjoint(&hasnt), "{has:?} {hasnt:?}");
     // The rest have no failing call but a call whose outcome is unknown:
     // `exists` is unknown for them, so neither form returns them.
-    let unknown: BTreeSet<String> = ids(&q(&r, "sessions where exists tool_call(outcome:unknown)"))
-        .into_iter()
-        .filter(|s| !has.contains(s))
-        .collect();
+    let unknown: BTreeSet<String> =
+        ids(&q(&r, "sessions where exists tool_calls(outcome:unknown)"))
+            .into_iter()
+            .filter(|s| !has.contains(s))
+            .collect();
     assert_eq!(
         has.union(&hasnt)
             .chain(&unknown)

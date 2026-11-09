@@ -32,7 +32,7 @@ fn every_spec_example_parses_through_the_product_catalog() {
         "tool_calls | group by action | count",
         "tool_calls where tool:Bash | agg count",
         "tool_calls where session.tag:project:morrow | agg count",
-        "sessions where exists tool_call(action:shell AND outcome:error)",
+        "sessions where exists tool_calls(action:shell AND outcome:error)",
         "sessions where seq(command:\"cargo test\" AND outcome:error -> tool:Edit -> command:\"cargo test\" AND outcome:ok)",
         "messages where written_by:human | group by session.origin | count",
         "messages where active:false",
@@ -205,7 +205,7 @@ fn shared_units_stages_and_nested_queries_use_product_names() {
         p("origin:codex | union (repo:morrow | where cost > 1) | except (sessions where chrono)");
     assert_eq!(nested.transforms.len(), 2);
     assert!(
-        matches!(cond("count(tool_call where outcome:error) >= 3"), ConditionKind::Count { unit, op: Op::Ge, count: 3, condition: Some(_), .. } if unit == "tool_calls")
+        matches!(cond("count(tool_calls where outcome:error) >= 3"), ConditionKind::Count { unit, op: Op::Ge, count: 3, condition: Some(_), .. } if unit == "tool_calls")
     );
     assert!(
         matches!(cond("id in (messages where chrono | group by session)"), ConditionKind::In { query, .. } if query.transforms.len() == 1)
@@ -221,7 +221,7 @@ fn repairs_and_product_depth_guard_are_stable() {
     assert!(matches!(parse(&deep), Err(QueryError::TooDeep { max: 64 })));
     let allowed = format!("{}a{}", "(".repeat(64), ")".repeat(64));
     assert!(parse(&allowed).is_ok());
-    assert!(parse("kind:* where exists tool_call(outcome:error)").is_err());
+    assert!(parse("kind:* where exists tool_calls(outcome:error)").is_err());
     assert!(parse("kind:* \"where\"").is_ok());
 }
 
