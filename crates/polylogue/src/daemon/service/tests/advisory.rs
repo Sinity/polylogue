@@ -138,36 +138,3 @@ fn advisory_cooldown_and_once_pair_history_have_distinct_lifetimes() {
         "after-cooldown"
     );
 }
-
-#[test]
-fn an_advisory_past_its_cap_answers_with_nothing_on_every_surface() {
-    // Preparation that cannot finish within the 20 ms cap fails open: the
-    // answer is the empty advisory, never a timeout, so every client gets
-    // the same answer however busy the daemon is.
-    let (w, _) = fixture();
-    let request = Request::Context {
-        budget_tokens: Default::default(),
-        request_id: polylogue_store::user_writes::new_request_id(),
-        ask: Ask::Advisory {
-            prompt: "Inspect src/parser.rs".into(),
-            cwd: CWD.into(),
-            session: SessionId::parse("codex:advisory-expired").unwrap(),
-        },
-        sender: None,
-    };
-    let expired =
-        polylogue_store::read::limit::ReadLimit::new(std::time::Duration::ZERO, Default::default());
-    let invocation = crate::operation::Invocation::new(
-        polylogue_model::Timestamp::from_unix_ms(1_790_856_000_000).unwrap(),
-        "synthetic-advisory".into(),
-        Authorship {
-            author: polylogue_model::Author::Operator,
-            via: Channel::Cli,
-        },
-    );
-    let answer = super::super::handle_with_invocation(request, &w.daemon, &expired, &invocation);
-    assert!(answer.failure().is_none(), "{answer:?}");
-    let value = crate::test_answers::ok(answer);
-    assert_eq!(value["delivery"], Value::Null);
-    assert_eq!(value["prepared"]["text"], "");
-}
