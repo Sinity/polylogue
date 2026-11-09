@@ -1168,6 +1168,7 @@ mod authorship;
 mod hash_order;
 
 mod documents;
+mod same_bytes;
 
 #[test]
 fn a_user_write_goes_ahead_of_queued_batches() {

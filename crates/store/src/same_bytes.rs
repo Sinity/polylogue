@@ -71,7 +71,7 @@ pub struct ReadingCopy {
 ///
 /// A message, document, event or link shows its source input's newest
 /// chain, and on equal values a newer chain wins, so an older chain's copy
-/// changes no shown row. Its sessions are marked changed, as a parse of the
+/// changes no shown row, and a copied document source is not the shown one. Its sessions are marked changed, as a parse of the
 /// chain would mark them.
 pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) -> Result<bool> {
     let ReadingCopy {
@@ -140,6 +140,9 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
                     .iter()
                     .map(|column| match column.as_str() {
                         "chain" => "?3".to_owned(),
+                        // The shown document source is the newest chain's
+                        // (documents.rs `refresh`); the older copy never is.
+                        "shown" if table == "document_source" => "0".to_owned(),
                         // When this write admitted the row, as a parse
                         // of the chain would record its own write.
                         "commit_seq" | "admitted" => {
