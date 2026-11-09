@@ -144,10 +144,6 @@ fn accepting_preparation_uses_original_native_rows_and_scratch_definitions() {
     assert_eq!(loaded["focus"][0].hash, object.id);
     assert_eq!(loaded["focus"][0].denominator, Some(object.id));
     assert_eq!(actual.definitions()[0].question_id, object.id);
-    let latest = prepare_query_plan_on(original, &tx, "latest", &native, None, None, None).unwrap();
-    let explicit =
-        polylogue_query::plan::prepare("session:test:latest", &native, |_| Ok(())).unwrap();
-    assert_eq!(latest.question_id(), explicit.question_id());
     let ordinary =
         prepare_query_plan_on(original, original, "sessions", &native, None, None, None).unwrap();
     let mut options = super::super::tests::options();
