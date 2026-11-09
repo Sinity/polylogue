@@ -56,6 +56,42 @@ pub fn tail_intact(path: &Path, from: u64, tail: &[u8]) -> io::Result<bool> {
     Ok(read_range(path, from - len, from)? == tail)
 }
 
+/// Whether the file at `path` begins with exactly the stored bytes of
+/// `chain`. A file whose identity changed (another inode, or gone and back)
+/// continues its chain only when every stored byte is still there.
+pub fn stored_prefix_intact(
+    path: &Path,
+    chain: &polylogue_store::blobs::StoredChain,
+    blobs: &std::sync::Arc<polylogue_store::blobs::Blobs>,
+) -> io::Result<bool> {
+    let mut file = File::open(path)?.take(chain.length);
+    let mut stored = chain.reader(std::sync::Arc::clone(blobs));
+    let mut left = vec![0u8; 1 << 20];
+    let mut right = vec![0u8; 1 << 20];
+    let mut compared = 0u64;
+    loop {
+        let n = read_full(&mut file, &mut left)?;
+        if n == 0 {
+            return Ok(compared == chain.length);
+        }
+        if read_full(&mut stored, &mut right[..n])? != n || left[..n] != right[..n] {
+            return Ok(false);
+        }
+        compared += n as u64;
+    }
+}
+
+fn read_full(reader: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..])? {
+            0 => break,
+            n => filled += n,
+        }
+    }
+    Ok(filled)
+}
+
 /// The last [`TAIL`] bytes of `bytes`, kept to check the next growth.
 pub fn tail_of(bytes: &[u8]) -> Vec<u8> {
     bytes[bytes.len().saturating_sub(TAIL)..].to_vec()

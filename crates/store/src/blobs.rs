@@ -50,6 +50,17 @@ pub struct FileFacts {
 }
 
 impl FileFacts {
+    /// The same unchanged file. A device number is assigned when a
+    /// filesystem is mounted (btrfs subvolumes, network and FUSE mounts), so
+    /// a remount renumbers every file; the same inode with the same size,
+    /// modification and change time is the same file.
+    pub fn unchanged_as(&self, other: &Self) -> bool {
+        self.inode == other.inode
+            && self.size == other.size
+            && self.mtime_ns == other.mtime_ns
+            && self.ctime_ns == other.ctime_ns
+    }
+
     pub fn of(meta: &Metadata) -> Self {
         let ns = |s: i64, n: i64| i128::from(s) * 1_000_000_000 + i128::from(n);
         Self {
@@ -89,7 +100,7 @@ pub fn classify(last: Option<FileFacts>, now: Option<FileFacts>) -> Change {
         (None, None) => Change::Unchanged,
         (Some(_), None) => Change::Disappeared,
         (None, Some(_)) => Change::First,
-        (Some(l), Some(n)) if l == n => Change::Unchanged,
+        (Some(l), Some(n)) if l.unchanged_as(&n) => Change::Unchanged,
         (Some(l), Some(n)) if l.device == n.device && l.inode == n.inode && n.size > l.size => {
             Change::Appended { from: l.size }
         }
