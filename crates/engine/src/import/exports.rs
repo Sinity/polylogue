@@ -119,31 +119,45 @@ impl export::ItemSink for ItemWriter<'_> {
     }
 }
 
-struct StateLookup<'a>(&'a mut ExportItems);
+/// The scratch store behind an export's cross-item state. A failure here is
+/// the import's own I/O, kept apart so it stops the export instead of being
+/// mistaken for one unreadable item.
+struct StateLookup<'a> {
+    items: &'a mut ExportItems,
+    failure: Option<String>,
+}
+impl StateLookup<'_> {
+    fn note<T>(&mut self, result: Result<T, impl std::fmt::Display>) -> Result<T, String> {
+        result.map_err(|error| {
+            let error = error.to_string();
+            self.failure.get_or_insert_with(|| error.clone());
+            error
+        })
+    }
+}
 impl ExportState for StateLookup<'_> {
     fn record_first_session(
         &mut self,
         native: &str,
         session: &polylogue_model::SessionId,
     ) -> Result<Option<polylogue_model::SessionId>, String> {
-        self.0
-            .claim_owner(native, session)
-            .map_err(|e| e.to_string())
+        let result = self.items.claim_owner(native, session);
+        self.note(result)
     }
     fn last_message(
         &mut self,
         session: &polylogue_model::SessionId,
     ) -> Result<Option<polylogue_model::MessageId>, String> {
-        self.0.last_message(session).map_err(|e| e.to_string())
+        let result = self.items.last_message(session);
+        self.note(result)
     }
     fn set_last_message(
         &mut self,
         session: &polylogue_model::SessionId,
         message: &polylogue_model::MessageId,
     ) -> Result<(), String> {
-        self.0
-            .set_last_message(session, message)
-            .map_err(|e| e.to_string())
+        let result = self.items.set_last_message(session, message);
+        self.note(result)
     }
 }
 
@@ -549,13 +563,17 @@ pub(crate) fn parse_export(
     }
     while let Some(ExportRecord { range, bytes }) = next {
         polylogue_store::fault::check("parse", &plan.path.to_string_lossy())?;
-        let step = export::parse_item(
-            parser,
-            &bytes,
-            range.clone(),
-            &mut StateLookup(&mut scratch),
-        )
-        .map_err(EngineError::Parse)?;
+        let mut state = StateLookup {
+            items: &mut scratch,
+            failure: None,
+        };
+        let parsed = export::parse_item(parser, &bytes, range.clone(), &mut state);
+        if let Some(failure) = state.failure {
+            return Err(EngineError::Parse(failure));
+        }
+        // One element the parser cannot read is that element's outcome; the
+        // export's other elements still parse. Its bytes stay stored.
+        let step = parsed.unwrap_or_else(|error| export::unreadable_item(error, range.clone()));
         let count = step.output.messages.len() as u64;
         let cursor = delivered(
             emit(ExportStep {

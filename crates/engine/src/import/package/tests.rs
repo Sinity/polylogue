@@ -83,6 +83,49 @@ fn nested_tar_and_compressed_tar_keep_originals_and_decoded_members() {
 }
 
 #[test]
+fn a_container_inside_its_own_bytes_is_refused() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("export.zip");
+    zip(&source, &[("conversations.json", CHAT.as_bytes())]);
+    let archive = Archive::at(&scratch.path().join("encoded"));
+    let bytes = copy_source(&source, &archive).unwrap();
+    // As if this container had been reached through a chain of containers
+    // that starts with these same bytes.
+    let mut seen = Expansion {
+        ancestors: vec![bytes.hash()],
+        ..Expansion::default()
+    };
+    let error = expand(source, bytes, None, &archive, &mut seen, &mut Vec::new()).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+}
+
+#[test]
+fn a_repeated_container_is_kept_once_and_expanded_once() {
+    let scratch = tempfile::tempdir().unwrap();
+    let inner = scratch.path().join("inner.zip");
+    zip(&inner, &[("conversations.json", CHAT.as_bytes())]);
+    let inner = std::fs::read(&inner).unwrap();
+    let source = scratch.path().join("outer.zip");
+    zip(&source, &[("a/inner.zip", &inner), ("b/inner.zip", &inner)]);
+    let members = stage(&source, &Archive::at(&scratch.path().join("encoded")), None).unwrap();
+    let containers = members.iter().filter(|member| member.container).count();
+    let decoded = members.iter().filter(|member| !member.container).count();
+    assert_eq!((containers, decoded), (3, 1));
+    assert!(members.iter().all(|member| member.origin.is_some()));
+}
+
+#[test]
+fn a_declared_size_beyond_free_staging_space_is_refused_before_decoding() {
+    let scratch = tempfile::tempdir().unwrap();
+    let archive = Archive::at(&scratch.path().join("encoded"));
+    assert!(fits_in_staging(&archive, 1).is_ok());
+    assert_eq!(
+        fits_in_staging(&archive, u64::MAX).unwrap_err().kind(),
+        std::io::ErrorKind::StorageFull
+    );
+}
+
+#[test]
 fn corrupt_member_refuses_container_before_staging_completes() {
     let scratch = tempfile::tempdir().unwrap();
     let source = scratch.path().join("broken.zip");

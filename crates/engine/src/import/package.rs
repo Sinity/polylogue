@@ -24,6 +24,7 @@ pub(super) fn stage(
         return Ok(members);
     }
     let mut members = Vec::new();
+    let mut seen = Expansion::default();
     if path.is_dir() {
         let mut paths = Vec::new();
         files_under(path, &mut paths)?;
@@ -33,6 +34,7 @@ pub(super) fn stage(
                 copy_source(&child, archive)?,
                 None,
                 archive,
+                &mut seen,
                 &mut members,
             )?;
         }
@@ -42,6 +44,7 @@ pub(super) fn stage(
             copy_source(path, archive)?,
             None,
             archive,
+            &mut seen,
             &mut members,
         )?;
     }
@@ -63,11 +66,38 @@ fn copy_source(
     Ok(copied)
 }
 
+/// What container expansion has seen so far. Work follows distinct content:
+/// a container holding its own bytes (directly or through a chain of
+/// containers) is refused, and a container already expanded at another path
+/// in the same import is kept as an original without expanding it again.
+#[derive(Default)]
+struct Expansion {
+    ancestors: Vec<polylogue_model::BlobHash>,
+    expanded: std::collections::HashSet<polylogue_model::BlobHash>,
+}
+
+/// Refuses a member whose declared decoded size cannot fit in the free
+/// staging space, before any of it is decoded.
+fn fits_in_staging(archive: &Archive, declared: u64) -> std::io::Result<()> {
+    let directory = archive.staging_dir();
+    std::fs::create_dir_all(&directory)?;
+    let stats = rustix::fs::statvfs(&directory).map_err(std::io::Error::from)?;
+    let free = stats.f_bavail.saturating_mul(stats.f_frsize);
+    if declared > free {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::StorageFull,
+            format!("container declares {declared} decoded bytes; staging has {free} free"),
+        ));
+    }
+    Ok(())
+}
+
 fn expand(
     path: PathBuf,
     bytes: polylogue_store::staging::PreparedBytes,
     parent: Option<(usize, u64)>,
     archive: &Archive,
+    seen: &mut Expansion,
     out: &mut Vec<Member>,
 ) -> std::io::Result<()> {
     let mut file = bytes.reader().map_err(std::io::Error::other)?;
@@ -81,6 +111,26 @@ fn expand(
         || path.to_string_lossy().ends_with(".tar.gz")
         || path.to_string_lossy().ends_with(".tar.zst");
     let index = out.len();
+    let hash = bytes.hash();
+    if container && seen.ancestors.contains(&hash) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("container {} contains its own bytes", path.display()),
+        ));
+    }
+    if container && !seen.expanded.insert(hash) {
+        // The same container at another path: its members are already staged.
+        out.push(Member {
+            path,
+            bytes,
+            container: true,
+            origin: None,
+            parent,
+            container_kind: None,
+            member_path_bytes: None,
+        });
+        return Ok(());
+    }
     if !container {
         out.push(Member {
             path,
@@ -96,6 +146,14 @@ fn expand(
     let mut children = Vec::new();
     if magic[..n].starts_with(ZIP_MAGIC) || path.extension().is_some_and(|e| e == "zip") {
         let mut zip = zip::ZipArchive::new(&mut file).map_err(std::io::Error::other)?;
+        let mut declared = 0u64;
+        for i in 0..zip.len() {
+            let member = zip.by_index_raw(i).map_err(std::io::Error::other)?;
+            if member.is_file() {
+                declared = declared.saturating_add(member.size());
+            }
+        }
+        fits_in_staging(archive, declared)?;
         for i in 0..zip.len() {
             let mut member = zip.by_index(i).map_err(std::io::Error::other)?;
             if !member.is_file() {
@@ -104,8 +162,9 @@ fn expand(
             let name = member.name_raw().to_vec();
             let display = member.name().to_owned();
             let expected = member.size();
+            // One byte past the declaration is enough to know it lied.
             let decoded = archive
-                .prepare_bytes(&mut member)
+                .prepare_bytes((&mut member).take(expected.saturating_add(1)))
                 .map_err(std::io::Error::other)?;
             if decoded.len() != expected {
                 return Err(std::io::Error::other(
@@ -129,6 +188,7 @@ fn expand(
                 continue;
             }
             let name = entry.path()?.into_owned();
+            fits_in_staging(archive, entry.header().size()?)?;
             let member = archive
                 .prepare_bytes(&mut entry)
                 .map_err(std::io::Error::other)?;
@@ -163,6 +223,7 @@ fn expand(
     } else {
         "tar"
     };
+    seen.ancestors.push(hash);
     for (name, i, member, display) in children {
         let child = out.len();
         let display = display.unwrap_or_else(|| {
@@ -174,11 +235,13 @@ fn expand(
             member,
             Some((index, i)),
             archive,
+            seen,
             out,
         )?;
         out[child].container_kind = Some(kind.into());
         out[child].member_path_bytes = Some(name);
     }
+    seen.ancestors.pop();
     Ok(())
 }
 
@@ -363,6 +426,17 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
             member.parent.is_some_and(|parent| parent.0 == index) && member.origin.is_some()
         }) {
             members[index].origin = polylogue_sources::origin::by_name(KEPT);
+        }
+    }
+    // A repeated container shares the route of its first, expanded copy.
+    let kept: std::collections::HashSet<_> = members
+        .iter()
+        .filter(|member| member.container && member.origin.is_some())
+        .map(|member| member.bytes.hash())
+        .collect();
+    for member in members.iter_mut().filter(|member| member.container) {
+        if member.origin.is_none() && kept.contains(&member.bytes.hash()) {
+            member.origin = polylogue_sources::origin::by_name(KEPT);
         }
     }
     Ok(())

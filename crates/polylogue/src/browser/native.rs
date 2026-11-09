@@ -30,8 +30,16 @@ pub fn read_frame(input: &mut impl Read) -> io::Result<Option<Value>> {
         Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(e) => return Err(e),
     }
-    let mut buf = vec![0u8; u32::from_ne_bytes(len) as usize];
-    input.read_exact(&mut buf)?;
+    // Memory follows the bytes that arrive, not the length the header claims.
+    let len = u64::from(u32::from_ne_bytes(len));
+    let mut buf = Vec::new();
+    input.take(len).read_to_end(&mut buf)?;
+    if buf.len() as u64 != len {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("frame ended after {} of {len} bytes", buf.len()),
+        ));
+    }
     serde_json::from_slice(&buf)
         .map(Some)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))

@@ -2149,6 +2149,7 @@ dependencies = [
  "proptest",
  "query-language",
  "rusqlite",
+ "rustix",
  "schemars",
  "serde",
  "serde_json",

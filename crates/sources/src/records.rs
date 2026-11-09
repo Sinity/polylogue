@@ -38,6 +38,13 @@ impl Records {
         self.counts.add(kind, outcome);
     }
 
+    /// A key the record repeats: JSON readers keep only its last value, so
+    /// the earlier values are leaves nothing read. The bytes stay stored.
+    pub fn repeated_key(&mut self, kind: &str, path: &str) {
+        self.counts
+            .unread(kind, &format!("{path} (repeated key; earlier value)"));
+    }
+
     /// Count unused leaves and derived shapes in one walk.
     pub fn fields(&mut self, kind: &str, value: &Json, declared: &Fields) {
         self.account(kind, value, declared, None, false);
