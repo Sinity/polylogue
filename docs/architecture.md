@@ -138,6 +138,12 @@ already stored. Deduplication checks the hash index together with the hashes
 appended in groups not yet committed, so a resumed write never stores a blob
 twice.
 
+Those states cover a process crash. A power loss or kernel panic also drops
+writes the kernel had not yet flushed, so the stores that hold irreplaceable
+data sync every commit: `archive.db` and `embeddings.db` (paid vectors) commit
+with SQLite's `synchronous=FULL`, and segments sync before their extents
+commit. `index.db` is rebuilt from those, so it commits with `NORMAL`.
+
 ## Pipeline
 
 Building the archive overlaps every stage:

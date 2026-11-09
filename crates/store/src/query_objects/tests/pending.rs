@@ -148,7 +148,11 @@ impl Sinex for PendingProducer {
     fn confirmed(&self, _: &crate::primary::ReplayState, _: &str) -> Result<Vec<Confirmed>> {
         Self::unavailable()
     }
-    fn acknowledge(&self, _: &crate::primary::ReplayState) -> Result<()> {
+    fn acknowledge(
+        &self,
+        _: &crate::primary::ReplayState,
+        _: &dyn Fn(&str) -> Result<bool>,
+    ) -> Result<()> {
         Self::unavailable()
     }
 }

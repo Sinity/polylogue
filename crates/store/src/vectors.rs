@@ -69,7 +69,12 @@ impl Vectors {
         limit: Option<&crate::read::limit::ReadLimit>,
     ) -> Result<Self> {
         let conn = if writable {
-            open_write(&archive.embeddings_db(), crate::archive::cache::SETUP)?
+            let conn = open_write(&archive.embeddings_db(), crate::archive::cache::SETUP)?;
+            // Vectors are paid for; each committed batch must survive a power
+            // loss, not only a process crash. One sync per batch costs little
+            // next to the provider call that produced it.
+            conn.pragma_update(None, "synchronous", "full")?;
+            conn
         } else {
             open_read(&archive.embeddings_db())?
         };

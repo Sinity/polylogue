@@ -26,6 +26,17 @@ pub(crate) fn save(conn: &Connection, state: &ReplayState) -> Result<()> {
     Ok(())
 }
 
+/// Whether `index.db` holds a fact for this Sinex event. Every confirmed
+/// change, including a refusal or an erasure seen before the live event,
+/// leaves one, and facts are never deleted.
+pub(crate) fn has_fact(conn: &Connection, event: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM primary_fact WHERE event=?1)",
+        [event],
+        |row| row.get(0),
+    )?)
+}
+
 pub(crate) fn native_context(conn: &Connection, event: &str) -> Result<Option<NativeFactContext>> {
     let bytes: Option<Vec<u8>> = conn
         .query_row(

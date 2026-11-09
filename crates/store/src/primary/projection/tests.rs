@@ -703,3 +703,26 @@ mod exports;
 mod associations;
 
 mod completion;
+
+#[test]
+fn has_fact_follows_applied_positions_and_erasures_seen_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = cache(&dir.path().join("index.db"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let erased = Confirmed {
+        native: None,
+        position: 3,
+        output_index: 0,
+        event: "event-erased".into(),
+        change: ConfirmedChange::Tombstoned,
+    };
+    // Staged but not yet complete: not in index.db.
+    apply(&mut index, &resolver, &[input(2, "staged"), erased]).unwrap();
+    assert!(!has_fact(&index, "event-staged").unwrap());
+    apply(&mut index, &resolver, &[barrier(4)]).unwrap();
+    assert!(has_fact(&index, "event-staged").unwrap());
+    // An event erased before this index read it still leaves a fact.
+    assert!(has_fact(&index, "event-erased").unwrap());
+    assert!(!has_fact(&index, "event-never-delivered").unwrap());
+}

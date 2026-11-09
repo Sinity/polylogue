@@ -38,6 +38,11 @@ pub(crate) fn no_event_receipt(frame: &sinex_protocol::Ingress) -> sinex_protoco
     .unwrap()
 }
 
+/// An index that holds every event, for tests about positions and receipts.
+pub(crate) fn every_event_applied(_: &str) -> crate::Result<bool> {
+    Ok(true)
+}
+
 pub(crate) fn applied(position: i64) -> polylogue_store::primary::ReplayState {
     polylogue_store::primary::ReplayState {
         applied_position: Some(position),
@@ -205,14 +210,20 @@ fn grouped_capture_remains_pending_until_its_confirmed_barrier() {
         .spool
         .lock()
         .unwrap()
-        .retire(&crate::tests::applied(9))
+        .retire(
+            &crate::tests::applied(9),
+            &crate::tests::every_event_applied,
+        )
         .unwrap();
     assert_eq!(sinex.pending_captures().unwrap().len(), 1);
     sinex
         .spool
         .lock()
         .unwrap()
-        .retire(&crate::tests::applied(10))
+        .retire(
+            &crate::tests::applied(10),
+            &crate::tests::every_event_applied,
+        )
         .unwrap();
     assert!(sinex.pending_captures().unwrap().is_empty());
 }
