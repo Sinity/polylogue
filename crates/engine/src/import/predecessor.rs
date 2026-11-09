@@ -300,6 +300,11 @@ impl Engine {
                 )));
             };
             seen.insert(address);
+            let Some(embedded_at) = identity.embedded_at else {
+                report.unmatched("its purchase time is not recorded", 1);
+                report.unmatched_addresses.push(id.to_owned());
+                return Ok(());
+            };
             let matches = texts.get(&address).map(Vec::as_slice).unwrap_or_default();
             let whole: Vec<&Vec<u8>> = matches
                 .iter()
@@ -327,7 +332,7 @@ impl Engine {
                     chunk: 0,
                     dims: dims as i64,
                     vector: values.to_vec(),
-                    embedded_at: identity.embedded_at.unwrap_or(0),
+                    embedded_at,
                 });
             }
             if batch.len() >= VECTORS_PER_GROUP {
@@ -336,12 +341,11 @@ impl Engine {
             Ok(())
         })?;
         flush(&mut batch, report)?;
-        let missing = identities.len() - seen.len();
-        if missing > 0 {
-            return Err(std::io::Error::other(format!(
-                "{missing} vectors named in the store's metadata have no stored values"
-            ))
-            .into());
+        for identity in &identities {
+            if !seen.contains(&identity.address) {
+                report.unmatched("named in the store's metadata with no stored values", 1);
+                report.unmatched_addresses.push(hex(&identity.address));
+            }
         }
         Ok(())
     }
