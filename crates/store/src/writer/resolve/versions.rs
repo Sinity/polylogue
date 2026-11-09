@@ -624,12 +624,14 @@ impl<'a> Projection<'a> {
                     .map(|(pk, _)| *pk),
             );
             for pk in stale {
-                if !messages.contains_key(&pk) {
-                    let (sources, shown) = load_message(index, pk, message_layouts)?;
-                    shown_messages.insert(pk, shown);
-                    messages.insert(pk, sources);
-                }
-                let sources = messages.get_mut(&pk).expect("loaded above");
+                let sources = match messages.entry(pk) {
+                    std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        let (sources, shown) = load_message(index, pk, message_layouts)?;
+                        shown_messages.insert(pk, shown);
+                        entry.insert(sources)
+                    }
+                };
                 if sources.iter().any(|s| s.input == input && s.chain == chain) {
                     continue;
                 }
