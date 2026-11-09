@@ -310,17 +310,9 @@ fn context_deadline(name: &str) {
 }
 
 fn assert_no_prepared(daemon: &test_daemon::TestDaemon) {
-    let response = crate::daemon::service::handle(
-        crate::daemon::Request::Query {
-            text: "deliveries".into(),
-            cursor: None,
-            page_size: None,
-            why: false,
-            session: None,
-            fields: vec![],
-        },
-        &daemon.daemon,
-    );
+    let response =
+        crate::test_daemon::Call::new("query", serde_json::json!({"query": "deliveries"}))
+            .answer(&daemon.daemon);
     let Some(data) = response.value().cloned() else {
         panic!("{response:?}");
     };

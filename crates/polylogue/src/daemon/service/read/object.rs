@@ -1,4 +1,5 @@
 //! Exact accepted object reads share durable Begin/Outcome and output codecs.
+use super::ReadRequest;
 use super::*;
 use polylogue_model::{Reference, RunId, query_objects::*};
 use std::num::NonZeroU64;
@@ -11,13 +12,10 @@ fn accepted(operation: &crate::operation::Context) -> Result<Option<serde_json::
         .map_err(|e| Failure::new("internal", e))
 }
 
-fn target(request: &Request) -> Option<Result<Reference, Failure>> {
-    let Request::Read {
+fn target(request: &ReadRequest) -> Option<Result<Reference, Failure>> {
+    let ReadRequest {
         target, options, ..
-    } = request
-    else {
-        return None;
-    };
+    } = request;
     (target.starts_with("request:") || options.view == View::Raw && target.starts_with("run:"))
         .then(|| Reference::parse(target).map_err(|error| Failure::new("bad_request", error)))
 }
@@ -25,7 +23,7 @@ fn target(request: &Request) -> Option<Result<Reference, Failure>> {
 fn execute<T>(
     reader: &Reader<'_>,
     d: &Daemon,
-    request: &Request,
+    request: &ReadRequest,
     operation: &Arc<crate::operation::Context>,
     reference: Reference,
     run: impl FnOnce(
@@ -39,16 +37,13 @@ fn execute<T>(
         &ProjectionEvidence,
     ) -> Result<T, Failure>,
 ) -> Result<T, Failure> {
-    let Request::Read {
+    let ReadRequest {
         options,
         format,
         delivery,
         budget,
         ..
-    } = request
-    else {
-        unreachable!()
-    };
+    } = request;
     options
         .validate()
         .map_err(|error| Failure::new("bad_request", error))?;
@@ -176,16 +171,14 @@ fn execute<T>(
 pub(super) fn page(
     reader: &Reader<'_>,
     d: &Daemon,
-    request: &Request,
+    request: &ReadRequest,
     operation: &Arc<crate::operation::Context>,
 ) -> Option<Answer<Value>> {
     let reference = match target(request)? {
         Ok(reference) => reference,
         Err(failure) => return Some(failure.answer()),
     };
-    let Request::Read { options, .. } = request else {
-        return None;
-    };
+    let ReadRequest { options, .. } = request;
     let result = execute(
         reader,
         d,
@@ -263,12 +256,12 @@ pub(super) fn page(
 }
 
 pub(super) fn produce(
-    request: &Request,
+    request: &ReadRequest,
     d: &Daemon,
     operation: &Arc<crate::operation::Context>,
     output: &mut dyn Write,
 ) -> Option<Result<(), Failure>> {
-    let Request::Read {
+    let ReadRequest {
         options,
         with_blobs,
         delivery: ReadDelivery::Stream,

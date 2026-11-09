@@ -51,23 +51,11 @@ fn output_lines() -> u64 {
 pub type Answer = polylogue_model::read::ReadPage;
 
 impl Arguments {
-    /// The read request these arguments name, built by the command's own
-    /// builder, the one parser of read arguments.
-    #[cfg(test)]
-    pub fn into_request(self) -> Result<crate::daemon::Request, String> {
-        let command = crate::commands::command("read").ok_or("read is a command")?;
-        let caller = crate::commands::Caller {
-            surface: crate::commands::Surface::Mcp,
-            cwd: None,
-            json: true,
-        };
-        let arguments = serde_json::to_value(self).map_err(|error| error.to_string())?;
-        (command.build_typed.ok_or("read has a typed builder")?)(arguments, &caller, "test-read")
-            .map_err(|error| error.to_string())
-    }
-
-    pub fn from_request(request: &crate::daemon::Request) -> Result<Self, String> {
-        let crate::daemon::Request::Read {
+    /// The public arguments of a resolved read, for its continuation call.
+    pub(crate) fn from_request(
+        request: &crate::daemon::service::read::ReadRequest,
+    ) -> Result<Self, String> {
+        let crate::daemon::service::read::ReadRequest {
             target,
             options,
             delivery,
@@ -75,10 +63,7 @@ impl Arguments {
             budget,
             with_blobs,
             cursor: _,
-        } = request
-        else {
-            return Err("a read request is required".into());
-        };
+        } = request;
         let (show, hide) = options.fold_words();
         Ok(Self {
             target: target.clone(),

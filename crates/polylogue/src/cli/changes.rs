@@ -1,6 +1,6 @@
 //! Printing the change feed. A completion line is forwarded only after every
 //! preceding line has been validated and written, then stdout is flushed.
-use super::{Archive, Request, fail};
+use super::{Archive, fail};
 use crate::daemon::query::feed::Line;
 use polylogue_model::ChangePosition;
 #[cfg(test)]
@@ -15,16 +15,21 @@ fn invalid(message: &str) -> io::Error {
 /// `changes`: writes one finite batch to stdout, ending with its
 /// completion line.
 pub fn run(
-    _: &crate::commands::Values,
-    request: &Request,
+    values: &crate::commands::Values,
     startup: &crate::config::Startup,
     call: &command_surface::RunnableRequest,
 ) -> ExitCode {
+    let arguments = match arguments(values) {
+        Ok(arguments) => arguments,
+        Err(message) => return fail(startup.output, true, "bad_request", &message, 2),
+    };
     let timeout = call
         .deadline
         .duration(Some(crate::daemon::execution::timeout()));
     let archive = Archive::at(&startup.config.archive);
-    match send(&archive, request, &mut io::stdout().lock(), timeout) {
+    let mut request = call.clone();
+    request.arguments = arguments;
+    match send(&archive, &request, &mut io::stdout().lock(), timeout) {
         Ok(code) => ExitCode::from(code),
         Err(e)
             if matches!(
@@ -38,20 +43,30 @@ pub fn run(
     }
 }
 
+/// The feed's arguments: only the last applied position.
+pub(crate) fn arguments(values: &crate::commands::Values) -> Result<serde_json::Value, String> {
+    if values.text("cursor").is_some()
+        || values.0.contains_key("fields")
+        || values.0.contains_key("why")
+    {
+        return Err("the change feed takes --since; use a changes query for filtering, fields or ordinary pages".into());
+    }
+    Ok(match values.text("since") {
+        Some(since) => serde_json::json!({ "since": since }),
+        None => serde_json::json!({}),
+    })
+}
+
 fn send(
     archive: &Archive,
-    request: &Request,
+    request: &command_surface::RunnableRequest,
     output: &mut impl Write,
     timeout: Option<std::time::Duration>,
 ) -> io::Result<u8> {
-    let Request::Changes { since } = request else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "a change-feed request is required",
-        ));
-    };
-    let previous = since
-        .as_deref()
+    let previous = request
+        .arguments
+        .get("since")
+        .and_then(serde_json::Value::as_str)
         .map(|s| {
             ChangePosition::parse(s)
                 .map(|p| p.to_string())
@@ -59,7 +74,7 @@ fn send(
         })
         .transpose()?;
     consume(output, previous.as_deref(), |callback| {
-        crate::client::stream::run(archive, request, timeout, callback)
+        crate::client::stream::run_call(archive, request, timeout, callback)
     })
 }
 

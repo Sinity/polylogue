@@ -276,7 +276,14 @@ fn a_silent_daemon_cannot_hold_a_hook_past_its_deadline() {
         stream.read_to_end(&mut request).unwrap();
         assert!(!request.is_empty());
     });
-    assert!(exchange(&socket, &Request::Status, Duration::from_millis(20)).is_none());
+    assert!(
+        crate::client::call_with_budget(
+            &socket,
+            &crate::client::request("status", serde_json::json!({}), "status".into()),
+            Duration::from_millis(20)
+        )
+        .is_err()
+    );
     peer.join().unwrap();
 }
 
@@ -600,10 +607,10 @@ fn a_context_timeout_emits_an_unreferenced_notice_and_names_only_the_original_pr
         line.clear();
         BufReader::new(&stream).read_line(&mut line).unwrap();
         let outcome: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(outcome["op"], "delivery_event");
-        assert_eq!(outcome["delivery"], prepare["request_id"]);
-        assert_eq!(outcome["what"], "not_sent");
-        assert_eq!(outcome["detail"], "timeout");
+        assert_eq!(outcome["operation"], "delivery-event");
+        assert_eq!(outcome["arguments"]["delivery"], prepare["request_id"]);
+        assert_eq!(outcome["arguments"]["what"], "not_sent");
+        assert_eq!(outcome["arguments"]["detail"], "timeout");
         writeln!(
             stream,
             "{}",

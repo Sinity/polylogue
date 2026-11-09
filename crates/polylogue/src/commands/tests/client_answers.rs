@@ -63,30 +63,13 @@ type Answer = Result<Value, String>;
 type Exit = Option<u8>;
 
 fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str], request_id: &str) -> (Answer, Exit) {
-    let (c, values) = crate::cli::parse(argv).unwrap();
-    let (Action::Request(build) | Action::Stream { build, .. }) = c.action else {
-        panic!("{} is local", c.name)
-    };
-    let caller = Caller {
-        surface: Surface::Cli,
-        cwd: std::env::current_dir().ok(),
-        json: true,
-    };
-    let request = match build(c, &values, &caller) {
-        Ok(request) => request,
+    let cwd = std::env::current_dir().unwrap();
+    let (c, _, arguments) = match crate::cli::request_arguments(argv, &cwd) {
+        Ok(parsed) => parsed,
         Err(e) => return (Err(format!("bad_request: {e}")), None),
     };
-    let answer = if c.register.is_some() {
-        let envelope = crate::protocol::operations::request(
-            c,
-            values,
-            request_id.into(),
-            command_surface::Deadline::Default,
-        );
-        crate::client::call_ready(&w.daemon.archive, &envelope).unwrap()
-    } else {
-        crate::client::send(&w.daemon.archive.socket(), &request).unwrap()
-    };
+    let request = crate::client::request(c.name, Value::Object(arguments), request_id.into());
+    let answer = crate::client::call_ready(&w.daemon.archive, &request).unwrap();
     let exit = answer.exit_code();
     let shown = crate::protocol::into_value(answer).map_err(|error| {
         format!(
@@ -170,19 +153,20 @@ fn http_answer(
         };
         pairs.extend(texts.iter().map(|t| format!("{name}={}", encoded(t))));
     }
-    if c.register.is_some() {
-        let request = crate::protocol::operations::request(
-            c,
-            values.clone(),
-            request_id.into(),
-            command_surface::Deadline::Default,
-        );
-        pairs = vec![
-            format!("operation={}", encoded(&request.operation)),
-            format!("arguments={}", encoded(&request.arguments.to_string())),
-            format!("request_id={}", encoded(request_id)),
-        ];
-    }
+    let arguments: serde_json::Map<String, Value> = values
+        .0
+        .iter()
+        .filter(|(name, _)| names.contains(&name.as_str()))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    pairs = vec![
+        format!("operation={}", encoded(c.name)),
+        format!(
+            "arguments={}",
+            encoded(&Value::Object(arguments).to_string())
+        ),
+        format!("request_id={}", encoded(request_id)),
+    ];
     let uri = format!("/api/v1{}?{}", c.http_path(), pairs.join("&"));
     let request = axum::http::Request::get(uri)
         .header(axum::http::header::HOST, format!("127.0.0.1:{}", web.port))
@@ -298,9 +282,7 @@ fn assert_read_page(answer: &Answer, position: &polylogue_model::ChangePosition)
 fn every_client_answers_the_same_request_identically() {
     let offered: Vec<&str> = COMMANDS
         .iter()
-        .filter(|c| {
-            c.tool.is_some() && c.http && !c.writes && matches!(c.action, Action::Request(_))
-        })
+        .filter(|c| c.tool.is_some() && c.http && !c.writes && matches!(c.run, Run::Daemon(_)))
         .map(|c| c.name)
         .collect();
     for name in &offered {

@@ -1,5 +1,4 @@
 use super::*;
-use crate::daemon::{Request, service};
 use crate::test_daemon::{self, TestDaemon};
 use polylogue_model::{
     Author, RevisionReference,
@@ -10,18 +9,21 @@ use serde_json::{Value, json};
 use std::sync::atomic::{AtomicI64, Ordering};
 
 pub(crate) const CWD: &str = "/synthetic/repo";
-fn authored(w: &TestDaemon, request: Request, author: Author) -> Value {
-    crate::test_answers::ok(service::handle_with_caller(
-        request,
-        &w.daemon,
-        &crate::daemon::execution::limit(None, Default::default()),
-        &Authorship {
-            author,
-            via: Channel::Cli,
-        },
-    ))
+fn authored(w: &TestDaemon, request: crate::test_daemon::Call, author: Author) -> Value {
+    crate::test_answers::ok(
+        (request)
+            .limit(crate::daemon::execution::limit(None, Default::default()).clone())
+            .authorship(
+                Authorship {
+                    author,
+                    via: Channel::Cli,
+                }
+                .clone(),
+            )
+            .answer(&w.daemon),
+    )
 }
-pub(crate) fn operator(w: &TestDaemon, request: Request) -> Value {
+pub(crate) fn operator(w: &TestDaemon, request: crate::test_daemon::Call) -> Value {
     authored(w, request, Author::Operator)
 }
 fn operation(w: &TestDaemon) -> Arc<crate::operation::Context> {
@@ -52,16 +54,17 @@ pub(crate) fn statement(
     }
     authored(
         w,
-        Request::Assert {
-            request_id: id.into(),
-            assertions: vec![NewAssertion {
+        crate::test_daemon::Call::new(
+            "assert",
+            serde_json::json!({"assertions": [NewAssertion {
                 kind,
                 key: Some(id.into()),
                 value: Some(json!("ARCHIVED_BODY_NOT_INLINED")),
                 valid_until: None,
                 links,
-            }],
-        },
+            }]}),
+        )
+        .id(id),
         Author::Agent(None),
     );
     let reader = w.daemon.reads.reader().unwrap();
@@ -86,9 +89,9 @@ pub(crate) fn statement(
 fn judge(w: &TestDaemon, reference: &RevisionReference, id: &str) {
     operator(
         w,
-        Request::Assert {
-            request_id: id.into(),
-            assertions: vec![NewAssertion {
+        crate::test_daemon::Call::new(
+            "assert",
+            serde_json::json!({"assertions": [NewAssertion {
                 kind: AssertionKind::Judgment,
                 key: Some("accepted".into()),
                 value: None,
@@ -97,8 +100,9 @@ fn judge(w: &TestDaemon, reference: &RevisionReference, id: &str) {
                     role: LinkRole::About,
                     reference: Reference::Assertion(reference.clone()),
                 }],
-            }],
-        },
+            }]}),
+        )
+        .id(id),
     );
 }
 pub(crate) fn selected(w: &TestDaemon, prompt: &str, cwd: &str) -> Prepared {
@@ -156,11 +160,11 @@ fn advisory_selection_requires_a_current_operator_judgment_and_exact_scoped_file
     assert!(selected(&w, "Continue the current work", CWD).empty);
     operator(
         &w,
-        Request::Withdraw {
-            request_id: "withdraw-file-decision".into(),
-            targets: vec![Reference::Assertion(reference)],
-            reason: None,
-        },
+        crate::test_daemon::Call::new(
+            "withdraw",
+            serde_json::json!({"targets": [Reference::Assertion(reference)]}),
+        )
+        .id("withdraw-file-decision"),
     );
     assert!(selected(&w, "Inspect src/parser.rs", CWD).empty);
 }
@@ -192,22 +196,13 @@ fn unscoped_relative_files_are_not_inferred_global_and_absolute_files_match_exac
 #[test]
 fn advisory_bounds_intersect_parent_and_an_expired_request_prepares_nothing() {
     let (w, _) = fixture();
-    let request = Request::Context {
-        request_id: "expired-advisory".into(),
-        ask: crate::briefing::Ask::Advisory {
-            prompt: "Inspect src/parser.rs".into(),
-            cwd: CWD.into(),
-            session: SessionId::parse("codex:advisory-test").unwrap(),
-        },
-        sender: Some("hook".into()),
-        budget_tokens: Default::default(),
-    };
+    let request = crate::test_daemon::Call::new("advisory", serde_json::json!({"prompt": "Inspect src/parser.rs", "cwd": CWD, "session": SessionId::parse("codex:advisory-test").unwrap()})).id("expired-advisory").surface(crate::commands::Surface::Hook);
     let limit =
         polylogue_store::read::limit::ReadLimit::at(std::time::Instant::now(), Default::default());
     // docs/agents.md, Advisories: "preparation is capped at 20 ms, intersected
     // with the caller's bound, or the hook says nothing". Past the bound the
     // answer is the empty advisory on every surface, never a timeout.
-    let answer = service::handle_with_limit(request, &w.daemon, &limit);
+    let answer = (request).limit(limit.clone()).answer(&w.daemon);
     assert!(answer.failure().is_none(), "{answer:?}");
     let value = crate::test_answers::ok(answer);
     assert_eq!(value["delivery"], serde_json::Value::Null);
@@ -289,16 +284,16 @@ fn a_new_file_assertion_revision_requires_its_own_judgment_and_is_a_distinct_pai
     now.fetch_add(1, Ordering::SeqCst);
     authored(
         &w,
-        Request::Revise {
-            request_id: "revise-file".into(),
-            bases: vec![old],
-            patch: polylogue_model::assertion::AssertionPatch {
+        crate::test_daemon::Call::new(
+            "revise",
+            serde_json::json!({"bases": [Reference::Assertion(old.clone()).to_string()], "patch": polylogue_model::assertion::AssertionPatch {
                 value: polylogue_model::assertion::Change::Set(json!(
                     "new exact authored decision"
                 )),
                 ..Default::default()
-            },
-        },
+            }}),
+        )
+        .id("revise-file"),
         Author::Agent(None),
     );
     assert!(

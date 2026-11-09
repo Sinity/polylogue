@@ -2,7 +2,7 @@ use super::*;
 use axum::body::{Body, to_bytes};
 use axum::http::Request as Http;
 use polylogue_model::{
-    Reference, RevisionReference,
+    Reference,
     assertion::{Assertion, LinkRole, NewAssertion},
 };
 use serde_json::{Value, json};
@@ -49,13 +49,7 @@ async fn send_raw(
     };
     let command = crate::commands::command(operation).expect("declared HTTP operation");
     let (builder, body) = if command.writes {
-        let body = if command.register.is_some() {
-            serde_json::to_vec(&envelope).unwrap()
-        } else {
-            let mut arguments = envelope.arguments.as_object().unwrap().clone();
-            arguments.insert("request_id".into(), json!(id));
-            serde_json::to_vec(&arguments).unwrap()
-        };
+        let body = serde_json::to_vec(&envelope).unwrap();
         (Http::post(format!("/api/v1/{operation}")), Body::from(body))
     } else {
         let encoded = serde_json::to_value(&envelope).unwrap();
@@ -218,7 +212,7 @@ async fn stored(f: &Fixture, root: &str, revision: &str) -> Assertion {
     );
     row
 }
-fn agent_write(f: &Fixture, request: crate::daemon::Request) -> Value {
+fn agent_write(f: &Fixture, request: crate::test_daemon::Call) -> Value {
     use polylogue_model::authorship::{Authorship, Channel};
     let authorship = Authorship {
         author: polylogue_model::Author::Agent(Some(
@@ -226,24 +220,14 @@ fn agent_write(f: &Fixture, request: crate::daemon::Request) -> Value {
         )),
         via: Channel::Mcp,
     };
-    let invocation = f.daemon.daemon.invocation(&authorship);
-    let limit = crate::daemon::execution::limit_for(&request, None, Default::default());
-    let answer = crate::daemon::service::handle_with_invocation(
-        request,
-        &f.daemon.daemon,
-        &limit,
-        &invocation,
-    );
+    let answer = request.authorship(authorship).answer(&f.daemon.daemon);
     assert_eq!(answer.exit_code(), 0, "{answer:?}");
     answer.value().unwrap().clone()
 }
 fn agent_assert(f: &Fixture, id: &str, value: &str) {
     agent_write(
         f,
-        crate::daemon::Request::Assert {
-            request_id: id.into(),
-            assertions: vec![serde_json::from_value::<NewAssertion>(note(value)).unwrap()],
-        },
+        crate::test_daemon::Call::new("assert", serde_json::json!({"assertions": [serde_json::from_value::<NewAssertion>(note(value)).unwrap()]})).id(id),
     );
 }
 fn about(row: &Assertion) -> Vec<String> {
@@ -292,14 +276,7 @@ fn operator_edits_and_judgments_of_agent_revisions_keep_exact_evidence() {
         );
         agent_write(
             &f,
-            crate::daemon::Request::Revise {
-                request_id: "agent-new".into(),
-                bases: vec![RevisionReference::exact("agent".into(), "agent".into())],
-                patch: serde_json::from_value(
-                    json!({"value":{"change":"set","value":"new proposal"}}),
-                )
-                .unwrap(),
-            },
+            crate::test_daemon::Call::new("revise", serde_json::json!({"bases": ["assertion:agent@agent"], "patch": {"value":{"change":"set","value":"new proposal"}}})).id("agent-new"),
         );
         let pending = query(&f, "assertions where agent:true judged:unknown").await;
         assert_eq!(pending["count"], 1);

@@ -1,4 +1,4 @@
-//! The named context operations share one owned answer and request envelope.
+//! The named context operations share one answer.
 use crate::briefing::{Prepared, StartSource};
 use polylogue_model::SessionId;
 use schemars::JsonSchema;

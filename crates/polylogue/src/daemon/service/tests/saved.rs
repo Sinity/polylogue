@@ -2,39 +2,27 @@ use super::*;
 
 fn answer(
     d: &test_daemon::TestDaemon,
-    request: Request,
+    request: crate::test_daemon::Call,
 ) -> command_surface::Answer<serde_json::Value> {
-    handle(request, &d.daemon)
+    (request).answer(&d.daemon)
 }
 
 #[track_caller]
-fn ok(d: &test_daemon::TestDaemon, request: Request) -> serde_json::Value {
+fn ok(d: &test_daemon::TestDaemon, request: crate::test_daemon::Call) -> serde_json::Value {
     crate::test_answers::ok(answer(d, request))
 }
 
 #[track_caller]
-fn empty(d: &test_daemon::TestDaemon, request: Request) -> serde_json::Value {
+fn empty(d: &test_daemon::TestDaemon, request: crate::test_daemon::Call) -> serde_json::Value {
     crate::test_answers::empty(answer(d, request))
 }
 
-fn save(id: &str, name: &str, text: &str) -> Request {
-    Request::Save {
-        request_id: id.into(),
-        name: name.into(),
-        text: text.into(),
-        denominator: None,
-    }
+fn save(id: &str, name: &str, text: &str) -> crate::test_daemon::Call {
+    crate::test_daemon::Call::new("save", serde_json::json!({"name": name, "query": text})).id(id)
 }
 
-fn query(text: &str) -> Request {
-    Request::Query {
-        text: text.into(),
-        cursor: None,
-        page_size: None,
-        why: false,
-        session: None,
-        fields: vec![],
-    }
+fn query(text: &str) -> crate::test_daemon::Call {
+    crate::test_daemon::Call::new("query", serde_json::json!({"query": text}))
 }
 
 #[test]
@@ -79,10 +67,12 @@ fn save_retries_keep_the_first_revision_after_the_definition_changes() {
 #[test]
 fn keep_retries_return_the_original_rows_after_membership_changes() {
     let mut d = test_daemon::start("first prompt");
-    let keep = |id: &str, text: &str, name: &str| Request::Keep {
-        request_id: id.into(),
-        text: text.into(),
-        name: Some(name.into()),
+    let keep = |id: &str, text: &str, name: &str| {
+        crate::test_daemon::Call::new(
+            "keep",
+            serde_json::json!({"query": text, "name": Some(name)}),
+        )
+        .id(id)
     };
     ok(&d, keep("kept", "assertions", "before"));
     ok(&d, save("saved", "everything", "sessions"));
@@ -119,14 +109,8 @@ fn a_save_that_query_names_could_not_say_is_refused() {
     }
 }
 
-fn watch(id: &str, query: &str, hold: Option<&str>) -> Request {
-    Request::Watch {
-        request_id: id.into(),
-        query: query.into(),
-        name: Some("my watch".into()),
-        hold: hold.map(str::to_owned),
-        notify: false,
-    }
+fn watch(id: &str, query: &str, hold: Option<&str>) -> crate::test_daemon::Call {
+    crate::test_daemon::Call::new("watch", serde_json::json!({"query": query, "name": Some("my watch"), "for": hold.map(str::to_owned)})).id(id)
 }
 
 #[test]
@@ -158,11 +142,11 @@ fn a_pipe_in_a_quoted_value_keeps_the_match_rows() {
     let d = test_daemon::start("synthetic|prompt");
     ok(
         &d,
-        Request::Keep {
-            request_id: "quoted-pipe".into(),
-            text: "sessions where exists messages(\"synthetic|prompt\")".into(),
-            name: None,
-        },
+        crate::test_daemon::Call::new(
+            "keep",
+            serde_json::json!({"query": "sessions where exists messages(\"synthetic|prompt\")"}),
+        )
+        .id("quoted-pipe"),
     );
     assert_eq!(ok(&d, query("result:quoted-pipe.matches"))["count"], 1);
 }
@@ -178,12 +162,10 @@ fn accepting_caller_is_preserved_on_retry_and_another_actor_cannot_reuse_the_id(
     };
     let limit = crate::daemon::execution::limit(None, Default::default());
     let call = |authorship: &Authorship| {
-        handle_with_caller(
-            save("caller-request", "caller-query", "sessions"),
-            &d.daemon,
-            &limit,
-            authorship,
-        )
+        (save("caller-request", "caller-query", "sessions"))
+            .limit(limit.clone())
+            .authorship((authorship).clone())
+            .answer(&d.daemon)
     };
     crate::test_answers::ok(call(&caller));
     let reads = d.daemon.reads.reader().unwrap();

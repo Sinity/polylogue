@@ -31,7 +31,6 @@ const GAPS: &[(&str, &str)] = &[
 
 fn archive_with_notes() -> Morrow {
     use crate::daemon::service::ArchiveMode;
-    use crate::daemon::{Request, service};
     use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
     use polylogue_model::{Block, Reference};
     use polylogue_testkit::session;
@@ -82,25 +81,24 @@ fn archive_with_notes() -> Morrow {
             vec![Reference::Message(decision)],
         ),
     ] {
-        let response = service::handle(
-            Request::Assert {
-                request_id: id.into(),
-                assertions: vec![NewAssertion {
-                    kind,
-                    key: key.map(Into::into),
-                    value: value.map(|value| serde_json::json!(value)),
-                    links: targets
-                        .into_iter()
-                        .map(|reference| NewAssertionLink {
-                            role: LinkRole::About,
-                            reference,
-                        })
-                        .collect(),
-                    valid_until: None,
-                }],
-            },
-            &runtime.daemon,
-        );
+        let response = crate::test_daemon::Call::new(
+            "assert",
+            serde_json::json!({"assertions": [NewAssertion {
+                kind,
+                key: key.map(Into::into),
+                value: value.map(|value| serde_json::json!(value)),
+                links: targets
+                    .into_iter()
+                    .map(|reference| NewAssertionLink {
+                        role: LinkRole::About,
+                        reference,
+                    })
+                    .collect(),
+                valid_until: None,
+            }]}),
+        )
+        .id(id)
+        .answer(&runtime.daemon);
         crate::test_answers::ok(response);
     }
     runtime.shutdown().unwrap();

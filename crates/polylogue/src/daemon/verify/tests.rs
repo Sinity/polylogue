@@ -1,17 +1,31 @@
-use crate::daemon::Request;
 use polylogue_store::verify::Verification;
 
 #[test]
 fn verify_through_the_daemon_checks_the_archive_and_writes_a_new_manifest() {
     let daemon = crate::test_daemon::start("words to verify");
     let manifest = daemon._dir.path().join("manifest.tsv");
-    let request = Request::Verify {
-        manifest: Some(manifest.clone()),
-    };
-    assert!(request.read_only());
-    assert!(crate::daemon::execution::request_deadline(&request, None).is_none());
+    let request = crate::client::request(
+        "verify",
+        serde_json::json!({"manifest": manifest}),
+        "verify-manifest".into(),
+    );
+    // A verification reads at idle priority, without the default deadline.
+    let row = crate::commands::command("verify").unwrap();
+    let policy = row
+        .registration()
+        .unwrap()
+        .admit(
+            &request.arguments,
+            row,
+            &crate::commands::Caller {
+                surface: crate::commands::Surface::Cli,
+                cwd: None,
+            },
+        )
+        .unwrap();
+    assert!(policy.read_only && !policy.default_deadline);
     let socket = daemon.daemon.archive.socket();
-    let answer = crate::client::send(&socket, &request).unwrap();
+    let answer = crate::client::call(&socket, &request).unwrap();
     let Some(value) = answer.value().cloned() else {
         panic!("{answer:?}");
     };
@@ -32,7 +46,7 @@ fn verify_through_the_daemon_checks_the_archive_and_writes_a_new_manifest() {
     assert!(text.lines().any(|line| line.ends_with(&expected)), "{text}");
 
     // An existing file is never replaced, and no partial file is left.
-    let again = crate::client::send(&socket, &request).unwrap();
+    let again = crate::client::call(&socket, &request).unwrap();
     assert!(again.value().is_none(), "{again:?}");
     assert_eq!(std::fs::read_to_string(&manifest).unwrap(), text);
     let left: Vec<_> = std::fs::read_dir(daemon._dir.path())
@@ -46,13 +60,11 @@ fn verify_through_the_daemon_checks_the_archive_and_writes_a_new_manifest() {
 #[test]
 fn a_manifest_path_must_be_absolute_on_the_daemon() {
     let daemon = crate::test_daemon::start("words to verify");
-    let answer = crate::client::send(
-        &daemon.daemon.archive.socket(),
-        &Request::Verify {
-            manifest: Some("relative.tsv".into()),
-        },
-    )
-    .unwrap();
+    // A caller without a working directory (HTTP) names an absolute path.
+    let answer =
+        crate::test_daemon::Call::new("verify", serde_json::json!({"manifest": "relative.tsv"}))
+            .surface(crate::commands::Surface::Http)
+            .answer(&daemon.daemon);
     let command_surface::Answer {
         outcome: command_surface::Outcome::Error(error),
         ..
@@ -60,5 +72,5 @@ fn a_manifest_path_must_be_absolute_on_the_daemon() {
     else {
         panic!("{answer:?}");
     };
-    assert!(error.message.contains("must be absolute"), "{answer:?}");
+    assert!(error.message.contains("absolute path"), "{answer:?}");
 }

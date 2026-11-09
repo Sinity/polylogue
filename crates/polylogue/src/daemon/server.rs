@@ -1,7 +1,6 @@
 //! Unix socket framing and listener lifecycle. Application operations live
 //! in `service`; ordinary requests receive one response, finite feeds a batch.
 
-use super::Request;
 use super::service::{self, Daemon, error};
 use std::io::{BufRead, BufReader, Write};
 use std::net::Shutdown;
@@ -59,6 +58,15 @@ fn write_scoped_json(
 /// busy reader pool never fails it.
 pub(crate) const PING: &str = "ping";
 
+fn write_answer(out: &mut UnixStream, answer: &command_surface::Answer<serde_json::Value>) -> bool {
+    writeln!(
+        out,
+        "{}",
+        serde_json::to_string(answer).expect("answer serializes")
+    )
+    .is_ok()
+}
+
 fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surface::OperationTable) {
     if stream
         .set_write_timeout(Some(Duration::from_secs(1)))
@@ -81,220 +89,42 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
         if line.trim().is_empty() {
             continue;
         }
-        if let Some(incoming) = crate::protocol::wire::incoming(&line) {
-            if matches!(&incoming, Ok(incoming) if incoming.request.operation == PING) {
-                let answer = command_surface::Answer::ok(serde_json::json!({}));
-                if writeln!(
-                    out,
-                    "{}",
-                    serde_json::to_string(&answer).expect("answer serializes")
-                )
-                .is_err()
-                {
+        let incoming = match crate::protocol::wire::incoming(&line) {
+            Some(Ok(incoming)) => incoming,
+            Some(Err(error)) => {
+                let answer = command_surface::Answer::error(crate::protocol::failure(
+                    "bad_request",
+                    error.to_string(),
+                ));
+                if !write_answer(&mut out, &answer) {
                     return;
                 }
                 continue;
             }
-            let mut read_scope = None;
-            let mut publication = crate::protocol::ReadScopes::default();
-            let answer = match incoming {
-                Err(error) => command_surface::Answer::error(crate::protocol::failure(
-                    "bad_request",
-                    error.to_string(),
-                )),
-                Ok(crate::protocol::wire::Incoming {
-                    request,
-                    caller,
-                    parent_deadline_ms,
-                }) => {
-                    let (evidence, channel) =
-                        crate::protocol::caller::peer(&out, &caller, d.config.requests.machine())
-                            .unwrap_or_else(|_| {
-                                (
-                                    Default::default(),
-                                    polylogue_model::authorship::Channel::Cli,
-                                )
-                            });
-                    let mut accepted = crate::protocol::caller::accept(
-                        &d.callers,
-                        &evidence,
-                        channel,
-                        cancellation.clone(),
-                    );
-                    accepted.parent = parent_deadline_ms.map(|deadline| {
-                        crate::operation::ParentLifetime::capture(
-                            super::execution::limit(Some(deadline), cancellation.clone())
-                                .deadline(),
-                            cancellation.clone(),
-                        )
-                    });
-                    accepted.invocation = Some(
-                        d.invocation(&accepted.authorship)
-                            .with_accepted_request(Some(Arc::new(request.clone()))),
-                    );
-                    accepted.working_directory =
-                        crate::protocol::caller::working_directory(&out).ok();
-                    let command = crate::commands::command(&request.operation);
-                    let caller = crate::commands::Caller {
-                        surface: match channel {
-                            polylogue_model::authorship::Channel::Mcp => {
-                                crate::commands::Surface::Mcp
-                            }
-                            polylogue_model::authorship::Channel::Hook => {
-                                crate::commands::Surface::Hook
-                            }
-                            _ => crate::commands::Surface::Cli,
-                        },
-                        cwd: accepted.working_directory.clone(),
-                        json: true,
-                    };
-                    let internal = match command.and_then(|command| command.build_typed) {
-                        Some(_) => {
-                            match crate::protocol::operations::admit(
-                                command.expect("typed command exists"),
-                                &request,
-                                &caller,
-                            ) {
-                                Ok(internal) => Some(internal),
-                                Err(failure) => {
-                                    let answer =
-                                        command_surface::Answer::<serde_json::Value>::error(
-                                            failure,
-                                        );
-                                    if writeln!(
-                                        out,
-                                        "{}",
-                                        serde_json::to_string(&answer).expect("answer serializes")
-                                    )
-                                    .is_err()
-                                    {
-                                        return;
-                                    }
-                                    continue;
-                                }
-                            }
-                        }
-                        None => None,
-                    };
-                    accepted.admitted_request = internal.clone();
-                    let mut request = request;
-                    request.deadline = crate::protocol::operations::admitted_deadline(
-                        command,
-                        internal.as_ref(),
-                        request.deadline,
-                    );
-                    if crate::protocol::operations::read_scope_required(command, internal.as_ref())
-                    {
-                        match d.reads.scope_token() {
-                            Ok(scope) => read_scope = Some(scope),
-                            Err(error) => {
-                                let answer = service::store_error(&error);
-                                if writeln!(
-                                    out,
-                                    "{}",
-                                    serde_json::to_string(&answer).expect("answer serializes")
-                                )
-                                .is_err()
-                                {
-                                    return;
-                                }
-                                continue;
-                            }
-                        }
-                    }
-                    accepted.read_scope = read_scope.clone();
-                    if let Some(command) = command
-                        && let crate::commands::Action::Stream { .. } = command.action
-                        && let Some(internal) = internal.filter(Request::streaming)
-                    {
-                        let mut limit = request
-                            .deadline
-                            .duration(crate::protocol::operations::deadlines().get(command.latency))
-                            .map_or_else(
-                                || {
-                                    polylogue_store::read::limit::ReadLimit::without_deadline(
-                                        cancellation.clone(),
-                                    )
-                                },
-                                |duration| {
-                                    polylogue_store::read::limit::ReadLimit::new(
-                                        duration,
-                                        cancellation.clone(),
-                                    )
-                                },
-                            );
-                        if let Some(parent) = &accepted.parent {
-                            let parent_limit = parent.read_limit(cancellation.clone());
-                            if parent_limit.deadline().is_some_and(|parent| {
-                                limit.deadline().is_none_or(|request| parent < request)
-                            }) {
-                                limit = parent_limit;
-                            }
-                        }
-                        let _ = out.set_write_timeout(Some(Duration::from_millis(10)));
-                        let produced = limit.scope(|| match limit.check() {
-                            Ok(()) => {
-                                let invocation = accepted
-                                    .invocation
-                                    .clone()
-                                    .expect("canonical request captures admission");
-                                d.resolve_operation_context(invocation)
-                                    .and_then(|operation| {
-                                        crate::protocol::stream::produce_limited(
-                                            &internal, d, &operation, &mut out, &limit,
-                                        )
-                                        .expect("stream command owns its request")
-                                    })
-                            }
-                            Err(error) => Err(crate::daemon::Failure::from(error)),
-                        });
-                        if let Err(failure) = produced {
-                            let _ = crate::protocol::stream::error(&mut out, failure);
-                        }
-                        let _ = out.set_write_timeout(Some(Duration::from_secs(1)));
-                        continue;
-                    }
-                    let origin = if channel == polylogue_model::authorship::Channel::Mcp {
-                        command_surface::Via::Mcp
-                    } else {
-                        command_surface::Via::Cli
-                    };
-                    let trusted =
-                        command_surface::Caller::authenticated(accepted.scope(), accepted)
-                            .with_access(command_surface::Access::Write);
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("operation runtime starts");
-                    let dispatched = runtime.block_on(operations.call_as(
-                        request,
-                        origin,
-                        trusted,
-                        Default::default(),
-                    ));
-                    publication = crate::protocol::ReadScopes::single(read_scope.clone());
-                    dispatched
+            None => {
+                let answer = error("bad_request", "a request names its operation");
+                if !write_answer(&mut out, &answer) {
+                    return;
                 }
-            };
-            let answer = crate::protocol::scope_answer(answer, &publication);
-            if write_scoped_json(&mut out, &answer, &publication).is_err() {
+                continue;
+            }
+        };
+        if incoming.request.operation == PING {
+            if !write_answer(
+                &mut out,
+                &command_surface::Answer::ok(serde_json::json!({})),
+            ) {
                 return;
             }
             continue;
         }
-        let incoming = match serde_json::from_str::<super::execution::Incoming>(&line) {
-            Ok(incoming) => incoming,
-            Err(e) => {
-                let _ = writeln!(
-                    out,
-                    "{}",
-                    serde_json::to_string(&error("bad_request", e)).unwrap_or_default()
-                );
-                continue;
-            }
-        };
+        let crate::protocol::wire::Incoming {
+            mut request,
+            caller,
+            parent_deadline_ms,
+        } = incoming;
         let (evidence, channel) =
-            crate::protocol::caller::peer(&out, &incoming.caller, d.config.requests.machine())
+            crate::protocol::caller::peer(&out, &caller, d.config.requests.machine())
                 .unwrap_or_else(|_| {
                     (
                         Default::default(),
@@ -303,109 +133,255 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                 });
         let mut accepted =
             crate::protocol::caller::accept(&d.callers, &evidence, channel, cancellation.clone());
-        accepted.working_directory = crate::protocol::caller::working_directory(&out).ok();
-        let limit = super::execution::limit_for(
-            &incoming.request,
-            incoming.deadline_ms,
-            cancellation.clone(),
+        accepted.parent = parent_deadline_ms.map(|deadline| {
+            crate::operation::ParentLifetime::capture(
+                super::execution::limit(Some(deadline), cancellation.clone()).deadline(),
+                cancellation.clone(),
+            )
+        });
+        accepted.invocation = Some(
+            d.invocation(&accepted.authorship)
+                .with_accepted_request(Some(Arc::new(request.clone()))),
         );
-        let request = incoming.request;
-        let read_scope = if request.read_only() {
+        accepted.working_directory = crate::protocol::caller::working_directory(&out).ok();
+        let caller = crate::commands::Caller {
+            surface: match channel {
+                polylogue_model::authorship::Channel::Mcp => crate::commands::Surface::Mcp,
+                polylogue_model::authorship::Channel::Hook => crate::commands::Surface::Hook,
+                _ => crate::commands::Surface::Cli,
+            },
+            cwd: accepted.working_directory.clone(),
+        };
+        let Some(command) = crate::commands::command(&request.operation) else {
+            let answer = error(
+                "bad_request",
+                format!("unknown operation {}", request.operation),
+            );
+            if !write_answer(&mut out, &answer) {
+                return;
+            }
+            continue;
+        };
+        if let crate::commands::Run::Feed { registration, .. } = command.run {
+            let limit = stream_limit(&request, command, true, &accepted, &cancellation);
+            write_stream(&mut out, d, &accepted, &limit, |d, context, output| {
+                registration.produce(&request.arguments, d, context, output)
+            });
+            continue;
+        }
+        let Some(registration) = command.registration() else {
+            let answer = error(
+                "bad_request",
+                format!("{} runs in the calling process", command.name),
+            );
+            if !write_answer(&mut out, &answer) {
+                return;
+            }
+            continue;
+        };
+        let policy = match registration.admit(&request.arguments, command, &caller) {
+            Ok(policy) => policy,
+            Err(failure) => {
+                if !write_answer(&mut out, &failure.answer()) {
+                    return;
+                }
+                continue;
+            }
+        };
+        // A write keeps its result instead of inheriting a read deadline.
+        if !policy.read_phase {
+            request.deadline = command_surface::Deadline::None;
+        }
+        let read_scope = if policy.read_only {
             match d.reads.scope_token() {
                 Ok(scope) => Some(scope),
                 Err(error) => {
-                    let _ = writeln!(
-                        out,
-                        "{}",
-                        serde_json::to_string(&service::store_error(&error))
-                            .expect("error serializes")
-                    );
+                    if !write_answer(&mut out, &service::store_error(&error)) {
+                        return;
+                    }
                     continue;
                 }
             }
         } else {
             None
         };
-        let _ = out.set_write_timeout(Some(Duration::from_millis(10)));
-        let produced = if request.streaming() {
-            Some(limit.scope(|| {
-                d.operation_context(&accepted.authorship)
-                    .and_then(|operation| {
-                        crate::protocol::stream::produce_limited(
-                            &request, d, &operation, &mut out, &limit,
-                        )
-                        .expect("stream command owns its request")
-                    })
-            }))
-        } else {
-            None
-        };
-        if let Some(result) = produced {
-            if let Err(failure) = result {
-                let _ = crate::protocol::stream::error(&mut out, failure);
-            }
-            let _ = out.set_write_timeout(Some(Duration::from_secs(1)));
+        accepted.read_scope = read_scope.clone();
+        if policy.streaming {
+            let limit = stream_limit(
+                &request,
+                command,
+                policy.default_deadline,
+                &accepted,
+                &cancellation,
+            );
+            let invocation = accepted
+                .invocation
+                .clone()
+                .expect("an accepted request captures its invocation");
+            write_stream(&mut out, d, &accepted, &limit, |d, context, output| {
+                registration.produce(
+                    &request.arguments,
+                    command,
+                    d,
+                    &invocation,
+                    &caller,
+                    context,
+                    output,
+                )
+            });
             continue;
         }
-        let _ = out.set_write_timeout(Some(Duration::from_secs(1)));
-        let typed = match &request {
-            Request::Status => Some(("status", serde_json::json!({}))),
-            Request::Sql { statement } => Some(("sql", serde_json::json!({"statement":statement}))),
-            request => crate::protocol::query::Arguments::from_request(request).map(|arguments| {
-                (
-                    "query",
-                    serde_json::to_value(arguments).expect("query arguments serialize"),
-                )
-            }),
-        };
-        let mut publication = crate::protocol::ReadScopes::single(read_scope.clone());
-        let answer = if let Some((operation, arguments)) = typed {
-            let table = operations;
-            let cursor = crate::protocol::operations::cursor(&request).map(str::to_owned);
-            let request = command_surface::Request {
-                operation: operation.into(),
-                arguments,
-                request_id: uuid::Uuid::now_v7().to_string(),
-                deadline: incoming.deadline_ms.map_or(
-                    command_surface::Deadline::Default,
-                    |deadline| {
-                        command_surface::Deadline::Milliseconds(
-                            super::execution::remaining(Some(deadline))
-                                .as_millis()
-                                .try_into()
-                                .unwrap_or(u64::MAX),
-                        )
-                    },
-                ),
-                budget_tokens: Default::default(),
-                cursor,
-                fresh: false,
-                format: Default::default(),
-            };
-            let mut accepted = accepted.clone();
-            accepted.read_scope = read_scope.clone();
-            let scope = accepted.scope();
-            let trusted = command_surface::Caller::authenticated(scope, accepted.clone())
-                .with_access(command_surface::Access::Write);
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("operation runtime starts");
-            let dispatched = runtime.block_on(table.call_as(
-                request,
-                command_surface::Via::Cli,
-                trusted,
-                Default::default(),
-            ));
-            publication = crate::protocol::ReadScopes::single(read_scope.clone());
-            dispatched
+        let via = if channel == polylogue_model::authorship::Channel::Mcp {
+            command_surface::Via::Mcp
         } else {
-            service::handle_with_caller(request, d, &limit, &accepted.authorship)
+            command_surface::Via::Cli
         };
+        let trusted = command_surface::Caller::authenticated(accepted.scope(), accepted)
+            .with_access(command_surface::Access::Write);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("operation runtime starts");
+        let answer =
+            runtime.block_on(operations.call_as(request, via, trusted, Default::default()));
+        let publication = crate::protocol::ReadScopes::single(read_scope);
         let answer = crate::protocol::scope_answer(answer, &publication);
         if write_scoped_json(&mut out, &answer, &publication).is_err() {
             return;
         }
+    }
+}
+
+/// The read limit of a stream: the request's deadline (the default one when
+/// it names none and its row has one), within the caller's own bound.
+fn stream_limit(
+    request: &command_surface::RunnableRequest,
+    command: &crate::commands::Command,
+    default_deadline: bool,
+    accepted: &crate::protocol::caller::Accepted,
+    cancellation: &polylogue_store::read::limit::ReadCancellation,
+) -> polylogue_store::read::limit::ReadLimit {
+    use polylogue_store::read::limit::ReadLimit;
+    let declared = crate::commands::deadlines().get(command.latency);
+    let duration = match request.deadline {
+        command_surface::Deadline::Default if !default_deadline => None,
+        command_surface::Deadline::Default if declared.is_none() => {
+            Some(super::execution::timeout())
+        }
+        deadline => deadline.duration(declared),
+    };
+    let mut limit = duration.map_or_else(
+        || ReadLimit::without_deadline(cancellation.clone()),
+        |duration| ReadLimit::new(duration, cancellation.clone()),
+    );
+    if let Some(parent) = &accepted.parent {
+        let parent_limit = parent.read_limit(cancellation.clone());
+        if parent_limit
+            .deadline()
+            .is_some_and(|parent| limit.deadline().is_none_or(|request| parent < request))
+        {
+            limit = parent_limit;
+        }
+    }
+    limit
+}
+
+/// Writes a stream's events to the socket under its read limit; a failure
+/// after the stream began ends it with the error answer.
+fn write_stream(
+    out: &mut UnixStream,
+    d: &Daemon,
+    accepted: &crate::protocol::caller::Accepted,
+    limit: &polylogue_store::read::limit::ReadLimit,
+    produce: impl FnOnce(
+        &Daemon,
+        &Arc<crate::operation::Context>,
+        &mut dyn std::io::Write,
+    ) -> Result<(), crate::daemon::Failure>,
+) {
+    let _ = out.set_write_timeout(Some(Duration::from_millis(10)));
+    let produced = limit.scope(|| {
+        limit.check()?;
+        let invocation = accepted
+            .invocation
+            .clone()
+            .expect("an accepted request captures its invocation");
+        let context = d.resolve_operation_context(invocation)?;
+        let scope = d.reads.scope_token()?;
+        let mut writer = GuardedWriter::new(out, limit.clone(), scope);
+        let result = produce(d, &context, &mut writer);
+        match writer.failure() {
+            Some(failure) => Err(failure),
+            None => result,
+        }
+    });
+    if let Err(failure) = produced {
+        let _ = crate::protocol::stream::error(out, failure);
+    }
+    let _ = out.set_write_timeout(Some(Duration::from_secs(1)));
+}
+
+/// Data writes yield regularly so revoked scopes and cancellations release readers.
+pub(crate) struct GuardedWriter<'a> {
+    output: &'a mut dyn Write,
+    limit: polylogue_store::read::limit::ReadLimit,
+    failure: Option<crate::daemon::Failure>,
+    scope: polylogue_store::ReadScopeToken,
+}
+impl<'a> GuardedWriter<'a> {
+    pub fn new(
+        output: &'a mut dyn Write,
+        limit: polylogue_store::read::limit::ReadLimit,
+        scope: polylogue_store::ReadScopeToken,
+    ) -> Self {
+        Self {
+            output,
+            limit,
+            failure: None,
+            scope,
+        }
+    }
+    /// Actual transport writes are individually bounded; never fence their retry loop.
+    fn activate<T>(
+        &mut self,
+        publish: impl FnOnce(&mut dyn Write) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        if let Err(error) = self.limit.check() {
+            self.failure = Some(crate::daemon::Failure::store(&error));
+            return Err(std::io::Error::other(error));
+        }
+        match self.scope.with_current(|| Ok(publish(self.output))) {
+            Ok(result) => result,
+            Err(error) => {
+                self.failure = Some(crate::daemon::Failure::store(&error));
+                Err(std::io::Error::other(error))
+            }
+        }
+    }
+    pub fn failure(&mut self) -> Option<crate::daemon::Failure> {
+        self.failure.take()
+    }
+}
+impl Write for GuardedWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        loop {
+            match self.activate(|output| output.write(bytes)) {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock
+                            | std::io::ErrorKind::TimedOut
+                            | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    continue;
+                }
+                result => return result,
+            }
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.activate(|output| output.flush())
     }
 }
 
@@ -626,7 +602,7 @@ fn listen(
     drop(listener);
     let _ = quiesce.send(());
     // Stop receiving new input while complete queued requests can still receive
-    // their refusal and an admitted write can publish its durable receipt.
+    // their refusal and an accepted write can publish its durable receipt.
     for (stream, _) in &clients {
         let _ = stream.shutdown(Shutdown::Read);
     }

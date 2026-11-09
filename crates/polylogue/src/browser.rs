@@ -19,7 +19,6 @@ pub mod native;
 pub(crate) mod notes;
 pub mod routes;
 
-use crate::daemon::Request;
 use command_surface::Answer;
 use polylogue_engine::Config;
 use polylogue_store::Archive;
@@ -56,21 +55,36 @@ impl BrowserHost {
 
     /// Asks the daemon. `None` when it does not answer: callers report what
     /// they cannot know as unknown, never as absent.
-    pub fn ask(&self, request: &Request) -> Option<Answer<Value>> {
-        crate::client::send(&self.socket, request).ok()
+    pub fn ask(&self, operation: &str, arguments: Value) -> Option<Answer<Value>> {
+        self.ask_as(
+            operation,
+            arguments,
+            polylogue_store::user_writes::new_request_id(),
+        )
+    }
+
+    /// Asks the daemon with the caller's own retry identity.
+    pub fn ask_as(
+        &self,
+        operation: &str,
+        arguments: Value,
+        request_id: String,
+    ) -> Option<Answer<Value>> {
+        crate::client::call(
+            &self.socket,
+            &crate::client::request(operation, arguments, request_id),
+        )
+        .ok()
     }
 
     /// The chat actions setting, or `None` when the daemon does not answer.
     /// The answer also shows the daemon is serving: a cheap read, unlike
     /// `status`, which counts the whole archive.
     pub fn actions_setting(&self) -> Option<bool> {
-        let request = Request::Setting {
-            request_id: None,
-            key: Some("browser.actions".into()),
-            value: None,
-            machine: None,
-        };
-        let data = crate::protocol::into_value(self.ask(&request)?).ok()?;
+        let data = crate::protocol::into_value(
+            self.ask("setting", serde_json::json!({ "key": "browser.actions" }))?,
+        )
+        .ok()?;
         let current: polylogue_model::settings::Current = serde_json::from_value(data).ok()?;
         match current.value {
             Some(polylogue_model::settings::Value::Boolean(enabled)) => Some(enabled),

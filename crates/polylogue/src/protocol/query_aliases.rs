@@ -38,3 +38,19 @@ pub struct List {
     #[serde(default)]
     pub fields: Vec<String>,
 }
+
+/// `measure NAME`: a sessions query (none for a whole-archive measure).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Measure {
+    pub query: Option<String>,
+    /// The series, for a measure with several.
+    pub metric: Option<String>,
+    /// The measure's own option.
+    pub option: Option<String>,
+    pub limit: Option<u64>,
+    #[serde(default)]
+    pub why: bool,
+    #[serde(default)]
+    pub fields: Vec<String>,
+}

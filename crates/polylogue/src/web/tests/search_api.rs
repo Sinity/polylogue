@@ -6,17 +6,14 @@ use serde_json::{Value, json};
 
 /// The rows of a query that matches something.
 fn data(r: &Reader, text: &str, cursor: Option<String>) -> Value {
-    crate::test_answers::ok(handle(
-        Request::Query {
-            text: text.into(),
-            cursor,
-            page_size: Some(50),
-            why: true,
-            session: None,
-            fields: vec![],
-        },
-        &r.web.daemon,
-    ))
+    crate::test_answers::ok(
+        crate::test_daemon::Call::new(
+            "query",
+            serde_json::json!({"query": text, "limit": Some(50), "why": true}),
+        )
+        .cursor(cursor.as_deref())
+        .answer(&r.web.daemon),
+    )
 }
 
 #[test]
@@ -176,15 +173,12 @@ fn filtered_search_has_the_same_rows_on_every_surface() {
         "messages where origin:claude-code similar:\"parser\"",
         "messages where origin:claude-code parser similar:\"parser\"",
     ] {
-        let request = Request::Query {
-            text: text.into(),
-            cursor: None,
-            page_size: Some(50),
-            why: true,
-            session: None,
-            fields: vec![],
-        };
-        let socket = crate::client::send(&r.web.daemon.archive.socket(), &request).unwrap();
+        let request = crate::client::request(
+            "query",
+            serde_json::json!({"query": text, "limit": 50, "why": true}),
+            "socket-query".into(),
+        );
+        let socket = crate::client::call(&r.web.daemon.archive.socket(), &request).unwrap();
         let (status, _, raw) = http.block_on(send(
             &r,
             authed(get(&format!(

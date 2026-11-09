@@ -1,4 +1,4 @@
-//! One accepting invocation, extended with a canonical evaluation context when needed.
+//! One accepted invocation, extended with its evaluation context when needed.
 use crate::daemon::Failure;
 use polylogue_model::{
     Timestamp,
@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// Server run identity is entropy, independent of the captured invocation time.
 pub(crate) fn new_run_id() -> polylogue_model::RunId {
     polylogue_model::RunId::parse(&uuid::Uuid::new_v4().hyphenated().to_string())
-        .expect("generated UUID is a canonical run identity")
+        .expect("a generated UUID is a valid run identity")
 }
 
 pub(crate) use polylogue_store::writer::ParentLifetime;
@@ -62,13 +62,9 @@ impl Invocation {
     pub(crate) fn parent_lifetime(&self) -> Option<Arc<ParentLifetime>> {
         self.parent.clone()
     }
-    /// Check only before admitting new work, never after custody or for owned cleanup.
-    pub(crate) fn check_parent_admission(&self) -> polylogue_store::Result<()> {
+    /// Check only before accepting new work, never after a write is handed over or for owned cleanup.
+    pub(crate) fn check_parent_lifetime(&self) -> polylogue_store::Result<()> {
         self.parent.as_ref().map_or(Ok(()), |parent| parent.check())
-    }
-    /// Exact transport input; internal invocations have no accepted envelope.
-    pub fn accepted_request(&self) -> Option<&command_surface::RunnableRequest> {
-        self.accepted_request.as_deref()
     }
     pub fn capture(
         metadata: &polylogue_model::user::RequestMetadata,
@@ -164,7 +160,7 @@ impl Context {
     pub(crate) fn parent_lifetime(&self) -> Option<Arc<ParentLifetime>> {
         self.parent.clone()
     }
-    pub(crate) fn check_parent_admission(&self) -> polylogue_store::Result<()> {
+    pub(crate) fn check_parent_lifetime(&self) -> polylogue_store::Result<()> {
         self.parent.as_ref().map_or(Ok(()), |parent| parent.check())
     }
     pub fn accepted_request(&self) -> Option<&command_surface::RunnableRequest> {
@@ -208,7 +204,7 @@ impl Context {
         if clock.day != self.clock.day {
             return Err(Failure::new(
                 "stale_cursor",
-                "the canonical logical day changed since this cursor was issued",
+                "the logical day setting changed since this cursor was issued",
             ));
         }
         let mut replay = self.clone();

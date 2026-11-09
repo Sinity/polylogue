@@ -133,7 +133,7 @@ fn accepted_envelope_survives_context_replay_without_becoming_public_evidence() 
             .unwrap();
         assert_eq!(replay.accepted_request(), Some(envelope.as_ref()));
         assert_eq!(
-            replay.invocation().accepted_request(),
+            Context::standalone(replay.invocation(), replay.clock.day.clone()).accepted_request(),
             Some(envelope.as_ref())
         );
         assert!(!format!("{replay:?}").contains("synthetic-private-input"));
@@ -144,10 +144,18 @@ fn accepted_envelope_survives_context_replay_without_becoming_public_evidence() 
         );
         assert_eq!(replay.ran_at, at);
     }
+    let day = DaySetting::new(
+        jiff::tz::TimeZone::UTC,
+        jiff::civil::Time::constant(4, 0, 0, 0),
+    )
+    .unwrap();
     assert!(
-        Invocation::new(at, "fixture".into(), Context::worker_authorship("fixture"))
-            .accepted_request()
-            .is_none()
+        Context::standalone(
+            Invocation::new(at, "fixture".into(), Context::worker_authorship("fixture")),
+            day
+        )
+        .accepted_request()
+        .is_none()
     );
 }
 
@@ -173,7 +181,7 @@ fn parent_lifetime_survives_context_conversion_and_replay_without_becoming_publi
     let parent = ParentLifetime::capture(None, cancellation.clone());
     let invocation = Invocation::new(at, "fixture".into(), Context::worker_authorship("fixture"))
         .with_parent(Some(parent.clone()));
-    invocation.check_parent_admission().unwrap();
+    invocation.check_parent_lifetime().unwrap();
     let day = DaySetting::new(
         jiff::tz::TimeZone::UTC,
         jiff::civil::Time::constant(4, 0, 0, 0),
@@ -189,8 +197,8 @@ fn parent_lifetime_survives_context_conversion_and_replay_without_becoming_publi
         &parent
     ));
     cancellation.cancel();
-    assert!(replay.check_parent_admission().is_err());
-    assert!(replay.invocation().check_parent_admission().is_err());
+    assert!(replay.check_parent_lifetime().is_err());
+    assert!(replay.invocation().check_parent_lifetime().is_err());
     assert!(!format!("{replay:?}").contains("parent"));
     assert!(
         !serde_json::to_string(&replay.provenance())
@@ -198,7 +206,7 @@ fn parent_lifetime_survives_context_conversion_and_replay_without_becoming_publi
             .contains("parent")
     );
     Invocation::new(at, "fixture".into(), Context::worker_authorship("fixture"))
-        .check_parent_admission()
+        .check_parent_lifetime()
         .unwrap();
     assert!(
         ParentLifetime::capture(Some(std::time::Instant::now()), Default::default())

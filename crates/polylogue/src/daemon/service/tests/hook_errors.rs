@@ -104,22 +104,20 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
         native_messages[1].prompt_kind,
         Some(polylogue_model::PromptKind::Harness)
     );
-    let ordinary = handle(
-        Request::Read {
-            target: "session:claude-code:s1".into(),
-            options: ReadOptions {
-                view: View::Transcript,
-                harness: Some(Expansion::Full),
-                ..Default::default()
-            },
-            delivery: ReadDelivery::Page,
-            format: "json".into(),
-            budget: None,
-            with_blobs: false,
-            cursor: None,
+    let ordinary = (crate::test_daemon::read(crate::daemon::service::read::ReadRequest {
+        target: "session:claude-code:s1".into(),
+        options: ReadOptions {
+            view: View::Transcript,
+            harness: Some(Expansion::Full),
+            ..Default::default()
         },
-        &daemon.daemon,
-    );
+        delivery: ReadDelivery::Page,
+        format: "json".into(),
+        budget: None,
+        with_blobs: false,
+        cursor: None,
+    }))
+    .answer(&daemon.daemon);
     let typed = typed(ordinary);
     let headers: Vec<_> = typed
         .document

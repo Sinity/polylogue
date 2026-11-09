@@ -259,30 +259,25 @@ fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions()
         }],
         valid_until: None,
     };
-    let Ok(data) = crate::protocol::into_value(handle(
-        Request::Assert {
-            request_id: "exact-note".into(),
-            assertions: vec![note],
-        },
-        &r.web.daemon,
-    )) else {
+    let Ok(data) = crate::protocol::into_value(
+        crate::test_daemon::Call::new("assert", serde_json::json!({"assertions": [note]}))
+            .id("exact-note")
+            .answer(&r.web.daemon),
+    ) else {
         panic!("note failed")
     };
     let old = data["id"].as_str().unwrap().to_owned();
-    crate::test_answers::ok(handle(
-        Request::Revise {
-            request_id: "exact-note-new".into(),
-            bases: vec![polylogue_model::RevisionReference::exact(
-                old.clone(),
-                old.clone(),
-            )],
-            patch: AssertionPatch {
+    crate::test_answers::ok(
+        crate::test_daemon::Call::new(
+            "revise",
+            serde_json::json!({"bases": [format!("assertion:{old}@{old}")], "patch": AssertionPatch {
                 value: Change::Set(serde_json::json!("newer exact note")),
                 ..Default::default()
-            },
-        },
-        &r.web.daemon,
-    ));
+            }}),
+        )
+        .id("exact-note-new")
+        .answer(&r.web.daemon),
+    );
     let exact = Reference::Assertion(polylogue_model::RevisionReference::exact(
         old.clone(),
         old.clone(),

@@ -12,8 +12,7 @@ pub(crate) mod schema;
 pub(crate) mod staged_file;
 pub(crate) mod write_out;
 
-use crate::commands::{Action, COMMANDS, Caller, Cli, Command, GROUPS, Kind, Surface, Values};
-use crate::daemon::Request;
+use crate::commands::{COMMANDS, Cli, Command, GROUPS, Kind, Run, Surface, Values};
 use clap::ArgAction;
 use clap::parser::{ArgMatches, ValueSource};
 use command_surface::Answer;
@@ -61,7 +60,7 @@ pub fn command() -> clap::Command {
                 .long("deadline")
                 .global(true)
                 .value_name("MS|none")
-                .help("Milliseconds from admission, or none to lift the deadline"),
+                .help("Milliseconds from when the daemon accepts the request, or none to lift the deadline"),
         );
     let mut globals: Vec<&str> = Vec::new();
     for a in COMMANDS.iter().flat_map(|c| c.args).filter(|a| a.global) {
@@ -155,9 +154,7 @@ fn clap_arg(a: &crate::commands::Arg) -> clap::Arg {
         Kind::List => arg.action(ArgAction::Append).value_delimiter(','),
     };
     if a.name == "budget" {
-        arg = arg.value_parser(|value: &str| {
-            crate::protocol::operations::parse_budget(Some(value)).map(|_| value.to_owned())
-        });
+        arg = arg.value_parser(|value: &str| parse_budget(Some(value)).map(|_| value.to_owned()));
     }
     if a.name == "query" && matches!(a.kind, Kind::Words | Kind::Rest) {
         arg = arg.add(clap_complete::engine::ArgValueCompleter::new(
@@ -225,11 +222,6 @@ fn values(c: &Command, m: &ArgMatches) -> Values {
             out.insert(a.name.to_owned(), v);
         }
     }
-    if c.writes
-        && let Some(id) = m.get_one::<String>("request_id")
-    {
-        out.insert("request_id".into(), Value::String(id.clone()));
-    }
     Values(out)
 }
 
@@ -241,6 +233,25 @@ pub fn parse(argv: &[&str]) -> Result<(&'static Command, Values), String> {
         .map_err(|e| e.to_string())?;
     let (c, m) = chosen(&matches).ok_or("no command")?;
     Ok((c, values(c, m)))
+}
+
+/// The command a command line names and the request arguments it sends,
+/// prepared in `cwd`, for tests.
+#[cfg(test)]
+pub fn request_arguments(
+    argv: &[&str],
+    cwd: &std::path::Path,
+) -> Result<(&'static Command, Values, serde_json::Map<String, Value>), String> {
+    let matches = command()
+        .try_get_matches_from(argv)
+        .map_err(|e| e.to_string())?;
+    let (c, m) = chosen(&matches).ok_or("no command")?;
+    let values = values(c, m);
+    let mut arguments = arguments(c, &values, m);
+    if let Some(prepare) = c.prepare {
+        prepare(&values, cwd, &mut arguments)?;
+    }
+    Ok((c, values, arguments))
 }
 
 fn parse_text(error: &clap::Error, output: crate::config::OutputConfig) -> String {
@@ -264,7 +275,7 @@ pub(crate) fn parse_error(error: clap::Error, output: crate::config::OutputConfi
 
 pub fn run_local(matches: &ArgMatches, output: crate::config::OutputConfig) -> Option<ExitCode> {
     let (command, matches) = chosen(matches)?;
-    let Action::Local(run) = command.action else {
+    let Run::Local(run) = command.run else {
         return None;
     };
     Some(run(
@@ -273,6 +284,40 @@ pub fn run_local(matches: &ArgMatches, output: crate::config::OutputConfig) -> O
         output,
         matches.get_flag("json"),
     ))
+}
+
+/// A request's token budget as the command line writes it.
+pub(crate) fn parse_budget(value: Option<&str>) -> Result<command_surface::TokenBudget, String> {
+    match value {
+        None => Ok(command_surface::TokenBudget::Default),
+        Some("none") => Ok(command_surface::TokenBudget::Unlimited),
+        Some(value) => value
+            .parse::<u32>()
+            .map(command_surface::TokenBudget::Tokens)
+            .map_err(|_| "budget must be a token count or none".into()),
+    }
+}
+
+/// The request arguments the command line names: the operation's own
+/// arguments given on it, without those that act on the calling machine.
+fn arguments(
+    command: &Command,
+    values: &Values,
+    matches: &ArgMatches,
+) -> serde_json::Map<String, Value> {
+    values
+        .0
+        .iter()
+        .filter(|(name, _)| {
+            matches.value_source(name) == Some(ValueSource::CommandLine)
+                && command.args.iter().any(|argument| {
+                    argument.name == name.as_str()
+                        && !argument.cli_only
+                        && !matches!(argument.name, "cursor" | "budget")
+                })
+        })
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
 }
 
 pub fn run(
@@ -287,11 +332,11 @@ pub fn run(
     };
     let mut values = values(cmd, m);
     values.0.insert("json".into(), Value::Bool(json));
-    let caller = Caller {
-        surface: Surface::Cli,
-        cwd: Some(cwd.to_owned()),
-        json,
-    };
+    match cmd.run {
+        Run::Local(run) => return run(cmd, &values, policy, json),
+        Run::ConfiguredLocal(run) => return run(cmd, &values, startup, json),
+        Run::Daemon(_) | Run::Delivered { .. } | Run::Feed { .. } => {}
+    }
     let raw = m.get_one::<String>("request");
     if raw.is_some()
         && cmd.args_for(Surface::Cli).any(|argument| {
@@ -326,100 +371,57 @@ pub fn run(
     let request_id = m
         .get_one::<String>("request_id")
         .cloned()
-        .unwrap_or_else(|| values.request_id());
-    let budget_tokens = match crate::protocol::operations::parse_budget(
-        m.get_one::<String>("budget").map(String::as_str),
-    ) {
+        .unwrap_or_else(polylogue_store::user_writes::new_request_id);
+    let budget_tokens = match parse_budget(m.get_one::<String>("budget").map(String::as_str)) {
         Ok(tokens) => tokens,
         Err(error) => return fail(policy, json, "bad_request", &error, 2),
     };
-    if !budget_tokens.is_default() && !matches!(cmd.name, "brief" | "takeover" | "recall") {
-        return fail(
-            policy,
-            json,
-            "bad_request",
-            "operation does not prepare budgeted context",
-            2,
-        );
-    }
     let cursor = values.text("cursor");
-    let mut literal_arguments = None;
-    let request = if let Some(raw) = raw {
-        let Some(build) = cmd.build_typed else {
-            return fail(
-                policy,
-                json,
-                "bad_request",
-                "this operation has no typed argument adapter",
-                2,
-            );
-        };
-        let arguments = match serde_json::from_str::<Value>(raw) {
-            Ok(arguments) => arguments,
+    let arguments = match raw {
+        Some(raw) => match serde_json::from_str::<Value>(raw) {
+            Ok(Value::Object(arguments)) => {
+                // Output options may read the arguments, while the request
+                // keeps exactly what the caller sent.
+                values = Values(arguments.clone());
+                values.0.insert("json".into(), Value::Bool(json));
+                arguments
+            }
+            Ok(_) => {
+                return fail(
+                    policy,
+                    json,
+                    "bad_request",
+                    "operation arguments must be an object",
+                    2,
+                );
+            }
             Err(error) => return fail(policy, json, "bad_request", &error.to_string(), 2),
-        };
-        let request = match build(arguments.clone(), &caller, &request_id).and_then(|request| {
-            crate::protocol::operations::with_cursor(request, cursor.as_deref())
-        }) {
-            Ok(request) => request,
-            Err(error) => return fail(policy, json, "bad_request", &error.message, 2),
-        };
-        let Some(object) = arguments.as_object() else {
-            return fail(
-                policy,
-                json,
-                "bad_request",
-                "operation arguments must be an object",
-                2,
-            );
-        };
-        // The typed adapter validated the arguments. Output options may read
-        // them, but the accepted envelope retains exactly what the caller sent.
-        values = Values(object.clone().into_iter().collect());
-        values.0.insert("json".into(), Value::Bool(json));
-        literal_arguments = Some(arguments);
-        request
-    } else {
-        let build = match cmd.action {
-            Action::Local(run) => return run(cmd, &values, policy, json),
-            Action::ConfiguredLocal(run) => return run(cmd, &values, startup, json),
-            Action::Request(build) | Action::Stream { build, .. } => build,
-        };
-        match build(cmd, &values, &caller) {
-            Ok(request) => request,
-            Err(message) => return fail(policy, json, "bad_request", &message, 2),
-        }
-    };
-    let call = match literal_arguments {
-        Some(arguments) => command_surface::Request {
-            operation: cmd.name.into(),
-            arguments,
-            request_id,
-            deadline,
-            budget_tokens,
-            cursor,
-            fresh: false,
-            format: Default::default(),
         },
         None => {
-            let mut explicit = values.clone();
-            explicit
-                .0
-                .retain(|name, _| m.value_source(name) == Some(ValueSource::CommandLine));
-            crate::protocol::operations::request(cmd, explicit, request_id, deadline)
+            let mut arguments = arguments(cmd, &values, m);
+            if let Some(prepare) = cmd.prepare
+                && let Err(message) = prepare(&values, cwd, &mut arguments)
+            {
+                return fail(policy, json, "bad_request", &message, 2);
+            }
+            arguments
         }
     };
-    if let Action::Stream { cli, .. } = cmd.action {
-        return cli(&values, &request, startup, &call);
+    let call = command_surface::Request {
+        operation: cmd.name.into(),
+        arguments: Value::Object(arguments),
+        request_id,
+        deadline,
+        budget_tokens,
+        cursor,
+        fresh: false,
+        format: Default::default(),
+    };
+    if let Run::Delivered { deliver, .. } | Run::Feed { deliver, .. } = cmd.run {
+        return deliver(&values, startup, &call);
     }
     let root = startup.config.archive.clone();
-    let result = if cmd.register.is_some() {
-        crate::client::call_ready(&Archive::at(&root), &call)
-    } else {
-        let timeout = deadline.duration(Some(crate::daemon::execution::timeout()));
-        send_with_timeout(&Archive::at(&root), &request, timeout)
-    };
-    let answer = match result {
+    let answer = match crate::client::call_ready(&Archive::at(&root), &call) {
         Ok(r) => r,
         Err(e) if is_down(&e) => {
             return fail(
@@ -464,8 +466,9 @@ pub fn run(
     }
     // JSON passes the answer through as received; anything that reads the
     // value first checks it is the operation's declared type.
-    if let Err(failure) = decoded(cmd, &answer) {
-        return fail_with(policy, json, &failure, &[]);
+    if let Err(failure) = crate::commands::declarations().validate_answer(cmd.name, &answer) {
+        let mismatch = crate::protocol::protocol_mismatch(cmd.name, failure.message);
+        return fail_with(policy, json, &mismatch, &[]);
     }
     let data = answer.value().expect("a non-error answer has a value");
     if !json && matches!(data["shape"].as_str(), Some("rows" | "matches")) {
@@ -474,7 +477,15 @@ pub fn run(
     match cmd.output {
         Some(output) => output(&values, &answer, startup, json),
         None => {
-            print!("{}", (cmd.print)(data, policy.stdout_color()));
+            let style = if policy.stdout_color() {
+                command_surface::TextStyle::Ansi
+            } else {
+                command_surface::TextStyle::Plain
+            };
+            match crate::commands::declarations().render_text(cmd.name, &answer, style) {
+                Ok(text) => print!("{text}"),
+                Err(failure) => return fail_with(policy, json, &failure, &[]),
+            }
             notes(
                 &crate::protocol::notes(&answer).cloned().collect::<Vec<_>>(),
                 policy,
@@ -612,22 +623,6 @@ fn is_down(e: &std::io::Error) -> bool {
     )
 }
 
-/// Sends one request, waiting for a daemon that is still starting: one
-/// that holds the archive lock but has not bound its socket yet (opening a
-/// large archive takes seconds). With no daemon at all, the error is
-/// returned at once.
-fn send_with_timeout(
-    archive: &Archive,
-    request: &Request,
-    timeout: Option<std::time::Duration>,
-) -> std::io::Result<Answer<Value>> {
-    let deadline_ms = crate::daemon::execution::request_deadline(
-        request,
-        timeout.map(crate::daemon::execution::deadline),
-    );
-    crate::client::send_when_ready(archive, request, deadline_ms)
-}
-
 pub(crate) fn wait_for_ready<T>(
     archive: &Archive,
     deadline_ms: Option<i64>,
@@ -673,20 +668,6 @@ pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Resul
 }
 
 /// A failure made here, before or instead of a daemon answer.
-/// Refuses an answer whose value is not its operation's declared type, the
-/// same way for every operation, before any printer or output handler reads it.
-pub(crate) fn decoded(
-    cmd: &Command,
-    answer: &Answer<Value>,
-) -> Result<(), command_surface::Failure> {
-    match (cmd.decode_answer, answer.value()) {
-        (Some(decode), Some(value)) => {
-            decode(value).map_err(|error| crate::protocol::protocol_mismatch(cmd.name, error))
-        }
-        _ => Ok(()),
-    }
-}
-
 pub(crate) fn fail(
     output: crate::config::OutputConfig,
     json: bool,

@@ -198,16 +198,13 @@ fn scalar_sqlite_selection_values_are_not_treated_as_missing() {
 
 #[test]
 fn public_keep_refuses_a_stale_change_cursor_without_keeping_a_result() {
-    use crate::daemon::{Request, service::handle};
     let daemon = crate::test_daemon::start("synthetic source");
-    let result = handle(
-        Request::Keep {
-            request_id: "stale-keep".into(),
-            text: "changes where after:obsolete:0:0 | limit 1".into(),
-            name: None,
-        },
-        &daemon.daemon,
-    );
+    let result = crate::test_daemon::Call::new(
+        "keep",
+        serde_json::json!({"query": "changes where after:obsolete:0:0 | limit 1"}),
+    )
+    .id("stale-keep")
+    .answer(&daemon.daemon);
     assert!(
         matches!(result, command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("resync_required"))
     );

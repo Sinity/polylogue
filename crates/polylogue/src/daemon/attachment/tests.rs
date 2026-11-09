@@ -18,8 +18,8 @@ fn request(
     input: Option<String>,
     cursor: Option<String>,
     length: usize,
-) -> Request {
-    Request::Attachment {
+) -> Range {
+    Range {
         message: message.clone(),
         block: 0,
         attachment: 0,

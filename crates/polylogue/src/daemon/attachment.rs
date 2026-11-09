@@ -1,5 +1,4 @@
 //! Checked attachment bytes through the ordinary application operation.
-use super::Request;
 use super::service::{Daemon, error, store_error};
 use base64::Engine as _;
 use command_surface::Answer;
@@ -46,22 +45,28 @@ enum CursorSource {
     },
 }
 
-pub(super) fn read(request: Request, d: &Daemon) -> Answer<Value> {
+/// One checked byte range of an attachment.
+pub(crate) struct Range {
+    pub message: polylogue_model::MessageId,
+    pub block: usize,
+    pub attachment: usize,
+    pub input: Option<String>,
+    pub length: usize,
+    pub cursor: Option<String>,
+}
+
+pub(crate) fn read(range: Range, d: &Daemon) -> Answer<Value> {
     if let Err(failure) = super::service::accepting(d) {
         return failure.answer();
     }
-    let Request::Attachment {
+    let Range {
         message,
         block,
         attachment,
         input,
         length,
         cursor,
-        ..
-    } = request
-    else {
-        return error("bad_request", "not an attachment request");
-    };
+    } = range;
     if length == 0 {
         return error("bad_request", "attachment range length must be positive");
     }

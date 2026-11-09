@@ -2,7 +2,6 @@
 //! access rules, the reader's pages and its JSON API.
 
 use super::*;
-use crate::daemon::service::handle;
 use crate::test_daemon::{self, TestDaemon};
 use axum::body::{Body, to_bytes};
 use axum::http::Request as Http;
@@ -203,7 +202,7 @@ fn pages_and_api_never_carry_the_archive_path() {
 
 #[test]
 fn the_session_page_escapes_archive_text_and_matches_the_socket() {
-    use polylogue_model::read::{ReadDelivery, ReadOptions, ReadPage};
+    use polylogue_model::read::ReadPage;
     let mut r = reader();
     // Signal commits advance the archive independently of this read comparison.
     r.w.pause_signals();
@@ -264,18 +263,13 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
                 .change_position()
                 .unwrap()
         };
-        let Ok(data) = crate::protocol::into_value(handle(
-            Request::Read {
-                target: "session:claude-code:s1".into(),
-                options: ReadOptions::default(),
-                delivery: ReadDelivery::Page,
-                format: "json".into(),
-                budget: None,
-                with_blobs: false,
-                cursor: None,
-            },
-            &r.web.daemon,
-        )) else {
+        let Ok(data) = crate::protocol::into_value(
+            crate::test_daemon::Call::new(
+                "read",
+                serde_json::json!({"target": "session:claude-code:s1", "format": "json"}),
+            )
+            .answer(&r.web.daemon),
+        ) else {
             panic!("socket read failed")
         };
         let socket: ReadPage = serde_json::from_value(data).unwrap();
@@ -614,17 +608,7 @@ fn cost_uses_public_accounting_and_session_scope() {
                 send(&r, authed(get(path)).body(Body::empty()).unwrap()).await;
             assert_eq!(status, StatusCode::OK, "{html}");
             assert_eq!(headers[header::CACHE_CONTROL], "no-store");
-            let Ok(data) = crate::protocol::into_value(handle(
-                Request::Query {
-                    text: format!("{scope} | measure usage"),
-                    cursor: None,
-                    page_size: None,
-                    why: false,
-                    session: None,
-                    fields: vec![],
-                },
-                &r.web.daemon,
-            )) else {
+            let Ok(data) = crate::protocol::into_value(crate::test_daemon::Call::new("query", serde_json::json!({"query": format!("{scope} | measure usage")})).answer(&r.web.daemon)) else {
                 panic!("usage failed")
             };
             let report =

@@ -2,7 +2,7 @@
 //! only after a validated completion; staged failures retain their diagnosis.
 pub(crate) mod bundle;
 
-use super::{Archive, Request, Values, fail};
+use super::{Archive, Values, fail};
 use base64::Engine as _;
 use polylogue_model::{Reference, bundle::Counts, read::*};
 use polylogue_store::export_items::ExportItems;
@@ -30,11 +30,10 @@ impl From<&str> for DeliveryError {
 
 pub(crate) fn run(
     values: &Values,
-    request: &Request,
     startup: &crate::config::Startup,
     accepted: &command_surface::RunnableRequest,
 ) -> ExitCode {
-    match deliver(values, request, startup, accepted) {
+    match deliver(values, startup, accepted) {
         Ok(code) => ExitCode::from(code),
         Err(DeliveryError::Text(error)) => fail(
             startup.output,
@@ -85,16 +84,25 @@ fn invalid(message: impl ToString) -> io::Error {
 
 fn deliver(
     values: &Values,
-    request: &Request,
     startup: &crate::config::Startup,
     accepted: &command_surface::RunnableRequest,
 ) -> Result<u8, DeliveryError> {
     let archive = Archive::at(&startup.config.archive);
-    let delivery = match request {
-        Request::Read { delivery, .. } => *delivery,
-        _ => return Err("a read request is required".into()),
-    };
+    let arguments: crate::protocol::read::Arguments =
+        serde_json::from_value(accepted.arguments.clone()).map_err(|e| e.to_string())?;
     let destination = values.text("to").map(PathBuf::from);
+    // Writing to a destination streams the reading; a terminal shows
+    // the terminal form unless JSON was asked for.
+    let delivery = if destination.is_some() {
+        ReadDelivery::Stream
+    } else {
+        arguments.delivery
+    };
+    let format = arguments.format.unwrap_or(if values.flag("json") {
+        Format::Json
+    } else {
+        Format::Terminal
+    });
     if destination.is_none() && delivery == ReadDelivery::Page {
         let answer = crate::client::call_ready(&archive, accepted).map_err(|e| e.to_string())?;
         let code = answer.exit_code();
@@ -112,10 +120,7 @@ fn deliver(
             return Err(DeliveryError::Answer(Box::new(answer)));
         };
         let page: ReadPage = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-        let Request::Read { format, .. } = request else {
-            unreachable!("a read request was checked above")
-        };
-        let format = polylogue_render::Format::parse(format).ok_or("unknown read format")?;
+        let format = polylogue_render::Format::parse(format.name()).ok_or("unknown read format")?;
         let mut encoded = Vec::new();
         polylogue_render::encode_document(
             &page.document,
@@ -136,17 +141,8 @@ fn deliver(
         .map_err(|e| e.to_string())?;
         return Ok(code);
     }
-    let Request::Read {
-        target,
-        format,
-        options,
-        with_blobs,
-        ..
-    } = request
-    else {
-        return Err("stream delivery requires a full read request".into());
-    };
-    let format = polylogue_render::Format::parse(format).ok_or("unknown read format")?;
+    let target = &arguments.target;
+    let format = polylogue_render::Format::parse(format.name()).ok_or("unknown read format")?;
     let directory = destination
         .as_ref()
         .is_some_and(|path| path.is_dir() || target.parse::<Reference>().is_err());
@@ -160,13 +156,18 @@ fn deliver(
     if directory && package_format.is_none() {
         return Err("directory delivery requires json, jsonl, markdown or html".into());
     }
-    let with_blobs = *with_blobs;
+    let with_blobs = arguments.with_blobs;
     // Writing to a destination selects streaming delivery. Keep the caller's
     // arguments and admission fields rather than serializing execution defaults.
     let mut call = accepted.clone();
     if destination.is_some() {
         call.arguments["delivery"] = serde_json::json!("stream");
-        if options.inherited {
+        // A bundle carries inherited prefixes unless they are hidden.
+        if !arguments
+            .hide
+            .iter()
+            .any(|word| word.split(':').next() == Some("inherited"))
+        {
             let mut show = values.list("show");
             if !show
                 .iter()
@@ -184,7 +185,14 @@ fn deliver(
         package_format,
         with_blobs,
         values.flag("json"),
-        |callback| crate::client::stream::run_call(&archive, &call, callback),
+        |callback| {
+            crate::client::stream::run_call(
+                &archive,
+                &call,
+                crate::client::stream::declared_budget(&call),
+                callback,
+            )
+        },
     )
 }
 

@@ -1,5 +1,4 @@
 //! Query operation DTOs. Result rows follow the columns selected by the query.
-use crate::daemon::Request;
 use command_surface::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -16,29 +15,6 @@ pub struct Arguments {
     pub session: Option<String>,
     #[serde(default)]
     pub fields: Vec<String>,
-}
-
-impl Arguments {
-    pub fn from_request(request: &Request) -> Option<Self> {
-        let Request::Query {
-            text,
-            cursor: _,
-            page_size,
-            why,
-            fields,
-            session,
-        } = request
-        else {
-            return None;
-        };
-        Some(Self {
-            query: text.clone(),
-            limit: *page_size,
-            why: *why,
-            session: session.clone(),
-            fields: fields.clone(),
-        })
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -62,7 +38,7 @@ pub struct Resolved {
 
 pub use polylogue_store::query::execute::Explanation;
 
-/// The query envelope is fixed. Row keys follow the declared columns;
+/// The query answer's shape is fixed. Row keys follow the declared columns;
 /// measure data belongs to the named measure's own result contract. The
 /// variants differ by their fields, and whether an answer is empty or
 /// incomplete is the answer's outcome, never a field here.

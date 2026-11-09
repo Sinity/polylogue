@@ -4,7 +4,7 @@
 mod execution;
 mod status;
 
-use super::{Failure, Request};
+use super::Failure;
 use crate::briefing::{self, Ask};
 use crate::operation::{Context, Invocation};
 use command_surface::Answer;
@@ -117,19 +117,20 @@ impl Daemon {
             .ok_or_else(|| Failure::new(FailureKind::BadRequest, "unknown operation"))?;
         let command =
             crate::commands::command(&request.operation).expect("registered command exists");
-        if command.build_typed.is_some() {
-            crate::protocol::operations::admit(
-                command,
-                request,
-                &crate::commands::Caller {
-                    surface: crate::commands::Surface::Http,
-                    cwd: None,
-                    json: true,
-                },
-            )?;
+        if let Some(registration) = command.registration() {
+            registration
+                .admit(
+                    &request.arguments,
+                    command,
+                    &crate::commands::Caller {
+                        surface: crate::commands::Surface::Http,
+                        cwd: None,
+                    },
+                )
+                .map_err(|failure| failure.error)?;
         }
         let mcp = command.tool.map_or(serde_json::Value::Null, |tool| {
-            let call = crate::protocol::operations::ToolCall {
+            let call = crate::mcp::ToolCall {
                 operation: Some(request.operation.clone()),
                 arguments: request.arguments.clone(),
                 request_id: request.request_id.clone(),
@@ -180,6 +181,21 @@ impl Daemon {
             )
             .with_scope(reader.confirmed_scope()?)),
         }
+    }
+}
+
+impl Daemon {
+    /// Writes are paused until the Sinex configuration is fixed or Sinex
+    /// can be reached.
+    pub(crate) fn blocked(&self) -> bool {
+        self.mode.blocked()
+    }
+    pub(crate) fn write_refusal(&self) -> Failure {
+        self.mode.write_refusal()
+    }
+    /// Holds idle-priority jobs back while an ordinary request runs.
+    pub(super) fn foreground(&self) -> super::schema::Foreground<'_> {
+        self.idle_admission.foreground()
     }
 }
 
@@ -475,7 +491,7 @@ fn context(
         if let Err(error) = ReadLimit::finish_scope("record delivery") {
             return store_error(&error);
         }
-        if let Err(error) = operation.check_parent_admission() {
+        if let Err(error) = operation.check_parent_lifetime() {
             return store_error(&error);
         }
         // Queued without the caller's lifetime: the text has been handed
@@ -590,7 +606,7 @@ fn submit<T: serde::Serialize>(
             limit.check()?;
         }
         let writes = writer(d)?;
-        invocation.check_parent_admission()?;
+        invocation.check_parent_lifetime()?;
         Ok(writes)
     };
     let writes = match accepted() {
@@ -702,901 +718,6 @@ pub(super) fn accepting(d: &Daemon) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Produces this finite feed, or leaves another request to its operation.
-pub(crate) fn change_feed(
-    request: &Request,
-    d: &Daemon,
-    operation: &Arc<crate::operation::Context>,
-    output: &mut dyn std::io::Write,
-) -> Option<Result<(), Failure>> {
-    let Request::Changes { since } = request else {
-        return None;
-    };
-    Some(accepting(d).and_then(|()| {
-        let mut file = feeds::read(d, since.as_deref(), operation)?;
-        std::io::copy(&mut file, output).map_err(|e| Failure::new("io", e))?;
-        Ok(())
-    }))
-}
-
-/// Answers one request. Reads use the read pool; imports go to the loop
-/// thread, which owns the writer.
-pub fn handle(request: Request, d: &Daemon) -> Answer<Value> {
-    let limit = super::execution::limit_for(&request, None, Default::default());
-    handle_with_limit(request, d, &limit)
-}
-
-pub fn handle_with_limit(
-    request: Request,
-    d: &Daemon,
-    limit: &polylogue_store::read::limit::ReadLimit,
-) -> Answer<Value> {
-    let authorship = polylogue_model::authorship::compute_authorship(
-        polylogue_model::authorship::Channel::Daemon,
-        &Default::default(),
-        None,
-    );
-    handle_with_caller(request, d, limit, &authorship)
-}
-
-pub fn handle_with_caller(
-    request: Request,
-    d: &Daemon,
-    limit: &polylogue_store::read::limit::ReadLimit,
-    authorship: &polylogue_model::authorship::Authorship,
-) -> Answer<Value> {
-    handle_with_invocation(request, d, limit, &d.invocation(authorship))
-}
-
-pub(crate) fn handle_with_invocation(
-    request: Request,
-    d: &Daemon,
-    limit: &polylogue_store::read::limit::ReadLimit,
-    invocation: &crate::operation::Invocation,
-) -> Answer<Value> {
-    let advisory_limit = matches!(
-        &request,
-        Request::Context {
-            ask: Ask::Advisory { .. },
-            ..
-        }
-    )
-    .then(|| {
-        let cap = Instant::now() + crate::advisory::BUDGET;
-        polylogue_store::read::limit::ReadLimit::at(
-            limit.deadline().map_or(cap, |parent| parent.min(cap)),
-            limit.cancellation.child(),
-        )
-    });
-    let limit = advisory_limit.as_ref().unwrap_or(limit);
-    #[cfg(test)]
-    let reader_acquired = Arc::new(AtomicBool::new(false));
-    #[cfg(test)]
-    if let Some(sender) = d.read_limits.lock().unwrap().as_ref() {
-        let _ = sender.send(crate::test_daemon::ReadObservation {
-            limit: limit.clone(),
-            owner: std::thread::current().id(),
-            acquired: Arc::clone(&reader_acquired),
-        });
-    }
-    if let Err(error) = invocation.check_parent_admission() {
-        return store_error(&error);
-    }
-    super::execution::run(request, limit, |request| {
-        handle_inner(
-            request,
-            d,
-            invocation,
-            #[cfg(test)]
-            &reader_acquired,
-        )
-    })
-}
-
-fn handle_inner(
-    request: Request,
-    d: &Daemon,
-    invocation: &crate::operation::Invocation,
-    #[cfg(test)] reader_acquired: &AtomicBool,
-) -> Answer<Value> {
-    if let Err(failure) = accepting(d) {
-        return failure.answer();
-    }
-    if d.mode.blocked() && !request.read_only() {
-        return d.mode.write_refusal().answer();
-    }
-    if let Request::Complete { text, position } = &request {
-        if *position > text.len() || !text.is_char_boundary(*position) {
-            return error(
-                "bad_request",
-                "completion position must be a UTF-8 byte boundary within the query",
-            );
-        }
-        let token = match d.archive.scope_token() {
-            Ok(token) => token,
-            Err(error) => return store_error(&error),
-        };
-        let candidates = crate::completion_catalog::complete_file(
-            &d.completion_path,
-            &crate::runtime_dir::archive_key(&d.archive.root),
-            text,
-            *position,
-        );
-        if let Err(error) = token.check() {
-            return store_error(&error);
-        }
-        return listed(candidates);
-    }
-    if let Request::SchemaInfer { selection } = request {
-        return super::schema::infer(d, selection);
-    }
-    if let Request::Verify { manifest } = &request {
-        return super::verify::run(d, manifest.as_deref());
-    }
-    if matches!(&request, Request::Attachment { .. }) {
-        return super::attachment::read(request, d);
-    }
-    if let Request::DeliveryEvent {
-        request_id,
-        delivery,
-        what,
-        detail,
-    } = request
-    {
-        return delivery_event(
-            d,
-            invocation,
-            request_id,
-            UserWrite::DeliveryEvent {
-                delivery,
-                what,
-                detail,
-            },
-        );
-    }
-    let _foreground = d.idle_admission.foreground();
-    let advisory = matches!(
-        &request,
-        Request::Context {
-            ask: Ask::Advisory { .. },
-            ..
-        }
-    );
-    let reader = match d.reads.reader() {
-        Ok(r) => r,
-        Err(StoreError::ReadPoolClosed) => {
-            return error("shutting_down", StoreError::ReadPoolClosed);
-        }
-        Err(_) if advisory => return advisory_silence(),
-        Err(e) => return store_error(&e),
-    };
-    #[cfg(test)]
-    reader_acquired.store(true, Ordering::Release);
-    let operation = if matches!(
-        &request,
-        Request::Query { .. }
-            | Request::Timeline { .. }
-            | Request::Cost { .. }
-            | Request::Watch { .. }
-            | Request::Embed { .. }
-            | Request::Read { .. }
-            | Request::Context { .. }
-            | Request::Resumable { .. }
-    ) || matches!(&request, Request::Explain { subject, .. } if subject == "query")
-    {
-        Some(match d.resolve_operation_context(invocation.clone()) {
-            Ok(operation) => operation,
-            Err(failure) => return failure.answer(),
-        })
-    } else {
-        None
-    };
-    match request {
-        Request::Attachment { .. } => unreachable!("attachment reads own their reader"),
-        Request::ChatSend { .. }
-        | Request::ChatActions
-        | Request::ChatAction { .. }
-        | Request::ChatClaim { .. }
-        | Request::ChatReport { .. }
-        | Request::ChatDecide { .. }
-        | Request::ChatAttachment { .. }
-        | Request::BackfillStart { .. }
-        | Request::BackfillJobs
-        | Request::BackfillCancel { .. }
-        | Request::BackfillClaim { .. }
-        | Request::BackfillReport { .. }
-        | Request::Conversations { .. }
-        | Request::StoredFiles { .. } => browser::handle(request, d, reader, invocation),
-        Request::Changes { .. } => error(
-            "bad_request",
-            "the change feed uses the finite socket stream",
-        ),
-        Request::Follow { .. } => error("bad_request", "follow uses the socket stream"),
-        Request::Ping { .. }
-        | Request::Claim { .. }
-        | Request::Answer { .. }
-        | Request::Permission { .. }
-        | Request::Interrupt { .. }
-        | Request::Start { .. }
-        | Request::HandOff { .. } => {
-            drop(reader);
-            acts::handle(request, d, invocation)
-        }
-        Request::Explain {
-            subject,
-            expression,
-            unit,
-            page_size,
-            cursor,
-            session,
-        } => {
-            let result = if subject == "query" {
-                if unit.is_some() || page_size.is_some() || cursor.is_some() {
-                    return error(
-                        "bad_request",
-                        "unit, page_size and cursor apply to declaration pages",
-                    );
-                }
-                let Some(text) = expression.as_deref().filter(|s| !s.trim().is_empty()) else {
-                    return error("bad_request", "expression is required for query");
-                };
-                super::query::with_ranking(
-                    &reader,
-                    &d.warm,
-                    &d.config,
-                    |embeddings, ranking_identity, _near| {
-                        super::query::explain(
-                            &reader,
-                            super::query::Ask {
-                                text,
-                                cursor: None,
-                                page_size: None,
-                                why: false,
-                                session,
-                                context: operation
-                                    .as_ref()
-                                    .expect("evaluated operation context")
-                                    .clone(),
-                                embeddings,
-                                ranking_identity,
-                                near: None,
-                                fields: &[],
-                            },
-                        )
-                    },
-                )
-            } else {
-                crate::explain::answer(
-                    &subject,
-                    expression.as_deref(),
-                    unit.as_deref(),
-                    page_size,
-                    cursor.as_deref(),
-                )
-            };
-            match result {
-                Ok(data) => ok(data),
-                Err(f) => f.answer(),
-            }
-        }
-        Request::Timeline {
-            date,
-            across_years,
-            undated,
-            cursor,
-            page_size,
-        } => {
-            match super::calendar::timeline(
-                &reader,
-                super::calendar::Timeline {
-                    date: date.as_deref(),
-                    across_years,
-                    undated,
-                    cursor: cursor.as_deref(),
-                    page_size,
-                },
-                operation.as_ref().expect("calendar operation context"),
-            ) {
-                Ok(data) => ok(data),
-                Err(f) => f.answer(),
-            }
-        }
-        Request::Cost {
-            month,
-            undated,
-            unknown_model,
-            query,
-            date,
-            model,
-            cursor,
-            page_size,
-        } => super::query::with_ranking(
-            &reader,
-            &d.warm,
-            &d.config,
-            |embeddings, ranking_identity, near| match super::calendar::cost(
-                &reader,
-                super::calendar::Cost {
-                    embeddings,
-                    ranking_identity,
-                    near: Some(near),
-                    month: month.as_deref(),
-                    query: &query,
-                    date: date.as_deref(),
-                    model: model.as_deref(),
-                    undated,
-                    unknown_model,
-                    cursor: cursor.as_deref(),
-                    page_size,
-                },
-                operation.as_ref().expect("calendar operation context"),
-            ) {
-                Ok(data) => ok(data),
-                Err(f) => f.answer(),
-            },
-        ),
-        Request::Status => status::answer(d, &reader),
-        Request::Query {
-            text,
-            cursor,
-            page_size,
-            why,
-            session,
-            fields,
-        } => super::query::with_ranking(
-            &reader,
-            &d.warm,
-            &d.config,
-            |embeddings, ranking_identity, near| {
-                let ask = super::query::Ask {
-                    text: &text,
-                    cursor: cursor.as_deref(),
-                    page_size,
-                    why,
-                    session,
-                    context: operation
-                        .as_ref()
-                        .expect("evaluated operation context")
-                        .clone(),
-                    embeddings,
-                    ranking_identity,
-                    near: Some(near),
-                    fields: &fields,
-                };
-                match super::query::run(&reader, ask) {
-                    Ok(answer) => query_answer(d, &reader, answer),
-                    Err(f) => f.answer(),
-                }
-            },
-        ),
-        Request::Complete { .. } => {
-            unreachable!("completion is handled before opening an archive reader")
-        }
-
-        Request::Sql { statement } => match reader.query_untrusted(&statement) {
-            // Compiled under a read-only authorizer: a statement that writes,
-            // creates temporary objects, attaches databases or sets pragmas
-            // is refused before it runs.
-            Ok(rows) => listed(rows),
-            Err(e) => error("sql", e),
-        },
-        request @ Request::Read { .. } => read::page(
-            &reader,
-            d,
-            &request,
-            operation.as_ref().expect("read operation context"),
-        ),
-        request @ (Request::Import { .. } | Request::ImportArchive { .. }) => {
-            drop(reader);
-            let (paths, from_archive, dry_run) = match request {
-                Request::Import { paths, .. } => (paths, None, false),
-                Request::ImportArchive { path, dry_run, .. } => (Vec::new(), Some(path), dry_run),
-                _ => unreachable!("an import request"),
-            };
-            let (reply, wait) = sync_channel(1);
-            let tx = match d.loop_tx.lock() {
-                Ok(tx) => tx,
-                Err(_) => return error("internal", "the loop has stopped"),
-            };
-            if let Err(error) = invocation.check_parent_admission() {
-                return store_error(&error);
-            }
-            let sent = tx
-                .send(LoopMsg::Import {
-                    paths,
-                    from_archive,
-                    dry_run,
-                    authorship: invocation.authorship.clone(),
-                    parent: invocation.parent_lifetime(),
-                    reply,
-                })
-                .is_ok();
-            drop(tx);
-            if !sent {
-                return error("internal", "the loop has stopped");
-            }
-            match wait.recv() {
-                Ok(Ok(report)) => import_answer(report),
-                Ok(Err(polylogue_engine::ImportFailure::Parent(error))) => store_error(&error),
-                Ok(Err(polylogue_engine::ImportFailure::Import(error))) => {
-                    self::error("import", error)
-                }
-                Err(_) => error("internal", "the loop has stopped"),
-            }
-        }
-        Request::SchemaInfer { .. } | Request::Verify { .. } => {
-            unreachable!("idle-priority jobs are admitted before acquiring a reader")
-        }
-        Request::SchemaUnread { origin } => super::schema::unread(&reader, origin.as_deref()),
-        Request::Embed {
-            what,
-            query,
-            limit,
-            yes,
-        } => {
-            let settings = match reader.settings_snapshot(d.config.requests.machine()) {
-                Ok(settings) => settings,
-                Err(error) => return store_error(&error),
-            };
-            crate::embeddings::handle(
-                &reader,
-                &what,
-                query.as_deref(),
-                limit,
-                yes,
-                crate::embeddings::Context {
-                    settings: &settings,
-                    credentials: &d.config.embedding_credentials,
-                    operation: operation.as_ref().expect("embedding operation context"),
-                },
-            )
-        }
-
-        Request::Keep {
-            request_id,
-            text,
-            name,
-        } => {
-            let selected_scope = reader.scope_token();
-            let intended = UserWrite::KeepResult {
-                name: name.clone(),
-                query: text.clone(),
-                rows_json: String::new(),
-                read_at: String::new(),
-            };
-            match repeated_request(&reader, &request_id, &intended, invocation) {
-                Ok(Some(previous)) => {
-                    drop(reader);
-                    return write_from_read(d, invocation, request_id, previous, selected_scope);
-                }
-                Err(failure) => return failure.answer(),
-                Ok(None) => {}
-            }
-            let operation = match d.resolve_operation_context(invocation.clone()) {
-                Ok(operation) => operation,
-                Err(failure) => return failure.answer(),
-            };
-            let kept = super::query::with_ranking(
-                &reader,
-                &d.warm,
-                &d.config,
-                |embeddings, ranking_identity, near| {
-                    let ask = super::query::Ask {
-                        text: &text,
-                        cursor: None,
-                        page_size: None,
-                        why: false,
-                        session: None,
-                        context: operation.clone(),
-                        embeddings,
-                        ranking_identity,
-                        near: Some(near),
-                        fields: &[],
-                    };
-                    super::query::keep(&reader, ask)
-                },
-            );
-            let kept = match kept {
-                Ok(k) => k,
-                Err(f) => {
-                    return f.answer();
-                }
-            };
-            drop(reader);
-            let read_at = serde_json::json!({ "now": kept["now"] }).to_string();
-            write_from_read(
-                d,
-                invocation,
-                request_id,
-                UserWrite::KeepResult {
-                    name,
-                    query: text,
-                    rows_json: kept.to_string(),
-                    read_at,
-                },
-                selected_scope,
-            )
-        }
-        Request::Save {
-            request_id,
-            name,
-            text,
-            denominator,
-        } => {
-            let intended = UserWrite::SaveQuery {
-                name,
-                text,
-                denominator,
-            };
-            let resolved = match repeated_request(&reader, &request_id, &intended, invocation) {
-                Ok(Some(previous)) => previous,
-                Ok(None) => intended,
-                Err(failure) => return failure.answer(),
-            };
-            drop(reader);
-            write(d, invocation, request_id, resolved)
-        }
-        Request::Watch {
-            request_id,
-            query,
-            name,
-            hold,
-            notify,
-        } => {
-            let selected_scope = reader.scope_token();
-            if let Some(hold) = &hold
-                && crate::signals::duration(hold).is_none()
-            {
-                return error(
-                    "invalid",
-                    format!("--for {hold:?} is not a duration such as 20m"),
-                );
-            }
-            // A watch whose query cannot run would only be refused later.
-            let ask = super::query::Ask {
-                text: &query,
-                cursor: None,
-                page_size: Some(1),
-                why: false,
-                session: None,
-                context: operation
-                    .as_ref()
-                    .expect("evaluated operation context")
-                    .clone(),
-                embeddings: false,
-                ranking_identity: None,
-                near: None,
-                fields: &[],
-            };
-            if let Err(f) = super::query::run(&reader, ask) {
-                return f.answer();
-            }
-            drop(reader);
-            let mut rule = serde_json::json!({
-                "name": name.clone().unwrap_or_else(|| query.clone()),
-                "query": query,
-                "fires": "on_new",
-                "deliver": "notice",
-                "interrupt": notify,
-            });
-            if let Some(hold) = hold {
-                rule["for"] = serde_json::json!(hold);
-            }
-            let assertion = polylogue_model::assertion::NewAssertion {
-                kind: polylogue_model::assertion::AssertionKind::Signal,
-                key: rule["name"].as_str().map(str::to_owned),
-                value: Some(rule),
-                links: vec![],
-                valid_until: None,
-            };
-            write_from_read(
-                d,
-                invocation,
-                request_id,
-                UserWrite::Assert {
-                    assertions: vec![assertion],
-                },
-                selected_scope,
-            )
-        }
-        Request::BrowserSelectionNote {
-            request_id,
-            body,
-            quote,
-            provider,
-            conversation_id,
-            message_id,
-            page_url,
-            selected_at,
-        } => {
-            let input = crate::browser::notes::SelectionNote {
-                request_id,
-                body,
-                quote,
-                source: crate::browser::notes::Source {
-                    provider,
-                    conversation_id,
-                    message_id,
-                    page_url,
-                    selected_at,
-                },
-            };
-            let (session, message_id) = match input.references() {
-                Ok(references) => references,
-                Err(failure) => return failure.answer(),
-            };
-            let message = polylogue_model::Reference::Message(message_id.clone());
-            let intended = UserWrite::Assert {
-                assertions: vec![input.assertion(session.clone(), message.clone())],
-            };
-            let selected_scope = reader.scope_token();
-            match repeated_request(&reader, &input.request_id, &intended, invocation) {
-                Ok(Some(previous)) => {
-                    drop(reader);
-                    return write_from_read(
-                        d,
-                        invocation,
-                        input.request_id,
-                        previous,
-                        selected_scope,
-                    );
-                }
-                Ok(None) => {}
-                Err(failure) => return failure.answer(),
-            }
-            // A message reference names exactly one message whatever its
-            // reachability; `id:` takes the native ID, not the reference text.
-            let query = format!(
-                "messages where message:{}",
-                polylogue_query::quoted(&message_id.to_string())
-            );
-            let targets = match query_targets_in(d, &reader, &query, invocation, Some(&session)) {
-                Ok(targets) => targets,
-                Err(failure) => return failure.answer(),
-            };
-            if targets.as_slice() != [message] {
-                return error(
-                    "conflict",
-                    "the supplied message is missing, ambiguous or belongs to another conversation; capture the conversation and retry",
-                );
-            }
-            drop(reader);
-            write_from_read(d, invocation, input.request_id, intended, selected_scope)
-        }
-        Request::Assert {
-            request_id,
-            assertions,
-        } => {
-            drop(reader);
-            write(d, invocation, request_id, UserWrite::Assert { assertions })
-        }
-        Request::AssertQuery {
-            request_id,
-            query,
-            assertion,
-        } => {
-            let selected_scope = reader.scope_token();
-            let intended = UserWrite::AssertQuery {
-                query: query.clone(),
-                assertion: assertion.clone(),
-                resolved: Vec::new(),
-            };
-            let resolved = match repeated_request(&reader, &request_id, &intended, invocation) {
-                Ok(Some(previous)) => previous,
-                Ok(None) => {
-                    if assertion
-                        .links
-                        .iter()
-                        .any(|link| link.role == polylogue_model::assertion::LinkRole::About)
-                    {
-                        return error(
-                            "bad_request",
-                            "a query assertion cannot supply its own about links",
-                        );
-                    }
-                    let targets = match query_targets(d, &reader, &query, invocation) {
-                        Ok(targets) => targets,
-                        Err(failure) => return failure.answer(),
-                    };
-                    UserWrite::AssertQuery {
-                        query,
-                        assertion,
-                        resolved: targets,
-                    }
-                }
-                Err(failure) => return failure.answer(),
-            };
-            let targets = match &resolved {
-                UserWrite::AssertQuery { resolved, .. } => resolved.len(),
-                _ => return error("conflict", "stored request has another action"),
-            };
-            drop(reader);
-            submit(
-                d,
-                invocation,
-                request_id,
-                resolved,
-                Some(selected_scope),
-                |outcome| polylogue_model::user::AssertQueryOutcome::new(outcome, targets),
-            )
-        }
-        Request::Revise {
-            request_id,
-            bases,
-            patch,
-        } => {
-            drop(reader);
-            write(
-                d,
-                invocation,
-                request_id,
-                UserWrite::ReviseAssertions { bases, patch },
-            )
-        }
-        Request::Judge {
-            request_id,
-            note,
-            accepted,
-            reason,
-        } => {
-            let reference = match polylogue_model::Reference::parse(&note) {
-                Ok(polylogue_model::Reference::Assertion(reference)) => reference,
-                Ok(_) => {
-                    return error(
-                        "bad_request",
-                        "a judgment needs a natural assertion reference",
-                    );
-                }
-                Err(error) => return self::error("bad_request", error),
-            };
-            let selected_scope = reader.scope_token();
-            let found = match reader.assertion(&reference) {
-                Ok(Some(found)) => found,
-                Ok(None) => return error("not_found", format!("no assertion {note}")),
-                Err(e) => return store_error(&e),
-            };
-            if !found.fact.author.is_agent() {
-                return error(
-                    "bad_request",
-                    "only assertions agents wrote are accepted or rejected; revise or withdraw the operator's own",
-                );
-            }
-            drop(reader);
-            let judgment = polylogue_model::assertion::NewAssertion {
-                kind: polylogue_model::assertion::AssertionKind::Judgment,
-                key: Some(if accepted { "accepted" } else { "rejected" }.into()),
-                value: reason.map(serde_json::Value::String),
-                links: vec![polylogue_model::assertion::NewAssertionLink {
-                    role: polylogue_model::assertion::LinkRole::About,
-                    reference: polylogue_model::Reference::Assertion(
-                        polylogue_model::RevisionReference {
-                            root: found.fact.root,
-                            revision: Some(found.fact.id),
-                        },
-                    ),
-                }],
-                valid_until: None,
-            };
-            write_from_read(
-                d,
-                invocation,
-                request_id,
-                UserWrite::Assert {
-                    assertions: vec![judgment],
-                },
-                selected_scope,
-            )
-        }
-        Request::Withdraw {
-            request_id,
-            targets,
-            reason,
-        } => {
-            drop(reader);
-            write(
-                d,
-                invocation,
-                request_id,
-                UserWrite::WithdrawAssertions { targets, reason },
-            )
-        }
-        Request::Context {
-            request_id,
-            ask,
-            sender,
-            budget_tokens,
-        } => {
-            drop(reader);
-            context(
-                d,
-                request_id,
-                &ask,
-                sender,
-                budget_tokens,
-                operation.as_ref().expect("briefing operation context"),
-            )
-        }
-        Request::DeliveryEvent { .. } => {
-            unreachable!("delivery events are handed over without a reader")
-        }
-        Request::Resumable { cwd, limit } => {
-            match crate::resume::resumable(
-                &reader,
-                &d.scope,
-                &cwd,
-                limit.unwrap_or(10),
-                operation.as_ref().expect("resumable operation context"),
-            ) {
-                Ok(sessions) => listed(sessions),
-                Err(e) => store_error(&e),
-            }
-        }
-        Request::Continue { session } => match crate::resume::plan(&reader, &session) {
-            Ok(p) => ok(p),
-            Err(e) => store_error(&e),
-        },
-        Request::Setting {
-            request_id: _,
-            key,
-            value: None,
-            machine,
-        } => {
-            let selected = machine.as_deref().unwrap_or(&invocation.machine);
-            if let Some(key) = key {
-                if let Err(error) = polylogue_model::settings::target_machine(
-                    &key,
-                    machine.as_deref(),
-                    &invocation.machine,
-                ) {
-                    return self::error("bad_value", error);
-                }
-                match reader.setting_current(&key, selected) {
-                    Ok(current) => ok(current),
-                    Err(error) => store_error(&error),
-                }
-            } else {
-                for spec in polylogue_model::settings::CATALOG
-                    .iter()
-                    .filter(|spec| spec.scope == polylogue_model::settings::Scope::Host)
-                {
-                    if let Err(error) = polylogue_model::settings::target_machine(
-                        spec.key,
-                        machine.as_deref(),
-                        &invocation.machine,
-                    ) {
-                        return self::error("bad_value", error);
-                    }
-                }
-                match reader.settings_catalog(selected) {
-                    Ok(catalog) => ok(catalog),
-                    Err(error) => store_error(&error),
-                }
-            }
-        }
-        Request::Setting {
-            request_id,
-            key,
-            value: Some(value),
-            machine,
-        } => {
-            let Some(key) = key else {
-                return error("bad_request", "a value requires a setting key");
-            };
-            drop(reader);
-            write(
-                d,
-                invocation,
-                request_id.unwrap_or_else(user_writes::new_request_id),
-                UserWrite::SetSetting {
-                    key,
-                    value,
-                    machine,
-                },
-            )
-        }
-    }
-}
-
 /// Resolve bulk targets through the same pinned selection and acknowledged
 /// execution lifecycle used by reads. The returned references retain native grain.
 fn query_targets(
@@ -1681,7 +802,7 @@ fn query_targets_in(
                 .binding_hash()
                 .map_err(|problem| Failure::new("internal", problem))?;
             let writes = writer(d)?;
-            operation.check_parent_admission()?;
+            operation.check_parent_lifetime()?;
             match operation.parent_lifetime() {
                 Some(parent) => writes.query_object_with_parent(object, parent),
                 None => writes.query_object(object),
@@ -2157,7 +1278,7 @@ pub fn start(
     // Pings and notices left pending raise their running sessions' mailbox
     // flags; those to sessions no longer running are settled.
     acts::settle_ended(&daemon, daemon.config.requests.now().unix_ms(), true);
-    let operations = Arc::new(crate::protocol::operations::table(Arc::clone(&daemon)));
+    let operations = Arc::new(crate::commands::table(Arc::clone(&daemon)));
     assert!(
         daemon.operations.set(Arc::downgrade(&operations)).is_ok(),
         "runtime installs its operation table once"
@@ -2324,12 +1445,13 @@ pub fn start(
     Ok(runtime)
 }
 
-mod browser;
+pub(crate) mod browser;
+pub(crate) mod handlers;
 pub(crate) mod read;
 
 #[cfg(test)]
 mod tests;
 
 pub(crate) mod acts;
-mod feeds;
+pub(crate) mod feeds;
 pub(crate) mod follow;

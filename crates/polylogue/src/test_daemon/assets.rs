@@ -23,13 +23,10 @@ pub fn seed_bytes(daemon: &TestDaemon, bytes: &[u8]) -> &'static str {
         serde_json::to_vec(&names).unwrap(),
     )
     .unwrap();
-    let imported = handle(
-        Request::Import {
-            request_id: "synthetic-attachment-import".into(),
-            paths: vec![source.clone()],
-        },
-        &daemon.daemon,
-    );
+    let imported =
+        crate::test_daemon::Call::new("import", serde_json::json!({"paths": [source.clone()]}))
+            .id("synthetic-attachment-import")
+            .answer(&daemon.daemon);
     let data =
         crate::protocol::into_value(imported).unwrap_or_else(|failure| panic!("{failure:?}"));
     assert_eq!(data["pass"]["errors"], serde_json::json!([]));

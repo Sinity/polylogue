@@ -112,10 +112,11 @@ fn application_shutdown_joins_socket_clients_while_all_reader_slots_remain_held(
     writeln!(
         stream,
         "{}",
-        serde_json::to_string(&crate::daemon::execution::Outgoing::new(
-            &Request::Status,
-            None
-        ))
+        serde_json::to_string(&crate::protocol::wire::Outgoing {
+            request: &crate::client::request("status", serde_json::json!({}), "status".into()),
+            caller: Default::default(),
+            parent_deadline_ms: None,
+        })
         .unwrap()
     )
     .unwrap();
@@ -146,10 +147,11 @@ fn listener_quiescence_is_observable_before_joining_clients() {
     writeln!(
         stream,
         "{}",
-        serde_json::to_string(&crate::daemon::execution::Outgoing::new(
-            &Request::Status,
-            None
-        ))
+        serde_json::to_string(&crate::protocol::wire::Outgoing {
+            request: &crate::client::request("status", serde_json::json!({}), "status".into()),
+            caller: Default::default(),
+            parent_deadline_ms: None,
+        })
         .unwrap()
     )
     .unwrap();
@@ -242,7 +244,7 @@ fn a_client_can_close_its_write_half_and_still_receive_the_answer() {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    stream.write_all(b"{\"caller\":{\"controlling_terminal\":false},\"op\":\"sql\",\"statement\":\"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100000) SELECT count(*) AS n FROM n\"}\n").unwrap();
+    stream.write_all(b"{\"caller\":{\"controlling_terminal\":false},\"operation\":\"sql\",\"request_id\":\"half-close\",\"arguments\":{\"statement\":\"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100000) SELECT count(*) AS n FROM n\"}}\n").unwrap();
     stream.shutdown(std::net::Shutdown::Write).unwrap();
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).unwrap();
@@ -412,4 +414,30 @@ fn a_daemon_run_until_idle_exits_with_its_summary_and_reads_sources_only_when_as
     assert!(read.work.errors.is_empty(), "{read:?}");
     assert!(read.work.inputs_changed >= 1, "{read:?}");
     assert_eq!(inputs(), 1);
+}
+
+#[test]
+fn data_activation_is_scope_fenced_even_before_a_reader_binds_the_limit() {
+    let daemon = crate::test_daemon::start("native stream activation fence");
+    let scope = daemon.daemon.reads.scope_token().unwrap();
+    let limit = polylogue_store::read::limit::ReadLimit::without_deadline(Default::default());
+    assert!(limit.check().is_ok());
+    daemon.daemon.archive.advance_generation_for_test().unwrap();
+    let mut bytes = Vec::new();
+    let mut writer = super::GuardedWriter::new(&mut bytes, limit, scope);
+    assert!(std::io::Write::write_all(&mut writer, b"stale complete event").is_err());
+    let failure = writer
+        .failure()
+        .expect("typed scope failure")
+        .answer::<serde_json::Value>();
+    let command_surface::Answer {
+        outcome: command_surface::Outcome::Error(error),
+        ..
+    } = failure
+    else {
+        panic!("scope changed failure");
+    };
+    assert_eq!(error.code.as_deref(), Some("scope_changed"));
+    drop(writer);
+    assert!(bytes.is_empty());
 }

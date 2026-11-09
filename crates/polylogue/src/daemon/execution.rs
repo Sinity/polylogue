@@ -1,9 +1,7 @@
 //! Request deadlines and transport cancellation. Only read work is interrupted;
 //! a committed write keeps its ordinary result.
-use super::Request;
 use command_surface::Answer;
 use polylogue_store::read::limit::{ReadCancellation, ReadLimit};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -11,35 +9,6 @@ pub const DEFAULT_READ_TIMEOUT_MS: u64 = 30_000;
 
 pub fn timeout() -> Duration {
     Duration::from_millis(DEFAULT_READ_TIMEOUT_MS)
-}
-
-/// Absolute Unix milliseconds on the wire; the daemon converts once to a
-/// monotonic duration so clock changes cannot extend a running read.
-#[derive(Deserialize)]
-pub struct Incoming {
-    #[serde(flatten)]
-    pub request: Request,
-    pub deadline_ms: Option<i64>,
-    pub caller: polylogue_model::authorship::CallerEvidence,
-}
-
-#[derive(Serialize)]
-pub struct Outgoing<'a> {
-    #[serde(flatten)]
-    pub request: &'a Request,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deadline_ms: Option<i64>,
-    pub caller: polylogue_model::authorship::CallerEvidence,
-}
-
-impl<'a> Outgoing<'a> {
-    pub fn new(request: &'a Request, deadline_ms: Option<i64>) -> Self {
-        Self {
-            request,
-            deadline_ms,
-            caller: crate::protocol::caller::evidence(),
-        }
-    }
 }
 
 pub fn deadline(duration: Duration) -> i64 {
@@ -54,107 +23,6 @@ pub fn remaining(deadline_ms: Option<i64>) -> Duration {
 
 pub fn limit(deadline_ms: Option<i64>, cancellation: ReadCancellation) -> ReadLimit {
     ReadLimit::new(remaining(deadline_ms), cancellation)
-}
-
-/// Limits cover read phases, including context preparation before its receipt.
-/// Unbudgeted streams, inference and verification have cancellation without a
-/// default deadline.
-pub fn request_deadline(request: &Request, deadline_ms: Option<i64>) -> Option<i64> {
-    if !request.has_read_phase() {
-        None
-    } else if matches!(
-        request,
-        Request::Read {
-            delivery: polylogue_model::read::ReadDelivery::Stream,
-            ..
-        } | Request::SchemaInfer { .. }
-            | Request::Verify { .. }
-    ) {
-        deadline_ms
-    } else {
-        Some(deadline_ms.unwrap_or_else(|| deadline(timeout())))
-    }
-}
-
-pub fn limit_for(
-    request: &Request,
-    deadline_ms: Option<i64>,
-    cancellation: ReadCancellation,
-) -> ReadLimit {
-    match request_deadline(request, deadline_ms) {
-        Some(deadline_ms) => limit(Some(deadline_ms), cancellation),
-        None => ReadLimit::without_deadline(cancellation),
-    }
-}
-
-pub fn run(
-    request: Request,
-    limit: &ReadLimit,
-    work: impl FnOnce(Request) -> Answer<Value>,
-) -> Answer<Value> {
-    if !request.has_read_phase() {
-        return work(request);
-    }
-    // Every request with a read phase is named; the rest returned above.
-    let (stage, text) = match &request {
-        Request::Query { text, .. } => ("query", Some(text.clone())),
-        Request::Explain { expression, .. } => ("explain", expression.clone()),
-        Request::Context {
-            ask: crate::briefing::Ask::Recall { text, .. },
-            ..
-        } => ("recall", Some(text.clone())),
-        Request::Context { .. } => ("context", None),
-        Request::AssertQuery { query, .. } => ("assert_query", Some(query.clone())),
-        Request::BrowserSelectionNote { .. } => ("browser_selection_note", None),
-        Request::Sql { .. } => ("sql", None),
-        Request::Status => ("status", None),
-        Request::Complete { .. } => ("completion", None),
-        Request::Read { .. } => ("read", None),
-        Request::Changes { .. } => ("changes", None),
-        Request::Follow { query, .. } => ("follow", Some(query.clone())),
-        Request::Attachment { .. } => ("attachment", None),
-        Request::SchemaInfer { .. } => ("schema_infer", None),
-        Request::SchemaUnread { .. } => ("schema_unread", None),
-        Request::Verify { .. } => ("verify", None),
-        Request::Timeline { .. } => ("timeline", None),
-        Request::Cost { .. } => ("cost", None),
-        Request::Resumable { .. } => ("resumable", None),
-        Request::Continue { .. } => ("continue", None),
-        Request::Setting { .. } => ("setting", None),
-        Request::Embed { .. } => ("embed", None),
-        Request::ChatActions => ("chat_actions", None),
-        Request::ChatAction { .. } => ("chat_action", None),
-        Request::ChatAttachment { .. } => ("chat_attachment", None),
-        Request::BackfillJobs => ("backfill_jobs", None),
-        Request::Conversations { .. } => ("conversations", None),
-        Request::StoredFiles { .. } => ("stored_files", None),
-        request => unreachable!("{request:?} has no read phase"),
-    };
-    // An advisory fails open: its handler answers with nothing when the
-    // limit runs out, the same on every surface, never with a timeout.
-    if matches!(
-        &request,
-        Request::Context {
-            ask: crate::briefing::Ask::Advisory { .. },
-            ..
-        }
-    ) {
-        return limit.scope(|| work(request));
-    }
-    limit.scope(|| {
-        if let Err(error) = limit.check() {
-            return refusal(&error, stage, text.as_deref(), limit);
-        }
-        let response = work(request);
-        // A checked writer handoff ends the read phase. Its accepted result
-        // must not become a timeout after the write commits.
-        if ReadLimit::current().is_some()
-            && let Err(error) = limit.check()
-        {
-            return refusal(&error, stage, text.as_deref(), limit);
-        }
-        response
-    })
 }
 
 /// A read stopped by its deadline or a cancellation names the stage it

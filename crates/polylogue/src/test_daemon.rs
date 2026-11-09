@@ -2,10 +2,9 @@
 //! its loop reads only the temporary home, and its socket is served on a
 //! thread of its own.
 
-use crate::daemon::Request;
 use crate::daemon::{
     server,
-    service::{self, Daemon, handle},
+    service::{self, Daemon},
 };
 use polylogue_engine::Config;
 use std::path::PathBuf;
@@ -159,7 +158,7 @@ impl TestDaemon {
     /// state that never comes is ended by the test runner's timeout.
     pub fn wait_for(&self, ok: impl Fn(&serde_json::Value) -> bool) {
         let status = || {
-            crate::protocol::into_value(handle(Request::Status, &self.daemon))
+            crate::protocol::into_value(call(&self.daemon, "status", serde_json::json!({})))
                 .unwrap_or_else(|failure| panic!("status failed: {failure:?}"))
         };
         while !ok(&status()) {
@@ -241,14 +240,10 @@ impl TestDaemon {
 
     /// Sets an archive setting through the daemon.
     pub fn set(&self, key: &str, value: &str) {
-        let r = handle(
-            Request::Setting {
-                request_id: None,
-                key: Some(key.into()),
-                value: Some(value.into()),
-                machine: None,
-            },
+        let r = call(
             &self.daemon,
+            "setting",
+            serde_json::json!({ "key": key, "value": value }),
         );
         assert!(
             matches!(
@@ -277,3 +272,115 @@ impl Drop for TestDaemon {
 
 pub mod assets;
 pub(crate) mod embeddings;
+
+/// Answers one request on the calling thread as the daemon's own caller,
+/// with the default read deadline and a new request ID.
+pub(crate) fn call(
+    daemon: &crate::daemon::service::Daemon,
+    operation: &str,
+    arguments: serde_json::Value,
+) -> command_surface::Answer<serde_json::Value> {
+    Call::new(operation, arguments).answer(daemon)
+}
+
+/// One request as a test sends it; the defaults are the daemon's own
+/// caller on the command line, a new request ID and the default deadline.
+#[derive(Clone)]
+pub(crate) struct Call {
+    pub operation: String,
+    pub arguments: serde_json::Value,
+    pub request_id: String,
+    pub cursor: Option<String>,
+    pub surface: crate::commands::Surface,
+    pub cwd: Option<PathBuf>,
+    pub authorship: polylogue_model::authorship::Authorship,
+    pub limit: polylogue_store::read::limit::ReadLimit,
+}
+
+impl Call {
+    pub(crate) fn new(operation: &str, arguments: serde_json::Value) -> Self {
+        Self {
+            operation: operation.into(),
+            arguments,
+            request_id: polylogue_store::user_writes::new_request_id(),
+            cursor: None,
+            surface: crate::commands::Surface::Cli,
+            cwd: None,
+            authorship: polylogue_model::authorship::compute_authorship(
+                polylogue_model::authorship::Channel::Daemon,
+                &Default::default(),
+                None,
+            ),
+            limit: crate::daemon::execution::limit(None, Default::default()),
+        }
+    }
+    /// The call a ready request names, with its identity and cursor.
+    pub(crate) fn from_request(request: &command_surface::RunnableRequest) -> Self {
+        Self::new(&request.operation, request.arguments.clone())
+            .id(&request.request_id)
+            .cursor(request.cursor.as_deref())
+    }
+    pub(crate) fn id(mut self, request_id: &str) -> Self {
+        self.request_id = request_id.into();
+        self
+    }
+    pub(crate) fn cursor(mut self, cursor: Option<&str>) -> Self {
+        self.cursor = cursor.map(str::to_owned);
+        self
+    }
+    pub(crate) fn surface(mut self, surface: crate::commands::Surface) -> Self {
+        self.surface = surface;
+        self
+    }
+    pub(crate) fn authorship(
+        mut self,
+        authorship: polylogue_model::authorship::Authorship,
+    ) -> Self {
+        self.authorship = authorship;
+        self
+    }
+    pub(crate) fn limit(mut self, limit: polylogue_store::read::limit::ReadLimit) -> Self {
+        self.limit = limit;
+        self
+    }
+    pub(crate) fn answer(
+        self,
+        daemon: &crate::daemon::service::Daemon,
+    ) -> command_surface::Answer<serde_json::Value> {
+        let invocation = daemon.invocation(&self.authorship);
+        self.answer_with(daemon, &invocation)
+    }
+    pub(crate) fn answer_with(
+        self,
+        daemon: &crate::daemon::service::Daemon,
+        invocation: &crate::operation::Invocation,
+    ) -> command_surface::Answer<serde_json::Value> {
+        crate::daemon::handler::local(
+            &self.operation,
+            self.arguments,
+            &crate::daemon::handler::Local {
+                daemon,
+                invocation,
+                caller: &crate::commands::Caller {
+                    surface: self.surface,
+                    cwd: self.cwd,
+                },
+                limit: &self.limit,
+                request_id: &self.request_id,
+                cursor: self.cursor.as_deref(),
+            },
+        )
+    }
+}
+
+/// A read the test resolves itself, sent as the read operation's arguments.
+pub(crate) fn read(request: crate::daemon::service::read::ReadRequest) -> Call {
+    let cursor = request.cursor.clone();
+    let arguments = crate::protocol::read::Arguments::from_request(&request)
+        .expect("a test read has public arguments");
+    Call::new(
+        "read",
+        serde_json::to_value(arguments).expect("read arguments serialize"),
+    )
+    .cursor(cursor.as_deref())
+}

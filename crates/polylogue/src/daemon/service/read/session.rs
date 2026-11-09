@@ -4,9 +4,9 @@
 //! entry by key and binds the rewrite version of every composed session,
 //! so appends never stale it and rewrites always do. Nothing is written.
 use super::super::{Daemon, Failure};
+use super::ReadRequest;
 use super::records::{SelectedRecord, message_record};
 use super::{evidence, output};
-use crate::daemon::Request;
 use crate::daemon::items::CachedIndex;
 use polylogue_model::{MessageId, Reference, SessionId, bundle::Record, read::*};
 use polylogue_store::Reader;
@@ -856,21 +856,18 @@ struct PageEntries {
 pub(super) fn page(
     reader: &Reader<'_>,
     d: &Daemon,
-    request: &Request,
+    request: &ReadRequest,
     operation: &Arc<crate::operation::Context>,
     scope: Scope,
 ) -> Result<ReadPage, Failure> {
-    let Request::Read {
+    let ReadRequest {
         target,
         options,
         format,
         budget,
         cursor,
         ..
-    } = request
-    else {
-        return Err(Failure::new("bad_request", "a read request is required"));
-    };
+    } = request;
     let format =
         Format::parse(format).ok_or_else(|| Failure::new("bad_request", "unknown read format"))?;
     let mut limits = PageBudget::default();
@@ -1913,21 +1910,18 @@ fn tree(reader: &Reader<'_>, seed: &SessionId) -> Result<Vec<Node>, Failure> {
 pub(super) fn links_page(
     reader: &Reader<'_>,
     d: &Daemon,
-    request: &Request,
+    request: &ReadRequest,
     operation: &Arc<crate::operation::Context>,
     scope: Scope,
 ) -> Result<ReadPage, Failure> {
-    let Request::Read {
+    let ReadRequest {
         target,
         options,
         format,
         budget,
         cursor,
         ..
-    } = request
-    else {
-        return Err(Failure::new("bad_request", "a read request is required"));
-    };
+    } = request;
     let format =
         Format::parse(format).ok_or_else(|| Failure::new("bad_request", "unknown read format"))?;
     let mut limits = PageBudget::default();

@@ -744,7 +744,7 @@ fn default_numeric_and_unlimited_context_budgets_retain_their_distinct_meanings(
             None,
             &[],
             &ask,
-            "budget-witness",
+            "budget-example",
             &fixture_context(Timestamp::from_unix_ms(T0).unwrap()),
             None,
             None,

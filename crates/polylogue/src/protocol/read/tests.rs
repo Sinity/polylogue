@@ -14,50 +14,30 @@ fn page_options_are_not_operation_arguments() {
 }
 
 #[test]
-fn every_read_builder_keeps_the_envelope_cursor_with_its_reading_options() {
-    let command = crate::commands::command("read").unwrap();
-    let caller = crate::commands::Caller {
-        surface: crate::commands::Surface::Http,
-        cwd: None,
-        json: true,
-    };
-    let mut envelope = command_surface::RunnableRequest::new(
-        "read",
-        json!({"target":"session:test:one","view":"dialogue"}),
-        "continuation-witness",
-    );
-    envelope.cursor = Some("sealed".into());
-    let request = crate::protocol::operations::admit(command, &envelope, &caller).unwrap();
-    let crate::daemon::Request::Read {
-        options, cursor, ..
-    } = &request
-    else {
-        panic!("read request")
-    };
-    assert_eq!(options.view, polylogue_model::read::View::Dialogue);
-    assert_eq!(cursor.as_deref(), Some("sealed"));
+fn a_read_keeps_the_request_cursor_beside_its_reading_options() {
+    let arguments: Arguments =
+        serde_json::from_value(json!({"target":"session:test:one","view":"dialogue"})).unwrap();
+    let request =
+        crate::daemon::service::read::ReadRequest::from_arguments(arguments, Some("sealed".into()))
+            .unwrap();
+    assert_eq!(request.options.view, polylogue_model::read::View::Dialogue);
+    assert_eq!(request.cursor.as_deref(), Some("sealed"));
     let round = Arguments::from_request(&request).unwrap();
     assert!(serde_json::to_value(round).unwrap().get("cursor").is_none());
-    let (chosen, values) = crate::cli::parse(&[
-        "polylogue",
-        "read",
-        "session:test:one",
-        "--view",
-        "dialogue",
-        "--cursor",
-        "sealed",
-    ])
+    // The command line sends the cursor beside the arguments too.
+    let (_, values, arguments) = crate::cli::request_arguments(
+        &[
+            "polylogue",
+            "read",
+            "session:test:one",
+            "--view",
+            "dialogue",
+            "--cursor",
+            "sealed",
+        ],
+        std::path::Path::new("/"),
+    )
     .unwrap();
-    let crate::commands::Action::Stream { build, .. } = chosen.action else {
-        panic!("read stream adapter");
-    };
-    let native = crate::commands::Caller {
-        surface: crate::commands::Surface::Cli,
-        ..caller
-    };
-    let crate::daemon::Request::Read { cursor, .. } = build(chosen, &values, &native).unwrap()
-    else {
-        panic!("read request");
-    };
-    assert_eq!(cursor.as_deref(), Some("sealed"));
+    assert!(arguments.get("cursor").is_none());
+    assert_eq!(values.text("cursor").as_deref(), Some("sealed"));
 }

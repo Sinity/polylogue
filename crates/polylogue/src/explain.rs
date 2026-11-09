@@ -115,12 +115,18 @@ fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
         "capabilities" => {
             // MCP tools list only their operations' common arguments and
             // carry no answer schema; both are published here in full.
+            let declared = |name: &str| {
+                commands::declarations()
+                    .descriptions()
+                    .iter()
+                    .find(|description| description.spec.name == name)
+            };
             let mut entries: Vec<_> = COMMANDS.iter().map(|c| json!({
                 "kind": "command", "name": c.name, "help": c.help,
                 "tool": c.tool.map(commands::Tool::name), "http": c.http, "writes": c.writes,
-                "arguments": commands::schema(c),
+                "arguments": declared(c.name).map(|description| description.input_schema.clone()),
                 "unlisted": c.args_for(commands::Surface::Mcp).filter(|a| a.unlisted).map(|a| a.name).collect::<Vec<_>>(),
-                "answer": c.typed_schemas.map(|schemas| schemas().1),
+                "answer": declared(c.name).map(|description| description.output_schema.clone()),
             })).collect();
             entries.push(json!({"kind": "answer", "schema": schemars::schema_for!(command_surface::Answer<Value>).to_value()}));
             entries.extend(polylogue_model::read::View::NAMES.iter().map(|name| json!({"kind": "read_view", "name": name})));

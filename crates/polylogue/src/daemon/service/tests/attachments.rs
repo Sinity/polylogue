@@ -8,7 +8,7 @@ fn attachment_read_refuses_once_the_daemon_stops_accepting() {
         .stopping
         .store(true, std::sync::atomic::Ordering::Release);
     let response = crate::daemon::attachment::read(
-        Request::Attachment {
+        crate::daemon::attachment::Range {
             message: polylogue_model::MessageId::parse("claude-code:synthetic").unwrap(),
             block: 0,
             attachment: 0,
@@ -33,13 +33,13 @@ fn attachment_pages_bound_each_transfer_and_keep_every_requested_byte_reachable(
     let mut actual = Vec::new();
     loop {
         let response = crate::daemon::attachment::read(
-            Request::Attachment {
+            crate::daemon::attachment::Range {
                 message: polylogue_model::MessageId::parse(message).unwrap(),
                 block: 0,
                 attachment: 0,
                 input: None,
                 length: usize::MAX,
-                cursor,
+                cursor: cursor.clone(),
             },
             &daemon.daemon,
         );

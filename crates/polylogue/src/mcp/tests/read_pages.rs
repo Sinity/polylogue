@@ -141,23 +141,15 @@ struct ItemUniverse {
 }
 impl ItemUniverse {
     fn from_root(daemon: &test_daemon::TestDaemon, next: &ReadyCall) -> Self {
-        let child: crate::protocol::operations::ToolCall =
+        let child: crate::mcp::ToolCall =
             serde_json::from_value(next.mcp["arguments"].clone()).unwrap();
         let arguments: crate::protocol::read::Arguments =
             serde_json::from_value(child.arguments).unwrap();
-        let mut request = arguments.into_request().unwrap();
-        let crate::daemon::Request::Read {
-            delivery,
-            budget,
-            with_blobs,
-            ..
-        } = &mut request
-        else {
-            panic!("original full read");
-        };
-        *delivery = polylogue_model::read::ReadDelivery::Stream;
-        *budget = None;
-        *with_blobs = false;
+        let mut request =
+            crate::daemon::service::read::ReadRequest::from_arguments(arguments, None).unwrap();
+        request.delivery = polylogue_model::read::ReadDelivery::Stream;
+        request.budget = None;
+        request.with_blobs = false;
         let operation = daemon
             .daemon
             .operation_context(&crate::operation::Context::worker_authorship(
@@ -354,8 +346,7 @@ pub(super) fn collect(
             break;
         };
         let envelope = &ready.mcp["arguments"];
-        let child: crate::protocol::operations::ToolCall =
-            serde_json::from_value(envelope.clone()).unwrap();
+        let child: crate::mcp::ToolCall = serde_json::from_value(envelope.clone()).unwrap();
         assert_eq!(
             child.deadline, expected_deadline,
             "generated child changed the deadline"
@@ -407,7 +398,7 @@ pub(super) fn collect(
 /// Whole-byte reconstruction uses the documented lifted deadline at the root.
 /// Children retain that accepted choice; the client never edits their deadlines.
 pub(super) fn read_without_deadline(archive: &Archive, arguments: Value) -> Result<String, String> {
-    let envelope = serde_json::to_value(crate::protocol::operations::ToolCall {
+    let envelope = serde_json::to_value(crate::mcp::ToolCall {
         operation: Some("read".into()),
         arguments,
         budget_tokens: Default::default(),
@@ -537,8 +528,7 @@ fn an_omitted_read_deadline_stays_default_in_the_next_call() {
         envelope.get("deadline").is_none(),
         "default is represented by omission"
     );
-    let child: crate::protocol::operations::ToolCall =
-        serde_json::from_value(envelope.clone()).unwrap();
+    let child: crate::mcp::ToolCall = serde_json::from_value(envelope.clone()).unwrap();
     assert_eq!(child.deadline, command_surface::Deadline::Default);
     assert!(child.cursor.is_some());
     let continued = execute_ready(&archive, &next).unwrap();

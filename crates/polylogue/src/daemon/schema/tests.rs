@@ -392,23 +392,20 @@ fn schema_infer_and_unread_use_the_real_daemon_socket_and_read_only_requests() {
         .unwrap()
         .hash()
         .to_string();
-    let imported = super::super::service::handle(
-        super::super::Request::Import {
-            request_id: "schema-extra-row".into(),
-            paths: vec![provider.clone()],
-        },
-        &daemon.daemon,
-    );
+    let imported =
+        crate::test_daemon::Call::new("import", serde_json::json!({"paths": [provider]}))
+            .id("schema-extra-row")
+            .answer(&daemon.daemon);
     crate::test_answers::ok(imported);
     daemon.wait_for(|status| status["store"]["messages"] == 2);
     std::fs::remove_file(provider).unwrap();
-    let request = super::super::Request::SchemaInfer {
-        selection: selection(Some("claude-code"), &[&imported_input], None),
-    };
-    assert!(request.read_only());
-    assert!(super::super::execution::request_deadline(&request, None).is_none());
+    let request = crate::client::request(
+        "schema infer",
+        serde_json::json!({"origin": "claude-code", "input": [imported_input]}),
+        "schema-infer".into(),
+    );
     let socket = daemon.daemon.archive.root.join("daemon.sock");
-    let response = crate::client::send(&socket, &request).unwrap();
+    let response = crate::client::call(&socket, &request).unwrap();
     let Some(data) = response.value().cloned() else {
         panic!("{response:?}");
     };
@@ -424,11 +421,12 @@ fn schema_infer_and_unread_use_the_real_daemon_socket_and_read_only_requests() {
             .unwrap()
             .contains("private scalar")
     );
-    let unread = super::super::Request::SchemaUnread {
-        origin: Some("claude-code".into()),
-    };
-    assert!(unread.read_only());
-    let response = crate::client::send(&socket, &unread).unwrap();
+    let unread = crate::client::request(
+        "schema unread",
+        serde_json::json!({"origin": "claude-code"}),
+        "schema-unread".into(),
+    );
+    let response = crate::client::call(&socket, &unread).unwrap();
     let Some(data) = response.value().cloned() else {
         panic!("{response:?}");
     };

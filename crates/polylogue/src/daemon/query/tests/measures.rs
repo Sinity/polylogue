@@ -95,12 +95,18 @@ fn time_comparison_and_facets_page_with_the_query_cursor() {
             }
             match page["next"].as_str() {
                 Some(next) => {
-                    let command = crate::commands::command("query").unwrap();
                     // The test helper puts the typed outcome beside the document.
                     let mut document = page.clone();
                     document.as_object_mut().unwrap().remove("outcome");
                     assert!(
-                        (command.print)(&document, false).contains(&format!("--cursor {next}"))
+                        crate::commands::declarations()
+                            .render_text(
+                                "query",
+                                &command_surface::Answer::ok(document),
+                                command_surface::TextStyle::Plain
+                            )
+                            .unwrap()
+                            .contains(&format!("--cursor {next}"))
                     );
                     cursor = Some(next.into());
                 }

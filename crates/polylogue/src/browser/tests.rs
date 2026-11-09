@@ -257,12 +257,10 @@ fn send(
     action: actions::ChatRequest,
     files: Vec<actions::ChatFile>,
 ) -> Result<Value, String> {
-    let request = crate::daemon::Request::ChatSend {
-        request_id: key.into(),
-        action,
-        files,
-    };
-    match crate::daemon::service::handle(request, &w.daemon) {
+    let mut arguments = serde_json::to_value(action).unwrap();
+    arguments["files"] = serde_json::json!(files);
+    let request = crate::test_daemon::Call::new("chat send", arguments).id(key);
+    match (request).answer(&w.daemon) {
         command_surface::Answer {
             outcome: command_surface::Outcome::Ok(data),
             ..
@@ -390,13 +388,11 @@ fn a_backfill_job_runs_through_the_daemon_and_survives_an_extension_restart() {
     let w = test_daemon::start("x");
     let host = host(&w);
     let start = |provider: &str| {
-        crate::daemon::service::handle(
-            crate::daemon::Request::BackfillStart {
-                provider: provider.into(),
-                since: Some("2026-01-01".into()),
-            },
-            &w.daemon,
+        crate::test_daemon::Call::new(
+            "backfill start",
+            serde_json::json!({"provider": provider, "since": Some("2026-01-01")}),
         )
+        .answer(&w.daemon)
     };
     let Some(data) = start("chatgpt").value().cloned() else {
         panic!("the job did not start")
@@ -552,15 +548,10 @@ fn grok_file_blobs(
 ) -> Vec<Option<polylogue_model::BlobHash>> {
     let session = polylogue_model::SessionId::parse("grok:grok-raw").unwrap();
     until(
-        || match host.ask(&crate::daemon::Request::Read {
-            target: format!("session:{session}"),
-            options: polylogue_model::read::ReadOptions::default(),
-            delivery: polylogue_model::read::ReadDelivery::Page,
-            format: "markdown".into(),
-            budget: None,
-            with_blobs: false,
-            cursor: None,
-        }) {
+        || match host.ask(
+            "read",
+            serde_json::json!({"target": format!("session:{session}"), "format": "markdown"}),
+        ) {
             Some(answer) if answer.value().is_some() => {
                 let data = crate::protocol::into_value(answer).unwrap();
                 let page: polylogue_model::read::ReadPage = serde_json::from_value(data).unwrap();

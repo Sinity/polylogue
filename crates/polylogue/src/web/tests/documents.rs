@@ -26,19 +26,15 @@ fn assert_document_import(response: command_surface::Answer<serde_json::Value>) 
 
 #[test]
 fn native_documents_search_and_read_through_one_typed_http_operation() {
-    use polylogue_model::read::{ReadDelivery, ReadOptions, ReadPage};
+    use polylogue_model::read::ReadPage;
     let r = reader();
     let literal = "AKIAIOSFODNN7EXAMPLE";
     let source = r.w._dir.path().join("synthetic-project-documents");
     std::fs::create_dir_all(source.join("projects")).unwrap();
     std::fs::write(source.join("projects/project-a.json"),json!({"uuid":"project-a","name":"Synthetic project","docs":[{"uuid":"doc-a","filename":format!("Guide <script> {literal}"),"content":format!("Document needle λ🙂 <script>{literal}</script>"),"created_at":"2026-05-02T00:00:00Z"}]}).to_string()).unwrap();
-    let imported = handle(
-        Request::Import {
-            request_id: "web-doc-import".into(),
-            paths: vec![source],
-        },
-        &r.web.daemon,
-    );
+    let imported = crate::test_daemon::Call::new("import", serde_json::json!({"paths": [source]}))
+        .id("web-doc-import")
+        .answer(&r.web.daemon);
     assert_document_import(imported);
     r.w.wait_for(|s| s["store"]["documents"].as_u64().is_some_and(|n| n > 0));
     let id = "claude-ai:project:project-a:doc:doc-a";
@@ -67,18 +63,13 @@ fn native_documents_search_and_read_through_one_typed_http_operation() {
         assert!(!page.contains("<script>"));
         assert!(page.contains("polylogue read --request"));
         let api = read_page(&r, &target, &[]).await;
-        let Ok(data) = crate::protocol::into_value(handle(
-            Request::Read {
-                target: target.clone(),
-                options: ReadOptions::default(),
-                delivery: ReadDelivery::Page,
-                format: "json".into(),
-                budget: None,
-                with_blobs: false,
-                cursor: None,
-            },
-            &r.web.daemon,
-        )) else {
+        let Ok(data) = crate::protocol::into_value(
+            crate::test_daemon::Call::new(
+                "read",
+                serde_json::json!({"target": target, "format": "json"}),
+            )
+            .answer(&r.web.daemon),
+        ) else {
             panic!("document read failed")
         };
         let socket: ReadPage = serde_json::from_value(data).unwrap();
@@ -112,33 +103,30 @@ fn native_documents_search_and_read_through_one_typed_http_operation() {
 #[test]
 fn search_links_follow_reference_columns_in_native_and_grouped_rows() {
     let r = reader();
-    let note = handle(
-        Request::Assert {
-            request_id: "claude-code:s1".into(),
-            assertions: vec![NewAssertion {
-                kind: AssertionKind::Tag,
-                key: Some("claude-code:s1".into()),
-                value: Some(json!({"value": "claude-code:s1"})),
-                links: vec![NewAssertionLink {
-                    role: LinkRole::About,
-                    reference: Reference::Session(
-                        polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
-                    ),
-                }],
-                valid_until: None,
+    let note = crate::test_daemon::Call::new(
+        "assert",
+        serde_json::json!({"assertions": [NewAssertion {
+            kind: AssertionKind::Tag,
+            key: Some("claude-code:s1".into()),
+            value: Some(json!({"value": "claude-code:s1"})),
+            links: vec![NewAssertionLink {
+                role: LinkRole::About,
+                reference: Reference::Session(
+                    polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+                ),
             }],
-        },
-        &r.web.daemon,
-    );
+            valid_until: None,
+        }]}),
+    )
+    .id("claude-code:s1")
+    .answer(&r.web.daemon);
     crate::test_answers::ok(note);
-    let kept = handle(
-        Request::Keep {
-            request_id: "web-kept-group".into(),
-            text: "sessions | group by id".into(),
-            name: None,
-        },
-        &r.web.daemon,
-    );
+    let kept = crate::test_daemon::Call::new(
+        "keep",
+        serde_json::json!({"query": "sessions | group by id"}),
+    )
+    .id("web-kept-group")
+    .answer(&r.web.daemon);
     crate::test_answers::ok(kept);
     rt().block_on(async {
         let (status, _, messages) = send(
@@ -192,13 +180,9 @@ fn document_previous_pages_restore_exact_unicode_body_fragments() {
     let source = r.w._dir.path().join("paged-documents");
     std::fs::create_dir_all(source.join("projects")).unwrap();
     std::fs::write(source.join("projects/paged-project.json"),json!({"uuid":"paged-project","name":"Synthetic project","docs":[{"uuid":"paged-doc","filename":"Synthetic document","content":"synthetic paragraph λ🙂 ".repeat(800)}]}).to_string()).unwrap();
-    let imported = handle(
-        Request::Import {
-            request_id: "paged-document-import".into(),
-            paths: vec![source],
-        },
-        &r.web.daemon,
-    );
+    let imported = crate::test_daemon::Call::new("import", serde_json::json!({"paths": [source]}))
+        .id("paged-document-import")
+        .answer(&r.web.daemon);
     assert_document_import(imported);
     r.w.wait_for(|data| data["store"]["documents"].as_u64().is_some_and(|n| n > 0));
     rt().block_on(async {

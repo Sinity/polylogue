@@ -150,18 +150,16 @@ fn family(d: &test_daemon::TestDaemon) {
 }
 
 fn read(d: &test_daemon::TestDaemon, target: &str, options: ReadOptions) -> ReadPage {
-    let response = handle(
-        Request::Read {
-            target: target.into(),
-            options,
-            delivery: polylogue_model::read::ReadDelivery::Page,
-            format: "json".into(),
-            budget: Some(100_000),
-            with_blobs: false,
-            cursor: None,
-        },
-        &d.daemon,
-    );
+    let response = (crate::test_daemon::read(crate::daemon::service::read::ReadRequest {
+        target: target.into(),
+        options,
+        delivery: polylogue_model::read::ReadDelivery::Page,
+        format: "json".into(),
+        budget: Some(100_000),
+        with_blobs: false,
+        cursor: None,
+    }))
+    .answer(&d.daemon);
     let Some(data) = response.value().cloned() else {
         panic!("{response:?}")
     };
@@ -352,7 +350,10 @@ fn the_last_page_follows_what_the_session_appends() {
         },
     );
     let follow = last.document.footer.follow.clone().expect("a follow call");
-    let before = handle(Request::Status, &d.daemon).value().unwrap()["store"]["messages"]
+    let before = crate::test_daemon::Call::new("status", serde_json::json!({}))
+        .answer(&d.daemon)
+        .value()
+        .unwrap()["store"]["messages"]
         .as_u64()
         .unwrap();
     let path = d.home.join(".claude/projects/-p/cont.jsonl");
@@ -372,17 +373,8 @@ fn the_last_page_follows_what_the_session_appends() {
     });
     let envelope: command_surface::RunnableRequest =
         serde_json::from_value(follow.http.arguments).unwrap();
-    let native = crate::protocol::operations::admit(
-        crate::commands::command("read").unwrap(),
-        &envelope,
-        &crate::commands::Caller {
-            surface: crate::commands::Surface::Http,
-            cwd: None,
-            json: true,
-        },
-    )
-    .unwrap();
-    let response = handle(native, &d.daemon);
+    let native = crate::test_daemon::Call::from_request(&envelope);
+    let response = (native).answer(&d.daemon);
     let page: ReadPage = serde_json::from_value(response.value().cloned().unwrap()).unwrap();
     let texts = texts(&page);
     assert_eq!(

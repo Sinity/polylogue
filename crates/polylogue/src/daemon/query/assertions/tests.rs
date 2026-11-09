@@ -1,5 +1,4 @@
 use super::*;
-use crate::daemon::Request;
 use crate::test_daemon;
 use polylogue_model::Timestamp;
 use polylogue_model::assertion::{
@@ -9,34 +8,35 @@ use polylogue_model::{Author, SessionId};
 
 fn add(w: &test_daemon::TestDaemon, id: &str, authored: (Author, NewAssertion)) {
     let limit = crate::daemon::execution::limit(None, Default::default());
-    let response = crate::daemon::service::handle_with_caller(
-        Request::Assert {
-            request_id: id.into(),
-            assertions: vec![authored.1],
-        },
-        &w.daemon,
-        &limit,
-        &polylogue_model::authorship::Authorship {
-            author: authored.0,
-            via: polylogue_model::authorship::Channel::Cli,
-        },
-    );
+    let response =
+        crate::test_daemon::Call::new("assert", serde_json::json!({"assertions": [authored.1]}))
+            .id(id)
+            .limit(limit.clone())
+            .authorship(
+                polylogue_model::authorship::Authorship {
+                    author: authored.0,
+                    via: polylogue_model::authorship::Channel::Cli,
+                }
+                .clone(),
+            )
+            .answer(&w.daemon);
     crate::test_answers::ok(response);
 }
 
 fn operator(
     w: &test_daemon::TestDaemon,
-    request: Request,
+    request: crate::test_daemon::Call,
 ) -> command_surface::Answer<serde_json::Value> {
-    crate::daemon::service::handle_with_caller(
-        request,
-        &w.daemon,
-        &crate::daemon::execution::limit(None, Default::default()),
-        &polylogue_model::authorship::Authorship {
-            author: Author::Operator,
-            via: polylogue_model::authorship::Channel::Cli,
-        },
-    )
+    (request)
+        .limit(crate::daemon::execution::limit(None, Default::default()).clone())
+        .authorship(
+            polylogue_model::authorship::Authorship {
+                author: Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            }
+            .clone(),
+        )
+        .answer(&w.daemon)
 }
 
 fn note(author: Author, target: &str, value: &str) -> (Author, NewAssertion) {
@@ -86,17 +86,14 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
     );
     let revised = operator(
         &w,
-        Request::Revise {
-            request_id: "018f0000-0000-7000-8000-000000000002".into(),
-            bases: vec![polylogue_model::RevisionReference::exact(
-                first.into(),
-                first.into(),
-            )],
-            patch: AssertionPatch {
+        crate::test_daemon::Call::new(
+            "revise",
+            serde_json::json!({"bases": [format!("assertion:{first}@{first}")], "patch": AssertionPatch {
                 value: Change::Set(serde_json::json!("run cargo nextest")),
                 ..Default::default()
-            },
-        },
+            }}),
+        )
+        .id("018f0000-0000-7000-8000-000000000002"),
     );
     crate::test_answers::ok(revised);
     let agent = Author::Agent(Some(SessionId::parse("codex:x").unwrap()));
@@ -125,14 +122,11 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
 
     let withdrawn = operator(
         &w,
-        Request::Withdraw {
-            request_id: "018f0000-0000-7000-8000-000000000005".into(),
-            targets: vec![Reference::Assertion(polylogue_model::RevisionReference {
-                root: first.into(),
-                revision: None,
-            })],
-            reason: Some("superseded".into()),
-        },
+        crate::test_daemon::Call::new(
+            "withdraw",
+            serde_json::json!({"targets": [format!("assertion:{first}")], "reason": Some("superseded")}),
+        )
+        .id("018f0000-0000-7000-8000-000000000005"),
     );
     crate::test_answers::ok(withdrawn);
     let reader = w.daemon.reads.reader().unwrap();

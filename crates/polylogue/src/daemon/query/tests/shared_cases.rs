@@ -88,7 +88,7 @@ impl compiler_cases::Compiler for Product {
 }
 /// Give each native source the fixture's declared columns through the real
 /// projection stage. Display options belong to the final answer and cannot
-/// request generated witness/diff columns from an earlier native source.
+/// request generated matched-row/diff columns from an earlier native source.
 fn project_fixture_sources(
     query: &mut Query,
     catalog: &query_language::catalog::Catalog,
