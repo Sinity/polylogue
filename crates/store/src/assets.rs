@@ -343,6 +343,13 @@ pub(crate) fn project_member(
                 "conflicting identity or classification for one import member".into(),
             ));
         }
+        // A member seen again only changes when it learns an identity or a
+        // sidecar it did not have; an identical re-import changes nothing.
+        let learned = (known_id.is_none() && source_id.is_some())
+            || (known_sidecar.is_none() && sidecar.is_some());
+        if !learned {
+            return Ok(());
+        }
         conn.execute(
             "UPDATE import_member SET source_id=?2,sidecar=?3 WHERE observation=?1",
             params![
@@ -388,6 +395,67 @@ fn count_input_change(conn: &Connection, input: &str) -> Result<()> {
     Ok(())
 }
 
+struct MetadataRow<'a> {
+    input: &'a str,
+    sidecar: &'a str,
+    ordinal: i64,
+    source_id: &'a str,
+    name: Option<&'a str>,
+    media_type: Option<&'a str>,
+    size: Option<String>,
+}
+
+/// Stores one asset metadata row; true only when the stored row changed.
+fn put_metadata(conn: &Connection, row: &MetadataRow<'_>) -> Result<bool> {
+    let changed = conn.execute(
+        "INSERT INTO import_asset_metadata VALUES (?1,?2,?3,?4,?5,?6,?7)
+         ON CONFLICT(input,sidecar,ordinal) DO UPDATE SET
+           source_id=excluded.source_id,name=excluded.name,
+           media_type=excluded.media_type,size=excluded.size
+         WHERE (source_id,name,media_type,size)
+           IS NOT (excluded.source_id,excluded.name,excluded.media_type,excluded.size)",
+        params![
+            row.input,
+            row.sidecar,
+            row.ordinal,
+            row.source_id,
+            row.name,
+            row.media_type,
+            row.size
+        ],
+    )?;
+    Ok(changed > 0)
+}
+
+/// Stores one sidecar's parse outcome; true only when it changed.
+fn put_sidecar(
+    conn: &Connection,
+    input: &str,
+    sidecar: &str,
+    recorded: &str,
+    error: Option<&str>,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "INSERT INTO import_asset_sidecar VALUES (?1,?2,?3,?4,?5)
+         ON CONFLICT(input,sidecar) DO UPDATE SET
+           version=excluded.version,source_version=excluded.source_version,
+           error=excluded.error
+         WHERE (version,source_version,error)
+           IS NOT (excluded.version,excluded.source_version,excluded.error)",
+        params![input, sidecar, RULES, recorded, error],
+    )?;
+    Ok(changed > 0)
+}
+
+/// Removes a sidecar's metadata rows; true only when there were any.
+fn reset_metadata(conn: &Connection, input: &str, sidecar: &str) -> Result<bool> {
+    let removed = conn.execute(
+        "DELETE FROM import_asset_metadata WHERE input=?1 AND sidecar=?2",
+        params![input, sidecar],
+    )?;
+    Ok(removed > 0)
+}
+
 pub(crate) fn install(
     conn: &mut Connection,
     archive: &Connection,
@@ -418,21 +486,21 @@ pub(crate) fn install(
                 media_type,
                 size,
             } => {
-                tx.execute(
-                    "INSERT OR REPLACE INTO import_asset_metadata VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                    params![
-                        input,
-                        sidecar,
-                        i64::try_from(ordinal).map_err(|_| StoreError::Invalid(
-                            "too many asset metadata entries".into()
-                        ))?,
-                        source_id,
-                        name,
-                        media_type,
-                        size.map(|n| n.to_string())
-                    ],
-                )?;
-                count_input_change(&tx, &input)?;
+                let ordinal = i64::try_from(ordinal)
+                    .map_err(|_| StoreError::Invalid("too many asset metadata entries".into()))?;
+                let row = MetadataRow {
+                    input: &input,
+                    sidecar: &sidecar,
+                    ordinal,
+                    source_id: &source_id,
+                    name: name.as_deref(),
+                    media_type: media_type.as_deref(),
+                    size: size.map(|n| n.to_string()),
+                };
+                let changed = put_metadata(&tx, &row)?;
+                if changed {
+                    count_input_change(&tx, &input)?;
+                }
             }
             AssetRow::Sidecar {
                 input,
@@ -449,18 +517,15 @@ pub(crate) fn install(
                         "asset sidecar changed while it was parsed".into(),
                     ));
                 }
-                tx.execute(
-                    "INSERT OR REPLACE INTO import_asset_sidecar VALUES (?1,?2,?3,?4,?5)",
-                    params![input, sidecar, RULES, recorded, error],
-                )?;
-                count_input_change(&tx, &input)?;
+                let changed = put_sidecar(&tx, &input, &sidecar, &recorded, error.as_deref())?;
+                if changed {
+                    count_input_change(&tx, &input)?;
+                }
             }
             AssetRow::ResetMetadata { input, sidecar } => {
-                tx.execute(
-                    "DELETE FROM import_asset_metadata WHERE input=?1 AND sidecar=?2",
-                    params![input, sidecar],
-                )?;
-                count_input_change(&tx, &input)?;
+                if reset_metadata(&tx, &input, &sidecar)? {
+                    count_input_change(&tx, &input)?;
+                }
             }
             AssetRow::Scan { through } => {
                 tx.execute(
