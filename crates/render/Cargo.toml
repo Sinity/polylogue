@@ -10,7 +10,7 @@ publish.workspace = true
 
 command-surface.workspace = true
 
-schemars = "1"
+schemars.workspace = true
 polylogue-model.workspace = true
 serde_json.workspace = true
 serde.workspace = true

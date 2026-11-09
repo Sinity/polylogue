@@ -20,14 +20,17 @@ const FORMATTED: &[&str] = &[
     "xtask",
 ];
 
-/// The feature set default test builds use, with the Sinex client excluded.
-/// `test`, `scenarios` and `check` reuse these feature-enabled artifacts.
-/// Native package selection limits which test targets Cargo builds.
-/// `polylogue-store/fixture` is named although the engine and the daemon
-/// already enable it as a dev-dependency feature, so a selection without them
-/// (`-p polylogue-store`) builds the same store artifact as every other test
-/// build, and the crates above it are not compiled a second time.
-const TEST_FEATURES: &str =
+/// The one feature list every build uses: Clippy, each test build, warm
+/// and focused runs. Cargo builds a crate again for each distinct feature
+/// set and resolution, and everything above it with it, so every command
+/// selects the whole workspace with these features and narrows only what it
+/// runs, through nextest filters. Tests therefore run in primary mode's build;
+/// code under `cfg(not(feature = "sinex"))` is compiled by the standalone
+/// Clippy pass.
+const FEATURES: &str =
+    "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture";
+/// The standalone Clippy pass: the same features without the Sinex client.
+const STANDALONE_FEATURES: &str =
     "polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture";
 
 #[derive(Parser)]
@@ -53,13 +56,12 @@ enum Cli {
         /// environment's warm build); selection does not apply.
         #[arg(long, conflicts_with_all = ["changed", "args"])]
         no_run: bool,
-        /// Further `cargo nextest run` arguments: `-p` packages and `-E`
-        /// filtersets, names and runner flags. Packages limit the build too.
+        /// Further `cargo nextest run` arguments: `-p` packages, `--exclude`
+        /// and `-E` filtersets select which tests run (the whole workspace is
+        /// always built); names and runner flags pass through.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Build and test the Sinex client and the application in primary mode.
-    SinexClient,
     /// Crate dependency boundaries only.
     Boundaries,
     /// Offline schema commands from the application's command table.
@@ -177,111 +179,62 @@ fn boundaries_step(run: &mut Run) -> devkit::Result {
     })
 }
 
-/// Whether Cargo's dependency graph makes a package affected by the selection.
-fn affected(selection: &Selection, metadata: &Value, target: &str) -> bool {
-    let (changed, binaries) = match selection {
-        Selection::Nothing => return false,
-        // Function filters are already narrowed by devkit. Checking both modes
-        // keeps their configuration independent of the filter's text syntax.
-        Selection::Workspace | Selection::Filter(_) => return true,
-        Selection::Packages(packages) => (packages.as_slice(), &[][..]),
-        Selection::Tests { packages, binaries } => (packages.as_slice(), binaries.as_slice()),
-    };
-    if binaries.iter().any(|(package, _)| package == target) {
-        return true;
-    }
-    let mut dependencies = std::collections::BTreeSet::new();
-    let mut pending = vec![target.to_owned()];
-    while let Some(name) = pending.pop() {
-        if !dependencies.insert(name.clone()) {
-            continue;
-        }
-        if let Some(package) = metadata["packages"].as_array().and_then(|packages| {
-            packages
-                .iter()
-                .find(|package| package["name"].as_str() == Some(&name))
-        }) {
-            pending.extend(
-                package["dependencies"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|dependency| dependency["name"].as_str().map(str::to_owned)),
-            );
-        }
-    }
-    changed.iter().any(|package| dependencies.contains(package))
+fn clippy(run: &mut Run) -> devkit::Result {
+    run.cargo(
+        "clippy",
+        &[
+            "clippy",
+            "--locked",
+            "--workspace",
+            "--all-targets",
+            "--features",
+            FEATURES,
+            "--",
+            "-D",
+            "warnings",
+        ],
+    )?;
+    // Only the code that the Sinex client replaces differs; the units below
+    // the application are the ones the first pass checked.
+    run.cargo(
+        "clippy-standalone",
+        &[
+            "clippy",
+            "--locked",
+            "--workspace",
+            "--exclude",
+            "polylogue-sinex",
+            "--all-targets",
+            "--features",
+            STANDALONE_FEATURES,
+            "--",
+            "-D",
+            "warnings",
+        ],
+    )
 }
 
-fn clippy(run: &mut Run, full: bool) -> devkit::Result {
-    let (application, sinex) = if full {
-        (true, true)
-    } else {
-        let selection = devkit::select::changed(&run.root, "origin/master")?;
-        let metadata = metadata(&run.root)?;
-        (
-            affected(&selection, &metadata, "polylogue"),
-            affected(&selection, &metadata, "polylogue-sinex"),
-        )
-    };
-    let mut args = vec!["clippy", "--locked", "--workspace", "--all-targets"];
-    if sinex {
-        args.extend(["--features", "polylogue/sinex"]);
-    } else {
-        args.extend(["--exclude", "polylogue-sinex"]);
-    }
-    args.extend(["--", "-D", "warnings"]);
-    run.cargo("clippy", &args)?;
-    if sinex && application {
-        run.cargo(
-            "clippy-standalone",
-            &[
-                "clippy",
-                "--locked",
-                "-p",
-                "polylogue",
-                "--all-targets",
-                "--",
-                "-D",
-                "warnings",
-            ],
-        )?;
-    }
-    Ok(())
-}
-
-fn sinex_client_arguments() -> Vec<String> {
-    [
-        "--locked",
-        "-p",
-        "polylogue-sinex",
-        "-p",
-        "polylogue",
-        "--features",
-        "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture",
-        "--tests",
-    ]
-    .map(String::from)
-    .to_vec()
-}
-
-fn sinex_client(run: &mut Run) -> devkit::Result {
-    run.nextest("sinex-client", &nextest(sinex_client_arguments()))
+/// A type check of every target with the one feature list: test-code errors
+/// surface here in a minute instead of after code generation.
+fn type_check(run: &mut Run) -> devkit::Result {
+    run.cargo(
+        "type check",
+        &[
+            "check",
+            "--locked",
+            "--workspace",
+            "--all-targets",
+            "--features",
+            FEATURES,
+        ],
+    )
 }
 
 fn build_tests(run: &mut Run) -> devkit::Result {
-    let standalone =
-        test_arguments(&run.root, &[], None, false).expect("the full selection is valid");
-    for (stage, arguments) in [
-        ("test build", standalone),
-        ("sinex-client test build", sinex_client_arguments()),
-    ] {
-        let mut command = vec!["test".to_owned(), "--no-run".to_owned()];
-        command.extend(arguments);
-        let arguments: Vec<&str> = command.iter().map(String::as_str).collect();
-        run.cargo(stage, &arguments)?;
-    }
-    Ok(())
+    let mut command = vec!["test".to_owned(), "--no-run".to_owned()];
+    command.extend(test_arguments(&[], None).expect("the full selection is valid"));
+    let arguments: Vec<&str> = command.iter().map(String::as_str).collect();
+    run.cargo("test build", &arguments)
 }
 
 fn nextest(args: Vec<String>) -> Nextest {
@@ -306,21 +259,26 @@ fn selects_test_targets(arg: &str) -> bool {
         })
 }
 
-/// Native Cargo package selection with nextest filters intersected with
-/// `required` (a changed-package selection, or the scenarios' own).
-/// Feature flags are refused so each mode keeps its fault-enabled build.
-fn test_arguments(
-    root: &Path,
-    args: &[String],
-    required: Option<String>,
-    mut sinex: bool,
-) -> Result<Vec<String>, String> {
+/// The workspace build with the one feature list, and nextest filters for
+/// what runs: `-p` and `--exclude` become package filters, intersected with
+/// `-E` filtersets and with `required` (a changed-package selection, or the
+/// scenarios' own). Feature flags are refused: a second feature set would
+/// build the graph again.
+fn test_arguments(args: &[String], required: Option<String>) -> Result<Vec<String>, String> {
     let explicit_targets = args
         .iter()
         .take_while(|arg| arg.as_str() != "--")
         .any(|arg| selects_test_targets(arg));
+    let package = |name: String| {
+        let name = name.strip_prefix('=').unwrap_or(&name).to_owned();
+        if name.contains(['*', '?', '[']) {
+            format!("package({name})")
+        } else {
+            format!("package(={name})")
+        }
+    };
     let mut packages = Vec::new();
-    let mut workspace = false;
+    let mut excluded = Vec::new();
     let mut filtersets = Vec::new();
     let mut rest = Vec::new();
     let mut args = args.iter();
@@ -335,18 +293,22 @@ fn test_arguments(
                 .cloned()
                 .ok_or_else(|| format!("{flag} needs a value"))
         };
+        let refused = || {
+            format!("{arg}: tests always build with {FEATURES}; select tests with -p, -E or names")
+        };
         match arg.as_str() {
-            "-p" | "--package" => packages.push(value(arg)?),
+            "-p" | "--package" => packages.push(package(value(arg)?)),
+            "--exclude" => excluded.push(package(value(arg)?)),
             "-E" | "--filterset" | "--filter-expr" => filtersets.push(value(arg)?),
-            "--workspace" | "--all" => workspace = true,
+            "--workspace" | "--all" => {}
             "-F" | "--features" | "--all-features" | "--no-default-features" => {
-                return Err(format!(
-                    "{arg}: tests always build with {TEST_FEATURES}; select tests with -p, -E or names"
-                ));
+                return Err(refused());
             }
             _ => {
-                if let Some(package) = arg.strip_prefix("--package=").or(arg.strip_prefix("-p")) {
-                    packages.push(package.strip_prefix('=').unwrap_or(package).to_owned());
+                if let Some(name) = arg.strip_prefix("--package=").or(arg.strip_prefix("-p")) {
+                    packages.push(package(name.to_owned()));
+                } else if let Some(name) = arg.strip_prefix("--exclude=") {
+                    excluded.push(package(name.to_owned()));
                 } else if let Some(filterset) = arg
                     .strip_prefix("--filterset=")
                     .or(arg.strip_prefix("--filter-expr="))
@@ -354,17 +316,12 @@ fn test_arguments(
                 {
                     filtersets.push(filterset.strip_prefix('=').unwrap_or(filterset).to_owned());
                 } else if arg.starts_with("--features=") || arg.starts_with("-F") {
-                    return Err(format!(
-                        "{arg}: tests always build with {TEST_FEATURES}; select tests with -p, -E or names"
-                    ));
+                    return Err(refused());
                 } else {
                     rest.push(arg.clone());
                 }
             }
         }
-    }
-    if packages.iter().any(|package| package == "polylogue-sinex") {
-        sinex = true;
     }
     let either = |sets: Vec<String>| {
         sets.into_iter()
@@ -374,58 +331,16 @@ fn test_arguments(
     };
     let terms: Vec<String> = [
         required,
+        (!packages.is_empty()).then(|| either(packages)),
+        (!excluded.is_empty()).then(|| format!("not ({})", either(excluded))),
         (!filtersets.is_empty()).then(|| either(filtersets)),
     ]
     .into_iter()
     .flatten()
     .collect();
-    let mut arguments = vec!["--locked".into()];
-    workspace |= packages.is_empty();
-    if workspace {
-        arguments.push("--workspace".into());
-    }
-    for package in packages {
-        arguments.extend(["-p".into(), package]);
-    }
-    let features = if workspace {
-        if sinex {
-            format!("polylogue/sinex,{TEST_FEATURES}")
-        } else {
-            TEST_FEATURES.into()
-        }
-    } else {
-        // Cargo accepts dependency features only when their provider is selected
-        // or directly visible to a selected package. Ask Cargo for that scope.
-        let output = devkit::cargo_command()
-            .args([
-                "tree", "--depth", "1", "--prefix", "none", "--format", "{p}",
-            ])
-            .args(&arguments)
-            .current_dir(root)
-            .output()
-            .map_err(|error| format!("cargo tree: {error}"))?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).into_owned());
-        }
-        let visible: std::collections::BTreeSet<_> = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| line.split_whitespace().next().map(str::to_owned))
-            .collect();
-        let mut features: Vec<_> = TEST_FEATURES
-            .split(',')
-            .filter(|feature| visible.contains(feature.split_once('/').unwrap().0))
-            .collect();
-        if (sinex || visible.contains("polylogue-sinex")) && visible.contains("polylogue") {
-            features.insert(0, "polylogue/sinex");
-        }
-        features.join(",")
-    };
-    if !features.is_empty() {
-        arguments.extend(["--features".into(), features]);
-    }
-    if workspace && !sinex {
-        arguments.extend(["--exclude".into(), "polylogue-sinex".into()]);
-    }
+    let mut arguments: Vec<String> = ["--locked", "--workspace", "--features", FEATURES]
+        .map(String::from)
+        .to_vec();
     if !terms.is_empty() {
         arguments.push("-E".to_owned());
         arguments.push(
@@ -464,64 +379,43 @@ fn main() -> ExitCode {
         Cli::Fast => run("fast", &[], |run| {
             fmt_check(run)?;
             boundaries_step(run)?;
-            clippy(run, false)
+            clippy(run)
         }),
         Cli::Check => run("check", &[], |run| {
             fmt_check(run)?;
             boundaries_step(run)?;
-            clippy(run, true)?;
-            let arguments =
-                test_arguments(&run.root, &[], None, false).expect("the full selection is valid");
-            run.nextest("test", &nextest(arguments))?;
-            sinex_client(run)?;
-            Ok(())
+            clippy(run)?;
+            let arguments = test_arguments(&[], None).expect("the full selection is valid");
+            run.nextest("test", &nextest(arguments))
         }),
         Cli::Warm => run("warm", &[], |run| {
             // A lint failure on master must not leave the test builds cold.
             let tests = build_tests(run);
-            clippy(run, true).and(tests)
+            clippy(run).and(tests)
         }),
-        Cli::SinexClient => run("sinex-client", &[], sinex_client),
         Cli::Scenarios => run("scenarios", &[], |run| {
-            let arguments = test_arguments(
-                &run.root,
-                &[],
-                Some("package(=polylogue) & kind(test)".into()),
-                false,
-            )
-            .expect("the scenario selection is valid");
+            let arguments = test_arguments(&[], Some("package(=polylogue) & kind(test)".into()))
+                .expect("the scenario selection is valid");
             run.nextest("test", &nextest(arguments))
         }),
         Cli::Boundaries => run("boundaries", &[], boundaries_step),
         Cli::Test { no_run: true, .. } => run("test", &["--no-run".into()], build_tests),
         Cli::Test { changed, args, .. } => {
             let mut required = None;
-            let mut sinex = false;
             if changed {
-                let root = Path::new(".");
-                match devkit::select::changed(root, "origin/master") {
+                match devkit::select::changed(Path::new("."), "origin/master") {
                     Ok(Selection::Nothing) => {
                         eprintln!("no package changed since the merge base; nothing to test");
                         return ExitCode::SUCCESS;
                     }
-                    Ok(selection) => {
-                        let graph = match metadata(root) {
-                            Ok(graph) => graph,
-                            Err(error) => {
-                                eprintln!("{error}");
-                                return ExitCode::FAILURE;
-                            }
-                        };
-                        sinex = affected(&selection, &graph, "polylogue-sinex");
-                        required = selection.filterset();
-                    }
+                    Ok(selection) => required = selection.filterset(),
                     Err(error) => {
                         eprintln!("{error}");
                         return ExitCode::FAILURE;
                     }
                 }
             }
-            let arguments = match test_arguments(Path::new("."), &args, required, sinex) {
+            let arguments = match test_arguments(&args, required) {
                 Ok(arguments) => arguments,
                 Err(error) => {
                     eprintln!("{error}");
@@ -529,6 +423,7 @@ fn main() -> ExitCode {
                 }
             };
             run("test", &args, |run| {
+                type_check(run)?;
                 run.nextest("test", &nextest(arguments))
             })
         }
