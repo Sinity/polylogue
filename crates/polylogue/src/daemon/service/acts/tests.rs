@@ -419,7 +419,8 @@ fn ping_answer_through_assert_links_to_the_ping() {
             && matches!(&link.reference, polylogue_model::Reference::Assertion(target) if target.root == ping)),
         "{:?}",
         stored.fact.links
-||||||| parent of e08d1d94b9 (Mark temporary chats, page and resume Drive revisions, edit hooks in place, resume only in the recorded directory)
+    );
+}
 
 /// A headless resume runs only in the session's recorded directory: with
 /// none recorded, or one that no longer exists, it is `not_sent` by name
