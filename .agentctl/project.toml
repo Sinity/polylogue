@@ -36,19 +36,6 @@ scratch = "tmpfs"
 cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
-[operations.baseline]
-description = "Warm build of master (test binaries and clippy, nothing run) that seeds new checkouts; the host queues it on each new master head"
-exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "warm"]
-# Its own one-slot pool: a 23-60 minute build never holds a slot lanes use.
-pool = "baseline"
-result = "exit"
-# A cold warm build took over 30 minutes for Polylogue and 23 for Sinex
-# (2026-11-02).
-timeout_seconds = 3600
-scratch = "nvme"
-cache = "none"
-unit_properties = ["MemoryHigh=8G"]
-
 [operations.scenarios]
 description = "End-to-end runs of the real daemon, CLI and MCP server over synthetic archives"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "scenarios"]
