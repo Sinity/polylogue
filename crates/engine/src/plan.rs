@@ -237,10 +237,8 @@ impl Plan {
                 && (self.waiting || self.parse_pos >= self.size))
     }
 
-    pub(crate) fn next_job(
-        &mut self,
-        stopped_attempt: &polylogue_model::batch::StoppedAttempt,
-    ) -> Job {
+    /// The byte range the next job reads.
+    pub(crate) fn next_range(&self) -> (u64, u64) {
         let start = if let Some(raw) = &self.raw {
             raw.cursor
                 .as_ref()
@@ -252,7 +250,14 @@ impl Plan {
         } else {
             self.parse_pos
         };
-        let end = self.size.min(start + self.span);
+        (start, self.size.min(start.saturating_add(self.span)))
+    }
+
+    pub(crate) fn next_job(
+        &mut self,
+        stopped_attempt: &polylogue_model::batch::StoppedAttempt,
+    ) -> Job {
+        let (start, end) = self.next_range();
         let store_from = if self.raw.is_some() {
             (end > start).then_some(start)
         } else {
