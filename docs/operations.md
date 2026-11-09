@@ -17,13 +17,13 @@ Polylogue runs as one resident daemon per archive. The daemon is the only proces
 
 No step deletes the index or any store.
 
-**Readiness.** With `Type=notify` the daemon signals readiness once the socket accepts requests, before catching up. Catching up is shown as work in `status`, never as unavailability.
+**Readiness.** With `Type=notify` the daemon signals readiness once the socket answers a `ping`, before catching up. The connection's thread answers `ping` without a reader or any cache, so a vector load or a full reader pool never delays readiness or the watchdog. Catching up is shown as work in `status`, never as unavailability.
 
 **Stop.** On `SIGTERM` or `SIGINT` the daemon stops accepting connections and answers queued requests with `shutting_down`; lets the commit in progress finish or rolls it back; stops its pipeline at a writer-group boundary; checkpoints its SQLite write-ahead logs; records how the run ended; and releases the lock. A second signal ends the process at once, which is safe because the next open resumes every state a crash can leave. Target: a stop within 5 s, and nothing done at the next start that a clean stop would not also need.
 
 **How each run ended:** `clean` (with the signal), `refused` (exit 78, with the reason), `failed` (with the error kind), or `unknown` (no record: killed or crashed). `status` shows it. An `unknown` end is never given a cause by closeness in time to another event.
 
-**Liveness.** With `WatchdogSec`, the daemon feeds the watchdog from its request loop, so a process that no longer answers its own socket is restarted by the service manager. Slow or stuck work is not a liveness failure: it is reported as stalled, never restarted away, because a restart would hide the defect that caused it.
+**Liveness.** With `WatchdogSec`, the daemon feeds the watchdog after each `ping` its own socket answers, so a process that no longer answers its own socket is restarted by the service manager. Slow or stuck work is not a liveness failure: it is reported as stalled, never restarted away, because a restart would hide the defect that caused it.
 
 **Restart** resumes from committed positions; it does not rescan the archive, replay tool-database captures or re-read history. Target: socket ready within 2 s of start.
 
