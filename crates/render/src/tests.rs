@@ -2909,3 +2909,210 @@ fn text_views_show_times_in_the_header_zone_and_say_which() {
     assert!(!text.contains("Times "), "{text}");
     assert!(text.contains("2026-11-09 08:12 +00:00"), "{text}");
 }
+
+/// A document covering every author, every indicator and every tool
+/// outcome, for the format goldens.
+fn every_kind_document() -> ReadDocument {
+    use polylogue_model::{Author, Origin, ToolOutcome, UnknownReason};
+    let source = Source::record("block:test:session:message#0");
+    let annotations = [
+        Author::Operator,
+        Author::Agent(None),
+        Author::Agent(Some(SessionId::parse("codex:agent-session").unwrap())),
+        Author::AgentOrigin(Origin::new("codex").unwrap()),
+        Author::Unattributed,
+        Author::Script("nightly".into()),
+    ]
+    .into_iter()
+    .map(|author| Annotation {
+        reference: "assertion:a1@a1".into(),
+        author,
+        kind: "note".into(),
+        value: json!("checked"),
+        open: None,
+    })
+    .collect();
+    let mut items = vec![ReadItem {
+        source: source.clone(),
+        kind: ItemKind::MessageHeader {
+            header: Box::new(MessageHeader {
+                time: TimeValue::unknown(),
+                author: ValueState::known("model".into()),
+                model: ValueState::NotRecorded,
+                assertions: annotations,
+                variant: None,
+                inherited: false,
+                branch: Default::default(),
+                context: None,
+            }),
+        },
+    }];
+    for indicator in [
+        IndicatorKind::Continues,
+        IndicatorKind::Branches,
+        IndicatorKind::Compacted,
+        IndicatorKind::Microcompacted,
+        IndicatorKind::RateLimited,
+        IndicatorKind::ModelSwitch,
+        IndicatorKind::AwaySummary,
+        IndicatorKind::Harness,
+        IndicatorKind::Turn,
+        IndicatorKind::LinkIssue,
+        IndicatorKind::Stale,
+        IndicatorKind::Variant,
+    ] {
+        items.push(ReadItem {
+            source: source.clone(),
+            kind: ItemKind::Indicator {
+                indicator,
+                text: "as recorded".into(),
+                expand: None,
+            },
+        });
+    }
+    let options = ReadOptions {
+        tools: Some(Expansion::Full),
+        ..Default::default()
+    };
+    for (n, outcome) in [
+        ToolOutcome::Ok,
+        ToolOutcome::Error {
+            reason: Some(polylogue_model::ErrorReason::ExitCode(2)),
+        },
+        ToolOutcome::Unknown {
+            reason: UnknownReason::StatusFieldUnreadable,
+        },
+        ToolOutcome::Unknown {
+            reason: UnknownReason::RunningInBackground,
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let result = Block::ToolResult {
+            reported_duration_ms: None,
+            call_id: Some(format!("call-{n}")),
+            outcome,
+            output: Some("out".into()),
+            data: None,
+            attachments: vec![],
+        };
+        items.extend(
+            layout(
+                message(vec![result]),
+                &options,
+                &ProjectionEvidence::default(),
+            )
+            .into_iter()
+            .filter(|item| matches!(item.kind, ItemKind::Call { .. })),
+        );
+    }
+    let mut doc = document(items);
+    doc.footer.coverage = vec![Coverage {
+        target: TargetKind::TextFragment,
+        view: View::Transcript,
+        omitted: 2,
+        accepted_views: vec![View::Transcript],
+    }];
+    doc
+}
+
+#[test]
+fn format_goldens_terminal() {
+    assert_eq!(
+        encode(&every_kind_document(), Format::Terminal),
+        include_str!("../tests/goldens/every_kind.terminal")
+    );
+}
+
+#[test]
+fn format_goldens_markdown() {
+    // The document ends with a fence and a blank line; the file cannot.
+    assert_eq!(
+        encode(&every_kind_document(), Format::Markdown).trim_end(),
+        include_str!("../tests/goldens/every_kind.markdown").trim_end()
+    );
+}
+
+#[test]
+fn format_goldens_html() {
+    assert_eq!(
+        encode(&every_kind_document(), Format::Html),
+        include_str!("../tests/goldens/every_kind.html").trim_end()
+    );
+}
+
+#[test]
+fn no_debug_formatting_in_rendered_output() {
+    let doc = every_kind_document();
+    for format in [Format::Terminal, Format::Markdown, Format::Html] {
+        let output = encode(&doc, format);
+        for debug in [
+            "Some(",
+            "None",
+            "SessionId(",
+            "Agent(",
+            "AgentOrigin",
+            "Script(",
+            "Unattributed",
+            "StatusFieldUnreadable",
+            "RunningInBackground",
+            "RateLimited",
+            "ModelSwitch",
+            "AwaySummary",
+            "LinkIssue",
+            "TextFragment",
+        ] {
+            assert!(
+                !output.contains(debug),
+                "{format:?} shows {debug}:\n{output}"
+            );
+        }
+    }
+    let mut session = polylogue_model::Session::new(
+        SessionId::parse("test:session").unwrap(),
+        polylogue_model::SessionKind::Main,
+    );
+    session
+        .set_time(
+            Some(polylogue_model::Timestamp::from_unix_ms(1_000).unwrap()),
+            polylogue_model::TimeEvidence {
+                quality: TimeQuality::Captured,
+                precision: Some(polylogue_model::Precision::Minute),
+                until: None,
+            },
+        )
+        .unwrap();
+    let card = crate::encode::session_lines(&session).join("\n");
+    assert!(card.contains("(captured, minute)"), "{card}");
+    for (error, words) in [
+        (crate::pager::PageError::ItemChanged, "changed"),
+        (crate::pager::PageError::AlreadyFull, "full"),
+    ] {
+        assert!(error.to_string().contains(words));
+    }
+}
+
+#[test]
+fn markdown_escapes_only_heading_markers() {
+    let doc = document(vec![text(
+        "# heading-like line\n   ## indented\n    # code indent\nTitle\n===\n---\n- a list item\nuse foo_bar(*x*) [link](u) a.b! {c} `tick` 1+1 a|b\n<b>bold</b> & co",
+    )]);
+    let markdown = encode(&doc, Format::Markdown);
+    let body: Vec<&str> = markdown.lines().skip(3).collect();
+    assert_eq!(
+        body,
+        [
+            "\\# heading-like line",
+            "   \\## indented",
+            "    # code indent",
+            "Title",
+            "\\===",
+            "\\---",
+            "- a list item",
+            "use foo_bar(*x*) [link](u) a.b! {c} `tick` 1+1 a|b",
+            "&lt;b&gt;bold&lt;/b&gt; &amp; co",
+            "",
+        ]
+    );
+}

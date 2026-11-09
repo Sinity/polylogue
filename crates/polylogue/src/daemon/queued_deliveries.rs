@@ -2,9 +2,9 @@
 //! without waiting. A brief answers before its delivery is recorded and never
 //! waits for room in the writer's queue: when the queue is full, the record
 //! waits here, in order with any outcome event for it, and goes to the
-//! writer after its next commit. Until a brief's record is committed, it is
-//! its recipient's latest brief here, so a resume or compaction brief that
-//! follows right away reports only what changed since.
+//! writer after its next commit. Until a delivered brief's record is
+//! committed, it is its recipient's latest brief here, so a resume or
+//! compaction brief that follows right away reports only what changed since.
 
 use crate::briefing::LastBrief;
 use polylogue_model::user::{UserOutcome, UserRequest};
@@ -30,6 +30,9 @@ struct Latest {
     brief: LastBrief,
     request: String,
     committed: Option<Committed>,
+    /// Its `delivered` outcome has been handed over; only a delivered brief
+    /// moves the point a later brief reports changes since.
+    delivered: bool,
 }
 
 struct PendingAdvice {
@@ -129,11 +132,16 @@ impl QueuedDeliveries {
             })
     }
 
-    /// The latest brief handed to `recipient` whose record is not committed.
+    /// The latest delivered brief to `recipient` whose record is not
+    /// committed.
     pub fn latest(&self, recipient: &str) -> Option<LastBrief> {
         let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         prune(&mut state);
-        state.latest.get(recipient).map(|latest| latest.brief)
+        state
+            .latest
+            .get(recipient)
+            .filter(|latest| latest.delivered)
+            .map(|latest| latest.brief)
     }
 }
 
@@ -158,13 +166,33 @@ fn submit(
             },
         );
     }
-    let recipient = recipient.map(|(recipient, brief)| {
+    if let polylogue_model::user::UserWrite::DeliveryEvent {
+        delivery,
+        what: polylogue_model::DeliveryOutcome::Delivered,
+        ..
+    } = &request.write
+    {
+        for latest in state.latest.values_mut() {
+            if &latest.request == delivery {
+                latest.delivered = true;
+            }
+        }
+    }
+    // Only session-start, resume and compaction briefs set the point a
+    // resume or compaction brief reports changes since.
+    let brief = matches!(
+        &request.write,
+        polylogue_model::user::UserWrite::Deliver(delivery)
+            if crate::briefing::BRIEF_EVENTS.contains(&delivery.event.as_str())
+    );
+    let recipient = recipient.filter(|_| brief).map(|(recipient, brief)| {
         state.latest.insert(
             recipient.clone(),
             Latest {
                 brief,
                 request: request.id.clone(),
                 committed: None,
+                delivered: false,
             },
         );
         recipient

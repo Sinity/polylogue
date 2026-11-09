@@ -603,3 +603,34 @@ fn rows_document(
     };
     serde_json::to_value(crate::protocol::query::Answer::Rows(Box::new(rows))).unwrap()
 }
+
+#[test]
+fn status_exit_code_is_degraded_when_answer_is_degraded() {
+    let root = tempfile::tempdir().unwrap();
+    let engine = crate::test_daemon::engine_config(root.path().join("home"));
+    let startup = crate::config::Startup::for_test(engine, root.path());
+    let data = serde_json::json!({"running": {"error": "the live table is unavailable"}});
+    let degraded =
+        command_surface::Answer::degraded(data.clone(), vec!["the index is behind".into()]);
+    for line in [false, true] {
+        let values = crate::commands::Values(serde_json::Map::from_iter([(
+            "line".into(),
+            serde_json::json!(line),
+        )]));
+        assert_eq!(
+            status_output(&values, &degraded, &startup, true),
+            ExitCode::from(degraded.exit_code()),
+            "line: {line}"
+        );
+        assert_ne!(degraded.exit_code(), 0);
+        assert_eq!(
+            status_output(
+                &values,
+                &command_surface::Answer::ok(data.clone()),
+                &startup,
+                true
+            ),
+            ExitCode::SUCCESS
+        );
+    }
+}

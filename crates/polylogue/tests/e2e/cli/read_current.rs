@@ -15,7 +15,10 @@ pub(super) struct Items {
 }
 impl Items {
     pub(super) fn push(&mut self, page: &ReadPage) {
-        for item in &page.document.items {
+        self.push_document(&page.document);
+    }
+    pub(super) fn push_document(&mut self, document: &polylogue_model::read::ReadDocument) {
+        for item in &document.items {
             if let ItemKind::Fragment {
                 text,
                 position,

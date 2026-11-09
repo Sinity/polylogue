@@ -254,6 +254,8 @@ fn a_compaction_brief_right_after_a_startup_brief_reports_only_what_changed_sinc
     let text = startup["prepared"]["text"].as_str().unwrap();
     assert!(text.contains("Recent sessions here"), "{text}");
     assert!(text.contains("claude-code:s9"), "{text}");
+    // The hook hands over its `delivered` outcome right after writing it.
+    delivered(&d, startup["delivery"].as_str().unwrap());
     let compact = brief(
         &d,
         &polylogue_store::user_writes::new_request_id(),
@@ -374,4 +376,125 @@ fn timeout_outcome_requires_positive_preparation_without_waiting_for_the_writer(
     assert!(reader.delivery("unconfirmed-prepare").unwrap().is_none());
     let delivery = reader.delivery(&id).unwrap().unwrap();
     assert!(delivery.0.events.iter().any(|event| event == "not_sent"));
+}
+
+/// A hook's report that it wrote the delivery to the harness.
+fn delivered(d: &test_daemon::TestDaemon, delivery: &str) {
+    crate::test_answers::ok(
+        crate::test_daemon::Call::new(
+            "delivery-event",
+            serde_json::json!({"delivery": delivery, "what": polylogue_model::DeliveryOutcome::Delivered, "detail": "written to the harness hook output"}),
+        )
+        .answer(&d.daemon),
+    );
+}
+
+/// An operator lesson about the brief's directory, written now.
+fn lesson(d: &test_daemon::TestDaemon, text: &str) {
+    use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+    let lesson = NewAssertion {
+        kind: AssertionKind::Lesson,
+        key: None,
+        value: Some(serde_json::json!(text)),
+        valid_until: None,
+        links: vec![NewAssertionLink {
+            role: LinkRole::About,
+            reference: polylogue_model::Reference::Cwd("/home/op/proj".into()),
+        }],
+    };
+    crate::test_answers::ok(
+        crate::test_daemon::Call::new("assert", serde_json::json!({"assertions": [lesson]}))
+            .authorship(polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            })
+            .answer(&d.daemon),
+    );
+}
+
+/// A delivery of `event` to the brief's session, as another sender records it.
+fn other_delivery(d: &test_daemon::TestDaemon, event: polylogue_model::DeliveryEvent) -> String {
+    use polylogue_model::user::{Delivery, UserWrite};
+    let id = polylogue_store::user_writes::new_request_id();
+    let invocation = d
+        .daemon
+        .invocation(&crate::operation::Context::worker_authorship(
+            "deliveries-test",
+        ));
+    crate::daemon::service::acts::author(
+        &d.daemon,
+        &invocation,
+        id.clone(),
+        UserWrite::Deliver(Delivery {
+            recipient_kind: "session".into(),
+            recipient_id: Some("claude-code:newcomer".into()),
+            sender: polylogue_model::DeliverySender::Mcp.as_str().into(),
+            event: event.as_str().into(),
+            cwd: None,
+            text: "handed over".into(),
+            refs: vec![],
+            left_out: vec![],
+        }),
+    )
+    .unwrap();
+    id
+}
+
+#[test]
+fn takeover_delivery_does_not_move_the_changes_since_point() {
+    let d = daemon_with_a_project();
+    let startup = brief(
+        &d,
+        &polylogue_store::user_writes::new_request_id(),
+        StartSource::Startup,
+    );
+    delivered(&d, startup["delivery"].as_str().unwrap());
+    after_queued_writes(&d);
+    lesson(&d, "the otter release needs a signed tag");
+    // A pasted takeover reaches the session later and is delivered.
+    let takeover = other_delivery(&d, polylogue_model::DeliveryEvent::Takeover);
+    delivered(&d, &takeover);
+    after_queued_writes(&d);
+    let resume = brief(
+        &d,
+        &polylogue_store::user_writes::new_request_id(),
+        StartSource::Resume,
+    );
+    let text = resume["prepared"]["text"].as_str().unwrap();
+    assert!(text.contains("Changes since your last brief at"), "{text}");
+    assert!(
+        text.contains("the otter release needs a signed tag"),
+        "{text}"
+    );
+}
+
+#[test]
+fn undelivered_brief_does_not_move_the_changes_since_point() {
+    let d = daemon_with_a_project();
+    let startup = brief(
+        &d,
+        &polylogue_store::user_writes::new_request_id(),
+        StartSource::Startup,
+    );
+    delivered(&d, startup["delivery"].as_str().unwrap());
+    after_queued_writes(&d);
+    lesson(&d, "the otter release needs a signed tag");
+    // A second brief that never reached the harness.
+    brief(
+        &d,
+        &polylogue_store::user_writes::new_request_id(),
+        StartSource::Startup,
+    );
+    after_queued_writes(&d);
+    let resume = brief(
+        &d,
+        &polylogue_store::user_writes::new_request_id(),
+        StartSource::Resume,
+    );
+    let text = resume["prepared"]["text"].as_str().unwrap();
+    assert!(text.contains("Changes since your last brief at"), "{text}");
+    assert!(
+        text.contains("the otter release needs a signed tag"),
+        "{text}"
+    );
 }

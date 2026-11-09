@@ -11,7 +11,13 @@ pub enum PageError {
 }
 impl std::fmt::Display for PageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::MetadataTooLarge => f.write_str("the page's header and footer exceed its budget"),
+            Self::InvalidPosition => f.write_str("the page position is not in this reading"),
+            Self::ItemChanged => f.write_str("the item at the page position changed"),
+            Self::AlreadyFull => f.write_str("the page is already full"),
+            Self::Serialization(error) => write!(f, "a page item could not be encoded: {error}"),
+        }
     }
 }
 impl std::error::Error for PageError {}

@@ -724,7 +724,7 @@ fn call_item(call: &Block, result: Option<&Block>, full: bool, running: bool) ->
                 ),
                 ToolOutcome::Unknown { reason } => (
                     ValueState::Unknown {
-                        reason: Some(format!("{reason:?}")),
+                        reason: Some(reason.describe().into()),
                     },
                     None,
                 ),

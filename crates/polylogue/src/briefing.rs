@@ -218,6 +218,15 @@ fn repo_names(dirs: &[String], recorded: Vec<String>) -> Vec<String> {
     names
 }
 
+/// The deliveries that set the point a resume or compaction brief reports
+/// changes since, once delivered: takeovers, pings and other hand-overs to
+/// the session do not.
+pub(crate) const BRIEF_EVENTS: [&str; 3] = [
+    polylogue_model::DeliveryEvent::SessionStart.as_str(),
+    polylogue_model::DeliveryEvent::Resume.as_str(),
+    polylogue_model::DeliveryEvent::Compaction.as_str(),
+];
+
 /// The latest brief a session received: when, and the archive's write
 /// counter then. Assertions written after it are the next brief's delta.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,8 +247,8 @@ impl LastBrief {
 
 /// Prepares the context `ask` wants. `delivery_id` goes in the text, so a
 /// reader of the transcript can find the delivery record. `scope` is the
-/// daemon's scope index; `queued` is the latest brief handed to the ask's
-/// recipient whose delivery record the writer has not committed yet. `near`
+/// daemon's scope index; `queued` is the latest delivered brief to the
+/// ask's recipient whose delivery record the writer has not committed yet. `near`
 /// ranks a recall by similarity when vectors exist.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare(
@@ -1101,13 +1110,18 @@ fn session_start(
     let me = session.map(ToString::to_string);
 
     // On resume and after compaction, only what changed since this
-    // session's last brief, committed or still queued.
+    // session's last delivered brief, committed or still queued.
     let previous = match (source, &me) {
         (StartSource::Resume | StartSource::Compact, Some(s)) => LastBrief::newest(
             reader
                 .deliveries_to(s)?
                 .into_iter()
-                .next()
+                .find(|d| {
+                    BRIEF_EVENTS.contains(&d.event.as_str())
+                        && d.events.iter().any(|what| {
+                            what == polylogue_model::DeliveryOutcome::Delivered.as_str()
+                        })
+                })
                 .map(|d| LastBrief {
                     at: d.at,
                     seq: d.seq,

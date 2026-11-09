@@ -78,6 +78,182 @@ pub(crate) fn run(
         }
     }
 }
+/// One page as `format`, the first line bold on a colour terminal.
+fn encode_page(
+    startup: &crate::config::Startup,
+    answer: &command_surface::Answer<serde_json::Value>,
+    format: polylogue_render::Format,
+) -> Result<(Vec<u8>, Option<ReadyCall>), DeliveryError> {
+    let Some(value) = answer.value() else {
+        return Err(DeliveryError::Answer(Box::new(answer.clone())));
+    };
+    let page: ReadPage = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+    let mut encoded = Vec::new();
+    polylogue_render::encode_document(
+        &page.document,
+        format,
+        polylogue_render::EncodeOptions::default(),
+        &mut encoded,
+    )
+    .map_err(|e| e.to_string())?;
+    if format == polylogue_render::Format::Terminal {
+        let text = String::from_utf8(encoded).map_err(|e| e.to_string())?;
+        encoded = polylogue_render::terminal::bold_first_line(&text, startup.output.stdout_color())
+            .into_bytes();
+    }
+    Ok((encoded, page.document.footer.next))
+}
+
+/// Notes and degraded parts of an answer, on standard error.
+fn page_notes(
+    startup: &crate::config::Startup,
+    answer: &command_surface::Answer<serde_json::Value>,
+) {
+    for note in crate::protocol::notes(answer) {
+        eprint!(
+            "{}",
+            super::print::diagnostic("note", note, None, startup.output.stderr_color())
+        );
+    }
+}
+
+/// Not a terminal: the page on standard output, then its notes and the
+/// exact command that continues it on standard error.
+fn one_page(
+    startup: &crate::config::Startup,
+    answer: command_surface::Answer<serde_json::Value>,
+    format: polylogue_render::Format,
+) -> Result<u8, DeliveryError> {
+    let (encoded, next) = encode_page(startup, &answer, format)?;
+    io::stdout()
+        .lock()
+        .write_all(&encoded)
+        .map_err(|e| e.to_string())?;
+    page_notes(startup, &answer);
+    if let Some(next) = next {
+        eprintln!(
+            "continue: {}",
+            polylogue_render::terminal::escape(&next.cli)
+        );
+    }
+    Ok(answer.exit_code())
+}
+
+/// On a terminal: every page of the reading, following each page's `next`,
+/// encoded as one document into the pager as the pages arrive, so the
+/// whole read is shown once, under one header.
+fn through_pager(
+    archive: &Archive,
+    startup: &crate::config::Startup,
+    mut answer: command_surface::Answer<serde_json::Value>,
+    format: polylogue_render::Format,
+) -> Result<u8, DeliveryError> {
+    let page_of = |answer: &command_surface::Answer<serde_json::Value>| {
+        let Some(value) = answer.value() else {
+            return Err(DeliveryError::Answer(Box::new(answer.clone())));
+        };
+        serde_json::from_value::<ReadPage>(value.clone())
+            .map_err(|e| DeliveryError::Text(e.to_string()))
+    };
+    let first = page_of(&answer)?;
+    let mut pager = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&startup.pager)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("starting the pager `{}`: {e}", startup.pager))?;
+    let mut input = BoldFirstLine {
+        out: pager.stdin.take().expect("piped pager input"),
+        state: if format == polylogue_render::Format::Terminal && startup.output.stdout_color() {
+            Bold::Before
+        } else {
+            Bold::Done
+        },
+    };
+    let mut code = answer.exit_code();
+    let shown = (|| -> Result<(), DeliveryError> {
+        // A pager closed before the end has shown what its reader wanted.
+        let closed = |error: &io::Error| error.kind() == io::ErrorKind::BrokenPipe;
+        page_notes(startup, &answer);
+        let mut encoder = match polylogue_render::Encoder::new(
+            &first.document.header,
+            format,
+            polylogue_render::EncodeOptions::default(),
+            &mut input,
+        ) {
+            Ok(encoder) => encoder,
+            Err(error) if closed(&error) => return Ok(()),
+            Err(error) => return Err(error.to_string().into()),
+        };
+        let mut page = first;
+        loop {
+            for item in &page.document.items {
+                match encoder.push(item) {
+                    Ok(()) => {}
+                    Err(error) if closed(&error) => return Ok(()),
+                    Err(error) => return Err(error.to_string().into()),
+                }
+            }
+            let Some(next) = page.document.footer.next.clone() else {
+                return match encoder.finish(&page.document.footer) {
+                    Ok(()) => Ok(()),
+                    Err(error) if closed(&error) => Ok(()),
+                    Err(error) => Err(error.to_string().into()),
+                };
+            };
+            let call: command_surface::RunnableRequest =
+                serde_json::from_value(next.http.arguments.clone()).map_err(|e| e.to_string())?;
+            answer = crate::client::call_ready(archive, &call).map_err(|e| e.to_string())?;
+            code = code.max(answer.exit_code());
+            page_notes(startup, &answer);
+            page = page_of(&answer)?;
+        }
+    })();
+    drop(input);
+    pager.wait().map_err(|e| e.to_string())?;
+    shown.map(|()| code)
+}
+
+/// Where a stream is in bolding its first line.
+enum Bold {
+    Before,
+    Inside,
+    Done,
+}
+
+/// Writes through, with the first line in bold, as
+/// [`polylogue_render::terminal::bold_first_line`] does for a whole text.
+struct BoldFirstLine<W> {
+    out: W,
+    state: Bold,
+}
+
+impl<W: Write> Write for BoldFirstLine<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        if let Bold::Before = self.state {
+            self.out.write_all(b"\x1b[1m")?;
+            self.state = Bold::Inside;
+        }
+        if let Bold::Inside = self.state
+            && let Some(end) = bytes.iter().position(|&b| b == b'\n')
+        {
+            self.out.write_all(&bytes[..end])?;
+            self.out.write_all(b"\x1b[0m")?;
+            self.out.write_all(&bytes[end..])?;
+            self.state = Bold::Done;
+            return Ok(bytes.len());
+        }
+        self.out.write_all(bytes)?;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
+
 fn invalid(message: impl ToString) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_string())
 }
@@ -116,30 +292,12 @@ fn deliver(
             );
             return Ok(code);
         }
-        let Some(value) = answer.value() else {
-            return Err(DeliveryError::Answer(Box::new(answer)));
-        };
-        let page: ReadPage = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
         let format = polylogue_render::Format::parse(format.name()).ok_or("unknown read format")?;
-        let mut encoded = Vec::new();
-        polylogue_render::encode_document(
-            &page.document,
-            format,
-            polylogue_render::EncodeOptions::default(),
-            &mut encoded,
-        )
-        .map_err(|e| e.to_string())?;
-        let mut stdout = io::stdout().lock();
-        if format == polylogue_render::Format::Terminal {
-            let text = String::from_utf8(encoded).map_err(|e| e.to_string())?;
-            let text =
-                polylogue_render::terminal::bold_first_line(&text, startup.output.stdout_color());
-            stdout.write_all(text.as_bytes())
+        return if startup.output.stdout_terminal {
+            through_pager(&archive, startup, answer, format)
         } else {
-            stdout.write_all(&encoded)
-        }
-        .map_err(|e| e.to_string())?;
-        return Ok(code);
+            one_page(startup, answer, format)
+        };
     }
     let target = &arguments.target;
     let format = polylogue_render::Format::parse(format.name()).ok_or("unknown read format")?;

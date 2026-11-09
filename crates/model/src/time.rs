@@ -14,6 +14,21 @@ pub struct TimeEvidence {
     pub until: Option<Timestamp>,
 }
 
+/// How a time is known, for readers: `captured`, `intrinsic, minute`,
+/// `file_mtime, bounded until …`.
+impl fmt::Display for TimeEvidence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.quality.as_str())?;
+        if let Some(precision) = self.precision {
+            write!(f, ", {}", precision.as_str())?;
+        }
+        if let Some(until) = self.until {
+            write!(f, " until {until}")?;
+        }
+        Ok(())
+    }
+}
+
 impl Default for TimeEvidence {
     fn default() -> Self {
         Self::UNKNOWN
