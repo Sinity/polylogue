@@ -164,7 +164,7 @@ fn duplicate_tag_uses_mathematical_value_and_keeps_original_author_and_hash() {
     );
 }
 #[test]
-fn frozen_apply_can_conserve_forks_but_implicit_live_write_cannot_choose_one() {
+fn frozen_apply_can_conserve_forks_and_the_next_live_write_resolves_them() {
     let conn = db();
     let title = statement(
         AssertionKind::Title,
@@ -176,11 +176,29 @@ fn frozen_apply_can_conserve_forks_but_implicit_live_write_cannot_choose_one() {
     let mut concurrent = get(&conn, "one").unwrap().unwrap().fact;
     concurrent.id = "other".into();
     concurrent.root = "other".into();
+    // Apply keeps the second family in the slot as written elsewhere.
     apply(&conn, &[concurrent], 2).unwrap();
-    assert!(
-        matches!(write(&conn,&request("three"),&[title],3,&|_| Ok(None),Owner::Standalone),Err(StoreError::Ambiguous {candidates,..}) if candidates.len()==2)
-    );
-    assert!(get(&conn, "three").unwrap().is_none());
+    // A live write into the slot revises every head of both families
+    // (docs/assertions.md, several families in one slot).
+    write(
+        &conn,
+        &request("three"),
+        &[title],
+        3,
+        &|_| Ok(None),
+        Owner::Standalone,
+    )
+    .unwrap();
+    let three = get(&conn, "three").unwrap().unwrap().fact;
+    assert_eq!(three.root, "one");
+    let mut revised: Vec<String> = three
+        .links
+        .iter()
+        .filter(|link| link.role == LinkRole::Revises)
+        .map(|link| link.reference.to_string())
+        .collect();
+    revised.sort();
+    assert_eq!(revised, ["assertion:one@one", "assertion:other@other"]);
 }
 #[test]
 fn native_fact_preserves_captured_provenance_and_original_waiting_hash() {
