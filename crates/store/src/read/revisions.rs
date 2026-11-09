@@ -7,6 +7,12 @@ pub struct RevisionPoint {
     pub length: u64,
 }
 impl Reader<'_> {
+    /// The newest later chain of `input` holding exactly the bytes of
+    /// `chain` (the same length and extents), whose reading is that chain's.
+    pub fn newest_identical_chain(&self, input: &str, chain: i64) -> Result<Option<i64>> {
+        crate::same_bytes::newest_identical(self.conn()?, input, chain)
+    }
+
     /// Visits known points at exactly this length, at most once per byte chain.
     /// Returning true stops the stream once the caller proves an exact copy.
     pub fn visit_revisions_at_length(

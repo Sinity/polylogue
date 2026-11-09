@@ -10,6 +10,7 @@ use std::fs;
 
 mod older_chains;
 mod reparse;
+mod same_bytes;
 
 /// a failure at any step of a write loses nothing. The writer fails
 /// at its n-th archive commit, between its archive and index commits, or at

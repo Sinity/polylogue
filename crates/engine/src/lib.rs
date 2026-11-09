@@ -238,6 +238,9 @@ pub struct Pass {
     pub blobs_appended: u64,
     pub blobs_deduplicated: u64,
     pub messages_written: u64,
+    /// Older chains whose reading was recorded from a newer chain of the
+    /// same input holding the same bytes, instead of parsed again.
+    pub readings_copied: u64,
     /// Sessions whose derived products the pass recomputed.
     pub sessions_derived: u64,
     pub seconds: f64,
@@ -264,6 +267,7 @@ impl Pass {
         self.blobs_appended += next.blobs_appended;
         self.blobs_deduplicated += next.blobs_deduplicated;
         self.messages_written += next.messages_written;
+        self.readings_copied += next.readings_copied;
         self.sessions_derived += next.sessions_derived;
         self.seconds += next.seconds;
         for root in next.unreadable_roots {
@@ -430,6 +434,10 @@ pub struct Engine {
     databases: BTreeMap<PathBuf, &'static str>,
     live_checked: Instant,
     pass_open: bool,
+    /// Older chains this pass records from a newer chain holding the same
+    /// bytes once that chain is read, each with the plan that parses it
+    /// when the copy would not be exact.
+    same_bytes: Vec<(Plan, polylogue_store::ReadingCopy)>,
     collectors_at: Option<Instant>,
     capture_checked: Option<Instant>,
     lookups: repo_lookup::Cache,
@@ -492,6 +500,7 @@ impl Engine {
             databases: BTreeMap::new(),
             live_checked: Instant::now(),
             pass_open: false,
+            same_bytes: Vec::new(),
             collectors_at: None,
             capture_checked: None,
             lookups: repo_lookup::Cache::default(),

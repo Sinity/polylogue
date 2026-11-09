@@ -48,6 +48,8 @@ pub mod query_objects;
 pub mod read;
 pub mod reference;
 mod repo_lookup;
+mod same_bytes;
+pub use same_bytes::ReadingCopy;
 pub mod schema;
 pub mod schema_inputs;
 pub mod scope_index;
