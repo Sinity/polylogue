@@ -190,8 +190,13 @@ fn http_answer(
     });
     let answer: command_surface::Answer<Value> = serde_json::from_value(body).unwrap();
     let exit = answer.exit_code();
-    let shown = crate::protocol::into_value(answer)
-        .map_err(|error| format!("{}: {}", error.code.unwrap(), error.message));
+    let shown = crate::protocol::into_value(answer).map_err(|error| {
+        format!(
+            "{}: {}",
+            error.code.as_deref().unwrap_or_default(),
+            error.message
+        )
+    });
     (shown, Some(exit))
 }
 
