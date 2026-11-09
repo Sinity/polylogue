@@ -541,6 +541,7 @@ fn predecessor_spool_tree_imports_every_hook_and_capture_file() {
     let again = engine
         .import_with_options(&[old.join("hooks")], &options("hook-spool"))
         .unwrap();
+    assert!(again.pass.errors.is_empty(), "{:?}", again.pass.errors);
     assert!(again.imported.is_empty(), "{again:?}");
-    assert_eq!(again.already_stored.len(), 4);
+    assert_eq!(again.already_stored.len(), 4, "{again:?}");
 }
