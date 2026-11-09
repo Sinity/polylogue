@@ -61,7 +61,7 @@ The full-text indexes are contentless, keyed by text ID, with contentless delete
 - Model calls are off for now (default; open operator question); turning them on is a setting.
 - **With calls off,** `similar:REF` works on every stored vector, and `similar:"text"` works when that text's vector is already stored. Otherwise the answer is `incomplete`: rows in the default order, marked unranked, with the note "semantic search for new text is off (model calls are off); `similar:` on a stored session or message still works". In a hybrid query the text side ranks alone and the note names the missing side. `embed status` and `embed preview` work; building is refused with the same reason.
 - **With calls on,** a query text is embedded once and its vector stored, keyed by model and normalized text hash, so it is never paid for twice. New messages and assertions are embedded in the background at idle priority within a monthly budget, default up to $5 a month, with a preview and confirmation for paid providers (default; open operator question).
-- **Providers:** a local OpenAI-compatible endpoint (default model `qwen3-embedding:0.6b`) and Voyage. Vectors from different models are compared only where the provider documents a shared space. Ruling, 2026-10-11: "These paid embeddings turn out to be worth few dollars IIRC, and even if it was more, it's not worth basing design of the projects on such considerations" (cc:e3e37f29-2490-47ae-89ef-fd40b6242e9a:07bbe1df-c4cd-4c59-b07e-540182d93fdd).
+- **Providers:** a local OpenAI-compatible endpoint (default model `qwen3-embedding:0.6b`) and Voyage. Vectors from different models are compared only where the provider documents a shared space. (ruling 2026-10-11, cc:e3e37f29-2490-47ae-89ef-fd40b6242e9a:07bbe1df-c4cd-4c59-b07e-540182d93fdd).
 - **Provider failures:** a transient failure leaves the text without a vector until the next round; a permanent rejection is recorded once and listed in `status`; a hybrid query with a failed side runs the other side and is `incomplete`.
 - Provider responses are validated as whole indexed batches before storage: exactly one nonempty, finite, nonzero vector of the same dimension per requested input, with unique indexes covering that request. Malformed responses are transient failures, never partial purchases or permanent input rejections. Normalization preserves finite tiny and large f32 components.
 - A stored chunk does not make its whole text complete. Preview and build use the missing chunk identities for the current exact embedding key; the existing key selection keeps dimension recipes separate. A retry requests only missing chunks, preserves purchased ones, and refuses returned dimensions that differ from the selected key. Permanent provider rejections remain recorded and skipped.
@@ -99,15 +99,3 @@ Fuzzy recall finds a half-remembered conversation by explicit, explained toleran
 - `similar:` on the hint, when vectors exist.
 
 Field names and values never match approximately; a mistyped field is an error with a suggestion.
-
-## Laws
-
-- **search-plans-agree**: the three search plans return identical rows in identical order for the same query on a generated archive.
-- **folding-and-fragments**: `lodz` finds `Łódź`; `text ~ "7/10"` finds the literal; the Morrow `chrono` search returns its 3 sessions and 8 hits, with subagent hits under their logical session.
-- **retraction-ranking**: ranking after retracting half the texts equals a fresh build's.
-- **count-exact-or-null**: `count` is exact, or `null` with a counting query in `notes`; never an estimate.
-- **similar-off-no-call**: with model calls off, `similar:"x"` is `incomplete` with the note and makes no network request (a provider that fails on any call proves it); `similar:"x" | agg count` makes no call.
-- **similar-ranks-never-filters**: `similar:session:<id> repo:Y` ranks only repository Y's sessions and returns every one of them, unranked ones after ranked.
-- **fusion-membership**: a three-list fusion matches an independent evaluator; fusion never changes membership or `count`; chained unions fuse once.
-- **recall-ranks-partial-matches**: on Morrow, `weekday arithmetic` ranks subagent #3's answer first, then #5 and #6; a five-word hint where no message has all five still returns ranked hits; a 100-hit recall pages through every hit once.
-- **fuzzy-recall**: `"backpu~ tools" around:2026-04` finds the backup-tools fixture, lists its substitutions, and ranks exact matches above approximate ones.

@@ -110,7 +110,6 @@ fn st(s: &str, state: &str, until: Option<i64>) -> (String, String, Option<i64>)
     (s.to_owned(), state.to_owned(), until)
 }
 
-/// law: live-state-reproducible
 #[test]
 fn live_state_is_a_function_of_stored_facts_and_the_time() {
     // Live state on hook evidence alone (no process lines). Without
@@ -256,7 +255,6 @@ fn live_state_is_total_for_sessions_without_hooks() {
     );
 }
 
-/// law: peers-symmetric
 #[test]
 fn peers_are_symmetric() {
     // Peers are symmetric, through the live query.
@@ -394,7 +392,6 @@ fn the_change_feed_continues_from_its_cursor() {
 
 mod change_generation;
 
-/// law: pl.live.fold
 #[test]
 fn stored_facts_equal_the_fold_of_stored_lines_with_ties_and_late_lines() {
     let lines = [

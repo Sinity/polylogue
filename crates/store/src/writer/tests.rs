@@ -81,7 +81,7 @@ impl TestArchive {
             .expect("one source reading")
     }
 
-    /// Separate raw capture from queued parsing when a law observes asynchronous work.
+    /// Separate raw capture from queued parsing when a test observes asynchronous work.
     fn commit_source(&self, mut reading: Batch, bytes: &[u8]) -> Result<Batch> {
         let mut raw = reading.clone();
         raw.parse.clear();
@@ -1445,7 +1445,6 @@ fn recorded_message_sessions_preserve_ambiguity_after_shown_row_deduplication() 
     assert!(!absent);
 }
 
-/// law: one refused reading in a group of independent inputs costs only itself
 #[cfg(feature = "faults")]
 #[test]
 fn a_refused_reading_in_a_group_of_independent_inputs_costs_only_itself() {

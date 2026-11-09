@@ -29,7 +29,6 @@ fn state(facts: &LiveFacts, now: i64) -> LiveState {
     view(Some(facts), None, now).state
 }
 
-/// law: pl.live.state-total
 #[test]
 fn the_view_is_total_and_constant_between_until_instants() {
     let lines = [
@@ -74,7 +73,6 @@ fn the_view_is_total_and_constant_between_until_instants() {
     );
 }
 
-/// law: pl.live.wait-not-stall
 #[test]
 fn a_rate_limit_stop_is_a_stall_and_never_waiting() {
     let (facts, _) = run(&[
@@ -115,7 +113,6 @@ fn a_rate_limit_stop_is_a_stall_and_never_waiting() {
     assert_eq!(state(&facts, 2 * MIN), LiveState::Idle);
 }
 
-/// law: pl.live.registry-outranks
 #[test]
 fn the_registry_word_outranks_hook_inference() {
     let (facts, _) = run(&[
@@ -147,7 +144,6 @@ fn the_registry_word_outranks_hook_inference() {
     );
 }
 
-/// law: pl.live.pid-reuse
 #[test]
 fn a_line_about_another_process_never_attaches() {
     let start = [
@@ -191,7 +187,6 @@ fn a_line_about_another_process_never_attaches() {
     assert_eq!((v.state, v.process_alive), (LiveState::Stale, Some(false)));
 }
 
-/// law: pl.live.no-text-state
 #[test]
 fn no_fact_comes_from_prose_or_command_text() {
     let (facts, _) = run(&[
@@ -243,7 +238,6 @@ fn no_fact_comes_from_prose_or_command_text() {
     assert_eq!(facts.task.as_deref(), Some("sx-1"));
 }
 
-/// law: pl.live.intervals-replay
 #[test]
 fn intervals_close_only_on_evidence_and_replay_identically() {
     let lines = vec![
@@ -292,7 +286,6 @@ fn intervals_close_only_on_evidence_and_replay_identically() {
     assert_eq!(state(&gone, 12 * MIN), LiveState::Ended);
 }
 
-/// law: pl.live.fold
 #[test]
 fn folding_through_stored_facts_equals_folding_at_once() {
     let lines = vec![

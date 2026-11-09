@@ -57,7 +57,6 @@ fn the_store_has_a_rule_for_exactly_the_catalog_fields() {
     }
 }
 
-/// law: live-state-one-rule
 /// SQL and the in-memory scope index use the same model through time boundaries.
 #[test]
 fn active_live_state_agrees_with_the_sql_rule() {

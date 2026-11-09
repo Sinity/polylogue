@@ -357,8 +357,6 @@ fn a_scope_reset_during_json_serialization_publishes_only_the_safe_failure() {
     assert_eq!(error.code.as_deref(), Some("scope_changed"));
 }
 
-/// law: until-idle-ends-after-work
-/// law: no-sources-reads-no-source
 #[test]
 fn a_daemon_run_until_idle_exits_with_its_summary_and_reads_sources_only_when_asked() {
     let dir = tempfile::tempdir().unwrap();

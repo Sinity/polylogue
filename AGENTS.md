@@ -19,17 +19,14 @@ working rules that apply here.
 
 ## The design of record
 
-The pages in `docs/` are Polylogue's design: behaviour, model, formats and
-laws, one page per area, each fact on one page. They describe the product as
+The pages in `docs/` are Polylogue's design: behaviour, model and formats,
+one page per area, each fact on one page. They describe the product as
 designed, not the code as it is; when the code and a page differ, the page is
 the target and closing the difference is the work. `docs/README.md` indexes
-the pages and defines how the operator's rulings are cited and how laws are
-named. Start with `docs/architecture.md` (purpose, principles, modes, stores,
+the pages and defines how the operator's rulings are cited. Start with `docs/architecture.md` (purpose, principles, modes, stores,
 durability, pipeline, configuration and clocks), then read the page that owns
 the area you are changing. CLI help, MCP tool schemas and module
-documentation describe the current build; the
-[reference index](docs/reference/README.md) separates current artifacts from
-planned generated pages.
+documentation describe the current build.
 
 Plans, open questions, decisions and acceptance criteria live in Beads, the
 task tracker, outside this repository. A Bead points at the doc section it
@@ -77,7 +74,6 @@ copy.
 | `crates/sources` | one declaration and one parser per origin, reading versions, markup extraction |
 | `crates/store` | every SQLite connection and all SQL: inputs, chains, versioned rows, row codecs, plan execution, migrations |
 | `crates/query` | the catalog and units, compilation to a `Plan`. No SQL |
-| `crates/assertions` | the assertion store and variants: author computation, the revision graph, judgments, Pages, pings, annotation passes |
 | `crates/render` | text, markdown and HTML over typed answers |
 | `crates/engine` | discovery, the overlapped ingest pipeline, tool-database capture, recognition, derivations |
 | `crates/sinex` | primary mode: the ledger over Sinex's producer client, the confirmed-stream consumer, Polylogue's kind declarations (behind the `sinex` feature) |
@@ -87,8 +83,7 @@ copy.
 | `xtask/` | developer commands, built on `devkit` from polylogue-sinex-common |
 | `nix/` | the NixOS and Home Manager modules and their shared settings library |
 
-`crates/assertions` does not exist yet: until it does, authored records live
-in `crates/store` and `crates/polylogue`.
+Authored records live in `crates/store` and `crates/polylogue`.
 `cargo xtask boundaries` enforces which crates may depend on which; only the
 store touches SQLite.
 
@@ -131,11 +126,10 @@ enables primary mode when its dependencies are affected; the landing check
 always runs both configurations. Every xtask
 run is recorded in devkit's history database.
 
-Designed and not built yet: `cargo xtask compile` and `coverage`;
-`cargo xtask laws`, which lists each law in `docs/` with the tests whose names
-carry its key; and `cargo xtask docs`, which regenerates `docs/reference/`.
+Designed and not built yet: `cargo xtask compile` and `coverage`.
 
-A host may queue these same commands through its own job runner; the
+Pull requests and master run `cargo xtask check` on GitHub Actions; read the
+result with `gh pr checks`. A host may queue these same commands through its own job runner; the
 operator's host does so with AgentCTL, whose descriptor in `.agentctl/`
 carries only host tuning. Use it where your environment provides it; the
 commands and their results are the same either way.
@@ -289,10 +283,10 @@ deadline lifted. "Such arbitrary limits are themselves straight-up bugs."
 `cc:62be45f2-6c40-49ce-a88e-bc566948628c:4cc20d7c-9e62-4b7a-9550-7dd97f9d48e9`).
 
 **Tests that are better than the predecessor's.** Every specified behaviour
-and every law in the pages in `docs/` has a test
+in the pages in `docs/` has a test
 that fails when the production path breaks. The valuable kinds: independent
 oracles (goldens written from format knowledge, never re-blessed from parser
-output), law suites over the Morrow archive, crash tests at real durability
+output), tests over the Morrow archive, crash tests at real durability
 boundaries, and property tests at serialization boundaries. Port the
 predecessor's cases as cases (inputs and expected outcomes), then fill the
 gaps both suites had. A test that restates a helper, asserts a mock's value,
@@ -312,7 +306,7 @@ and cleanup before raising timeouts or cutting coverage.
 - Rust, four-space indent, `rustfmt`.
 - A module is `name.rs` with its children in `name/`; no `mod.rs`.
 - Tests live in their own files, never inline; `docs/testing.md` owns their
-  layout and law names. Use synthetic inputs,
+  layout. Use synthetic inputs,
   temporary directories and `polylogue-testkit`.
 - Comments state constraints and reasons, briefly. History, status, Bead IDs
   and section numbers belong in Git and Beads.
@@ -339,6 +333,10 @@ archive, `/home/op` paths). Credentials, real captures, private reports and
 real databases stay out of Git, and so do paths into a particular machine.
 Reading the operator's real files on the development machine for development
 and measurement is fine; report figures, not contents.
+Public docs state design intent in neutral language and cite rulings by date
+and locator, never quoting the operator's private sessions; PR bodies, review
+comments and commit messages carry no excerpts of captured data or private
+analyses.
 
 ## Cloud sessions and changes to polylogue-sinex-common
 

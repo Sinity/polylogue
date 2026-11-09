@@ -140,7 +140,7 @@ fn prepared_effect_is_private_and_preserves_full_assertion_provenance() {
 fn saved_family_and_revision_are_frozen_across_pending_overlay_and_replay() {
     let conn = cache();
     // This focused cache fixture retains real binder-produced question bodies.
-    // The Writer laws separately exercise their native ACK boundary.
+    // The Writer tests separately exercise their native ACK boundary.
     for text in ["sessions", "messages", "events"] {
         let plan = polylogue_query::plan::prepare(
             text,

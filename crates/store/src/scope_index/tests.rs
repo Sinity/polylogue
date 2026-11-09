@@ -21,7 +21,6 @@ fn ids(sessions: Vec<&ScopeSession>) -> Vec<String> {
         .collect()
 }
 
-/// law: scope-whole-components
 #[test]
 fn sessions_under_a_directory_match_whole_path_components_newest_first() {
     let dir = tempfile::tempdir().unwrap();
@@ -70,7 +69,6 @@ fn sessions_under_a_directory_match_whole_path_components_newest_first() {
     assert_eq!(index.len(), 4, "only main sessions are held");
 }
 
-/// law: scope-live-and-claims
 #[test]
 fn live_sessions_and_open_beads_come_from_the_held_facts() {
     let dir = tempfile::tempdir().unwrap();
@@ -114,7 +112,6 @@ fn live_sessions_and_open_beads_come_from_the_held_facts() {
     assert!(index.open_beads(&dirs).is_empty());
 }
 
-/// law: scope-follows-change-feed
 #[test]
 fn the_index_follows_sessions_changed_after_its_position() {
     let dir = tempfile::tempdir().unwrap();

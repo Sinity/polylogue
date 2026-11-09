@@ -1,11 +1,9 @@
 # Polylogue documentation
 
-These pages are Polylogue's design: its behaviour, model, formats and laws, and
+These pages are Polylogue's design: its behaviour, model, formats, and
 the reasons for them. They describe the product as designed. What exists in a
 given build is described by CLI help, MCP tool schemas and module
-documentation. The [reference index](reference/README.md) distinguishes
-current artifacts from planned generated pages; the difference is work,
-tracked outside the repository. How work is done in this repository is in
+documentation. How work is done in this repository is in
 [`AGENTS.md`](../AGENTS.md).
 
 Two current-build artifacts also live here: the embedded
@@ -35,7 +33,7 @@ locations are inputs to the runtime and its tests.
 | [web](web.md) | the web workbench and its visual baselines |
 | [operations](operations.md) | the daemon, status, notices, configuration, deployment, backup |
 | [primary mode](primary-mode.md) | Polylogue on Sinex |
-| [testing](testing.md) | test archives, law suites, fault and crash tests, fuzzing, benchmarks |
+| [testing](testing.md) | test archives, properties tested, fault and crash tests, fuzzing, benchmarks |
 | [vocabulary](vocabulary.md) | each concept and its one name |
 
 The shared mechanics (blobs and segments, the query grammar, the operation and
@@ -48,19 +46,17 @@ one README per crate. Sinex's pages are in
 
 ### The operator's words
 
-Only the operator's own words are labelled. Everything unlabelled is the
-design. A ruling is cited once, on the page that owns the rule it binds, after
-the sentence that states the rule:
+A ruling is cited once, on the page that owns the rule it binds, after the
+sentence that states the rule, as `(ruling DATE, LOCATOR)`:
 
-> **Polylogue has no deletion.** Ruling, 2026-10-28: "probably just do not
-> have deletion in the first place in polylogue, for now"
-> (cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-27T23:14:04Z).
+> **Polylogue has no deletion.**
+> (ruling 2026-10-28, cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-27T23:14:04Z)
 
-The date is the operator's local date; a locator's time is UTC. The quote is
-verbatim, with the operator's spelling, cut with "…", normally under thirty
-words. When the design sentence already says everything, the citation is
-`(ruling DATE, LOCATOR)` with no quote. Only
-the latest deliberate statement is cited. A rule that rests on a default the
+The date is the operator's local date; a locator's time is UTC. The page states
+the decided behaviour in its own words. These pages are public, so the
+operator's private sessions are never quoted; the locator lets anyone with the
+archive read the original. Only the latest deliberate statement is cited.
+Everything unlabelled is the design. A rule that rests on a default the
 operator may still change says "(default; open operator question)".
 
 ### Locators
@@ -81,27 +77,9 @@ Every locator resolves in a primary source.
 Sinex's and polylogue-sinex-common's documentation use the same conventions
 and link here.
 
-### Laws
+### Generated artifacts
 
-Every area page ends with `## Laws`. Each law is one bullet: a bold key, then
-the property and how it is checked. A law's full name is `<page>/<key>`
-(`archive/re-parse-keeps-every-version`). Keys are plain words and stay stable;
-there are no law numbers.
-
-A test that checks a law carries the key in its name
-(`re_parse_keeps_every_version`, with a suffix when several tests check one
-law). Finding a law's tests is a name search. `cargo xtask laws` lists each
-law and the tests whose names carry its key, and the laws with none; it fails
-nothing. Laws of the shared query language live in the `query-language` crate
-and run against Polylogue's catalog too.
-
-### Generated pages
-
-The [planned pages](reference/README.md#planned-pages) will be rendered from
-the declarations by `cargo xtask docs`, committed and checked as goldens.
-That generator is not implemented yet. Until a reference generator exists,
-its table stays in the area page that owns the subject. Existing generated
-artifacts are changed through their declarations, not by hand.
+Generated artifacts are changed through their declarations, not by hand.
 
 ### Links
 

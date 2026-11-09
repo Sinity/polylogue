@@ -12,7 +12,6 @@ fn exact(root: &str, id: &str) -> Reference {
     Reference::Assertion(RevisionReference::exact(root.into(), id.into()))
 }
 
-/// law: older-archive-notes
 #[test]
 fn notes_become_assertions_with_their_identity_revisions_and_withdrawals() {
     let (_dir, older) = standard();
@@ -84,7 +83,6 @@ fn an_older_hidden_tag_becomes_the_hidden_session_mark() {
     assert_eq!(fact.root, hidden.first_note);
 }
 
-/// law: older-archive-notes
 #[test]
 fn a_relation_to_another_family_names_that_note_exactly() {
     let note_row = |id: &str, first: &str, relations: Vec<(String, String)>| Note {
@@ -124,7 +122,6 @@ fn a_relation_to_another_family_names_that_note_exactly() {
     assert!(note(&unknown, &roots).unwrap_err().contains("on_page"));
 }
 
-/// law: older-archive-settings
 #[test]
 fn a_later_setting_value_revises_the_one_before_it_on_the_same_machine() {
     let (_dir, older) = standard();
@@ -170,7 +167,6 @@ fn a_later_setting_value_revises_the_one_before_it_on_the_same_machine() {
     assert!(mapped[2].1.is_ok());
 }
 
-/// law: older-archive-requests
 #[test]
 fn deliveries_events_and_kept_results_become_the_requests_that_wrote_them() {
     let (_dir, older) = standard();
@@ -224,7 +220,6 @@ fn deliveries_events_and_kept_results_become_the_requests_that_wrote_them() {
     assert!(rows.kept_results.is_empty());
 }
 
-/// law: older-archive-requests
 #[test]
 fn a_request_that_disagrees_with_its_row_refuses_both() {
     let dir = tempfile::tempdir().unwrap();

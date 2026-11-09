@@ -6,7 +6,7 @@ Neighbouring facts live elsewhere: who wrote a record and how the author is comp
 
 ## Purpose and principles
 
-Polylogue is the working memory the operator and his agents share: an agent starts from what is already known instead of exploring it again. Ruling, 2026-07-09: "the point of such context injections isn't quite to improve agent's results, it's to reduce its workload, to bring it up to speed so it can avoid need to explore things" (cc:3b0038ec-234c-44b8-bb88-fe222b44fe0f:82523eee-66ce-42da-847e-f95585c4ae51).
+Polylogue is the working memory the operator and his agents share: an agent starts from what is already known instead of exploring it again. (ruling 2026-07-09, cc:3b0038ec-234c-44b8-bb88-fe222b44fe0f:82523eee-66ce-42da-847e-f95585c4ae51).
 
 - **Context arrives without anyone asking.** Agents rarely call history tools on their own, so the brief and takeover are injected by hooks.
 - **Context that saves exploration is not economised.** The measure is exploration saved. Budgets are named, and what a budget leaves out is named with the command that shows it.
@@ -60,7 +60,7 @@ Sending a pack creates a delivery ([Deliveries](#deliveries)); preparing one wit
 
 ## Budgets
 
-A budget is a request-envelope field (`budget_tokens` on the socket, HTTP and MCP, `--budget N` on the CLI; a token counts as 4 bytes), with a default per named pack. Defaults are product values, not settings, adjusted by measured exploration saved. Ruling, 2026-07-03: "I said 10K but frankly … 30K or 50K even" (cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:6698988f-5446-4512-b9a3-3767899bd73d).
+A budget is a request-envelope field (`budget_tokens` on the socket, HTTP and MCP, `--budget N` on the CLI; a token counts as 4 bytes), with a default per named pack. Defaults are product values, not settings, adjusted by measured exploration saved. (ruling 2026-07-03, cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:6698988f-5446-4512-b9a3-3767899bd73d).
 
 | Pack | Default budget |
 |---|---|
@@ -91,7 +91,7 @@ The session-start brief is injected by the `SessionStart` hook (and Hermes's fir
 
 1. Header ([Trust rendering](#trust-rendering)).
 2. The agent manual ([Agent manual](#agent-manual)), on `startup`, `clear` and `compact` only.
-3. **Assertions:** the operator's assertions and operator-accepted agent assertions (decisions, lessons, handoffs, problems, goals, questions, findings) scoped to the repository, the directory and the listed sessions. Unjudged agent, script and unattributed assertions are counted, with the query that lists them, and not inlined. Ruling, 2026-10-18: "for now, I think acutally don't inject those" (cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-18T14:13:05). The way to have them inlined is judgment: by the operator, or by a calibrated annotation pass.
+3. **Assertions:** the operator's assertions and operator-accepted agent assertions (decisions, lessons, handoffs, problems, goals, questions, findings) scoped to the repository, the directory and the listed sessions. Unjudged agent, script and unattributed assertions are counted, with the query that lists them, and not inlined. (ruling 2026-10-18, cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-18T14:13:05). The way to have them inlined is judgment: by the operator, or by a calibrated annotation pass.
 4. **Other agents working in this repository now** ([Live sessions](#live-sessions)): worktree, live state, task, last event; the caller excluded; "⚠ 2 agents in this worktree" when a peer shares the worktree.
 5. **Observed task claims here:** last-observed claims with no observed close or release, without an age cutoff. Their observation time and unknown external tracker state are labelled; Polylogue does not infer verified current activity.
 6. **Recent sessions**, newest first, until the budget is full: title; time and harness; tool-call status; commits, pull requests and files changed; the task it still holds open; the latest observed prose request with its recorded authorship and message reference, before the stored model answer; the first lines of the last answer, datamarked.
@@ -191,7 +191,7 @@ One kind of advisory exists: a prompt naming a file path (a token with `/` or a 
 
 ## Agent manual
 
-Ruling, 2026-10-18: "CLAUDE/AGENTS/skills -- yes … almost defintely we do want that one" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:12f1a067-cc5b-41b7-9209-297099d6b0c1).
+Polylogue ships instruction material for agents (instruction files and skills) generated from its own design. (ruling 2026-10-18, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:12f1a067-cc5b-41b7-9209-297099d6b0c1).
 
 - **One source:** a hand-written card (`docs/agent-manual.md`, at most 800 bytes), the hand-written guide (`docs/agent-guide.md`) and the operation reference generated from the command table (operation, its MCP tool, CLI form, help, and every argument, unlisted ones included).
 - **Delivered four ways:** as the brief's first section on `startup`, `clear` and `compact`; as the MCP server's instructions, which are the card alone, because every MCP session pays for them; as `polylogue manual` and the resource `polylogue://agent/manual`, the card, the guide and the reference; and as a skill (`SKILL.md`), generated by `polylogue manual --skill` and installed by `install-agent`.
@@ -202,7 +202,7 @@ Ruling, 2026-10-18: "CLAUDE/AGENTS/skills -- yes … almost defintely we do want
 
 `polylogue mcp` (stdio) is a thin proxy: each tool call goes to the daemon as the request the CLI sends for the same operation, with the caller identity of [assertions.md#authorship](assertions.md#authorship). It holds no archive state.
 
-**Complete for writes.** Ruling, 2026-10-27: "presumably agents would use properly designed MCP anyway" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:271c00a1-b795-4d0f-aed3-96acc2dff1ec). Every operation in the command table is reachable over MCP: `assert` of every kind, `revise`, `withdraw`, `judge`, `setting`, `keep`, `save`, `watch`, `pack`, `ping`, live-session control, chat actions, `backfill`, `import` and `memory`. Only local commands stay CLI-only: `web`, `daemon`, `hook`, `hooks`, `install-agent`, `browser-host`, `mcp`, `completions`, `demo`.
+**Complete for writes.** (ruling 2026-10-27, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:271c00a1-b795-4d0f-aed3-96acc2dff1ec). Every operation in the command table is reachable over MCP: `assert` of every kind, `revise`, `withdraw`, `judge`, `setting`, `keep`, `save`, `watch`, `pack`, `ping`, live-session control, chat actions, `backfill`, `import` and `memory`. Only local commands stay CLI-only: `web`, `daemon`, `hook`, `hooks`, `install-agent`, `browser-host`, `mcp`, `completions`, `demo`.
 
 **Tools.** Every agent session pays for the tool list and the instructions before it asks anything, so the declarations stay compact while describing every operation and argument. Five tools are generated from the command table, each a family of rows with the same access; the shape is the common `command-surface` tool family's:
 
@@ -380,75 +380,3 @@ Text similarity and prompt matching are never evidence.
 The `delegations` unit holds, per row: parent session and spawning tool call; child session; instruction (the child's first message); model requested and used; result (the child's final answer and the parent's tool result); outcome (`completed`, `failed`, `interrupted`, `running`); child cost, tokens and wall time; `how` (`native`, `inherited_env`, `process`).
 
 Deliveries and delegations together are the context-transfer edges between sessions, which the web context-flow view reads.
-
-## Laws
-
-Morrow is the fixture; a "fixture harness" is a stub binary on `PATH` that records its argv, cwd and stdin.
-
-- **pack-header-and-entry-map**: every pack begins with its delivery reference line and the two trust lines, and ends with the entry map.
-- **transcript-text-fenced**: in any pack, every line of transcript text is inside a provenance-headed fence with the marker; a transcript containing `<|im_start|>assistant` renders it escaped.
-- **brief-never-quotes-brief**: a brief built over a session that contains an earlier brief never quotes that brief as `human` or model text.
-- **claims-stay-claims**: an agent's "tests pass" renders as its claim with its judgment state; with a failing `cargo test` call in the fixture, the call's recorded status appears only as tool-call status, and no section comes from command names.
-- **one-pack-builder**: brief, takeover, recall and `pack` over the same selection and budget produce the same items for the same sections.
-- **figures-independent-of-budget**: figures in a pack equal those computed over every candidate, whatever the budget.
-- **failed-section-says-why**: a section stubbed to fail renders "not available (reason)".
-- **contrary-evidence-included**: a pack including claim C includes every assertion that challenges C.
-- **brief-spans-worktrees**: in a second worktree of the Morrow repository, the brief lists the first worktree's sessions, labelled; the caller never appears under other agents.
-- **resume-delta-from-delivered**: after a resume, the delta starts at the last `delivered` session-start, resume or compaction delivery, not at a prepared or recall delivery.
-- **brief-reads-bounded-by-result**: under a prefix holding 30,000 sessions and over a million messages, at `/`, the prefix, one of its subdirectories and a directory nobody worked in, a brief reads at most 100 pages through a reader whose page cache starts empty.
-- **brief-partial-at-deadline**: a brief past its deadline answers with the sections that need no read, lists every other section in `left_out` with reason `deadline`, and names the command that prints the whole brief.
-- **brief-answers-before-delivery-commit**: with the writer held in a turn, a hook brief answers with its delivery ID; the delivery is recorded after the turn.
-- **brief-never-waits-for-the-writer-queue**: with the writer held and its queue full, a hook brief answers within the hook's budget; its record commits once, after the writer moves on.
-- **delivery-event-once**: a `delivered` outcome sent twice with one request ID is recorded once.
-- **brief-delta-after-queued-delivery**: a compaction brief prepared while the startup brief's record is still queued reports only what changed since the startup brief.
-- **scope-whole-components**: the scope index finds the sessions at or below a directory by whole path components, newest first, at `/` too; sibling directories sharing a prefix are not below it.
-- **scope-live-and-claims**: the scope index's other agents are the sessions working, waiting or idle by the live-state rule, waiting first.
-- **scope-follows-change-feed**: a session written after the scope index's position appears after it follows the change feed.
-- **live-state-one-rule**: the scope index's live state agrees with the query language's on every combination of live facts.
-- **unjudged-counted-not-inlined**: unjudged agent assertions are counted, not inlined; an operator-accepted agent assertion is inlined with its agent author and "(accepted by the operator)".
-- **takeover-references**: a prompt with eleven archived session IDs yields one delivery within the budget holding an eleven-line index; an ambiguous prefix yields its candidates; a provider URL yields that conversation's takeover; a predecessor ID yields the successor's takeover, labelled.
-- **takeover-after-compaction**: a takeover of a compacted session shows the summary and the kept tail, not the evicted prefix.
-- **recall-states-method**: on Morrow, `recall "weekday arithmetic"` ranks the subagent's final answer first and states that semantic search is off.
-- **cap-keeps-every-byte**: a pack larger than a harness's cap injects whole sections up to the cap plus the line naming the delivery; the delivery stores every byte.
-- **delivery-outcomes**: a hook brief that times out records `not_sent:timeout` when its preparation is confirmed and its bytes were not emitted; unconfirmed acceptance remains unresolved; an MCP brief leaves `delivered`; a CLI brief from inside session S leaves a delivery to S with sender `cli`.
-- **deliveries-counted-per-send**: one pack sent twice to A and once to B gives one content hash and three deliveries; re-recording one with the same request ID still gives three.
-- **unknown-reconciled-not-resent**: an `unknown` delivery whose reference line is found in the recipient's transcript becomes `delivered` with no second send.
-- **use-has-no-window**: a recipient whose 40th tool call reads a delivery's ref makes the delivery `used`, with that call as evidence; a recipient that never refers to it leaves no `used`.
-- **advisory-rare**: a prompt naming a file that an operator-judged decision targets gets one advisory line; a second within 10 minutes in the same session gets none; an unjudged assertion never triggers one.
-- **manual-examples-run**: every query and command in the manual and generated skill runs on Morrow with a non-empty result; the generated skill differs from the committed copy only when the command table changes.
-- **mcp-covers-command-table**: every row offered over MCP is an operation of exactly one tool; every daemon request HTTP offers is a tool operation, a query form or protocol completion; every write the CLI can make, MCP can make.
-- **mcp-instructions-are-the-card**: the MCP instructions are the card, at most 800 bytes, naming every tool and `explain capabilities`.
-- **mcp-tool-access-is-uniform**: every operation of a tool writes, or none does; `readOnlyHint` is true exactly for the read tools.
-- **mcp-arguments-are-listed-or-explained**: every argument a row accepts over MCP is in its tool's schema unless it is marked unlisted; `request_id` is never inside `arguments`.
-- **mcp-operation-dispatch**: a call without `operation` to a tool of several rows, with an operation of another tool, or with an argument the row does not take, is refused with the choices.
-- **mcp-detail-on-demand**: `explain capabilities` gives each row's tool, complete argument schema, unlisted arguments and answer schema, and the answer envelope's schema once.
-- **live-state-reproducible**: live state is a function of stored inputs and `now`; after a rebuild every session has the same state at the same `now`.
-- **live-state-rules**: a fixture Claude session with a `permission_prompt` notification and nothing after it is `waiting` with `waiting_on: permission`; after `root_gone` without `SessionEnd` it is `stale`; after `SessionEnd`, `ended`.
-- **pl.live.fold**: folding a session's live evidence line by line through its stored facts equals folding it at once; the stored facts equal the fold over the stored lines after a refold.
-- **pl.live.state-total**: the live view is total, returns `until`, and is constant between `until` instants with no new evidence.
-- **pl.live.wait-not-stall**: a `StopFailure` rate-limit stop is a stall, never waiting.
-- **pl.live.registry-outranks**: a registry `busy` with hook-derived `idle` shows `working`, both kept in the facts.
-- **pl.live.no-text-state**: no live fact, footprint path or task comes from prose or shell-command text; a `bash` call `sed -i x file` adds nothing to the footprint, an `Edit` of `file` does.
-- **pl.live.intervals-replay**: intervals close only on evidence and a refold gives the same bytes.
-- **pl.live.root-gone-prompt**: a root's exit is seen through its pidfd within 100 ms.
-- **pl.live.sampler-proportional**: a sample with no process change writes nothing; with no live roots nothing under `/proc` is read.
-- **pl.live.pid-reuse**: a process or registry line with the same pid but a different start time or boot ID never attaches to the earlier session.
-- **pl.live.footprint-commit**: a commit in the session's worktree that contains files of its footprint takes exactly those files out; files it does not contain stay.
-- **pl.live.channel-pure**: the channel is a function of the act, the live state and the probe; an unconfirmed mechanism is refused naming the harness and never replaced by another channel.
-- **pl.live.mailbox-once**: concurrent claims of one session hand each pending delivery over exactly once.
-- **pl.live.never-mid-tool**: nothing is claimed before a tool runs; a ping reaches a working session at its next tool result or prompt.
-- **pl.live.hosted-survives**: a hosted session whose daemon connection goes away keeps running; a new connection reattaches within 2 s, gets the request nobody answered, and the fixture agent counts every prompt once.
-- **pl.live.handoff-link**: a hand-off starts a new hosted session whose first turn opens with the pack's delivery reference and whose `pack` delivery names the source; `--print` starts nothing.
-- **channel-table-generated**: the channel table above equals the one generated from the harness declarations.
-- **pl.live.broadcast-frozen**: a broadcast ping's recipients are the query's result when it is sent; one assertion, one delivery per recipient.
-- **peers-symmetric**: peers are symmetric at a given `now`.
-- **task-from-explicit-evidence**: a tracker ID in a prompt or an exact tracker claim command creates no task; explicit structured evidence naming the item and claiming session does, and later explicit close or release evidence clears it.
-- **ping-to-working-at-next-hook**: a ping to a working fixture session is injected at its next `PostToolUse` and never earlier.
-- **ping-resumes-once**: a ping to an ended session runs the declared resume command once in the recorded cwd through the fixture harness and records the delivery; re-ingesting the message that held the `@[address]` sends nothing.
-- **ping-to-missing-session**: a ping to a session whose file is gone, with a role, starts a new session of that role recorded as new and linked `reference`; without a role, `not_sent:session_missing`.
-- **alias-rebinding-keeps-recipient**: an alias rebound after a ping leaves the earlier delivery's recipient unchanged.
-- **signal-never-runs-harness** (`sig.trigger-never-starts-agent`): a signal firing addressed to a session never runs a harness command; a notice to a session that is not running is recorded `not_sent:session_not_live`.
-- **unconfirmed-control-refused**: a control whose harness mechanism is not confirmed answers `refused`, `unsupported`, naming the harness and version.
-- **permission-hook-fails-open**: a permission decision made within the hook timeout is returned by the `PermissionRequest` entry; with none, the entry returns nothing and exits 0.
-- **append-visible-quickly**: a hook line appended to a fixture spool appears in `follow` and the change feed within 1 s p95 in `bench` (reported, not asserted in unit tests).
-- **delegations-from-evidence**: on Morrow, `delegations parent:<session>` lists the subagent with instruction, result and cost; a Codex session whose first hook line carries a Claude session ID appears with `how: inherited_env`.

@@ -12,22 +12,22 @@ Measurement options are one query scalar. Quote an option containing commas, for
 - **Unknown is never zero.** Every sum states its known part and how many items it could not count, in the items' own unit. A partial value is a lower bound ("at least"); a missing time is never placed.
 - **One definition per figure, one function per rule.** One cost function prices a response; every other cost is a sum of its results. Surfaces never recompute.
 - **Denominators and grain are part of the answer.** Every rate names its denominator, every count names its unit, and figures from different definitions are labelled not comparable.
-- **Computed, not interpreted.** Counts, sums, durations, joins and statistics over recorded structure are in scope. Labels inferred from prose (work kind, phases, success, abandonment) are not, because they would claim what the records do not show. Ruling, 2026-03-27: "I think 'confidence' stuff is menaningless slop" (cc-queued:14ea730a-aa86-433a-9bba-8be973977d5c@2026-03-27T08:47).
-- **No umbrella category.** Users see fields, units, measures and reports. The code's name for a stored or computed product is *derivation*, and the current generated reference page is [Derived data](derived.md). Ruling, 2026-08-31: "aggressively dissolve the insights concept … there shouldn't be some soprt of separte step called 'insights' in the convergence" (cc-queued:62b956ba-3ea3-4693-8d71-9a36321c37a9@2026-08-31T05:41).
+- **Computed, not interpreted.** Counts, sums, durations, joins and statistics over recorded structure are in scope. Labels inferred from prose (work kind, phases, success, abandonment) are not, because they would claim what the records do not show. (ruling 2026-03-27, cc-queued:14ea730a-aa86-433a-9bba-8be973977d5c@2026-03-27T08:47).
+- **No umbrella category.** Users see fields, units, measures and reports. The code's name for a stored or computed product is *derivation*, and the current generated reference page is [Derived data](derived.md). (ruling 2026-08-31, cc-queued:62b956ba-3ea3-4693-8d71-9a36321c37a9@2026-08-31T05:41).
 - **Measurement is the query language plus named computations.** Anything a pipeline can express is a pipeline. A measure exists only for what pipelines cannot express: windows, forecasts, survival, level changes, transitions, ranking.
 - **Every number reaches every surface the same way,** through the command table; `explain` prints the pipeline behind a report.
-- **Precise accounting with existing libraries.** Ruling, 2026-05-04: "we want to have precise tokenization, token counts, cost tracking, model etc." (cc:c1cf89f2-c4ff-48de-9459-599c2e8d04ff:c6cfe879-70d5-42e4-8913-989d114ce0ff); token counting and cost tracking "should actually be pretty much solved problems" (ruling 2026-06-27, cc:1944721d-4531-41be-8093-13454b62ebd6:cb4115e5-9b91-4d6d-938d-bfe842e10c14).
+- **Precise accounting with existing libraries.** (ruling 2026-05-04, cc:c1cf89f2-c4ff-48de-9459-599c2e8d04ff:c6cfe879-70d5-42e4-8913-989d114ce0ff); token counting and cost tracking "should actually be pretty much solved problems" (ruling 2026-06-27, cc:1944721d-4531-41be-8093-13454b62ebd6:cb4115e5-9b91-4d6d-938d-bfe842e10c14).
 - **Reports are general.** No report is specific to one person's own tools or setup.
 
 ## Rules
 
 ### Validity
 
-Each product declares one validity kind, which decides the evidence it needs before it ships. Ruling, 2026-10-27: "construct validity very important, and the way things are converged, avoiding the issues of old codebase where these things were some weid separate stage" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:2f5be8f0-e636-4b96-860c-1c1ca4f3e930).
+Each product declares one validity kind, which decides the evidence it needs before it ships. (ruling 2026-10-27, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:2f5be8f0-e636-4b96-860c-1c1ca4f3e930).
 
 | Kind | What it is | Evidence required before it ships |
 |---|---|---|
-| **exact** | a count, sum, join or ordering over recorded fields; its name states its definition | laws checked by property tests, and hand-checked values on Morrow |
+| **exact** | a count, sum, join or ordering over recorded fields; its name states its definition | properties checked by property tests, and hand-checked values on Morrow |
 | **parameterized** | exact once a declared constant is fixed | as exact, plus the constant printed wherever the value is shown, and a sensitivity figure (the value at the constant and at one other value on a real-shaped sample) |
 | **extracted** | read from tool output or command text by declared per-tool patterns | coverage (share of candidates recognized) and precision and recall on a hand-checked real sample, with `n` and date, recorded in the declaration |
 | **judged** | a label, segment or ranking standing for something the records do not state | agreement with operator-labelled examples or a structural ground truth, with `n`, recorded before shipping; without it the product is not exposed |
@@ -36,14 +36,14 @@ Labelled samples are private judgment notes and kept results in the operator's a
 
 ### Grain and storage
 
-Analyses are computed when their data arrives, and at read only when that cannot be done accurately. Ruling, 2026-06-27: "we are supposed to materialize such analyses into proper schema we have. I mean, basically compute these when we read the underlying data. not dynamically (ofc if it cant be done (accurately, correctly))" (cc-queued:1944721d-4531-41be-8093-13454b62ebd6@2026-06-27T17:03).
+Analyses are computed when their data arrives, and at read only when that cannot be done accurately. (ruling 2026-06-27, cc-queued:1944721d-4531-41be-8093-13454b62ebd6@2026-06-27T17:03).
 
 - **Stored grains are row and session only.** A stored product is a column on a parsed row (`message`, `tool_call`, `event`), or a session column or session-keyed table.
 - **Session-grain values are stored as their data arrives** when a query filters, sorts or groups on them across the archive, or when they are costly per read (graph walks, interval unions).
 - **Grouped figures are computed at read** from stored session rows: logical session, day, week, repository, project. Grouping stored rows is exact, so a late import, a re-parse or a newly arrived link changes them with nothing stale to invalidate. A grouped figure measured too slow at read may be stored as well, keyed by session (for example by session and UTC quarter hour), so it changes with its session; nothing is keyed by day, repository or root.
 - **Read-time products** are those that depend on the clock (live state, windows, forecasts, "quiet for 6 hours"), on a setting (logical day, plan) or on an arbitrary selection (aggregates, comparisons, rankings), and per-turn or per-pair computations no archive-wide query sorts on.
 - **Stored products read only parsed rows,** never assertions, settings or the clock, so a note or a setting change never makes a stored product stale.
-- **Storing a product does not make it citable.** Citation is served by [kept results](#citation-and-figures). Whether a product that is neither stored nor a field is best served as a named query is decided per product. Ruling, 2026-10-27, on that rule: "this might not be universal neccessarily" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:109d583d-02c8-43d4-9ea0-0db79c3f5ed4).
+- **Storing a product does not make it citable.** Citation is served by [kept results](#citation-and-figures). Whether a product that is neither stored nor a field is best served as a named query is decided per product. (ruling 2026-10-27, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:109d583d-02c8-43d4-9ea0-0db79c3f5ed4).
 
 **Two storage forms:**
 
@@ -174,13 +174,13 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 
 **Active path.** The path from the provider's newest marked leaf to the root. With no valid marker the value is NULL (unknown, read as on the path). Abandoned branches were run and billed, so usage counts both paths while message counts follow the active one. Evidence: Morrow #7.
 
-**Session columns from records.** Kind, provider title, working directories, branch, harness version and start, merged from every input's session record by order-independent rules. Law: the result is independent of input order.
+**Session columns from records.** Kind, provider title, working directories, branch, harness version and start, merged from every input's session record by order-independent rules. The result is independent of input order.
 
 **Display title.** For a session whose records name no title: the first line of the first human prose prompt. The repository is shown beside it, never inside it. NULL when there is no human prose prompt; never written out as a recorded title.
 
 **Working directories and repository.** One row per (session, directory) in first-use order: the directory, the longest repository lookup at or above it (by whole path components), the repository identity (its root commit), a display name, and `project` (the repository name, else the directory under `/<…>/project/<name>`, else NULL). A directory with no lookup has NULL identity and counts as "no repository", never as another repository. `repo:X` matches any directory of the session; `group by project` counts a two-project session under each. Cross-session cause: a new or changed repository lookup. Evidence: coverage on a real archive (share of agent sessions with an identity).
 
-**Logical session.** `root` is the session reached by walking parent links of kind `continuation`, `fork`, `spawn` and `resume` to a session with no such parent; `depth` counts the steps; `reference` links never join. A pending link (the parent is not in the archive) stops the walk with `root_pending` set, instead of a guess. Links come only from source markers ([sessions.md](sessions.md#session-links)). Stored because `group by root` and logical counts run over the whole archive. Laws: the root is independent of link arrival order; Morrow #2, #3 and #4 share root #2, and #5 and #6 share #5.
+**Logical session.** `root` is the session reached by walking parent links of kind `continuation`, `fork`, `spawn` and `resume` to a session with no such parent; `depth` counts the steps; `reference` links never join. A pending link (the parent is not in the archive) stops the walk with `root_pending` set, instead of a guess. Links come only from source markers ([sessions.md](sessions.md#session-links)). Stored because `group by root` and logical counts run over the whole archive. The root is independent of link arrival order; Morrow #2, #3 and #4 share root #2, and #5 and #6 share #5.
 
 **Session counts.** Messages, human prompts, human commands, words, words per author, thinking messages, compactions, tool calls, errors and calls by action, over the session's own rows. Stored as session columns, because they are fields sorted and grouped across the archive. A threshold such as "substantive" messages is stated in the query (`messages where words>=3`), never stored.
 
@@ -233,7 +233,7 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 - **Completeness travels with the value:** `{nusd, complete, priced, unpriced}`, one of `complete`, `partial` (a lower bound) or `unknown` (null). Query fields `cost`, `cost_complete`, `unpriced_responses`; `agg sum:cost` reports `partial_cost` and `unknown_cost`.
 - A provider-reported zero is a measured zero. Each response of a multi-model session is priced under its own model. A session view shows API-equivalent and provider-reported side by side, with their difference labelled "not in transcript".
 
-**Message cost.** One function prices a response from its lanes and its model's catalog row at its time. Unknown when any billed lane is unreported or the model is unpriced. A row column whose version is the catalog hash. Law: every stored message cost equals the function applied to its usage.
+**Message cost.** One function prices a response from its lanes and its model's catalog row at its time. Unknown when any billed lane is unreported or the model is unpriced. A row column whose version is the catalog hash. Every stored message cost equals the function applied to its usage.
 
 **Session cost.** `own` (the sum of message cost over the own population), `own_unpriced`, `complete` (no unpriced response; for Codex, reconciled), `tree` (own plus every session below through `spawn` links), `tree_unpriced` and `tree_missing_children` (children a spawning call names that are not in the archive, with those calls' references). A partial value shows "at least". A child belongs to exactly one tree. Cross-session cause: a change in a session marks the tree cost of each ancestor. Fields `cost`, `tree_cost`, `subagent_cost` (tree minus own, partial if either is) and `cost_complete`. Continuations, forks and resumes are not trees: a logical session's cost is the sum of its sessions' own costs, once each. Stored so that sorting by cost and tree sums are indexed reads.
 
@@ -350,44 +350,3 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 An empty selection gives zero counts with outcome `empty`; a failed component gives `degraded` with that component's error while the other columns stay. Any report can be saved and kept; a kept report records its pipelines, scope, clock, unknowns and derivation versions, and renders to a file through [`read --to`](reading.md#writing-out) like any kept result.
 
 **Embeddings.** A vector per message or chunk, used as a ranking score, never as a filter. The derive consumer embeds new or changed text while the `embeddings` setting is on; the setting carries the spend budget ([search.md](search.md#semantic-ranking)) and is the user's one authorization. Model calls are off by default; stored and purchased vectors are kept and used. Judged: recall at 10 on known pairs before it is relied on. Search behaviour and providers are search.md's.
-
-## Laws
-
-Oracles: Morrow facts computed by hand ([testing.md](testing.md#morrow)), synthetic series, property tests.
-
-- **every-product-declared**: every stored table has a declaration and an entry in the derived-data reference; every `Extracted` or `Judged` declaration has a recorded figure; every `Exact` or `Parameterized` one names a test.
-- **stored-products-read-parsed-rows-only**: each derivation run with the assertion, setting and clock inputs empty and full produces the same output.
-- **version-bump-required**: changing a derivation's rules without bumping its version fails its golden test; changing a shipped table changes its hash.
-- **late-import-regroups**: a late import of a session in a past week changes that week's grouped figures at the next read, with no stale value served.
-- **late-link-converges**: a link arriving late updates the logical-session root of the child's subtree and the session cost of its ancestors in the link's transaction.
-- **behind-sessions-pending**: an aggregate over a selection with behind sessions reports them as `pending`; a single-session read of a behind session equals the value after derivation.
-- **derive-crash-leaves-marks**: a crash during derivation leaves marks behind and no partial product visible.
-- **morrow-cost**: archive own API-equivalent cost is $5.86 known, with 4 session totals unknown; #4's 18 inherited messages add nothing.
-- **duplicate-route-sums-unchanged**: adding a duplicate route of a session leaves every own sum unchanged; an off-path branch's response is in own usage and not in message counts.
-- **usage-equals-sum**: `sessions where Q | agg sum:cost` equals `measure usage` over Q in exact nano-USD; every stored message cost equals the cost function of its usage.
-- **prices-effective-dated**: rows dated 2026-09-01 and 2026-10-01 price a 2026-09-30 response by the first and a 2026-10-01 response by the second; an override changes the hash and reprices exactly the affected messages; every shipped row has a source.
-- **money-kinds-never-added**: no code adds two money kinds (separate types); a provider-reported zero is a measured zero.
-- **tree-cost**: the tree cost of Morrow #2 is 3.01; a tree with a missing child reports `tree_missing_children ≥ 1` with the spawning call's reference.
-- **counted-tokens-labelled**: counted tokens are never summed with reported tokens without the `counted` label, and price only to `estimated`.
-- **codex-reconciles**: a Codex fixture whose reports reconcile has complete usage; one with an unconfirmed report is partial, with its gap.
-- **codex-windows**: a Codex fixture gives reported windows, burn between readings 30 minutes apart, and exhaustion inside the window.
-- **status-line-burn**: readings of 15% then 19% five minutes apart give 48% per hour and its exhaustion time.
-- **spend-at-limit-hits**: a refusal-only fixture shows token burn, and spend at past limit hits from two earlier rejected windows with `n = 2`.
-- **windows-converge**: a late import re-derives later inferred windows; a reset drop restarts burn; a first reading of 0% or 100% never divides by zero.
-- **cycle-outlook**: linear and trailing-mean projections handle anchor day 31 and zero elapsed time; subscription share over two cycles sums back to the plan price; a mid-cycle plan change splits the cycle; observations after the as-of instant are excluded.
-- **time-lanes-sum-to-wall**: Morrow #2 has a 75-minute wall span, and its time lanes match the hand-computed split and sum exactly to it.
-- **long-tool-call-counts**: a 12-minute shell call counts 12 minutes of tool time where message clustering drops that gap.
-- **overlapping-calls**: two overlapping 10-minute calls give sum 20, union 15, overlap 5.
-- **tool-results-not-human**: a tool-result row never counts as human activity.
-- **daily-series**: Morrow `analyze --by day` equals its golden; a step series (10 days at 1, 10 at 5) gives one level change at day 11; an incomplete day breaks baselines on both sides; a daylight-saving spring day is one row.
-- **morrow-tools**: Morrow has 37 calls with 2 errors, and fail-then-pass pairs for `cargo test` (one edit to `src/parse.rs`) and `cargo clippy`.
-- **failure-rate-bounds**: `agg failure_rate` over 70 ok, 10 error and 20 unknown gives `[0.10, 0.30]`; an exit-code-only failure counts only under the exit definition.
-- **survival-steps**: Kaplan-Meier steps and censoring match hand values; time to pass uses the test class.
-- **one-command-classifier**: no other table or pattern list maps command text to a class or a check, and no brief, advisory or notice code path reads `command_class`.
-- **class-figures-labelled**: every figure grouped by `command_class` carries the extracted label and its precision figure; with no precision recorded, the figure is refused with that reason.
-- **root-order-independent**: logical-session roots are independent of link arrival order; a `reference` link never changes a root; a resume joins its parent's logical session.
-- **logical-by-default**: report `sessions` counts logical sessions by default and physical sessions with `--physical`; money is the same either way.
-- **facets-count-once**: a session counts once per value; tag case folds; the IDF of a value present everywhere is 0.
-- **unknown-never-zero**: a compare of Claude Code against Codex reports Codex cost as unknown or reconciled, never 0; an origin without tool calls shows "no tool data"; a harness that records no intervention markers shows "not recorded".
-- **nearest-rank**: `agg p50` equals the reference nearest-rank median; `corr` reports pairs and missing pairs.
-- **related-scores-everything**: `related:` scores every eligible session before paging and reports each reason in `why`; it is not exposed until its recall figure is recorded.

@@ -83,7 +83,7 @@ The testkit and query tests read these files through the real parsers.
 
 ## Times the examples use
 
-Local times of the records, as `build.py` writes them. Terminal output shows
+Local times of the records. Terminal output shows
 `HH:MM`, cut off rather than rounded.
 
 **The examples' clock** is 2026-10-08 12:00 local (10:00 UTC, as in
@@ -172,9 +172,9 @@ that each note is written after its target.
 
 ## Parents set (the Claude-Code-only home)
 
-`build.py` also writes a second home, `claude-code-only/`, holding the
-Claude Code sessions #1–#4 unchanged plus the harder parent cases below
-(`spec/model.md`): copies, late parents, continuations and forks. None of
+A second home, the parents set, holds the Claude Code sessions #1–#4
+(laid out from `claude-code/`) plus the harder parent cases in
+`claude-code-only/`: copies, late parents, continuations and forks. None of
 these sessions are in the main archive, so the main totals above are
 unchanged. Time: 2026-10-08, local. "L1" etc. are names used here only.
 
@@ -228,7 +228,7 @@ Things the examples rely on:
 
 ## Live set (hook and process spools)
 
-`build.py` also writes a third home, `live/`, for the live-state tests:
+A third home, `live/`, serves the live-state tests:
 hook spool files with process identities and
 job variables, a process spool, and minimal transcripts for three sessions.
 None are in the main archive. Clock: 2026-10-09 15:00 local. Boot ID

@@ -87,7 +87,6 @@ fn a_restarted_consumer_redelivers_applied_positions_without_changing_them() {
     );
 }
 
-/// law: lifecycle-reaches-index
 #[test]
 fn an_event_erased_before_this_index_read_it_is_recorded_as_tombstoned() {
     let dir = tempfile::tempdir().unwrap();

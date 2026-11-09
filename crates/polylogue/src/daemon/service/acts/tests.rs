@@ -51,7 +51,6 @@ fn claim_ids(d: &test_daemon::TestDaemon) -> Vec<String> {
         .collect()
 }
 
-/// law: pl.live.mailbox-once
 /// Concurrent claims of one session hand each pending delivery over
 /// exactly once and lower the flag.
 #[test]
@@ -118,7 +117,6 @@ fn a_ping_with_no_channel_is_refused_and_recorded() {
     assert!(!crate::mailbox::raised(running.daemon.acts.mail(), &s1()));
 }
 
-/// law: pl.live.broadcast-frozen
 /// A broadcast resolves its query once, when sent: one ping assertion
 /// about each recipient and one delivery each.
 #[test]
@@ -209,7 +207,6 @@ fn hosted_codex(d: &test_daemon::TestDaemon) -> tempfile::TempDir {
     fixture
 }
 
-/// law: sig.trigger-never-starts-agent
 /// A notice to a session that is not running is recorded `not_sent` with
 /// sender `signal` and event `notice`, and nothing resumes the session.
 #[test]
@@ -240,7 +237,6 @@ fn a_notice_to_a_stopped_session_is_not_sent_and_starts_nothing() {
     assert!(!crate::mailbox::raised(d.daemon.acts.mail(), &s1()));
 }
 
-/// law: pl.live.handoff-link
 /// A hand-off starts a new hosted session in another harness, never a
 /// resume or fork of the source: its first turn opens with the pack's
 /// delivery reference, and the `pack` delivery names the source it was
