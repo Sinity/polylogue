@@ -85,7 +85,7 @@ fn latest_request_keeps_unknown_authorship_and_skips_injection_commands_and_old_
         (
             "test:injected",
             "harness",
-            "injected_context",
+            "harness",
             true,
             "injected context is not a request",
         ),

@@ -319,7 +319,7 @@ fn previous_indices_include_hidden_messages_in_own_and_parent_selections() {
     let conn =
         crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP).unwrap();
     conn.execute(
-        "UPDATE message SET role='unparseable',written_by='unknown' WHERE id='claude-code:a-1'",
+        "UPDATE message SET role='system',written_by='unknown' WHERE id='claude-code:a-1'",
         [],
     )
     .unwrap();
