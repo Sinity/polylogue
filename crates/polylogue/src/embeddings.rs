@@ -6,7 +6,9 @@
 //! Settings (`polylogue setting KEY VALUE`):
 //! - `embed.provider`: `local` or `voyage`; unset means embeddings are off;
 //! - `embed.endpoint`: default `http://127.0.0.1:11434/v1` (local) or
-//!   `https://api.voyageai.com/v1`;
+//!   `https://api.voyageai.com/v1`; for Voyage it must stay on Voyage's
+//!   origin, because the Voyage key is sent nowhere else; for the local
+//!   provider it must be a loopback address, so text never leaves the machine;
 //! - `embed.model`: default `qwen3-embedding:0.6b` (local) or `voyage-4`;
 //! - `embed.price_per_mtok`: dollars per million tokens, for the preview;
 //!   unset for a paid provider means the cost is shown as unknown.
@@ -56,6 +58,35 @@ pub struct Context<'a> {
     pub operation: &'a std::sync::Arc<crate::operation::Context>,
 }
 
+/// The only origin the Voyage key is ever sent to.
+const VOYAGE_ORIGIN: &str = "https://api.voyageai.com";
+
+/// Whether `endpoint` is on Voyage's own origin (scheme, host and port).
+fn is_voyage_origin(endpoint: &str) -> bool {
+    match (
+        reqwest::Url::parse(endpoint),
+        reqwest::Url::parse(VOYAGE_ORIGIN),
+    ) {
+        (Ok(endpoint), Ok(voyage)) => endpoint.origin() == voyage.origin(),
+        _ => false,
+    }
+}
+
+/// Whether `endpoint` names this machine (a loopback address or `localhost`).
+fn is_loopback(endpoint: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => host.eq_ignore_ascii_case("localhost"),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderKind {
     Voyage,
@@ -99,6 +130,18 @@ impl Provider {
             None => endpoint.into(),
             _ => return Err("invalid typed embed.endpoint".into()),
         };
+        if kind == ProviderKind::Local && !is_loopback(&endpoint) {
+            return Err(format!(
+                "embed.endpoint {endpoint} is not on this machine; the local provider \
+                 only sends text to a loopback address"
+            ));
+        }
+        if kind == ProviderKind::Voyage && !is_voyage_origin(&endpoint) {
+            return Err(format!(
+                "embed.endpoint {endpoint} is not Voyage's origin ({VOYAGE_ORIGIN}); \
+                 the Voyage key is only sent to Voyage"
+            ));
+        }
         let model = match settings
             .get("embed.model")
             .map_err(|error| error.to_string())?
@@ -193,6 +236,14 @@ impl Provider {
         let client = client.build().map_err(failed)?;
         let mut request = client.post(&url).json(&body);
         if self.kind == ProviderKind::Voyage {
+            // The key goes to Voyage and nowhere else, whatever endpoint the
+            // provider was built with.
+            if !is_voyage_origin(&self.endpoint) {
+                return Err(EmbedError::Config(format!(
+                    "refusing to send the Voyage key to {}; it only goes to {VOYAGE_ORIGIN}",
+                    self.endpoint
+                )));
+            }
             let key = self
                 .credentials
                 .voyage
@@ -202,6 +253,12 @@ impl Provider {
                     EmbedError::Config("the startup Voyage credential is unavailable".into())
                 })?;
             request = request.bearer_auth(key);
+        }
+        if self.kind == ProviderKind::Local && !is_loopback(&self.endpoint) {
+            return Err(EmbedError::Config(format!(
+                "refusing to send text to {}; the local provider only uses loopback addresses",
+                self.endpoint
+            )));
         }
         let response = request.send().await.map_err(failed)?;
         let code = response.status().as_u16();

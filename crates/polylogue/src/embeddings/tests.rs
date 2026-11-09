@@ -15,7 +15,7 @@ mod cancellation;
 #[test]
 fn provider_consumes_typed_settings_and_captured_credentials() {
     use polylogue_model::settings::{self, Current, Owner, Snapshot};
-    let snapshot = |provider: &str| {
+    let snapshot_with = |provider: &str, endpoint: Option<&str>| {
         Snapshot::new(
             settings::CATALOG
                 .iter()
@@ -28,10 +28,10 @@ fn provider_consumes_typed_settings_and_captured_credentials() {
                     owner: "polylogue".into(),
                     value: settings::current(
                         spec.key,
-                        if spec.key == "embed.provider" {
-                            Some(provider)
-                        } else {
-                            None
+                        match spec.key {
+                            "embed.provider" => Some(provider),
+                            "embed.endpoint" => endpoint,
+                            _ => None,
                         },
                         Owner::Standalone,
                     )
@@ -42,6 +42,7 @@ fn provider_consumes_typed_settings_and_captured_credentials() {
                 .collect::<Vec<_>>(),
         )
     };
+    let snapshot = |provider: &str| snapshot_with(provider, None);
     let credentials = Credentials::new(Some("synthetic-secret".into()));
     assert!(!format!("{credentials:?}").contains("synthetic-secret"));
     assert!(
@@ -60,6 +61,21 @@ fn provider_consumes_typed_settings_and_captured_credentials() {
     assert_eq!(voyage.model, "voyage-4");
     assert!(!format!("{voyage:?}").contains("synthetic-secret"));
     assert!(Provider::from_settings(&Snapshot::new(Vec::new()), &credentials).is_err());
+    // A Voyage provider never points its key at another origin.
+    let elsewhere = Provider::from_settings(
+        &snapshot_with("voyage", Some("http://127.0.0.1:11434/v1")),
+        &credentials,
+    )
+    .unwrap_err();
+    assert!(elsewhere.contains("not Voyage's origin"), "{elsewhere}");
+    assert!(
+        Provider::from_settings(
+            &snapshot_with("voyage", Some("https://api.voyageai.com/v1")),
+            &credentials,
+        )
+        .unwrap()
+        .is_some()
+    );
 }
 
 #[test]
@@ -89,3 +105,62 @@ fn embedding_selection_refuses_aggregate_and_incomplete_session_results() {
 }
 
 mod batch;
+
+#[test]
+fn only_voyages_own_origin_counts_as_voyage() {
+    assert!(is_voyage_origin("https://api.voyageai.com/v1"));
+    assert!(is_voyage_origin("https://api.voyageai.com:443/v1/"));
+    assert!(!is_voyage_origin("http://api.voyageai.com/v1"));
+    assert!(!is_voyage_origin("https://api.voyageai.com.example.net/v1"));
+    assert!(!is_voyage_origin("https://api.voyageai.com:8443/v1"));
+    assert!(!is_voyage_origin("http://127.0.0.1:11434/v1"));
+    assert!(!is_voyage_origin("not a url"));
+}
+
+#[test]
+fn a_voyage_provider_pointed_elsewhere_sends_no_key() {
+    use std::io::Read;
+    use std::net::TcpListener;
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let provider = Provider {
+        kind: ProviderKind::Voyage,
+        endpoint: format!("http://{}/v1", listener.local_addr().unwrap()),
+        model: "voyage-4".into(),
+        price_per_mtok: None,
+        credentials: Credentials::new(Some("synthetic-voyage-key".into())),
+    };
+    let error = provider.embed(&["text".into()], false).unwrap_err();
+    assert!(matches!(error, EmbedError::Config(_)), "{error:?}");
+    // The refusal happens before any connection: nothing reached the
+    // listener, so no request could have carried the key.
+    match listener.accept() {
+        Ok((mut stream, _)) => {
+            let mut received = String::new();
+            let _ = stream.read_to_string(&mut received);
+            panic!("the provider connected to a non-Voyage origin: {received:?}");
+        }
+        Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock),
+    }
+}
+
+#[test]
+fn the_local_provider_only_uses_loopback_addresses() {
+    assert!(is_loopback("http://127.0.0.1:11434/v1"));
+    assert!(is_loopback("http://127.8.9.10:80/v1"));
+    assert!(is_loopback("http://[::1]:11434/v1"));
+    assert!(is_loopback("http://localhost:11434/v1"));
+    assert!(!is_loopback("http://192.168.1.5:11434/v1"));
+    assert!(!is_loopback("https://example.com/v1"));
+    assert!(!is_loopback("http://localhost.example.com/v1"));
+    assert!(!is_loopback("not a url"));
+    let provider = Provider {
+        kind: ProviderKind::Local,
+        endpoint: "http://192.0.2.1:11434/v1".into(),
+        model: "synthetic".into(),
+        price_per_mtok: Some(0.0),
+        credentials: Credentials::new(None),
+    };
+    let error = provider.embed(&["private text".into()], false).unwrap_err();
+    assert!(matches!(error, EmbedError::Config(_)), "{error:?}");
+}

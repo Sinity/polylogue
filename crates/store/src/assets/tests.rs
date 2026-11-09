@@ -291,3 +291,58 @@ fn import_members_and_asset_rows_move_their_import_counters() {
         (Some(2), Some(2))
     );
 }
+
+#[test]
+fn an_identical_reimport_leaves_the_import_counters_unchanged() {
+    let conn = Connection::open_in_memory().unwrap();
+    crate::schema::ensure_index(&conn).unwrap();
+    let counter = || -> Option<i64> {
+        conn.query_row(
+            "SELECT changed FROM import_change WHERE import_id='import-a'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap()
+    };
+    let member = ObservedMember {
+        observation: "one".into(),
+        input: "input-a".into(),
+        membership: crate::ImportMember {
+            version: 1,
+            import_id: "import-a".into(),
+            member: "one.bin".into(),
+            authorship: None,
+            format: None,
+        },
+    };
+    // First sight counts; seeing the same member again does not.
+    project_member(&conn, &member, None, None).unwrap();
+    assert_eq!(counter(), Some(1));
+    project_member(&conn, &member, None, None).unwrap();
+    assert_eq!(counter(), Some(1));
+    // Learning a source identity is a real change.
+    project_member(&conn, &member, Some("source-1"), None).unwrap();
+    assert_eq!(counter(), Some(2));
+    project_member(&conn, &member, Some("source-1"), None).unwrap();
+    assert_eq!(counter(), Some(2));
+
+    // Asset metadata and sidecars: only a different stored row changes.
+    let row = |name: &'static str| MetadataRow {
+        input: "input-a",
+        sidecar: "sidecar.json",
+        ordinal: 0,
+        source_id: "source-1",
+        name: Some(name),
+        media_type: Some("image/png"),
+        size: Some("10".into()),
+    };
+    assert!(put_metadata(&conn, &row("a.png")).unwrap());
+    assert!(!put_metadata(&conn, &row("a.png")).unwrap());
+    assert!(put_metadata(&conn, &row("b.png")).unwrap());
+    assert!(put_sidecar(&conn, "input-a", "sidecar.json", "v1", None).unwrap());
+    assert!(!put_sidecar(&conn, "input-a", "sidecar.json", "v1", None).unwrap());
+    assert!(put_sidecar(&conn, "input-a", "sidecar.json", "v1", Some("bad json")).unwrap());
+    assert!(reset_metadata(&conn, "input-a", "sidecar.json").unwrap());
+    assert!(!reset_metadata(&conn, "input-a", "sidecar.json").unwrap());
+}
