@@ -384,7 +384,8 @@ fn a_file_reached_through_a_linked_directory_is_one_location() {
     let real = dir.path().join("config/claude/projects/p");
     std::fs::create_dir_all(&real).unwrap();
     std::fs::write(real.join("s.jsonl"), b"{}\n").unwrap();
-    std::os::unix::fs::symlink(dir.path().join("config/claude"), dir.path().join("linked")).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("config/claude"), dir.path().join("linked"))
+        .unwrap();
     let through_link = dir.path().join("linked/projects/p/s.jsonl");
     let direct = real.join("s.jsonl");
     assert_eq!(
