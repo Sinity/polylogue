@@ -274,6 +274,7 @@ impl Compiler<'_> {
             notes: vec![],
             incomplete: vec![],
             why: vec![],
+            why_defaults: vec![],
             why_of: format!(
                 "SELECT count(*) FROM source_kept_result k, json_each(k.rows_json, '$.{part}') j WHERE k.id={id_param}"
             ),

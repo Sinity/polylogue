@@ -46,6 +46,9 @@ pub struct Selection {
     pub undated: bool,
     /// Only sessions of these origins (`claude-code`, `codex`, …).
     pub origins: Option<Vec<String>>,
+    /// The selected sessions include the subagent sessions they spawned, at
+    /// any depth: a logical session's work is all of its sessions' work.
+    pub subagents: bool,
 }
 
 impl Selection {
@@ -115,10 +118,17 @@ impl Selection {
             // One parameter holds every key, however many sessions the
             // query selected.
             params.push(serde_json::Value::from(pks.clone()).to_string().into());
-            clauses.push(format!(
-                "{column} IN (SELECT value FROM json_each(?{}))",
-                params.len()
-            ));
+            let n = params.len();
+            clauses.push(if self.subagents {
+                format!(
+                    "{column} IN (WITH RECURSIVE logical(pk) AS (SELECT value FROM json_each(?{n}) \
+                     UNION SELECT l.child_pk FROM link l JOIN session lp ON lp.id = l.parent_id \
+                     JOIN logical ON logical.pk = lp.pk \
+                     WHERE l.kind = 'subagent' AND l.child_pk IS NOT NULL) SELECT pk FROM logical)"
+                )
+            } else {
+                format!("{column} IN (SELECT value FROM json_each(?{n}))")
+            });
         }
     }
 }

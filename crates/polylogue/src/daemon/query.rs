@@ -351,6 +351,7 @@ fn answer(
                         reader,
                         &m.what,
                         selection.sessions,
+                        (m.since, m.until),
                         program.clock.now.as_millisecond(),
                         day,
                         None,
@@ -419,6 +420,7 @@ fn answer(
             reader,
             &m.what,
             sessions,
+            (m.since, m.until),
             program.clock.now.as_millisecond(),
             day,
             population,
@@ -464,7 +466,7 @@ fn answer(
             .iter()
             .map(|part| format!("incomplete: {part}")),
     );
-    let why = if why_asked && count == 0 {
+    let why = if why_asked {
         polylogue_store::read::limit::ReadLimit::set_stage("explanation counts");
         Some(why(reader, program, &params)?)
     } else {
@@ -609,6 +611,9 @@ pub(crate) fn select_usage(
     let sessions = with_similarity(reader, program, near, select)?;
     Ok(polylogue_store::measure::Selection {
         sessions,
+        since: m.since,
+        until: m.until,
+        subagents: true,
         ..Default::default()
     })
 }

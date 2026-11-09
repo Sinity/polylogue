@@ -23,7 +23,8 @@ impl<'a> Compiler<'a> {
             }
             _ => return Err(not_built("this shared query source")),
         };
-        let mut where_sql: Vec<String> = self.defaults(&scope, &top)?;
+        let applied = self.applied_defaults(&scope, &top)?;
+        let mut where_sql: Vec<String> = applied.iter().map(|(_, sql)| sql.clone()).collect();
         let defaults_only = where_sql.clone();
         if let Some(input) = &self.input_rows {
             let key = scope.a.expand(units::spec(scope.unit).key);
@@ -152,6 +153,8 @@ impl<'a> Compiler<'a> {
                         population_sql: String::new(),
                         selection_sql: String::new(),
                         everything: wheres.is_empty(),
+                        since: None,
+                        until: None,
                     });
                 }
                 TransformKind::Matches => {
@@ -353,6 +356,7 @@ impl<'a> Compiler<'a> {
             })
             .collect();
         if let Some(measure) = &mut measure {
+            (measure.since, measure.until) = self.session_window;
             measure.selection_sql = sql.clone();
             measure.population_sql = format!(
                 "SELECT {s}.pk AS _pk FROM session {s} WHERE {defaults}{parameters}",
@@ -369,6 +373,25 @@ impl<'a> Compiler<'a> {
             "{ctes}SELECT count(*) FROM {from} WHERE {}",
             and_all(&defaults_only)
         );
+        let why_defaults = applied
+            .iter()
+            .enumerate()
+            .map(|(i, (describe, _))| {
+                let others: Vec<String> = defaults_only
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .map(|(_, sql)| sql.clone())
+                    .collect();
+                WhyClause {
+                    clause: describe.clone(),
+                    sql: format!(
+                        "{ctes}SELECT count(*) FROM {from} WHERE {}",
+                        and_all(&others)
+                    ),
+                }
+            })
+            .collect();
         let ranked = self.ranking().is_some();
         let counts_near = shape == Shape::Rows && self.near_rank.is_some();
         let page_size =
@@ -429,6 +452,7 @@ impl<'a> Compiler<'a> {
             incomplete: self.incomplete,
             why,
             why_of,
+            why_defaults,
             page_size,
             counts_near,
             near: self.near,
@@ -504,16 +528,39 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         top: &[Condition],
     ) -> Result<Vec<String>, QueryError> {
+        Ok(self
+            .applied_defaults(scope, top)?
+            .into_iter()
+            .map(|(_, sql)| sql)
+            .collect())
+    }
+
+    /// The defaults a unit binds with what each says, dropped by a top-level
+    /// condition naming their field.
+    pub(super) fn applied_defaults(
+        &mut self,
+        scope: &RowContext,
+        top: &[Condition],
+    ) -> Result<Vec<(String, String)>, QueryError> {
         // OR and NOT keep the outer defaults: only top-level ANDs expand.
         let bound = self.saved_defaults(scope, top)?;
         let named = named_fields(&bound, scope.unit);
-        let reference = bound.iter().any(|c| self.is_reference(c, scope.unit));
+        let row_reference = bound
+            .iter()
+            .any(|c| self.is_reference(c, scope.unit) && !self.names_a_session(c, scope.unit));
+        let session_reference = bound.iter().any(|c| self.names_a_session(c, scope.unit));
         Ok(units::spec(scope.unit)
             .defaults
             .iter()
-            .filter(|d| !(d.unless_reference && reference))
+            .filter(|d| !(d.unless_reference && row_reference))
+            .filter(|d| !(d.unless_reference && session_reference && d.unless.contains(&"hidden")))
             .filter(|d| !d.unless.iter().any(|f| named.contains(*f)))
-            .map(|d| d.sql.render(&scope.a, self.opts.clock.now.as_millisecond()))
+            .map(|d| {
+                (
+                    d.describe(),
+                    d.sql.render(&scope.a, self.opts.clock.now.as_millisecond()),
+                )
+            })
             .collect())
     }
 

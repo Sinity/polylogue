@@ -498,3 +498,109 @@ fn stored_products_declare_validity_and_executable_evidence() {
         include_str!("../../../../docs/derived.md")
     );
 }
+
+/// A subagent forked with its parent's context: its first user message is
+/// the harness's fork instructions, and its metadata names the task.
+fn forked_subagent(w: &mut WriterArchive, description: Option<&str>) {
+    use polylogue_model::{Event, Output, TimeQuality};
+    w.write("parent", prose("parent", 1, 1_000, "Plan the migration"));
+    let child = sid("agent-fork");
+    let messages = prose(
+        "agent-fork",
+        1,
+        2_000,
+        "<fork-boilerplate>\nYou are a worker fork.\n</fork-boilerplate>\nRun the audit",
+    );
+    let mut events = vec![Event {
+        session: Some(child.clone()),
+        kind: "fork_context".into(),
+        at: None,
+        at_quality: TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
+        after: None,
+        range: Some((0, 1)),
+        data: json!({"type":"fork-context-ref","parentSessionId":"parent"}),
+    }];
+    if let Some(description) = description {
+        events.push(Event {
+            session: Some(child.clone()),
+            kind: "subagent_meta".into(),
+            at: None,
+            at_quality: TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
+            after: None,
+            range: Some((1, 2)),
+            data: json!({"agentType":"fork","description":description}),
+        });
+    }
+    let output = Output {
+        sessions: vec![Session::new(child.clone(), SessionKind::Subagent)],
+        messages: messages
+            .into_iter()
+            .enumerate()
+            .map(|(i, message)| polylogue_model::MessageRow {
+                offset: i as u64,
+                end: i as u64 + 1,
+                message,
+            })
+            .collect(),
+        links: vec![polylogue_model::Link {
+            kind: polylogue_model::LinkKind::Spawn,
+            parent: sid("parent"),
+            child,
+            at: Some(polylogue_model::MessageId::parse("claude-code:parent-p1").unwrap()),
+            call_id: None,
+            evidence: "fork-context-ref".into(),
+        }],
+        events,
+        ..Output::default()
+    };
+    w.write_output(
+        "input-agent-fork",
+        "claude-code",
+        "/p/agent-fork",
+        output,
+        2,
+    );
+    w.writer.derive().unwrap();
+}
+
+#[test]
+fn fork_title_from_meta_description() {
+    let mut w = WriterArchive::new();
+    forked_subagent(&mut w, Some("Audit the identity schemes"));
+    assert_eq!(
+        one(
+            &w,
+            "SELECT derived_title FROM session WHERE id = 'claude-code:agent-fork'"
+        ),
+        json!({"derived_title": "Audit the identity schemes"})
+    );
+    // Without metadata the fork instructions are still never the title.
+    let mut w = WriterArchive::new();
+    forked_subagent(&mut w, None);
+    assert_eq!(
+        one(
+            &w,
+            "SELECT derived_title FROM session WHERE id = 'claude-code:agent-fork'"
+        ),
+        json!({"derived_title": null})
+    );
+}
+
+#[test]
+fn fork_with_parents_shows_inherited_count() {
+    let mut w = WriterArchive::new();
+    forked_subagent(&mut w, Some("Audit"));
+    let pool = crate::ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let child = sid("agent-fork");
+    let selection = reader.select_messages(&child, true).unwrap();
+    assert!(selection.parents().complete, "{:?}", selection.parents());
+    // The parent's prompt up to the branch point comes before the fork's
+    // own message.
+    let keys = reader.message_keys_with_parents(&child).unwrap();
+    assert_eq!(keys.len(), 2, "{keys:?}");
+}

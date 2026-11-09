@@ -319,8 +319,9 @@ pub fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), SelectionError> {
     Ok(())
 }
 
-/// Each top-level condition counted alone against the rows the defaults
-/// keep: `repo:other → 0 of 5`.
+/// Each default with the rows it keeps of the rows without it, then each
+/// top-level condition counted alone against the rows the defaults keep:
+/// `repo:other → 0 of 5`.
 /// How many rows one clause of an empty query matches, of the rows its
 /// unit has.
 #[derive(
@@ -344,17 +345,22 @@ pub fn why(
             Ok(r.first().and_then(|r| r["count(*)"].as_u64()).unwrap_or(0))
         };
         let of = count(&program.why_of)?;
-        program
-            .why
-            .iter()
-            .map(|w| {
-                Ok(Explanation {
-                    clause: w.clause.clone(),
-                    matches: count(&w.sql)?,
-                    of,
-                })
+        // Each default first: the rows it keeps of the rows without it.
+        let defaults = program.why_defaults.iter().map(|w| {
+            Ok(Explanation {
+                clause: w.clause.clone(),
+                matches: of,
+                of: count(&w.sql)?,
             })
-            .collect()
+        });
+        let clauses = program.why.iter().map(|w| {
+            Ok(Explanation {
+                clause: w.clause.clone(),
+                matches: count(&w.sql)?,
+                of,
+            })
+        });
+        defaults.chain(clauses).collect()
     })
 }
 

@@ -173,6 +173,7 @@ fn page_sources(reader: &Reader<'_>, selection: &Selection<'_>) -> Result<Vec<So
             since: responses.since,
             until: responses.until,
             undated: responses.undated,
+            subagents: responses.subagents,
         };
         let selection = Selection {
             responses: Some(&responses),

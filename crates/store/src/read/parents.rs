@@ -14,6 +14,15 @@ struct Key {
     order: i64,
 }
 
+/// The links whose child carries its parent's messages before it: a fork or
+/// resume, and a subagent forked with its parent's context (Claude Code's
+/// `fork-context-ref`, recorded as a `fork_context` event in the child, with
+/// the branch point on the spawn link).
+const INHERITS: &str = "((kind = 'continuation' AND how IN ('fork', 'resume')) \
+     OR (kind = 'subagent' AND branch_point IS NOT NULL AND EXISTS ( \
+       SELECT 1 FROM event fe JOIN session fs ON fs.pk = fe.session_pk \
+       WHERE fs.id = link.child_id AND fe.kind = 'fork_context')))";
+
 struct Link {
     parent: String,
     how: String,
@@ -72,9 +81,12 @@ impl<'a> Reader<'a> {
         with_parents: bool,
     ) -> Result<MessageSelection<'r, 'a>> {
         let own = self.session_pk(id)?.map(|pk| (pk, id.clone()));
-        let has_parents = with_parents && self.conn()?.query_row(
-            "SELECT EXISTS(SELECT 1 FROM link WHERE child_id=?1 AND kind='continuation' AND how IN ('fork','resume'))",
-            [id.to_string()], |r| r.get::<_, bool>(0))?;
+        let has_parents = with_parents
+            && self.conn()?.query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM link WHERE child_id=?1 AND {INHERITS})"),
+                [id.to_string()],
+                |r| r.get::<_, bool>(0),
+            )?;
         let (keys, issues) = match own.as_ref().filter(|_| has_parents) {
             Some((pk, _)) => self.parent_keys(*pk, id)?,
             None => (Vec::new(), Vec::new()),
@@ -100,11 +112,10 @@ impl<'a> Reader<'a> {
     ) -> Result<Frame> {
         let mut links: VecDeque<Link> = self
             .conn()?
-            .prepare_cached(
-                "SELECT parent_id, how, branch_point FROM link
-                 WHERE child_id = ?1 AND kind = 'continuation' AND how IN ('fork', 'resume')
-                 ORDER BY pk",
-            )?
+            .prepare_cached(&format!(
+                "SELECT parent_id, CASE WHEN kind = 'subagent' THEN 'fork' ELSE how END, branch_point
+                 FROM link WHERE child_id = ?1 AND {INHERITS} ORDER BY pk"
+            ))?
             .query_map([session.to_string()], |r| {
                 Ok(Link {
                     parent: r.get(0)?,

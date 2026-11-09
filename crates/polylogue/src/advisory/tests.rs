@@ -204,11 +204,15 @@ fn advisory_bounds_intersect_parent_and_an_expired_request_prepares_nothing() {
     };
     let limit =
         polylogue_store::read::limit::ReadLimit::at(std::time::Instant::now(), Default::default());
-    assert!(
-        service::handle_with_limit(request, &w.daemon, &limit)
-            .failure()
-            .is_some()
-    );
+    // docs/agents.md, Advisories: "preparation is capped at 20 ms, intersected
+    // with the caller's bound, or the hook says nothing". Past the bound the
+    // answer is the empty advisory on every surface, never a timeout.
+    let answer = service::handle_with_limit(request, &w.daemon, &limit);
+    assert!(answer.failure().is_none(), "{answer:?}");
+    let value = crate::test_answers::ok(answer);
+    assert_eq!(value["delivery"], serde_json::Value::Null);
+    assert_eq!(value["prepared"]["text"], "");
+    assert_eq!(value["prepared"]["refs"], serde_json::json!([]));
     assert!(
         w.daemon
             .reads

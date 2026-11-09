@@ -209,6 +209,22 @@ pub struct Default {
     pub unless_reference: bool,
 }
 
+impl Default {
+    /// What the default keeps out and what brings those rows back, for
+    /// `--why`.
+    pub fn describe(&self) -> String {
+        let mut back: Vec<String> = self.unless.iter().map(|f| format!("{f}:")).collect();
+        if self.unless_reference {
+            back.push("a reference".to_owned());
+        }
+        if back.is_empty() {
+            "default".to_owned()
+        } else {
+            format!("default (a top-level {} lifts it)", back.join(", "))
+        }
+    }
+}
+
 /// A `prefix.FIELD` path from one unit to another.
 pub struct Relation {
     pub prefix: &'static str,
@@ -414,11 +430,11 @@ pub static UNITS: &[UnitSpec] = &[
         defaults: &[
             d(
                 Expr::Fn(main_sessions),
-                &["kind", "parent", "root", "depth", "connected", "link"],
+                &["kind", "parent", "root", "depth", "connected", "link", "id"],
                 true,
             ),
             d(Expr::Template("{s}.stub = 0"), &["source"], false),
-            d(Expr::Fn(not_hidden), &["hidden"], true),
+            d(Expr::Fn(not_hidden), &["hidden", "id"], true),
         ],
         relations: &[],
         parents: &[],

@@ -344,3 +344,76 @@ fn unknown_session_endings_and_clock_sources_match_unknown_conditions() {
         assert_eq!(result["count"], 1);
     }
 }
+
+fn session_pk(archive: &TestArchive, like: &str) -> i64 {
+    let pool = archive.fx.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    reader
+        .query(
+            "SELECT pk FROM session WHERE id LIKE ?1",
+            &[SqlValue::Text(like.into())],
+        )
+        .unwrap()[0]["pk"]
+        .as_i64()
+        .unwrap()
+}
+
+#[test]
+fn sessions_day_includes_subagent_usage() {
+    let archive = morrow();
+    // #2 on Oct 2 spawned subagent #3, the only session that used
+    // claude-opus-5-5: the day's usage over main sessions includes it.
+    let v = q(
+        &archive,
+        "sessions where since:2026-10-02 until:2026-10-02 | measure usage",
+    );
+    let models: Vec<&str> = v["data"]["by_model"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["model"].as_str())
+        .collect();
+    assert!(models.contains(&"claude-opus-5-5"), "{v}");
+    assert_eq!(
+        ids(&q(&archive, "since:2026-10-02 until:2026-10-02")),
+        ["#2"]
+    );
+}
+
+#[test]
+fn usage_window_excludes_responses_outside() {
+    let mut archive = morrow();
+    let day = "sessions where since:2026-10-01 until:2026-10-01 | measure usage";
+    let before = q(&archive, day);
+    // A response in #1 on the next day: #1 is still selected (its recorded
+    // activity is Oct 1), and the response stays out of Oct 1's figures.
+    let s1 = session_pk(&archive, "%0001-4000%");
+    archive
+        .fx
+        .message(
+            s1,
+            MessageFacts {
+                cost_nusd: Some(990_000_000),
+                ..msg(
+                    &scoped("claude-code:7f3a2c10-0001-4000-8000-000000000001", "m1late"),
+                    "assistant",
+                    "model",
+                    "late",
+                    at(2, 10),
+                )
+            },
+        )
+        .unwrap();
+    let after = q(&archive, day);
+    assert_eq!(
+        after["data"]["known_response_messages"],
+        before["data"]["known_response_messages"]
+    );
+    assert_eq!(after["data"]["api_cost"], before["data"]["api_cost"]);
+    // The whole archive does count it.
+    let all = q(&archive, "sessions | measure usage");
+    assert!(
+        all["data"]["known_response_messages"].as_u64().unwrap()
+            > after["data"]["known_response_messages"].as_u64().unwrap()
+    );
+}

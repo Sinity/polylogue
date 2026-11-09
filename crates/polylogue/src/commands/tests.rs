@@ -470,3 +470,25 @@ fn daily_series_is_a_metric_option() {
 }
 
 mod assertions;
+
+#[test]
+fn mcp_read_default_budget_pages() {
+    // A read without `page_tokens` is a page under the default budget, with
+    // a continuation, never the whole session in one answer.
+    let read = command("read").unwrap();
+    let build = read.build_typed.unwrap();
+    let request = build(
+        json!({"target":"claude-code:s1"}),
+        &mcp_caller(),
+        "read-page",
+    )
+    .unwrap();
+    let Request::Read {
+        delivery, budget, ..
+    } = request
+    else {
+        panic!("read request");
+    };
+    assert_eq!(delivery, polylogue_model::read::ReadDelivery::Page);
+    assert_eq!(budget, None, "the daemon applies its default page budget");
+}

@@ -84,7 +84,7 @@ Each unit binds its default filters once, when its source is bound (a unit, `que
 
 | Unit | Default |
 |---|---|
-| `sessions` | main sessions (subagents roll up into their logical session); not stubs |
+| `sessions` | main sessions (subagents roll up into their logical session: measures over a session include the subagent sessions it spawned); not stubs. A top-level `kind:`, `id:` or structure field, or a reference, lifts it |
 | listings and search over every unit with a session | not `hidden`; measures and population counts include hidden sessions and say how many |
 | `messages`, `blocks`, `tool_calls` | not duplicate copies; on the active path, or path unknown |
 | `tool_calls` | wrapper calls whose children are counted are excluded |
@@ -247,7 +247,7 @@ A run or kept result is **pre-registered** when a `saved_query` assertion naming
 
 - `explain QUERY` compiles without reading rows and returns the parsed query with spans; the defaults applied and which conditions dropped them; units; definitions; resolved times; the ranking in effect (none, relevance, similarity, fused, and which lists); `query:<hash>`; and `read_as`, the query read back in plain language from each field's, operator's and stage's declared phrase. With `--detail full` it adds the compiled plan.
 - `explain` alone describes the language; `explain units|fields [UNIT]|stages|operators|capabilities` pages the declarations.
-- `--why`, on any query, also counts within the aggregate deadline: per condition `{clause, group, matches, of, hint}`, nested by OR, NOT and parenthesis group, with no limit on entries; for a ranked answer, each shown row's rank in each list and its contribution. For an empty answer it adds the nearest relaxation: the time bound that would admit rows, the closed-set values present, the closest field values.
+- `--why`, on any query, also counts within the aggregate deadline: first each default the unit applied, as `{clause, matches, of}` where `clause` names the conditions that lift it and `matches of of` is the rows it keeps of the rows without it; then per condition `{clause, group, matches, of, hint}`, nested by OR, NOT and parenthesis group, with no limit on entries; for a ranked answer, each shown row's rank in each list and its contribution. For an empty answer it adds the nearest relaxation: the time bound that would admit rows, the closed-set values present, the closest field values.
 - Every answer carries `read_as`.
 - Explain and completion never write, build, embed or call a model.
 

@@ -281,6 +281,15 @@ fn answer_reserve(left: std::time::Duration) -> std::time::Duration {
 /// prepared and written into it; the writer records the delivery, and any
 /// later outcome event for it, in queue order. A session-start brief stops
 /// its sections early enough to answer before the request's deadline.
+/// The answer of an advisory that has nothing to offer: also its answer
+/// when preparation cannot finish within its cap, on every surface.
+fn advisory_silence() -> Answer<Value> {
+    crate::protocol::written(
+        serde_json::json!({"delivery":null,"prepared":crate::advisory::empty()}),
+        false,
+    )
+}
+
 fn context(
     d: &Daemon,
     request_id: String,
@@ -415,10 +424,22 @@ fn context(
         Some(limit) => limit.scope(prepare),
         None => prepare(),
     };
+    // An advisory never blocks and fails open: preparation that runs out of
+    // its 20 ms cap (intersected with the caller's bound), or finds its
+    // delivery history incomplete, answers with nothing on every surface.
+    let silent = advisory_silence;
     let (prepared, selected_scope, written_up_to) = match prepared {
         Ok(prepared) => prepared,
+        Err(_) if is_advisory => return silent(),
         Err(answer) => return *answer,
     };
+    if is_advisory
+        && request_limit
+            .as_ref()
+            .is_some_and(|limit| limit.check().is_err())
+    {
+        return silent();
+    }
     // The request's own deadline and cancellation still apply.
     if let Some(limit) = &request_limit
         && let Err(error) = limit.check()
@@ -834,11 +855,19 @@ fn handle_inner(
         );
     }
     let _foreground = d.idle_admission.foreground();
+    let advisory = matches!(
+        &request,
+        Request::Context {
+            ask: Ask::Advisory { .. },
+            ..
+        }
+    );
     let reader = match d.reads.reader() {
         Ok(r) => r,
         Err(StoreError::ReadPoolClosed) => {
             return error("shutting_down", StoreError::ReadPoolClosed);
         }
+        Err(_) if advisory => return advisory_silence(),
         Err(e) => return store_error(&e),
     };
     #[cfg(test)]

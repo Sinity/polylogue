@@ -21,6 +21,10 @@ pub struct Measure {
     pub help: &'static str,
     /// Covers every session: refused after conditions.
     pub whole_archive: bool,
+    /// Counts messages: a selection bounded by `since:`/`until:` counts only
+    /// the messages inside the bounds, and a session's figures include the
+    /// subagent sessions it spawned.
+    pub messages: bool,
     pub paging: Option<Paging>,
     /// Optional colon-separated arguments, also exposed as --option.
     pub argument: Option<&'static str>,
@@ -49,6 +53,7 @@ pub static MEASURES: &[Measure] = &[
         name: "facets",
         help: "Paged read-time session counts by family and value, with global counts, IDF and lift; basic, deep or one family",
         whole_archive: false,
+        messages: false,
         paging: Some(Paging::Facets),
         argument: Some("family"),
         metrics: &[],
@@ -63,6 +68,7 @@ pub static MEASURES: &[Measure] = &[
         name: "outlook",
         help: "Billing estimate from dated plan.<provider> settings: provider:method (linear, trailing-7d-mean); money in nano-USD",
         whole_archive: false,
+        messages: false,
         paging: None,
         argument: Some("provider:method"),
         metrics: &[],
@@ -73,6 +79,7 @@ pub static MEASURES: &[Measure] = &[
         name: "time",
         help: "Recorded session clocks and wall-time lanes; clustering gap 5 minutes; query cursor pages sessions",
         whole_archive: false,
+        messages: false,
         paging: Some(Paging::Sessions),
         argument: None,
         metrics: &[],
@@ -83,6 +90,7 @@ pub static MEASURES: &[Measure] = &[
         name: "compare",
         help: "Recorded session fields side by side, with varying fields and unknown counts; optional comma-separated fields",
         whole_archive: false,
+        messages: false,
         paging: Some(Paging::Sessions),
         argument: Some("fields"),
         metrics: &[],
@@ -93,6 +101,7 @@ pub static MEASURES: &[Measure] = &[
         name: "usage",
         help: "Tokens by kind and cost by model, over a sessions query or everything",
         whole_archive: false,
+        messages: true,
         paging: None,
         argument: None,
         metrics: &[],
@@ -103,6 +112,7 @@ pub static MEASURES: &[Measure] = &[
         name: "sessions",
         help: "Each session's tokens and cost, own (its own responses) and with_parents (what it shows, inherited responses included)",
         whole_archive: false,
+        messages: false,
         paging: None,
         argument: None,
         metrics: &[],
@@ -113,6 +123,7 @@ pub static MEASURES: &[Measure] = &[
         name: "quota",
         help: "The 5-hour and weekly subscription windows: burn and forecast",
         whole_archive: true,
+        messages: false,
         paging: None,
         argument: None,
         metrics: &[],
@@ -129,6 +140,7 @@ pub static MEASURES: &[Measure] = &[
         name: "outcomes",
         help: "Tool outcomes: ok, error, no result and unknown, never one rate",
         whole_archive: false,
+        messages: true,
         paging: None,
         argument: None,
         metrics: &[],
@@ -139,6 +151,7 @@ pub static MEASURES: &[Measure] = &[
         name: "failing",
         help: "Per repository, the commands whose most recent run failed",
         whole_archive: false,
+        messages: true,
         paging: None,
         argument: None,
         metrics: &[],
@@ -149,6 +162,7 @@ pub static MEASURES: &[Measure] = &[
         name: "drift",
         help: "Record types and fields each format's parser did not know, newest first: where the tools' formats moved",
         whole_archive: true,
+        messages: false,
         paging: None,
         argument: None,
         metrics: &[],
@@ -159,6 +173,7 @@ pub static MEASURES: &[Measure] = &[
         name: "unanswered",
         help: "Time to a session ending on an unanswered prompt after 6 quiet hours (Kaplan-Meier)",
         whole_archive: false,
+        messages: false,
         paging: None,
         argument: None,
         metrics: &[],
@@ -169,6 +184,7 @@ pub static MEASURES: &[Measure] = &[
         name: "survival",
         help: "Time to a session's first failed tool call, in minutes (Kaplan-Meier)",
         whole_archive: false,
+        messages: false,
         paging: None,
         argument: None,
         metrics: &[],
@@ -179,6 +195,7 @@ pub static MEASURES: &[Measure] = &[
         name: "survival-turns",
         help: "Time to a session's first failed tool call, in human prompts (Kaplan-Meier)",
         whole_archive: false,
+        messages: false,
         paging: None,
         argument: None,
         metrics: &[],
@@ -189,6 +206,7 @@ pub static MEASURES: &[Measure] = &[
         name: "daily",
         help: "A daily series with its 7-day baseline and level changes",
         whole_archive: false,
+        messages: true,
         paging: None,
         argument: None,
         metrics: daily::DAILY_METRICS,
@@ -199,6 +217,7 @@ pub static MEASURES: &[Measure] = &[
         name: "process",
         help: "Which tool call follows which, and what follows a failure",
         whole_archive: false,
+        messages: true,
         paging: None,
         argument: None,
         metrics: &[],
@@ -209,6 +228,7 @@ pub static MEASURES: &[Measure] = &[
         name: "rhythm",
         help: "Prompts by weekday and hour",
         whole_archive: false,
+        messages: true,
         paging: None,
         argument: None,
         metrics: &[],
@@ -243,6 +263,7 @@ pub fn run(
     reader: &Reader<'_>,
     what: &str,
     sessions: Option<Vec<i64>>,
+    window: (Option<i64>, Option<i64>),
     now: i64,
     day: &DaySetting,
     population: Option<Vec<i64>>,
@@ -255,10 +276,21 @@ pub fn run(
         )));
     }
     let run = Run {
-        selection: Selection {
-            sessions,
-            population,
-            ..Selection::default()
+        selection: if m.messages {
+            Selection {
+                sessions,
+                population,
+                since: window.0,
+                until: window.1,
+                subagents: true,
+                ..Selection::default()
+            }
+        } else {
+            Selection {
+                sessions,
+                population,
+                ..Selection::default()
+            }
         },
         now,
         day,

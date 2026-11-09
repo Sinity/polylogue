@@ -177,6 +177,11 @@ fn words_in(c: &mut Compiler<'_>, x: &Call<'_, '_>, index: Index) -> Result<Stri
 
 pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let t = c.time(x.name, &x.value()?, x.span)?;
+    if x.top && x.unit == Unit::Sessions {
+        // Conditions joined by AND narrow: the latest start wins.
+        let start = t.start_ms();
+        c.session_window.0 = Some(c.session_window.0.map_or(start, |s| s.max(start)));
+    }
     let window = units::spec(x.unit)
         .since
         .ok_or_else(|| c.unknown_field(x.name, x.unit, x.span))?;
@@ -202,6 +207,10 @@ pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
 
 pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let t = c.time(x.name, &x.value()?, x.span)?;
+    if x.top && x.unit == Unit::Sessions {
+        let bound = crate::calendar::boundary_ms(t.until_bound());
+        c.session_window.1 = Some(c.session_window.1.map_or(bound, |u| u.min(bound)));
+    }
     let window = units::spec(x.unit)
         .until
         .ok_or_else(|| c.unknown_field(x.name, x.unit, x.span))?;
@@ -214,10 +223,8 @@ pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
             },
         ));
     }
-    Ok(x.scope.a.expand(window).replace(
-        "{v}",
-        &crate::calendar::boundary_ms(t.until_bound()).to_string(),
-    ))
+    let bound = crate::calendar::boundary_ms(t.until_bound());
+    Ok(x.scope.a.expand(window).replace("{v}", &bound.to_string()))
 }
 
 /// `evidence_until:T`: the evidence Polylogue had by T, read with today's

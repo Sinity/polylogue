@@ -34,11 +34,29 @@ fn measures_on_a_fresh_reader_see_current_tags_without_a_preceding_query() {
     let pool = f.reads().unwrap();
 
     let reader = pool.reader().unwrap();
-    let usage = run(&reader, "usage", None, 1_700_000_100_000, &day, None).unwrap();
+    let usage = run(
+        &reader,
+        "usage",
+        None,
+        (None, None),
+        1_700_000_100_000,
+        &day,
+        None,
+    )
+    .unwrap();
     assert_eq!(usage["known_response_messages"], 2);
     assert_eq!(usage["hidden_sessions"], 1);
     drop(reader);
 
     let reader = pool.reader().unwrap();
-    run(&reader, "quota", None, 1_700_000_100_000, &day, None).unwrap();
+    run(
+        &reader,
+        "quota",
+        None,
+        (None, None),
+        1_700_000_100_000,
+        &day,
+        None,
+    )
+    .unwrap();
 }
