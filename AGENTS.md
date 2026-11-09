@@ -76,7 +76,7 @@ copy.
 | `crates/query` | the catalog and units, compilation to a `Plan`. No SQL |
 | `crates/render` | text, markdown and HTML over typed answers |
 | `crates/engine` | discovery, the overlapped ingest pipeline, tool-database capture, recognition, derivations |
-| `crates/sinex` | primary mode: the ledger over Sinex's producer client, the confirmed-stream consumer, Polylogue's kind declarations (behind the `sinex` feature) |
+| `crates/sinex` | primary mode: Sinex's producer client wiring, the confirmed-stream consumer, Polylogue's kind declarations (behind the `sinex` feature) |
 | `crates/polylogue` | the daemon library and thin CLI, MCP, web and browser-host front ends generated from the command table; the pack builder |
 | `crates/testkit` | test archives built through the real loop: the synthetic Morrow archive (`examples/morrow/`), independent goldens |
 | `extension/` | the browser extension |
@@ -88,7 +88,7 @@ Authored records live in `crates/store` and `crates/polylogue`.
 store touches SQLite.
 
 The shared crates (`hashed-blobs`, `devkit`, `query-language`,
-`command-surface`, `web-shell`) follow polylogue-sinex-common's `master`
+`command-surface`, `web-shell`, `authored`, `signals`, `signal-delivery`) follow polylogue-sinex-common's `master`
 branch, with the exact commit pinned in `Cargo.lock`. Its
 [dependency guide](https://github.com/Sinity/polylogue-sinex-common#depending-on-this-repository)
 describes lock updates and local development with `cargo xtask link-common`.
@@ -176,42 +176,52 @@ earlier Python implementation is in this repository's Git history). Write the
 whole change from the design: complete features, built on the architecture's
 abstractions, with the predecessor's behaviour and test cases ported.
 
-**Edit in bulk.** Change whole modules, crates and call sites in one pass;
-verify once a coherent change is complete, not after each small edit.
+**Edit in bulk; type-check as you go.** Change whole modules, crates and call
+sites in one pass. Run `cargo xtask check --changed` (formatting, boundaries,
+clippy and the tests the change can affect) after each layer you write; it
+reports every type error at once. Run the wider tests once the change is
+coherent.
 
-**Review your own work before verifying it.** Walk through every changed file
-and function and narrate, in your notes, what it does, checked against the
-task, the owning page, `docs/architecture.md` and the predecessor's behaviour.
-Look for everything that is wrong at once: a requirement not met, a mechanism
-duplicated, a predecessor left in place, a caller not converted, a limit that
-refuses valid input, a test that cannot fail, a name that does not say what
-the thing is, a case the design covers and the code does not. Fix all of it,
-narrate again, and repeat until a full pass finds nothing. Then verify. The
-author makes the work good; a separate reviewer is not the mechanism for
+**Review your own work before verifying it.** Read the whole diff once
+against the task, the owning page, `docs/architecture.md` and the
+predecessor's behaviour, and list everything wrong in that one pass: a
+requirement not met, a mechanism duplicated, a predecessor left in place, a
+caller not converted, a limit that refuses valid input, a test that cannot
+fail, a name that does not say what the thing is, a case the design covers
+and the code does not. Fix the whole list, then read only what the fixes
+changed. Then verify. The author makes the work good; a separate reviewer is not the mechanism for
 that. "Review should not look for a single wrong thing, it should strive to
 list everything wrong. so that there is no forever loop of fixing and finding
 new issue" (operator, 2026-09-29, `cc:9ec284a7-6a6a-486b-949f-d8bbdb22ae1e:16cb3a25-318f-455b-82b5-bf0f6f732e30`).
 
 **Verify scoped to the change.** Commit first, so a result belongs to a
-commit. Run formatting, clippy for the crates you touched and the focused
-tests for the code you changed; `cargo xtask check --changed` does all three
-for what the change can affect. A pull request is verified by GitHub Actions,
-which runs `cargo xtask check` for its head; every test runs again on master.
-Run a full local check only to reproduce a failure CI reported. Before treating a failure as yours, compare
-with the same test on current master.
+commit. While editing, `cargo xtask check --changed` runs formatting, clippy
+and the tests the change can affect. A pull request is verified by GitHub
+Actions, which runs `cargo xtask check` for its head (affected tests only);
+every test runs again on master after the merge. Run a full local check only
+to reproduce a failure CI reported. Before treating a failure as yours,
+compare with the same test on current master (`gh run list -b master`).
 
-**Finish the area.** A task owns an area to a written done condition.
-Problems found inside the area are fixed in the same work; a large problem is
-a set of smaller ones, done in turn. Things outside the area go into the
-report or a Bead with what was found, not into the change.
+**Finish what the task names.** A task states its done condition before work
+starts, as behaviour on master and the tests that prove it. A defect inside
+the area that stops that condition from holding is fixed in the same work.
+Anything else found goes on a Bead with what was found, and the current work
+lands without it.
 
-**Git and pull requests.** Work on a branch; commit with plain messages whose
-body says why. Stage explicit paths. Rebase onto `origin/master` before the
-final verification and again before handing off; resolve conflicts by taking
-master's names and structure and reapplying your change. Prefer a few large,
-coherent PRs, usually one per area. Whoever lands runs the full check on the
-exact landing tree and merges with
-`gh pr merge --squash --match-head-commit <sha>`. Hooks stay enabled.
+**Git and pull requests.** Work on a branch from `origin/master`; every pull
+request targets `master`, and stacked pull requests are not used. Commit with
+plain messages whose body says why. Stage explicit paths. Land a feature as a
+sequence of pull requests, each of which compiles, passes its tests and
+leaves master coherent: complete for what it covers, with no stub to replace
+later and no compatibility path between steps. Small related fixes share one
+pull request, since each pull request costs a full CI run. Master requires
+the `check` status on the pull request's head; branches need not be up to
+date with master, so rebase only to resolve a conflict, taking master's names
+and structure and reapplying your change. Merge with
+`gh pr merge --auto --squash --match-head-commit <sha>`. Development speed
+comes before a perfectly green master (operator, 2026-11-09): when two
+separately green changes combine into a failing master, whoever's change
+caused it fixes it next. Hooks stay enabled.
 
 **PR descriptions** are plain prose: what changed and why, the design
 decisions taken and their reasons, what was verified (commands and run IDs)
@@ -224,8 +234,12 @@ Bead and in the PR. "IDK how these are for me, I do not know ~anything about
 these details" (operator, 2026-09-29,
 `cc:9ec284a7-6a6a-486b-949f-d8bbdb22ae1e:b6a95d83-9b7f-4478-a74e-a0a3d3b46683`).
 The operator decides product scope and intent, privacy, money (paid APIs,
-purchased vectors), irreversible actions on real data, and anything published
-outward. When one of those is open, take the conservative option, keep
+purchased vectors) and anything published outward. Deploying, activating,
+restarting, rebuilding an archive and the release cutover are yours: original
+inputs stay where their sources keep them and an old archive is set aside, not
+deleted. No stored format or archive is deployed in a sense that needs
+compatibility or migration; target one current format. When an operator
+question is open, take the conservative option, keep
 working on the rest, and put the question in the report and on the Bead.
 
 **A request to check is read-only.** When asked to inspect, analyse or
@@ -266,7 +280,8 @@ do more than its predecessor did, without the predecessor's machinery. "Why
 build some sort of bare-bones features which will need to be replaced by
 actual full-fledged ones anyway?" (2026-10-27,
 `cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3c3dd59f-4560-4fee-95d4-5c43b6c94ca5`).
-Design thoroughly, including areas that already nominally work.
+When an area you are changing works but its design is wrong, redesign it as
+part of the task; an area you are not changing gets a Bead.
 
 **Use the predecessor's knowledge, not its mechanisms.** The Python
 predecessor had a working core under layers of repair and bookkeeping. Port
@@ -313,7 +328,9 @@ boundaries, and property tests at serialization boundaries. Port the
 predecessor's cases as cases (inputs and expected outcomes), then fill the
 gaps both suites had. A test that restates a helper, asserts a mock's value,
 checks what the type system already prevents, or matches SQL substrings where
-rows could be compared adds cost without coverage. "We want to cover various
+rows could be compared adds cost without coverage. A test asserts behaviour
+that exists, never that a name, variant or format stays absent: a removal is
+verified by the build and by tests of the replacement's behaviour. "We want to cover various
 aspects of the projects, but we don't want to have tests which are
 counterproductive or low-value just to have more tests." (2026-10-27,
 `cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:bbb105d6-16f1-418e-b04a-0c5f105832df`).
@@ -338,9 +355,12 @@ and cleanup before raising timeouts or cutting coverage.
 - Unsupported operations return a typed error, never an empty success.
   Unknown times stay unknown, and unknown costs are never zero. IDs are
   opaque strings and may contain colons.
-- Stored formats evolve by numbered in-place migrations and targeted
-  re-parse (`docs/archive.md`); inputs are read where the outside tools write
-  them and recognised by declared structure (`docs/capture.md`).
+- Each stored format has one current version (`docs/archive.md`). A format
+  change rewrites the format, its writers and its readers together and
+  regenerates test data; no reader for an earlier version of Polylogue's own
+  formats is kept, and what is derived is re-parsed from the original inputs.
+  Inputs are read where the outside tools write them and recognised by
+  declared structure (`docs/capture.md`).
 
 ## Vocabulary
 
@@ -392,8 +412,8 @@ of it (the path, else `$POLYLOGUE_SINEX_COMMON`, else
 `../polylogue-sinex-common`). Linking is explicit. It writes the git-ignored
 `.cargo/local.toml`, and Cargo.lock then names the local crates, so the lock
 is not committed in that state. `cargo xtask unlink-common` restores the lock.
-Merge the common pull request first;
-its workflow then opens a pull request here that moves Cargo.lock to the new
-commit. Convert the callers on that branch, or run `cargo update -p devkit
--p hashed-blobs` on the branch that converts them, so
-the lock change and the callers land together.
+Merge the common pull request first. Polylogue also pins Sinex by revision
+(`crates/sinex/Cargo.toml`), and that Sinex revision's own common dependencies
+must resolve against the same common commit, so the order is: common merges,
+Sinex adopts that common commit, then one Polylogue pull request moves the
+Sinex revision and the common lock together and converts the callers.

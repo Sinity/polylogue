@@ -56,7 +56,7 @@ The store and engine have a `faults` feature that adds a fault registry. It star
 
 One end-to-end harness: the real `polylogue` binary runs as a daemon over a temporary archive built from a seeded template, driven through the CLI, MCP and the browser extension's native-messaging host, with answers compared to goldens. Harness behaviour is tested with fixture harnesses: stub binaries on `PATH` that record their argv, cwd and stdin, so pings, resumes and installs are checked without a real agent.
 
-**Primary mode** is tested against a real Sinex stack started by devkit (PostgreSQL with TimescaleDB, NATS and `sinexd` at the Sinex revision Polylogue pins): Morrow converged in primary mode must answer as standalone does, and again after a rebuild from the confirmed stream ([primary-mode.md](primary-mode.md)). These tests need that stack and run where it is available.
+**Primary mode** is tested against a real Sinex stack (PostgreSQL with TimescaleDB, NATS and `sinexd` at the Sinex revision Polylogue pins): Morrow converged in primary mode must answer as standalone does, and again after a rebuild from the confirmed stream ([primary-mode.md](primary-mode.md)). These tests, and the primary-mode backup and restore test, are ignored unless `SINEXD` names a `sinexd` built at that revision, so neither `cargo xtask check` nor CI runs them today; run them by hand with `SINEXD` set. Making them run in the ordinary check is plnext-jo9u.
 
 ## Fuzzing
 
@@ -76,7 +76,7 @@ What is measured: the first build per stage; incremental updates; interactive re
 
 **Reads.** The read benchmark generates one 16 MiB session and eight small ones with the testkit builders, checks that a complete read holds every message once in order, that windows at the first, middle and last positions match it, and that repeated windows render the same bytes, then reports daemon start, the first request after each restart and later requests (median and p95), page counts and daemon memory.
 
-The whole suite runs in under 10 minutes, measured per stage (compile, setup, run).
+The target is a whole suite under 10 minutes, measured per stage (compile, setup, run); CI's master runs currently take 14–21 minutes including the build.
 
 ## Row dictionary
 

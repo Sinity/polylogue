@@ -42,16 +42,16 @@ the earlier committed prefix stays visible and notifies readers. The writer
 reports the failure with its last applied position before sending that cue;
 a failed attempt with no committed progress produces no commit notification.
 The capture loop returns queued writer errors on continuing passes even when
-there are no new inputs to parse, while keeping outstanding custody pending.
+there are no new inputs to parse, while keeping the client's outstanding unacknowledged spool entries pending.
 
-A capture turn pins the existing read-scope token before using cached confirmed state and checks that same token before reporting completion. A reset during a turn, or between turns, discards reconstructible input progress, parser and discovery caches; watched identities and receiving custody remain owned until their actual acknowledgments settle. The next turn reloads confirmed facts under a fresh scope and repeats discovery. The outer loop retries a scope interruption as a failed turn; queued writer and reset failures remain errors.
+A capture turn pins the existing read scope (the token naming which confirmed state a turn may use) before using cached confirmed state and checks that same token before reporting completion. A reset during a turn, or between turns, discards reconstructible input progress, parser and discovery caches; watched identities and entries still awaiting acknowledgment stay owned until their actual acknowledgments settle. The next turn reloads confirmed facts under a fresh scope and repeats discovery. The outer loop retries a scope interruption as a failed turn; queued writer and reset failures remain errors.
 
-A failed capture turn cannot mark earlier pending custody settled. The loop
+A failed capture turn cannot mark earlier unacknowledged spool entries settled. The loop
 keeps that continuation through a read or planning error until a completed
 pass observes its actual state; batch mode cannot report idle from that error.
 Affected paths remain scheduled through a failed turn and while confirmation
 is pending, including inputs with no confirmed file facts yet. A missing provider
-still consults its existing producer custody and scoped history. A gone observation
+still consults its existing unacknowledged spool entries and scoped history. A gone observation
 waits for the exact confirmed input and no pending predecessor, uses the ordinary
 metadata acquisition route, and changes local file facts only after confirmation.
 
@@ -87,7 +87,7 @@ another acquisition, the sampler adopts the confirmed input and reading cursor.
 One transition adopts logical progress for watched inputs and exact database
 input IDs. It keeps parser continuation only at the same input, origin, chain
 and reading cursor, invalidates cached tail bytes when their stored range changes,
-and retires working custody only when the matching observation is covered.
+and retires the unacknowledged spool entry only when the matching observation is covered.
 A pending capture's raw byte cursor cannot advance that logical source state.
 Confirmed application can retire the producer body before the capture loop
 receives its result. The loop then adopts the exact confirmed input, file facts
@@ -119,7 +119,7 @@ not a confirmation wait: successful parsing can start a database read in the
 same batch, while a failed parse stops that attempt. Errors in that attempt do
 not clear another input's confirmation wait. Once only confirmed application
 remains, the batch returns pending progress so its caller can wait for stream events.
-Later batches consult the original producer custody until it is retired; an
+Later batches consult the original unacknowledged spool entries until it is retired; an
 unchanged database does not need another physical read to report that wait.
 
 Confirmed payloads are checked against their current immutable kind declaration
@@ -140,7 +140,7 @@ What a host keeps locally in primary mode:
 - the embeddings store, local and backed up, since recomputing it costs money;
 - the producer client's spool, where bytes and prepared writes wait until Sinex acknowledges them; it sits under Sinex's store root on the same host. Material bytes are acknowledged before the events that cite them.
 
-There is no local ledger of inputs, no local segment log and no send cursor. The Sinex adapter is a Cargo feature outside the default build.
+There is no local ledger of inputs, no local segment log and no send cursor. The Sinex adapter is the Cargo feature `sinex`, off in a plain `cargo build` and included in the Nix package.
 
 ### Online backup
 
@@ -159,7 +159,7 @@ The producer artifact restores under the same producer identity alongside its
 paired core cut. Receipts in that artifact precede the core cut; operations
 without receipts retry their original identities. A later live spool or a
 producer label alone cannot replace this artifact. A missing participant leaves
-producer custody incomplete.
+the unacknowledged spool entries incomplete.
 
 **Reads see what Sinex committed.** A write becomes visible to queries once its record arrives on the confirmed stream and is applied. The stale-base check of an authored write is the one exception: it runs against the applied position plus this host's prepared writes not yet confirmed, so two quick revisions on one host (an MCP memory `create` followed by `str_replace`) see each other ([assertions.md#currency](assertions.md#currency)).
 
@@ -220,7 +220,7 @@ Where a deployment manages Polylogue's configuration (a Nix module option, for e
 
 The Polylogue daemon evaluates queries that mix Polylogue and Sinex data, because it holds the AI text, which Sinex does not index; Sinex callers reach AI text through this route.
 
-- Names are bound from the parsed query with the `pl.` and `sx.` prefixes, never from strings; namespace binding is defined by the shared language in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md).
+- Names are bound from the parsed query with the `pl.` and `sx.` prefixes, never from strings; namespace binding is defined by the shared language in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/query-language/README.md).
 - Sinex parts are compiled for and run by Sinex through its API; results join on references and time.
 - Every answer reports the positions it read in each product and their lag, so a mixed answer is reproducible and its staleness visible.
 - `sx:` references are a form whose grammar Sinex owns ([references.md#forms](references.md#forms)).
