@@ -262,7 +262,9 @@ fn ai_studio_chunks_read_and_rebuild_from_stored_inputs_without_empty_sessions()
     fn read(w: &ClaudeHome) -> serde_json::Value {
         let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
         let reader = pool.reader().unwrap();
-        let id = polylogue_model::SessionId::parse("ai-studio:Chat").unwrap();
+        let id =
+            polylogue_model::SessionId::parse("ai-studio:content-c58928695e9edda481843ae08d4ef183")
+                .unwrap();
         serde_json::json!({
             "messages": reader.messages(&id, false).unwrap(),
             "sessions": reader.query("SELECT id FROM session WHERE stub=0 ORDER BY id", &[]).unwrap(),
