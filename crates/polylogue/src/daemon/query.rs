@@ -260,6 +260,23 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<QueryAnswer, Failure> {
     let mut program = polylogue_store::query::lower(&plan, &opts)?;
     validate(reader, &program)?;
     prepare_measure(&mut program, ask.page_size)?;
+    // A `similar:` ranking whose query vector cannot be had (the provider is
+    // down, model calls are off and no vector is stored) keeps every row,
+    // unranked, and says so, instead of failing the query.
+    let similarity = match (&program.near, ask.near) {
+        (Some(request), Some(near)) => Some(near(&request.text).unwrap_or_else(|message| {
+            program.incomplete.push(format!(
+                "semantic ranking failed ({message}); rows are unranked"
+            ));
+            std::sync::Arc::new(polylogue_store::vectors::Similarity::unknown())
+        })),
+        _ => None,
+    };
+    let ready = |_: &str| {
+        similarity
+            .clone()
+            .ok_or_else(|| "semantic search unavailable".to_owned())
+    };
     let after = cursor
         .as_ref()
         .map(|cursor| page::check(cursor, &program, &opts, ask.why))
@@ -280,17 +297,22 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<QueryAnswer, Failure> {
         context: evaluation.provenance(),
         times: program.resolved_times.clone(),
     };
-    with_similarity(reader, &program, ask.near, || {
-        answer(
-            reader,
-            &program,
-            &program.clock.day,
-            after,
-            &paging,
-            ask.why,
-            resolved,
-        )
-    })
+    with_similarity(
+        reader,
+        &program,
+        ask.near.map(|_| &ready as &NearFn<'_>),
+        || {
+            answer(
+                reader,
+                &program,
+                &program.clock.day,
+                after,
+                &paging,
+                ask.why,
+                resolved,
+            )
+        },
+    )
 }
 
 /// The answer to a compiled program: its count and one page after `after`.

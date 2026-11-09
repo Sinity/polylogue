@@ -580,6 +580,23 @@ pub struct Similarity {
 }
 
 impl Similarity {
+    /// No text's similarity is known: a `similar:` ranking whose query
+    /// vector could not be had keeps every row, unranked.
+    pub fn unknown() -> Self {
+        Self {
+            loaded: Arc::new(Loaded {
+                key: String::new(),
+                revision: 0,
+                dims: 0,
+                texts: HashMap::new(),
+                owner: Vec::new(),
+                scale: Vec::new(),
+                values: Vec::new(),
+            }),
+            best: Vec::new(),
+        }
+    }
+
     pub fn of(&self, hash: &[u8]) -> Option<f32> {
         let text = *self.loaded.texts.get(hash)?;
         self.best.get(text as usize).copied()
