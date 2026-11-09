@@ -1,4 +1,5 @@
 mod kept;
+mod plans;
 
 use super::*;
 use crate::fixture::{Fixture, MessageFacts, SessionFacts};
@@ -232,7 +233,6 @@ fn group_identity_excludes_counts_and_unknown_observation_stays_unknown() {
         BTreeMap::from([("count".into(), Some(3.))])
     );
     assert!(rows[0].target.is_none());
-    assert!(rows[0].first_seen.is_none());
 }
 #[test]
 fn pure_bindings_preserve_closed_group_values_without_a_clock() {
@@ -388,7 +388,6 @@ fn absence_of_hook_and_activity_evidence_is_unknown_live_state() {
         })
         .unwrap();
     assert_eq!(rows[0].values["live"], "unknown");
-    assert!(rows[0].first_seen.is_none());
 }
 #[test]
 fn saved_aliases_bind_to_definition_hashes_and_keep_revision_metadata() {

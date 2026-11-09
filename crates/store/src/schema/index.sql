@@ -143,7 +143,7 @@ CREATE TABLE message_source (
   version_hash      BLOB NOT NULL REFERENCES message_version(version_hash), -- BLAKE3 of the version's sorted-key JSON: the last tie-break
   PRIMARY KEY (message_pk, input_pk, chain)
 ) STRICT;
-CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- foreign-key check
+CREATE INDEX message_source_input ON message_source(input_pk, chain, source_start);   -- foreign-key check; the next record's start
 
 -- Text is stored once per distinct content; `id` is the rowid of its search entries.
 CREATE TABLE text (
@@ -247,7 +247,6 @@ CREATE INDEX tool_call_pairing ON tool_call(session_pk, call_id) WHERE call_id I
 CREATE INDEX block_call ON block(session_pk, call_id) WHERE call_id IS NOT NULL;   -- call -> earlier result
 CREATE INDEX tool_call_tool    ON tool_call(tool);
 CREATE INDEX tool_call_action  ON tool_call(action, outcome);
-CREATE INDEX tool_call_failed  ON tool_call(session_pk) WHERE outcome <> 'ok';
 CREATE INDEX tool_call_path    ON tool_call(path) WHERE path IS NOT NULL;
 CREATE INDEX tool_call_repo_command ON tool_call(command_norm, at) WHERE command_norm IS NOT NULL;   -- failing commands
 CREATE INDEX tool_call_result  ON tool_call(result_block_pk) WHERE result_block_pk IS NOT NULL;   -- foreign-key check
@@ -280,7 +279,7 @@ CREATE TABLE link (
   UNIQUE (parent_id, child_id, kind, how)
 ) STRICT;
 CREATE INDEX link_child  ON link(child_pk);                    -- parents
-CREATE INDEX link_child_id ON link(child_id) WHERE child_pk IS NULL;   -- late children
+CREATE INDEX link_child_id ON link(child_id);   -- parents by id; late children
 CREATE INDEX link_branch_point ON link(branch_point) WHERE branch_point IS NOT NULL;
 CREATE INDEX link_parent ON link(parent_id, kind);             -- children; late parents
 
@@ -304,7 +303,7 @@ CREATE TABLE event (
 ) STRICT;
 CREATE UNIQUE INDEX event_id ON event(id);
 CREATE INDEX event_session ON event(session_pk, seq);
-CREATE INDEX event_input   ON event(input_pk, source_chain);
+CREATE INDEX event_input   ON event(input_pk, source_chain, source_start);
 CREATE INDEX event_after   ON event(after_message_pk) WHERE after_message_pk IS NOT NULL;
 CREATE INDEX event_after_id ON event(after_message_id) WHERE after_message_id IS NOT NULL;
 CREATE INDEX event_kind    ON event(kind, at);

@@ -678,7 +678,7 @@ impl Reader<'_> {
             None => conn.query_row(
                 "SELECT coalesce(
                     (SELECT min(s) FROM (
-                        SELECT source_start AS s FROM message WHERE input_pk = ?1 AND source_chain = ?2 AND source_start > ?3
+                        SELECT source_start AS s FROM message_source WHERE input_pk = ?1 AND chain = ?2 AND source_start > ?3
                         UNION ALL
                         SELECT source_start FROM event WHERE input_pk = ?1 AND source_chain = ?2 AND source_start > ?3)),
                     (SELECT parsed_upto FROM parse_state WHERE input_pk = ?1 AND chain = ?2),

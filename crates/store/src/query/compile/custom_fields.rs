@@ -4,7 +4,7 @@
 //! names its rule here, so a field without one cannot be declared.
 
 use super::*;
-use polylogue_model::{LINK_HOW_NAMES, LINK_KIND_NAMES};
+use polylogue_model::{CallOutcome, LINK_HOW_NAMES, LINK_KIND_NAMES};
 
 /// A special field's compile rule.
 pub(crate) type Custom = fn(&mut Compiler<'_>, &Call<'_, '_>) -> Result<String, QueryError>;
@@ -434,6 +434,51 @@ pub(crate) fn model(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
          THEN EXISTS (SELECT 1 FROM message x WHERE x.session_pk = {s}.pk AND lower(x.model) IN ({})) END",
         vs.join(", ")
     ))
+}
+
+/// `outcome:` compares the stored column, so `tool_call_action` serves it;
+/// only `pending`, decided from the session's live state, needs more, and
+/// `unknown` leaves those calls out.
+pub(crate) fn tool_call_outcome(
+    c: &mut Compiler<'_>,
+    x: &Call<'_, '_>,
+) -> Result<String, QueryError> {
+    let a = &x.scope.a;
+    let t = &a.t;
+    let pending = a.expand(fields::OPEN_CALL);
+    let unknown = format!("({t}.outcome = 'unknown' AND NOT {pending})");
+    let def = fields::lookup(x.unit, x.name).expect("outcome is declared");
+    let one = |value: &str| -> Result<String, QueryError> {
+        match CallOutcome::NAMES
+            .iter()
+            .find(|name| name.eq_ignore_ascii_case(value))
+            .copied()
+        {
+            Some("pending") => Ok(pending.clone()),
+            Some("unknown") => Ok(unknown.clone()),
+            Some(stored) => Ok(format!("{t}.outcome = '{stored}'")),
+            None => Err(x.bad(value.to_owned(), closed_set_message(def, value))),
+        }
+    };
+    match x.op {
+        FieldOp::Match(Value::Unknown) => Ok(unknown.clone()),
+        FieldOp::Match(Value::Known) => Ok(format!("NOT {unknown}")),
+        FieldOp::Match(v) => {
+            let parts = alternatives(v)
+                .iter()
+                .map(|value| one(value))
+                .collect::<Result<Vec<_>, _>>()?;
+            any_of(x, parts)
+        }
+        FieldOp::Compare(Op::Eq, value) => one(value),
+        FieldOp::Compare(Op::Ne, value) => Ok(format!("NOT {}", one(value)?)),
+        op => {
+            let expr = def
+                .expr(a, c.opts.clock.now.as_millisecond())
+                .expect("outcome has SQL");
+            c.typed(def, &expr, op, x.span)
+        }
+    }
 }
 
 pub(crate) fn tag(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {

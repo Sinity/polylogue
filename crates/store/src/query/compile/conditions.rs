@@ -877,12 +877,20 @@ impl<'a> Compiler<'a> {
             message,
         };
         let stores_unknown = def.stored_unknown.is_some();
+        // A closed set's values are stored in their declared spelling, so
+        // the column is compared as stored and its indexes can serve it.
+        let closed = kind == Kind::Match && def.values.is_some();
         let known;
-        let expr = if let Some(word) = def.stored_unknown {
-            known = format!("NULLIF(lower({expr}), '{word}')");
-            known.as_str()
-        } else {
-            expr
+        let expr = match def.stored_unknown {
+            Some(word) if closed => {
+                known = format!("NULLIF({expr}, '{word}')");
+                known.as_str()
+            }
+            Some(word) => {
+                known = format!("NULLIF(lower({expr}), '{word}')");
+                known.as_str()
+            }
+            None => expr,
         };
         match (kind, op) {
             (_, FieldOp::Match(Value::Any)) => Ok("1".into()),
@@ -896,23 +904,29 @@ impl<'a> Compiler<'a> {
                 }),
             ) if text.eq_ignore_ascii_case("unknown") => Ok(format!("({expr}) IS NULL")),
             (Kind::Match, FieldOp::Match(v)) => {
-                let values = alternatives(v);
+                let mut values = alternatives(v);
                 if let Some(set) = def.values {
-                    for x in &values {
-                        if !set.iter().any(|s| s.eq_ignore_ascii_case(x)) {
+                    for x in &mut values {
+                        let Some(declared) = set.iter().find(|s| s.eq_ignore_ascii_case(x)) else {
                             return Err(bad(x, closed_set_message(def, x)));
-                        }
+                        };
+                        *x = (*declared).to_owned();
                     }
                 }
                 let (unknown, values): (Vec<&String>, Vec<&String>) = values
                     .iter()
                     .partition(|x| stores_unknown && x.eq_ignore_ascii_case("unknown"));
-                let ps: Vec<String> = values
-                    .iter()
-                    .map(|x| self.text_param(&x.to_lowercase()))
-                    .collect();
-                let listed = format!("lower({expr}) IN ({})", ps.join(", "));
-                Ok(match (unknown.is_empty(), ps.is_empty()) {
+                let listed = if closed {
+                    let ps: Vec<String> = values.iter().map(|x| self.text_param(x)).collect();
+                    format!("{expr} IN ({})", ps.join(", "))
+                } else {
+                    let ps: Vec<String> = values
+                        .iter()
+                        .map(|x| self.text_param(&x.to_lowercase()))
+                        .collect();
+                    format!("lower({expr}) IN ({})", ps.join(", "))
+                };
+                Ok(match (unknown.is_empty(), values.is_empty()) {
                     (true, _) => listed,
                     (false, true) => format!("({expr}) IS NULL"),
                     (false, false) => format!("({listed} OR ({expr}) IS NULL)"),
