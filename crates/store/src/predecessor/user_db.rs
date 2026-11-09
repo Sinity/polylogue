@@ -70,6 +70,15 @@ pub struct Row {
     pub stored: serde_json::Map<String, Json>,
 }
 
+/// One predecessor annotation schema.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Schema {
+    pub id: String,
+    pub version: i64,
+    pub definition: String,
+    pub stored: Json,
+}
+
 /// The result of mapping one row: its form here, or why it has none.
 pub type Mapped<T> = std::result::Result<T, String>;
 
@@ -153,6 +162,32 @@ impl UserDb {
             out.entry(set).or_default().push(member);
         }
         Ok(out)
+    }
+
+    /// The annotation schemas, by ID and version, with every column as stored.
+    pub fn schemas(&self) -> Result<Vec<Schema>> {
+        if !tables_of(&self.conn)?.contains_key("annotation_schemas") {
+            return Ok(Vec::new());
+        }
+        let mut statement = self.conn.prepare(
+            "SELECT schema_id, schema_version, definition_json, definition_sha256, registered_at_ms
+             FROM annotation_schemas ORDER BY schema_id, schema_version",
+        )?;
+        let rows = statement.query_map([], |r| {
+            Ok(Schema {
+                id: r.get(0)?,
+                version: r.get(1)?,
+                definition: r.get(2)?,
+                stored: serde_json::json!({
+                    "schema_id": r.get::<_, String>(0)?,
+                    "schema_version": r.get::<_, i64>(1)?,
+                    "definition_json": r.get::<_, String>(2)?,
+                    "definition_sha256": r.get::<_, String>(3)?,
+                    "registered_at_ms": r.get::<_, i64>(4)?,
+                }),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Rows per table.
@@ -551,6 +586,129 @@ pub fn pass(id: &str, rows: &[Row], machine: &str) -> Mapped<AssertionFact> {
             .ok_or_else(|| format!("time {newest} is out of range"))?,
         valid_until: None,
         links: Vec::new(),
+    };
+    fact.canonicalized().map_err(|error| error.to_string())
+}
+
+/// The unit a rubric's rows are drawn from, for each kind of target the
+/// predecessor's schemas named; the first kind a schema names that has a
+/// unit here is its unit, and the rest stay in its predecessor fields.
+fn unit_query(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "session" => "sessions",
+        "message" => "messages",
+        "block" => "blocks",
+        "delegation" => "links where kind:spawn",
+        "assertion" => "assertions",
+        _ => return None,
+    })
+}
+
+/// A predecessor annotation schema as a `rubric`: its fields keep their
+/// names, types, enums, ranges, requirement and description; its abstain,
+/// confidence and rationale fields become the rubric's allowances; its
+/// description is the instructions. Its time is `at`, since the predecessor
+/// recorded none for the schemas it shipped.
+pub fn rubric(
+    schema: &Schema,
+    machine: &str,
+    pass: &RevisionReference,
+    at: i64,
+) -> Mapped<AssertionFact> {
+    use polylogue_model::assertion::values::{Field, FieldType, Rubric};
+    let definition: Json = serde_json::from_str(&schema.definition)
+        .map_err(|error| format!("definition_json is not JSON: {error}"))?;
+    let text = |key: &str| definition.get(key).and_then(Json::as_str);
+    let kinds: Vec<&str> = definition
+        .get("target_ref_kinds")
+        .and_then(Json::as_array)
+        .map(|kinds| kinds.iter().filter_map(Json::as_str).collect())
+        .unwrap_or_default();
+    let unit = kinds
+        .iter()
+        .find_map(|kind| unit_query(kind))
+        .ok_or_else(|| format!("none of its target kinds {kinds:?} has a unit here"))?;
+    let abstain_field = text("abstain_field");
+    let mut fields = Vec::new();
+    let (mut confidence, mut rationale) = (false, false);
+    for field in definition
+        .get("fields")
+        .and_then(Json::as_array)
+        .ok_or("it declares no fields")?
+    {
+        let name = field
+            .get("name")
+            .and_then(Json::as_str)
+            .ok_or("a field has no name")?;
+        if Some(name) == abstain_field {
+            continue;
+        }
+        if name == "confidence" {
+            confidence = true;
+            continue;
+        }
+        if name == "rationale" {
+            rationale = true;
+            continue;
+        }
+        let value_type: FieldType =
+            serde_json::from_value(field.get("value_type").cloned().unwrap_or(Json::Null))
+                .map_err(|_| format!("field {name} has a type with no counterpart here"))?;
+        let number = |key: &str| field.get(key).and_then(Json::as_number).cloned();
+        fields.push(Field {
+            name: name.to_owned(),
+            value_type,
+            enum_values: field
+                .get("enum_values")
+                .and_then(Json::as_array)
+                .filter(|values| !values.is_empty())
+                .cloned(),
+            minimum: number("minimum"),
+            maximum: number("maximum"),
+            required: field.get("required").and_then(Json::as_bool),
+            description: field
+                .get("description")
+                .and_then(Json::as_str)
+                .map(str::to_owned),
+        });
+    }
+    let instructions = match (text("title"), text("description")) {
+        (Some(title), Some(description)) => format!("{title}. {description}"),
+        (None, Some(description)) => description.to_owned(),
+        (Some(title), None) => title.to_owned(),
+        (None, None) => return Err("it has no description to instruct from".into()),
+    };
+    let value = serde_json::to_value(Structured {
+        fields: Rubric {
+            instructions,
+            unit_query: unit.to_owned(),
+            fields,
+            abstain: abstain_field.is_some(),
+            confidence,
+            rationale: Some(rationale),
+        },
+        predecessor: Some(schema.stored.clone()),
+    })
+    .map_err(|error| error.to_string())?;
+    let id = format!("predecessor-schema:{}@{}", schema.id, schema.version);
+    let fact = AssertionFact {
+        id: id.clone(),
+        root: id,
+        kind: AssertionKind::Rubric,
+        key: Some(schema.id.clone()),
+        value: Some(value),
+        author: Author::Script("polylogue".into()),
+        via: Channel::Import,
+        machine: machine.to_owned(),
+        created_at: Timestamp::from_unix_ms(at)
+            .ok_or_else(|| format!("time {at} is out of range"))?,
+        valid_until: None,
+        links: vec![AssertionLink {
+            role: LinkRole::Origin,
+            reference: Reference::Assertion(pass.clone()),
+            seen_hash: None,
+            quote: None,
+        }],
     };
     fact.canonicalized().map_err(|error| error.to_string())
 }

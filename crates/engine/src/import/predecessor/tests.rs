@@ -57,7 +57,7 @@ fn authored_records_carried() {
         (12, 11, 1)
     );
     assert_eq!(report.classes["pass"].stored, 1);
-    assert_eq!(report.classes["annotation_schemas"].kept, 1);
+    assert_eq!(report.classes["annotation_schemas"].stored, 1);
     assert_eq!(report.classes["result_set_members"].kept, 2);
     assert_eq!(report.refused.len(), 1);
     assert_eq!(report.refused[0].row, fixture::MARK);
@@ -83,7 +83,7 @@ fn authored_records_carried() {
         &archive,
         "SELECT id, root, kind, key, author, via, machine FROM assertion ORDER BY id",
     );
-    assert_eq!(stored.len(), 12);
+    assert_eq!(stored.len(), 13);
     let row = |id: &str| stored.iter().find(|row| row[0] == id).unwrap().clone();
     assert_eq!(
         row(fixture::CANDIDATE),
@@ -140,7 +140,7 @@ fn authored_records_carried() {
             "SELECT count(*) FROM link WHERE role = 'origin' AND ref = 'assertion:{pass}@{pass}'"
         ),
     );
-    assert_eq!(origins, [["11"]]);
+    assert_eq!(origins, [["12"]]);
     assert_eq!(
         std::fs::read(&path).unwrap(),
         before,
@@ -159,9 +159,10 @@ fn authored_records_carried() {
         (0, 11, 1)
     );
     assert_eq!(again.classes["pass"].present, 1);
+    assert_eq!(again.classes["annotation_schemas"].present, 1);
     assert_eq!(
         strings(&archive, "SELECT count(*) FROM assertion"),
-        [["12"]]
+        [["13"]]
     );
 }
 

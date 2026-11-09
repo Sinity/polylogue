@@ -223,3 +223,38 @@ fn the_pass_is_the_same_for_the_same_rows() {
     assert_eq!(first.created_at.unix_ms(), 6_000);
     assert_eq!(first.value.as_ref().unwrap()["counts"]["assertions"], 12);
 }
+
+#[test]
+fn an_annotation_schema_becomes_a_rubric_with_its_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("user.db");
+    fixture::user_db(&path);
+    let db = UserDb::open(&path, dir.path()).unwrap();
+    let schemas = db.schemas().unwrap();
+    assert_eq!(schemas.len(), 1);
+    let pass = RevisionReference::exact("pass-1".into(), "pass-1".into());
+    let fact = rubric(&schemas[0], "machine-1", &pass, 6_000).unwrap();
+    assert_eq!(fact.kind, AssertionKind::Rubric);
+    assert_eq!(fact.key.as_deref(), Some("seed.example"));
+    assert_eq!(fact.id, "predecessor-schema:seed.example@1");
+    assert_eq!(fact.author, Author::Script("polylogue".into()));
+    assert_eq!(fact.created_at.unix_ms(), 6_000);
+    let value = fact.value.unwrap();
+    assert_eq!(
+        value["instructions"],
+        "Session activity. What kind of work the session did."
+    );
+    // The first target kind with a unit here decides the unit.
+    assert_eq!(value["unit_query"], "sessions");
+    assert_eq!(value["abstain"], true);
+    assert_eq!(value["confidence"], true);
+    assert_eq!(value["rationale"], true);
+    assert_eq!(
+        value["fields"],
+        serde_json::json!([{"name": "activity", "value_type": "enum",
+            "enum_values": ["build", "debug", "research"], "minimum": null, "maximum": null,
+            "required": true, "description": "The main activity."}])
+    );
+    assert_eq!(value["predecessor"]["schema_id"], "seed.example");
+    assert_eq!(value["predecessor"]["definition_json"], fixture::SCHEMA);
+}

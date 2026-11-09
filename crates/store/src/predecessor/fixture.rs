@@ -58,6 +58,8 @@ pub const NOTE: &str = "assertion-note:handoff";
 pub const MARK: &str = "mark:star";
 pub const AGENT_SESSION: &str = "codex-session:00000000-0000-7000-8000-00000000c0de";
 pub const RESULT_SET: &str = "finding-0001";
+/// A schema in the predecessor's `polylogue.annotation-schema/v1` shape.
+pub const SCHEMA: &str = r#"{"abstain_field":"abstain","description":"What kind of work the session did.","evidence_policy":"required","fields":[{"description":"The main activity.","enum_values":["build","debug","research"],"maximum":null,"minimum":null,"name":"activity","required":true,"value_type":"enum"},{"description":"Label confidence.","enum_values":[],"maximum":1.0,"minimum":0.0,"name":"confidence","required":true,"value_type":"number"},{"description":"Too little evidence to label.","enum_values":[],"maximum":null,"minimum":null,"name":"abstain","required":false,"value_type":"boolean"},{"description":"Why.","enum_values":[],"maximum":null,"minimum":null,"name":"rationale","required":false,"value_type":"string"}],"format":"polylogue.annotation-schema/v1","schema_id":"seed.example","status":"active","target_ref_kinds":["work_event","session"],"title":"Session activity","version":1}"#;
 pub const MEMBERS: [&str; 2] = [
     "message:claude-code-session:00000000-0000-4000-8000-00000000bbbb:m-1",
     "message:claude-code-session:00000000-0000-4000-8000-00000000bbbb:m-2",
@@ -282,8 +284,8 @@ pub fn user_db(path: &Path) {
         1_004,
     );
     conn.execute(
-        "INSERT INTO annotation_schemas VALUES ('seed.example', 1, '{\"schema_id\":\"seed.example\",\"version\":1}', ?1, 0)",
-        ["0".repeat(64)],
+        "INSERT INTO annotation_schemas VALUES ('seed.example', 1, ?1, ?2, 0)",
+        params![SCHEMA, "0".repeat(64)],
     )
     .unwrap();
     for (rank, member) in MEMBERS.iter().enumerate() {
