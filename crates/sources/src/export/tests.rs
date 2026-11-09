@@ -367,3 +367,16 @@ fn keyed_maps_check_the_complete_wrapper_and_preserve_callback_failures() {
         matches!(scan_map(br#"{"messages":{"a":1}}"#.as_slice(),"messages",|_,_,_|Err("stop".into())),Err(ScanError::Callback(value)) if value=="stop")
     );
 }
+
+#[test]
+fn a_repeated_key_is_reported_by_its_path() {
+    assert_eq!(
+        first_repeated_key(br#"{"a":1,"b":{"c":1,"d":[{"e":1,"e":2}],"c":3}}"#),
+        Some("b.d.[].e".to_owned())
+    );
+    assert_eq!(first_repeated_key(br#"{"a":1,"b":{"a":2}}"#), None);
+    assert_eq!(
+        first_repeated_key(br#"{"n":1.50,"m":123456789012345678901234567890}"#),
+        None
+    );
+}

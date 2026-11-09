@@ -411,6 +411,9 @@ pub fn parse_item(
         &mut crate::document::Sink::new(&mut output, &mut records),
         owners,
     )?;
+    if let Some(path) = first_repeated_key(bytes) {
+        records.repeated_key("export item", &path);
+    }
     for row in &mut output.messages {
         let source = parser
             .message_range(&row.message)
@@ -436,6 +439,100 @@ pub fn parse_item(
         consumed: range.end,
         repeats_whole_conversations: false,
     })
+}
+
+/// The path of the first object key an element repeats, if any. Readers of
+/// the element see only the key's last value.
+fn first_repeated_key(bytes: &[u8]) -> Option<String> {
+    struct Walk<'a> {
+        path: &'a mut Vec<String>,
+        found: &'a mut Option<String>,
+    }
+    impl<'de> DeserializeSeed<'de> for Walk<'_> {
+        type Value = ();
+        fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<(), D::Error> {
+            de.deserialize_any(self)
+        }
+    }
+    impl<'de> Visitor<'de> for Walk<'_> {
+        type Value = ();
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a JSON value")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+            let mut keys = std::collections::HashSet::new();
+            while let Some(key) = map.next_key::<String>()? {
+                if !keys.insert(key.clone()) && self.found.is_none() {
+                    self.path.push(key.clone());
+                    *self.found = Some(self.path.join("."));
+                    self.path.pop();
+                }
+                self.path.push(key);
+                map.next_value_seed(Walk {
+                    path: self.path,
+                    found: self.found,
+                })?;
+                self.path.pop();
+            }
+            Ok(())
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+            self.path.push("[]".into());
+            while seq
+                .next_element_seed(Walk {
+                    path: self.path,
+                    found: self.found,
+                })?
+                .is_some()
+            {}
+            self.path.pop();
+            Ok(())
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_str<E>(self, _: &str) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_unit<E>(self) -> Result<(), E> {
+            Ok(())
+        }
+    }
+    let (mut path, mut found) = (Vec::new(), None);
+    let mut de = serde_json::Deserializer::from_slice(bytes);
+    Walk {
+        path: &mut path,
+        found: &mut found,
+    }
+    .deserialize(&mut de)
+    .ok()?;
+    found
+}
+
+/// One export element the parser could not read: counted as unreadable,
+/// with no rows, over that element's byte range.
+pub fn unreadable_item(error: String, range: Range<u64>) -> crate::parse::Step {
+    let mut records = crate::Records::default();
+    records.record(
+        "export item",
+        &polylogue_model::RecordOutcome::unreadable(error),
+    );
+    crate::parse::Step {
+        output: Default::default(),
+        counts: records.finish().expect("unreadable item counted"),
+        start: range.start,
+        consumed: range.end,
+        repeats_whole_conversations: false,
+    }
 }
 
 pub fn refused(error: String, length: u64) -> crate::parse::Step {

@@ -23,6 +23,7 @@ zstd.workspace = true
 tempfile.workspace = true
 flate2 = "1"
 tar = "0.4"
+rustix.workspace = true
 sha2 = "0.10"
 
 [features]

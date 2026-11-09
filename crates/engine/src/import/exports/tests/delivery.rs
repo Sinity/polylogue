@@ -141,6 +141,44 @@ fn interrupted_delivery_replays_the_same_sealed_prefix_from_archived_bytes() {
     ));
 }
 
+#[test]
+fn an_element_the_parser_cannot_read_does_not_refuse_its_siblings() {
+    let home = ClaudeHome::new();
+    let mut readable = conversation("readable", 1, &[("kept-message", "kept body")]);
+    readable["current_node"] = json!("kept-message");
+    // Nested past what the JSON reader builds into a value: the scanner still
+    // splits it out by its bytes, and only this element is unreadable.
+    let deep = format!(
+        "{{\"id\":\"deep\",\"mapping\":{{}},\"extra\":{}{}}}",
+        "[".repeat(300),
+        "]".repeat(300)
+    );
+    let raw = format!("[{},{deep}]", serde_json::to_string(&readable).unwrap());
+    let (engine, _lock, plan) = plan(&home, raw.as_bytes());
+    let steps = collect(&engine, &plan);
+    let texts: Vec<_> = steps
+        .iter()
+        .flat_map(|step| {
+            step.complete_output()
+                .unwrap()
+                .messages
+                .iter()
+                .map(|row| row.message.text())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(texts, ["kept body"]);
+    let unreadable: u64 = steps
+        .iter()
+        .map(|step| step.counts.unreadable.values().sum::<u64>())
+        .sum();
+    assert_eq!(unreadable, 1);
+    assert!(matches!(
+        steps.last().unwrap().delivery.unwrap().source,
+        ExportDeliverySource::Complete { item_count: 2, .. }
+    ));
+}
+
 fn assert_refusal(step: &ParseStep) {
     assert_eq!(
         step.stopped_attempt,

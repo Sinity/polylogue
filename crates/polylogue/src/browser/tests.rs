@@ -673,6 +673,22 @@ fn the_reader_address_is_unavailable_when_no_reader_is_running() {
     assert_eq!(response.json()["error"], "reader_unavailable");
 }
 
+#[test]
+fn a_frame_claiming_more_than_arrives_fails_without_allocating_the_claim() {
+    // A header claiming 4 GiB followed by three bytes: the reader must stop
+    // at the bytes that exist instead of allocating the claimed length.
+    let mut input = u32::MAX.to_ne_bytes().to_vec();
+    input.extend_from_slice(b"{}x");
+    let error = read_frame(&mut input.as_slice()).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+    let mut whole = Vec::new();
+    write_frame(&mut whole, &json!({"type": "body_end"})).unwrap();
+    assert_eq!(
+        read_frame(&mut whole.as_slice()).unwrap(),
+        Some(json!({"type": "body_end"}))
+    );
+}
+
 mod notes;
 mod repeated_captures;
 
