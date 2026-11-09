@@ -342,7 +342,7 @@ pub(super) fn merge_hooks(
 }
 
 /// The file the original settings bytes are kept in before the first edit.
-pub fn backup_path(path: &Path) -> PathBuf {
+pub(super) fn backup_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_owned();
     name.push(".polylogue-backup");
     path.with_file_name(name)
