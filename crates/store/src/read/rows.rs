@@ -42,7 +42,7 @@ impl Reader<'_> {
         &self,
         sql: &str,
         params: &[SqlValue],
-        mut visit: impl FnMut(serde_json::Value) -> std::result::Result<(), E>,
+        visit: impl FnMut(serde_json::Value) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E>
     where
         E: From<StoreError>,
