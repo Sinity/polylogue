@@ -320,6 +320,12 @@ fn claude_stream_json_steers_answers_and_interrupts() {
         approval["response"]["response"]["updatedInput"],
         json!({"command": "ls"})
     );
+    // The second message starts a second turn only after the first ended.
+    wait_until("the first turn's end", || {
+        status_lines(&hosting.config.spool)
+            .iter()
+            .any(|(_, word)| word.as_deref() == Some("idle"))
+    });
     client.send("and again", None).unwrap();
     wait_until("the second permission", || client.request().is_some());
     client.answer(false, Some("not now")).unwrap();

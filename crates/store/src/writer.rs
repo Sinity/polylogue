@@ -168,6 +168,10 @@ pub struct Writer {
 #[derive(Clone)]
 struct WriterQueue {
     bulk: Arc<Mutex<Option<SyncSender<Msg>>>>,
+    /// A second sender into the bulk queue that only wakes the writer for a
+    /// user write. Its lock is held only for one `try_send`, never while a
+    /// bulk sender waits for room, so a user write always sends its wake.
+    wake: Arc<Mutex<Option<SyncSender<Msg>>>>,
     users: Arc<Mutex<Option<SyncSender<UserMsg>>>>,
     resolver: Arc<resolve::Resolver>,
     commits: crate::completion::CommitEvents,
@@ -211,6 +215,7 @@ impl WriterQueue {
         #[cfg(any(test, feature = "fixture"))] dispatch: dispatch::Barriers,
     ) -> Self {
         Self {
+            wake: Arc::new(Mutex::new(Some(bulk.clone()))),
             bulk: Arc::new(Mutex::new(Some(bulk))),
             users: Arc::new(Mutex::new(Some(users))),
             resolver,
@@ -248,15 +253,19 @@ impl WriterQueue {
             .ok_or(())?
             .send(message)
             .map_err(|_| ())?;
-        // Wakes an idle writer. While a bulk sender holds the lock the queue
-        // is full and the writer busy; it serves user writes before its next
-        // bulk message anyway.
-        if let Ok(bulk) = self.bulk.try_lock()
-            && let Some(bulk) = bulk.as_ref()
-        {
-            let _ = bulk.try_send(Msg::Wake);
-        }
+        self.wake();
         Ok(())
+    }
+
+    /// Wakes a writer that may be waiting for bulk work. A full bulk queue
+    /// refuses the wake, and needs none: the writer has messages to take
+    /// and serves user writes before each one.
+    fn wake(&self) {
+        if let Ok(wake) = self.wake.lock()
+            && let Some(wake) = wake.as_ref()
+        {
+            let _ = wake.try_send(Msg::Wake);
+        }
     }
 
     /// As [`Self::send_user`], but a full queue hands the message back
@@ -272,17 +281,16 @@ impl WriterQueue {
                 std::sync::mpsc::TrySendError::Full(message) => Some(message),
                 std::sync::mpsc::TrySendError::Disconnected(_) => None,
             })?;
-        if let Ok(bulk) = self.bulk.try_lock()
-            && let Some(bulk) = bulk.as_ref()
-        {
-            let _ = bulk.try_send(Msg::Wake);
-        }
+        self.wake();
         Ok(())
     }
 
     fn stop(&self) {
         if let Ok(mut users) = self.users.lock() {
             users.take();
+        }
+        if let Ok(mut wake) = self.wake.lock() {
+            wake.take();
         }
         if let Ok(mut accepting) = self.bulk.lock()
             && let Some(sender) = accepting.take()

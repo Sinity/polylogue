@@ -342,12 +342,16 @@ impl crate::primary::Sinex for OfflineProducer {
         }
         Ok(())
     }
-    /// Spooled products are kept, so a test can read what was sent.
+    /// Spooled products are kept, so a test can read what was sent. Like the
+    /// real producer's spool, a write becomes visible whole: a publication
+    /// pass may rewrite the file while the test reads it.
     fn prepare_products(&self, writes: &[ProductWrite]) -> Result<crate::primary::PreparedWrite> {
         std::fs::create_dir_all(&self.root)?;
-        let file = std::fs::File::create(self.root.join("products.json"))?;
+        let preparing = self.root.join("products.json.preparing");
+        let file = std::fs::File::create(&preparing)?;
         serde_json::to_writer(&file, writes)?;
         file.sync_all()?;
+        std::fs::rename(&preparing, self.root.join("products.json"))?;
         Ok(crate::primary::PreparedWrite {
             identity: "offline-products".into(),
             pending: true,

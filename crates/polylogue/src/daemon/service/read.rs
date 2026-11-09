@@ -695,11 +695,9 @@ fn record_run(
                 exact: false,
                 next: None,
             };
-            // The writer's queue can be full while it works through a batch;
-            // the read does not wait for room.
-            let writer = writer.clone();
-            std::thread::spawn(move || writer.record_after_answer(object, run, outcome));
-            Ok(())
+            writer
+                .record_after_answer(object, run, outcome)
+                .map_err(Failure::from)
         },
     )
 }
