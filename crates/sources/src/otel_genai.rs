@@ -10,7 +10,7 @@
 //! that are not GenAI spans are counted and set aside.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id};
@@ -277,7 +277,7 @@ fn model_span(
     let tokens = |k: &str| span.attrs.get(k).and_then(Json::as_u64);
     let cached = tokens("gen_ai.usage.cache_read.input_tokens");
     let usage = Usage {
-        input: tokens("gen_ai.usage.input_tokens").map(|i| i.saturating_sub(cached.unwrap_or(0))),
+        input: tokens("gen_ai.usage.input_tokens").and_then(|i| i.checked_sub(cached.unwrap_or(0))),
         cached_input: cached,
         output: tokens("gen_ai.usage.output_tokens"),
         ..Usage::default()

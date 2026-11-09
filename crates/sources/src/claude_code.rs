@@ -15,7 +15,7 @@
 //! once, and the copying session gets a `copy` link.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 mod blocks;
 mod fields;
@@ -1096,15 +1096,23 @@ fn merge_attrs(
 
 fn usage(u: &Json) -> Usage {
     let n = |k: &str| u.get(k).and_then(Json::as_u64);
+    let thinking = n("thinking_tokens").or_else(|| {
+        u.pointer("/output_tokens_details/thinking_tokens")
+            .and_then(Json::as_u64)
+    });
+    // `output_tokens` counts thinking too; `Usage.output` excludes it. A
+    // record whose thinking exceeds its output leaves output unknown.
+    let output = match (n("output_tokens"), thinking) {
+        (Some(output), Some(thinking)) => output.checked_sub(thinking),
+        (output, None) => output,
+        (None, Some(_)) => None,
+    };
     Usage {
         input: n("input_tokens"),
         cached_input: n("cache_read_input_tokens"),
         cache_write: n("cache_creation_input_tokens"),
-        output: n("output_tokens"),
-        reasoning: u.get("thinking_tokens").and_then(Json::as_u64).or_else(|| {
-            u.pointer("/output_tokens_details/thinking_tokens")
-                .and_then(Json::as_u64)
-        }),
+        output,
+        reasoning: thinking,
         cache_write_1h: u
             .get("cache_creation")
             .and_then(|c| c.get("ephemeral_1h_input_tokens"))

@@ -7,7 +7,7 @@
 //! result sit together in the assistant message.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
@@ -395,7 +395,8 @@ fn usage(tokens: Option<&Json>) -> Usage {
     let n = |k: &str| t.get(k).and_then(Json::as_u64);
     let cached = n("cached");
     Usage {
-        input: n("input").map(|i| i.saturating_sub(cached.unwrap_or(0))),
+        // Cached above input is inconsistent: the uncached part is unknown.
+        input: n("input").and_then(|i| i.checked_sub(cached.unwrap_or(0))),
         cached_input: cached,
         cache_write: None,
         output: n("output"),

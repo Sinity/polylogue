@@ -29,12 +29,13 @@ fn unused_leaf_counted_and_outcomes_sum_with_malformed_line() {
 #[test]
 fn claude_usage_signature_and_multi_result_metadata_are_read() {
     let input = jsonl(&[
-        json!({"type":"assistant","uuid":"a","sessionId":"morrow","message":{"id":"native","role":"assistant","content":[{"type":"thinking","signature":"opaque"}],"usage":{"thinking_tokens":9,"server_tool_use":{"web_search_requests":2,"web_fetch_requests":0},"iterations":3}}}),
+        json!({"type":"assistant","uuid":"a","sessionId":"morrow","message":{"id":"native","role":"assistant","content":[{"type":"thinking","signature":"opaque"}],"usage":{"output_tokens":20,"thinking_tokens":9,"server_tool_use":{"web_search_requests":2,"web_fetch_requests":0},"iterations":3}}}),
         json!({"type":"user","uuid":"u","sessionId":"morrow","toolUseResult":[{"tool_use_id":"read","file":{"filePath":"/home/op/morrow/a.rs","numLines":2}},{"tool_use_id":"edit","exitCode":7,"durationMs":125,"structuredPatch":[{"oldStart":1,"newStart":1,"lines":["-a","+b"]}]}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"edit","content":[{"type":"tool_reference","tool_name":"Read"},{"type":"text","text":"failed"}]},{"type":"tool_result","tool_use_id":"read","content":"two lines"}]}}),
     ]);
     let parsed = parse("claude-code", "projects/morrow/morrow.jsonl", &input);
     let assistant = message(&parsed, ":a");
     assert_eq!(assistant["usage"]["reasoning"], 9);
+    assert_eq!(assistant["usage"]["output"], 11);
     assert_eq!(
         assistant["production"],
         json!({"server_tool_use":{"web_search_requests":2,"web_fetch_requests":0},"iterations":3})

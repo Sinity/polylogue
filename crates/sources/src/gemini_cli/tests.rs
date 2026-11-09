@@ -81,6 +81,21 @@ fn a_turn_with_a_tool_call_and_its_result() {
 }
 
 #[test]
+fn cached_above_input_leaves_input_unknown() {
+    let bytes = session(vec![
+        json!({"id": "g1", "timestamp": "2026-03-14T18:01:50Z",
+        "type": "gemini", "content": "ok", "model": "gemini-3-pro",
+        "tokens": {"input": 50, "output": 7, "cached": 60}}),
+    ]);
+    let step =
+        crate::export::fixture::parse(&mut Parse::Export(Box::new(GeminiCli::default())), &bytes)
+            .unwrap();
+    let usage = &step.output.messages[0].message.usage;
+    assert_eq!(usage.input, None);
+    assert_eq!(usage.cached_input, Some(60));
+}
+
+#[test]
 fn recognizes_chat_files_only() {
     let p = Path::new("/h/.gemini/tmp/proj/chats/session-1.json");
     assert!(recognize(p, b"{\n  \"sessionId\": \"4ab5\""));

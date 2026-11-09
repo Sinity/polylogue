@@ -377,6 +377,30 @@ fn usage_keeps_one_hour_cache_writes_and_the_speed() {
     assert_eq!(u.speed.as_deref(), Some("fast"));
 }
 
+fn usage_of(usage: Json) -> polylogue_model::Usage {
+    let rec = json!({"type":"assistant","uuid":"a1","sessionId":"s1","timestamp":"2026-01-01T00:00:00Z",
+        "message":{"id":"msg_1","role":"assistant","model":"claude-opus-5-5",
+                   "content":[{"type":"text","text":"ok"}],"usage":usage}});
+    let step = run(&main_file("s1"), &mut Default::default(), &jsonl(&[rec]), 0).unwrap();
+    final_messages(&[step])[0].usage.clone()
+}
+
+#[test]
+fn thinking_is_inside_output_tokens() {
+    let u = usage_of(json!({"output_tokens":305,"output_tokens_details":{"thinking_tokens":100}}));
+    assert_eq!(u.output, Some(205));
+    assert_eq!(u.reasoning, Some(100));
+    let u = usage_of(json!({"output_tokens":5}));
+    assert_eq!((u.output, u.reasoning), (Some(5), None));
+}
+
+#[test]
+fn thinking_above_output_leaves_output_unknown() {
+    let u = usage_of(json!({"output_tokens":10,"output_tokens_details":{"thinking_tokens":11}}));
+    assert_eq!(u.output, None);
+    assert_eq!(u.reasoning, Some(11));
+}
+
 #[test]
 fn native_background_notification_keeps_reported_clock_precision_or_unknown() {
     use polylogue_model::{Precision, TimeEvidence, Timestamp};

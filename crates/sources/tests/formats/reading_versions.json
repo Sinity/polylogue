@@ -28,15 +28,15 @@
     "0ea7851b65c55d85e6fa8c6622ad118a85d2dda92938d1a8656ef3704f8c330e"
   ],
   "claude-code": [
-    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=4",
+    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=5",
     "d9f4194d5d3ebdcf3939c41adfadf040ef5c077b3e3aba62e3c04d4909ad10ac"
   ],
   "claude-code-history": [
-    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=4,crate::claude_code::side::VERSION=1",
+    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=5,crate::claude_code::side::VERSION=1",
     "92acebf5b2e325829b05a23fbae4b3dcbfdb4f354196541a71ca2f8c418e12f2"
   ],
   "claude-code-side": [
-    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=4,crate::claude_code::side::VERSION=1",
+    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=5,crate::claude_code::side::VERSION=1",
     "27ae0456023092a3d499b9990d3a91a86704b81e3cd6d9ba14a3a572bb2167a8"
   ],
   "claude-design": [
@@ -60,7 +60,7 @@
     "e3404ac6e8e845ffba24750d5e0b720c5d75ce338db4b218e8843fffef17c5ce"
   ],
   "gemini-cli": [
-    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::chatgpt::VERSION=1,crate::export::VERSION=2,crate::gemini_cli::VERSION=1",
+    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::chatgpt::VERSION=1,crate::export::VERSION=2,crate::gemini_cli::VERSION=2",
     "1537c30b64d8c82b0c9cef3d8eed8ae22d73ad878898306e1ccf0727767f7466"
   ],
   "grok": [
@@ -88,7 +88,7 @@
     "2f6b1b969d307266a60e93d52b673cfcaedc3481b51a9536c5fb84df37c40069"
   ],
   "otel-genai": [
-    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::chatgpt::VERSION=1,crate::export::VERSION=2,crate::otel_genai::VERSION=1",
+    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::chatgpt::VERSION=1,crate::export::VERSION=2,crate::otel_genai::VERSION=2",
     "f290b2dc965bf30d63452dd1d965600c2481bb85136c5aad59019921f6075c95"
   ],
   "polylogue-archive-rows": [

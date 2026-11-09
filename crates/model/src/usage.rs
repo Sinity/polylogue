@@ -11,8 +11,11 @@ pub struct Usage {
     pub cached_input: Option<u64>,
     /// Input tokens written to a cache, billed apart from plain input.
     pub cache_write: Option<u64>,
+    /// Output tokens, never including reasoning: a source that counts
+    /// reasoning inside its output total has it subtracted here, so the two
+    /// counts add up to what the response produced.
     pub output: Option<u64>,
-    /// Reasoning tokens, when the source reports them apart from output.
+    /// Reasoning tokens, when the source reports them.
     pub reasoning: Option<u64>,
     /// The part of `cache_write` written with a one-hour lifetime, which is
     /// billed at a higher rate than the default five-minute writes.
