@@ -4,7 +4,7 @@
 //! ordinary `read` operation and continues with each page's `follow` call.
 //! A query prints the rows that were not in its earlier answers. Nothing is
 //! recorded.
-use super::{Archive, Request, fail};
+use super::{Archive, fail};
 use crate::protocol::follow::{Line, Marks};
 use polylogue_model::read::{HeaderKind, ReadPage, ReadyCall};
 use std::collections::HashSet;
@@ -17,7 +17,6 @@ const QUIET_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub fn run(
     values: &crate::commands::Values,
-    request: &Request,
     startup: &crate::config::Startup,
     call: &command_surface::RunnableRequest,
 ) -> ExitCode {
@@ -54,7 +53,7 @@ pub fn run(
             );
         }
         if target.split_whitespace().next() == Some("sessions") {
-            return live_query(values, request, startup, call);
+            return live_query(values, &target, startup, call);
         }
         return follow_query(&archive, &target, output, json);
     }
@@ -301,53 +300,53 @@ const REQUEST_SPAN: Duration = Duration::from_secs(60);
 
 fn live_query(
     values: &crate::commands::Values,
-    request: &Request,
+    query: &str,
     startup: &crate::config::Startup,
     _: &command_surface::RunnableRequest,
 ) -> ExitCode {
-    let Request::Follow { query, marks } = request else {
-        return fail(
-            startup.output,
-            true,
-            "bad_request",
-            "a follow request is required",
-            2,
-        );
-    };
     let zone = startup
         .config
         .standalone_day()
         .map(|day| day.zone().clone())
         .unwrap_or_else(|_| jiff::tz::TimeZone::system());
     let archive = Archive::at(&startup.config.archive);
-    let mut marks = marks.clone();
+    let mut marks: Option<Marks> = None;
     let mut stdout = io::stdout().lock();
     loop {
-        let request = Request::Follow {
-            query: query.clone(),
+        let arguments = crate::daemon::service::follow::Arguments {
+            target: query.to_owned(),
             marks: marks.clone(),
         };
+        let mut request = crate::client::request(
+            "follow",
+            serde_json::to_value(arguments).expect("follow arguments serialize"),
+            polylogue_store::user_writes::new_request_id(),
+        );
+        request.deadline = command_surface::Deadline::Milliseconds(
+            u64::try_from(REQUEST_SPAN.as_millis()).expect("the follow span fits"),
+        );
         let mut next: Option<Marks> = None;
-        let result = crate::client::stream::run(&archive, &request, Some(REQUEST_SPAN), |frame| {
-            if frame.event == "error" {
-                return Err(io::Error::other(frame.data));
-            }
-            let line: Line = serde_json::from_str(&frame.data).map_err(io::Error::other)?;
-            match line {
-                Line::Marks { marks } => next = Some(marks),
-                line => {
-                    if values.flag("json") {
-                        serde_json::to_writer(&mut stdout, &line)?;
-                        writeln!(stdout)?;
-                        stdout.flush()?;
-                    } else if let Some(text) = line.text(&zone) {
-                        writeln!(stdout, "{}", polylogue_render::terminal::escape(&text))?;
-                        stdout.flush()?;
+        let result =
+            crate::client::stream::run_call(&archive, &request, Some(REQUEST_SPAN), |frame| {
+                if frame.event == "error" {
+                    return Err(io::Error::other(frame.data));
+                }
+                let line: Line = serde_json::from_str(&frame.data).map_err(io::Error::other)?;
+                match line {
+                    Line::Marks { marks } => next = Some(marks),
+                    line => {
+                        if values.flag("json") {
+                            serde_json::to_writer(&mut stdout, &line)?;
+                            writeln!(stdout)?;
+                            stdout.flush()?;
+                        } else if let Some(text) = line.text(&zone) {
+                            writeln!(stdout, "{}", polylogue_render::terminal::escape(&text))?;
+                            stdout.flush()?;
+                        }
                     }
                 }
-            }
-            Ok(true)
-        });
+                Ok(true)
+            });
         match (result, next) {
             (Ok(()), Some(reached)) => marks = Some(reached),
             (Ok(()), None) => {

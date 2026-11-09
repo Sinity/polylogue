@@ -1,6 +1,7 @@
 //! MCP tool calls against a real daemon on a temporary archive.
 
 use super::*;
+use crate::commands::Surface;
 use crate::test_daemon;
 use serde_json::json;
 
@@ -367,11 +368,14 @@ fn tool_annotations_follow_the_command_table() {
     let tools = tools();
     for tool in Tool::ALL {
         let listed = tools.iter().find(|t| t["name"] == tool.name()).unwrap();
-        assert_eq!(listed["annotations"]["readOnlyHint"], !tool.writes());
         assert_eq!(listed["annotations"]["openWorldHint"], tool.open_world());
         assert_eq!(listed["annotations"]["idempotentHint"], tool.idempotent());
         for command in operations(tool) {
-            assert_eq!(command.writes, tool.writes(), "{}", command.name);
+            assert_eq!(
+                listed["annotations"]["readOnlyHint"], !command.writes,
+                "{}",
+                command.name
+            );
         }
     }
     for (name, read_only) in [
@@ -405,10 +409,12 @@ fn every_tool_operation_is_reachable_from_exactly_one_tool() {
     // Every daemon request the command line or HTTP can make, apart from
     // query forms and the protocol's own completion, is a tool operation.
     let query_forms = ["list", "live", "notices", "sql", "changes"];
-    for command in COMMANDS
-        .iter()
-        .filter(|c| matches!(c.action, Action::Request(_) | Action::Stream { .. }) && c.http)
-    {
+    for command in COMMANDS.iter().filter(|c| {
+        !matches!(
+            c.run,
+            crate::commands::Run::Local(_) | crate::commands::Run::ConfiguredLocal(_)
+        ) && c.http
+    }) {
         assert!(
             command.tool.is_some()
                 || query_forms.contains(&command.name)
@@ -470,8 +476,15 @@ fn typed_operations_declare_every_field_of_their_arguments() {
             }
         }
     }
-    for command in tool_commands().filter(|c| c.register.is_some()) {
-        let schema = command.typed_schemas.unwrap()().0;
+    // `chat send` takes the files its `--attach` names on the command line.
+    for command in tool_commands().filter(|command| command.prepare.is_none()) {
+        let schema = crate::commands::declarations()
+            .descriptions()
+            .iter()
+            .find(|description| description.spec.name == command.name)
+            .unwrap()
+            .input_schema
+            .clone();
         let mut typed = std::collections::BTreeSet::new();
         fields(&schema, &schema, &mut typed);
         let declared: std::collections::BTreeSet<String> = command
@@ -591,7 +604,7 @@ fn tool_requests_and_answers_keep_terminal_controls_visible() {
 
 #[test]
 fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
-    let daemon = test_daemon::start("MCP ready witness");
+    let daemon = test_daemon::start("MCP ready example");
     let ready = daemon
         .daemon
         .ready_call(&command_surface::Request {
@@ -672,7 +685,7 @@ fn typed_admission_failure_has_the_same_shared_answer_without_opening_a_daemon()
         args(json!({
             "operation":"read",
             "arguments":{"target":"session:claude-code:synthetic", "author":"invented"},
-            "request_id":"invalid-admission-witness"
+            "request_id":"invalid-request-example"
         })),
         None,
         &tokio_util::sync::CancellationToken::new(),
@@ -690,4 +703,38 @@ fn typed_admission_failure_has_the_same_shared_answer_without_opening_a_daemon()
         panic!("canonical admission error");
     };
     assert_eq!(error.kind, command_surface::FailureKind::BadRequest);
+}
+
+/// The tool list is the shared declarations' projection of the rows: one
+/// tool per family, each row its operation, its input from the rows' typed
+/// requests.
+#[test]
+fn tool_schema_from_operation_table() {
+    let declarations = crate::commands::declarations();
+    assert_eq!(tools(), declarations.mcp_tools());
+    for tool in Tool::ALL {
+        let listed = tools()
+            .into_iter()
+            .find(|listed| listed["name"] == tool.name())
+            .unwrap();
+        let rows: Vec<&str> = operations(tool).map(|row| row.name).collect();
+        let offered: Vec<&str> = listed["inputSchema"]["properties"]["operation"]["enum"]
+            .as_array()
+            .map(|names| names.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_else(|| rows.clone());
+        assert_eq!(offered, rows, "{}", tool.name());
+        let family = declarations.family_schemas(
+            tool.name()
+                .strip_prefix("polylogue_")
+                .expect("product tool prefix"),
+        );
+        for row in &rows {
+            let description = declarations
+                .descriptions()
+                .iter()
+                .find(|description| description.spec.name == *row)
+                .unwrap();
+            assert_eq!(family[*row], description.input_schema, "{row}");
+        }
+    }
 }

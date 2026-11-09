@@ -5,7 +5,6 @@
 
 use super::BrowserHost;
 use super::actions::Update;
-use crate::daemon::Request;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path as UrlPath, Query, State};
@@ -66,8 +65,15 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
 
 /// Asks the daemon and answers with its data, or its refusal's status and
 /// code; 503 `daemon_required` when it does not answer (stopped, or too busy).
-async fn ask(host: Arc<BrowserHost>, request: Request) -> Result<Value, Box<HttpResponse>> {
-    match blocking(move || host.ask(&request)).await.flatten() {
+async fn ask(
+    host: Arc<BrowserHost>,
+    operation: &'static str,
+    arguments: Value,
+) -> Result<Value, Box<HttpResponse>> {
+    match blocking(move || host.ask(operation, arguments))
+        .await
+        .flatten()
+    {
         Some(answer) => {
             crate::protocol::into_value(answer).map_err(|failure| Box::new(refuse_with(&failure)))
         }
@@ -79,8 +85,8 @@ async fn ask(host: Arc<BrowserHost>, request: Request) -> Result<Value, Box<Http
     }
 }
 
-async fn answer(host: Arc<BrowserHost>, request: Request) -> HttpResponse {
-    match ask(host, request).await {
+async fn answer(host: Arc<BrowserHost>, operation: &'static str, arguments: Value) -> HttpResponse {
+    match ask(host, operation, arguments).await {
         Ok(data) => Json(data).into_response(),
         Err(refusal) => *refusal,
     }
@@ -216,10 +222,8 @@ async fn capture_files(State(host): State<Arc<BrowserHost>>, body: Bytes) -> Htt
     let stored = match provider.zip(conversation) {
         Some((provider, conversation)) => ask(
             host,
-            Request::StoredFiles {
-                provider,
-                conversation,
-            },
+            "stored-files",
+            json!({ "provider": provider, "conversation": conversation }),
         )
         .await
         .ok(),
@@ -263,11 +267,8 @@ async fn conversations(
         .iter()
         .map(|id| host.capture_log(&asked.provider, id).exists())
         .collect();
-    let request = Request::Conversations {
-        provider: asked.provider.clone(),
-        ids: asked.ids.clone(),
-    };
-    let held = ask(host, request).await.ok();
+    let arguments = json!({ "provider": asked.provider, "ids": asked.ids });
+    let held = ask(host, "conversations", arguments).await.ok();
     let daemon = held.is_some();
     let rows: Vec<Value> = asked
         .ids
@@ -330,11 +331,10 @@ async fn chat_actions(
     State(host): State<Arc<BrowserHost>>,
     Query(q): Query<ClaimQuery>,
 ) -> HttpResponse {
-    let request = match q.claim_by.filter(|by| !by.is_empty()) {
-        None => Request::ChatActions,
-        Some(by) => Request::ChatClaim { by },
-    };
-    answer(host, request).await
+    match q.claim_by.filter(|by| !by.is_empty()) {
+        None => answer(host, "chat list", json!({})).await,
+        Some(by) => answer(host, "chat claim", json!({ "by": by })).await,
+    }
 }
 
 async fn chat_report(
@@ -342,7 +342,7 @@ async fn chat_report(
     UrlPath(id): UrlPath<String>,
     Json(update): Json<Update>,
 ) -> HttpResponse {
-    answer(host, Request::ChatReport { id, update }).await
+    answer(host, "chat report", json!({ "id": id, "update": update })).await
 }
 
 #[derive(Deserialize)]
@@ -359,13 +359,8 @@ async fn chat_decision(
     UrlPath(id): UrlPath<String>,
     Json(d): Json<Decision>,
 ) -> HttpResponse {
-    let request = Request::ChatDecide {
-        id,
-        approve: d.approve,
-        by: d.by,
-        detail: d.detail,
-    };
-    answer(host, request).await
+    let arguments = json!({ "id": id, "approve": d.approve, "by": d.by, "detail": d.detail });
+    answer(host, "chat decide", arguments).await
 }
 
 async fn chat_attachment(
@@ -373,7 +368,8 @@ async fn chat_attachment(
     UrlPath((id, attachment)): UrlPath<(String, String)>,
 ) -> HttpResponse {
     use base64::Engine as _;
-    let v = match ask(host, Request::ChatAttachment { id, attachment }).await {
+    let arguments = json!({ "id": id, "attachment": attachment });
+    let v = match ask(host, "chat attachment", arguments).await {
         Ok(v) => v,
         Err(refusal) => return *refusal,
     };
@@ -394,7 +390,7 @@ async fn chat_attachment(
 }
 
 async fn backfill_jobs(State(host): State<Arc<BrowserHost>>) -> HttpResponse {
-    answer(host, Request::BackfillJobs).await
+    answer(host, "backfill list", json!({})).await
 }
 
 #[derive(Deserialize)]
@@ -408,7 +404,7 @@ async fn backfill_claim(
     State(host): State<Arc<BrowserHost>>,
     Json(c): Json<Claimant>,
 ) -> HttpResponse {
-    answer(host, Request::BackfillClaim { by: c.by }).await
+    answer(host, "backfill claim", json!({ "by": c.by })).await
 }
 
 #[derive(Deserialize)]
@@ -423,10 +419,6 @@ async fn backfill_report(
     UrlPath(id): UrlPath<String>,
     Json(r): Json<Report>,
 ) -> HttpResponse {
-    let request = Request::BackfillReport {
-        id,
-        by: r.by,
-        report: r.report,
-    };
-    answer(host, request).await
+    let arguments = json!({ "id": id, "by": r.by, "report": r.report });
+    answer(host, "backfill report", arguments).await
 }

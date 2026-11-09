@@ -40,16 +40,11 @@ fn native_no_effect(d: &Daemon, id: &str) {
         .user(invocation.request(id.into(), write()))
         .unwrap();
 }
-fn read(id: &str) -> Request {
-    Request::Read {
-        target: format!("request:{id}"),
-        options: Default::default(),
-        delivery: ReadDelivery::Stream,
-        format: "jsonl".into(),
-        budget: None,
-        with_blobs: false,
-        cursor: None,
-    }
+fn read(id: &str) -> crate::test_daemon::Call {
+    crate::test_daemon::Call::new(
+        "read",
+        serde_json::json!({"target": format!("request:{id}"), "delivery": "stream", "format": "jsonl"}),
+    )
 }
 fn frames(bytes: &[u8]) -> Vec<(String, serde_json::Value)> {
     std::str::from_utf8(bytes)
@@ -76,7 +71,15 @@ fn frames(bytes: &[u8]) -> Vec<(String, serde_json::Value)> {
 fn streamed(d: &Daemon, id: &str) -> (ReadBegin, ReadRecord, ReadComplete) {
     streamed_request(d, &read(id))
 }
-fn streamed_request(d: &Daemon, request: &Request) -> (ReadBegin, ReadRecord, ReadComplete) {
+fn streamed_request(
+    d: &Daemon,
+    request: &crate::test_daemon::Call,
+) -> (ReadBegin, ReadRecord, ReadComplete) {
+    let request = &super::ReadRequest::from_arguments(
+        serde_json::from_value(request.arguments.clone()).unwrap(),
+        None,
+    )
+    .unwrap();
     let operation = d.operation_context(&actor()).unwrap();
     let mut bytes = Vec::new();
     super::super::produce(request, d, &operation, &mut bytes)
@@ -147,15 +150,12 @@ fn actual_no_effect_request_read_records_one_object_run_and_roundtrips_through_d
     let mut receiver = test_daemon::start("independent receiving source");
     receiver.pause_signals();
     let limit = crate::daemon::execution::limit(None, Default::default());
-    let imported = crate::daemon::service::handle_with_caller(
-        Request::Import {
-            request_id: "import-object".into(),
-            paths: vec![destination],
-        },
-        &receiver.daemon,
-        &limit,
-        &actor(),
-    );
+    let imported =
+        crate::test_daemon::Call::new("import", serde_json::json!({"paths": [destination]}))
+            .id("import-object")
+            .limit(limit.clone())
+            .authorship(actor().clone())
+            .answer(&receiver.daemon);
     crate::test_answers::ok(imported);
     let reader = receiver.daemon.reads.reader().unwrap();
     let Some(polylogue_store::read::authored_evidence::AuthoredReadEvidence::Local {
@@ -207,7 +207,11 @@ fn actual_object_stream_stops_on_scope_reset_and_cancellation_before_record_body
         };
         let response = limit.scope(|| {
             super::super::produce(
-                &read("interrupted-object"),
+                &crate::daemon::service::read::ReadRequest::from_arguments(
+                    serde_json::from_value(read("interrupted-object").arguments.clone()).unwrap(),
+                    None,
+                )
+                .unwrap(),
                 &d.daemon,
                 &operation,
                 &mut output,

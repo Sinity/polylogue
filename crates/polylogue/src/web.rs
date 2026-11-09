@@ -1,7 +1,7 @@
 //! The daemon's loopback HTTP port: the web reader
 //! and its JSON API, for the browser only. Every route answers through the
-//! same `Request` as the Unix socket, so a page and a command cannot drift
-//! apart. Other programs use the socket; the extension uses its native
+//! same operations and handlers as the Unix socket, so a page and a command
+//! cannot drift apart. Other programs use the socket; the extension uses its native
 //! messaging host (`crate::browser`).
 
 pub mod access;
@@ -10,7 +10,6 @@ mod connection;
 pub mod pages;
 mod reader;
 
-use crate::daemon::Request;
 use crate::daemon::service::Daemon;
 use axum::Router;
 use axum::extract::{Path as UrlPath, Query, Request as HttpRequest, State};
@@ -296,9 +295,24 @@ async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> Htt
     web_shell::assets::secure(response)
 }
 
-/// Runs a request on a blocking thread, as the socket would.
-pub async fn ask(web: &Arc<Web>, request: Request) -> Answer<Value> {
-    let scope = if request.read_only() {
+/// Runs one operation on a blocking thread, as the socket would.
+pub async fn ask(
+    web: &Arc<Web>,
+    operation: &'static str,
+    arguments: Value,
+    cursor: Option<String>,
+) -> Answer<Value> {
+    let caller = crate::commands::Caller {
+        surface: crate::commands::Surface::Http,
+        cwd: None,
+    };
+    let read_only = crate::commands::command(operation)
+        .and_then(|row| {
+            row.registration()
+                .map(|registration| registration.admit(&arguments, row, &caller))
+        })
+        .is_some_and(|policy| policy.is_ok_and(|policy| policy.read_only));
+    let scope = if read_only {
         match web.daemon.reads.scope_token() {
             Ok(scope) => Some(scope),
             Err(error) => return crate::daemon::service::store_error(&error),
@@ -317,7 +331,18 @@ pub async fn ask(web: &Arc<Web>, request: Request) -> Answer<Value> {
     );
     let answer = tokio::task::spawn_blocking(move || {
         let invocation = d.invocation(&authorship).with_parent(parent);
-        crate::daemon::service::handle_with_invocation(request, &d, &limit, &invocation)
+        crate::daemon::handler::local(
+            operation,
+            arguments,
+            &crate::daemon::handler::Local {
+                daemon: &d,
+                invocation: &invocation,
+                caller: &caller,
+                limit: &limit,
+                request_id: &polylogue_store::user_writes::new_request_id(),
+                cursor: cursor.as_deref(),
+            },
+        )
     })
     .await
     .unwrap_or_else(|error| crate::daemon::service::error("internal", error));
@@ -417,20 +442,16 @@ fn failed(status: StatusCode, kind: &str, message: &str) -> HttpResponse {
 }
 
 async fn home(State(web): State<Arc<Web>>) -> HttpResponse {
-    let status = match crate::protocol::into_value(ask(&web, Request::Status).await) {
-        Ok(status) => status,
-        Err(failure) => return failed_with(&failure),
-    };
+    let status =
+        match crate::protocol::into_value(ask(&web, "status", serde_json::json!({}), None).await) {
+            Ok(status) => status,
+            Err(failure) => return failed_with(&failure),
+        };
     let sessions = match ask(
         &web,
-        Request::Query {
-            text: "sessions".into(),
-            cursor: None,
-            page_size: Some(30),
-            why: false,
-            session: None,
-            fields: vec![],
-        },
+        "query",
+        serde_json::json!({"query": "sessions", "limit": 30}),
+        None,
     )
     .await
     .value()
@@ -452,15 +473,8 @@ async fn search(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Ht
     if p.q.trim().is_empty() {
         return Redirect::to("/").into_response();
     }
-    let request = Request::Query {
-        text: p.q.clone(),
-        cursor: p.cursor.clone(),
-        page_size: None,
-        why: true,
-        session: None,
-        fields: vec![],
-    };
-    match crate::protocol::into_value(ask(&web, request).await) {
+    let arguments = serde_json::json!({"query": p.q, "why": true});
+    match crate::protocol::into_value(ask(&web, "query", arguments, p.cursor.clone()).await) {
         Ok(data) => page(pages::search(&p.q, Some(&data), None, p.cursor.as_deref())),
         Err(failure) => page(pages::search(
             &p.q,
@@ -479,18 +493,7 @@ async fn cost(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Http
         p.q.trim()
     };
     let text = format!("{scope} | measure usage");
-    let answer = ask(
-        &web,
-        Request::Query {
-            text,
-            cursor: None,
-            page_size: None,
-            why: false,
-            session: None,
-            fields: vec![],
-        },
-    )
-    .await;
+    let answer = ask(&web, "query", serde_json::json!({ "query": text }), None).await;
     match crate::protocol::into_value(answer) {
         Ok(data) => page(pages::cost(scope, &data["data"])),
         Err(failure) => failed_with(&failure),

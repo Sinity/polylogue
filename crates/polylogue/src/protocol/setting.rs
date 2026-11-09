@@ -10,14 +10,6 @@ pub struct Arguments {
     pub machine: Option<String>,
 }
 
-pub fn required_access(arguments: &Arguments) -> command_surface::Access {
-    if arguments.value.is_some() {
-        command_surface::Access::Write
-    } else {
-        command_surface::Access::Read
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Answer {

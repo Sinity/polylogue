@@ -2,7 +2,7 @@
 
 mod files;
 
-use crate::commands::{self, Action, Caller, Command, Surface, Values};
+use crate::commands::{self, Caller, Command, Surface, Values};
 use crate::daemon::service;
 use polylogue_engine::Config;
 use serde::Serialize;
@@ -108,28 +108,29 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
     let invoke = |command: &str, arguments: Value| -> Result<Value, String> {
         let declaration =
             commands::command(command).ok_or_else(|| format!("no command {command}"))?;
-        let values = Values::from_json(
-            declaration,
-            Surface::Cli,
-            arguments
-                .as_object()
-                .ok_or("arguments must be an object")?
-                .clone(),
-        )?;
-        let build = match declaration.action {
-            Action::Request(build) | Action::Stream { build, .. } => build,
-            _ => return Err(format!("{command} must use the daemon")),
-        };
-        let request = build(
-            declaration,
-            &values,
-            &Caller {
-                surface: Surface::Cli,
-                cwd: Some(directory.clone()),
-                json: true,
+        let authorship = polylogue_model::authorship::compute_authorship(
+            polylogue_model::authorship::Channel::Cli,
+            &Default::default(),
+            None,
+        );
+        let invocation = runtime.daemon.invocation(&authorship);
+        let limit = crate::daemon::execution::limit(None, Default::default());
+        let answer = crate::daemon::handler::local(
+            declaration.name,
+            arguments,
+            &crate::daemon::handler::Local {
+                daemon: &runtime.daemon,
+                invocation: &invocation,
+                caller: &Caller {
+                    surface: Surface::Cli,
+                    cwd: Some(directory.clone()),
+                },
+                limit: &limit,
+                request_id: &polylogue_store::user_writes::new_request_id(),
+                cursor: None,
             },
-        )?;
-        crate::protocol::into_value(service::handle(request, &runtime.daemon)).map_err(|failure| {
+        );
+        crate::protocol::into_value(answer).map_err(|failure| {
             format!(
                 "{command}: {}: {}",
                 failure.code.as_deref().unwrap_or_default(),
@@ -152,7 +153,13 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
             let text = if command == "query" {
                 crate::cli::print::query_plain(&result)
             } else {
-                (declaration.print)(&result, false)
+                commands::declarations()
+                    .render_text(
+                        declaration.name,
+                        &command_surface::Answer::ok(result.clone()),
+                        command_surface::TextStyle::Plain,
+                    )
+                    .map_err(|failure| failure.message)?
             };
             steps.push(Step {
                 title: title.into(),

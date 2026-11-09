@@ -1,4 +1,4 @@
-//! Canonical assertion operations retain the domain's closed write shapes.
+//! The assertion operations take the domain's closed write shapes.
 use polylogue_model::{
     Reference,
     assertion::{AssertionPatch, NewAssertion},
@@ -32,5 +32,13 @@ pub struct Revise {
 pub struct Withdraw {
     #[schemars(length(min = 1))]
     pub targets: Vec<Reference>,
+    pub reason: Option<String>,
+}
+/// The operator accepts or rejects one revision of an agent's note.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Judge {
+    pub note: String,
+    pub accepted: bool,
     pub reason: Option<String>,
 }

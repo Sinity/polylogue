@@ -1,5 +1,4 @@
 //! One connection and incremental SSE decoder for finite operation streams.
-use crate::daemon::Request;
 use command_surface::{Answer, SseDecoder, SseEvent};
 use polylogue_store::Archive;
 use std::io::{self, Read, Write};
@@ -14,36 +13,29 @@ pub enum Error {
     Answer(Box<Answer<serde_json::Value>>),
 }
 
-pub fn run(
-    archive: &Archive,
-    request: &Request,
-    timeout: Option<Duration>,
-    event: impl FnMut(SseEvent) -> io::Result<bool>,
-) -> Result<(), Error> {
-    let duration = timeout.unwrap_or_else(crate::daemon::execution::timeout);
-    let deadline = Some(crate::daemon::execution::deadline(duration));
-    let outgoing = crate::daemon::execution::Outgoing::new(request, deadline);
-    send(archive, &outgoing, Some(duration), event)
-}
-
-/// A typed streaming call uses the same request envelope as a paged call.
+/// One streaming call; `budget` bounds connecting and each read and write.
 pub fn run_call(
     archive: &Archive,
     request: &command_surface::RunnableRequest,
+    budget: Option<Duration>,
     event: impl FnMut(SseEvent) -> io::Result<bool>,
 ) -> Result<(), Error> {
-    let class = crate::commands::command(&request.operation)
-        .map(|command| command.latency)
-        .unwrap_or(command_surface::LatencyClass::Local);
-    let budget = request
-        .deadline
-        .connection_timeout(crate::protocol::operations::deadlines().get(class));
     let outgoing = crate::protocol::wire::Outgoing {
         request,
         caller: crate::protocol::caller::evidence(),
         parent_deadline_ms: None,
     };
     send(archive, &outgoing, budget, event)
+}
+
+/// The budget of a streaming call from its row's declared latency.
+pub fn declared_budget(request: &command_surface::RunnableRequest) -> Option<Duration> {
+    let class = crate::commands::command(&request.operation)
+        .map(|command| command.latency)
+        .unwrap_or(command_surface::LatencyClass::Local);
+    request
+        .deadline
+        .connection_timeout(crate::commands::deadlines().get(class))
 }
 
 fn send(

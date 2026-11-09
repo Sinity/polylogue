@@ -1,6 +1,22 @@
 use super::*;
-use crate::daemon::service::handle_with_limit;
+use crate::daemon::handler::{Policy, within_limit};
 use crate::test_daemon;
+
+/// How the daemon treats this call before it runs.
+fn policy(call: &test_daemon::Call) -> Policy {
+    let row = crate::commands::command(&call.operation).unwrap();
+    row.registration()
+        .unwrap()
+        .admit(
+            &call.arguments,
+            row,
+            &crate::commands::Caller {
+                surface: call.surface,
+                cwd: None,
+            },
+        )
+        .unwrap()
+}
 
 pub(crate) const SLOW: &str = "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n";
 
@@ -19,13 +35,9 @@ fn background_readers_keep_their_ordinary_busy_wait() {
 fn slow_read_returns_a_typed_deadline_with_unknown_count() {
     let daemon = test_daemon::start("synthetic deadline");
     let limit = ReadLimit::new(Duration::from_millis(50), Default::default());
-    let response = handle_with_limit(
-        Request::Sql {
-            statement: SLOW.into(),
-        },
-        &daemon.daemon,
-        &limit,
-    );
+    let response = crate::test_daemon::Call::new("sql", serde_json::json!({"statement": SLOW}))
+        .limit(limit.clone())
+        .answer(&daemon.daemon);
     let command_surface::Answer {
         outcome: command_surface::Outcome::Error(error),
         envelope: command_surface::Envelope { notes, .. },
@@ -51,9 +63,8 @@ fn slow_read_returns_a_typed_deadline_with_unknown_count() {
 
 #[test]
 fn expiry_at_completion_never_returns_a_partial_success() {
-    let request = Request::Status;
     let limit = ReadLimit::new(Duration::from_millis(10), Default::default());
-    let response = run(request, &limit, |_| {
+    let response = within_limit(&limit, true, false, "status", None, || {
         std::thread::sleep(Duration::from_millis(20));
         super::super::service::ok(serde_json::json!({"count": 123}))
     });
@@ -66,64 +77,33 @@ fn expiry_at_completion_never_returns_a_partial_success() {
 fn expired_requests_never_start_any_read_operation() {
     let daemon = test_daemon::start("synthetic limits");
     let requests = [
-        Request::Status,
-        Request::Read {
-            target: "session:claude-code:s1".into(),
-            options: polylogue_model::read::ReadOptions::default(),
-            delivery: polylogue_model::read::ReadDelivery::Page,
-            format: "json".into(),
-            budget: None,
-            with_blobs: false,
-            cursor: Some("never-open-an-expired-request".into()),
-        },
-        Request::Read {
-            target: "session:claude-code:s1".into(),
-            options: polylogue_model::read::ReadOptions::default(),
-            delivery: polylogue_model::read::ReadDelivery::Page,
-            format: "json".into(),
-            budget: None,
-            with_blobs: false,
-            cursor: None,
-        },
-        Request::Context {
-            budget_tokens: Default::default(),
-            request_id: "synthetic-recall".into(),
-            ask: crate::briefing::Ask::Recall {
-                text: "synthetic".into(),
-                cwd: None,
-                for_session: None,
-                cursor: None,
-            },
-            sender: None,
-        },
-        Request::Query {
-            text: "sessions | measure usage".into(),
-            cursor: None,
-            page_size: None,
-            why: false,
-            session: None,
-            fields: vec![],
-        },
-        Request::Complete {
-            text: "repo:".into(),
-            position: 5,
-        },
-        Request::Query {
-            text: "sessions".into(),
-            cursor: None,
-            page_size: None,
-            why: false,
-            session: None,
-            fields: vec![],
-        },
-        Request::Sql {
-            statement: "SELECT 1".into(),
-        },
+        crate::test_daemon::Call::new("status", serde_json::json!({})),
+        crate::test_daemon::Call::new(
+            "read",
+            serde_json::json!({"target": "session:claude-code:s1", "format": "json"}),
+        )
+        .cursor(Some("never-open-an-expired-request")),
+        crate::test_daemon::Call::new(
+            "read",
+            serde_json::json!({"target": "session:claude-code:s1", "format": "json"}),
+        ),
+        crate::test_daemon::Call::new("recall", serde_json::json!({"query": "synthetic"}))
+            .id("synthetic-recall"),
+        crate::test_daemon::Call::new(
+            "query",
+            serde_json::json!({"query": "sessions | measure usage"}),
+        ),
+        crate::test_daemon::Call::new(
+            "complete",
+            serde_json::json!({"text": "repo:", "position": 5}),
+        ),
+        crate::test_daemon::Call::new("query", serde_json::json!({"query": "sessions"})),
+        crate::test_daemon::Call::new("sql", serde_json::json!({"statement": "SELECT 1"})),
     ];
     for request in requests {
         let limit = ReadLimit::new(Duration::ZERO, Default::default());
         assert!(
-            matches!(handle_with_limit(request, &daemon.daemon, &limit), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("deadline_exceeded"))
+            matches!((request).limit(limit.clone()).answer(&daemon.daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("deadline_exceeded"))
         );
     }
 }
@@ -147,20 +127,13 @@ fn write_requests_do_not_enter_a_read_scope_even_with_an_expired_cancelled_limit
     let limit = ReadLimit::new(Duration::ZERO, Default::default());
     limit.cancellation.cancel();
     for request in [
-        Request::Keep {
-            request_id: "synthetic-keep".into(),
-            text: "sessions".into(),
-            name: None,
-        },
-        Request::Embed {
-            what: "build".into(),
-            query: None,
-            limit: None,
-            yes: false,
-        },
+        crate::test_daemon::Call::new("keep", serde_json::json!({"query": "sessions"}))
+            .id("synthetic-keep"),
+        crate::test_daemon::Call::new("embed build", serde_json::json!({})),
     ] {
-        assert!(request_deadline(&request, Some(0)).is_none());
-        let response = run(request, &limit, |_| {
+        let policy = policy(&request);
+        assert!(!policy.read_phase, "{}", request.operation);
+        let response = within_limit(&limit, policy.read_phase, false, "write", None, || {
             assert!(ReadLimit::current().is_none());
             super::super::service::ok(serde_json::json!({"done": true}))
         });
@@ -173,23 +146,19 @@ fn write_requests_do_not_enter_a_read_scope_even_with_an_expired_cancelled_limit
 
 #[test]
 fn streamed_read_has_no_default_deadline_and_explicit_deadlines_still_apply() {
-    let request = Request::Read {
-        target: "sessions".into(),
-        options: polylogue_model::read::ReadOptions::default(),
-        delivery: polylogue_model::read::ReadDelivery::Stream,
-        format: "json".into(),
-        budget: None,
-        with_blobs: false,
-        cursor: None,
-    };
-    let limit = limit_for(&request, None, Default::default());
-    assert!(limit.check().is_ok());
-    assert!(request_deadline(&request, None).is_none());
-    assert_eq!(request_deadline(&request, Some(0)), Some(0));
-    let response = run(
-        request,
-        &limit_for(&Request::Status, Some(0), Default::default()),
-        |_| panic!("expired streamed read started"),
+    let request = crate::test_daemon::Call::new(
+        "read",
+        serde_json::json!({"target": "sessions", "delivery": "stream", "format": "json"}),
+    );
+    let policy = policy(&request);
+    assert!(policy.read_phase && policy.streaming && !policy.default_deadline);
+    let response = within_limit(
+        &ReadLimit::new(Duration::ZERO, Default::default()),
+        policy.read_phase,
+        false,
+        "read",
+        None,
+        || panic!("expired streamed read started"),
     );
     assert!(
         matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(error), envelope: command_surface::Envelope { notes, .. }, .. } if error.code.as_deref() == Some("deadline_exceeded") && notes[0].starts_with("stopped during read "))
@@ -198,34 +167,28 @@ fn streamed_read_has_no_default_deadline_and_explicit_deadlines_still_apply() {
 
 #[test]
 fn other_read_requests_use_their_operation_name_in_refusals() {
-    let request = Request::BackfillJobs;
-    let limit = ReadLimit::new(Duration::ZERO, Default::default());
-    let response = run(request, &limit, |_| panic!("expired request started"));
+    let daemon = test_daemon::start("synthetic refusal stage");
+    let response = crate::test_daemon::Call::new("backfill list", serde_json::json!({}))
+        .limit(ReadLimit::new(Duration::ZERO, Default::default()))
+        .answer(&daemon.daemon);
     assert!(
-        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(_), envelope: command_surface::Envelope { notes, .. }, .. } if notes[0].starts_with("stopped during backfill_jobs "))
+        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(_), envelope: command_surface::Envelope { notes, .. }, .. } if notes[0].starts_with("stopped during backfill list ")),
+        "{response:?}"
     );
 }
 
 #[test]
 fn context_receipts_do_not_disable_the_read_phase_deadline() {
-    let request = Request::Context {
-        budget_tokens: Default::default(),
-        request_id: "synthetic-context".into(),
-        ask: crate::briefing::Ask::Takeover {
-            session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
-            for_session: None,
-        },
-        sender: Some("mcp".into()),
-    };
-    assert!(!request.read_only());
-    assert!(request.has_read_phase());
-    assert!(request_deadline(&request, None).is_some());
-    assert_eq!(request_deadline(&request, Some(0)), Some(0));
-    let response = run(
-        request,
-        &ReadLimit::new(Duration::ZERO, Default::default()),
-        |_| panic!("expired context started"),
-    );
+    let daemon = test_daemon::start("synthetic context deadline");
+    let request =
+        crate::test_daemon::Call::new("takeover", serde_json::json!({"session": "claude-code:s1"}))
+            .id("synthetic-context")
+            .surface(crate::commands::Surface::Mcp);
+    let policy = policy(&request);
+    assert!(!policy.read_only && policy.read_phase && policy.default_deadline);
+    let response = request
+        .limit(ReadLimit::new(Duration::ZERO, Default::default()))
+        .answer(&daemon.daemon);
     assert!(
         matches!(response, command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("deadline_exceeded"))
     );
@@ -237,15 +200,10 @@ fn an_authored_write_commits_with_an_expired_cancelled_read_budget() {
     let limit = ReadLimit::new(Duration::ZERO, Default::default());
     limit.cancellation.cancel();
     let id = polylogue_store::user_writes::new_request_id();
-    let response = handle_with_limit(
-        Request::Keep {
-            request_id: id.clone(),
-            text: "sessions".into(),
-            name: None,
-        },
-        &daemon.daemon,
-        &limit,
-    );
+    let response = crate::test_daemon::Call::new("keep", serde_json::json!({"query": "sessions"}))
+        .id(id.clone().as_ref())
+        .limit(limit.clone())
+        .answer(&daemon.daemon);
     crate::test_answers::ok(response);
     assert!(
         daemon
@@ -261,17 +219,11 @@ fn an_authored_write_commits_with_an_expired_cancelled_read_budget() {
 
 #[test]
 fn continued_read_is_a_page_with_an_ordinary_read_deadline() {
-    let request = Request::Read {
-        target: "session:claude-code:s1".into(),
-        options: polylogue_model::read::ReadOptions::default(),
-        delivery: polylogue_model::read::ReadDelivery::Page,
-        format: "json".into(),
-        budget: None,
-        with_blobs: false,
-        cursor: Some("opaque-awaiting-owner-validation".into()),
-    };
-    assert!(request.read_only());
-    assert!(!request.streaming());
-    assert!(request_deadline(&request, None).is_some());
-    assert_eq!(request_deadline(&request, Some(0)), Some(0));
+    let request = crate::test_daemon::Call::new(
+        "read",
+        serde_json::json!({"target": "session:claude-code:s1", "format": "json"}),
+    )
+    .cursor(Some("opaque-awaiting-owner-validation"));
+    let policy = policy(&request);
+    assert!(policy.read_only && !policy.streaming && policy.default_deadline);
 }

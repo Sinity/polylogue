@@ -32,7 +32,7 @@ pub fn providers() -> impl Iterator<Item = &'static str> {
 pub struct Refused(pub &'static str);
 
 /// A request to draft or submit one turn in a chat web page.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChatRequest {
     pub provider: String,
     /// The conversation to reply in; none starts a new one.
@@ -55,7 +55,7 @@ pub struct ChatRequest {
 }
 
 /// A file the operator attaches, with its bytes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChatFile {
     pub name: String,
     pub media_type: String,
@@ -63,7 +63,7 @@ pub struct ChatFile {
 }
 
 /// What the extension instance holding an action reports.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Update {
     /// The extension instance holding the claim.
     pub by: String,

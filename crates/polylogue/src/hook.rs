@@ -23,7 +23,6 @@
 
 use crate::briefing::{Ask, StartSource};
 use crate::config::Startup;
-use crate::daemon::Request;
 use command_surface::Answer;
 use polylogue_model::DeliveryOutcome;
 use polylogue_model::SessionId;
@@ -253,16 +252,23 @@ fn request_id(at: jiff::Timestamp) -> std::io::Result<String> {
 }
 
 /// Sends one request with a time budget for the whole exchange.
-fn ask_daemon(startup: &Startup, request: &Request, budget: Duration) -> Option<Answer<Value>> {
-    exchange(
+fn ask_daemon(
+    startup: &Startup,
+    operation: &str,
+    arguments: Value,
+    request_id: String,
+    budget: Duration,
+) -> Option<Answer<Value>> {
+    let mut request = crate::client::request(operation, arguments, request_id);
+    request.deadline = command_surface::Deadline::Milliseconds(
+        u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
+    );
+    crate::client::call_with_budget(
         &Archive::at(&startup.config.archive).socket(),
-        request,
+        &request,
         budget,
     )
-}
-
-fn exchange(socket: &Path, request: &Request, budget: Duration) -> Option<Answer<Value>> {
-    crate::client::send_with_budget(socket, request, budget).ok()
+    .ok()
 }
 
 /// The session a hook payload names, as Polylogue names it.
@@ -436,12 +442,13 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
         // may confirm preparation; absent proof leaves acceptance unresolved.
         let _ = ask_daemon(
             startup,
-            &Request::DeliveryEvent {
-                request_id: self::request_id(startup.clock.now()).ok()?,
-                delivery: request_id,
-                what: DeliveryOutcome::NotSent,
-                detail: Some("timeout".into()),
-            },
+            "delivery-event",
+            json!({
+                "delivery": request_id,
+                "what": DeliveryOutcome::NotSent,
+                "detail": "timeout",
+            }),
+            self::request_id(startup.clock.now()).ok()?,
             DELIVERED_BUDGET,
         );
         return Some((
@@ -464,12 +471,13 @@ fn delivered(startup: &Startup, delivery: &str, budget: Duration) {
     };
     let _ = ask_daemon(
         startup,
-        &Request::DeliveryEvent {
-            request_id,
-            delivery: delivery.to_owned(),
-            what: DeliveryOutcome::Delivered,
-            detail: Some("written to the harness hook output".into()),
-        },
+        "delivery-event",
+        json!({
+            "delivery": delivery,
+            "what": DeliveryOutcome::Delivered,
+            "detail": "written to the harness hook output",
+        }),
+        request_id,
         budget,
     );
 }
@@ -707,10 +715,9 @@ pub fn accepts_mail(harness: Harness, event: &str) -> bool {
 fn claim(startup: &Startup, session: &SessionId, event: &str) -> Option<(Vec<String>, String)> {
     let reply = ask_daemon(
         startup,
-        &Request::Claim {
-            session: session.clone(),
-            event: event.to_owned(),
-        },
+        "mail-claim",
+        json!({ "session": session, "event": event }),
+        polylogue_store::user_writes::new_request_id(),
         CONTEXT_BUDGET,
     )?;
     let data = crate::protocol::into_value(reply).ok()?;
@@ -729,11 +736,13 @@ fn claim(startup: &Startup, session: &SessionId, event: &str) -> Option<(Vec<Str
 fn permission(startup: &Startup, session: &SessionId, payload: &Value) {
     let Some(reply) = ask_daemon(
         startup,
-        &Request::Permission {
-            session: session.clone(),
-            tool: payload["tool_name"].as_str().unwrap_or("").to_owned(),
-            input: payload["tool_input"].clone(),
-        },
+        "permission",
+        json!({
+            "session": session,
+            "tool": payload["tool_name"].as_str().unwrap_or(""),
+            "input": payload["tool_input"],
+        }),
+        polylogue_store::user_writes::new_request_id(),
         CONTEXT_BUDGET,
     ) else {
         return;

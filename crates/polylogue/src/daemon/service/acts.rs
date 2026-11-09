@@ -8,8 +8,9 @@
 //! starts on the protocol [`polylogue_model::live::channel::host_channel`]
 //! names.
 use super::{Daemon, Failure, Invocation, authored_preparation, error, ok, writer};
-use crate::daemon::Request;
+use crate::daemon::handler::{Call, Handler};
 use crate::live_acts::{ResumeRun, probe};
+use crate::protocol::act as protocol;
 use command_surface::Answer;
 use polylogue_model::live::channel::{Act, Channel, channel};
 use polylogue_model::user::{Delivery, UserOutcome, UserWrite};
@@ -19,80 +20,89 @@ use serde_json::{Value, json};
 #[cfg(test)]
 mod tests;
 
-pub(super) fn handle(request: Request, d: &Daemon, invocation: &Invocation) -> Answer<Value> {
-    let result = match request {
-        Request::Ping {
-            request_id,
-            target,
-            text,
-            live,
-            about,
-        } => ping(d, invocation, &request_id, &target, &text, live, about),
-        Request::Claim { session, event: _ } => claim(d, &session),
-        Request::Answer {
-            request_id,
-            session,
-            approve,
-            text,
-            standing,
-        } => answer(
-            d,
-            invocation,
-            &request_id,
-            &session,
-            approve,
-            text,
-            standing,
-        ),
-        Request::Permission {
-            session,
-            tool,
-            input,
-        } => permission(d, invocation, &session, &tool, &input),
-        Request::Interrupt {
-            request_id,
-            session,
-        } => interrupt(d, invocation, &request_id, &session),
-        Request::Start {
-            request_id,
-            harness,
-            role,
-            cwd,
-            text,
-        } => start(
-            d,
-            invocation,
-            &request_id,
-            harness.as_deref(),
-            role.as_deref(),
-            &cwd,
-            &text,
-        ),
-        Request::HandOff {
-            request_id,
-            session,
-            to,
-            cwd,
-            at,
-            stop_source,
-            print,
-        } => hand_off(
-            d,
-            invocation,
-            &HandOff {
-                request_id: &request_id,
-                source: &session,
-                to: &to,
-                cwd: cwd.as_deref(),
-                at: at.as_deref(),
-                stop_source,
-                print,
-            },
-        ),
-        _ => unreachable!("only live-session acts reach here"),
+/// The acts' handlers: each records its act and reaches its session.
+macro_rules! act {
+    ($(#[$doc:meta])* $name:ident, $arguments:ty, |$args:ident, $call:ident| $body:expr) => {
+        $(#[$doc])*
+        pub(crate) struct $name;
+        impl Handler for $name {
+            type Arguments = $arguments;
+            type Answer = Value;
+            fn run($args: Self::Arguments, $call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+                $body
+            }
+        }
     };
-    result.unwrap_or_else(|failure| failure.answer())
 }
+
+act!(Ping, protocol::Ping, |a, call| ping(
+    call.daemon,
+    call.invocation,
+    call.request_id,
+    &a.target,
+    &a.text,
+    a.live,
+    a.about
+));
+act!(
+    /// A hook takes the pings and notices pending for its session.
+    Claim,
+    protocol::Claim,
+    |a, call| claim(call.daemon, &a.session)
+);
+act!(AnswerRequest, protocol::Answer, |a, call| answer(
+    call.daemon,
+    call.invocation,
+    call.request_id,
+    &a.session,
+    a.decision == protocol::Decision::Approve,
+    a.text,
+    a.standing
+));
+act!(Permission, protocol::Permission, |a, call| permission(
+    call.daemon,
+    call.invocation,
+    &a.session,
+    &a.tool,
+    &a.input
+));
+act!(Interrupt, protocol::Interrupt, |a, call| interrupt(
+    call.daemon,
+    call.invocation,
+    call.request_id,
+    &a.session
+));
+act!(Start, protocol::Start, |a, call| {
+    if a.harness.is_none() && a.role.is_none() {
+        Err(Failure::new(
+            "bad_request",
+            "start takes --harness or --role",
+        ))
+    } else {
+        start(
+            call.daemon,
+            call.invocation,
+            call.request_id,
+            a.harness.as_deref(),
+            a.role.as_deref(),
+            &a.cwd,
+            &a.text,
+        )
+    }
+});
+act!(HandOffSession, protocol::HandOff, |a, call| hand_off(
+    call.daemon,
+    call.invocation,
+    &HandOff {
+        request_id: call.request_id,
+        source: &a.session,
+        to: &a.to,
+        cwd: a.cwd.as_deref(),
+        at: a.at.as_deref(),
+        stop_source: a.stop_source,
+        print: a.print,
+    },
+));
 
 fn now(d: &Daemon) -> i64 {
     d.config.requests.now().unix_ms()
@@ -106,7 +116,7 @@ pub(super) fn author(
     write: UserWrite,
 ) -> Result<UserOutcome, Failure> {
     let writes = writer(d)?;
-    invocation.check_parent_admission()?;
+    invocation.check_parent_lifetime()?;
     let request = invocation.request(request_id, write);
     Ok(writes.user_preparing(request, authored_preparation(), None)?)
 }

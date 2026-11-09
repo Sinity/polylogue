@@ -77,13 +77,11 @@ fn a_commit_is_counted_however_long_the_last_count_took() {
 fn completion_reads_declared_values_and_refreshes_observed_models() {
     let d = crate::test_daemon::start("synthetic prompt");
     let values = |word: &str| {
-        crate::daemon::service::handle(
-            crate::daemon::Request::Complete {
-                text: word.into(),
-                position: word.len(),
-            },
-            &d.daemon,
+        crate::test_daemon::Call::new(
+            "complete",
+            serde_json::json!({"text": word, "position": word.len()}),
         )
+        .answer(&d.daemon)
     };
     assert!(
         crate::test_answers::ok(values("live:"))
@@ -143,13 +141,12 @@ fn completion_request_preserves_full_text_offsets_and_reports_invalid_boundaries
     let daemon = crate::test_daemon::start("synthetic prompt");
     let text = "tool_calls where outcome:err | count";
     let position = text.find(" | ").unwrap();
-    match crate::daemon::service::handle(
-        crate::daemon::Request::Complete {
-            text: text.into(),
-            position,
-        },
-        &daemon.daemon,
-    ) {
+    match crate::test_daemon::Call::new(
+        "complete",
+        serde_json::json!({"text": text, "position": position}),
+    )
+    .answer(&daemon.daemon)
+    {
         command_surface::Answer {
             outcome: command_surface::Outcome::Ok(data),
             ..
@@ -176,13 +173,12 @@ fn completion_request_preserves_full_text_offsets_and_reports_invalid_boundaries
         other => panic!("{other:?}"),
     }
     for position in [6, 8] {
-        match crate::daemon::service::handle(
-            crate::daemon::Request::Complete {
-                text: "repo:λ".into(),
-                position,
-            },
-            &daemon.daemon,
-        ) {
+        match crate::test_daemon::Call::new(
+            "complete",
+            serde_json::json!({"text": "repo:λ", "position": position}),
+        )
+        .answer(&daemon.daemon)
+        {
             command_surface::Answer {
                 outcome: command_surface::Outcome::Error(error),
                 ..

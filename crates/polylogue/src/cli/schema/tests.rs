@@ -1,10 +1,15 @@
 use super::*;
-use crate::commands::{Action, Caller, Surface};
+use crate::commands::Surface;
 use serde_json::json;
 
 #[test]
 fn infer_and_unread_share_typed_requests_and_keep_local_output_off_remote_surfaces() {
-    let (command, values) = crate::cli::parse(&[
+    let arguments = |argv: &[&str]| {
+        let (command, _, arguments) =
+            crate::cli::request_arguments(argv, std::path::Path::new("/")).unwrap();
+        (command, serde_json::Value::Object(arguments))
+    };
+    let (command, wire) = arguments(&[
         "polylogue",
         "schema",
         "infer",
@@ -17,21 +22,10 @@ fn infer_and_unread_share_typed_requests_and_keep_local_output_off_remote_surfac
         "named",
         "--output",
         "schema.json",
-    ])
-    .unwrap();
-    let Action::Request(build) = command.action else {
-        panic!("inference needs the daemon");
-    };
-    let caller = Caller {
-        surface: Surface::Cli,
-        cwd: None,
-        json: true,
-    };
-    let request = build(command, &values, &caller).unwrap();
-    let wire = serde_json::to_value(&request).unwrap();
+    ]);
     assert_eq!(
         wire,
-        json!({"op":"schema_infer","origin":"claude-code","inputs":["opaque:input"],"revision":2,"since":null,"fields":["named"]})
+        json!({"origin":"claude-code","input":["opaque:input"],"revision":2,"field":["named"]})
     );
     assert!(command.tool == Some(crate::commands::Tool::Read) && command.http);
     assert!(
@@ -44,26 +38,22 @@ fn infer_and_unread_share_typed_requests_and_keep_local_output_off_remote_surfac
             .args_for(Surface::Http)
             .any(|arg| arg.name == "output")
     );
+    let daemon = crate::test_daemon::start("schema arguments");
     for args in [
         vec!["polylogue", "schema", "infer", "--revision", "0"],
         vec!["polylogue", "schema", "infer", "--since", "2026-01-01"],
         vec!["polylogue", "schema", "infer", "claude-code", "--all"],
     ] {
-        let (command, values) = crate::cli::parse(&args).unwrap();
-        let Action::Request(build) = command.action else {
-            unreachable!()
-        };
-        assert!(build(command, &values, &caller).is_err());
+        let (_, wire) = arguments(&args);
+        let answer = crate::test_daemon::call(&daemon.daemon, "schema infer", wire);
+        assert_eq!(
+            answer.failure().and_then(|failure| failure.code.as_deref()),
+            Some("bad_request"),
+            "{args:?}: {answer:?}"
+        );
     }
-    let (command, values) =
-        crate::cli::parse(&["polylogue", "schema", "unread", "claude-code"]).unwrap();
-    let Action::Request(build) = command.action else {
-        unreachable!()
-    };
-    assert_eq!(
-        serde_json::to_value(build(command, &values, &caller).unwrap()).unwrap(),
-        json!({"op":"schema_unread","origin":"claude-code"})
-    );
+    let (_, wire) = arguments(&["polylogue", "schema", "unread", "claude-code"]);
+    assert_eq!(wire, json!({"origin":"claude-code"}));
 }
 
 #[test]

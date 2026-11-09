@@ -35,14 +35,11 @@ fn prepared(d: &test_daemon::TestDaemon, id: &str, text: &str) {
 }
 
 fn claim_ids(d: &test_daemon::TestDaemon) -> Vec<String> {
-    let answer = handle(
-        Request::Claim {
-            session: s1(),
-            event: "PostToolUse".into(),
-        },
-        &d.daemon,
-        &invocation(d),
-    );
+    let answer = crate::test_daemon::Call::new(
+        "mail-claim",
+        serde_json::json!({"session": s1(), "event": "PostToolUse"}),
+    )
+    .answer_with(&d.daemon, &invocation(d));
     crate::test_answers::ok(answer)["deliveries"]
         .as_array()
         .unwrap()
@@ -87,17 +84,7 @@ fn concurrent_claims_hand_each_delivery_over_once() {
 #[test]
 fn a_ping_with_no_channel_is_refused_and_recorded() {
     let ping = |d: &test_daemon::TestDaemon, live: bool| {
-        crate::test_answers::ok(handle(
-            Request::Ping {
-                request_id: polylogue_store::user_writes::new_request_id(),
-                target: "@[claude-code:s1]".into(),
-                text: "rebase after my commit".into(),
-                live,
-                about: None,
-            },
-            &d.daemon,
-            &invocation(d),
-        ))
+        crate::test_answers::ok(crate::test_daemon::Call::new("ping", serde_json::json!({"target": "@[claude-code:s1]", "text": "rebase after my commit", "live": live})).answer_with(&d.daemon, &invocation(d)))
     };
     let ended = test_daemon::start_with_clock("ended", at("2026-03-02T10:00:00Z"));
     let answer = ping(&ended, true);
@@ -122,17 +109,13 @@ fn a_ping_with_no_channel_is_refused_and_recorded() {
 #[test]
 fn a_broadcast_resolves_its_recipients_when_sent() {
     let d = test_daemon::start_with_clock("broadcast", at("2026-03-02T10:00:00Z"));
-    let answer = crate::test_answers::ok(handle(
-        Request::Ping {
-            request_id: polylogue_store::user_writes::new_request_id(),
-            target: "@[sessions]".into(),
-            text: "pause pushes".into(),
-            live: true,
-            about: None,
-        },
-        &d.daemon,
-        &invocation(&d),
-    ));
+    let answer = crate::test_answers::ok(
+        crate::test_daemon::Call::new(
+            "ping",
+            serde_json::json!({"target": "@[sessions]", "text": "pause pushes", "live": true}),
+        )
+        .answer_with(&d.daemon, &invocation(&d)),
+    );
     let deliveries = answer["deliveries"].as_array().unwrap();
     assert_eq!(deliveries.len(), 1);
     assert_eq!(deliveries[0]["session"], "claude-code:s1");
@@ -143,17 +126,11 @@ fn a_broadcast_resolves_its_recipients_when_sent() {
 #[test]
 fn an_answer_needs_a_pending_request() {
     let d = test_daemon::start_with_clock("answer", at("2026-03-01T10:05:00Z"));
-    let answer = handle(
-        Request::Answer {
-            request_id: polylogue_store::user_writes::new_request_id(),
-            session: s1(),
-            approve: true,
-            text: None,
-            standing: true,
-        },
-        &d.daemon,
-        &invocation(&d),
-    );
+    let answer = crate::test_daemon::Call::new(
+        "answer",
+        serde_json::json!({"session": s1(), "decision": "approve", "standing": true}),
+    )
+    .answer_with(&d.daemon, &invocation(&d));
     let value = serde_json::to_value(&answer).unwrap();
     assert_eq!(value["error"]["kind"], "refused");
 }
@@ -248,19 +225,7 @@ fn a_hand_off_starts_a_new_session_briefed_from_the_source() {
     let fixture = hosted_codex(&d);
     let work = tempfile::tempdir().unwrap();
     let hand_off = |to: &str, print: bool| {
-        handle(
-            Request::HandOff {
-                request_id: polylogue_store::user_writes::new_request_id(),
-                session: s1(),
-                to: to.into(),
-                cwd: Some(work.path().to_owned()),
-                at: Some("message:claude-code:u1".into()),
-                stop_source: false,
-                print,
-            },
-            &d.daemon,
-            &invocation(&d),
-        )
+        crate::test_daemon::Call::new("hand-off", serde_json::json!({"session": s1(), "to": to, "cwd": Some(work.path()), "at": Some("message:claude-code:u1"), "print": print})).answer_with(&d.daemon, &invocation(&d))
     };
     let printed = crate::test_answers::ok(hand_off("codex", true));
     assert!(
@@ -309,17 +274,13 @@ fn role_addresses_and_role_starts() {
     let fixture = hosted_codex(&d);
     let work = tempfile::tempdir().unwrap();
     let ping = |target: &str| {
-        serde_json::to_value(handle(
-            Request::Ping {
-                request_id: polylogue_store::user_writes::new_request_id(),
-                target: target.into(),
-                text: "review my diff".into(),
-                live: false,
-                about: None,
-            },
-            &d.daemon,
-            &invocation(&d),
-        ))
+        serde_json::to_value(
+            crate::test_daemon::Call::new(
+                "ping",
+                serde_json::json!({"target": target, "text": "review my diff"}),
+            )
+            .answer_with(&d.daemon, &invocation(&d)),
+        )
         .unwrap()
     };
     assert_eq!(ping("@[role:reviewer]")["error"]["kind"], "not_found");
@@ -347,17 +308,7 @@ fn role_addresses_and_role_starts() {
             .unwrap()
             .contains("no_live_instance")
     );
-    let started = crate::test_answers::ok(handle(
-        Request::Start {
-            request_id: polylogue_store::user_writes::new_request_id(),
-            harness: None,
-            role: Some("reviewer".into()),
-            cwd: work.path().to_owned(),
-            text: "look at the store".into(),
-        },
-        &d.daemon,
-        &invocation(&d),
-    ));
+    let started = crate::test_answers::ok(crate::test_daemon::Call::new("start", serde_json::json!({"role": Some("reviewer"), "cwd": work.path(), "text": "look at the store"})).answer_with(&d.daemon, &invocation(&d)));
     assert_eq!(started["session"], "codex:t1");
     assert_eq!(started["role"], "reviewer");
     let first = &turns(fixture.path())[0];
@@ -370,17 +321,13 @@ fn role_addresses_and_role_starts() {
     drop(reader);
     // The instance runs on its hosted connection (no live evidence has
     // arrived yet), so a ping reaches it rather than starting another.
-    let pinged = crate::test_answers::ok(handle(
-        Request::Ping {
-            request_id: polylogue_store::user_writes::new_request_id(),
-            target: "@[role:reviewer]".into(),
-            text: "review my diff".into(),
-            live: false,
-            about: None,
-        },
-        &d.daemon,
-        &invocation(&d),
-    ));
+    let pinged = crate::test_answers::ok(
+        crate::test_daemon::Call::new(
+            "ping",
+            serde_json::json!({"target": "@[role:reviewer]", "text": "review my diff"}),
+        )
+        .answer_with(&d.daemon, &invocation(&d)),
+    );
     assert_eq!(pinged["deliveries"][0]["session"], "codex:t1");
     assert_eq!(pinged["deliveries"][0]["channel"], "protocol");
     assert_eq!(pinged["deliveries"][0]["outcome"], "delivered");
@@ -390,31 +337,17 @@ fn role_addresses_and_role_starts() {
     d.daemon
         .acts
         .release_host(&SessionId::parse("codex:t1").unwrap());
-    let restarted = crate::test_answers::ok(handle(
-        Request::Ping {
-            request_id: polylogue_store::user_writes::new_request_id(),
-            target: "@[role:reviewer]".into(),
-            text: "one more".into(),
-            live: false,
-            about: None,
-        },
-        &d.daemon,
-        &invocation(&d),
-    ));
+    let restarted = crate::test_answers::ok(
+        crate::test_daemon::Call::new(
+            "ping",
+            serde_json::json!({"target": "@[role:reviewer]", "text": "one more"}),
+        )
+        .answer_with(&d.daemon, &invocation(&d)),
+    );
     assert_eq!(restarted["deliveries"][0]["session"], "codex:t2");
     assert!(turns(fixture.path())[2].contains("one more"));
     // A role's harness and an explicit other harness conflict.
-    let conflict = serde_json::to_value(handle(
-        Request::Start {
-            request_id: polylogue_store::user_writes::new_request_id(),
-            harness: Some("hermes".into()),
-            role: Some("reviewer".into()),
-            cwd: work.path().to_owned(),
-            text: "x".into(),
-        },
-        &d.daemon,
-        &invocation(&d),
-    ))
+    let conflict = serde_json::to_value(crate::test_daemon::Call::new("start", serde_json::json!({"harness": Some("hermes"), "role": Some("reviewer"), "cwd": work.path(), "text": "x"})).answer_with(&d.daemon, &invocation(&d)))
     .unwrap();
     assert_eq!(conflict["error"]["kind"], "bad_value");
 }

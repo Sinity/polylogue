@@ -1,17 +1,23 @@
 //! Product failure codes classified once into the shared transport contract.
+pub mod act;
 pub mod assertion;
 pub mod attachment;
+pub mod browser;
+pub mod calendar;
 pub mod caller;
 pub mod complete;
 pub mod context;
+pub mod embed;
+pub mod explain;
 pub mod follow;
 pub mod import;
-pub mod operations;
 mod scope;
 pub(crate) use scope::{ReadScopes, answer as scope_answer};
 pub mod query;
 pub mod query_aliases;
 pub mod read;
+pub mod resume;
+pub mod saved;
 pub mod schema;
 pub mod setting;
 pub mod status;

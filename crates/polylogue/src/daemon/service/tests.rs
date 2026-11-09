@@ -21,18 +21,9 @@ fn read(
         arguments.page_tokens =
             budget.map(|value| std::num::NonZeroU64::new(value as u64).unwrap());
         resume.arguments = serde_json::to_value(arguments).unwrap();
-        crate::protocol::operations::admit(
-            crate::commands::command("read").unwrap(),
-            &resume,
-            &crate::commands::Caller {
-                surface: crate::commands::Surface::Http,
-                cwd: None,
-                json: true,
-            },
-        )
-        .unwrap()
+        crate::test_daemon::Call::from_request(&resume)
     } else {
-        Request::Read {
+        crate::test_daemon::read(crate::daemon::service::read::ReadRequest {
             target: "session:claude-code:s1".into(),
             options: polylogue_model::read::ReadOptions {
                 view,
@@ -43,9 +34,9 @@ fn read(
             budget,
             with_blobs: false,
             cursor: None,
-        }
+        })
     };
-    handle(request, d)
+    (request).answer(d)
 }
 
 fn typed(response: command_surface::Answer<serde_json::Value>) -> polylogue_model::read::ReadPage {
@@ -140,7 +131,7 @@ fn runtime_shutdown_wakes_signals_releases_lock_and_refuses_old_handles() {
         .unwrap();
     thread.join().unwrap();
     assert!(
-        matches!(handle(Request::Status, &daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
+        matches!(crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
     );
     assert!(
         Archive::open_or_create(&root).is_ok(),
@@ -202,7 +193,9 @@ fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
     let mut runtime =
         test_daemon::start_runtime(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
     let old = Arc::clone(&runtime.daemon);
-    crate::test_answers::ok(handle(Request::Status, &old));
+    crate::test_answers::ok(
+        crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&old),
+    );
     runtime.shutdown().unwrap();
     assert!(matches!(
         old.reads.reader(),
@@ -210,10 +203,12 @@ fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
     ));
     let mut next =
         test_daemon::start_runtime(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
-    crate::test_answers::ok(handle(Request::Status, &next.daemon));
+    crate::test_answers::ok(
+        crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&next.daemon),
+    );
     next.shutdown().unwrap();
     assert!(
-        matches!(handle(Request::Status, &old), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
+        matches!(crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&old), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
     );
 }
 
@@ -254,7 +249,7 @@ fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_
         let entered = Arc::clone(&entered);
         requests.push(std::thread::spawn(move || {
             entered.wait();
-            handle(Request::Status, &daemon)
+            crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&daemon)
         }));
     }
     entered.wait();
@@ -267,7 +262,7 @@ fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_
     runtime.shutdown().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
     assert!(
-        matches!(handle(Request::Status, &daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
+        matches!(crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
     );
 }
 
@@ -290,21 +285,13 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_canonic
     let source = w.home.join(".claude/projects/-p/s1.jsonl");
     let original = std::fs::read(&source).unwrap();
     let records = || {
-        let request = Request::Read {
-            target: "session:claude-code:s1".into(),
-            options: polylogue_model::read::ReadOptions::default(),
-            delivery: polylogue_model::read::ReadDelivery::Stream,
-            format: "jsonl".into(),
-            budget: None,
-            with_blobs: false,
-            cursor: None,
-        };
+        let request = crate::test_daemon::Call::new(
+            "read",
+            serde_json::json!({"target": "session:claude-code:s1", "delivery": "stream", "format": "jsonl"}),
+        );
         let envelope = command_surface::Request {
             operation: "read".into(),
-            arguments: serde_json::to_value(
-                crate::protocol::read::Arguments::from_request(&request).unwrap(),
-            )
-            .unwrap(),
+            arguments: request.arguments.clone(),
             request_id: uuid::Uuid::now_v7().to_string(),
             deadline: command_surface::Deadline::None,
             budget_tokens: Default::default(),
@@ -354,17 +341,8 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_canonic
         })
         .unwrap();
     assert!(canonical.title.is_none());
-    let response = handle(
-        Request::Query {
-            text: "sessions".into(),
-            cursor: None,
-            page_size: None,
-            why: false,
-            session: None,
-            fields: vec![],
-        },
-        &w.daemon,
-    );
+    let response = crate::test_daemon::Call::new("query", serde_json::json!({"query": "sessions"}))
+        .answer(&w.daemon);
     let Some(data) = response.value().cloned() else {
         panic!("{response:?}")
     };

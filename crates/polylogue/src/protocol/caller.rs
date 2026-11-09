@@ -29,7 +29,6 @@ pub struct Accepted {
     pub(crate) parent: Option<std::sync::Arc<crate::operation::ParentLifetime>>,
     pub working_directory: Option<PathBuf>,
     pub invocation: Option<crate::operation::Invocation>,
-    pub admitted_request: Option<crate::daemon::Request>,
     /// The existing native token captured after classifying the actual request.
     pub read_scope: Option<polylogue_store::ReadScopeToken>,
 }
@@ -54,7 +53,6 @@ pub fn accept(
         parent: None,
         working_directory: None,
         invocation: None,
-        admitted_request: None,
         read_scope: None,
     }
 }

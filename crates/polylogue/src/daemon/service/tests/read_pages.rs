@@ -10,22 +10,13 @@ fn request(
     view: View,
     budget: usize,
     cursor: Option<&ResumeArguments>,
-) -> Request {
+) -> crate::test_daemon::Call {
     if let Some(resume) = cursor {
         let mut resume = resume.clone();
         resume.arguments["page_tokens"] = serde_json::json!(budget);
-        return crate::protocol::operations::admit(
-            crate::commands::command("read").unwrap(),
-            &resume,
-            &crate::commands::Caller {
-                surface: crate::commands::Surface::Http,
-                cwd: None,
-                json: true,
-            },
-        )
-        .unwrap();
+        return crate::test_daemon::Call::from_request(&resume);
     }
-    Request::Read {
+    crate::test_daemon::read(crate::daemon::service::read::ReadRequest {
         target: target.into(),
         options: ReadOptions {
             view,
@@ -37,7 +28,7 @@ fn request(
         budget: Some(budget),
         with_blobs: false,
         cursor: None,
-    }
+    })
 }
 fn page(
     d: &Daemon,
@@ -47,7 +38,7 @@ fn page(
     budget: usize,
     cursor: Option<&ResumeArguments>,
 ) -> ReadPage {
-    let response = handle(request(target, inherited, view, budget, cursor), d);
+    let response = (request(target, inherited, view, budget, cursor)).answer(d);
     let Some(data) = response.value().cloned() else {
         panic!("{response:?}")
     };
@@ -210,25 +201,17 @@ fn read_pages_refuse_malformed_cross_view_and_tampered_positions() {
         let mut malformed_resume = token.clone();
         malformed_resume.cursor = Some(malformed.to_owned());
         refused(
-            handle(
-                request(
-                    "session:claude-code:s1",
-                    false,
-                    View::Transcript,
-                    1,
-                    Some(&malformed_resume),
-                ),
-                &d.daemon,
-            ),
+            (request(
+                "session:claude-code:s1",
+                false,
+                View::Transcript,
+                1,
+                Some(&malformed_resume),
+            ))
+            .answer(&d.daemon),
             "invalid_query",
         );
     }
-    let command = crate::commands::command("read").unwrap();
-    let caller = crate::commands::Caller {
-        surface: crate::commands::Surface::Http,
-        cwd: None,
-        json: true,
-    };
     for (field, value) in [
         ("show", serde_json::json!(["inherited"])),
         ("view", serde_json::json!("dialogue")),
@@ -238,8 +221,8 @@ fn read_pages_refuse_malformed_cross_view_and_tampered_positions() {
         // when the page is read (docs/reading.md, Budgets).
         let mut changed = token.clone();
         changed.arguments[field] = value;
-        let request = crate::protocol::operations::admit(command, &changed, &caller).unwrap();
-        refused(handle(request, &d.daemon), "invalid_query");
+        let request = crate::test_daemon::Call::from_request(&changed);
+        refused((request).answer(&d.daemon), "invalid_query");
     }
     let wire = token.cursor.clone().unwrap();
     for at in [0, wire.len() / 2, wire.len() - 1] {
@@ -248,16 +231,14 @@ fn read_pages_refuse_malformed_cross_view_and_tampered_positions() {
         let mut changed_resume = token.clone();
         changed_resume.cursor = Some(String::from_utf8(changed).unwrap());
         refused(
-            handle(
-                request(
-                    "session:claude-code:s1",
-                    false,
-                    View::Transcript,
-                    1,
-                    Some(&changed_resume),
-                ),
-                &d.daemon,
-            ),
+            (request(
+                "session:claude-code:s1",
+                false,
+                View::Transcript,
+                1,
+                Some(&changed_resume),
+            ))
+            .answer(&d.daemon),
             "invalid_query",
         );
     }
@@ -288,16 +269,14 @@ fn read_pages_survive_unrelated_writes_and_refuse_changed_earlier_content() {
         &d,
         &[("u1", "rewritten earlier content before the continuation")],
     );
-    let response = handle(
-        request(
-            "session:claude-code:s1",
-            false,
-            View::Transcript,
-            1,
-            Some(&token),
-        ),
-        &d.daemon,
-    );
+    let response = (request(
+        "session:claude-code:s1",
+        false,
+        View::Transcript,
+        1,
+        Some(&token),
+    ))
+    .answer(&d.daemon);
     assert!(
         matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. } if error.code.as_deref() == Some("stale_cursor")),
         "{response:?}"
@@ -396,16 +375,14 @@ fn direct_anchors_keep_their_own_original_text_and_refuse_missing_sources() {
         source
     );
     assert!(matches!(
-        handle(
-            request(
-                "message:claude-code:missing",
-                false,
-                View::Transcript,
-                10,
-                None
-            ),
-            &d.daemon
-        ),
+        (request(
+            "message:claude-code:missing",
+            false,
+            View::Transcript,
+            10,
+            None
+        ))
+        .answer(&d.daemon),
         command_surface::Answer {
             outcome: command_surface::Outcome::Error(_),
             ..

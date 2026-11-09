@@ -3,44 +3,29 @@
 //! the writer, so a context answer never waits for a writer turn.
 
 use super::*;
-use crate::briefing::{Ask, StartSource};
+use crate::briefing::StartSource;
 
 /// Returns once the writer has applied every request queued before this
 /// call: it answers a synchronous write only after the queued ones.
 fn after_queued_writes(d: &test_daemon::TestDaemon) {
-    crate::test_answers::ok(handle(
-        Request::Keep {
-            request_id: polylogue_store::user_writes::new_request_id(),
-            text: "sessions".into(),
-            name: None,
-        },
-        &d.daemon,
-    ));
+    crate::test_answers::ok(
+        crate::test_daemon::Call::new("keep", serde_json::json!({"query": "sessions"}))
+            .answer(&d.daemon),
+    );
 }
 
 fn takeover(d: &test_daemon::TestDaemon, request_id: &str) -> serde_json::Value {
-    let request = Request::Context {
-        budget_tokens: Default::default(),
-        request_id: request_id.into(),
-        ask: Ask::Takeover {
-            session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
-            for_session: None,
-        },
-        sender: Some(polylogue_model::DeliverySender::Hook.as_str().into()),
-    };
-    crate::test_answers::ok(handle(request, &d.daemon))
+    let request =
+        crate::test_daemon::Call::new("takeover", serde_json::json!({"session": "claude-code:s1"}))
+            .id(request_id)
+            .surface(crate::commands::Surface::Hook);
+    crate::test_answers::ok((request).answer(&d.daemon))
 }
 
 fn deliveries(d: &test_daemon::TestDaemon) -> u64 {
-    let request = Request::Query {
-        text: "deliveries".into(),
-        cursor: None,
-        page_size: None,
-        why: false,
-        session: None,
-        fields: vec![],
-    };
-    crate::test_answers::ok(handle(request, &d.daemon))["count"]
+    let request =
+        crate::test_daemon::Call::new("query", serde_json::json!({"query": "deliveries"}));
+    crate::test_answers::ok((request).answer(&d.daemon))["count"]
         .as_u64()
         .unwrap()
 }
@@ -71,17 +56,12 @@ fn an_accepted_prepared_receipt_crosses_the_read_deadline_without_a_false_refusa
     blocker.lock_shared().unwrap();
     let id = polylogue_store::user_writes::new_request_id();
     let limit = ReadLimit::new(Duration::from_secs(2), Default::default());
-    let request = Request::Context {
-        budget_tokens: Default::default(),
-        request_id: id.clone(),
-        ask: Ask::Takeover {
-            session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
-            for_session: None,
-        },
-        sender: Some("mcp".into()),
-    };
+    let request =
+        crate::test_daemon::Call::new("takeover", serde_json::json!({"session": "claude-code:s1"}))
+            .id(&id)
+            .surface(crate::commands::Surface::Mcp);
     let (response, handed_off) = std::thread::scope(|scope| {
-        let worker = scope.spawn(|| super::super::handle_with_limit(request, &d.daemon, &limit));
+        let worker = scope.spawn(|| request.limit(limit.clone()).answer(&d.daemon));
         let until = Instant::now() + Duration::from_secs(5);
         while limit.stage() != Some("record delivery")
             && !worker.is_finished()
@@ -159,17 +139,17 @@ fn daemon_with_a_project() -> test_daemon::TestDaemon {
 }
 
 fn brief(d: &test_daemon::TestDaemon, request_id: &str, source: StartSource) -> serde_json::Value {
-    let request = Request::Context {
-        budget_tokens: Default::default(),
-        request_id: request_id.into(),
-        ask: Ask::SessionStart {
-            cwd: "/home/op/proj".into(),
-            session: Some(polylogue_model::SessionId::parse("claude-code:newcomer").unwrap()),
-            source,
-        },
-        sender: Some(polylogue_model::DeliverySender::Hook.as_str().into()),
-    };
-    match handle(request, &d.daemon) {
+    let request = crate::test_daemon::Call::new(
+        "brief",
+        serde_json::json!({
+            "cwd": "/home/op/proj",
+            "session": "claude-code:newcomer",
+            "source": source,
+        }),
+    )
+    .id(request_id)
+    .surface(crate::commands::Surface::Hook);
+    match (request).answer(&d.daemon) {
         command_surface::Answer {
             outcome: command_surface::Outcome::Ok(data),
             ..
@@ -192,14 +172,11 @@ fn hold_writer(
         writer.pause_user_dispatch_for_test(id, polylogue_store::writer::DispatchPhase::Owned);
     let daemon = std::sync::Arc::clone(&d.daemon);
     let held = std::thread::spawn(move || {
-        crate::test_answers::ok(handle(
-            Request::Keep {
-                request_id: id.into(),
-                text: "sessions".into(),
-                name: None,
-            },
-            &daemon,
-        ));
+        crate::test_answers::ok(
+            crate::test_daemon::Call::new("keep", serde_json::json!({"query": "sessions"}))
+                .id(id)
+                .answer(&daemon),
+        );
     });
     barrier.wait().unwrap();
     (barrier, held)
@@ -243,14 +220,12 @@ fn a_repeated_delivery_event_is_applied_once() {
     let d = daemon_with_a_project();
     let id = polylogue_store::user_writes::new_request_id();
     brief(&d, &id, StartSource::Startup);
-    let event = Request::DeliveryEvent {
-        request_id: polylogue_store::user_writes::new_request_id(),
-        delivery: id.clone(),
-        what: polylogue_model::DeliveryOutcome::Delivered,
-        detail: Some("written to the harness hook output".into()),
-    };
+    let event = crate::test_daemon::Call::new(
+        "delivery-event",
+        serde_json::json!({"delivery": id.clone(), "what": polylogue_model::DeliveryOutcome::Delivered, "detail": Some("written to the harness hook output")}),
+    );
     for _ in 0..2 {
-        let answer = crate::test_answers::ok(handle(event.clone(), &d.daemon));
+        let answer = crate::test_answers::ok((event.clone()).answer(&d.daemon));
         assert_eq!(answer["queued"], true);
     }
     after_queued_writes(&d);
@@ -338,15 +313,7 @@ fn a_brief_answers_while_the_writer_queue_is_full_and_its_delivery_commits_once_
     );
     assert_eq!(answer["delivery"], id.as_str());
     // Its outcome waits behind it, in order.
-    let event = crate::test_answers::ok(handle(
-        Request::DeliveryEvent {
-            request_id: polylogue_store::user_writes::new_request_id(),
-            delivery: id.clone(),
-            what: polylogue_model::DeliveryOutcome::Delivered,
-            detail: None,
-        },
-        &d.daemon,
-    ));
+    let event = crate::test_answers::ok(crate::test_daemon::Call::new("delivery-event", serde_json::json!({"delivery": id.clone(), "what": polylogue_model::DeliveryOutcome::Delivered})).answer(&d.daemon));
     assert_eq!(event["queued"], true);
     barrier.release();
     held.join().unwrap();
@@ -393,15 +360,7 @@ fn timeout_outcome_requires_positive_preparation_without_waiting_for_the_writer(
     let id = polylogue_store::user_writes::new_request_id();
     let prepared = brief(&d, &id, StartSource::Startup);
     let event = |delivery: &str| {
-        handle(
-            Request::DeliveryEvent {
-                request_id: polylogue_store::user_writes::new_request_id(),
-                delivery: delivery.into(),
-                what: polylogue_model::DeliveryOutcome::NotSent,
-                detail: Some("timeout".into()),
-            },
-            &d.daemon,
-        )
+        crate::test_daemon::Call::new("delivery-event", serde_json::json!({"delivery": delivery, "what": polylogue_model::DeliveryOutcome::NotSent, "detail": Some("timeout")})).answer(&d.daemon)
     };
     let unknown = crate::test_answers::ok(event("unconfirmed-prepare"));
     let known = crate::test_answers::ok(event(&id));

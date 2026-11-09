@@ -8,13 +8,9 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
     let text = " exact MCP λ🙂 evidence ".repeat(500);
     let credential = "--secret=\"unfinished --token=\"synthetic-later-value\" tail";
     std::fs::write(&source,format!("{}\n",json!({"atof_version":"0.1","kind":"mark","uuid":"synthetic","name":"neutral","data":{"text":text,"credential":credential}}))).unwrap();
-    let imported = crate::daemon::service::handle(
-        crate::daemon::Request::Import {
-            request_id: "mcp-event-fixture".into(),
-            paths: vec![source],
-        },
-        &daemon.daemon,
-    );
+    let imported = crate::test_daemon::Call::new("import", serde_json::json!({"paths": [source]}))
+        .id("mcp-event-fixture")
+        .answer(&daemon.daemon);
     crate::test_answers::ok(imported);
     let archive = Archive::at(&daemon.daemon.archive.root);
     let listed: Value = serde_json::from_str(

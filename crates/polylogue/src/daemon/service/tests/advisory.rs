@@ -88,9 +88,9 @@ fn advisory_cooldown_and_once_pair_history_have_distinct_lifetimes() {
     // A synchronous authored write follows the off-writer handoff and proves it committed.
     operator(
         &w,
-        Request::Assert {
-            request_id: "after-advisory".into(),
-            assertions: vec![NewAssertion {
+        crate::test_daemon::Call::new(
+            "assert",
+            serde_json::json!({"assertions": [NewAssertion {
                 kind: AssertionKind::Note,
                 key: None,
                 value: Some(json!("synthetic barrier")),
@@ -99,8 +99,9 @@ fn advisory_cooldown_and_once_pair_history_have_distinct_lifetimes() {
                     role: LinkRole::About,
                     reference: Reference::Repo("synthetic".into()),
                 }],
-            }],
-        },
+            }]}),
+        )
+        .id("after-advisory"),
     );
     let row = w
         .daemon

@@ -1,6 +1,6 @@
 //! An explicit browser selection becomes an ordinary operator note.
 use super::BrowserHost;
-use crate::daemon::{Failure, Request};
+use crate::daemon::Failure;
 use command_surface::Answer;
 use polylogue_model::{MessageId, Reference};
 use serde::{Deserialize, Serialize};
@@ -33,22 +33,22 @@ pub(super) fn save(host: &BrowserHost, input: SelectionNote) -> Answer<Value> {
     if let Err(failure) = input.references() {
         return failure.answer();
     }
-    host.ask(&Request::BrowserSelectionNote {
-        request_id: input.request_id,
-        body: input.body,
-        quote: input.quote,
-        provider: input.source.provider,
-        conversation_id: input.source.conversation_id,
-        message_id: input.source.message_id,
-        page_url: input.source.page_url,
-        selected_at: input.source.selected_at,
-    })
-    .unwrap_or_else(|| {
-        crate::daemon::service::error(
-            "daemon_required",
-            "save outcome unknown; retry this draft with the same ID",
-        )
-    })
+    let arguments = serde_json::json!({
+        "body": input.body,
+        "quote": input.quote,
+        "provider": input.source.provider,
+        "conversation_id": input.source.conversation_id,
+        "message_id": input.source.message_id,
+        "page_url": input.source.page_url,
+        "selected_at": input.source.selected_at,
+    });
+    host.ask_as("selection-note", arguments, input.request_id)
+        .unwrap_or_else(|| {
+            crate::daemon::service::error(
+                "daemon_required",
+                "save outcome unknown; retry this draft with the same ID",
+            )
+        })
 }
 
 impl SelectionNote {

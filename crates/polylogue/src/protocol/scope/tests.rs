@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     commands::{Caller, Surface},
-    daemon::{Request, service::Daemon},
+    daemon::service::Daemon,
 };
 use command_surface::{Answer, Operation, OperationFuture, RequestContext};
 use serde_json::json;
@@ -29,7 +29,7 @@ impl Operation for HeldCatalog {
 
     fn execute(
         &self,
-        _: Self::Request,
+        arguments: Self::Request,
         context: RequestContext,
     ) -> OperationFuture<'_, Answer<Self::Response>> {
         Box::pin(async move {
@@ -38,14 +38,22 @@ impl Operation for HeldCatalog {
                 .caller()
                 .identity::<crate::protocol::caller::Accepted>()
                 .unwrap();
-            let request = accepted.admitted_request.clone().unwrap();
             let limit =
                 polylogue_store::read::limit::ReadLimit::without_deadline(Default::default());
-            let response = crate::daemon::service::handle_with_invocation(
-                request,
-                &self.daemon,
-                &limit,
-                accepted.invocation.as_ref().unwrap(),
+            let response = crate::daemon::handler::local(
+                "setting",
+                serde_json::to_value(arguments).unwrap(),
+                &crate::daemon::handler::Local {
+                    daemon: &self.daemon,
+                    invocation: accepted.invocation.as_ref().unwrap(),
+                    caller: &Caller {
+                        surface: Surface::Mcp,
+                        cwd: None,
+                    },
+                    limit: &limit,
+                    request_id: &context.request_id,
+                    cursor: None,
+                },
             );
             let Some(data) = response.value().cloned() else {
                 panic!("setting producer failed: {response:?}");
@@ -64,12 +72,14 @@ fn admitted(
     let caller = Caller {
         surface: Surface::Mcp,
         cwd: None,
-        json: true,
     };
-    let internal =
-        (command.build_typed.unwrap())(envelope.arguments.clone(), &caller, &envelope.request_id)
-            .unwrap();
-    let scope = crate::protocol::operations::read_scope_required(Some(command), Some(&internal))
+    let policy = command
+        .registration()
+        .unwrap()
+        .admit(&envelope.arguments, command, &caller)
+        .unwrap();
+    let scope = policy
+        .read_only
         .then(|| daemon.reads.scope_token().unwrap());
     let mut accepted = crate::protocol::caller::accept(
         &daemon.callers,
@@ -82,7 +92,6 @@ fn admitted(
             .invocation(&accepted.authorship)
             .with_accepted_request(Some(Arc::new(envelope.clone()))),
     );
-    accepted.admitted_request = Some(internal);
     accepted.read_scope = scope.clone();
     (
         command_surface::Caller::authenticated(accepted.scope(), accepted)
@@ -118,9 +127,7 @@ async fn each_request_publishes_only_under_its_own_native_scope() {
         .unwrap();
     declarations
         .declare::<crate::protocol::setting::Arguments, crate::protocol::setting::Answer>(
-            crate::protocol::operations::specification(
-                crate::commands::command("setting").unwrap(),
-            ),
+            crate::commands::specification(crate::commands::command("setting").unwrap()),
             |answer, _| serde_json::to_string(answer).unwrap(),
         )
         .unwrap();
@@ -214,11 +221,4 @@ async fn each_request_publishes_only_under_its_own_native_scope() {
         .identity::<crate::protocol::caller::Accepted>()
         .unwrap();
     assert!(accepted.read_scope.is_none());
-    assert!(matches!(
-        accepted.admitted_request.as_ref(),
-        Some(Request::Setting {
-            request_id: Some(_),
-            ..
-        })
-    ));
 }

@@ -5,10 +5,13 @@
 //! the one writer ([`polylogue_store::chat_actions`],
 //! [`polylogue_store::backfill_jobs`]).
 
-use super::{Daemon, browser_refusal, error, ok, store_error, writer};
+use super::{Daemon, browser_refusal, ok, store_error, writer};
 use crate::browser::{actions, backfill};
-use crate::daemon::{Failure, Request};
+use crate::cli::print;
+use crate::daemon::Failure;
+use crate::daemon::handler::{Call, Handler};
 use crate::operation::Invocation;
+use crate::protocol::browser as protocol;
 use base64::Engine as _;
 use command_surface::Answer;
 use polylogue_model::user::UserWrite;
@@ -42,7 +45,7 @@ fn enabled(invocation: &Invocation, reader: &Reader<'_>) -> Result<bool, Failure
 /// request ID.
 fn apply(d: &Daemon, invocation: &Invocation, write: UserWrite) -> Result<Option<String>, Failure> {
     let writes = writer(d)?;
-    invocation.check_parent_admission()?;
+    invocation.check_parent_lifetime()?;
     let request = invocation.request(user_writes::new_request_id(), write);
     let result = match invocation.parent_lifetime() {
         Some(parent) => writes.user_with_parent(request, parent),
@@ -109,180 +112,281 @@ fn store_files(
         .collect()
 }
 
-pub(super) fn handle(
-    request: Request,
-    d: &Daemon,
-    reader: Reader<'_>,
-    invocation: &Invocation,
-) -> Answer<Value> {
-    let now = invocation.at.unix_ms();
-    match request {
-        Request::ChatSend {
-            request_id,
-            action,
-            files,
-        } => {
-            match enabled(invocation, &reader) {
-                Ok(true) => {}
-                Ok(false) => {
-                    return browser_refusal(actions::Refused("browser_actions_off"));
-                }
-                Err(failure) => return failure.answer(),
-            }
-            drop(reader);
-            // Checked before any file is stored.
-            if let Err(r) = actions::new_action(&request_id, &action, vec![]) {
-                return browser_refusal(r);
-            }
-            let stored = match store_files(d, &files) {
-                Ok(stored) => stored,
-                Err(failure) => return failure.answer(),
-            };
-            match actions::new_action(&request_id, &action, stored) {
-                Ok(new) => chat_then_view(d, invocation, UserWrite::ChatEnqueue(new)),
-                Err(r) => browser_refusal(r),
+/// The browser handlers: each answers with the JSON view the extension reads.
+macro_rules! browser {
+    ($(#[$doc:meta])* $name:ident, $arguments:ty, $print:expr, |$args:ident, $call:ident| $body:expr) => {
+        $(#[$doc])*
+        pub(crate) struct $name;
+        impl Handler for $name {
+            type Arguments = $arguments;
+            type Answer = Value;
+            const PRINT: fn(&Value, bool) -> String = $print;
+            fn run($args: Self::Arguments, $call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+                Ok($body)
             }
         }
-        Request::ChatActions => match reader.chat_actions() {
+    };
+}
+
+fn reader<'a>(call: &'a Call<'_>) -> Result<Reader<'a>, Failure> {
+    call.reader()
+}
+
+browser!(ChatSend, protocol::ChatSend, print::json, |a, call| {
+    let (d, invocation) = (call.daemon, call.invocation);
+    let reader = reader(call)?;
+    match enabled(invocation, &reader) {
+        Ok(true) => {}
+        Ok(false) => return Ok(browser_refusal(actions::Refused("browser_actions_off"))),
+        Err(failure) => return Err(failure),
+    }
+    drop(reader);
+    let action = actions::ChatRequest {
+        provider: a.provider,
+        conversation: a.conversation,
+        project: a.project,
+        text: a.text,
+        model: a.model,
+        effort: a.effort,
+        submit: a.submit,
+    };
+    // Checked before any file is stored.
+    if let Err(r) = actions::new_action(call.request_id, &action, vec![]) {
+        return Ok(browser_refusal(r));
+    }
+    let stored = store_files(d, &a.files)?;
+    match actions::new_action(call.request_id, &action, stored) {
+        Ok(new) => chat_then_view(d, invocation, UserWrite::ChatEnqueue(new)),
+        Err(r) => browser_refusal(r),
+    }
+});
+
+browser!(
+    ChatList,
+    protocol::ChatList,
+    print::chat_actions,
+    |_a, call| {
+        let reader = reader(call)?;
+        let now = call.invocation.at.unix_ms();
+        match reader.chat_actions() {
             Ok(list) => ok(json!({
                 "actions": list.iter().map(|a| actions::view(a, now)).collect::<Vec<_>>(),
             })),
             Err(e) => store_error(&e),
-        },
-        Request::ChatAction { id } => match reader.chat_action(&id) {
-            Ok(Some(a)) => ok(json!({ "action": actions::view(&a, now) })),
-            Ok(None) => browser_refusal(actions::refusal("unknown_chat_action")),
-            Err(e) => store_error(&e),
-        },
-        Request::ChatClaim { by } => {
-            let on = match enabled(invocation, &reader) {
-                Ok(on) => on,
-                Err(failure) => return failure.answer(),
-            };
-            drop(reader);
-            if !on {
-                return ok(json!({ "enabled": false, "action": null }));
-            }
-            chat_then_view(d, invocation, UserWrite::ChatClaim { by })
         }
-        Request::ChatReport { id, update } => {
-            drop(reader);
-            chat_then_view(
-                d,
-                invocation,
-                UserWrite::ChatReport {
-                    action: id,
-                    by: update.by,
-                    outcome: update.outcome,
-                    phase: update.phase,
-                    detail: update.detail,
-                    receipt: update.receipt,
-                },
-            )
+    }
+);
+
+browser!(
+    /// The extension instance `by` takes the oldest queued chat action.
+    ChatClaim,
+    protocol::ChatClaim,
+    print::json,
+    |a, call| {
+        let reader = reader(call)?;
+        let on = enabled(call.invocation, &reader)?;
+        drop(reader);
+        if !on {
+            return Ok(ok(json!({ "enabled": false, "action": null })));
         }
-        Request::ChatDecide {
-            id,
+        chat_then_view(
+            call.daemon,
+            call.invocation,
+            UserWrite::ChatClaim { by: a.by },
+        )
+    }
+);
+
+browser!(ChatReport, protocol::ChatReport, print::json, |a, call| {
+    let update = a.update;
+    chat_then_view(
+        call.daemon,
+        call.invocation,
+        UserWrite::ChatReport {
+            action: a.id,
+            by: update.by,
+            outcome: update.outcome,
+            phase: update.phase,
+            detail: update.detail,
+            receipt: update.receipt,
+        },
+    )
+});
+
+fn decide(
+    call: &Call<'_>,
+    id: String,
+    approve: bool,
+    by: String,
+    detail: Option<String>,
+) -> Answer<Value> {
+    chat_then_view(
+        call.daemon,
+        call.invocation,
+        UserWrite::ChatDecide {
+            action: id,
             approve,
             by,
             detail,
-        } => {
-            drop(reader);
-            chat_then_view(
-                d,
-                invocation,
-                UserWrite::ChatDecide {
-                    action: id,
-                    approve,
-                    by,
-                    detail,
-                },
-            )
+        },
+    )
+}
+
+browser!(ChatApprove, protocol::ChatDecide, print::json, |a, call| {
+    decide(call, a.id, true, "operator".into(), None)
+});
+browser!(ChatDecline, protocol::ChatDecide, print::json, |a, call| {
+    decide(call, a.id, false, "operator".into(), None)
+});
+browser!(
+    /// A decision the extension's page reports for the operator.
+    ChatDecision,
+    protocol::ChatDecision,
+    print::json,
+    |a, call| decide(call, a.id, a.approve, a.by, a.detail)
+);
+
+browser!(
+    ChatAttachment,
+    protocol::ChatAttachment,
+    print::json,
+    |a, call| {
+        let reader = reader(call)?;
+        match reader.chat_attachment(&a.id, &a.attachment) {
+            Ok((attachment, bytes)) => ok(json!({
+                "media_type": attachment.media_type,
+                "bytes": base64::engine::general_purpose::STANDARD.encode(bytes),
+            })),
+            Err(e) => refused(&e).answer(),
         }
-        Request::ChatAttachment { id, attachment } => {
-            match reader.chat_attachment(&id, &attachment) {
-                Ok((a, bytes)) => ok(json!({
-                    "media_type": a.media_type,
-                    "bytes": base64::engine::general_purpose::STANDARD.encode(bytes),
-                })),
-                Err(e) => refused(&e).answer(),
+    }
+);
+
+browser!(
+    BackfillStart,
+    protocol::BackfillStart,
+    print::backfill_jobs,
+    |a, call| {
+        match backfill::new_job(&a.provider, a.since.as_deref()) {
+            Ok(new) => {
+                backfill_then_view(call.daemon, call.invocation, UserWrite::BackfillStart(new))
             }
+            Err(r) => browser_refusal(r),
         }
-        Request::BackfillStart { provider, since } => {
-            drop(reader);
-            match backfill::new_job(&provider, since.as_deref()) {
-                Ok(new) => backfill_then_view(d, invocation, UserWrite::BackfillStart(new)),
-                Err(r) => browser_refusal(r),
-            }
-        }
-        Request::BackfillJobs => match reader.backfill_jobs() {
+    }
+);
+
+browser!(
+    BackfillList,
+    protocol::BackfillList,
+    print::backfill_jobs,
+    |_a, call| {
+        let reader = reader(call)?;
+        let now = call.invocation.at.unix_ms();
+        match reader.backfill_jobs() {
             Ok(jobs) => ok(json!({
                 "jobs": jobs.iter().map(|job| backfill::view(job, now)).collect::<Vec<_>>(),
             })),
             Err(e) => store_error(&e),
-        },
-        Request::BackfillCancel { id } => {
-            drop(reader);
-            backfill_then_view(d, invocation, UserWrite::BackfillCancel { job: id })
         }
-        Request::BackfillClaim { by } => {
-            drop(reader);
-            backfill_then_view(d, invocation, UserWrite::BackfillClaim { by })
-        }
-        Request::BackfillReport { id, by, report } => {
-            drop(reader);
-            backfill_then_view(
-                d,
-                invocation,
-                UserWrite::BackfillReport {
-                    job: id,
-                    by,
-                    report,
-                },
-            )
-        }
-        Request::Conversations { provider, ids } => {
-            let sessions: Vec<_> = ids
-                .iter()
-                .map(|id| polylogue_sources::browser_capture::session_for(&provider, id))
-                .collect();
-            let known: Vec<_> = sessions.iter().flatten().cloned().collect();
-            let mut found = match reader.captured_sessions(&known) {
-                Ok(found) => found.into_iter(),
-                Err(e) => return store_error(&e),
-            };
-            let conversations: Vec<_> = ids
-                .iter()
-                .zip(&sessions)
-                .map(|(id, session)| {
-                    let held = session.as_ref().and_then(|_| found.next().flatten());
-                    json!({
-                        "id": id,
-                        "session": session.as_ref().map(ToString::to_string),
-                        "messages": held.as_ref().map(|h| h.messages),
-                        "downloading": held.as_ref().is_some_and(|h| h.downloading),
-                        "last_captured_at": held.and_then(|h| h.last_captured_at),
-                    })
-                })
-                .collect();
-            ok(json!({ "provider": provider, "conversations": conversations }))
-        }
-        Request::StoredFiles {
-            provider,
-            conversation,
-        } => {
-            let Some(session) =
-                polylogue_sources::browser_capture::session_for(&provider, &conversation)
-            else {
-                return ok(json!({ "files": [] }));
-            };
-            match reader.stored_files(&session) {
-                Ok(files) => match reader.downloading_files(&session) {
-                    Ok(downloading) => ok(json!({ "files": files, "downloading": downloading })),
-                    Err(e) => store_error(&e),
-                },
-                Err(e) => store_error(&e),
-            }
-        }
-        other => error("bad_request", format!("{other:?} is not a browser request")),
     }
-}
+);
+
+browser!(
+    BackfillCancel,
+    protocol::BackfillCancel,
+    print::backfill_jobs,
+    |a, call| {
+        backfill_then_view(
+            call.daemon,
+            call.invocation,
+            UserWrite::BackfillCancel { job: a.id },
+        )
+    }
+);
+
+browser!(
+    BackfillClaim,
+    protocol::BackfillClaim,
+    print::json,
+    |a, call| {
+        backfill_then_view(
+            call.daemon,
+            call.invocation,
+            UserWrite::BackfillClaim { by: a.by },
+        )
+    }
+);
+
+browser!(
+    BackfillReport,
+    protocol::BackfillReport,
+    print::json,
+    |a, call| {
+        backfill_then_view(
+            call.daemon,
+            call.invocation,
+            UserWrite::BackfillReport {
+                job: a.id,
+                by: a.by,
+                report: a.report,
+            },
+        )
+    }
+);
+
+browser!(
+    Conversations,
+    protocol::Conversations,
+    print::json,
+    |a, call| {
+        let reader = reader(call)?;
+        let sessions: Vec<_> = a
+            .ids
+            .iter()
+            .map(|id| polylogue_sources::browser_capture::session_for(&a.provider, id))
+            .collect();
+        let known: Vec<_> = sessions.iter().flatten().cloned().collect();
+        let mut found = match reader.captured_sessions(&known) {
+            Ok(found) => found.into_iter(),
+            Err(e) => return Ok(store_error(&e)),
+        };
+        let conversations: Vec<_> = a
+            .ids
+            .iter()
+            .zip(&sessions)
+            .map(|(id, session)| {
+                let held = session.as_ref().and_then(|_| found.next().flatten());
+                json!({
+                    "id": id,
+                    "session": session.as_ref().map(ToString::to_string),
+                    "messages": held.as_ref().map(|h| h.messages),
+                    "downloading": held.as_ref().is_some_and(|h| h.downloading),
+                    "last_captured_at": held.and_then(|h| h.last_captured_at),
+                })
+            })
+            .collect();
+        ok(json!({ "provider": a.provider, "conversations": conversations }))
+    }
+);
+
+browser!(
+    StoredFiles,
+    protocol::StoredFiles,
+    print::json,
+    |a, call| {
+        let Some(session) =
+            polylogue_sources::browser_capture::session_for(&a.provider, &a.conversation)
+        else {
+            return Ok(ok(json!({ "files": [] })));
+        };
+        let reader = reader(call)?;
+        match reader.stored_files(&session) {
+            Ok(files) => match reader.downloading_files(&session) {
+                Ok(downloading) => ok(json!({ "files": files, "downloading": downloading })),
+                Err(e) => store_error(&e),
+            },
+            Err(e) => store_error(&e),
+        }
+    }
+);

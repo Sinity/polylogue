@@ -1,15 +1,10 @@
 use super::*;
-use crate::daemon::{Request, service::handle};
 
-fn explain(expression: Option<&str>) -> Request {
-    Request::Explain {
-        subject: "query".into(),
-        expression: expression.map(str::to_owned),
-        unit: None,
-        page_size: None,
-        cursor: None,
-        session: Some("claude-code:s1".into()),
-    }
+fn explain(expression: Option<&str>) -> crate::test_daemon::Call {
+    crate::test_daemon::Call::new(
+        "explain",
+        serde_json::json!({"subject": "query", "expression": expression.map(str::to_owned), "session": Some("claude-code:s1")}),
+    )
 }
 
 #[test]
@@ -93,30 +88,21 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         polylogue_model::WallClock::fixed("2026-10-29T08:00:00Z".parse().unwrap()),
         day,
     );
-    let save = Request::Save {
-        request_id: "save-explain".into(),
-        name: "mine".into(),
-        text: "self".into(),
-        denominator: None,
-    };
-    let limit = crate::daemon::execution::limit_for(&save, None, Default::default());
+    let save =
+        crate::test_daemon::Call::new("save", serde_json::json!({"name": "mine", "query": "self"}))
+            .id("save-explain");
     let caller = polylogue_model::authorship::Authorship {
         author: polylogue_model::Author::Agent(Some(
             polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
         )),
         via: polylogue_model::authorship::Channel::Mcp,
     };
-    crate::test_answers::ok(crate::daemon::service::handle_with_caller(
-        save, &w.daemon, &limit, &caller,
-    ));
-    let kept = crate::test_answers::ok(handle(
-        Request::Keep {
-            request_id: "keep-explain".into(),
-            text: "sessions".into(),
-            name: None,
-        },
-        &w.daemon,
-    ));
+    crate::test_answers::ok(save.authorship(caller.clone()).answer(&w.daemon));
+    let kept = crate::test_answers::ok(
+        crate::test_daemon::Call::new("keep", serde_json::json!({"query": "sessions"}))
+            .id("keep-explain")
+            .answer(&w.daemon),
+    );
     let position = w.daemon.reads.reader().unwrap().change_position().unwrap();
     for expression in [
         "tool_calls where outcome:error | group by session | count".to_owned(),
@@ -128,7 +114,7 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         "query:mine".into(),
         format!("result:{}", kept["id"].as_str().unwrap()),
     ] {
-        let result = crate::test_answers::ok(handle(explain(Some(&expression)), &w.daemon));
+        let result = crate::test_answers::ok((explain(Some(&expression))).answer(&w.daemon));
         let explanation = &result["explanation"];
         let program = &explanation["program"];
         assert!(!program["sql"].as_str().unwrap().is_empty());
@@ -166,7 +152,7 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
     ] {
         assert!(
             matches!(
-                handle(explain(expression), &w.daemon),
+                (explain(expression)).answer(&w.daemon),
                 command_surface::Answer {
                     outcome: command_surface::Outcome::Error(_),
                     ..

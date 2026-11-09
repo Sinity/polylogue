@@ -14,17 +14,29 @@ const IDLE_WAIT: Duration = Duration::from_secs(10);
 /// Time kept before the deadline to send the marks.
 const MARKS_MARGIN: Duration = Duration::from_millis(500);
 
-/// Produces the follow stream, or leaves another request to its operation.
-pub(crate) fn produce(
-    request: &crate::daemon::Request,
-    d: &Daemon,
-    operation: &Arc<crate::operation::Context>,
-    output: &mut dyn std::io::Write,
-) -> Option<Result<(), Failure>> {
-    let crate::daemon::Request::Follow { query, marks } = request else {
-        return None;
-    };
-    Some(accepting(d).and_then(|()| run(d, operation, query, marks.clone(), output)))
+/// Lines for a session or a sessions query as its live state changes and
+/// its rows arrive, until the deadline.
+pub(crate) struct Follow;
+
+/// What to follow; `marks` continues a previous follow.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Arguments {
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marks: Option<Marks>,
+}
+
+impl crate::daemon::handler::Feed for Follow {
+    type Arguments = Arguments;
+    fn produce(
+        arguments: Self::Arguments,
+        d: &Daemon,
+        operation: &Arc<crate::operation::Context>,
+        output: &mut dyn std::io::Write,
+    ) -> Result<(), Failure> {
+        run(d, operation, &arguments.target, arguments.marks, output)
+    }
 }
 
 fn run(

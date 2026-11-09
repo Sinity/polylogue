@@ -1,12 +1,16 @@
 use super::*;
 
+fn status() -> command_surface::RunnableRequest {
+    crate::client::request("status", serde_json::json!({}), "status".into())
+}
+
 #[test]
 fn a_missing_daemon_is_daemon_required() {
     let dir = tempfile::tempdir().unwrap();
-    let err = crate::client::send(&dir.path().join("daemon.sock"), &Request::Status).unwrap_err();
+    let err = crate::client::call(&dir.path().join("daemon.sock"), &status()).unwrap_err();
     assert!(is_down(&err));
     assert!(!Archive::at(dir.path()).lock_held());
-    let err = send_with_timeout(&Archive::at(dir.path()), &Request::Status, None).unwrap_err();
+    let err = crate::client::call_ready(&Archive::at(dir.path()), &status()).unwrap_err();
     assert!(is_down(&err));
 }
 
@@ -31,7 +35,10 @@ fn a_starting_daemon_is_waited_for() {
         std::io::Write::write_all(&mut &stream, format!("{reply}\n").as_bytes()).unwrap();
         drop(lock);
     });
-    let response = send_with_timeout(&archive, &Request::Status, None).unwrap();
+    // A deadline longer than the start; the status class's own is shorter.
+    let mut request = status();
+    request.deadline = command_surface::Deadline::Milliseconds(30_000);
+    let response = crate::client::call_ready(&archive, &request).unwrap();
     assert_eq!(
         crate::test_answers::ok(response),
         serde_json::json!({"ready": true})
@@ -42,7 +49,7 @@ fn a_starting_daemon_is_waited_for() {
 #[test]
 fn manual_is_an_offline_topic() {
     let manual = COMMANDS.iter().find(|c| c.name == "manual").unwrap();
-    assert!(matches!(manual.action, Action::Local(_)));
+    assert!(matches!(manual.run, crate::commands::Run::Local(_)));
     let matches = command()
         .try_get_matches_from(["polylogue", "manual"])
         .unwrap();
@@ -58,7 +65,7 @@ fn manual_is_an_offline_topic() {
 #[test]
 fn generated_ready_cli_call_reaches_the_socket_with_its_identity_and_deadline() {
     use std::io::{BufRead, Write};
-    let daemon = crate::test_daemon::start("canonical command witness");
+    let daemon = crate::test_daemon::start("command example");
     let request = command_surface::Request {
         operation: "query".into(),
         arguments: serde_json::json!({"query":"sessions"}),
@@ -161,70 +168,31 @@ fn raw_cli_arguments_replace_required_positionals() {
 }
 
 #[test]
-fn clients_send_deadlines_only_for_reads_and_explicit_stream_limits() {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixListener;
+fn clients_wait_with_deadlines_only_for_reads_and_explicit_stream_limits() {
     use std::time::Duration;
-    let directory = tempfile::tempdir().unwrap();
-    let archive = Archive::at(directory.path());
-    for (request, timeout, expected) in [
-        (Request::Status, None, true),
-        (
-            Request::Read {
-                target: "sessions".into(),
-                options: polylogue_model::read::ReadOptions::default(),
-                delivery: polylogue_model::read::ReadDelivery::Stream,
-                format: "json".into(),
-                budget: None,
-                with_blobs: false,
-                cursor: None,
-            },
-            None,
-            false,
-        ),
-        (
-            Request::Read {
-                target: "sessions".into(),
-                options: polylogue_model::read::ReadOptions::default(),
-                delivery: polylogue_model::read::ReadDelivery::Stream,
-                format: "json".into(),
-                budget: None,
-                with_blobs: false,
-                cursor: None,
-            },
-            Some(Duration::from_secs(120)),
-            true,
-        ),
-        (
-            Request::Embed {
-                what: "build".into(),
-                query: None,
-                limit: None,
-                yes: false,
-            },
-            Some(Duration::from_secs(120)),
-            false,
-        ),
+    let stream = || {
+        crate::client::request(
+            "read",
+            serde_json::json!({"target": "sessions", "delivery": "stream", "format": "json"}),
+            "stream".into(),
+        )
+    };
+    let mut limited = stream();
+    limited.deadline = command_surface::Deadline::Milliseconds(120_000);
+    let mut build = crate::client::request("embed build", serde_json::json!({}), "build".into());
+    build.deadline = command_surface::Deadline::Milliseconds(120_000);
+    for (request, expected) in [
+        (status(), Some(Duration::from_millis(80 + 50))),
+        (stream(), None),
+        (limited, Some(Duration::from_millis(120_000 + 50))),
+        (build, None),
     ] {
-        let listener = UnixListener::bind(archive.socket()).unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut line = String::new();
-            BufReader::new(&stream).read_line(&mut line).unwrap();
-            let outgoing: serde_json::Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(outgoing.get("deadline_ms").is_some(), expected);
-            if let Some(timeout) = timeout.filter(|_| expected) {
-                let left =
-                    outgoing["deadline_ms"].as_i64().unwrap() - crate::daemon::service::now_ms();
-                assert!(left > timeout.as_millis() as i64 - 5000);
-            }
-            stream
-                .write_all(b"{\"outcome\":\"ok\",\"value\":{},\"notes\":[],\"next\":[]}\n")
-                .unwrap();
-        });
-        send_with_timeout(&archive, &request, timeout).unwrap();
-        server.join().unwrap();
-        std::fs::remove_file(archive.socket()).unwrap();
+        assert_eq!(
+            crate::client::connection_budget(&request, None),
+            expected,
+            "{}",
+            request.operation
+        );
     }
 }
 
@@ -284,7 +252,7 @@ fn a_json_value_without_its_final_line_boundary_is_not_a_completed_answer() {
     let call = command_surface::Request {
         operation: "status".into(),
         arguments: serde_json::json!({}),
-        request_id: "incomplete-answer-witness".into(),
+        request_id: "incomplete-answer-example".into(),
         deadline: command_surface::Deadline::None,
         budget_tokens: Default::default(),
         cursor: None,
@@ -299,7 +267,7 @@ fn a_json_value_without_its_final_line_boundary_is_not_a_completed_answer() {
 #[test]
 fn literal_read_envelope_is_not_expanded_with_cli_defaults() {
     use std::io::{BufRead, Write};
-    let daemon = crate::test_daemon::start("read envelope witness");
+    let daemon = crate::test_daemon::start("read request example");
     for form in ["generated", "literal", "flags", "export", "export-hidden"] {
         let root = tempfile::tempdir().unwrap();
         let archive = Archive::at(root.path());
@@ -451,8 +419,14 @@ fn captured_output_policy_reaches_query_and_error_renderers_per_sink() {
         (true, true, false, Some("dumb")),
     ] {
         let output = OutputConfig::new(stdout, stderr, no_color, term);
-        let command = crate::commands::command("query").unwrap();
-        let text = (command.print)(&data, output.stdout_color());
+        let style = if output.stdout_color() {
+            command_surface::TextStyle::Ansi
+        } else {
+            command_surface::TextStyle::Plain
+        };
+        let text = crate::commands::declarations()
+            .render_text("query", &command_surface::Answer::ok(data.clone()), style)
+            .unwrap();
         assert_eq!(text.contains("\x1b[1m"), output.stdout_color());
         assert!(
             !text.contains("\x1b[31m"),
@@ -557,7 +531,10 @@ fn an_answer_from_another_protocol_is_refused_before_it_is_printed() {
     }));
     for name in ["query", "list", "measure sessions"] {
         let command = crate::commands::command(name).unwrap_or_else(|| panic!("{name}"));
-        let refused = super::decoded(command, &older).unwrap_err();
+        let refused = crate::commands::declarations()
+            .validate_answer(command.name, &older)
+            .map_err(|failure| crate::protocol::protocol_mismatch(command.name, failure.message))
+            .unwrap_err();
         assert_eq!(
             refused.code.as_deref(),
             Some("daemon_protocol_mismatch"),
@@ -571,7 +548,11 @@ fn an_answer_from_another_protocol_is_refused_before_it_is_printed() {
     }
     let failed: Answer<serde_json::Value> =
         Answer::error(crate::protocol::failure("not_found", "nothing"));
-    assert!(super::decoded(crate::commands::command("query").unwrap(), &failed).is_ok());
+    assert!(
+        crate::commands::declarations()
+            .validate_answer("query", &failed)
+            .is_ok()
+    );
 }
 
 /// A query answer document of the declared type, with these columns and rows.

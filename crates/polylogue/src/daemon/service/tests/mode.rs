@@ -65,16 +65,11 @@ fn launch(startup: crate::config::Startup) -> std::io::Result<Runtime> {
     )
 }
 
-fn read_request() -> Request {
-    Request::Read {
-        target: "claude-code:s1".into(),
-        options: polylogue_model::read::ReadOptions::default(),
-        format: "json".into(),
-        delivery: polylogue_model::read::ReadDelivery::Page,
-        budget: None,
-        with_blobs: false,
-        cursor: None,
-    }
+fn read_request() -> crate::test_daemon::Call {
+    crate::test_daemon::Call::new(
+        "read",
+        serde_json::json!({"target": "claude-code:s1", "format": "json"}),
+    )
 }
 
 fn seeded() -> ClaudeHome {
@@ -93,65 +88,33 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
     assert!(runtime.signals.is_none());
     assert!(runtime.signals_stop.is_none());
     // Sinex is unavailable while the configuration is broken, so status is degraded.
-    let (status, _) = crate::test_answers::degraded(handle(Request::Status, &runtime.daemon));
+    let (status, _) = crate::test_answers::degraded(
+        crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&runtime.daemon),
+    );
     assert_eq!(status["mode"]["state"], "blocked");
     assert_eq!(status["mode"]["path"], path.to_str().unwrap());
     assert!(!status["mode"]["error"].as_str().unwrap().is_empty());
-    let ask = crate::briefing::Ask::Recall {
-        text: "question".into(),
-        cwd: None,
-        for_session: None,
-        cursor: None,
-    };
     let requests = vec![
-        Request::ChatSend {
-            request_id: "send".into(),
-            action: crate::browser::actions::ChatRequest {
-                provider: "chatgpt".into(),
-                conversation: None,
-                project: None,
-                text: "Synthetic draft".into(),
-                model: "X".into(),
-                effort: None,
-                submit: false,
-            },
-            files: vec![],
-        },
-        Request::BackfillStart {
-            provider: "chatgpt".into(),
-            since: None,
-        },
-        Request::Import {
-            request_id: "import".into(),
-            paths: vec![],
-        },
-        Request::Setting {
-            request_id: None,
-            key: Some("browser.actions".into()),
-            value: Some("on".into()),
-            machine: None,
-        },
-        Request::Context {
-            budget_tokens: Default::default(),
-            request_id: "delivery".into(),
-            ask,
-            sender: Some("hook".into()),
-        },
-        Request::Keep {
-            request_id: "keep".into(),
-            text: "sessions".into(),
-            name: None,
-        },
-        Request::Embed {
-            what: "build".into(),
-            query: None,
-            limit: None,
-            yes: true,
-        },
+        crate::test_daemon::Call::new(
+            "chat send",
+            serde_json::json!({"provider": "chatgpt", "text": "Synthetic draft", "model": "X"}),
+        )
+        .id("send"),
+        crate::test_daemon::Call::new("backfill start", serde_json::json!({"provider": "chatgpt"})),
+        crate::test_daemon::Call::new("import", serde_json::json!({})).id("import"),
+        crate::test_daemon::Call::new(
+            "setting",
+            serde_json::json!({"key": Some("browser.actions"), "value": Some("on")}),
+        ),
+        crate::test_daemon::Call::new("recall", serde_json::json!({"query": "question"}))
+            .id("delivery")
+            .surface(crate::commands::Surface::Hook),
+        crate::test_daemon::Call::new("keep", serde_json::json!({"query": "sessions"})).id("keep"),
+        crate::test_daemon::Call::new("embed build", serde_json::json!({"yes": true})),
     ];
     for request in requests {
         assert!(
-            matches!(handle(request, &runtime.daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. }
+            matches!((request).answer(&runtime.daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. }
             if error.code.as_deref() == Some("sinex_unavailable")
                 && error.hint.as_deref().is_some_and(|hint| hint.contains(path.to_str().unwrap())))
         );
@@ -176,18 +139,16 @@ fn malformed_config_keeps_primary_status_and_refuses_reads_and_writes() {
         let runtime = launch(startup).unwrap();
         blocked(&runtime, &path(&w));
         assert!(
-            matches!(handle(read_request(), &runtime.daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("sinex_unavailable"))
+            matches!((read_request()).answer(&runtime.daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("sinex_unavailable"))
         );
         assert!(
-            crate::test_answers::ok(handle(
-                Request::Setting {
-                    request_id: None,
-                    key: Some("browser.actions".into()),
-                    value: None,
-                    machine: None
-                },
-                &runtime.daemon
-            ))["authored"]
+            crate::test_answers::ok(
+                crate::test_daemon::Call::new(
+                    "setting",
+                    serde_json::json!({"key": Some("browser.actions")})
+                )
+                .answer(&runtime.daemon)
+            )["authored"]
                 .is_null()
         );
         assert!(w.file("pending.jsonl").exists());
@@ -215,7 +176,9 @@ fn missing_config_is_standalone() {
     let runtime = launch(startup).unwrap();
     assert!(runtime.daemon.writes.is_some());
     assert_eq!(
-        crate::test_answers::ok(handle(Request::Status, &runtime.daemon))["mode"]["state"],
+        crate::test_answers::ok(
+            crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&runtime.daemon)
+        )["mode"]["state"],
         "standalone"
     );
 }
@@ -238,10 +201,12 @@ fn primary_outage_preserves_raw_custody_without_standalone_fallback_or_owner_day
         assert!(runtime.daemon.archive.is_primary());
         assert!(runtime.daemon.writes.is_some());
         // Sinex is not running, so status is degraded.
-        let (status, _) = crate::test_answers::degraded(handle(Request::Status, &runtime.daemon));
+        let (status, _) = crate::test_answers::degraded(
+            crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&runtime.daemon),
+        );
         assert_eq!(status["mode"]["state"], "primary");
         assert!(
-            matches!(handle(read_request(), &runtime.daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. }
+            matches!((read_request()).answer(&runtime.daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. }
             if matches!(error.code.as_deref(), Some("primary_context_missing" | "primary_context_unavailable")))
         );
         let ModeState::Primary { connection } = &runtime.daemon.mode else {

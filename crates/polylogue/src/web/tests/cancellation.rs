@@ -45,7 +45,7 @@ fn aborting_an_http_handler_cancels_its_blocking_read() {
         .unwrap();
     let web = Arc::clone(&r.web);
     let task = runtime.spawn(async move {
-        ask(&web, Request::Sql { statement: "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n".into() }).await
+        ask(&web, "sql", serde_json::json!({"statement": "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}), None).await
     });
     let limit = reads.recv_timeout(Duration::from_secs(5)).unwrap();
     test_daemon::TestDaemon::wait_for_sql(&limit);
@@ -286,7 +286,7 @@ fn no_header_null_sql_has_no_implicit_read_cap_and_disconnect_still_cleans_up() 
     let observed = reads.recv_timeout(Duration::from_secs(5)).unwrap();
     TestDaemon::wait_for_sql(&observed);
     // Exceed this operation's actual class default without adding it to null.
-    let default = crate::protocol::operations::deadlines()
+    let default = crate::commands::deadlines()
         .get(crate::commands::command("sql").unwrap().latency)
         .expect("SQL has a finite class default");
     std::thread::sleep(default + Duration::from_millis(20));

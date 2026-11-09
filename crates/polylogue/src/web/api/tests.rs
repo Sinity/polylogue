@@ -1,5 +1,5 @@
 use super::*;
-use crate::daemon::{Failure, Request, service::Daemon};
+use crate::daemon::{Failure, service::Daemon};
 use std::io::Write;
 
 fn web(daemon: &crate::test_daemon::TestDaemon) -> Arc<Web> {
@@ -15,12 +15,12 @@ fn web(daemon: &crate::test_daemon::TestDaemon) -> Arc<Web> {
 #[test]
 fn stream_failure_before_first_event_uses_the_shared_http_status() {
     fn failed(
-        _: &Request,
         _: &Daemon,
+        _: &crate::operation::Invocation,
         _: &std::sync::Arc<crate::operation::Context>,
         _: &mut dyn Write,
-    ) -> Option<Result<(), crate::daemon::Failure>> {
-        Some(Err(Failure::new("bad_request", "invalid selection")))
+    ) -> Result<(), crate::daemon::Failure> {
+        Err(Failure::new("bad_request", "invalid selection"))
     }
     let daemon = crate::test_daemon::start("synthetic stream refusal");
     tokio::runtime::Builder::new_multi_thread()
@@ -30,10 +30,9 @@ fn stream_failure_before_first_event_uses_the_shared_http_status() {
         .block_on(async {
             let response = stream(
                 &web(&daemon),
-                Request::Changes { since: None },
+                super::super::request_limit(),
+                crate::client::request("changes", serde_json::json!({}), "http-stream".into()),
                 failed,
-                None,
-                None,
             )
             .await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -49,11 +48,11 @@ fn stream_failure_before_first_event_uses_the_shared_http_status() {
 #[test]
 fn stream_failure_after_begin_delivers_error_without_final_completion() {
     fn failed(
-        _: &Request,
         _: &Daemon,
+        _: &crate::operation::Invocation,
         authorship: &std::sync::Arc<crate::operation::Context>,
         output: &mut dyn Write,
-    ) -> Option<Result<(), crate::daemon::Failure>> {
+    ) -> Result<(), crate::daemon::Failure> {
         assert_eq!(
             authorship.authorship.author,
             polylogue_model::Author::Operator
@@ -74,7 +73,7 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
             &serde_json::json!({"snapshot":"synthetic"}),
         )
         .unwrap();
-        Some(Err(Failure::new("conflict", "source changed")))
+        Err(Failure::new("conflict", "source changed"))
     }
     let daemon = crate::test_daemon::start("synthetic stream late failure");
     tokio::runtime::Builder::new_multi_thread()
@@ -84,10 +83,8 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
         .block_on(async {
             let response = stream(
                 &web(&daemon),
-                Request::Changes { since: None },
-                failed,
-                None,
-                Some(command_surface::Request {
+                super::super::request_limit(),
+                command_surface::Request {
                     operation: "changes".into(),
                     arguments: serde_json::json!({"uncapped":true}),
                     request_id: "http-accepted-stream".into(),
@@ -96,7 +93,8 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
                     cursor: None,
                     fresh: false,
                     format: Default::default(),
-                }),
+                },
+                failed,
             )
             .await;
             assert_eq!(response.status(), StatusCode::OK);
@@ -120,18 +118,18 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
 #[test]
 fn stream_headers_arrive_while_the_bounded_producer_is_waiting_for_the_reader() {
     fn large(
-        _: &Request,
         _: &Daemon,
+        _: &crate::operation::Invocation,
         _: &std::sync::Arc<crate::operation::Context>,
         output: &mut dyn Write,
-    ) -> Option<Result<(), crate::daemon::Failure>> {
+    ) -> Result<(), crate::daemon::Failure> {
         let result = (|| {
             crate::protocol::stream::event(output, "begin", &serde_json::json!({}))?;
             // Exceeds the transport buffer. Preparation cannot finish until the body is consumed.
             crate::protocol::stream::event(output, "record", &"x".repeat(128 * 1024))?;
             crate::protocol::stream::event(output, "complete", &serde_json::json!({}))
         })();
-        Some(result.map_err(|error| Failure::new("io", error)))
+        result.map_err(|error| Failure::new("io", error))
     }
     let daemon = crate::test_daemon::start("synthetic stream backpressure");
     tokio::runtime::Builder::new_multi_thread()
@@ -143,10 +141,9 @@ fn stream_headers_arrive_while_the_bounded_producer_is_waiting_for_the_reader() 
                 std::time::Duration::from_secs(5),
                 stream(
                     &web(&daemon),
-                    Request::Changes { since: None },
+                    super::super::request_limit(),
+                    crate::client::request("changes", serde_json::json!({}), "http-stream".into()),
                     large,
-                    None,
-                    None,
                 ),
             )
             .await
@@ -159,7 +156,7 @@ fn stream_headers_arrive_while_the_bounded_producer_is_waiting_for_the_reader() 
 #[test]
 fn generated_http_ready_call_executes_without_translating_its_arguments() {
     use tower::ServiceExt;
-    let daemon = crate::test_daemon::start("HTTP ready witness");
+    let daemon = crate::test_daemon::start("HTTP ready example");
     let call = command_surface::Request {
         operation: "query".into(),
         arguments: serde_json::json!({"query":"sessions"}),
@@ -233,7 +230,7 @@ fn generated_http_ready_call_executes_without_translating_its_arguments() {
 #[test]
 fn read_html_negotiates_on_the_same_typed_operation_route() {
     use tower::ServiceExt;
-    let daemon = crate::test_daemon::start("HTML same operation witness <script>");
+    let daemon = crate::test_daemon::start("HTML same operation example <script>");
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -263,7 +260,7 @@ fn read_html_negotiates_on_the_same_typed_operation_route() {
                 .await
                 .unwrap();
             let text = String::from_utf8(bytes.to_vec()).unwrap();
-            assert!(text.contains("HTML same operation witness"), "{text}");
+            assert!(text.contains("HTML same operation example"), "{text}");
             assert!(text.contains("&lt;script&gt;"), "{text}");
         });
 }
@@ -271,14 +268,14 @@ fn read_html_negotiates_on_the_same_typed_operation_route() {
 #[test]
 fn native_scope_reset_terminates_a_begun_http_stream_without_final_completion() {
     fn reset_after_begin(
-        _: &Request,
         daemon: &Daemon,
+        _: &crate::operation::Invocation,
         _: &std::sync::Arc<crate::operation::Context>,
         output: &mut dyn Write,
-    ) -> Option<Result<(), crate::daemon::Failure>> {
+    ) -> Result<(), crate::daemon::Failure> {
         let reader = match daemon.reads.reader() {
             Ok(reader) => reader,
-            Err(error) => return Some(Err(Failure::from(error))),
+            Err(error) => return Err(Failure::from(error)),
         };
         let result = (|| {
             crate::protocol::stream::event(
@@ -295,9 +292,9 @@ fn native_scope_reset_terminates_a_begun_http_stream_without_final_completion() 
             crate::protocol::stream::event(output, "complete", &serde_json::json!({}))?;
             Ok::<(), Box<dyn std::error::Error>>(())
         })();
-        Some(result.map_err(|error| Failure::new("io", error)))
+        result.map_err(|error| Failure::new("io", error))
     }
-    let daemon = crate::test_daemon::start("native generation stream witness");
+    let daemon = crate::test_daemon::start("native generation stream example");
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -305,10 +302,9 @@ fn native_scope_reset_terminates_a_begun_http_stream_without_final_completion() 
         .block_on(async {
             let response = stream(
                 &web(&daemon),
-                Request::Changes { since: None },
+                super::super::request_limit(),
+                crate::client::request("changes", serde_json::json!({}), "http-stream".into()),
                 reset_after_begin,
-                None,
-                None,
             )
             .await;
             assert_eq!(response.status(), StatusCode::OK);
@@ -426,7 +422,7 @@ fn a_captured_parent_deadline_is_not_renewed_during_dispatch_wait() {
             answer(
                 &web,
                 crate::commands::command("status").unwrap(),
-                Ok(Input::Ready(request)),
+                Ok(request),
                 &HeaderMap::new(),
             )
             .await
@@ -486,7 +482,7 @@ fn a_cancelled_http_parent_without_a_header_cannot_submit_a_pure_write() {
         answer(
             &web,
             crate::commands::command("setting").unwrap(),
-            Ok(Input::Ready(request)),
+            Ok(request),
             &HeaderMap::new(),
         )
         .await
@@ -548,7 +544,7 @@ fn writer_dispatch_refuses_queued_expiry_but_finishes_an_already_owned_write() {
                 answer(
                     &web,
                     crate::commands::command("setting").unwrap(),
-                    Ok(Input::Ready(request)),
+                    Ok(request),
                     &HeaderMap::new(),
                 )
                 .await
@@ -638,7 +634,9 @@ fn actual_ready_http_calls_preserve_absent_null_and_finite_deadlines() {
             has_deadline,
             !matches!(deadline, command_surface::Deadline::Default)
         );
-        let parsed = ready_pairs(pairs).unwrap();
+        let parsed = crate::commands::declarations()
+            .parse_http_query("query", &pairs, "unused")
+            .unwrap();
         assert_eq!(
             parsed, request,
             "actual generated call changed its accepted envelope: {url}"

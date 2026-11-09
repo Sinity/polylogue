@@ -52,19 +52,24 @@ fn write(
 ) -> Result<PathBuf, String> {
     let path = PathBuf::from(values.text("out").ok_or("--out is required")?);
     let mut temporary = super::staged_file::StagedFile::new(&path).map_err(|e| e.to_string())?;
-    let command = crate::commands::command("attachment").ok_or("attachment command missing")?;
-    let Action::Request(build) = command.action else {
-        return Err("attachment request missing".into());
-    };
-    let mut request = build(
-        command,
-        values,
-        &Caller {
-            surface: Surface::Cli,
-            cwd: None,
-            json: true,
-        },
-    )?;
+    let arguments: serde_json::Map<String, Value> =
+        ["message", "block", "attachment", "input", "length"]
+            .into_iter()
+            .filter_map(|name| {
+                values
+                    .0
+                    .get(name)
+                    .map(|value| (name.to_owned(), value.clone()))
+            })
+            .collect();
+    let mut request = crate::client::request(
+        "attachment",
+        Value::Object(arguments),
+        polylogue_store::user_writes::new_request_id(),
+    );
+    if let Some(seconds) = values.integer("timeout") {
+        request.deadline = command_surface::Deadline::Milliseconds(seconds.saturating_mul(1000));
+    }
     let mut value = data.clone();
     let mut hasher = blake3::Hasher::new();
     let mut offset = 0;
@@ -97,16 +102,10 @@ fn write(
         offset = end;
         match page.next {
             Some(next) => {
-                let Request::Attachment { cursor, .. } = &mut request else {
-                    return Err("attachment request changed".into());
-                };
-                *cursor = Some(next);
-                value = match send_with_timeout(
+                request.cursor = Some(next);
+                value = match crate::client::call_ready(
                     &Archive::at(&startup.config.archive.clone()),
                     &request,
-                    values
-                        .integer("timeout")
-                        .map(std::time::Duration::from_secs),
                 )
                 .map_err(|e| e.to_string())?
                 {

@@ -123,9 +123,9 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
             line.clear();
             BufReader::new(&stream).read_line(&mut line).unwrap();
             let request: Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(request["op"], "delivery_event");
-            assert_eq!(request["delivery"], delivery);
-            assert_eq!(request["what"], "delivered");
+            assert_eq!(request["operation"], "delivery-event");
+            assert_eq!(request["arguments"]["delivery"], delivery);
+            assert_eq!(request["arguments"]["what"], "delivered");
             writeln!(
                 stream,
                 "{}",

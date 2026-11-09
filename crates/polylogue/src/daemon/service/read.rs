@@ -4,7 +4,6 @@
 //! Session and query pages queue their first-page run without waiting for a write.
 //! Exact request and raw run reads retain the execution before exposing its reference.
 use super::{Daemon, Failure, error};
-use crate::daemon::Request;
 use command_surface::Answer;
 use polylogue_model::{bundle::ReadSnapshot, read::*};
 use polylogue_render::pager::{PageBuilder, PageError, Push};
@@ -25,6 +24,122 @@ mod object;
 mod output;
 mod records;
 mod session;
+
+/// One read as the daemon resolves it from the read operation's arguments.
+#[derive(Debug, Clone)]
+pub(crate) struct ReadRequest {
+    pub target: String,
+    pub options: ReadOptions,
+    pub delivery: ReadDelivery,
+    pub format: String,
+    pub budget: Option<usize>,
+    pub with_blobs: bool,
+    /// A page cursor issued by an earlier page of this same reading.
+    pub cursor: Option<String>,
+}
+
+impl ReadRequest {
+    /// The read the public arguments name: the one parser of read arguments.
+    pub(crate) fn from_arguments(
+        arguments: crate::protocol::read::Arguments,
+        cursor: Option<String>,
+    ) -> Result<Self, String> {
+        let crate::protocol::read::Arguments {
+            target,
+            view,
+            format,
+            delivery,
+            page_tokens,
+            show,
+            hide,
+            output_lines,
+            for_others,
+            variant,
+            with_blobs,
+            at,
+            diff,
+            around,
+            latest,
+            physical,
+        } = arguments;
+        let mut options = ReadOptions {
+            view,
+            output_lines,
+            for_others,
+            variants: variant,
+            at: at
+                .map(|at| polylogue_model::MessageId::parse(&at))
+                .transpose()
+                .map_err(|error| error.to_string())?,
+            diff,
+            around,
+            latest,
+            physical,
+            ..ReadOptions::default()
+        };
+        options
+            .apply_fold(&show, &hide)
+            .map_err(|error| error.to_string())?;
+        options.validate().map_err(|error| error.to_string())?;
+        Ok(Self {
+            target,
+            options,
+            delivery,
+            format: format.unwrap_or(Format::Json).name().into(),
+            budget: page_tokens
+                .map(|tokens| usize::try_from(tokens.get()))
+                .transpose()
+                .map_err(|_| "page_tokens exceeds address space")?,
+            with_blobs,
+            cursor,
+        })
+    }
+}
+
+/// Reads one reference or query as a page, or as a stream of records.
+pub(crate) struct Read;
+impl crate::daemon::handler::Handler for Read {
+    type Arguments = crate::protocol::read::Arguments;
+    type Answer = crate::protocol::read::Answer;
+    const PAGES: bool = true;
+    fn default_deadline(arguments: &Self::Arguments) -> bool {
+        arguments.delivery != ReadDelivery::Stream
+    }
+    const PRINT: fn(&Value, bool) -> String = crate::cli::print::read;
+    fn run(
+        arguments: Self::Arguments,
+        call: &crate::daemon::handler::Call<'_>,
+    ) -> Result<Answer<Value>, Failure> {
+        let request = match ReadRequest::from_arguments(arguments, call.cursor.map(str::to_owned)) {
+            Ok(request) => request,
+            Err(message) => return Ok(error("bad_request", message)),
+        };
+        let reader = call.reader()?;
+        let context = call.context()?;
+        Ok(page(&reader, call.daemon, &request, &context))
+    }
+}
+
+impl crate::daemon::handler::Streams for Read {
+    fn streaming(arguments: &Self::Arguments) -> bool {
+        arguments.delivery == ReadDelivery::Stream
+    }
+    fn produce(
+        arguments: Self::Arguments,
+        call: &crate::daemon::handler::Call<'_>,
+        context: &Arc<crate::operation::Context>,
+        output: &mut dyn Write,
+    ) -> Result<(), Failure> {
+        let request = ReadRequest::from_arguments(arguments, None)
+            .map_err(|message| Failure::new("bad_request", message))?;
+        produce(&request, call.daemon, context, output).unwrap_or_else(|| {
+            Err(Failure::new(
+                "bad_request",
+                "streaming reads require stream delivery",
+            ))
+        })
+    }
+}
 
 /// What read cursors are sealed with: this index generation's key and the
 /// generation.
@@ -69,8 +184,8 @@ struct Reading {
     digest: String,
 }
 
-fn reading(request: &Request) -> Result<(Reading, Option<&str>), Failure> {
-    let Request::Read {
+fn reading(request: &ReadRequest) -> Result<(Reading, Option<&str>), Failure> {
+    let ReadRequest {
         target,
         options,
         delivery,
@@ -78,10 +193,7 @@ fn reading(request: &Request) -> Result<(Reading, Option<&str>), Failure> {
         budget,
         cursor,
         ..
-    } = request
-    else {
-        return Err(Failure::new("bad_request", "a read request is required"));
-    };
+    } = request;
     options
         .validate()
         .map_err(|e| Failure::new("bad_request", e))?;
@@ -466,15 +578,13 @@ fn record_run(
     reader: &Reader<'_>,
     d: &Daemon,
     operation: &Arc<crate::operation::Context>,
-    request: &Request,
+    request: &ReadRequest,
     reading: &Reading,
 ) -> Result<(), Failure> {
     use polylogue_model::query_objects::{
         ExecutionPresentation, QueryRun, QueryRunOutcome, RunBinding, RunOutcome,
     };
-    let Request::Read { delivery, .. } = request else {
-        return Ok(());
-    };
+    let ReadRequest { delivery, .. } = request;
     let Some(writer) = d.writes.as_ref() else {
         return Ok(());
     };
@@ -582,11 +692,11 @@ fn deadline(operation: &crate::operation::Context) -> command_surface::Deadline 
 /// The ready call that continues this reading at `cursor`.
 fn next_call(
     d: &Daemon,
-    request: &Request,
+    request: &ReadRequest,
     cursor: String,
     deadline: command_surface::Deadline,
 ) -> Result<ReadyCall, Failure> {
-    let Request::Read {
+    let ReadRequest {
         target,
         options,
         delivery,
@@ -594,11 +704,8 @@ fn next_call(
         budget,
         with_blobs,
         ..
-    } = request
-    else {
-        return Err(Failure::new("internal", "a read request is required"));
-    };
-    let continued = Request::Read {
+    } = request;
+    let continued = ReadRequest {
         target: target.clone(),
         options: options.clone(),
         delivery: *delivery,
@@ -610,7 +717,7 @@ fn next_call(
     let arguments = crate::protocol::read::Arguments::from_request(&continued)
         .map_err(|e| Failure::new("internal", e))?;
     let arguments = serde_json::to_value(arguments).map_err(|e| Failure::new("internal", e))?;
-    let cursor = crate::protocol::operations::cursor(&continued).map(str::to_owned);
+    let cursor = continued.cursor.clone();
     let identity =
         blake3::hash(&serde_json::to_vec(&(&arguments, &cursor)).expect("continuation serializes"));
     d.ready_call(&command_surface::RunnableRequest {
@@ -626,15 +733,15 @@ fn next_call(
     .map_err(Failure::from)
 }
 
-pub(super) fn page(
+pub(crate) fn page(
     reader: &Reader<'_>,
     d: &Daemon,
-    request: &Request,
+    request: &ReadRequest,
     operation: &Arc<crate::operation::Context>,
 ) -> Answer<Value> {
     if matches!(
         request,
-        Request::Read {
+        ReadRequest {
             with_blobs: true,
             ..
         }
@@ -689,7 +796,7 @@ const BACKWARD_ANCHOR_ROW: u64 = 1 << 32;
 fn rows_page(
     reader: &Reader<'_>,
     d: &Daemon,
-    request: &Request,
+    request: &ReadRequest,
     operation: &Arc<crate::operation::Context>,
     reading: &Reading,
     cursor: Option<&str>,
@@ -872,7 +979,7 @@ fn rows_page(
 }
 
 pub(crate) fn produce(
-    request: &Request,
+    request: &ReadRequest,
     d: &Daemon,
     operation: &Arc<crate::operation::Context>,
     output: &mut dyn Write,
@@ -880,7 +987,7 @@ pub(crate) fn produce(
     if let Some(result) = self::object::produce(request, d, operation, output) {
         return Some(result);
     }
-    let Request::Read {
+    let ReadRequest {
         delivery: ReadDelivery::Stream,
         with_blobs,
         ..
