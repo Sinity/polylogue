@@ -26,6 +26,7 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 - **Every identity hash reads one JSON encoding**: the shared canonical JSON (a domain tag where the identity has one, object keys sorted, numbers as spelled), so no hash depends on map order or on the features serde_json was built with.
 - **Times keep their source precision.** A parsed time keeps the precision, quality and bounds the source gave it ([capture.md](capture.md#source-clocks)); millisecond columns used by queries are an index over it and never replace it.
 - **Message IDs are stable across re-parse.** A source without native message IDs gets a fallback ID from the input and record position (`<stem>@<offset>`), stable for the same bytes.
+- **A stored row never reads as a default.** A stored name the model's enum does not have, an ID that does not parse, unparseable attributes or a negative count is a read error naming the row or column; it is never read as a user message, empty attributes or a skipped row.
 - Which route's reading of a conversation is shown, field by field, is in [sessions.md](sessions.md#one-conversation-through-several-routes).
 
 ## Evolution

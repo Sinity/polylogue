@@ -54,6 +54,45 @@ pub(crate) fn time_bytes(
     Ok(serde_json::to_vec(&(at, evidence))?)
 }
 
+/// A stored name the model does not have.
+#[derive(Debug, thiserror::Error)]
+#[error("unknown stored name {0:?}")]
+struct UnknownName(String);
+
+/// Decoding of columns that hold a model enum's stored name. A name the enum
+/// does not have is a column error naming the column, never a default.
+pub(crate) trait NamedColumns {
+    fn name<T: polylogue_model::StoredName>(&self, column: usize) -> rusqlite::Result<T>;
+    fn optional_name<T: polylogue_model::StoredName>(
+        &self,
+        column: usize,
+    ) -> rusqlite::Result<Option<T>>;
+}
+
+fn decode_name<T: polylogue_model::StoredName>(column: usize, name: String) -> rusqlite::Result<T> {
+    T::from_name(&name).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::new(UnknownName(name)),
+        )
+    })
+}
+
+impl NamedColumns for rusqlite::Row<'_> {
+    fn name<T: polylogue_model::StoredName>(&self, column: usize) -> rusqlite::Result<T> {
+        decode_name(column, self.get(column)?)
+    }
+    fn optional_name<T: polylogue_model::StoredName>(
+        &self,
+        column: usize,
+    ) -> rusqlite::Result<Option<T>> {
+        self.get::<_, Option<String>>(column)?
+            .map(|name| decode_name(column, name))
+            .transpose()
+    }
+}
+
 pub(crate) fn read_time(
     row: &rusqlite::Row<'_>,
     column: usize,

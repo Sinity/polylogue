@@ -4,7 +4,7 @@
 
 use crate::archive::{Archive, open_read};
 use crate::blobs::FileFacts;
-use crate::encoding::{restore_text, unpack_block, unpack_text};
+use crate::encoding::{NamedColumns, restore_text, unpack_block, unpack_text};
 use crate::{Result, StoreError};
 use polylogue_model::{
     Block, Message, MessageId, PromptKind, Role, Session, SessionId, Timestamp, Usage,
@@ -481,10 +481,6 @@ impl rusqlite::ToSql for SqlValue {
             SqlValue::Null => ToSqlOutput::Borrowed(ValueRef::Null),
         })
     }
-}
-
-pub(crate) fn parse_name<T: serde::de::DeserializeOwned>(s: &str) -> Option<T> {
-    serde_json::from_value(serde_json::Value::String(s.to_owned())).ok()
 }
 
 pub(crate) fn ts(ms: Option<i64>) -> Option<Timestamp> {
@@ -1050,24 +1046,24 @@ impl Reader<'_> {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, Option<String>>(3)?,
+                r.name::<Role>(2)?,
+                r.optional_name::<PromptKind>(3)?,
                 r.get::<_, Option<String>>(4)?,
                 crate::encoding::read_time(r, 5)?,
                 r.get::<_, Option<String>>(6)?,
                 [
-                    r.get::<_, Option<i64>>(7)?,
-                    r.get::<_, Option<i64>>(8)?,
-                    r.get::<_, Option<i64>>(9)?,
-                    r.get::<_, Option<i64>>(10)?,
-                    r.get::<_, Option<i64>>(11)?,
+                    r.get::<_, Option<u64>>(7)?,
+                    r.get::<_, Option<u64>>(8)?,
+                    r.get::<_, Option<u64>>(9)?,
+                    r.get::<_, Option<u64>>(10)?,
+                    r.get::<_, Option<u64>>(11)?,
                 ],
                 r.get::<_, Option<String>>(12)?,
                 r.get::<_, Option<String>>(13)?,
-                r.get::<_, Option<i64>>(14)?,
+                r.get::<_, Option<u64>>(14)?,
                 r.get::<_, Option<String>>(15)?,
                 (
-                    r.get::<_, Option<i64>>(16)?,
+                    r.get::<_, Option<u64>>(16)?,
                     r.get::<_, Option<String>>(17)?,
                 ),
                 r.get::<_, Option<Vec<u8>>>(18)?,
@@ -1104,28 +1100,20 @@ impl Reader<'_> {
                 source_end,
                 record_order,
             ) = row?;
-            let Ok(id) = MessageId::parse(&id) else {
-                continue;
-            };
+            let id = MessageId::parse(&id)
+                .map_err(|_| StoreError::Invalid(format!("message row {pk} has an invalid ID")))?;
             if !keep(pk) {
                 continue;
             }
-            let n = |x: Option<i64>| x.map(|x| x as u64);
-            let attrs: Option<serde_json::Value> =
-                attrs.and_then(|a| serde_json::from_str(&a).ok());
+            let named = id.to_string();
+            let invalid = |what: &str| StoreError::Invalid(format!("message {named} has {what}"));
+            let attrs: Option<serde_json::Value> = attrs
+                .map(|a| serde_json::from_str(&a))
+                .transpose()
+                .map_err(|_| invalid("unparseable attributes"))?;
             let visible = match content.visibility {
                 None => true,
-                Some(filter)
-                    if filter.prompts
-                        && !parse_name::<Role>(&role).is_some_and(|role| {
-                            polylogue_model::is_prompt(
-                                role,
-                                kind.as_deref().and_then(parse_name::<PromptKind>),
-                            )
-                        }) =>
-                {
-                    false
-                }
+                Some(filter) if filter.prompts && !polylogue_model::is_prompt(role, kind) => false,
                 Some(filter) if filter.kinds.is_empty() => false,
                 Some(filter) => {
                     let sql = format!(
@@ -1145,22 +1133,25 @@ impl Reader<'_> {
             let message = Message {
                 id,
                 session: session.clone(),
-                parent: parent.and_then(|p| MessageId::parse(&p).ok()),
-                role: parse_name(&role).unwrap_or(Role::User),
+                parent: parent
+                    .map(|p| MessageId::parse(&p))
+                    .transpose()
+                    .map_err(|_| invalid("an invalid parent ID"))?,
+                role,
                 at: at.0,
                 at_quality: at.1.quality,
                 at_precision: at.1.precision,
                 at_until: at.1.until,
                 model,
-                prompt_kind: kind.as_deref().and_then(parse_name::<PromptKind>),
+                prompt_kind: kind,
                 blocks,
                 usage: Usage {
-                    input: n(tokens[0]),
-                    cached_input: n(tokens[1]),
-                    cache_write: n(tokens[2]),
-                    output: n(tokens[3]),
-                    reasoning: n(tokens[4]),
-                    cache_write_1h: n(w1h),
+                    input: tokens[0],
+                    cached_input: tokens[1],
+                    cache_write: tokens[2],
+                    output: tokens[3],
+                    reasoning: tokens[4],
+                    cache_write_1h: w1h,
                     service_tier: tier,
                     speed,
                 },
@@ -1170,7 +1161,7 @@ impl Reader<'_> {
                     .and_then(|a| a.get("reported_cost_usd"))
                     .and_then(serde_json::Value::as_number)
                     .cloned(),
-                duration_ms: n(duration),
+                duration_ms: duration,
                 attrs: attrs
                     .as_ref()
                     .and_then(|value| value.get("attrs"))
@@ -1180,7 +1171,9 @@ impl Reader<'_> {
                 production: attrs
                     .as_ref()
                     .and_then(|a| a.get("production"))
-                    .and_then(|p| serde_json::from_value(p.clone()).ok())
+                    .map(|p| serde_json::from_value(p.clone()))
+                    .transpose()
+                    .map_err(|_| invalid("an unparseable production record"))?
                     .unwrap_or_default(),
             };
             let projection = hash
