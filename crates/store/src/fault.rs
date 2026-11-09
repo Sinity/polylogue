@@ -12,12 +12,15 @@ pub enum Action {
     Panic,
     /// Stop a subprocess at the boundary so its test parent can kill it.
     StopProcess,
+    /// Block the thread at the point until the test calls [`release`], so the
+    /// test can act while the code is stopped at a known step ([`held`]).
+    Hold,
 }
 
 #[cfg(feature = "faults")]
 mod armed {
     use super::Action;
-    use std::sync::Mutex;
+    use std::sync::{Condvar, Mutex};
 
     /// `(point, subject substring, action, reaches to let pass, hits left)`.
     #[allow(clippy::type_complexity)]
@@ -37,6 +40,48 @@ mod armed {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
+        *HOLD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Hold::default();
+    }
+
+    #[derive(Default)]
+    struct Hold {
+        held: bool,
+        released: bool,
+    }
+    static HOLD: Mutex<Hold> = Mutex::new(Hold {
+        held: false,
+        released: false,
+    });
+    static HOLD_CHANGED: Condvar = Condvar::new();
+
+    pub(super) fn hold() {
+        let mut state = HOLD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.held = true;
+        HOLD_CHANGED.notify_all();
+        while !state.released {
+            state = HOLD_CHANGED
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// Whether a thread has reached a point armed with [`Action::Hold`].
+    pub fn held() -> bool {
+        HOLD.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .held
+    }
+
+    /// Lets the thread stopped at an [`Action::Hold`] point continue.
+    pub fn release() {
+        HOLD.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .released = true;
+        HOLD_CHANGED.notify_all();
     }
 
     pub fn take(point: &str, subject: &str) -> Option<Action> {
@@ -57,7 +102,7 @@ mod armed {
 }
 
 #[cfg(feature = "faults")]
-pub use armed::{arm, clear};
+pub use armed::{arm, clear, held, release};
 
 /// Reaching `point` for `subject` (a path, a table): fails or panics if a
 /// test armed it, otherwise nothing.
@@ -74,6 +119,7 @@ pub fn check(point: &str, subject: &str) -> crate::Result<()> {
         Some(Action::StopProcess) => {
             stop_process();
         }
+        Some(Action::Hold) => armed::hold(),
         None => {}
     }
     let _ = (point, subject);
