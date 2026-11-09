@@ -121,6 +121,7 @@ fn explicit_unbounded_read_stream_waits_beyond_the_read_default_and_finishes_exa
             record_type: "synthetic".into(),
         },
         figures: vec![],
+        zone: None,
     };
     let item = ReadItem {
         source: Source::record("message:claude-code:m1"),

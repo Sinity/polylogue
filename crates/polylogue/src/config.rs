@@ -414,8 +414,10 @@ struct HttpFile {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DayFile {
-    zone: String,
-    start: jiff::civil::Time,
+    /// An IANA zone; the host's named zone when absent.
+    zone: Option<String>,
+    /// When a logical day starts; 04:00 when absent.
+    start: Option<jiff::civil::Time>,
 }
 fn absolute(path: PathBuf, base: &Path) -> PathBuf {
     use std::path::Component;
@@ -548,16 +550,20 @@ impl Startup {
         let (mode, _primary_auth) = load_mode(&base.join("sinex.toml"))?;
         let standalone = matches!(mode, crate::daemon::service::ArchiveMode::Standalone);
         let standalone_day = if standalone {
-            let day = file.day.unwrap_or(DayFile {
-                zone: "UTC".into(),
-                start: jiff::civil::Time::constant(4, 0, 0, 0),
+            let DayFile { zone, start } = file.day.unwrap_or(DayFile {
+                zone: None,
+                start: None,
             });
-            let zone = jiff::tz::TimeZone::get(&day.zone)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            Some(
-                DaySetting::new(zone, day.start)
-                    .map_err(|error| Error::Invalid(error.to_string()))?,
-            )
+            let start = start.unwrap_or(jiff::civil::Time::constant(4, 0, 0, 0));
+            let day = match zone {
+                Some(zone) => {
+                    let zone = jiff::tz::TimeZone::get(&zone)
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    DaySetting::new(zone, start)
+                }
+                None => DaySetting::system(start),
+            };
+            Some(day.map_err(|error| Error::Invalid(error.to_string()))?)
         } else {
             #[cfg(feature = "sinex")]
             if file.day.is_some()

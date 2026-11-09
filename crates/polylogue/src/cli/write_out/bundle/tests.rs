@@ -27,6 +27,7 @@ fn begin() -> ReadBegin {
                 query: "sessions".into(),
             },
             figures: vec![],
+            zone: None,
         },
         options: ReadOptions::default(),
     }

@@ -142,3 +142,22 @@ impl fmt::Debug for Timestamp {
 
 #[cfg(test)]
 mod tests;
+
+/// RFC 3339 in `zone` with that zone's offset at `t` (`2026-11-09T09:12:00+01:00`);
+/// a zero offset is written `Z`. The instant is exact either way.
+pub fn rfc3339_in(t: Timestamp, zone: &jiff::tz::TimeZone) -> String {
+    let offset = zone.to_offset(t.0);
+    if offset == jiff::tz::Offset::UTC {
+        t.0.to_string()
+    } else {
+        t.0.display_with_offset(offset).to_string()
+    }
+}
+
+/// A clock time for people: `2026-11-09 09:12 +01:00`, in `zone` and to the
+/// minute, with the offset so a reader never mistakes the zone.
+pub fn local_minute(t: Timestamp, zone: &jiff::tz::TimeZone) -> String {
+    t.0.to_zoned(zone.clone())
+        .strftime("%Y-%m-%d %H:%M %:z")
+        .to_string()
+}

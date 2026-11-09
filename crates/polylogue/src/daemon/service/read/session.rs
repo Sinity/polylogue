@@ -1004,6 +1004,7 @@ pub(super) fn page(
         }
     };
     let mut header = header(reader, &scope.session, target, options)?;
+    header.zone = Some(operation.clock.day.zone_name().to_owned());
     if scope.logical {
         header.kind = logical_header(&scope.session, &composed);
     }
@@ -1199,6 +1200,7 @@ fn header(
             session: Box::new(stored),
         },
         figures: Vec::new(),
+        zone: None,
     })
 }
 
