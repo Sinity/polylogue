@@ -20,3 +20,65 @@ fn native_resume_uses_each_harness_command() {
     assert!(harness_resume(&SessionId::parse("claude-code:agent-a1").unwrap(), None).is_none());
     assert!(harness_resume(&SessionId::parse("chatgpt:abc").unwrap(), None).is_none());
 }
+
+#[test]
+fn resume_uses_launch_directory_not_last_used() {
+    let home = polylogue_testkit::ClaudeHome::new();
+    let record = |uuid: &str, cwd: &str| {
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "user", "uuid": uuid, "sessionId": "s1", "cwd": cwd,
+                "timestamp": "2026-03-01T10:00:00Z",
+                "message": {"role": "user", "content": uuid}
+            })
+        )
+    };
+    home.append(
+        "s1.jsonl",
+        &(record("u1", "/home/op/launch") + &record("u2", "/home/op/launch/crates/sub")),
+    );
+    let session = SessionId::parse("claude-code:s1").unwrap();
+    let directory = |home: &polylogue_testkit::ClaudeHome| {
+        let (mut engine, _lock) = home.engine(64 << 20);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{pass:?}");
+        let reads = home.reads();
+        let reader = reads.reader().unwrap();
+        let last = reader
+            .session(&session)
+            .unwrap()
+            .unwrap()
+            .cwd
+            .last()
+            .cloned();
+        let plan = plan(&reader, &session).unwrap();
+        (plan.harness_command.unwrap().cwd, last)
+    };
+    // The last directory used stays recorded; resume uses the launch one.
+    assert_eq!(
+        directory(&home),
+        (
+            Some("/home/op/launch".to_owned()),
+            Some("/home/op/launch/crates/sub".to_owned())
+        )
+    );
+    // A relocation by the tool moves where the session resumes.
+    home.append(
+        "s1.jsonl",
+        &format!(
+            "{}\n{}",
+            serde_json::json!({"type": "relocated", "sessionId": "s1",
+                               "relocatedCwd": "/home/op/moved",
+                               "timestamp": "2026-03-01T10:01:00Z"}),
+            record("u3", "/home/op/moved/crates/sub")
+        ),
+    );
+    assert_eq!(
+        directory(&home),
+        (
+            Some("/home/op/moved".to_owned()),
+            Some("/home/op/moved/crates/sub".to_owned())
+        )
+    );
+}

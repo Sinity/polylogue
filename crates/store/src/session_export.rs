@@ -48,6 +48,45 @@ impl Reader<'_> {
         .collect()
     }
 
+    /// The directory a session resumes in: where it was launched, or where
+    /// its tool says it was relocated (a Claude Code `relocated` record),
+    /// never a directory it moved to while working. `None` when the session
+    /// recorded no directory.
+    pub fn resume_directory(&self, id: &SessionId) -> Result<Option<String>> {
+        let found: Option<(i64, Option<String>)> = self
+            .conn()?
+            .prepare_cached("SELECT pk, cwd_json FROM session WHERE id = ?1")?
+            .query_row([id.to_string()], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        let Some((pk, cwd_json)) = found else {
+            return Ok(None);
+        };
+        let relocated: Option<(Vec<u8>, Vec<u8>)> = self
+            .conn()?
+            .prepare_cached(
+                "SELECT fields,data FROM event WHERE session_pk=?1 AND kind='relocated'
+                 ORDER BY seq DESC, id DESC LIMIT 1",
+            )?
+            .query_row([pk], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        if let Some((fields, data)) = relocated {
+            let event = crate::events::canonical_event(&fields, &data)?;
+            if let Some(dir) = event
+                .data
+                .get("relocatedCwd")
+                .and_then(serde_json::Value::as_str)
+                .filter(|dir| !dir.is_empty())
+            {
+                return Ok(Some(dir.to_owned()));
+            }
+        }
+        let cwd: Vec<String> = cwd_json
+            .map(|json| serde_json::from_str(&json))
+            .transpose()?
+            .unwrap_or_default();
+        Ok(cwd.into_iter().next())
+    }
+
     /// Links where the session is the parent or the child, in an order fixed
     /// by their content: the order inputs arrived in never changes the view
     ///.

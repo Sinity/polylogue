@@ -289,3 +289,32 @@ fn observation_clock_never_fills_missing_native_turn_or_session_time() {
     assert_eq!(observation.at_precision, Some(Precision::Second));
     assert_eq!(observation.at.unwrap().to_string(), "2026-02-01T00:00:00Z");
 }
+
+#[test]
+fn temporary_chat_is_marked() {
+    let read = |kind: &str| {
+        let bytes = capture(
+            chatgpt_payload(),
+            json!({"provider": "chatgpt", "provider_session_id": "c1", "session_kind": kind,
+                   "turns": [], "attachments": []}),
+        );
+        run_document(&Capture, &bytes).unwrap()
+    };
+    let temporary = read("temporary");
+    assert_eq!(temporary.output.sessions.len(), 1);
+    assert_eq!(
+        temporary.output.sessions[0].mode.as_deref(),
+        Some("temporary")
+    );
+    assert!(
+        !temporary
+            .counts
+            .unread_fields
+            .keys()
+            .any(|path| path.contains("session_kind")),
+        "{:?}",
+        temporary.counts.unread_fields
+    );
+    let standard = read("standard");
+    assert_eq!(standard.output.sessions[0].mode, None);
+}

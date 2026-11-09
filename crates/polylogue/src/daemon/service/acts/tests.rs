@@ -421,3 +421,68 @@ fn ping_answer_through_assert_links_to_the_ping() {
         stored.fact.links
     );
 }
+
+/// A headless resume runs only in the session's recorded directory: with
+/// none recorded, or one that no longer exists, it is `not_sent` by name
+/// and nothing runs in the daemon's own directory.
+#[test]
+fn resume_with_missing_directory_is_refused_by_name() {
+    let d = test_daemon::start_with_clock("no directory", at("2026-03-02T10:00:00Z"));
+    std::fs::write(
+        d.home.join(".claude/projects/-p/s9.jsonl"),
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "user", "uuid": "u9", "sessionId": "s9",
+                "timestamp": "2026-03-01T10:00:00Z", "cwd": "/home/op/gone",
+                "message": {"role": "user", "content": "plan the otter release"}
+            })
+        ),
+    )
+    .unwrap();
+    d.wait_for(|status| status["store"]["messages"] == 2);
+    let detail = |session: &str, delivery: &str| {
+        author(
+            &d.daemon,
+            &invocation(&d),
+            delivery.into(),
+            UserWrite::Deliver(Delivery {
+                recipient_kind: "session".into(),
+                recipient_id: Some(session.into()),
+                sender: DeliverySender::Ping.as_str().into(),
+                event: DeliveryEvent::Ping.as_str().into(),
+                cwd: None,
+                text: "rebase".into(),
+                refs: vec![],
+                left_out: vec![],
+            }),
+        )
+        .unwrap();
+        resume_once(
+            &d.daemon,
+            &ResumeRun {
+                session: SessionId::parse(session).unwrap(),
+                delivery: delivery.into(),
+                text: "rebase".into(),
+            },
+        );
+        let reader = d.daemon.reads.reader().unwrap();
+        let rows = reader
+            .query(
+                "SELECT what, detail FROM delivery_event WHERE delivery=?1",
+                &[polylogue_store::SqlValue::Text(delivery.into())],
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["what"], "not_sent");
+        rows[0]["detail"].as_str().unwrap().to_owned()
+    };
+    assert_eq!(
+        detail("claude-code:s1", "resume-unknown"),
+        "directory_unknown"
+    );
+    assert_eq!(
+        detail("claude-code:s9", "resume-missing"),
+        "directory_missing(/home/op/gone)"
+    );
+}

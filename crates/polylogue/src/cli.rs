@@ -598,11 +598,33 @@ fn exec_plan(data: &Value, output: crate::config::OutputConfig) -> ExitCode {
         .flatten()
         .filter_map(|a| a.as_str())
         .collect();
+    // The harness reopens the session from its resume directory; the CLI's
+    // own directory would reopen nothing or the wrong project.
+    let dir = match native["cwd"].as_str() {
+        Some(dir) if std::path::Path::new(dir).is_dir() => Ok(dir),
+        Some(dir) => Err(format!("directory_missing: {dir} does not exist here")),
+        None => Err("directory_unknown: the session recorded no directory to resume in".into()),
+    };
+    let dir = match dir {
+        Ok(dir) => dir,
+        Err(reason) => {
+            eprint!(
+                "{}",
+                print::diagnostic(
+                    "",
+                    &format!(
+                        "{reason}; continue with context instead: polylogue takeover {}",
+                        data["session"].as_str().unwrap_or("")
+                    ),
+                    None,
+                    output.stderr_color()
+                )
+            );
+            return ExitCode::from(1);
+        }
+    };
     let mut cmd = std::process::Command::new(program);
-    cmd.args(&args);
-    if let Some(dir) = native["cwd"].as_str() {
-        cmd.current_dir(dir);
-    }
+    cmd.args(&args).current_dir(dir);
     let err = cmd.exec();
     eprint!(
         "{}",

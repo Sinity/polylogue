@@ -46,7 +46,6 @@ fn resumed_runs_of_one_session_queue_in_order() {
         session: session.clone(),
         delivery: format!("d{n}"),
         text: String::new(),
-        cwd: None,
     };
     // With no daemon bound nothing runs, and the session is free again.
     assert!(acts.resume(run(1)));

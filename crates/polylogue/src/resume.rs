@@ -15,7 +15,9 @@ use polylogue_store::{OpenItems, Reader, StoreError};
 use serde::Serialize;
 use std::path::Path;
 
-/// A command line to run in a directory.
+/// A command line to run in a directory. A harness resume runs in the
+/// session's resume directory ([`Reader::resume_directory`]); without one it
+/// is refused, never run in the caller's directory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Command {
     pub program: String,
@@ -45,10 +47,10 @@ pub struct Plan {
 }
 
 pub fn plan(reader: &Reader<'_>, session: &SessionId) -> Result<Plan, StoreError> {
-    let s = reader
+    reader
         .session(session)?
         .ok_or_else(|| StoreError::NotFound(format!("session {session}")))?;
-    let cwd = s.cwd.last().cloned();
+    let cwd = reader.resume_directory(session)?;
     Ok(Plan {
         session: session.clone(),
         harness_command: harness_resume(session, cwd.as_deref()),
@@ -119,7 +121,7 @@ pub fn resumable(
         if !open.any() && follow_ups.is_empty() {
             continue;
         }
-        let harness_command = harness_resume(&s.id, s.cwd.as_deref());
+        let harness_command = harness_resume(&s.id, reader.resume_directory(&s.id)?.as_deref());
         out.push(ResumableSession {
             session: s,
             open,
