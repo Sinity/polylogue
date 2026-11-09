@@ -191,7 +191,23 @@ struct VocabularyUpdate {
     kept: BTreeMap<String, (completion::Kept, Option<polylogue_query::Kept>)>,
     settings: Vec<String>,
 }
+/// The sessions a publication writes: the startup snapshot streams every
+/// session; a later one writes those changed since the last publication.
+enum Sessions {
+    All,
+    Changed(Vec<SessionChange>),
+}
+
 impl VocabularyUpdate {
+    fn is_empty(&self) -> bool {
+        !self.replaced
+            && self.families.is_empty()
+            && self.definitions.is_empty()
+            && self.tags.is_empty()
+            && self.kept.is_empty()
+            && self.settings.is_empty()
+    }
+
     fn install(self, vocabulary: &mut Vocabulary) {
         if self.replaced {
             *vocabulary = Vocabulary::default();
@@ -280,8 +296,20 @@ impl State {
             reader.completion_vocabulary_changes(after.as_ref())?,
         )?;
         let result = if let Some((generation, mut writer)) = self.writer.take() {
+            // Most commits change nothing the catalog holds (a build commits
+            // continually); the file is rewritten only when its content changes.
+            let mut sessions = Vec::new();
+            reader.visit_completion_sessions(after.as_ref(), |change| {
+                sessions.push(change);
+                Ok(())
+            })?;
+            if sessions.is_empty() && update.is_empty() {
+                self.writer = Some((generation, writer));
+                self.position = Some(position);
+                return Ok(());
+            }
             let result = writer.update(&metadata, |writer| {
-                self.apply(reader, writer, after.as_ref(), &update)
+                self.apply(writer, Sessions::Changed(sessions), &update, reader)
             });
             self.writer = Some((generation, writer));
             result
@@ -289,7 +317,7 @@ impl State {
             pointer
                 .build(&metadata, |writer| {
                     writer.put_catalog(&self.catalog)?;
-                    self.apply(reader, writer, None, &update)
+                    self.apply(writer, Sessions::All, &update, reader)
                 })
                 .map(|writer| {
                     self.writer = Some((position.generation.clone(), writer));
@@ -598,15 +626,27 @@ impl State {
 
     fn apply(
         &self,
-        reader: &Reader<'_>,
         writer: &mut CatalogWriter,
-        after: Option<&ChangePosition>,
+        sessions: Sessions,
         update: &VocabularyUpdate,
+        reader: &Reader<'_>,
     ) -> Result<()> {
-        reader.visit_completion_sessions(after, |change| match change {
+        let mut put = |change| match change {
             SessionChange::Upsert(session) => writer.put_session(&session),
             SessionChange::Removed(id) => writer.remove_session(&id),
-        })?;
+        };
+        let first = match sessions {
+            Sessions::All => {
+                reader.visit_completion_sessions(None, &mut put)?;
+                true
+            }
+            Sessions::Changed(changes) => {
+                for change in changes {
+                    put(change)?;
+                }
+                false
+            }
+        };
         if update.replaced {
             writer.clear_authored()?;
         }
@@ -631,7 +671,7 @@ impl State {
             writer.put_kept(kept)?;
         }
         let mut keys: std::collections::BTreeSet<_> = update.settings.iter().cloned().collect();
-        if after.is_none() || update.replaced {
+        if first || update.replaced {
             keys.extend(
                 polylogue_model::settings::CATALOG
                     .iter()

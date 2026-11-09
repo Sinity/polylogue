@@ -378,11 +378,14 @@ fn no_cow(dir: &Path) {
         .status();
 }
 
+/// How long a connection waits for a lock another connection holds.
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn tune(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "wal")?;
     conn.pragma_update(None, "synchronous", "normal")?;
     conn.pragma_update(None, "temp_store", "memory")?;
-    conn.busy_timeout(std::time::Duration::from_secs(30))?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
     Ok(())
 }
 
@@ -406,6 +409,43 @@ pub mod cache {
 /// into the database file: about 1 GB rather than 4 MB, so a page written by
 /// many transactions reaches the database file once.
 pub(crate) const WAL_AUTOCHECKPOINT: i64 = 262_144;
+
+/// Starts the write-ahead log of `conn`'s main database (at `path`) over once
+/// it holds more than `limit` pages, waiting at most `wait` for readers still
+/// reading the log. Returns whether the log was started over.
+///
+/// The automatic checkpoint copies the log into the database but leaves the
+/// log in place while any reader uses it, and a steady stream of reads
+/// (each commit wakes the readers that follow it) always has one: the log
+/// then grows without bound, and every commit copies its pages again. This
+/// checkpoint copies what is left, waits for the readers that started before
+/// the copy finished (later readers read the database file), and truncates
+/// the log. The writer calls it between its transactions; a log still in use
+/// stays and is tried again after the next one.
+pub(crate) fn restart_full_log(
+    conn: &Connection,
+    path: &Path,
+    limit: i64,
+    wait: std::time::Duration,
+) -> Result<bool> {
+    let mut log = path.as_os_str().to_owned();
+    log.push("-wal");
+    let size = match std::fs::metadata(&log) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let page: i64 = conn.query_row("PRAGMA main.page_size", [], |r| r.get(0))?;
+    if size <= limit.saturating_mul(page) as u64 {
+        return Ok(false);
+    }
+    conn.busy_timeout(wait)?;
+    let busy = conn.query_row("PRAGMA main.wal_checkpoint(TRUNCATE)", [], |r| {
+        r.get::<_, i64>(0)
+    });
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    Ok(busy? == 0)
+}
 
 /// A connection the writer (or setup) uses. Each connection belongs to one
 /// thread, so SQLite's own mutexes are off (they cost about 3% of the
