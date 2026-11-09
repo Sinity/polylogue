@@ -143,6 +143,31 @@ fn malformed_and_partial_reports_keep_numeric_suppliedness_without_saturation() 
 }
 
 #[test]
+fn unreported_reasoning_keeps_output_and_leaves_reasoning_unknown() {
+    let trace = vec![
+        meta(json!({})),
+        count(
+            2,
+            counters(10, 2),
+            json!({"input_tokens":10,"cached_input_tokens":0,"output_tokens":6}),
+        ),
+        count(
+            3,
+            counters(20, 9),
+            json!({"input_tokens":10,"cached_input_tokens":0,"output_tokens":4,
+                   "reasoning_output_tokens":5}),
+        ),
+    ];
+    let step = run(&rollout(), &mut ParserState::default(), &jsonl(&trace), 0).unwrap();
+    let r = readings(&step);
+    assert_eq!(r.len(), 2);
+    assert_eq!(r[0].usage.output, Some(6));
+    assert_eq!(r[0].usage.reasoning, None);
+    assert_eq!(r[1].usage.output, None);
+    assert_eq!(r[1].output_including_reasoning, Some(4));
+}
+
+#[test]
 fn native_child_tools_are_harness_observations_without_a_model() {
     let trace = vec![
         meta(json!({})),

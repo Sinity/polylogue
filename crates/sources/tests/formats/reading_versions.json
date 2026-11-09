@@ -44,7 +44,7 @@
     "3c18cef36ae3a1a6771c81f25aac746115b8bddcc624a57e937cf92e767eb8ba"
   ],
   "codex": [
-    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::codex::VERSION=2",
+    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::codex::VERSION=3",
     "7c977b7f7941dfda8e197c85924473938383e8d9d8965d2a8a48082aec8134aa"
   ],
   "codex-cloud": [
@@ -52,7 +52,7 @@
     "6988b8c06af2ea2f35ae16db9f9bd1d89442b920dd34a24fbe30078d79e1b7ec"
   ],
   "codex-database": [
-    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::codex::VERSION=2,crate::codex::database::VERSION=2",
+    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::codex::VERSION=3,crate::codex::database::VERSION=2",
     "5b981ebacae6be17a31dc47b1500a135a1b4697a53f03aa6b06c9ff9fe027f90"
   ],
   "gemini-app": [
