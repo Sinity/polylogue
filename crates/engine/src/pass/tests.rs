@@ -5,7 +5,7 @@ mod scope_lifecycle;
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user};
 use std::io::Read;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{FileExt, MetadataExt};
 
 #[cfg(feature = "faults")]
 mod live_queue;
@@ -364,15 +364,18 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
         "the next append retains the acknowledged source chain"
     );
     let inode = std::fs::metadata(&path).unwrap().ino();
-    // Touch the same file so planning selects a rewrite, then make only that
-    // planned read fail. Moving it aside preserves its inode and bytes.
-    std::fs::File::open(&path)
-        .unwrap()
-        .set_modified(std::time::UNIX_EPOCH)
-        .unwrap();
+    // Change a stored byte in place so planning selects a rewrite (a touch
+    // that keeps every stored byte is observed back, docs/archive.md), then
+    // restore it and make only that planned read fail. Moving the file aside
+    // preserves its inode and bytes.
+    let first = std::fs::read(&path).unwrap()[0];
+    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.write_at(b" ", 0).unwrap();
     let now = FileFacts::of(&std::fs::metadata(&path).unwrap());
     let plan = engine.plan(&path, now).unwrap().unwrap();
     assert_eq!(plan.change, Change::Rewritten);
+    file.write_at(&[first], 0).unwrap();
+    drop(file);
     let aside = home.dir.path().join("held-source");
     std::fs::rename(&path, &aside).unwrap();
     let mut failed = Pass::default();
