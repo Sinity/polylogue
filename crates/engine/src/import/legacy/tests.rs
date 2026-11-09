@@ -26,6 +26,36 @@ fn fixture(root: &Path) {
         db.execute("INSERT INTO raw_sessions VALUES (?1,'claude-code-session','/home/op/gone/legacy.jsonl',?2,?3,NULL,?4,?5,?6,?7)",rusqlite::params![id,hash.as_slice(),bytes.len() as i64,if predecessor.is_some(){"append"}else{"full"},predecessor,start,start.map(|n|n+bytes.len() as i64)]).unwrap();
     }
 }
+fn archive_format() -> ImportOptions {
+    ImportOptions {
+        format: Some(crate::import::predecessor::ARCHIVE.into()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_predecessor_archive_is_read_only_when_named() {
+    let w = polylogue_testkit::ClaudeHome::new();
+    let old = w.dir.path().join("predecessor");
+    fixture(&old);
+    let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
+    let report = engine.import(std::slice::from_ref(&old)).unwrap();
+    assert!(report.imported.is_empty(), "{report:?}");
+    assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.input"), 0);
+    let empty = w.dir.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let report = engine
+        .import_with_options(&[empty], &archive_format())
+        .unwrap();
+    assert_eq!(report.refused.len(), 1);
+    assert!(
+        report.refused[0]
+            .reason
+            .contains("needs source.db and blob/"),
+        "{report:?}"
+    );
+}
+
 #[test]
 fn predecessor_blobs_keep_original_fragments_and_join_only_recorded_append_offsets() {
     let root = tempfile::tempdir().unwrap();
@@ -67,7 +97,9 @@ fn missing_or_changed_legacy_blob_refuses_the_whole_import_without_archive_rows(
             std::fs::write(path, vec![b'x'; APPEND.len()]).unwrap();
         }
         let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
-        let report = engine.import(&[old]).unwrap();
+        let report = engine
+            .import_with_options(&[old], &archive_format())
+            .unwrap();
         assert_eq!(report.refused.len(), 1);
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.input"), 0);
     }
@@ -80,7 +112,9 @@ fn predecessor_import_parses_native_sessions_and_rebuilds_after_the_old_archive_
     fixture(&old);
     {
         let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
-        let report = engine.import(std::slice::from_ref(&old)).unwrap();
+        let report = engine
+            .import_with_options(std::slice::from_ref(&old), &archive_format())
+            .unwrap();
         assert!(report.refused.is_empty(), "{report:?}");
         assert!(report.pass.errors.is_empty(), "{report:?}");
         assert_eq!(w.texts("legacy"), ["one", "two"]);

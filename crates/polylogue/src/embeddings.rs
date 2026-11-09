@@ -31,9 +31,7 @@ use unicode_normalization::UnicodeNormalization;
 
 /// Texts per request.
 const BATCH: usize = 32;
-/// Characters per chunk: long texts are embedded in chunks, and a text's
-/// best chunk ranks it.
-const CHUNK_CHARS: usize = 6000;
+use polylogue_store::vectors::CHUNK_CHARS;
 /// Texts read from the index per page.
 const PAGE: u64 = 2000;
 

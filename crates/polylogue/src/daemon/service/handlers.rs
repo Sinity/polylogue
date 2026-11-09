@@ -552,6 +552,9 @@ impl Handler for Import {
                     "--from-archive names one archive and takes no other paths",
                 ));
             }
+            Some(_) if arguments.format.is_some() => {
+                return Ok(error("bad_request", "--from-archive takes no --format"));
+            }
             Some(archive) => {
                 let archive = call.path(archive, "archive path")?;
                 Some(archive)
@@ -574,6 +577,7 @@ impl Handler for Import {
         let sent = tx
             .send(polylogue_engine::LoopMsg::Import {
                 paths,
+                format: arguments.format.clone(),
                 from_archive,
                 dry_run: arguments.dry_run,
                 authorship: invocation.authorship.clone(),

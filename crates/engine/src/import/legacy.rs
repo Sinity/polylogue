@@ -79,7 +79,7 @@ pub(super) fn stage(
         member_path_bytes: None,
     });
     for input in &inputs {
-        let format = origin(&input.origin).ok_or_else(|| {
+        let format = polylogue_store::predecessor::origin(&input.origin).ok_or_else(|| {
             std::io::Error::other(format!("unsupported predecessor origin {}", input.origin))
         })?;
         let spec = polylogue_sources::origin::by_name(format).ok_or_else(|| {
@@ -171,22 +171,5 @@ pub(super) fn stage(
     }
     Ok(Some(members))
 }
-fn origin(origin: &str) -> Option<&'static str> {
-    Some(match origin {
-        "claude-code-session" => "claude-code",
-        "codex-session" => "codex",
-        "gemini-cli-session" => "gemini-cli",
-        "hermes-session" => "hermes",
-        "antigravity-session" => "antigravity",
-        "grok-export" => "grok",
-        "chatgpt-export" => "chatgpt",
-        "claude-ai-export" => "claude-ai",
-        "claude-design-session" => "claude-design",
-        "aistudio-drive" => "ai-studio",
-        "otel-genai" => "otel-genai",
-        _ => return None,
-    })
-}
-
 #[cfg(test)]
 mod tests;

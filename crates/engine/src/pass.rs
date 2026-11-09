@@ -1765,6 +1765,7 @@ impl Engine {
     ) {
         let LoopMsg::Import {
             paths,
+            format,
             from_archive,
             dry_run,
             authorship,
@@ -1787,6 +1788,7 @@ impl Engine {
                         &paths,
                         &ImportOptions {
                             authorship: Some(authorship),
+                            format,
                             from_archive,
                             dry_run,
                             ..Default::default()

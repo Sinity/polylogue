@@ -22,6 +22,10 @@ use std::sync::Arc;
 /// loaded at the same count holds what the file holds.
 static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Characters per chunk: a text longer than this is embedded in chunks of
+/// this many characters of its NFC form, and its best chunk ranks it.
+pub const CHUNK_CHARS: usize = 6000;
+
 pub fn writes() -> u64 {
     WRITES.load(std::sync::atomic::Ordering::Acquire)
 }
