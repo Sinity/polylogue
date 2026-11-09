@@ -1044,8 +1044,10 @@ fn handle_inner(
             unreachable!("completion is handled before opening an archive reader")
         }
 
-        Request::Sql { statement } => match reader.query(&statement, &[]) {
-            // The connection is read-only: a statement that writes fails.
+        Request::Sql { statement } => match reader.query_untrusted(&statement) {
+            // Compiled under a read-only authorizer: a statement that writes,
+            // creates temporary objects, attaches databases or sets pragmas
+            // is refused before it runs.
             Ok(rows) => listed(rows),
             Err(e) => error("sql", e),
         },

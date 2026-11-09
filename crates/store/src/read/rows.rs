@@ -42,7 +42,7 @@ impl Reader<'_> {
         &self,
         sql: &str,
         params: &[SqlValue],
-        mut visit: impl FnMut(serde_json::Value) -> std::result::Result<(), E>,
+        visit: impl FnMut(serde_json::Value) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E>
     where
         E: From<StoreError>,
@@ -50,37 +50,76 @@ impl Reader<'_> {
         crate::fault::check("read.query", sql).map_err(E::from)?;
         let conn = self.conn().map_err(E::from)?;
         let mut stmt = conn.prepare_cached(sql).map_err(StoreError::from)?;
-        let names: Vec<String> = stmt
-            .column_names()
-            .iter()
-            .map(|s| (*s).to_owned())
-            .collect();
-        for (i, p) in params.iter().take(stmt.parameter_count()).enumerate() {
-            stmt.raw_bind_parameter(i + 1, p)
-                .map_err(StoreError::from)?;
-        }
-        let mut rows = stmt.raw_query();
-        while let Some(r) = rows.next().map_err(StoreError::from)? {
-            let mut obj = serde_json::Map::new();
-            for (i, name) in names.iter().enumerate() {
-                use rusqlite::types::ValueRef;
-                let v = match r.get_ref(i).map_err(StoreError::from)? {
-                    ValueRef::Null => serde_json::Value::Null,
-                    ValueRef::Integer(n) => n.into(),
-                    ValueRef::Real(f) => serde_json::json!(f),
-                    ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned().into(),
-                    ValueRef::Blob(b) => b
-                        .iter()
-                        .map(|x| format!("{x:02x}"))
-                        .collect::<String>()
-                        .into(),
-                };
-                obj.insert(name.clone(), v);
-            }
-            visit(serde_json::Value::Object(obj))?;
-        }
-        Ok(())
+        visit_rows(&mut stmt, params, visit)
     }
+
+    /// Collect a statement written by a caller. It may only read: the
+    /// statement is compiled under an authorizer that allows reads, selects,
+    /// recursive queries and functions and refuses everything else, so it
+    /// cannot create temporary objects, attach databases or set pragmas on
+    /// the shared reader connection that later reads would see.
+    pub fn query_untrusted(&self, sql: &str) -> Result<Vec<serde_json::Value>> {
+        use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+        crate::fault::check("read.query", sql)?;
+        let conn = self.conn()?;
+        conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
+            AuthAction::Read { .. }
+            | AuthAction::Select
+            | AuthAction::Recursive
+            | AuthAction::Function { .. } => Authorization::Allow,
+            _ => Authorization::Deny,
+        }))?;
+        let prepared = conn.prepare(sql);
+        conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+        let mut stmt = prepared?;
+        let mut out = Vec::new();
+        visit_rows(&mut stmt, &[], |row| {
+            out.push(row);
+            Ok::<_, StoreError>(())
+        })?;
+        Ok(out)
+    }
+}
+
+/// Decode a prepared statement's rows as JSON objects keyed by column name.
+fn visit_rows<E>(
+    stmt: &mut rusqlite::Statement<'_>,
+    params: &[SqlValue],
+    mut visit: impl FnMut(serde_json::Value) -> std::result::Result<(), E>,
+) -> std::result::Result<(), E>
+where
+    E: From<StoreError>,
+{
+    let names: Vec<String> = stmt
+        .column_names()
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    for (i, p) in params.iter().take(stmt.parameter_count()).enumerate() {
+        stmt.raw_bind_parameter(i + 1, p)
+            .map_err(StoreError::from)?;
+    }
+    let mut rows = stmt.raw_query();
+    while let Some(r) = rows.next().map_err(StoreError::from)? {
+        let mut obj = serde_json::Map::new();
+        for (i, name) in names.iter().enumerate() {
+            use rusqlite::types::ValueRef;
+            let v = match r.get_ref(i).map_err(StoreError::from)? {
+                ValueRef::Null => serde_json::Value::Null,
+                ValueRef::Integer(n) => n.into(),
+                ValueRef::Real(f) => serde_json::json!(f),
+                ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned().into(),
+                ValueRef::Blob(b) => b
+                    .iter()
+                    .map(|x| format!("{x:02x}"))
+                    .collect::<String>()
+                    .into(),
+            };
+            obj.insert(name.clone(), v);
+        }
+        visit(serde_json::Value::Object(obj))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
