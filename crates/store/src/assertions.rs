@@ -20,7 +20,7 @@ pub(crate) use saved::{
     saved_family, saved_queries, saved_query_snapshot,
 };
 mod read;
-mod settings;
+pub(crate) mod settings;
 mod write;
 pub(crate) use write::{WriteContext, revise_preparing, write_preparing};
 

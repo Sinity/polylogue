@@ -184,7 +184,7 @@ impl crate::Reader<'_> {
         &self,
         key: &str,
         until: Timestamp,
-    ) -> Result<Vec<(Timestamp, Option<settings::Value>)>> {
+    ) -> Result<Vec<(Timestamp, SettingAt)>> {
         let spec = settings::declaration(key).map_err(|error| invalid(&error.to_string()))?;
         if spec.scope != settings::Scope::Archive {
             return Err(invalid(
@@ -198,11 +198,15 @@ impl crate::Reader<'_> {
     }
 }
 
-fn history(
-    conn: &Connection,
-    key: &str,
-    until: Timestamp,
-) -> Result<Vec<(Timestamp, Option<settings::Value>)>> {
+/// A setting over one interval of its history: its value (`None` while
+/// unset), or unknown while several families held it at once.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SettingAt {
+    Value(Option<settings::Value>),
+    Conflict(Vec<String>),
+}
+
+fn history(conn: &Connection, key: &str, until: Timestamp) -> Result<Vec<(Timestamp, SettingAt)>> {
     if conn.is_autocommit() {
         return Err(invalid(
             "setting history requires a pinned read transaction",
@@ -221,17 +225,23 @@ fn history(
                     .map(reference)
                     .collect())
             })?;
-        if !conflicts.is_empty() {
-            return Err(StoreError::Ambiguous {
-                reference: format!("setting {key} at {boundary}"),
-                candidates: conflicts.iter().map(ToString::to_string).collect(),
-            });
-        }
-        let selected = selected.pop();
-        let identity = selected.as_ref().map(|(reference, _, _)| reference.clone());
+        // A conflicting interval is unknown, not a failure of the whole
+        // history; the revision that resolves it ends the interval.
+        let (identity, at) = if conflicts.is_empty() {
+            let selected = selected.pop();
+            (
+                selected
+                    .as_ref()
+                    .map(|(reference, _, _)| vec![reference.to_string()]),
+                SettingAt::Value(selected.map(|(_, _, value)| value)),
+            )
+        } else {
+            let conflicting: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
+            (Some(conflicting.clone()), SettingAt::Conflict(conflicting))
+        };
         if identity != previous {
             previous = identity;
-            history.push((boundary, selected.map(|(_, _, value)| value)));
+            history.push((boundary, at));
         }
     }
     Ok(history)

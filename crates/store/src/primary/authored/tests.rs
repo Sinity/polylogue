@@ -936,3 +936,50 @@ fn reverse_full_snapshot_restore_keeps_event_order_and_disabled_execution() {
         Err(StoreError::NotFound(_))
     ));
 }
+
+#[test]
+fn two_hosts_first_setting_show_conflict_in_primary() {
+    let mut conn = cache();
+    let set = |id: &str, at: i64, value: &str| {
+        request(
+            id,
+            at,
+            UserWrite::SetSetting {
+                key: "browser.actions".into(),
+                value: value.into(),
+                machine: None,
+            },
+        )
+    };
+    let in_conflict = |conn: &Connection| -> i64 {
+        conn.query_row(
+            &format!(
+                "SELECT count(*) FROM source_assertion a WHERE a.kind = 'setting' AND {}",
+                crate::assertions::sql::in_conflict("a")
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    // Each host prepares its first setting before the stream shows it the
+    // other's; the stream then applies both.
+    let laptop = prepare_with(&conn, &set("laptop", 1, "on"), &[], &[]).unwrap();
+    let desktop = prepare_with(&conn, &set("desktop", 2, "off"), &[], &[]).unwrap();
+    commit(&mut conn, &laptop, 1);
+    commit(&mut conn, &desktop, 2);
+    assert_eq!(in_conflict(&conn), 2);
+    // The next setting from either host revises both heads.
+    let settled = prepare_with(&conn, &set("settled", 3, "on"), &[], &[]).unwrap();
+    commit(&mut conn, &settled, 3);
+    assert_eq!(in_conflict(&conn), 0);
+    let current: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM source_revision_state s JOIN source_assertion a ON a.id = s.id \
+             WHERE a.kind = 'setting' AND s.current = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(current, 1);
+}

@@ -263,9 +263,9 @@ pub const SESSION_HAS: [Has; 8] = [
         sql: |s| {
             format!(
                 "EXISTS (SELECT 1 FROM source_assertion hn JOIN source_link ht ON ht.record = hn.id AND ht.role = 'about' \
-                 WHERE ht.ref = 'session:' || {s}.id AND {} \
-                 GROUP BY hn.root HAVING count(*) > 1)",
-                current_assertion("hn")
+                 WHERE ht.ref = 'session:' || {s}.id AND {} AND {})",
+                current_assertion("hn"),
+                crate::assertions::sql::in_conflict("hn")
             )
         },
     },
@@ -523,7 +523,7 @@ f(Assertions,"write_counter").sql("{r}.commit_seq"),
 f(Assertions,"created_at").sql("{r}.created_at"),
 f(Assertions,"root").sql("{r}.root"),
 f(Assertions,"current").sql_fn(notes_current),
-f(Assertions,"conflict").sql("(SELECT count(*) FROM source_revision_state ac WHERE ac.root={r}.root AND ac.current=1)>1"),
+f(Assertions,"conflict").sql_fn(|a| crate::assertions::sql::in_conflict(&a.row)),
 f(Assertions,"withdrawn").sql_fn(notes_withdrawn),
 f(Assertions,"since").custom(custom::since),
 f(Assertions,"evidence_until").custom(custom::evidence_until),

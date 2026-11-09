@@ -27,7 +27,9 @@ pub enum InvalidAssertion {
         role: LinkRole,
         reference: Reference,
     },
-    #[error("all revises links must name revisions of one assertion family")]
+    #[error(
+        "all revises links must name revisions of one assertion family, unless a single-valued kind resolves families holding one slot"
+    )]
     RevisionFamilies,
     #[error("withdrawal requires at least one withdraws link")]
     NoWithdrawalTarget,
@@ -149,7 +151,14 @@ pub fn validate_links<'a>(
             revisions.insert(&revision.root);
         }
     }
-    if revisions.len() > 1 {
+    // Only a single-valued kind can have several families in one slot, and
+    // one revision naming all their heads resolves them; the writer checks
+    // that the families do share a slot.
+    let single_valued = kind
+        .spec()
+        .uniqueness
+        .is_some_and(|uniqueness| uniqueness.when_held == authored::WhenHeld::Revise);
+    if revisions.len() > 1 && !single_valued {
         return Err(InvalidAssertion::RevisionFamilies);
     }
     // A relation is a statement about the revision it relates to.

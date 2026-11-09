@@ -200,9 +200,9 @@ fn refusal(kind: &NewAssertion, refused: Refused<StoreError>) -> StoreError {
         Refusal::UnknownTarget(target) => {
             StoreError::NotFound(target_reference(&target).to_string())
         }
-        Refusal::BasesSpanRoots(_) => {
-            invalid("one revision must name bases of one assertion family")
-        }
+        Refusal::BasesSpanRoots(_) => invalid(
+            "one revision must name bases of one assertion family, or of families holding one slot",
+        ),
         Refusal::Ambiguous { holders } => StoreError::Ambiguous {
             reference: kind
                 .key
@@ -211,7 +211,7 @@ fn refusal(kind: &NewAssertion, refused: Refused<StoreError>) -> StoreError {
             candidates: list(holders),
         },
         Refusal::SlotTaken { holders } => StoreError::Conflict(format!(
-            "the revised {} would take a slot held by {}",
+            "the revised {} would take a slot also held by {}; a revision naming every head of every holder resolves it",
             kind.kind.as_str(),
             list(holders).join(", ")
         )),
@@ -601,13 +601,10 @@ pub(crate) fn revision_statement(
             "a withdrawal cannot be revised; withdraw it to restore what it withdrew",
         ));
     }
-    if facts
-        .iter()
-        .any(|fact| fact.root != first.root || fact.kind != first.kind)
-    {
-        return Err(invalid(
-            "one revision must name bases of one assertion family",
-        ));
+    // Bases of several families are accepted when they hold one slot of a
+    // single-valued kind; the authored plan checks that.
+    if facts.iter().any(|fact| fact.kind != first.kind) {
+        return Err(invalid("one revision must name bases of one kind"));
     }
     fn change<T: Clone>(old: Option<T>, change: &Change<T>) -> Option<T> {
         match change {
