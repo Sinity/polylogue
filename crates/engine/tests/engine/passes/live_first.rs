@@ -6,7 +6,10 @@ use super::*;
 #[test]
 fn a_spool_file_arriving_mid_pass_is_stored_before_the_backlog_ends() {
     let w = ClaudeHome::new();
-    const BACKLOG: i64 = 1500;
+    // With one worker the pool takes 16 plans at a time and looks for live
+    // inputs between them; 200 sessions leave over ten such rounds after the
+    // first stored session, at any machine speed.
+    const BACKLOG: i64 = 200;
     let mut lines = String::new();
     for i in 0..10 {
         lines.push_str(&user(

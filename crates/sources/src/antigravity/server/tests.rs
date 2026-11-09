@@ -415,15 +415,18 @@ fn an_unresponsive_server_times_out_once_for_the_whole_conversion_pass() {
         listener.set_nonblocking(true).unwrap();
         assert!(matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
     });
-    let client = Server::new(42, port, "synthetic-token".into());
+    let production = Server::new(42, port, "synthetic-token".into());
     assert_eq!(
-        client.agent.config().timeouts().connect,
+        production.agent.config().timeouts().connect,
         Some(Duration::from_secs(5))
     );
     assert_eq!(
-        client.agent.config().timeouts().global,
+        production.agent.config().timeouts().global,
         Some(Duration::from_secs(60))
     );
+    // The same client with a short timeout: the stall ends the pass the same
+    // way without the test waiting a minute.
+    let client = Server::with_timeout(42, port, "synthetic-token".into(), Duration::from_secs(2));
     let spool = temp.path().join("spool");
     let started = std::time::Instant::now();
     let errors = collect(&paths, &spool, &[client]);
@@ -431,7 +434,7 @@ fn an_unresponsive_server_times_out_once_for_the_whole_conversion_pass() {
     stop.send(()).unwrap();
     task.join().unwrap();
     assert_eq!(errors.len(), 1, "{errors:?}");
-    eprintln!("production conversion timeout: {elapsed:?}");
+    eprintln!("conversion timeout: {elapsed:?}");
     assert!(
         errors[0].to_ascii_lowercase().contains("timeout"),
         "{errors:?}"

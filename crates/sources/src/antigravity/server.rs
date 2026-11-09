@@ -16,8 +16,15 @@ struct Server {
     agent: ureq::Agent,
 }
 
+/// How long one request to the vendor server may take, connection included.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
 impl Server {
     fn new(pid: u64, port: u16, token: String) -> Self {
+        Self::with_timeout(pid, port, token, REQUEST_TIMEOUT)
+    }
+
+    fn with_timeout(pid: u64, port: u16, token: String, timeout: Duration) -> Self {
         Self {
             pid,
             port,
@@ -26,7 +33,7 @@ impl Server {
                 .proxy(None)
                 .max_redirects(0)
                 .timeout_connect(Some(Duration::from_secs(5)))
-                .timeout_global(Some(Duration::from_secs(60)))
+                .timeout_global(Some(timeout))
                 .build()
                 .into(),
         }
