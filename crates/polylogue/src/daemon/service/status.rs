@@ -12,7 +12,7 @@ pub(super) fn answer(
         Ok(position) => position.to_string(),
         Err(error) => return store_error(&error),
     };
-    let counted = d.warm.counts(reader, &position);
+    let counted = d.warm.counts(&position);
     let loop_status = d
         .status
         .lock()

@@ -30,14 +30,44 @@ fn count_failures_are_visible_and_a_success_clears_them() {
     );
     warm.archive_counts.lock().unwrap().as_mut().unwrap().took = Duration::ZERO;
     warm.recount_wanted.store(false, Ordering::Release);
-    let reader = daemon.daemon.reads.reader().unwrap();
-    let cached = warm.counts(&reader, "later position").unwrap();
+    let cached = warm.counts("later position").unwrap();
     assert_eq!(cached.position, before.position);
     assert!(warm.count_error().is_some());
     assert!(warm.recount_wanted.load(Ordering::Acquire));
-    drop(reader);
     warm.refresh_counts(&daemon.daemon.reads);
     assert!(warm.count_error().is_none());
+}
+
+#[test]
+fn status_answers_from_the_published_count_after_any_earlier_quick_count() {
+    // A rebuild starts from an empty archive, so its first count is quick;
+    // the archive then grows while it writes. `status` must not count again
+    // inside its own request on the strength of that earlier quick count.
+    let daemon = crate::test_daemon::start("status published count");
+    let warm = Warm::default();
+    warm.refresh_counts(&daemon.daemon.reads);
+    let before = {
+        let mut held = warm.archive_counts.lock().unwrap();
+        let counted = held.as_mut().unwrap();
+        counted.took = Duration::ZERO;
+        counted.position.clone()
+    };
+    warm.recount_wanted.store(false, Ordering::Release);
+    let answered = warm.counts("a newer position").unwrap();
+    assert_eq!(
+        answered.position, before,
+        "status counted inside its request"
+    );
+    assert!(warm.recount_wanted.load(Ordering::Acquire));
+    assert_eq!(
+        warm.archive_counts
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .position,
+        before
+    );
 }
 
 #[test]
