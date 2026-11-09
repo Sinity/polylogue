@@ -34,6 +34,7 @@ locations are inputs to the runtime and its tests.
 | [operations](operations.md) | the daemon, status, notices, configuration, deployment, backup |
 | [primary mode](primary-mode.md) | Polylogue on Sinex |
 | [testing](testing.md) | test archives, properties tested, fault and crash tests, fuzzing, benchmarks |
+| [development](development.md) | building, the dev shell, xtask, CI, the deployment modules |
 | [vocabulary](vocabulary.md) | each concept and its one name |
 
 The shared mechanics (blobs and segments, the query grammar, the operation and

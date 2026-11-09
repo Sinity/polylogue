@@ -2,7 +2,7 @@
 
 Polylogue has one table of operations, and every surface is generated from it: the command line, the daemon's socket, HTTP and MCP. This page owns that table as Polylogue uses it, the command-line grammar and the rule that keeps the command set small, latency classes and Polylogue's budgets, the daemon's states as the command line sees them, warm state, completion and its catalog file, the picker, row addressing (`@N`, `@last`), footers and affordances, output, Polylogue's failure kinds and exit codes, and help.
 
-The generic mechanics (the `Operation` trait, the failure-to-exit-and-HTTP table, request and answer envelopes, deadline classes, SSE framing) are the common [`command-surface`](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/command-surface.md) crate's. The query language is in [query.md](query.md); what a caller sends about itself and how its author is computed is in [assertions.md](assertions.md#authorship); writing out with `read --to` is in [reading.md](reading.md#writing-out); MCP as the agents' channel is in [agents.md](agents.md#mcp-server); the web is in [web.md](web.md).
+The generic mechanics (the `Operation` trait, the failure-to-exit-and-HTTP table, request and answer envelopes, deadline classes, SSE framing) are the common [`command-surface`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/command-surface/README.md) crate's. The query language is in [query.md](query.md); what a caller sends about itself and how its author is computed is in [assertions.md](assertions.md#authorship); writing out with `read --to` is in [reading.md](reading.md#writing-out); MCP as the agents' channel is in [agents.md](agents.md#mcp-server); the web is in [web.md](web.md).
 
 ## Command table
 
@@ -93,6 +93,32 @@ Commands are not about a query's rows.
 | `verify [--manifest FILE]` | the on-demand read-only check ([operations.md](operations.md#verification)) |
 | `sinex cutover` | the one mode transition ([primary-mode.md](primary-mode.md#cutover)) |
 
+### What is built today
+
+The verbs and commands above are the design. The command table on master
+(`crates/polylogue/src/commands.rs`) differs from it, and the query-first
+command line that closes the gap is tracked under plnext-ojv:
+
+- **Designed, not built yet:** the query-first grammar (a query followed by a
+  verb), `trace`, `pack`, `pick`, `variant`, `applies`, the page operations
+  (`add`, `move`, `toc`, `checkout`, `checkin`), `next`, `auth drive`,
+  `hooks print|status` and `sinex cutover`. Calling one answers with an
+  unknown-command error.
+- **Built rows the design replaces:** `list`, `live`, `notices`, `waiting`,
+  `cost`, `timeline`, `attachment` and the `measure NAME` commands exist as
+  rows today; by the discipline above they become the bare query, the
+  shipped saved queries and the `| measure` and `| agg` stages. Until then
+  they answer as rows. `cost` clips usage to the requested day, which
+  `| measure usage` does not yet do.
+- **Built rows not listed above:** `query`, `recall`, `brief`, `takeover`,
+  `continue`, `hand-off`, `start`, `interrupt`, `answer`, `watch`, `keep`,
+  `save`, `revise`, `withdraw`, `assert`, `assert-query`, `conversations`,
+  `stored-files`, `manual`, `embed build|preview|status`,
+  `hooks install|uninstall`, `schema diff`, `backfill start|cancel|list`,
+  `chat send|approve|decline|list`, and the hidden rows the hooks and the
+  browser host send (`delivery-event`, `mail-claim`, `permission`,
+  `selection-note`, `chat claim`, `backfill claim`, `judge`, `ping`).
+
 ## Latency classes
 
 Each table row declares a latency class, and the class applies on every surface (CLI, MCP, HTTP, web). Budgets are end to end (process start to the last byte of the first screen, through the real binary and socket), with a warm daemon and a real-shaped archive under ordinary load, at p95. The deadline each request carries comes from its class, in the `command-surface` request envelope.
@@ -112,9 +138,9 @@ Help answers in about 100 ms and queries in under a second. (ruling 2026-05-12, 
 
 The read-class `advisory` operation has a stricter preparation cap of 20 ms, intersected with its caller’s bound on every surface. Hooks send a 20 ms request and emit nothing on failure; `--deadline none` does not lift this optional-advisory cap. The accepted request envelope and identity remain unchanged.
 
-Pure writes, including imports, await their durable result without a read deadline. Mixed operations retain deadlines for their read preparation; classification follows the admitted arguments, so reading a setting remains bounded while writing it keeps its result. The HTTP admission header above still applies.
+Pure writes, including imports, await their durable result without a read deadline. Mixed operations retain deadlines for their read preparation; classification follows the accepted arguments, so reading a setting remains bounded while writing it keeps its result. The `x-polylogue-deadline-ms` header above still applies.
 
-**Deadlines are interactive defaults.** The CLI's socket timeout is the deadline plus 50 ms, so a hung daemon never hangs a shell. Any caller lifts a deadline (`--deadline MS`, `--deadline none`; `deadline: null` over MCP and HTTP); deadline behaviour and cancellation are in [query.md](query.md#deadlines). A timed-out aggregate prints the narrower query the planner can serve and the same query with the deadline lifted:
+**Deadlines are interactive defaults.** A read whose row declares no latency class, called with the default deadline, stops after 30 seconds (`DEFAULT_READ_TIMEOUT_MS`); `--deadline none` lifts it. The CLI's socket timeout is the deadline plus 50 ms, so a hung daemon never hangs a shell. Any caller lifts a deadline (`--deadline MS`, `--deadline none`; `deadline: null` over MCP and HTTP); deadline behaviour and cancellation are in [query.md](query.md#deadlines). A timed-out aggregate prints the narrower query the planner can serve and the same query with the deadline lifted:
 
 ```console
 $ polylogue 'tool_calls where outcome:error | group by tool | count'
@@ -231,7 +257,7 @@ A query matching exactly one row, or a unique prefix, never opens the picker. `-
 
 ### Keys
 
-The picker and the web use the same letter for the same act wherever both offer it; the shared key table is the common [`web-shell`](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/web-shell.md)'s, and Polylogue's web bindings are in [web.md](web.md). The picker uses Ctrl forms for letters that would otherwise type into its query.
+The picker and the web use the same letter for the same act wherever both offer it; the shared key table is the common [`web-shell`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/web-shell/README.md)'s, and Polylogue's web bindings are in [web.md](web.md). The picker uses Ctrl forms for letters that would otherwise type into its query.
 
 | Act | Picker |
 |---|---|

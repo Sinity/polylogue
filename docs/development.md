@@ -14,7 +14,7 @@ nix flake check
 nix fmt
 ```
 
-The default package includes the Sinex adapter. `packages.polylogue-extension`
+The Nix package includes the Sinex adapter (the Cargo feature `sinex`, off in a plain `cargo build`). `packages.polylogue-extension`
 builds the Chrome and Firefox archives with the extension's Node builder and
 provides an unpacked Chrome extension; the overlay adds both packages. Package
 builds set `POLYLOGUE_REVISION` at compile time, and `--version` shows it.

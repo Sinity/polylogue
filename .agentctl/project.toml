@@ -59,17 +59,6 @@ scratch = "tmpfs"
 cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
-[operations.compile]
-description = "Compile selected packages without waiting behind the full suite"
-exec = ["nix", "develop", "--command", "cargo", "check", "--locked"]
-arguments = "required"
-pool = "compile"
-result = "exit"
-timeout_seconds = 1800
-scratch = "nvme"
-cache = "none"
-unit_properties = ["MemoryHigh=8G"]
-
 [operations.focused]
 description = "Selected package or test checks with the normal development queue"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "test"]
