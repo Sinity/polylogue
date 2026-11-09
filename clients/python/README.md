@@ -40,6 +40,8 @@ choose the number of tokens transferred in one page.
 once. For retries, give the same `--request-id` and identical arguments; the
 client never invents a second write after a lost answer. An explicit archive is
 passed as the CLI's `--archive` argument for ordinary calls and change feeds.
+Relative paths are made absolute when `Client` is constructed; declared path
+aliases are preserved, including short aliases used for Unix sockets.
 
 ```python
 for line in client.changes(previous_position):

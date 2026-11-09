@@ -301,6 +301,7 @@ fn a_stopped_process_resumes_its_committed_parse_positions() {
                 schema::INDEX,
                 crate::coverage::SCHEMA,
                 crate::variants::SCHEMA,
+                crate::parser_context::SCHEMA,
                 schema::READ_INDEXES
             ]
         )
@@ -400,6 +401,7 @@ fn missing_time_indexes_are_created_without_rebuilding_the_index() {
                     schema::INDEX,
                     crate::coverage::SCHEMA,
                     crate::variants::SCHEMA,
+                    crate::parser_context::SCHEMA,
                     schema::READ_INDEXES
                 ]
             )

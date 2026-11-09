@@ -12,7 +12,7 @@ pub fn parse(parser: &mut Parse, bytes: &[u8]) -> Result<Step, String> {
 pub fn parse_input(parser: &mut Parse, input: &str, bytes: &[u8]) -> Result<Step, String> {
     let Parse::Export(export) = parser else {
         return parser
-            .step(None, bytes, 0)
+            .step(None, bytes, 0, &Default::default())
             .map(|(step, _)| step)
             .map_err(|e| e.to_string());
     };
@@ -186,7 +186,9 @@ mod tests {
                 "sessionId":"s1","uuid":id,"hookAdditionalContext":["context"]});
             let mut bytes = serde_json::to_vec(&record).unwrap();
             bytes.push(b'\n');
-            let (step, _) = parser.step(None, &bytes, index as u64 * 1000).unwrap();
+            let (step, _) = parser
+                .step(None, &bytes, index as u64 * 1000, &Default::default())
+                .unwrap();
             let mut output = step.output;
             output.message_receipts.insert(0, index as u64 + 10);
             append_output(&mut combined, output);

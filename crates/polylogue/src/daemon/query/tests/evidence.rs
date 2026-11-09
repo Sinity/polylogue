@@ -26,8 +26,12 @@ fn evidence_until_reads_the_rows_polylogue_had_then() {
     drop(engine);
     let mut config = home.config(64 << 20);
     config.clock = polylogue_model::WallClock::fixed("2026-10-07T10:00:01Z".parse().unwrap());
-    let mut engine =
-        polylogue_engine::Engine::new(config, polylogue_store::Archive::at(&home.root)).unwrap();
+    let mut engine = polylogue_engine::Engine::new(
+        config,
+        polylogue_store::Archive::at(&home.root),
+        polylogue_testkit::stopped_attempt(),
+    )
+    .unwrap();
     home.append("a.jsonl", &claude_user("a2", "a", "second prompt"));
     assert!(engine.run_pass().unwrap().errors.is_empty());
     let all = query(&home, "messages | sort by first_seen").unwrap();

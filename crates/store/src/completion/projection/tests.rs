@@ -171,3 +171,127 @@ fn completion_removal_delta_keeps_a_recreated_session_in_the_same_cursor_window(
         vec![serde_json::json!({"session_id":"claude-code:restored"})]
     );
 }
+
+#[test]
+fn authored_deltas_follow_only_affected_families_and_setting_keys() {
+    use polylogue_model::{Reference, user::UserWrite};
+    let archive = WriterArchive::new();
+    let reads = crate::ReadPool::open(&archive.archive).unwrap();
+    let write = |id: &str, value| {
+        archive
+            .writer
+            .user_preparing(
+                crate::fixture::authored::operator_request(id.into(), value),
+                crate::user_writes::PreparationContext::new(vec!["codex".into()]),
+                None,
+            )
+            .unwrap()
+    };
+    for (id, name) in [("saved-a", "alpha"), ("saved-b", "beta")] {
+        write(
+            id,
+            UserWrite::SaveQuery {
+                name: name.into(),
+                text: "sessions | group by origin | count".into(),
+                denominator: Some("sessions".into()),
+            },
+        );
+    }
+    write(
+        "setting-a",
+        UserWrite::SetSetting {
+            key: "signal.interrupts_per_hour".into(),
+            value: "3".into(),
+            machine: None,
+        },
+    );
+    let after = reads.reader().unwrap().change_position().unwrap();
+    write(
+        "setting-b",
+        UserWrite::SetSetting {
+            key: "browser.actions".into(),
+            value: "on".into(),
+            machine: None,
+        },
+    );
+    {
+        let reader = reads.reader().unwrap();
+        let mut definitions = Vec::new();
+        reader
+            .visit_completion_definitions(Some(after.archive), |value| {
+                definitions.push(value.family);
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            definitions.is_empty(),
+            "an unrelated setting must not reload saved families: {definitions:?}"
+        );
+        assert_eq!(
+            reader.completion_setting_keys(Some(after.archive)).unwrap(),
+            ["browser.actions"]
+        );
+    }
+    let after = reads.reader().unwrap().change_position().unwrap();
+    write(
+        "withdraw-a",
+        UserWrite::WithdrawAssertions {
+            targets: vec![Reference::parse("assertion:saved-a").unwrap()],
+            reason: None,
+        },
+    );
+    let mut changes = Vec::new();
+    reads
+        .reader()
+        .unwrap()
+        .visit_completion_definitions(Some(after.archive), |value| {
+            changes.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].family, "saved-a");
+    assert!(changes[0].saved.is_none() && changes[0].queries.is_empty());
+    let after = reads.reader().unwrap().change_position().unwrap();
+    write(
+        "reinstate-a",
+        UserWrite::WithdrawAssertions {
+            targets: vec![Reference::parse("assertion:withdraw-a").unwrap()],
+            reason: None,
+        },
+    );
+    let mut changes = Vec::new();
+    reads
+        .reader()
+        .unwrap()
+        .visit_completion_definitions(Some(after.archive), |value| {
+            changes.push(value);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].family, "saved-a");
+    assert_eq!(changes[0].saved.as_ref().unwrap().name, "alpha");
+    assert!(changes[0].queries.contains_key("alpha"));
+    let after = reads.reader().unwrap().change_position().unwrap();
+    write(
+        "replace-a",
+        UserWrite::SaveQuery {
+            name: "alpha".into(),
+            text: "messages | group by role | count".into(),
+            denominator: Some("messages".into()),
+        },
+    );
+    let delta = reads
+        .reader()
+        .unwrap()
+        .completion_vocabulary_changes(Some(&after))
+        .unwrap();
+    assert!(!delta.replaced);
+    assert_eq!(delta.definitions.len(), 1);
+    assert_eq!(delta.definitions[0].family, "saved-a");
+    assert_eq!(
+        delta.definitions[0].saved.as_ref().unwrap().text,
+        "messages | group by role | count"
+    );
+}

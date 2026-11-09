@@ -23,6 +23,12 @@ pub(crate) use prepare::{ProvisionalQueries, prepare_query_plan_on, saved_querie
 mod keyed;
 use std::{collections::BTreeMap, ops::ControlFlow, sync::Arc};
 
+/// A current assertion family's names and resolved query definitions.
+pub(crate) struct SavedFamily {
+    pub names: BTreeMap<String, usize>,
+    pub queries: BTreeMap<String, Vec<polylogue_query::SavedQuery>>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SelectionError {
     #[error(transparent)]
@@ -639,7 +645,7 @@ impl Reader<'_> {
         mut visit: impl FnMut(SessionId) -> crate::Result<ControlFlow<()>>,
     ) -> crate::Result<()> {
         let conn = self.conn()?;
-        let message = message.to_string();
+        let message = crate::parser_context::canonical_message(conn, message)?.to_string();
         let (sql, id) = crate::query::references::message_sessions(&message);
         let mut statement = conn.prepare_cached(sql)?;
         let mut rows = statement.query([id])?;
@@ -794,6 +800,15 @@ impl Reader<'_> {
             condition,
             options.self_session.as_deref(),
         )
+    }
+
+    pub(crate) fn selection_saved_queries_for_family(
+        &self,
+        root: &str,
+    ) -> Result<SavedFamily, SelectionError> {
+        let values = prepare::saved_queries_for_family(self.conn()?, root)?;
+        self.conn()?;
+        Ok(values)
     }
 
     pub fn selection_saved_queries(

@@ -1604,3 +1604,101 @@ fn record_visitors_stop_before_decoding_later_session_payloads() {
             .unwrap();
     }
 }
+
+#[test]
+fn link_evidence_merges_across_sources_independently_of_the_source_winner() {
+    // Both provider markers describe the same spawn. Their source IDs depend on
+    // file paths, while the exported relation must survive relocation/rebuild.
+    for child_first in [false, true] {
+        for child_id_first in [false, true] {
+            for (child_rank, parent_rank) in [(0, 0), (0, 1), (1, 0)] {
+                let w = test_archive();
+                let mut child = batch(
+                    if child_id_first { "a-child" } else { "z-child" },
+                    child_rank,
+                    0,
+                    Vec::new(),
+                    &["parent", "child"],
+                );
+                child.parse[0].output.links.push(Link {
+                    kind: LinkKind::Spawn,
+                    parent: sid("parent"),
+                    child: sid("child"),
+                    at: None,
+                    call_id: None,
+                    evidence: "agentId".into(),
+                });
+                let mut parent = batch(
+                    if child_id_first {
+                        "z-parent"
+                    } else {
+                        "a-parent"
+                    },
+                    parent_rank,
+                    0,
+                    Vec::new(),
+                    &["parent", "child"],
+                );
+                let mut parent_link = child.parse[0].output.links[0].clone();
+                parent_link.call_id = Some("toolu_0203".into());
+                parent_link.evidence = "toolUseResult.agentId".into();
+                parent.parse[0].output.links.push(parent_link);
+                let mut replacement = child.clone();
+                let child_id = child.input.id.clone();
+                let readings = if child_first {
+                    [child, parent]
+                } else {
+                    [parent, child]
+                };
+                let mut child_chain = None;
+                for mut reading in readings {
+                    reading.parse[0].prepare();
+                    let is_child = reading.input.id == child_id;
+                    let stored = w.store_reading(reading, Some(&SOURCE_RECORD)).unwrap();
+                    if is_child {
+                        child_chain = Some(stored.chain);
+                    }
+                }
+                let report = w.writer.flush().unwrap();
+                assert!(report.errors.is_empty(), "{report:?}");
+                let reads = ReadPool::open(&w.archive).unwrap();
+                let links = reads.reader().unwrap().links(&sid("parent")).unwrap();
+                assert_eq!(links.len(), 1);
+                assert_eq!(links[0].evidence, "agentId");
+                assert_eq!(links[0].call_id.as_deref(), Some("toolu_0203"));
+                let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
+                assert_eq!(
+                    index
+                        .query_row("SELECT count(*) FROM link_source", [], |r| r
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    2
+                );
+                // Replacing one actual reading retracts only that contributor.
+                // The remaining parent's evidence and call must become visible.
+                replacement.change = Change::Reparse {
+                    chain: child_chain.unwrap(),
+                };
+                replacement.observation = None;
+                replacement.parse[0].reset = true;
+                replacement.parse[0].reading_version = "synthetic=2".into();
+                replacement.parse[0].output.links.clear();
+                replacement.parse[0].prepare();
+                w.store_reading(replacement, None).unwrap();
+                let report = w.writer.flush().unwrap();
+                assert!(report.errors.is_empty(), "{report:?}");
+                let links = reads.reader().unwrap().links(&sid("parent")).unwrap();
+                assert_eq!(links.len(), 1);
+                assert_eq!(links[0].evidence, "toolUseResult.agentId");
+                assert_eq!(links[0].call_id.as_deref(), Some("toolu_0203"));
+                assert_eq!(
+                    index
+                        .query_row("SELECT count(*) FROM link_source", [], |r| r
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    1
+                );
+            }
+        }
+    }
+}

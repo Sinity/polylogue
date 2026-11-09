@@ -318,6 +318,8 @@ impl Config {
     }
 }
 pub struct Startup {
+    /// Executable bytes supplied by main only for a command that starts an Engine.
+    pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
     pub config: Arc<Config>,
     pub engine: polylogue_engine::Config,
     pub mode: crate::daemon::service::ArchiveMode,
@@ -611,6 +613,7 @@ impl Startup {
             primary_auth: _primary_auth,
         });
         Ok(Self {
+            stopped_attempt: None,
             config,
             engine,
             mode,
@@ -685,6 +688,7 @@ impl Config {
 impl Startup {
     pub(crate) fn for_test(engine: polylogue_engine::Config, archive: &Path) -> Self {
         Self {
+            stopped_attempt: Some(polylogue_testkit::stopped_attempt()),
             config: Config::for_test(&engine, archive),
             clock: engine.clock.clone(),
             engine,

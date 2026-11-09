@@ -86,6 +86,12 @@ pub enum Ask {
         #[serde(default)]
         source: StartSource,
     },
+    /// A judged file-targeted pointer for a prompt, with no archived body.
+    Advisory {
+        prompt: String,
+        cwd: PathBuf,
+        session: SessionId,
+    },
     /// Taking over from another session named by its ID or a pasted session link.
     Takeover {
         session: SessionId,
@@ -119,6 +125,7 @@ impl Ask {
     pub fn recipient(&self) -> Option<&SessionId> {
         match self {
             Self::SessionStart { session, .. } => session.as_ref(),
+            Self::Advisory { session, .. } => Some(session),
             Self::Takeover { for_session, .. } | Self::Recall { for_session, .. } => {
                 for_session.as_ref()
             }
@@ -127,7 +134,7 @@ impl Ask {
 
     pub fn cwd(&self) -> Option<&Path> {
         match self {
-            Self::SessionStart { cwd, .. } => Some(cwd),
+            Self::SessionStart { cwd, .. } | Self::Advisory { cwd, .. } => Some(cwd),
             Self::Recall { cwd, .. } => cwd.as_deref(),
             Self::Takeover { .. } => None,
         }
@@ -244,6 +251,7 @@ pub fn prepare(
     reader: &Reader<'_>,
     scope: &SharedScopeIndex,
     queued: Option<LastBrief>,
+    pending_advice: &[Vec<String>],
     ask: &Ask,
     delivery_id: &str,
     context: &std::sync::Arc<crate::operation::Context>,
@@ -268,6 +276,20 @@ pub fn prepare(
             *source,
             budget,
             delivery_id,
+            context,
+        ),
+        Ask::Advisory {
+            prompt,
+            cwd,
+            session,
+        } => crate::advisory::prepare(
+            reader,
+            scope,
+            prompt,
+            cwd,
+            session,
+            delivery_id,
+            pending_advice,
             context,
         ),
         Ask::Takeover { session, .. } => takeover(reader, session, budget, delivery_id, context),
@@ -557,7 +579,7 @@ fn prefix(text: &str, bytes: usize) -> &str {
 
 /// Standard JSON escapes preserve every source byte while keeping terminal
 /// controls and conversational role markers out of the rendered data fence.
-fn archive_json(value: &serde_json::Value) -> String {
+pub(crate) fn archive_json(value: &serde_json::Value) -> String {
     let mut encoded = polylogue_render::terminal::json(value, false);
     for (marker, escaped) in [
         ("<", r"\u003c"),

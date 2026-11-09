@@ -16,6 +16,14 @@ mod reading;
 mod requests;
 
 impl Sinex {
+    /// Optional advice must not mistake unpublished or unapplied producer
+    /// ownership for empty delivery history, including after restart.
+    pub fn advisory_history_ready(&self) -> bool {
+        self.spool
+            .try_lock()
+            .is_ok_and(|queue| queue.is_known_empty())
+    }
+
     pub(crate) fn send_pending(&self) {
         let result = self
             .client_operation(async |client| client.retry_prepared().await)
@@ -327,27 +335,77 @@ impl Sinex {
             }
         }
         let queue = self.queue()?;
+        if queue.get(identity)?.is_some() {
+            let original = queue.decode_frame(identity)?;
+            let mut expected = crate::products::events(writes)?;
+            let Ingress::Events { source, events, .. } = &original else {
+                return Err(Error::Invalid(
+                    "named product intent is not an event group".into(),
+                ));
+            };
+            if source
+                .as_ref()
+                .is_none_or(|source| source.name != "polylogue" || !matches!(source.version, 5 | 6))
+            {
+                return Err(Error::Invalid(
+                    "named product intent has an unsupported source".into(),
+                ));
+            }
+            let observation = format!("{identity}:observation");
+            if queue.get(&observation)?.is_some() {
+                if queue.export_material_key(&observation)?.as_ref() != export_key {
+                    return Err(Error::Invalid(
+                        "export identity changed its immutable reading key".into(),
+                    ));
+                }
+                let retained: Vec<ProductWrite> =
+                    crate::spool::decode_json(queue.body(&observation)?)?;
+                if retained != writes {
+                    return Err(Error::Invalid(
+                        "named product identity changed immutable facts".into(),
+                    ));
+                }
+                return Ok(PreparedWrite {
+                    identity: identity.into(),
+                    pending: true,
+                });
+            }
+            for (new, old) in expected.iter_mut().zip(events) {
+                if source.as_ref().is_some_and(|source| source.version == 5)
+                    && old.kind.name == "polylogue.parse_progress"
+                    && old.kind.version == 5
+                    && new.kind.name == old.kind.name
+                    && new.payload == old.payload
+                {
+                    new.kind = old.kind.clone();
+                }
+            }
+            if &expected != events {
+                return Err(Error::Invalid(
+                    "named product identity changed immutable facts".into(),
+                ));
+            }
+            return Ok(PreparedWrite {
+                identity: identity.into(),
+                pending: true,
+            });
+        }
         let unlocated = export_key.is_some()
             || writes
                 .iter()
                 .any(|write| write.location.is_none() && write.parents.is_empty());
         if unlocated {
             let observation = format!("{identity}:observation");
-            let frozen_key = match export_key {
-                Some(key) if queue.get(&observation)?.is_some() => {
-                    let original = queue.export_material_key(&observation)?.ok_or_else(|| {
-                        Error::Invalid(
-                            "existing export custody has no immutable reading binding".into(),
-                        )
-                    })?;
-                    if &original != key {
-                        return Err(Error::Invalid(
-                            "export identity changed its immutable reading key".into(),
-                        ));
-                    }
-                    Some(original)
+            let frozen_key = if queue.get(&observation)?.is_some() {
+                let original = queue.export_material_key(&observation)?;
+                if original.as_ref() != export_key {
+                    return Err(Error::Invalid(
+                        "export identity changed its immutable reading key".into(),
+                    ));
                 }
-                key => key.cloned(),
+                original
+            } else {
+                export_key.cloned()
             };
             let export_key = frozen_key.as_ref();
             let mut writes = if queue.get(&observation)?.is_some() {
@@ -363,11 +421,25 @@ impl Sinex {
                 writes.to_vec()
             };
             let body = serde_json::to_vec(&writes)?;
+            let observation_source = if queue.get(&observation)?.is_some() {
+                let Ingress::Material { material, .. } = queue.decode_frame(&observation)? else {
+                    return Err(Error::Invalid("observation has no material".into()));
+                };
+                if material.source.name != "polylogue" || !matches!(material.source.version, 5 | 6)
+                {
+                    return Err(Error::Invalid(
+                        "observation has an unsupported source".into(),
+                    ));
+                }
+                material.source
+            } else {
+                crate::source_reference()
+            };
             queue.prepare_material(
                 Ingress::Material {
                     frame: observation.clone(),
                     material: Box::new(MaterialFrame {
-                        source: crate::source_reference(),
+                        source: observation_source,
                         id: crate::material_id(&self.config.producer, &observation),
                         input: InputRef {
                             kind: "polylogue-observation".into(),
@@ -616,15 +688,17 @@ impl Sinex {
     ) -> Result<polylogue_model::user::UserOutcome> {
         let identity = format!("request:{}", request.request.id);
         let queue = self.queue()?;
+        let mut source = crate::source_reference();
         let repeat = if queue.get(&identity)?.is_some() {
             let Ingress::Material { material, .. } = queue.decode_frame(&identity)? else {
                 return Err(Error::Invalid("authored intent has no material".into()));
             };
-            if material.source != crate::source_reference() {
+            if material.source.name != "polylogue" || !matches!(material.source.version, 5 | 6) {
                 return Err(Error::Invalid(
-                    "authored intent belongs to another adapter version".into(),
+                    "authored intent belongs to an unsupported adapter source".into(),
                 ));
             }
+            source = material.source.clone();
             let original: PreparedRequest = crate::spool::decode_json(queue.body(&identity)?)?;
             if original != *request {
                 return Err(Error::Invalid(
@@ -640,7 +714,7 @@ impl Sinex {
             Ingress::Material {
                 frame: identity.clone(),
                 material: Box::new(MaterialFrame {
-                    source: crate::source_reference(),
+                    source: source.clone(),
                     id: crate::material_id(&self.config.producer, &identity),
                     input: InputRef {
                         kind: "polylogue".into(),
@@ -781,9 +855,10 @@ impl Sinex {
                 let Ingress::Material { material, .. } = queue.decode_frame(&identity)? else {
                     return Err(Error::Invalid("authored intent has no material".into()));
                 };
-                if material.source != crate::source_reference() {
+                if material.source.name != "polylogue" || !matches!(material.source.version, 5 | 6)
+                {
                     return Err(Error::Invalid(
-                        "authored intent belongs to another adapter version".into(),
+                        "authored intent belongs to an unsupported adapter source".into(),
                     ));
                 }
                 crate::spool::decode_json(queue.body(&identity)?)?

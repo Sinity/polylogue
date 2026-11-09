@@ -836,6 +836,7 @@ impl Reader<'_> {
         id: &MessageId,
     ) -> Result<Option<(Message, MessageProjection)>> {
         let conn = self.conn()?;
+        let id = crate::parser_context::canonical_message(conn, id)?;
         let hash = conn.query_row(
             "SELECT s.version_hash FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.shown=1
              WHERE m.id=?1",
@@ -855,6 +856,7 @@ impl Reader<'_> {
     /// extent admission; unavailable legacy proof stays unknown.
     pub fn message_admission(&self, id: &MessageId) -> Result<Option<u64>> {
         let conn = self.conn()?;
+        let id = crate::parser_context::canonical_message(conn, id)?;
         let admission = conn
             .query_row(
                 "SELECT p.admitted,i.id,s.chain,s.source_end FROM message m

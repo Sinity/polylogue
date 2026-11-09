@@ -28,8 +28,21 @@ impl Inner {
                     "a scope reset must be a separate control page".into(),
                 ));
             }
-            if crate::primary::scope::reset(&mut self.index, &self.location, &self.resolver, scope)?
-            {
+            let changed = match crate::primary::scope::reset(
+                &mut self.index,
+                &self.location,
+                &self.resolver,
+                scope,
+            ) {
+                Ok(changed) => changed,
+                Err(error) => {
+                    // Reads stay fenced after a failed reset. Publish its real
+                    // failure before replying, so a blocked turn can observe it.
+                    self.stream_followed(Some(error.to_string()));
+                    return Err(error);
+                }
+            };
+            if changed {
                 self.commits.committed();
                 self.derive_due = false;
                 self.derived_version = None;

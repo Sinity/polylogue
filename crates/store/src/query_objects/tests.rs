@@ -675,3 +675,91 @@ fn object_run_has_no_question_and_query_or_continuation_cannot_omit_one() {
         .unwrap();
     assert_eq!(fetched.value, exact);
 }
+
+#[test]
+fn query_admission_positions_share_the_source_cursor_and_rollback_without_cues() {
+    let archive = WriterArchive::new();
+    let reads = crate::ReadPool::open(&archive.archive).unwrap();
+    let subscription = archive.writer.sender().unwrap().completion_commits();
+    let first = question("sessions");
+    let before = reads.reader().unwrap().change_position().unwrap();
+    archive.writer.query_object(first.clone()).unwrap();
+    subscription.try_recv().unwrap();
+    let reader = reads.reader().unwrap();
+    let after = reader.change_position().unwrap();
+    assert!(after.archive > before.archive);
+    assert_eq!(
+        reader.completion_changed_queries(before.archive).unwrap(),
+        std::collections::BTreeSet::from([first.id.to_string()])
+    );
+    drop(reader);
+    // An exact repeat retains its first position and emits no new commit cue.
+    archive.writer.query_object(first.clone()).unwrap();
+    assert!(matches!(
+        subscription.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    assert_eq!(reads.reader().unwrap().change_position().unwrap(), after);
+    let conn = Connection::open(archive.archive.archive_db()).unwrap();
+    let original: Vec<u8> = conn
+        .query_row(
+            "SELECT object FROM query WHERE hash=?1",
+            [first.id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    // A true old NULL row remains unknown even if the same body is offered again.
+    conn.execute(
+        "UPDATE query SET commit_seq=NULL WHERE hash=?1",
+        [first.id.to_string()],
+    )
+    .unwrap();
+    archive.writer.query_object(first.clone()).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT commit_seq FROM query WHERE hash=?1",
+            [first.id.to_string()],
+            |row| row.get::<_, Option<i64>>(0)
+        )
+        .unwrap(),
+        None
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT object FROM query WHERE hash=?1",
+            [first.id.to_string()],
+            |row| row.get::<_, Vec<u8>>(0)
+        )
+        .unwrap(),
+        original
+    );
+    conn.execute_batch("CREATE TRIGGER stop_query BEFORE INSERT ON query BEGIN SELECT raise(ABORT,'stop query'); END").unwrap();
+    let second = question("messages");
+    let error = archive.writer.query_object(second.clone()).unwrap_err();
+    assert!(
+        matches!(&error,StoreError::Sqlite(rusqlite::Error::SqliteFailure(code,Some(message))) if code.extended_code==rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER && message=="stop query"),
+        "{error:?}"
+    );
+    assert_eq!(reads.reader().unwrap().change_position().unwrap(), after);
+    assert!(matches!(
+        subscription.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    conn.execute_batch("DROP TRIGGER stop_query").unwrap();
+    archive.writer.query_object(second.clone()).unwrap();
+    subscription.try_recv().unwrap();
+    let reader = reads.reader().unwrap();
+    assert_eq!(
+        reader.completion_changed_queries(after.archive).unwrap(),
+        std::collections::BTreeSet::from([second.id.to_string()])
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT commit_seq FROM query WHERE hash=?1",
+            [second.id.to_string()],
+            |row| row.get::<_, Option<i64>>(0)
+        )
+        .unwrap(),
+        Some(reader.change_position().unwrap().archive)
+    );
+}

@@ -193,6 +193,18 @@ fn chosen(matches: &ArgMatches) -> Option<(&'static Command, &ArgMatches)> {
     crate::commands::command(&name).map(|c| (c, leaf))
 }
 
+/// Only configured local commands that construct an Engine need its binary identity.
+pub(crate) fn needs_engine(
+    matches: &ArgMatches,
+    mode: &crate::daemon::service::ArchiveMode,
+) -> bool {
+    chosen(matches).is_some_and(|(command, _)| match command.name {
+        "daemon" => mode.needs_engine(),
+        "demo tour" => true,
+        _ => false,
+    })
+}
+
 /// A command's values from its matches.
 fn values(c: &Command, m: &ArgMatches) -> Values {
     let mut out = serde_json::Map::new();

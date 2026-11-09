@@ -112,6 +112,7 @@ fn discover(root: &Path, processes: &Path) -> Vec<Server> {
 pub const COLLECTOR: crate::origin::Collector = crate::origin::Collector {
     setting: None,
     background: true,
+    settle: None,
     sync: |paths, stop| sync(paths.home, paths.spool, stop),
 };
 

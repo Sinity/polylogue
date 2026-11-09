@@ -16,7 +16,7 @@ fn changed_reading_replaces_its_chains_and_the_next_pass_is_quiet() {
     assert_eq!(chains, 1);
     assert!(bytes > 0);
     let config = w.config(64);
-    let mut engine = Engine::new(config, archive).unwrap();
+    let mut engine = Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap();
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert!(pass.bytes_read > 0);

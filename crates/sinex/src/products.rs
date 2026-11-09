@@ -298,6 +298,12 @@ pub(crate) fn decode(event_type: &str, payload: Value) -> Result<Product> {
             ));
         }
     }
+    if matches!(&product, Product::ParseProgress { stopped_attempt:Some(_),reading,.. } if !matches!(reading.progress, polylogue_model::batch::StepProgress::Failed { .. } | polylogue_model::batch::StepProgress::Refused { .. }))
+    {
+        return Err(Error::Invalid(
+            "only stopped progress has a stopped attempt".into(),
+        ));
+    }
     if kind(&product) != event_type {
         return Err(Error::Invalid(format!(
             "confirmed {event_type} carries another product kind"
@@ -417,7 +423,8 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                             "message" => 6,
                             "request" | "restored_request" => 6,
                             "session" | "document" | "event" | "link" | "background"
-                            | "repository" | "parse_progress" => 5,
+                            | "repository" => 5,
+                            "parse_progress" => 6,
                             "input" => 4,
                             "fragment" => 3,
                             "query_run" => 4,

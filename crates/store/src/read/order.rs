@@ -23,6 +23,7 @@ impl Reader<'_> {
     /// The canonical physical owner is metadata; resolving it never hydrates
     /// an endpoint body or expands inherited parents.
     pub fn message_session(&self, id: &MessageId) -> Result<Option<SessionId>> {
+        let id = crate::parser_context::canonical_message(self.conn()?, id)?;
         let value = self.conn()?.query_row(
             "SELECT s.id FROM message m JOIN session s ON s.pk=m.session_pk WHERE m.id=?1 AND m.duplicate_of IS NULL",
             [id.to_string()], |row| row.get::<_,String>(0),
@@ -38,6 +39,7 @@ impl Reader<'_> {
     /// session. It is independent of query order and inherited parent prefixes.
     /// The count walks the session's reading-order index up to the message.
     pub fn message_order(&self, id: &MessageId) -> Result<Option<u64>> {
+        let id = crate::parser_context::canonical_message(self.conn()?, id)?;
         self.conn()?
             .prepare_cached(
                 "SELECT (SELECT count(*) FROM message o WHERE o.session_pk=m.session_pk AND o.duplicate_of IS NULL

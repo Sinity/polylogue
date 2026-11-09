@@ -34,6 +34,8 @@ fn independent_hash(domain: &[u8], value: &Value) -> BlobHash {
 fn baseline() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     schema::ensure_archive(&conn).unwrap();
+    conn.execute_batch("DROP INDEX query_commit_seq; ALTER TABLE query DROP COLUMN commit_seq;")
+        .unwrap();
     conn.pragma_update(None, "user_version", 1).unwrap();
     conn
 }
@@ -87,7 +89,7 @@ fn numbered_upgrade_preserves_question_run_completion_and_hash_custody() {
     )
     .unwrap();
     schema::ensure_archive(&conn).unwrap();
-    assert_eq!(schema::version(&conn).unwrap(), 3);
+    assert_eq!(schema::version(&conn).unwrap(), 4);
     let (bytes, first): (Vec<u8>, String) = conn
         .query_row("SELECT object,first_run FROM query", [], |row| {
             Ok((row.get(0)?, row.get(1)?))
@@ -202,7 +204,7 @@ fn unavailable_legacy_question_does_not_block_archive_open_or_unrelated_executio
     )
     .unwrap();
     schema::ensure_archive(&conn).unwrap();
-    assert_eq!(schema::version(&conn).unwrap(), 3);
+    assert_eq!(schema::version(&conn).unwrap(), 4);
     let bytes: Vec<u8> = conn
         .query_row(
             "SELECT object FROM query WHERE hash=?1",

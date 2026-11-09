@@ -1,17 +1,29 @@
 //! Bounded projections from one authoritative read, consumed by the catalog publisher.
 use super::catalog::Session;
+use crate::source::Source;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::ChangePosition;
 use rusqlite::OptionalExtension;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub enum SessionChange {
     Upsert(Box<Session>),
     Removed(String),
 }
+/// One source snapshot's authored changes, bounded by its existing source cursor.
+pub struct VocabularyChanges {
+    pub replaced: bool,
+    pub definitions: Vec<DefinitionChange>,
+    pub kept: Vec<NativeKept>,
+    pub settings: Vec<String>,
+    pub queries: BTreeSet<String>,
+}
+
 #[derive(Debug)]
 pub struct DefinitionChange {
     pub family: String,
+    pub names: BTreeMap<String, usize>,
+    pub queries: BTreeMap<String, Vec<polylogue_query::SavedQuery>>,
     pub saved: Option<NativeSaved>,
     pub tag: Option<(String, Option<String>)>,
 }
@@ -120,19 +132,93 @@ impl Reader<'_> {
         }
         Ok(position)
     }
-    /// Family candidates are independent of first admission counters: a
-    /// withdrawal may affect another family, or retract the whole last fact.
+    pub fn completion_vocabulary_changes(
+        &self,
+        after: Option<&ChangePosition>,
+    ) -> Result<VocabularyChanges> {
+        let replaced = self.completion_authored_replaced(after)?;
+        let after = if replaced { None } else { after };
+        let mut definitions = Vec::new();
+        self.visit_completion_definitions(after.map(|position| position.archive), |change| {
+            definitions.push(change);
+            Ok(())
+        })?;
+        let mut kept = Vec::new();
+        self.visit_completion_kept(after.map(|position| position.archive), |value| {
+            kept.push(value);
+            Ok(())
+        })?;
+        Ok(VocabularyChanges {
+            replaced,
+            definitions,
+            kept,
+            settings: self.completion_setting_keys(after.map(|position| position.archive))?,
+            queries: after
+                .map(|position| self.completion_changed_queries(position.archive))
+                .transpose()?
+                .unwrap_or_default(),
+        })
+    }
+
+    /// Native authored lifecycle rebuilds replace that entire source category.
+    /// Admission counters stay original, so they cannot describe its removals.
+    pub fn completion_authored_replaced(&self, after: Option<&ChangePosition>) -> Result<bool> {
+        let Some(after) = after else { return Ok(false) };
+        let current = self.change_position()?;
+        if after.generation != current.generation
+            || after.archive > current.archive
+            || after.index > current.index
+        {
+            return Err(StoreError::Invalid("completion generation changed".into()));
+        }
+        if matches!(Source::of(self.conn()?)?, Source::Ledger) {
+            return Ok(false);
+        }
+        Ok(self.conn()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM primary_fact WHERE kind='request' AND changed!=admitted AND changed>?1)",
+            [after.archive], |row| row.get(0))?)
+    }
+
+    /// Changed objects and their exact retained dependents, not current names.
+    /// Older NULL admissions belong to the startup snapshot, never to a guessed cut.
+    pub fn completion_changed_queries(&self, after: i64) -> Result<BTreeSet<String>> {
+        let lifecycle = if matches!(Source::of(self.conn()?)?, Source::Cache) {
+            "UNION SELECT substr(reference,7) FROM primary_fact WHERE kind='query' AND changed!=admitted AND changed>?1 AND reference GLOB 'query:*'"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "WITH RECURSIVE affected(hash) AS (
+            SELECT hash FROM source_query WHERE commit_seq>?1 {lifecycle}
+            UNION SELECT e.query FROM source_query_edge e JOIN affected a ON e.uses='query:'||a.hash
+        ) SELECT hash FROM affected"
+        );
+        let values = self
+            .conn()?
+            .prepare(&sql)?
+            .query_map([after], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        self.check()?;
+        Ok(values)
+    }
+
     pub fn visit_completion_definitions(
         &self,
-        _after: Option<i64>,
+        after: Option<i64>,
         mut visit: impl FnMut(DefinitionChange) -> Result<()>,
     ) -> Result<()> {
         let conn = self.conn()?;
-        let mut statement=conn.prepare("SELECT DISTINCT root FROM source_assertion WHERE kind IN ('saved_query','tag') ORDER BY root")?;
-        let mut rows = statement.query([])?;
-        while let Some(row) = rows.next()? {
+        let roots: BTreeSet<String> = match after {
+            Some(after) => crate::assertions::changed_roots(conn, after)?,
+            None => conn.prepare("SELECT DISTINCT root FROM source_assertion WHERE kind IN ('saved_query','tag') ORDER BY root")?
+                .query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?,
+        };
+        for root in roots {
             self.check()?;
-            visit(self.completion_definition(&row.get::<_, String>(0)?)?)?;
+            let relevant = conn.query_row("SELECT EXISTS(SELECT 1 FROM source_assertion WHERE root=?1 AND kind IN ('saved_query','tag'))", [&root], |row| row.get::<_,bool>(0))?;
+            if relevant {
+                visit(self.completion_definition(&root)?)?;
+            }
         }
         self.check()?;
         Ok(())
@@ -144,8 +230,13 @@ impl Reader<'_> {
             Reference, RevisionReference,
             assertion::{AssertionKind, values},
         };
+        let saved = self
+            .selection_saved_queries_for_family(family)
+            .map_err(crate::selection::SelectionError::into_store_error)?;
         let mut change = DefinitionChange {
             family: family.into(),
+            names: saved.names,
+            queries: saved.queries,
             saved: None,
             tag: None,
         };
@@ -243,14 +334,27 @@ impl Reader<'_> {
         }
         Ok(())
     }
-    /// Key vocabulary is a pinned source snapshot. No first-admission counter
-    /// can serve as a withdrawal or whole-family retraction watermark.
-    pub fn completion_setting_keys(&self, _after: Option<i64>) -> Result<Vec<String>> {
-        Ok(self
-            .conn()?
-            .prepare("SELECT DISTINCT key FROM source_assertion WHERE kind='setting' ORDER BY key")?
-            .query_map([], |row| row.get(0))?
-            .collect::<rusqlite::Result<_>>()?)
+    /// Newly admitted assertions nominate exactly their affected setting families.
+    /// The startup/category-replacement call takes the complete current snapshot.
+    pub fn completion_setting_keys(&self, after: Option<i64>) -> Result<Vec<String>> {
+        let conn = self.conn()?;
+        let mut keys = BTreeSet::new();
+        if let Some(after) = after {
+            for root in crate::assertions::changed_roots(conn, after)? {
+                keys.extend(conn.prepare("SELECT DISTINCT key FROM source_assertion WHERE root=?1 AND kind='setting' ORDER BY key")?
+                    .query_map([root], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
+            }
+        } else {
+            keys.extend(
+                conn.prepare(
+                    "SELECT DISTINCT key FROM source_assertion WHERE kind='setting' ORDER BY key",
+                )?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+            );
+        }
+        self.check()?;
+        Ok(keys.into_iter().collect())
     }
 }
 

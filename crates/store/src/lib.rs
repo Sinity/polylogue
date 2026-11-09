@@ -226,3 +226,5 @@ impl From<rusqlite::Error> for StoreError {
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
+
+pub mod parser_context;

@@ -163,64 +163,103 @@ fn connect(config: &Config) -> Arc<Sinex> {
     }
 }
 
+/// The same outer turn boundary as the daemon: a scope interruption discards
+/// that read and waits for real reset/application progress before a fresh turn.
+fn confirm_capture(
+    engine: &mut Engine,
+    commits: &polylogue_store::completion::CommitSubscription,
+    started: Instant,
+    context: (&Archive, &Sinex, &Running),
+    mut complete: impl FnMut(&polylogue_engine::Pass) -> polylogue_store::Result<bool>,
+    failure: impl Fn() -> String,
+) -> polylogue_engine::Pass {
+    let (archive, sinex, running) = context;
+    loop {
+        assert!(
+            started.elapsed() < Duration::from_secs(120),
+            "native capture/replay did not reach confirmed application: {}; {}",
+            failure(),
+            running.evidence(sinex, archive)
+        );
+        let result =
+            (|| -> Result<(bool, polylogue_engine::Pass), polylogue_engine::EngineError> {
+                let pass = engine.run_pass()?;
+                let scope = archive.scope_token()?;
+                assert!(
+                    pass.errors.is_empty(),
+                    "{pass:?}; {}",
+                    running.evidence(sinex, archive)
+                );
+                let done = complete(&pass)?;
+                scope.check()?;
+                Ok((done, pass))
+            })();
+        let interrupted = match result {
+            Ok((true, pass)) => return pass,
+            Ok((false, _)) => false,
+            Err(polylogue_engine::EngineError::Store(
+                polylogue_store::StoreError::ScopeChanged,
+            )) => true,
+            Err(error) => panic!(
+                "native capture/replay failed: {error}; {}",
+                running.evidence(sinex, archive)
+            ),
+        };
+        let remaining = Duration::from_secs(120).saturating_sub(started.elapsed());
+        // A failed reset intentionally emits no commit cue. Retain the old
+        // replay-readiness tick while fenced, so its queued error is observed.
+        let wait = if interrupted {
+            remaining.min(Duration::from_millis(200))
+        } else {
+            remaining
+        };
+        match commits.recv_timeout(wait) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if interrupted => {}
+            Err(error) => panic!(
+                "native capture/replay wait: {error}; {}; {}",
+                failure(),
+                running.evidence(sinex, archive)
+            ),
+        }
+    }
+}
+
 /// Builds the Morrow example `example` with its home at `home`, on Sinex.
 fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &Running) {
     let (archive, _lock) = Archive::open_primary(&example.root, &running.config.store).unwrap();
     let mut settings = example.config();
     settings.home = home.to_path_buf();
-    let mut engine = Engine::on_sinex(settings, archive.clone(), sinex.clone()).unwrap();
+    let mut engine = Engine::on_sinex(
+        settings,
+        archive.clone(),
+        sinex.clone(),
+        polylogue_testkit::stopped_attempt(),
+    )
+    .unwrap();
     let commits = engine.writer().unwrap().completion_commits();
     let started = Instant::now();
-    loop {
-        assert!(
-            started.elapsed() < Duration::from_secs(120),
-            "capture did not reach confirmed application within its budget; {}",
-            running.evidence(sinex, &archive)
-        );
-        let pass = engine.run_pass().unwrap_or_else(|error| {
-            panic!(
-                "native capture pass failed: {error}; {}",
-                running.evidence(sinex, &archive)
-            )
-        });
-        assert!(
-            pass.errors.is_empty(),
-            "{:?}; {}",
-            pass.errors,
-            running.evidence(sinex, &archive)
-        );
-        if !pass.capture_pending {
-            break;
-        }
-        let remaining = Duration::from_secs(120).saturating_sub(started.elapsed());
-        commits.recv_timeout(remaining).unwrap_or_else(|error| {
-            panic!(
-                "capture did not reach confirmed application: {error}; {}",
-                running.evidence(sinex, &archive)
-            )
-        });
-    }
-    // The idle writer follows the confirmed stream until it reaches Sinex's head.
-    loop {
-        let applied = ReadPool::open(&archive)
-            .unwrap()
-            .reader()
-            .unwrap()
-            .confirmed_checkpoint()
-            .unwrap();
-        let head = sinex.status().unwrap().owner_position;
-        if head.is_some() && applied == head {
-            break;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(120),
-            "the index did not reach Sinex's head: {applied:?} of {head:?}; {}",
-            running.evidence(sinex, &archive)
-        );
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    confirm_capture(
+        &mut engine,
+        &commits,
+        started,
+        (&archive, sinex, running),
+        |pass| {
+            let applied = ReadPool::open(&archive)?.reader()?.confirmed_checkpoint()?;
+            let head = sinex.status().unwrap().owner_position;
+            Ok(!pass.capture_pending && head.is_some() && applied == head)
+        },
+        String::new,
+    );
     let acquisitions = running.native.sql("SELECT frame,material_id FROM core.ingress_frames WHERE producer='polylogue' AND frame LIKE 'acquisition:%' ORDER BY frame");
-    let repeated = engine.run_pass().unwrap();
+    let repeated = confirm_capture(
+        &mut engine,
+        &commits,
+        started,
+        (&archive, sinex, running),
+        |pass| Ok(!pass.capture_pending),
+        String::new,
+    );
     assert!(
         repeated.errors.is_empty() && !repeated.capture_pending,
         "an unchanged capture must already be confirmed: {repeated:?}; {}",
@@ -235,25 +274,29 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
 
 /// Every session as the export format holds it, and every note.
 fn answers(archive: &Archive) -> (BTreeMap<String, serde_json::Value>, Vec<serde_json::Value>) {
-    let pool = ReadPool::open(archive).unwrap();
-    let reader = pool.reader().unwrap();
+    read_answers(archive).unwrap()
+}
+
+fn read_answers(
+    archive: &Archive,
+) -> polylogue_store::Result<(BTreeMap<String, serde_json::Value>, Vec<serde_json::Value>)> {
+    let pool = ReadPool::open(archive)?;
+    let reader = pool.reader()?;
     let sessions = reader
-        .query("SELECT id FROM session ORDER BY id", &[])
-        .unwrap()
+        .query("SELECT id FROM session ORDER BY id", &[])?
         .into_iter()
         .map(|row| {
             let id = polylogue_model::SessionId::parse(row["id"].as_str().unwrap()).unwrap();
-            let export = reader.session_export(&id).unwrap().unwrap();
-            (id.to_string(), serde_json::to_value(export).unwrap())
+            let export = reader.session_export(&id)?.unwrap();
+            Ok((id.to_string(), serde_json::to_value(export).unwrap()))
         })
-        .collect();
+        .collect::<polylogue_store::Result<_>>()?;
     let notes = reader
         .query(
             "SELECT n.id,n.kind,n.value,t.ref FROM source_assertion n JOIN source_link t ON t.record=n.id ORDER BY n.id,t.role,t.ref",
             &[],
-        )
-        .unwrap();
-    (sessions, notes)
+        )?;
+    Ok((sessions, notes))
 }
 
 /// Structural comparison of synthetic answers, without logging their text bodies.
@@ -277,30 +320,38 @@ fn answer_difference(
             Some(Value::Object(value)) => format!("object(fields={})", value.len()),
         }
     }
-    fn first(expected: Option<&Value>, actual: Option<&Value>, path: String) -> Option<String> {
+    fn differences(
+        expected: Option<&Value>,
+        actual: Option<&Value>,
+        path: String,
+        changed: &mut Vec<String>,
+    ) {
         if expected == actual {
-            return None;
+            return;
         }
         match (expected, actual) {
             (Some(Value::Object(left)), Some(Value::Object(right))) => {
                 let keys: std::collections::BTreeSet<_> = left.keys().chain(right.keys()).collect();
-                keys.into_iter().find_map(|key| {
-                    first(
+                for key in keys {
+                    differences(
                         left.get(key),
                         right.get(key),
                         format!("{path}/{}", key.replace('~', "~0").replace('/', "~1")),
-                    )
-                })
+                        changed,
+                    );
+                }
             }
-            (Some(Value::Array(left)), Some(Value::Array(right))) if left.len() == right.len() => {
-                left.iter()
-                    .zip(right)
-                    .enumerate()
-                    .find_map(|(index, (left, right))| {
-                        first(Some(left), Some(right), format!("{path}/{index}"))
-                    })
+            (Some(Value::Array(left)), Some(Value::Array(right))) => {
+                for index in 0..left.len().max(right.len()) {
+                    differences(
+                        left.get(index),
+                        right.get(index),
+                        format!("{path}/{index}"),
+                        changed,
+                    );
+                }
             }
-            _ => Some(format!(
+            _ => changed.push(format!(
                 "{path}: expected {}, actual {}",
                 summary(expected),
                 summary(actual)
@@ -317,13 +368,14 @@ fn answer_difference(
         .filter(|id| !expected.contains_key(*id))
         .take(8)
         .collect();
-    let changed = expected.iter().find_map(|(id, value)| {
-        actual
-            .get(id)
-            .and_then(|actual| first(Some(value), Some(actual), id.clone()))
-    });
+    let mut changed = Vec::new();
+    for (id, value) in expected {
+        if let Some(actual) = actual.get(id) {
+            differences(Some(value), Some(actual), id.clone(), &mut changed);
+        }
+    }
     format!(
-        "sessions expected={}, actual={}; missing(first8)={missing:?}; extra(first8)={extra:?}; first changed={changed:?}",
+        "sessions expected={}, actual={}; missing(first8)={missing:?}; extra(first8)={extra:?}; changed={changed:?}",
         expected.len(),
         actual.len()
     )
@@ -360,8 +412,13 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     phase("built on Sinex");
     {
         let (archive, _lock) = Archive::open_primary(&example.root, &running.config.store).unwrap();
-        let mut engine =
-            Engine::on_sinex(example.config(), archive.clone(), sinex.clone()).unwrap();
+        let mut engine = Engine::on_sinex(
+            example.config(),
+            archive.clone(),
+            sinex.clone(),
+            polylogue_testkit::stopped_attempt(),
+        )
+        .unwrap();
         let commits = engine.writer().unwrap().completion_commits();
         let before_import = answer_difference(&expected, &answers(&archive).0);
         let imported = example.import_exports(&mut engine).unwrap();
@@ -371,32 +428,43 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
             running.evidence(&sinex, &archive)
         );
         let imported_at = Instant::now();
-        loop {
-            assert!(
-                imported_at.elapsed() < Duration::from_secs(120),
-                "imported sessions did not reach the standalone answer; before import: {before_import}; current: {}; {}",
-                answer_difference(&expected, &answers(&archive).0),
-                running.evidence(&sinex, &archive)
-            );
-            let pass = engine.run_pass().unwrap();
-            assert!(
-                pass.errors.is_empty(),
-                "{pass:?}; {}",
-                running.evidence(&sinex, &archive)
-            );
-            if answers(&archive).0 == expected {
-                break;
-            }
-            commits
-                .recv_timeout(Duration::from_secs(120).saturating_sub(imported_at.elapsed()))
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "import answer wait: {error}; before import: {before_import}; current: {}; {}",
-                        answer_difference(&expected, &answers(&archive).0),
+        confirm_capture(
+            &mut engine,
+            &commits,
+            imported_at,
+            (&archive, &sinex, &running),
+            |pass| {
+                let applied = ReadPool::open(&archive)?.reader()?.confirmed_checkpoint()?;
+                let status = sinex.status().unwrap();
+                let actual = read_answers(&archive)?.0;
+                // Session presence retains the declared-source discovery barrier.
+                // Once all work is confirmed, semantics are an assertion, not a wait.
+                if !pass.capture_pending
+                    && expected.keys().all(|id| actual.contains_key(id))
+                    && status.prepared_materials == 0
+                    && status.prepared_writes == 0
+                    && status.owner_position.is_some()
+                    && applied == status.owner_position
+                {
+                    assert!(
+                        actual == expected,
+                        "confirmed imported answers differ; before import: {before_import}; current: {}; {}",
+                        answer_difference(&expected, &actual),
                         running.evidence(&sinex, &archive)
-                    )
-                });
-        }
+                    );
+                    return Ok(true);
+                }
+                Ok(false)
+            },
+            || {
+                format!(
+                    "before import: {before_import}; current: {}",
+                    read_answers(&archive)
+                        .map(|answers| answer_difference(&expected, &answers.0))
+                        .unwrap_or_else(|error| error.to_string())
+                )
+            },
+        );
         engine
             .writer()
             .unwrap()
@@ -417,24 +485,14 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
             ))
             .unwrap();
         let authored_at = Instant::now();
-        loop {
-            assert!(
-                authored_at.elapsed() < Duration::from_secs(120),
-                "the authored note did not reach confirmed application; {}",
-                running.evidence(&sinex, &archive)
-            );
-            if answers(&archive).1.len() == 1 {
-                break;
-            }
-            commits
-                .recv_timeout(Duration::from_secs(120).saturating_sub(authored_at.elapsed()))
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "note confirmation: {error}; {}",
-                        running.evidence(&sinex, &archive)
-                    )
-                });
-        }
+        confirm_capture(
+            &mut engine,
+            &commits,
+            authored_at,
+            (&archive, &sinex, &running),
+            |pass| Ok(!pass.capture_pending && read_answers(&archive)?.1.len() == 1),
+            String::new,
+        );
     }
     phase("exports imported");
     let on_sinex = Archive::on_sinex(&example.root, &running.config.store);

@@ -219,6 +219,7 @@ impl CatalogWriter {
             ] {
                 self.conn.execute("INSERT INTO metadata VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key,value])?;
             }
+            crate::fault::check("completion.before_commit", &self.path.to_string_lossy())?;
             self.conn.execute_batch("COMMIT")?;
             Ok(())
         })();
@@ -368,8 +369,20 @@ impl CatalogWriter {
             .execute("DELETE FROM item WHERE kind='setting' AND id=?1", [key])?;
         Ok(())
     }
+    /// Replace only authored vocabulary after the source owner rewrote it.
+    /// Session contributions remain independent of this category.
+    pub fn clear_authored(&mut self) -> Result<()> {
+        for family in self.definition_families()? {
+            self.remove_values(&format!("assertion:{family}"))?;
+        }
+        self.conn.execute(
+            "DELETE FROM item WHERE kind IN ('saved','kept','setting')",
+            [],
+        )?;
+        Ok(())
+    }
+
     /// Includes tag-only contribution owners as well as saved definitions.
-    /// These disposable owner keys only nominate families for source reads.
     pub fn definition_families(&self) -> Result<Vec<String>> {
         Ok(self.conn.prepare("SELECT id FROM item WHERE kind='saved' UNION SELECT substr(session,11) FROM contribution WHERE session GLOB 'assertion:*' ORDER BY 1")?
             .query_map([],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?)

@@ -302,8 +302,13 @@ fn first_run(conn: &Connection, source: Source, question: &str) -> Result<()> {
 }
 
 /// The caller's ordinary source transaction owns the complete question and edges.
-pub(crate) fn apply_object(conn: &Connection, object: &QueryObject) -> Result<()> {
+pub(crate) fn apply_object(conn: &Connection, object: &QueryObject, counter: i64) -> Result<()> {
     validate_integrity(object)?;
+    if counter <= 0 {
+        return Err(StoreError::Invalid(
+            "query admission position must be positive".into(),
+        ));
+    }
     let source = Source::of(conn)?;
     let id = object.id.to_string();
     let existing: Option<Vec<u8>> = conn
@@ -321,11 +326,14 @@ pub(crate) fn apply_object(conn: &Connection, object: &QueryObject) -> Result<()
         return Ok(());
     }
     conn.execute(
-        &source.sql("INSERT INTO @source.query(hash,normal_form,object) VALUES (?1,?2,?3)"),
+        &source.sql(
+            "INSERT INTO @source.query(hash,normal_form,object,commit_seq) VALUES (?1,?2,?3,?4)",
+        ),
         params![
             id,
             serde_json::to_string(&object.normal_form)?,
-            pack(object)?
+            pack(object)?,
+            counter,
         ],
     )?;
     for edge in &object.edges {

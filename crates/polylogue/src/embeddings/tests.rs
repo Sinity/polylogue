@@ -6,7 +6,7 @@ fn long_texts_are_chunked_and_normalized() {
     assert_eq!(short, ["café"]);
     let long = "x".repeat(CHUNK_CHARS * 2 + 5);
     assert_eq!(chunks(&long).len(), 3);
-    let v = unit(vec![3.0, 4.0]);
+    let v = unit(vec![3.0, 4.0]).unwrap();
     assert!((v[0] - 0.6).abs() < 1e-6 && (v[1] - 0.8).abs() < 1e-6);
 }
 
@@ -87,3 +87,5 @@ fn embedding_selection_refuses_aggregate_and_incomplete_session_results() {
         assert!(response.code() == expected, "{query}: {response:?}");
     }
 }
+
+mod batch;

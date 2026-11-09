@@ -17,14 +17,13 @@ pub(crate) struct InputState {
     pub(crate) parsed_upto: u64,
     /// Whether the current chain was parsed at all.
     pub(crate) parsed: bool,
-    /// The chain is not read again until its bytes grow: a parse reached
-    /// source EOF with an incomplete last record, or this engine recorded a
-    /// refusal or failure at the stored length (a restart reads it again).
+    /// Current progress waits at this length: an incomplete record at source
+    /// EOF, or a recorded stop. The stored-chain planner selects stop retries.
     pub(crate) waiting: bool,
     pub(crate) parser_state: Option<Json>,
     pub(crate) tail: Option<Vec<u8>>,
-    /// The revision chain whose bytes are stored, when known from the
-    /// archive; `None` once this run stored a new chain.
+    /// The revision chain whose bytes are stored, from confirmed metadata
+    /// or an actual writer acknowledgment. Unknown until one supplies it.
     pub(crate) chain: Option<i64>,
     /// The file facts a read failed at when no parse state could record the
     /// failure (nothing of the file was stored, or the record itself failed):
@@ -100,6 +99,14 @@ impl InputState {
         self.waiting = waiting;
     }
 
+    /// A new scope reconstructs confirmed facts and parser state. Original
+    /// receiving custody stays owned until its real acknowledgment settles.
+    pub(crate) fn discard_confirmed(&mut self) {
+        let working = self.working.take();
+        *self = Self::new(std::mem::take(&mut self.input_id), self.origin);
+        self.working = working;
+    }
+
     pub(crate) fn needs_reading(&self) -> bool {
         (!self.waiting && self.parsed_upto < self.stored) || !self.parsed
     }
@@ -133,6 +140,8 @@ pub(crate) struct Plan {
     /// Capture continues while a missing same-version continuation defers parsing.
     pub(crate) parser_deferred: bool,
     pub(crate) parser_state: Option<Json>,
+    /// Actual selected source chain for parser context, retained across jobs.
+    pub(crate) parser_chain: Option<i64>,
     pub(crate) tail: Option<Vec<u8>>,
     pub(crate) span: u64,
     pub(crate) chunk: u64,
@@ -171,6 +180,13 @@ impl Plan {
         chunk: u64,
         tracked: bool,
     ) -> Plan {
+        let parser_chain = match (&change, &source) {
+            (Change::First | Change::Rewritten, _) => None,
+            (Change::Reparse { chain }, _) | (_, pool::Bytes::Unloaded { chain, .. }) => {
+                Some(*chain)
+            }
+            _ => None,
+        };
         Plan {
             basis: None,
             pending: None,
@@ -189,6 +205,7 @@ impl Plan {
             storing_started: false,
             parser_deferred: false,
             parser_state: None,
+            parser_chain,
             tail: None,
             chunk,
             priority: Priority::Bulk,
@@ -216,7 +233,10 @@ impl Plan {
                 && (self.waiting || self.parse_pos >= self.size))
     }
 
-    pub(crate) fn next_job(&mut self) -> Job {
+    pub(crate) fn next_job(
+        &mut self,
+        stopped_attempt: &polylogue_model::batch::StoppedAttempt,
+    ) -> Job {
         let start = if let Some(raw) = &self.raw {
             raw.cursor
                 .as_ref()
@@ -256,6 +276,7 @@ impl Plan {
             ),
         };
         Job {
+            stopped_attempt: Some(*stopped_attempt),
             acquisition: None,
             path: self.path.clone(),
             origin: self.origin,
@@ -269,6 +290,8 @@ impl Plan {
             at_end: end == self.size,
             length,
             parser_state: self.parser_state.take(),
+            parser_chain: self.parser_chain,
+            parser_context: None,
             parser_deferred: self.parser_deferred,
             priority: self.priority,
             source: self.source.clone(),
@@ -276,6 +299,9 @@ impl Plan {
     }
 
     pub(crate) fn apply(&mut self, d: Done, parsed: bool) {
+        if let Some(chain) = d.chain {
+            self.parser_chain = Some(chain);
+        }
         self.pending = d.pending.clone();
         if d.checkpoint.is_some() {
             self.checkpoint = d.checkpoint.clone();

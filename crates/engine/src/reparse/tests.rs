@@ -18,11 +18,12 @@ impl StepParser for Together {
         state: Option<&polylogue_model::Json>,
         bytes: &[u8],
         base: u64,
+        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, polylogue_model::Json), ParseError> {
         if STARTED.fetch_add(1, Ordering::SeqCst) < 2 {
             TOGETHER.wait();
         }
-        let result = self.0.step(state, bytes, base);
+        let result = self.0.step(state, bytes, base, context);
         PARSED.lock().unwrap().as_ref().unwrap().send(()).unwrap();
         result
     }
@@ -77,11 +78,10 @@ fn engine(w: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
         machine: "test-machine".into(),
         host: "test".into(),
         chunk: 64 << 20,
-        rescan_every: Duration::from_secs(60),
         live_every: Duration::from_secs(2),
         reads_sources: true,
     };
-    let engine = Engine::new(config, archive).unwrap();
+    let engine = Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap();
     (engine, _lock)
 }
 
@@ -215,12 +215,13 @@ impl StepParser for LiveParser {
         state: Option<&polylogue_model::Json>,
         bytes: &[u8],
         base: u64,
+        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, polylogue_model::Json), ParseError> {
         if self.second {
             let resume = RESUME_SECOND.lock().unwrap().take().unwrap();
             resume.recv().unwrap();
         }
-        let result = self.parser.step(state, bytes, base);
+        let result = self.parser.step(state, bytes, base, context);
         if !self.second {
             let new = String::from_utf8_lossy(bytes).contains("\"later\"");
             let signal = if new { &LIVE_APPEND } else { &OLD_READING };
@@ -296,18 +297,30 @@ fn a_committed_live_path_can_append_while_another_chain_is_still_parsing() {
     *OLD_READING.lock().unwrap() = Some(old);
     *LIVE_APPEND.lock().unwrap() = Some(new);
     *RESUME_SECOND.lock().unwrap() = Some(resumed);
-    std::thread::scope(|scope| {
+    let (result, pass, appended) = std::thread::scope(|scope| {
         let w = &w;
-        scope.spawn(move || {
-            old_ready.recv().unwrap();
-            w.append("a.jsonl", &claude_user("later", "a", "later text"));
-            new_ready.recv().unwrap();
-            resume.send(()).unwrap();
+        let append = scope.spawn(move || {
+            let appended = old_ready
+                .recv_timeout(Duration::from_secs(10))
+                .and_then(|()| {
+                    w.append("a.jsonl", &claude_user("later", "a", "later text"));
+                    new_ready.recv_timeout(Duration::from_secs(10))
+                });
+            // Release the other parser even when live work failed, so the
+            // production pass can return its actual errors to the assertion.
+            let _ = resume.send(());
+            appended
         });
         let mut pass = Pass::default();
-        engine.replace_readings(plans, &mut pass).unwrap();
-        assert!(pass.errors.is_empty(), "{pass:?}");
+        let result = engine.replace_readings(plans, &mut pass);
+        (result, pass, append.join().unwrap())
     });
+    assert!(result.is_ok(), "replacement result: {result:?}; {pass:?}");
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert!(
+        appended.is_ok(),
+        "live append signal: {appended:?}; {pass:?}"
+    );
     *OLD_READING.lock().unwrap() = None;
     *LIVE_APPEND.lock().unwrap() = None;
     assert_eq!(w.texts("a"), ["first", "later text"]);

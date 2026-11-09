@@ -13,6 +13,15 @@ pub use export::{
 };
 pub use progress::{ParseProgress, StepProgress};
 
+/// The actual program and parser settings that made one stopped attempt.
+/// Source, chain, reading version and observed length belong to its reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StoppedAttempt {
+    pub executable: BlobHash,
+    pub parser_settings: Option<BlobHash>,
+}
+
 /// Native parser continuation at one exact admitted cursor. This is not source,
 /// revision or receipt evidence; the containing reading supplies that identity.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

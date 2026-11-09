@@ -117,11 +117,13 @@ pub(crate) fn engine(
         machine: "test-machine".into(),
         host: "test".into(),
         chunk,
-        rescan_every: std::time::Duration::from_secs(60),
         live_every: std::time::Duration::from_secs(2),
         reads_sources: true,
     };
-    (Engine::new(config, archive).unwrap(), lock)
+    (
+        Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap(),
+        lock,
+    )
 }
 
 #[test]
@@ -301,3 +303,59 @@ mod stored_bytes;
 mod container_members;
 
 mod strict;
+
+#[cfg(feature = "faults")]
+#[test]
+fn repeated_explicit_import_keeps_a_stopped_attempt_until_its_executable_changes() {
+    use polylogue_store::fault::{self, Action};
+    use polylogue_testkit::{ClaudeHome, claude_user};
+    let home = ClaudeHome::new();
+    let path = home.dir.path().join("stopped-import.jsonl");
+    std::fs::write(&path, claude_user("one", "stopped-import", "kept original")).unwrap();
+    let (mut engine, lock) = engine(&home, 4096);
+    let options = ImportOptions {
+        format: Some("claude-code".into()),
+        ..Default::default()
+    };
+    fault::arm("parse", "stopped-import", Action::Fail, 0, u32::MAX);
+    let failed = engine
+        .import_with_options(std::slice::from_ref(&path), &options)
+        .unwrap();
+    fault::clear();
+    assert!(!failed.pass.errors.is_empty(), "{failed:?}");
+    let config = engine.config.clone();
+    let archive = engine.archive.clone();
+    let attempt = engine.stopped_attempt;
+    drop(engine);
+    let mut engine = Engine::new(config.clone(), archive.clone(), attempt).unwrap();
+    let repeat = engine
+        .import_with_options(std::slice::from_ref(&path), &options)
+        .unwrap();
+    assert!(repeat.pass.errors.is_empty(), "{repeat:?}");
+    assert_eq!(repeat.pass.bytes_read, 0, "{repeat:?}");
+    assert_eq!(
+        home.count("SELECT count(*) AS n FROM parse_state WHERE status='failed'"),
+        1
+    );
+    drop(engine);
+    let changed = StoppedAttempt {
+        executable: polylogue_model::BlobHash::of(b"new executable image"),
+        ..attempt
+    };
+    let mut engine = Engine::new(config, archive, changed).unwrap();
+    let retried = engine
+        .import_with_options(std::slice::from_ref(&path), &options)
+        .unwrap();
+    assert!(retried.pass.errors.is_empty(), "{retried:?}");
+    assert!(retried.pass.bytes_read > 0, "{retried:?}");
+    assert_eq!(retried.pass.bytes_stored, 0, "{retried:?}");
+    assert_eq!(
+        home.count(
+            "SELECT count(*) AS n FROM parse_state WHERE status='done' AND stopped_attempt IS NULL"
+        ),
+        1
+    );
+    assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 1);
+    drop(engine);
+    drop(lock);
+}

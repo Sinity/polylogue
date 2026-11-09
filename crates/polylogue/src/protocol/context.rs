@@ -16,6 +16,14 @@ pub struct Brief {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct Advisory {
+    pub prompt: String,
+    pub cwd: Option<PathBuf>,
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Takeover {
     pub session: SessionId,
     pub for_session: Option<SessionId>,

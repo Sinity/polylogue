@@ -1,13 +1,39 @@
 use super::*;
 use std::io::{BufRead, BufReader, Read};
 use std::net::TcpListener;
-use std::sync::mpsc::channel;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc::channel,
+};
 use std::time::{Duration, Instant};
 
+struct Cleanup {
+    stop_peer: Arc<AtomicBool>,
+    cancellation: polylogue_store::read::limit::ReadCancellation,
+}
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        self.stop_peer.store(true, Ordering::Release);
+        self.cancellation.cancel();
+    }
+}
+
 fn stalled_provider(cancel: bool) {
-    let daemon = crate::test_daemon::start("provider cancellation");
-    let _held = daemon.daemon.reads.reader().unwrap();
+    // This is the Provider/ReadPool contract, not daemon worker scheduling.
+    // Exactly two real slots make a third checkout prove the provider released
+    // its reader, without competing scope/catalog/count background work.
+    let archive = polylogue_store::fixture::writer::WriterArchive::new();
+    let reads = polylogue_store::ReadPool::with_budget(&archive.archive, 2, 32 << 20).unwrap();
+    let held = reads.reader().unwrap();
+    held.query("SELECT 1", &[]).unwrap();
+    // Open both connections before starting the provider/deadline fixture.
+    {
+        let warm = reads.reader().unwrap();
+        warm.query("SELECT 1", &[]).unwrap();
+    }
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
     let provider = Provider {
         kind: ProviderKind::Local,
         endpoint: format!("http://{}", listener.local_addr().unwrap()),
@@ -15,18 +41,34 @@ fn stalled_provider(cancel: bool) {
         price_per_mtok: Some(0.0),
         credentials: Credentials::new(None),
     };
-    let limit = polylogue_store::read::limit::ReadLimit::new(
-        if cancel {
-            Duration::from_secs(30)
-        } else {
-            Duration::from_millis(500)
-        },
-        Default::default(),
-    );
+    let stop_peer = Arc::new(AtomicBool::new(false));
+    let cancellation = polylogue_store::read::limit::ReadCancellation::default();
     let (ready, started) = channel();
     std::thread::scope(|scope| {
-        let server = scope.spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
+        // Drop before scoped joins even when setup/assertions fail. No peer
+        // remains in accept and no provider worker keeps its reader alive.
+        let _cleanup = Cleanup {
+            stop_peer: Arc::clone(&stop_peer),
+            cancellation: cancellation.clone(),
+        };
+        let server = scope.spawn(|| {
+            let until = Instant::now() + Duration::from_secs(5);
+            let stream = loop {
+                if stop_peer.load(Ordering::Acquire) {
+                    return;
+                }
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < until =>
+                    {
+                        std::thread::sleep(Duration::from_millis(1))
+                    }
+                    Err(error) => panic!("stalled-provider fixture received no request: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
@@ -46,40 +88,80 @@ fn stalled_provider(cancel: bool) {
             }
             input.read_exact(&mut vec![0; length]).unwrap();
             ready.send(()).unwrap();
-            // A cancelled provider future must close its connection, even though
-            // this peer never sends response headers.
+            // Only cancellation/deadline can close this stalled exchange:
+            // the peer never sends response headers.
             assert_eq!(input.read(&mut [0]).unwrap(), 0);
         });
-        let worker = scope.spawn(|| {
-            limit.scope(|| {
-                let reader = daemon.daemon.reads.reader().unwrap();
-                reader.query("SELECT 1", &[]).unwrap();
-                let result = provider.embed(&["synthetic".into()], true);
-                drop(reader);
-                result
-            })
+        let worker = scope.spawn(|| -> Result<_, EmbedError> {
+            // Reader initialization is a bounded fixture precondition. It
+            // must not consume the active provider request's 500 ms deadline.
+            let setup = polylogue_store::read::limit::ReadLimit::new(
+                Duration::from_secs(5),
+                cancellation.child(),
+            );
+            let reader = setup.scope(|| -> Result<_, polylogue_store::StoreError> {
+                let reader = reads.reader()?;
+                reader.query("SELECT 1", &[])?;
+                Ok(reader)
+            })?;
+            let limit = polylogue_store::read::limit::ReadLimit::new(
+                if cancel {
+                    Duration::from_secs(30)
+                } else {
+                    Duration::from_millis(500)
+                },
+                cancellation.child(),
+            );
+            let result = limit.scope(|| provider.embed(&["synthetic".into()], true));
+            drop(reader);
+            result
         });
-        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let Err(error) = started.recv_timeout(Duration::from_secs(5)) {
+            let slots = reads.checked_out();
+            cancellation.cancel();
+            let result = worker.join();
+            panic!(
+                "stalled provider never received the request: readiness={error:?}, worker={result:?}, pool_slots={slots}"
+            );
+        }
         let stopped = Instant::now();
         if cancel {
-            limit.cancellation.cancel();
+            cancellation.cancel();
         }
-        let elapsed = daemon.assert_slot_freed();
+        let released = Instant::now();
+        scope
+            .spawn(|| {
+                let limit = polylogue_store::read::limit::ReadLimit::new(
+                    Duration::from_secs(2),
+                    Default::default(),
+                );
+                limit.scope(|| reads.reader().map(drop)).unwrap();
+            })
+            .join()
+            .unwrap();
+        let elapsed = released.elapsed();
+        assert!(elapsed < Duration::from_secs(2));
         let result = worker.join().unwrap();
         if cancel {
-            assert!(matches!(
-                result,
-                Err(EmbedError::Store(
-                    polylogue_store::StoreError::ReadCancelled
-                ))
-            ));
+            assert!(
+                matches!(
+                    &result,
+                    Err(EmbedError::Store(
+                        polylogue_store::StoreError::ReadCancelled
+                    ))
+                ),
+                "{result:?}"
+            );
         } else {
-            assert!(matches!(
-                result,
-                Err(EmbedError::Store(
-                    polylogue_store::StoreError::ReadDeadlineExceeded
-                ))
-            ));
+            assert!(
+                matches!(
+                    &result,
+                    Err(EmbedError::Store(
+                        polylogue_store::StoreError::ReadDeadlineExceeded
+                    ))
+                ),
+                "{result:?}"
+            );
         }
         assert!(stopped.elapsed() < Duration::from_secs(2));
         eprintln!("stalled provider released reader in {elapsed:?}");

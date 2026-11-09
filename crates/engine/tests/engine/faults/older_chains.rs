@@ -1,8 +1,9 @@
 use super::*;
+use polylogue_engine::Engine;
 use polylogue_testkit::{ClaudeHome, claude_user, delete_index};
 
 #[test]
-fn an_older_chain_parse_failure_waits_without_deleting_bytes_and_retries_after_restart() {
+fn an_older_chain_parse_failure_waits_across_restart_until_the_executable_changes() {
     {
         fault::clear();
         let w = ClaudeHome::new();
@@ -51,8 +52,20 @@ fn an_older_chain_parse_failure_waits_without_deleting_bytes_and_retries_after_r
         drop(engine);
         drop(lock);
         let (mut restarted, _lock) = w.engine(64 << 20);
+        let unchanged = restarted.run_pass().unwrap();
+        assert!(unchanged.errors.is_empty(), "{unchanged:?}");
+        assert_eq!(unchanged.bytes_read, 0, "{unchanged:?}");
+        assert_eq!(w.texts("history"), ["current sibling"]);
+        let config = restarted.config.clone();
+        let archive = restarted.archive.clone();
+        let mut attempt = polylogue_testkit::stopped_attempt();
+        attempt.executable = polylogue_model::BlobHash::of(b"changed historical reader executable");
+        drop(restarted);
+        let mut restarted = Engine::new(config, archive, attempt).unwrap();
         let after = restarted.run_pass().unwrap();
         assert!(after.errors.is_empty(), "{:?}", after.errors);
+        assert_eq!(after.bytes_stored, 0, "{after:?}");
         assert_eq!(w.texts("history"), before);
+        assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), 2);
     }
 }

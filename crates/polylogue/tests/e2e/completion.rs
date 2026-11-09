@@ -424,3 +424,77 @@ fn named_wrappers_keep_their_registration_and_selected_offline_catalog() {
         assert_eq!(std::fs::read_dir(archive).unwrap().count(), 1);
     }
 }
+
+#[test]
+fn completion_latency_reports_real_shell_callbacks_with_daemon_up_and_down() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("archive");
+    let cache = directory.path().join("cache");
+    let mut source = polylogue_store::fixture::Fixture::new(&root).unwrap();
+    source
+        .session(polylogue_store::fixture::SessionFacts {
+            id: "codex:completion-latency",
+            repo: Some("neutral-repository"),
+            ..Default::default()
+        })
+        .unwrap();
+    drop(source);
+    let environment = process::Fixture::new(
+        &root,
+        &directory.path().join("home"),
+        &directory.path().join("config"),
+    );
+    let mut daemon = Some(crate::cli::start_daemon(&environment));
+    crate::cli::wait_status(&environment, |status| {
+        status["store"]["sessions"].as_u64().is_some_and(|n| n > 0)
+    });
+    let ready = Instant::now();
+    loop {
+        if callback(
+            &root,
+            &cache,
+            "zsh",
+            &["sessions where repo:neutral"],
+            "polylogue",
+        )
+        .0
+        .contains("neutral-repository")
+        {
+            break;
+        }
+        assert!(
+            ready.elapsed() < Duration::from_secs(10),
+            "startup catalog did not publish the committed repository"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    for mode in ["up", "down"] {
+        if mode == "down" {
+            drop(daemon.take());
+        }
+        for shell in ["bash", "zsh", "fish"] {
+            let mut samples = Vec::new();
+            for _ in 0..10 {
+                let (output, elapsed) = callback(
+                    &root,
+                    &cache,
+                    shell,
+                    &["sessions where repo:neutral"],
+                    "polylogue",
+                );
+                assert!(
+                    output.contains("neutral-repository"),
+                    "daemon {mode}, {shell}: {output}"
+                );
+                samples.push(elapsed.as_micros());
+            }
+            let mut sorted = samples.clone();
+            sorted.sort_unstable();
+            eprintln!(
+                "completion daemon={mode} shell={shell} samples_us={samples:?} p95_us={} maximum_us={}",
+                sorted[sorted.len() * 95 / 100],
+                sorted.last().unwrap()
+            );
+        }
+    }
+}

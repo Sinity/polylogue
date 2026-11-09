@@ -1,6 +1,7 @@
 mod coverage;
 mod no_sources;
 mod parent_admission;
+mod scope_lifecycle;
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user};
 use std::io::Read;
@@ -44,7 +45,7 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
             plan.input.id = "codex:rollout:delayed".into();
         }
         plan.parser_deferred = true;
-        let mut job = plan.next_job();
+        let mut job = plan.next_job(&polylogue_testkit::stopped_attempt());
         job.end = (bytes.len() / 2) as u64;
         job.length = job.end;
         job.at_end = false;
@@ -182,7 +183,7 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         let mut tail = engine.plan(&path, now).unwrap().unwrap();
         assert_eq!(tail.stored_upto, done.end);
         assert!(matches!(tail.change, Change::Appended { from } if from == done.end));
-        let mut job = tail.next_job();
+        let mut job = tail.next_job(&polylogue_testkit::stopped_attempt());
         assert_eq!(job.start, done.end);
         let mut context = engine.sampling_context(&path, origin.name, "").unwrap();
         context.facts = Some(now);
@@ -336,13 +337,32 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
     let old = "original body ".repeat(40);
     home.append("checkpoint.jsonl", &claude_user("one", "session", &old));
     let (mut engine, _lock) = crate::import::tests::engine(&home, 256);
-    assert!(engine.run_pass().unwrap().errors.is_empty());
+    let seeded = engine.run_pass().unwrap();
+    assert!(seeded.errors.is_empty(), "initial capture: {seeded:?}");
+    let path = home.file("checkpoint.jsonl");
+    let selected = engine
+        .reads
+        .reader()
+        .unwrap()
+        .input_progress(&engine.inputs[&path].input_id)
+        .unwrap()
+        .unwrap()
+        .chain;
+    let cached_chain = engine.inputs[&path].chain;
     home.append(
         "checkpoint.jsonl",
         &claude_user("two", "session", "second body"),
     );
-    assert!(engine.run_pass().unwrap().errors.is_empty());
-    let path = home.file("checkpoint.jsonl");
+    let appended = engine.run_pass().unwrap();
+    assert!(
+        appended.errors.is_empty(),
+        "append before rewrite: {appended:?}"
+    );
+    assert_eq!(
+        cached_chain,
+        Some(selected),
+        "the next append retains the acknowledged source chain"
+    );
     let inode = std::fs::metadata(&path).unwrap().ino();
     // Touch the same file so planning selects a rewrite, then make only that
     // planned read fail. Moving it aside preserves its inode and bytes.
@@ -410,7 +430,10 @@ fn open_engine(home: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
     config.machine = "test-machine".into();
     config.host = "test".into();
     let (archive, lock) = Archive::open_or_create(&home.root).unwrap();
-    (Engine::new(config, archive).unwrap(), lock)
+    (
+        Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap(),
+        lock,
+    )
 }
 
 #[test]
@@ -533,6 +556,7 @@ fn confirmed_stopped_readings_settle_only_their_exact_bytes_and_reader() {
         let mut step =
             polylogue_store::ParseStep::new(Default::default(), Default::default(), 0..0, false);
         step.progress = progress;
+        step.stopped_attempt = Some(engine.stopped_attempt);
         step.reading_version = expected.origin.reading_version();
         engine
             .writer
@@ -556,6 +580,13 @@ fn confirmed_stopped_readings_settle_only_their_exact_bytes_and_reader() {
             engine.confirmed_reading(&expected).unwrap(),
             "confirmed stops settle without reaching source EOF"
         );
+        let recorded_attempt = engine.stopped_attempt;
+        engine.stopped_attempt.executable = polylogue_model::BlobHash::of(b"changed executable");
+        assert!(
+            !engine.confirmed_reading(&expected).unwrap(),
+            "a previous attempt cannot confirm a newly submitted stopped reading"
+        );
+        engine.stopped_attempt = recorded_attempt;
         expected.size += 1;
         assert!(
             !engine.confirmed_reading(&expected).unwrap(),
@@ -568,4 +599,70 @@ fn confirmed_stopped_readings_settle_only_their_exact_bytes_and_reader() {
             "a different reader must produce its own confirmation"
         );
     }
+}
+
+#[test]
+fn idle_loop_turns_do_not_repeat_the_startup_discovery_walk() {
+    let home = ClaudeHome::new();
+    let (mut engine, _lock) = open_engine(&home);
+    engine.config.live_every = Duration::from_millis(1);
+    let status = Arc::new(Mutex::new(LoopStatus::default()));
+    let shared = Arc::clone(&status);
+    let (tx, rx) = channel();
+    let worker_tx = tx.clone();
+    let worker = std::thread::spawn(move || {
+        engine.run(worker_tx, &rx, &shared, Lifetime::UntilStopped, || {})
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let observed = loop {
+        let now = status.lock().unwrap().clone();
+        if now.passes >= 3 || Instant::now() >= deadline {
+            break now;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    tx.send(LoopMsg::Stop).unwrap();
+    let summary = worker.join().unwrap().unwrap();
+    assert!(observed.passes >= 3, "{observed:?}");
+    assert_eq!(summary.work.full_scans, 1);
+    assert!(summary.work.errors.is_empty(), "{summary:?}");
+}
+
+#[test]
+fn a_first_byte_acquisition_failure_has_no_durable_stop_and_retries_after_restart() {
+    let home = ClaudeHome::new();
+    home.append(
+        "first-byte.jsonl",
+        &claude_user("one", "first-byte", "read after restart"),
+    );
+    let (mut engine, lock) = open_engine(&home);
+    engine.load().unwrap();
+    let path = home.file("first-byte.jsonl");
+    let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
+    engine.track(&collect::Found {
+        path: path.clone(),
+        origin,
+    });
+    let now = FileFacts::of(&std::fs::metadata(&path).unwrap());
+    let plan = engine.plan(&path, now).unwrap().unwrap();
+    let held = home.dir.path().join("held-original");
+    std::fs::rename(&path, &held).unwrap();
+    let mut failed = Pass::default();
+    let executed = engine.execute_pool(vec![plan], &mut failed);
+    std::fs::rename(&held, &path).unwrap();
+    executed.unwrap();
+    assert!(!failed.errors.is_empty(), "{failed:?}");
+    assert_eq!(failed.bytes_stored, 0, "{failed:?}");
+    assert_eq!(home.count("SELECT count(*) AS n FROM parse_state"), 0);
+    let config = engine.config.clone();
+    let archive = engine.archive.clone();
+    let attempt = engine.stopped_attempt;
+    drop(engine);
+    let mut engine = Engine::new(config, archive, attempt).unwrap();
+    let retried = engine.run_pass().unwrap();
+    assert!(retried.errors.is_empty(), "{retried:?}");
+    assert!(retried.bytes_stored > 0, "{retried:?}");
+    assert_eq!(home.texts("first-byte"), ["read after restart"]);
+    drop(engine);
+    drop(lock);
 }

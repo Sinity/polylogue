@@ -1,8 +1,8 @@
 // Captures waiting for the host to acknowledge them. A capture is put here
 // before it is sent and removed once the host has synced it to disk, so a
 // capture survives a stopped service worker, a browser restart and an
-// extension update. This is all the extension keeps; everything else lives
-// in Polylogue.
+// extension update. Browser-local pacing and fingerprints carry no capture
+// custody; Polylogue owns the archive and job history.
 
 const DATABASE = "polylogue";
 const STORE = "outbox";

@@ -76,6 +76,7 @@ impl Engine {
         let (queued, results) = channel();
         let workers = self.config.workers.max(1).min(count);
         let read_memory = self.config.reader_memory_per_connection()?;
+        let stopped_attempt = self.stopped_attempt;
         let archive = self.archive.clone();
         let blobs = Arc::clone(&self.blobs);
         let writer = self.writer.sender()?;
@@ -108,6 +109,7 @@ impl Engine {
                                         read_memory,
                                         memory,
                                         &mut bytes_read,
+                                        &stopped_attempt,
                                     )
                                 }))
                                 .unwrap_or_else(|_| {
@@ -227,11 +229,11 @@ impl Engine {
                     Err(error) => {
                         self.release_reading(&mut busy, &plan.path);
                         let message = format!("re-parse {}: {error}", plan.path.display());
-                        if matches!(error, EngineError::Parse(_)) {
-                            self.record_failure(&mut plan, message, pass);
-                            self.finish_plan(plan);
-                        } else {
-                            pass.errors.push(message);
+                        pass.errors.push(message);
+                        if matches!(error, EngineError::Parse(_))
+                            && let Err(error) = self.record_retried_stop(&mut plan, pass)
+                        {
+                            pass.errors.push(format!("record retried stop: {error}"));
                         }
                     }
                 }
@@ -259,6 +261,46 @@ impl Engine {
         result
     }
 
+    /// A rejected private cursor cannot become progress. An existing admitted
+    /// stop at this exact cursor can retain its error and bind the actual retry.
+    fn record_retried_stop(&mut self, plan: &mut Plan, pass: &mut Pass) -> Result<(), EngineError> {
+        let Change::Reparse { chain } = plan.change else {
+            return Ok(());
+        };
+        let version = plan.origin.reading_version();
+        let stored = self
+            .reads
+            .reader()?
+            .parser_checkpoint(&plan.input.id, chain, &version)?;
+        let Some(stored) = stored.filter(|stored| {
+            stored.reading_version == version
+                && stored.parsed_upto == plan.parse_pos
+                && stored.progress.at_length() == Some(plan.size)
+        }) else {
+            return Ok(());
+        };
+        let progress = match stored.progress {
+            polylogue_model::batch::ParseProgress::Failed { error, .. } => {
+                polylogue_model::batch::StepProgress::Failed { error }
+            }
+            polylogue_model::batch::ParseProgress::Refused { reason, .. } => {
+                polylogue_model::batch::StepProgress::Refused { reason }
+            }
+            _ => return Ok(()),
+        };
+        self.record_stop(plan, progress, pass);
+        if self.archive.is_primary() && plan.failure_recorded {
+            match self.confirmed_reading(plan) {
+                Ok(confirmed) => pass.capture_pending |= !confirmed,
+                Err(error) => {
+                    pass.capture_pending = true;
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Durable preparation does not advance a cached parser cursor. Both
     /// pooled stored parsing and replacement readings await this exact fact.
     pub(crate) fn confirmed_reading(&self, plan: &Plan) -> Result<bool, EngineError> {
@@ -279,7 +321,11 @@ impl Engine {
             }
             if let Some(length) = cursor.progress.at_length() {
                 return length == plan.size
-                    && (cursor.progress.stopped() || cursor.parsed_upto >= plan.parse_pos);
+                    && if cursor.progress.stopped() {
+                        cursor.stopped_attempt == Some(self.stopped_attempt)
+                    } else {
+                        cursor.parsed_upto >= plan.parse_pos
+                    };
             }
             cursor.parsed_upto >= plan.parse_pos
                 && (!(plan.waiting || plan.failure_recorded) || cursor.parsed_upto >= plan.size)
@@ -361,6 +407,7 @@ fn prepare(
     read_memory: u64,
     memory: &Memory,
     bytes_read: &mut u64,
+    stopped_attempt: &StoppedAttempt,
 ) -> Result<Option<ChainReading>, EngineError> {
     if let pool::Bytes::Unloaded {
         chain,
@@ -399,7 +446,7 @@ fn prepare(
                 decoded.push(new);
                 files.extend(file);
             }
-            let (mut step, cursor) = item.into_parse(plan, blobs)?;
+            let (mut step, cursor) = item.into_parse(plan, blobs, stopped_attempt)?;
             polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
                 reading.push(&mut step)
             })?;
@@ -414,16 +461,28 @@ fn prepare(
             plan.failure_recorded = true;
         }
     } else {
+        let context = if plan.origin.name == "claude-code" {
+            Some(polylogue_store::parser_context::Overlay::open(
+                archive,
+                &plan.input.id,
+                plan.parser_chain,
+                &plan.origin.reading_version(),
+                plan.parse_pos,
+            )?)
+        } else {
+            None
+        };
         while !plan.finished() {
-            let job = plan.next_job();
+            let mut job = plan.next_job(stopped_attempt);
+            job.parser_context = context.clone();
             let bytes = job.end - job.start;
             let _charge = memory.take(bytes);
             *bytes_read += bytes;
             let (batch, done) = pool::run(job, archive, blobs, false);
             if done.continuation_missing {
-                return Err(EngineError::Parse(
-                    "native parser continuation is unavailable at the admitted cursor".into(),
-                ));
+                return Err(EngineError::Parse(done.error.unwrap_or_else(|| {
+                    "native parser continuation is unavailable at the admitted cursor".into()
+                })));
             }
             if let Some(error) = &done.error {
                 return Err(if error.starts_with("parse ") {

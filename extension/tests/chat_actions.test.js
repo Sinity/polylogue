@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ChatActions, actionUrl } from "../src/background/chat_actions.js";
 import { Host } from "../src/background/host.js";
-import { attachmentInPage, failureOutcome } from "../src/actions/chatgpt.js";
+import { attachmentInPage, cancelChatActionInPage, failureOutcome } from "../src/actions/chatgpt.js";
 import { fakeChrome, json } from "./support/fake_chrome.js";
 
 const ACTION = {
@@ -43,8 +43,8 @@ describe("a chat action queued with `polylogue chat send`", () => {
     const file = files.entries.get("f1").file;
     expect(await file.text()).toBe("hello");
     expect(file.name).toBe("notes.txt");
-    expect(reports.map((r) => r.outcome)).toEqual(["progress", "drafted"]);
-    expect(reports[1]).toMatchObject({ by: "ext-1", receipt: { model: "GPT X" } });
+    expect(reports.map((r) => r.outcome)).toEqual(["progress", "progress", "drafted"]);
+    expect(reports.at(-1)).toMatchObject({ by: "ext-1", receipt: { model: "GPT X" } });
     // The draft stays open for the operator.
     expect(chrome.tabs.list).toHaveLength(1);
     delete globalThis.__polylogueChatAttachments;
@@ -79,4 +79,44 @@ describe("a chat action queued with `polylogue chat send`", () => {
     attachmentInPage("a1", "run-1", "discard");
     expect(globalThis.__polylogueChatAttachments).toBeUndefined();
   });
+});
+
+it("keeps an unconfirmed submitted turn open and never reports it submitted", async () => {
+  const { actions, reports, chrome } = setup(() => {
+    expect(reports.at(-1)).toMatchObject({ outcome: "progress", phase: "sending" });
+    return { ok: true, outcome: "submitted", provider_conversation_id: "c1", provider_turn_id: "m1" };
+  });
+  ACTION.submit = true;
+  actions.capture = async () => ({ outcome: "stored", conversation: "c1", confirmedTurn: null });
+  try { await actions.step(); }
+  finally { ACTION.submit = false; delete globalThis.__polylogueChatAttachments; }
+  expect(reports.at(-1).outcome).toBe("outcome_unknown");
+  expect(reports.some((report) => report.outcome === "submitted")).toBe(false);
+  expect(chrome.tabs.list).toHaveLength(1);
+});
+
+it("reports submitted only after its exact turn is durably captured", async () => {
+  const { actions, reports, chrome } = setup(() => {
+    expect(reports.at(-1)).toMatchObject({ outcome: "progress", phase: "sending" });
+    return { ok: true, outcome: "submitted", provider_conversation_id: "c1", provider_turn_id: "m1" };
+  });
+  ACTION.submit = true;
+  actions.capture = async (_tab, confirm) => {
+    expect(confirm).toEqual({ turn: "m1", text: ACTION.text });
+    expect(reports.some((report) => report.outcome === "submitted")).toBe(false);
+    return { outcome: "stored", conversation: "c1", confirmedTurn: "m1" };
+  };
+  try { await actions.step(); }
+  finally { ACTION.submit = false; delete globalThis.__polylogueChatAttachments; }
+  expect(reports.at(-1)).toMatchObject({ outcome: "submitted", receipt: { conversation: "c1", turn: "m1" } });
+  expect(chrome.tabs.list).toHaveLength(0);
+});
+
+it("revokes only the owned page run after a claim is lost", () => {
+  attachmentInPage("a1", "run-1", "begin");
+  cancelChatActionInPage("a1", "other");
+  expect(globalThis.__polylogueChatAttachments.cancelled).toBeUndefined();
+  cancelChatActionInPage("a1", "run-1");
+  expect(globalThis.__polylogueChatAttachments.cancelled).toBe(true);
+  delete globalThis.__polylogueChatAttachments;
 });

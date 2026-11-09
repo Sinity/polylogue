@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ProviderScheduler } from "../src/background/provider.js";
+import { chatActionInPage } from "../src/actions/chatgpt.js";
 import { JSDOM } from "jsdom";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "../src");
@@ -21,7 +23,7 @@ function page(url, scripts, { html = "<body></body>", routes = {}, resources = [
   const sent = [];
   const fetched = [];
   window.chrome = {
-    runtime: { id: "x", onConnect: event(), onMessage: event(), sendMessage: async (m) => { sent.push(m); return {}; } },
+    runtime: { id: "x", onConnect: event(), onMessage: event(), sendMessage: async (m) => { sent.push(m); return { ok: true }; } },
   };
   // A response as the page's fetch gives it, with the page's own Blob.
   const respond = (status, text, headers = {}) => ({
@@ -95,7 +97,7 @@ describe("the Grok page script", () => {
   it("joins a conversation's three answers into one JSON object", async () => {
     const base = "https://grok.com/rest/app-chat/conversations/g1";
     const { window } = page("https://grok.com/c/g1", ["content/grok.js"], {
-      routes: { [`${base}/responses`]: [200, { responses: [] }], [`${base}/response-node`]: [500, ""], [base]: [200, { conversationId: "g1" }] },
+      routes: { [`${base}/responses`]: [200, { responses: [] }], [`${base}/response-node`]: [404, ""], [base]: [200, { conversationId: "g1" }] },
     });
     const answer = await window.polylogueProvider.fetchConversation(null);
     expect(JSON.parse(await answer.body.text())).toEqual({ conversation: { conversationId: "g1" }, responses: { responses: [] } });
@@ -231,4 +233,44 @@ describe("the in-page panel", () => {
     expect(window.polylogueWording.conversation({ provider: "chatgpt", conversation: "c1", state: "spooled", daemon: "running" }).label)
       .toBe("Stored; Polylogue is reading it");
   });
+});
+
+it("stops a MAIN-world action immediately on a retryable provider failure", async () => {
+  const { window, fetched } = page("https://chatgpt.com/c/c1", [], {
+    routes: { "https://chatgpt.com/backend-api/conversation/c1": [503, "", { "retry-after": "Thu, 01 Jan 2026 00:01:00 GMT" }] },
+  });
+  const execute = window.eval(`(${chatActionInPage.toString()})`);
+  const result = await execute({ provider: "chatgpt", conversation: "c1", text: "hello", model: "X", submit: true }, "run");
+  expect(result).toMatchObject({ ok: false, status: 503, retry_after: "Thu, 01 Jan 2026 00:01:00 GMT", submission_may_have_occurred: false });
+  expect(fetched).toHaveLength(1);
+  window.close();
+});
+
+it("charges each background HTTP request before fetch, including hidden authentication", async () => {
+  const scheduler = new ProviderScheduler({ dailyBudget: 1, now: () => 0 });
+  const { window, fetched } = page("https://chatgpt.com/c/c1", ["content/chatgpt.js", "content/page.js"], {
+    routes: { "https://chatgpt.com/api/auth/session": [200, { accessToken: "synthetic" }] },
+  });
+  window.chrome.runtime.sendMessage = async () => {
+    try { await scheduler.authorize("chatgpt"); return { ok: true }; }
+    catch (error) { return { error: error.message, until: error.until }; }
+  };
+  await expect(scheduler.run("chatgpt", () => window.polylogueProvider.fetchConversation("c1"), { background: true }))
+    .rejects.toMatchObject({ until: 86400000 });
+  expect(fetched).toHaveLength(1);
+  window.close();
+});
+
+it("the content fetch wrapper stops an operation on the first retryable response", async () => {
+  const scheduler = new ProviderScheduler();
+  const { window, fetched } = page("https://chatgpt.com/c/c1", ["content/chatgpt.js", "content/page.js"], {
+    routes: { "https://chatgpt.com/api/auth/session": [503, "", { "retry-after": "30" }] },
+  });
+  window.chrome.runtime.sendMessage = async () => {
+    await scheduler.authorize("chatgpt", 1); return { ok: true };
+  };
+  await expect(scheduler.run("chatgpt", () => window.polylogueProvider.fetchConversation("c1"), { owner: 1 }))
+    .rejects.toMatchObject({ status: 503, retryAfter: "30" });
+  expect(fetched).toHaveLength(1);
+  window.close();
 });

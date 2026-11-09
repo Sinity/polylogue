@@ -384,10 +384,11 @@ fn apply_inner(
         }
         return Ok(());
     }
+    let export_refusal = export_delivery && export::is_refusal(step);
     let mut export_refusals = previous
         .as_ref()
         .and_then(|old| old.export_refusals.clone());
-    if export::is_refusal(step) {
+    if export_refusal {
         if let Some(ref mut history) = export_refusals {
             history.count = add(history.count, 1)?;
             history.last = receipt.clone();
@@ -429,9 +430,9 @@ fn apply_inner(
         last_start: step.start,
         last_end: step.parsed_upto,
         last_hash: hash,
-        refused_export: export::is_refusal(step),
+        refused_export: export_refusal,
         export_refusals,
-        export_cursor: if export::is_refusal(step) {
+        export_cursor: if export_refusal {
             None
         } else {
             step.delivery

@@ -11,10 +11,10 @@ fn document_parser_requires_the_whole_input() {
     let parser = Parse::Document(Box::new(EmptyDocument));
     assert!(parser.is_document());
     assert!(matches!(
-        parser.step(None, b"{}", 12),
+        parser.step(None, b"{}", 12, &Default::default()),
         Err(ParseError::NotWhole(12))
     ));
-    let (step, parser_state) = parser.step(None, b"{}", 0).unwrap();
+    let (step, parser_state) = parser.step(None, b"{}", 0, &Default::default()).unwrap();
     assert_eq!(step.consumed, 2);
     assert_eq!(parser_state, Json::Null);
 }
@@ -109,19 +109,21 @@ fn capture_logs_verify_complete_captures_and_wait_on_incomplete_suffixes() {
     let mut bytes = MAGIC.to_vec();
     bytes.extend(Header::of(body).encode());
     bytes.extend(body);
-    let (steps, _) = parser.steps(None, &bytes, 0).unwrap();
+    let (steps, _) = parser.steps(None, &bytes, 0, &Default::default()).unwrap();
     assert_eq!(steps.len(), 1);
     assert_eq!(steps[0].consumed, bytes.len() as u64);
     assert!(steps[0].repeats_whole_conversations);
     let end = bytes.len();
     bytes.extend(&Header::of(body).encode()[..10]);
-    let (steps, _) = parser.steps(None, &bytes, 0).unwrap();
+    let (steps, _) = parser.steps(None, &bytes, 0, &Default::default()).unwrap();
     assert_eq!(steps[0].consumed, end as u64);
-    let (waiting, _) = parser.steps(None, &bytes[end..], end as u64).unwrap();
+    let (waiting, _) = parser
+        .steps(None, &bytes[end..], end as u64, &Default::default())
+        .unwrap();
     assert_eq!(waiting[0].consumed, 0);
     bytes[end - 1] = b'[';
     assert!(matches!(
-        parser.steps(None, &bytes, 0),
+        parser.steps(None, &bytes, 0, &Default::default()),
         Err(ParseError::CaptureLog(_))
     ));
 }
@@ -157,13 +159,15 @@ fn capture_event_ranges_name_the_capture_in_whole_and_incremental_reads() {
         expected.push((start, bytes.len() as u64));
     }
     let parser = Parse::CaptureLog(Box::new(DocumentEvent));
-    let (steps, _) = parser.steps(None, &bytes, 0).unwrap();
+    let (steps, _) = parser.steps(None, &bytes, 0, &Default::default()).unwrap();
     assert_eq!(steps.len(), 2);
     for (step, &range) in steps.iter().zip(&expected) {
         assert_eq!(step.output.events[0].range, Some(range));
         assert_eq!(&bytes[range.0 as usize..range.1 as usize], body);
     }
     let start = steps[0].consumed as usize;
-    let (later, _) = parser.steps(None, &bytes[start..], start as u64).unwrap();
+    let (later, _) = parser
+        .steps(None, &bytes[start..], start as u64, &Default::default())
+        .unwrap();
     assert_eq!(later[0].output.events, steps[1].output.events);
 }

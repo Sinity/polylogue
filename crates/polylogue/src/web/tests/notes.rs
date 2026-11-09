@@ -506,7 +506,7 @@ fn semantic_and_mixed_annotation_use_the_public_query_population() {
                     }
                 }
             }
-            let body = r#"{"data":[{"embedding":[1.0,0.0]}]}"#;
+            let body = r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#;
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
         });
         for (key, value) in [

@@ -78,6 +78,12 @@ export function attachmentInPage(actionId, runId, command, item = null, offset =
   return { ok: true };
 }
 
+/** Revokes a still-running page action after its claim renewal failed. */
+export function cancelChatActionInPage(actionId, runId) {
+  const state = globalThis.__polylogueChatAttachments;
+  if (state?.actionId === actionId && state.runId === runId) state.cancelled = true;
+}
+
 /**
  * Drafts the action's turn in the composer, or sends it once, and answers
  * what the page showed: the conversation and the sent turn's ID.
@@ -177,6 +183,8 @@ export async function chatActionInPage(action, runId) {
       const retryAfter = response.headers.get("Retry-After");
       const error = new Error(`provider response http_${response.status}${retryAfter ? ` retry_after_${retryAfter}` : ""}`);
       error.retryAfterSeconds = Number.parseInt(retryAfter || "", 10) || null;
+      error.status = response.status;
+      error.retryAfter = retryAfter;
       throw error;
     }
     return { conversation: await response.json(), status: response.status };
@@ -363,6 +371,7 @@ export async function chatActionInPage(action, runId) {
       30_000,
       "send_button",
     );
+    if (attachmentState?.cancelled) throw new Error("chat_claim_lost");
     submissionMayHaveOccurred = true;
     pointerClick(send);
     const conversationId = await waitFor(conversationIdFromLocation, 30_000, "conversation_navigation");
@@ -407,6 +416,8 @@ export async function chatActionInPage(action, runId) {
       ok: false,
       detail: String(error?.message || error),
       submission_may_have_occurred: submissionMayHaveOccurred,
+      status: error?.status || null,
+      retry_after: error?.retryAfter || null,
       retry_after_seconds: error?.retryAfterSeconds || null,
     };
   }

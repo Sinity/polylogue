@@ -25,6 +25,8 @@ impl RowWriter<'_, '_> {
             "session_record",
             "parsed",
             "parse_state",
+            "parser_context",
+            "parser_context_state",
             "unused",
             "message_injection_field",
         ] {

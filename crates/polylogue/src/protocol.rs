@@ -39,6 +39,8 @@ pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
             "model_required",
             "attachment_name_not_a_basename",
             "invalid_action",
+            "submission_receipt_required",
+            "submission_conversation_mismatch",
             "since_is_a_date_or_time",
             "unknown_outcome",
             "unknown_attachment",

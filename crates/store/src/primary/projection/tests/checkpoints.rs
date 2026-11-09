@@ -51,6 +51,7 @@ fn only_the_retained_control_supplies_a_parser_continuation() {
             reset: false,
             comparison: None,
             checkpoint: Some(checkpoint.clone()),
+            stopped_attempt: None,
             semantic_event_ids: None,
         },
     );
@@ -94,6 +95,7 @@ fn a_mismatched_canonical_continuation_is_refused_before_cache_application() {
     staged(
         &mut index,
         Product::ParseProgress {
+            stopped_attempt: None,
             reading: reading(),
             counts: Default::default(),
             reset: false,
@@ -115,4 +117,40 @@ fn a_mismatched_canonical_continuation_is_refused_before_cache_application() {
             .unwrap(),
         0
     );
+}
+
+#[test]
+fn confirmed_stopped_attempt_is_carried_outside_missing_parser_continuation() {
+    let root = tempfile::tempdir().unwrap();
+    let mut index = cache(&root.path().join("index.db"));
+    let mut source = reading();
+    source.progress = polylogue_model::batch::StepProgress::Failed {
+        error: "original failure".into(),
+    };
+    let attempt = polylogue_model::batch::StoppedAttempt {
+        executable: polylogue_model::BlobHash::of(b"actual original program"),
+        parser_settings: None,
+    };
+    staged(
+        &mut index,
+        Product::ParseProgress {
+            reading: source,
+            counts: Default::default(),
+            reset: false,
+            comparison: None,
+            checkpoint: None,
+            stopped_attempt: Some(attempt),
+            semantic_event_ids: None,
+        },
+    );
+    let mut planned = plan(&index).unwrap();
+    let mut controls = Vec::new();
+    planned.readings[0]
+        .3
+        .visit_source(|step| {
+            controls.push((step.checkpoint.clone(), step.stopped_attempt));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(controls, vec![(None, Some(attempt))]);
 }

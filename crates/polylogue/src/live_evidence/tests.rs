@@ -158,6 +158,107 @@ fn an_exited_root_waiting_to_be_reaped_is_gone() {
     assert!(w.update_roots(&roots, now()).is_empty());
 }
 
+/// A failed spool open must not consume an exit observation or change its time.
+#[test]
+fn root_gone_retries_after_the_process_spool_becomes_writable() {
+    for already_gone in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let proc_root = dir.path().join("proc");
+        let spool = dir.path().join("spool");
+        fake_proc(&proc_root, &[(10, 1, 500, "claude")]);
+        let mut watcher = Watcher::new(proc_root.clone(), "b1".into(), None);
+        let roots = [root("s", 10, 500, "b1")];
+        if !already_gone {
+            let started = watcher.update_roots(&roots, now());
+            watcher.append_process(&spool, &started).unwrap();
+        }
+        fake_proc(&proc_root, &[]);
+        let observed = if already_gone {
+            watcher.update_roots(&roots, now())
+        } else {
+            watcher.exited(&BTreeSet::from(["claude-code:s".into()]), now())
+        };
+        assert_eq!(events(&observed), [("RootGone".into(), 10)]);
+        let process = spool.join("process");
+        std::fs::create_dir_all(&spool).unwrap();
+        if !already_gone {
+            std::fs::rename(&process, spool.join("saved-process")).unwrap();
+        }
+        std::fs::write(&process, b"blocked").unwrap();
+        assert!(watcher.append_process(&spool, &observed).is_err());
+        assert!(!watcher.pending.is_empty());
+        std::fs::remove_file(&process).unwrap();
+        let later = jiff::Timestamp::from_second(now().as_second() + 10).unwrap();
+        let repeated = watcher.update_roots(&roots, later);
+        assert!(repeated.is_empty());
+        watcher.append_process(&spool, &repeated).unwrap();
+        assert!(watcher.pending.is_empty());
+        assert!(watcher.exited(&BTreeSet::new(), later).is_empty());
+        watcher.append_process(&spool, &[]).unwrap();
+        let bytes = std::fs::read(process.join("b1.ndjson")).unwrap();
+        let lines: Vec<Value> = serde_json::Deserializer::from_slice(&bytes)
+            .into_iter()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(lines, observed);
+    }
+}
+
+#[test]
+fn a_partial_process_spool_write_retries_only_its_unwritten_suffix() {
+    struct FullAfterPrefix {
+        file: std::fs::File,
+        remaining: usize,
+        interrupted: bool,
+    }
+    impl Write for FullAfterPrefix {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if std::mem::take(&mut self.interrupted) {
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            if self.remaining == 0 {
+                return Err(std::io::Error::from_raw_os_error(28));
+            }
+            let n = self.file.write(&bytes[..bytes.len().min(self.remaining)])?;
+            self.remaining -= n;
+            Ok(n)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.file.flush()
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let spool = dir.path().join("spool");
+    std::fs::write(&spool, b"blocked").unwrap();
+    let mut watcher = Watcher::new(dir.path().join("absent"), "b1".into(), None);
+    let observed = watcher.update_roots(&[root("s", 10, 500, "b1")], now());
+    assert!(watcher.append_process(&spool, &observed).is_err());
+    let expected = watcher.pending.clone();
+    std::fs::remove_file(&spool).unwrap();
+    let mut writer = FullAfterPrefix {
+        file: spool_file(&spool, "process", "b1").unwrap(),
+        remaining: 13,
+        interrupted: true,
+    };
+    assert!(write_pending(&mut watcher.pending, &mut writer).is_err());
+    assert_eq!(watcher.pending, expected[13..]);
+    drop(writer);
+    let suffix = watcher.pending.clone();
+    let mut full: &mut [u8] = &mut [];
+    let error = write_pending(&mut watcher.pending, &mut full).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::WriteZero);
+    assert_eq!(watcher.pending, suffix);
+    watcher.append_process(&spool, &[]).unwrap();
+    watcher.append_process(&spool, &[]).unwrap();
+    let bytes = std::fs::read(spool.join("process/b1.ndjson")).unwrap();
+    assert_eq!(bytes, expected);
+    let lines: Vec<Value> = serde_json::Deserializer::from_slice(&bytes)
+        .into_iter()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(lines, observed);
+}
+
 #[test]
 fn a_root_exit_is_seen_through_its_pidfd_at_once() {
     let mut child = std::process::Command::new("sleep")

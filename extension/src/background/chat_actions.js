@@ -3,7 +3,8 @@
 // a background tab, drafts the turn or sends it, and reports what happened.
 // Replies come back through ordinary capture.
 
-import { attachmentInPage, chatActionInPage, failureOutcome } from "../actions/chatgpt.js";
+import { attachmentInPage, cancelChatActionInPage, chatActionInPage, failureOutcome } from "../actions/chatgpt.js";
+import { ProviderScheduler } from "./provider.js";
 import { loaded } from "./tabs.js";
 
 const CHUNK_BYTES = 256 * 1024;
@@ -26,11 +27,12 @@ export function actionUrl(action) {
 }
 
 export class ChatActions {
-  constructor({ chrome, host, instance, capture, log = () => {} }) {
+  constructor({ chrome, host, instance, capture, scheduler = new ProviderScheduler(), log = () => {} }) {
     this.chrome = chrome;
     this.host = host;
     this.instance = instance;
     this.capture = capture;
+    this.scheduler = scheduler;
     this.log = log;
     this.running = null;
   }
@@ -57,7 +59,6 @@ export class ChatActions {
   }
 
   async passFiles(action, runId, tabId) {
-    await this.inPage(tabId, attachmentInPage, [action.id, runId, "begin"]);
     for (const item of action.attachments || []) {
       await this.inPage(tabId, attachmentInPage, [action.id, runId, "start", item]);
       const bytes = new Uint8Array(await (await this.host.chatAttachment(action.id, item.id)).arrayBuffer());
@@ -73,23 +74,40 @@ export class ChatActions {
     const report = (update) => this.host.reportChatAction(action.id, { by, ...update });
     const runId = crypto.randomUUID();
     let sending = false;
+    let preparedSend = false;
     let tab = null;
+    let claimLost = false;
     // Progress reports renew the claim while the page works.
     const renew = setInterval(() => {
-      void report({ outcome: "progress", phase: sending ? "sending" : "preparing" }).catch(() => undefined);
+      void report({ outcome: "progress", phase: sending || preparedSend ? "sending" : "preparing" }).catch(() => {
+        claimLost = true;
+        if (tab) void this.inPage(tab.id, cancelChatActionInPage, [action.id, runId]).catch(() => undefined);
+      });
     }, RENEW_MS);
     try {
       tab = await this.chrome.tabs.create({ url: actionUrl(action), active: false });
       await loaded(this.chrome, tab.id);
+      await this.inPage(tab.id, attachmentInPage, [action.id, runId, "begin"]);
       if (action.attachments?.length) await this.passFiles(action, runId, tab.id);
-      sending = action.submit;
-      await report({ outcome: "progress", phase: sending ? "sending" : "preparing" });
-      const result = await this.inPage(tab.id, chatActionInPage, [action, runId]);
+      await report({ outcome: "progress", phase: sending || preparedSend ? "sending" : "preparing" });
+      const result = await this.scheduler.run("chatgpt", () => { sending = action.submit; return this.inPage(tab.id, chatActionInPage, [action, runId]); }, { priority: -1, owner: tab.id, before: async () => {
+        if (claimLost) throw new Error("chat claim lost");
+        preparedSend = action.submit;
+        await report({ outcome: "progress", phase: preparedSend ? "sending" : "preparing" });
+      } });
       if (!result?.ok) {
         const error = new Error(result?.detail || "the page gave no answer");
         error.mayHaveSent = Boolean(result?.submission_may_have_occurred);
         error.retryAfterSeconds = result?.retry_after_seconds || null;
+        error.status = result?.status;
+        error.retryAfter = result?.retry_after;
         throw error;
+      }
+      if (result.outcome === "submitted") {
+        const captured = await this.capture(tab.id, { turn: result.provider_turn_id, text: action.text });
+        if (!captured || captured.outcome !== "stored" || captured.conversation !== result.provider_conversation_id || !result.provider_turn_id || captured.confirmedTurn !== result.provider_turn_id) {
+          throw new Error("the submitted turn is not durably captured yet");
+        }
       }
       await report({
         outcome: result.outcome,
@@ -107,7 +125,6 @@ export class ChatActions {
         },
       });
       if (result.outcome === "submitted") {
-        await this.capture(tab.id).catch(() => undefined);
         await this.chrome.tabs.remove(tab.id).catch(() => undefined);
       }
       // A draft stays open in its tab for the operator.

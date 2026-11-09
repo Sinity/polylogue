@@ -42,6 +42,10 @@ pub struct Job {
     /// The input's stored length once this job is written.
     pub length: u64,
     pub parser_state: Option<Json>,
+    pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
+    pub parser_chain: Option<i64>,
+    /// One privately staged replacement keeps its own context between jobs.
+    pub(crate) parser_context: Option<polylogue_store::parser_context::Overlay>,
     pub(crate) parser_deferred: bool,
     pub priority: Priority,
     /// Where the bytes come from.
@@ -79,6 +83,8 @@ impl Job {
 /// What a finished job tells the loop.
 #[derive(Debug)]
 pub struct Done {
+    /// The actual committed chain returned by the writer, never a guess.
+    pub chain: Option<i64>,
     pub path: PathBuf,
     pub start: u64,
     pub end: u64,
@@ -307,7 +313,9 @@ fn acknowledge_groups(pending: Receiver<PendingGroup>, done: Sender<Done>) {
                                 result.write_failed = true;
                                 result.stored = 0;
                             }
-                            Some(Ok(_)) => {}
+                            Some(Ok(stored)) => {
+                                result.chain = Some(stored.chain);
+                            }
                             None => {
                                 result.error = Some("the writer returned no result".into());
                                 result.write_failed = true;
@@ -381,6 +389,7 @@ fn failed_step(job: &Job, error: String, prepare: bool) -> ParseStep {
     failed.reset = false;
     failed.progress = polylogue_model::batch::StepProgress::Failed { error };
     failed.reading_version = job.origin.reading_version();
+    failed.stopped_attempt = job.stopped_attempt;
     if prepare {
         failed.prepare();
     }
@@ -395,6 +404,7 @@ pub(crate) fn run(
 ) -> (Option<PreparedBatch>, Done) {
     use polylogue_store::timing::{Stage, add, time};
     let mut out = Done {
+        chain: None,
         path: job.path.clone(),
         start: job.start,
         end: job.end,
@@ -483,6 +493,74 @@ pub(crate) fn run(
             }
         });
     out.raw_acquisition = acquisition.clone();
+    let context_overlay = if let Some(context) = job.parser_context.take() {
+        match context.check_source(
+            &job.input.id,
+            job.parser_chain,
+            &job.origin.reading_version(),
+            job.start,
+        ) {
+            Ok(()) => Some(context),
+            Err(error) => {
+                out.error = Some(error.to_string());
+                out.continuation_missing = true;
+                None
+            }
+        }
+    } else if job.origin.name == "claude-code"
+        && !job.parser_deferred
+        && (job.start == 0 || out.parser_state.is_some())
+    {
+        let chain = job.parser_chain.or(match job.change {
+            Change::Reparse { chain } => Some(chain),
+            _ => None,
+        });
+        match polylogue_store::parser_context::Overlay::open(
+            archive,
+            &job.input.id,
+            chain,
+            &job.origin.reading_version(),
+            job.start,
+        ) {
+            Ok(context) => Some(context),
+            Err(error) => {
+                out.error = Some(error.to_string());
+                out.continuation_missing = true;
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let context = context_overlay
+        .as_ref()
+        .map(|overlay| polylogue_model::parser_context::Handle::new(overlay.clone()))
+        .unwrap_or_default();
+    if let Some(chain) = context_overlay
+        .as_ref()
+        .and_then(|overlay| overlay.replay_chain())
+    {
+        match rebuild_context(&job, archive, store, chain, &context) {
+            Ok(state) => {
+                let mut expected = out.parser_state.clone().unwrap_or(Json::Null);
+                if let Some(object) = expected.as_object_mut() {
+                    object.remove(polylogue_model::parser_context::FIELD);
+                }
+                if expected != state {
+                    out.error = Some(
+                        "reconstructed context differs from its admitted parser checkpoint".into(),
+                    );
+                    out.continuation_missing = true;
+                } else {
+                    out.parser_state = Some(state);
+                }
+            }
+            Err(error) => {
+                out.error = Some(error);
+                out.continuation_missing = true;
+            }
+        }
+    }
     let mut extra = Vec::new();
     let parser = (job.origin.open)(&job.path).or_else(|| {
         job.origin
@@ -492,7 +570,7 @@ pub(crate) fn run(
     let parse = parser
         .map(|parser| {
             if job.origin.support == polylogue_sources::Support::Parsed
-                && (job.parser_deferred || job.start > 0 && out.parser_state.is_none()) {
+                && (job.parser_deferred || out.continuation_missing || job.start > 0 && out.parser_state.is_none()) {
                 out.continuation_missing = true;
                 return Vec::new();
             }
@@ -502,7 +580,7 @@ pub(crate) fn run(
                 polylogue_store::fault::check("parse", &job.path.to_string_lossy())
                     .map_err(|e| e.to_string())?;
                 time(Stage::Parse, || {
-                    parser.steps(out.parser_state.as_ref(), &bytes, job.start)
+                    parser.steps(out.parser_state.as_ref(), &bytes, job.start, &context)
                 })
                 .map_err(|e| e.to_string())
             }))
@@ -551,6 +629,9 @@ pub(crate) fn run(
                             };
                         }
                         p.repeats_whole_conversations = step.repeats_whole_conversations;
+                        if matches!(p.progress, polylogue_model::batch::StepProgress::Failed { .. } | polylogue_model::batch::StepProgress::Refused { .. }) {
+                            p.stopped_attempt = job.stopped_attempt;
+                        }
                         if job.origin.is_row_dump(&job.path) {
                             let start = step.start as usize;
                             let end = step.consumed as usize;
@@ -569,6 +650,22 @@ pub(crate) fn run(
                     }
                     if let Some(last) = parsed.last_mut()
                         && !matches!(last.progress, polylogue_model::batch::StepProgress::NoParserYet { .. }) {
+                        if let Some(overlay) = &context_overlay {
+                            let Some(state) = out.parser_state.as_mut().and_then(Json::as_object_mut) else {
+                                let error = "keyed parser continuation has no object state";
+                                out.error = Some(error.into());
+                                out.failure_recorded = true;
+                                return vec![failed_step(&job, error.into(), prepare)];
+                            };
+                            match overlay.checkpoint_delta(out.parsed_upto).and_then(|delta| serde_json::to_value(delta).map_err(Into::into)) {
+                                Ok(delta) => { state.insert(polylogue_model::parser_context::FIELD.into(), delta); }
+                                Err(error) => {
+                                    out.error = Some(error.to_string());
+                                    out.failure_recorded = true;
+                                    return vec![failed_step(&job, error.to_string(), prepare)];
+                                }
+                            }
+                        }
                         last.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
                             last.reading_version.clone(), last.parsed_upto, out.parser_state.clone().filter(|state| !state.is_null())));
                     }
@@ -632,4 +729,49 @@ pub(crate) fn run(
         release: InFlight::default(),
     };
     (Some(PreparedBatch { batch, files }), out)
+}
+
+/// Exceptional reconstruction reads only archived, admitted bytes. Ordinary
+/// resume opens the recorded keyed view and never enters this path.
+fn rebuild_context(
+    job: &Job,
+    archive: &polylogue_store::Archive,
+    blobs: &polylogue_store::blobs::Blobs,
+    chain: i64,
+    context: &polylogue_model::parser_context::Handle,
+) -> Result<Json, String> {
+    let reads = polylogue_store::ReadPool::open(archive).map_err(|e| e.to_string())?;
+    let reader = reads.reader().map_err(|e| e.to_string())?;
+    let source = reader
+        .stored_chain(&job.input.id, chain, job.start)
+        .map_err(|e| e.to_string())?;
+    let parser = (job.origin.open)(&job.path)
+        .ok_or_else(|| "context reconstruction has no provider parser".to_owned())?;
+    let mut state = None;
+    let mut pending = Vec::new();
+    let mut read = 0u64;
+    let mut cursor = 0u64;
+    while read < job.start {
+        let end = (read + 65536).min(job.start);
+        pending.extend(
+            source
+                .read_range(blobs, read, end)
+                .map_err(|e| e.to_string())?,
+        );
+        read = end;
+        let (steps, next) = parser
+            .steps(state.as_ref(), &pending, cursor, context)
+            .map_err(|e| e.to_string())?;
+        let consumed = steps.last().map_or(0, |step| step.consumed) as usize;
+        if consumed > pending.len() {
+            return Err("context reconstruction cursor exceeds its bytes".into());
+        }
+        pending.drain(..consumed);
+        cursor += consumed as u64;
+        state = Some(next);
+    }
+    if cursor != job.start || !pending.is_empty() {
+        return Err("context reconstruction did not reach its admitted checkpoint".into());
+    }
+    Ok(state.unwrap_or(Json::Null))
 }

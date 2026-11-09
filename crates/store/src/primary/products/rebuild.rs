@@ -11,6 +11,7 @@ pub(crate) struct AssembledReading {
     pub reset: bool,
     pub comparison: Option<crate::tool_databases::Comparison>,
     pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
+    pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
     pub semantic_event_ids: Option<BTreeMap<usize, String>>,
     controls: usize,
 }
@@ -122,6 +123,7 @@ impl AssembledReading {
                 reset,
                 comparison: source_comparison,
                 checkpoint,
+                stopped_attempt,
                 semantic_event_ids,
                 ..
             } => {
@@ -130,6 +132,7 @@ impl AssembledReading {
                 self.reset = reset;
                 self.comparison = source_comparison;
                 self.checkpoint = checkpoint;
+                self.stopped_attempt = stopped_attempt;
                 self.receipt = receipt;
                 self.controls += 1;
             }
@@ -196,6 +199,7 @@ impl CapturedReading {
             reset: body.reset,
             comparison: body.comparison,
             checkpoint: body.checkpoint,
+            stopped_attempt: body.stopped_attempt,
         };
         captured.clone().into_step().validate_export()?;
         Ok(captured)

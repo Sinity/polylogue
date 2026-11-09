@@ -36,7 +36,9 @@ pub const INDEX: &str = concat!(
     "\n",
     include_str!("schema/session_cwd.sql"),
     "\n",
-    include_str!("schema/session_items.sql")
+    include_str!("schema/session_items.sql"),
+    "\n",
+    include_str!("schema/version_cleanup.sql")
 );
 #[cfg(test)]
 pub(crate) const QUERY_OBJECTS: &str = concat!(
@@ -58,6 +60,10 @@ pub(crate) const ARCHIVE_MIGRATIONS: &[Migration] = &[
     Migration::Data {
         name: "kept output declarations v2",
         apply: crate::kept::archive_v3,
+    },
+    Migration::Data {
+        name: "query admission positions",
+        apply: crate::query_objects::evolution::archive_v4,
     },
 ];
 
@@ -86,7 +92,7 @@ impl Migration {
 pub const ARCHIVE_VERSION: u32 = 1 + ARCHIVE_MIGRATIONS.len() as u32;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 3;
+pub const INDEX_VERSION: u32 = 7;
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
 /// after the baseline ("PLG1"). A non-empty file without it was written by an
@@ -135,6 +141,7 @@ fn base_index(conn: &Connection) -> Result<()> {
     conn.execute_batch(INDEX)?;
     conn.execute_batch(crate::coverage::SCHEMA)?;
     conn.execute_batch(crate::variants::SCHEMA)?;
+    conn.execute_batch(crate::parser_context::SCHEMA)?;
     Ok(())
 }
 
@@ -167,6 +174,8 @@ pub fn ensure_primary_index(conn: &Connection) -> Result<()> {
     ensure_index_in(conn, true)
 }
 fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
+    // ALTER TABLE validates views that read packed bodies through these functions.
+    crate::sql_functions::register(conn)?;
     check_format(conn, "index")?;
     let found = version(conn)?;
     if found > INDEX_VERSION {
@@ -182,14 +191,34 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         // Read indexes are added before the shape check, so an index missing
         // only those is completed rather than refused.
         tx.execute_batch(READ_INDEXES)?;
+        if primary {
+            tx.execute_batch(include_str!("primary/projection/read_indexes.sql"))?;
+        }
         if found == 1 {
             crate::query_objects::evolution::index_v2(&tx, primary)?;
         }
         if found == 1 || found == 2 {
             crate::kept::index_v3(&tx, primary)?;
+        }
+        if (1..=3).contains(&found) {
+            crate::query_objects::evolution::index_v4(&tx, primary)?;
             set_version(&tx, INDEX_VERSION)?;
         }
-        let matches = (found == 1 || found == 2 || found == INDEX_VERSION)
+        if (1..=4).contains(&found) {
+            tx.execute_batch(crate::parser_context::SCHEMA)?;
+            tx.execute_batch("ALTER TABLE parse_state ADD COLUMN stopped_attempt BLOB CHECK(stopped_attempt IS NULL OR status IN ('refused','failed'));")?;
+            set_version(&tx, INDEX_VERSION)?;
+        }
+        if (1..=5).contains(&found) {
+            tx.execute_batch(include_str!("schema/index_6.sql"))?;
+            tx.execute_batch(include_str!("schema/version_cleanup.sql"))?;
+            set_version(&tx, INDEX_VERSION)?;
+        }
+        if (1..=6).contains(&found) {
+            crate::writer::resolve::versions::reproject_link_evidence(&tx)?;
+            set_version(&tx, INDEX_VERSION)?;
+        }
+        let matches = (1..=INDEX_VERSION).contains(&found)
             && if building(&tx)? {
                 same_build_schema_in(&tx, primary)?
             } else {
@@ -218,6 +247,7 @@ pub fn building(conn: &Connection) -> Result<bool> {
 
 /// Creates `archive.db` in an empty file and brings an older one forward.
 pub fn ensure_archive(conn: &Connection) -> Result<()> {
+    crate::sql_functions::register(conn)?;
     check_format(conn, "archive")?;
     // An empty file takes the identity before its tables, so no crash can
     // leave a versioned archive without it.
@@ -227,9 +257,20 @@ pub fn ensure_archive(conn: &Connection) -> Result<()> {
     ensure(conn, "archive", &[ARCHIVE], ARCHIVE_MIGRATIONS)
 }
 
-/// Creates `embeddings.db` in an empty file; refuses one with other tables.
+/// Creates `embeddings.db` or upgrades its model-revision metadata in place.
 pub(crate) fn ensure_embeddings(conn: &Connection) -> Result<()> {
-    ensure(conn, "embeddings", &[EMBEDDINGS], &[])
+    ensure(
+        conn,
+        "embeddings",
+        &[EMBEDDINGS],
+        &[Migration::Data {
+            name: "model vector snapshot revisions",
+            apply: |conn| {
+                conn.execute_batch(include_str!("schema/embeddings_2.sql"))?;
+                Ok(())
+            },
+        }],
+    )
 }
 
 /// Creates the database from `sql` in an empty file, or applies the

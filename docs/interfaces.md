@@ -7,6 +7,7 @@ The generic mechanics (the `Operation` trait, the failure-to-exit-and-HTTP table
 ## Command table
 
 - **One typed operation table** drives every surface. Each row declares the operation's arguments, answer type, latency class, failure kinds, one-sentence help, its reason for existing ([below](#discipline)) and one to four examples on the Morrow archive. The CLI, socket, HTTP and MCP are generated from it; a new operation is a row, not code on each surface.
+- **Archive selection preserves path aliases.** An explicit archive path is made absolute without expanding its symlinks; canonical archive identity is resolved separately. CLI adapters and the Morrow tour preserve declared aliases so a short Unix-socket path stays usable.
 - **Ready calls are complete requests.** The CLI form of a row is its command words, with `--request JSON` for a complete argument object (not mixed with operation flags), `--request-id ID` and `--deadline MS|none`; `find` is the explicit query form. MCP groups the rows into five tools ([agents.md](agents.md#mcp-server)), and a call takes `{operation, arguments, request_id, deadline}`, `operation` being the row's command name. HTTP takes `{operation, arguments, request_id, deadline}` on the row's route; GET encodes `arguments` and `deadline` as JSON query values. Named context operations also take optional envelope `budget_tokens` (`--budget N`), as described in [Budgets](agents.md#budgets). Every surface checks the same typed arguments. On the read route, `Accept: text/html` renders the same typed page and its ready calls.
 - **Finite transfers use the shared server-sent-event framing** on the socket and HTTP: a begin event, record events and a completion event from one read. A failure before HTTP headers uses the shared failure status; a later failure ends with an error event and no completion. A client writes a directory bundle into place, and `changes` advances its saved position, only after the completion event.
 - **Access belongs to the request.** The declared operation determines access from its typed arguments. MCP tool-family hints describe the family; the same operation and arguments have the same access on every surface.
@@ -108,6 +109,8 @@ An MCP `_meta.deadline_ms` absolute bound travels separately from the unchanged 
 
 Help answers in about 100 ms and queries in under a second. (ruling 2026-05-12, cc-queued:64f29439-f42d-4128-88d5-1bc327cfdbf4@2026-05-12T01:49). A missed budget is a defect in the code, not a reason to relax the number. Budgets are measured as paired benchmark runs ([testing.md](testing.md#benchmarks)); no test asserts elapsed time.
 
+The read-class `advisory` operation has a stricter preparation cap of 20 ms, intersected with its caller’s bound on every surface. Hooks send a 20 ms request and emit nothing on failure; `--deadline none` does not lift this optional-advisory cap. The accepted request envelope and identity remain unchanged.
+
 Pure writes, including imports, await their durable result without a read deadline. Mixed operations retain deadlines for their read preparation; classification follows the admitted arguments, so reading a setting remains bounded while writing it keeps its result. The HTTP admission header above still applies.
 
 **Deadlines are interactive defaults.** The CLI's socket timeout is the deadline plus 50 ms, so a hung daemon never hangs a shell. Any caller lifts a deadline (`--deadline MS`, `--deadline none`; `deadline: null` over MCP and HTTP); deadline behaviour and cancellation are in [query.md](query.md#deadlines). A timed-out aggregate prints the narrower query the planner can serve and the same query with the deadline lifted:
@@ -181,8 +184,24 @@ Completion is advanced and works with the daemon down. (ruling 2026-05-01, chatg
 - **Location:** `$XDG_CACHE_HOME/polylogue/<archive key>/catalog`, so it survives a reboot before the daemon starts.
 - **Contents:** a header (format version, archive key, write position, time written); values with counts per completable field; saved query names with parameters and help; kept results (ID, name, unit, row count); settings keys and values; sessions (full ID, shortest unique prefix, title, origin, repository, last activity, first prompt), sorted by ID with a second order by last activity.
 - **Format:** a private, versioned SQLite derived catalog with indexed values and typed metadata, opened read-only with memory mapping. The publisher owns its WAL and shared-memory files and preserves them for offline readers; a daemon-down read changes none of the cache files. Concurrent readers retain a committed SQL snapshot while publication continues. SQLite may coordinate shared-memory read marks inside the live owner process. The catalog path selects a uniquely named physical database through an atomically published pointer. Rebuilding the same source generation uses fresh database and journal names so pinned old snapshots cannot mix with the rebuild. Activation retires the previous pointer-owned cache namespace. Missing, wrong-archive, obsolete or corrupt catalogs leave grammar-only completion.
-- **Freshness:** a startup or generation rebuild writes a private database, syncs and renames it, then activates its pointer under the source scope fence. Ordinary committed batches publish values and their position together in one catalog transaction. Candidates target at most 2 s of lag while writes continue; query answers read the authoritative store rather than this cache.
+- **Freshness:** the publisher subscribes before its startup snapshot, then consumes coalesced post-commit cues and existing source/index positions. Sessions, assertion families, settings, kept results and query-body dependencies update from their committed change source. An actual native lifecycle rewrite replaces its affected vocabulary category; a scope or index generation change rebuilds the snapshot. Each catalog transaction publishes its data and position together. Activation uses the native scope fence, which revokes the old pointer synchronously. Completion never promotes staged or producer-acknowledged data to confirmed vocabulary.
+- **Budgets:** the targets are at most 50 ms per keystroke with the daemon up or down, and at most 2 s from a committed batch to visible vocabulary while a writer commits once per second. Preserve actual latency samples and workload receipts separately from functional test results; a passing test alone is not timing evidence.
 - It is derived and harmless to delete.
+
+For a bounded synthetic measurement, retain successful output from the existing
+functional matrix, real daemon up/down shell callbacks, and committed-write
+visibility fixture:
+
+```sh
+cargo xtask test -p polylogue -E 'test(completion_matrix_thirteen_positions_three_shells_empty_and_seeded) | test(completion_latency_reports_real_shell_callbacks_with_daemon_up_and_down) | test(acknowledged_commits_refresh_catalog_values_while_keystrokes_continue)' --success-output immediate
+```
+
+The output records the 78-position matrix distribution, ten real CLI callbacks
+per shell and daemon state, and five setting batches scheduled one second
+apart. Record the actual acknowledged commit offsets as workload evidence.
+Submit-to-visible samples bound commit-to-visible latency from above; the
+acknowledgment-to-visible samples are reported separately. Compare the recorded
+values with the budgets without adding elapsed-time assertions to tests.
 
 ### Registration
 
