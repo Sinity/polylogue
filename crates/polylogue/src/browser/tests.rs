@@ -488,6 +488,36 @@ fn reading_a_captures_files_uses_the_capture_parser_without_writing_the_spool() 
     );
 }
 
+/// law: capture-holds-conversation
+#[test]
+fn a_capture_without_conversation_content_is_refused_and_not_spooled() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = host_without_daemon(dir.path());
+    // What a stale extension background sent: identity and provenance only.
+    let empty = json!({
+        "polylogue_capture_kind": "browser_llm_session",
+        "schema_version": 1,
+        "provenance": {"captured_at": "2026-11-02T16:20:59Z", "source_url": "https://chatgpt.com/c/empty"},
+        "session": {"provider": "chatgpt", "provider_session_id": "empty", "session_kind": "standard", "attachments": []}
+    });
+    let a = exchange(&host, "POST", "/v1/captures", empty.to_string().as_bytes());
+    assert_eq!(a.status, 400);
+    assert_eq!(a.json()["error"], "capture_has_no_conversation");
+    let mut empty_raw = empty.clone();
+    empty_raw["raw_provider_payload"] = json!({});
+    let b = exchange(
+        &host,
+        "POST",
+        "/v1/captures",
+        empty_raw.to_string().as_bytes(),
+    );
+    assert_eq!(b.json()["error"], "capture_has_no_conversation");
+    assert_eq!(
+        conversations(&host, &["empty"])["conversations"][0]["state"],
+        "unknown"
+    );
+}
+
 #[test]
 fn a_capture_larger_than_axums_default_body_limit_is_accepted() {
     let w = test_daemon::start("x");
