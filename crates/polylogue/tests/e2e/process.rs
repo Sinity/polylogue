@@ -58,6 +58,8 @@ impl Fixture {
                 std::env::var_os("PATH").expect("test tools need PATH"),
             )
             .env("LANG", "C.UTF-8")
+            // A terminal read pages through $PAGER; no one reads these pages.
+            .env("PAGER", "cat")
             .env("TMPDIR", self.root.join("tmp"))
             .env("HOME", &self.home)
             .env("XDG_CONFIG_HOME", &self.config)
