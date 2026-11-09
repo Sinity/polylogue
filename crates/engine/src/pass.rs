@@ -1280,6 +1280,13 @@ impl Engine {
         // that arrive meanwhile can go ahead of what is still waiting.
         let mut waiting: std::collections::VecDeque<Plan> = plans.into();
         let mut running: HashMap<PathBuf, Plan> = HashMap::new();
+        // Inputs whose first job this run queued. An input holds its parser
+        // state between jobs until its last finishes, so a new input starts
+        // only when its first range can be queued at once; otherwise the
+        // loop would wait inside `submit` with a new input while finished
+        // ranges of started ones wait in `done_rx`, and every large input of
+        // a pass would end up started, each holding its state.
+        let mut started: HashSet<PathBuf> = HashSet::new();
         let mut outstanding = 0usize;
         let mut checked = Instant::now();
         let room = self.config.workers.max(1) * IN_POOL_PER_WORKER;
@@ -1313,6 +1320,14 @@ impl Engine {
                     pass.capture_pending |= plan.pending.is_some();
                     self.finish_plan(plan);
                     continue;
+                }
+                if !started.contains(&plan.path) {
+                    let (start, end) = plan.next_range();
+                    if outstanding > 0 && !pool.has_room(end - start) {
+                        waiting.push_front(plan);
+                        break;
+                    }
+                    started.insert(plan.path.clone());
                 }
                 // Stored bytes are loaded as their plan starts, so a pass
                 // over every stored input holds only the running plans'.

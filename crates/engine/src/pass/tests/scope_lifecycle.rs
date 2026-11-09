@@ -32,12 +32,18 @@ fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
             &engine.inputs[&path].origin.reading_version(),
         )
         .unwrap();
-    let admitted_state = checkpoint
+    let mut admitted_state = checkpoint
         .as_ref()
         .and_then(|stored| stored.checkpoint.as_ref())
         .and_then(|checkpoint| checkpoint.parser_state.as_ref())
         .expect("Claude continuation is admitted with its cursor")
         .clone();
+    // The kept state leaves out the keyed context's changes, which the
+    // index holds (docs/architecture.md, pipeline).
+    admitted_state
+        .as_object_mut()
+        .unwrap()
+        .remove(polylogue_model::parser_context::FIELD);
     assert_eq!(
         engine.inputs[&path].parser_state.as_ref(),
         Some(&admitted_state)

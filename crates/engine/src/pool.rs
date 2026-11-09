@@ -187,6 +187,13 @@ impl Pool {
         }
     }
 
+    /// Whether a job of `bytes` would be queued now, without waiting for
+    /// bytes in flight to commit.
+    pub fn has_room(&self, bytes: u64) -> bool {
+        let q = self.shared.queue.lock().expect("pool lock");
+        q.in_flight == 0 || q.in_flight + bytes <= self.shared.limit
+    }
+
     /// Queues a job. Blocks while the bytes already in flight are at the
     /// limit; a job larger than the limit runs alone.
     pub fn submit(&self, job: Job) {
@@ -742,6 +749,17 @@ pub(crate) fn run(
         source.lock().expect("import reader lock").consume(upto);
     }
     out.checkpoint = parse.last().and_then(|step| step.checkpoint.clone());
+    for state in [
+        out.parser_state.as_mut(),
+        out.checkpoint
+            .as_mut()
+            .and_then(|checkpoint| checkpoint.parser_state.as_mut()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        crate::parser_checkpoint::without_context_changes(state);
+    }
     let batch = Batch {
         required_disposition: job
             .acquisition

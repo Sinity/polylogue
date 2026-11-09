@@ -16,6 +16,7 @@ mod large_sessions;
 mod live_first;
 mod one_worker;
 mod reading_version;
+mod started_inputs;
 mod tool_captures;
 
 #[test]
