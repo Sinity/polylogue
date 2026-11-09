@@ -8,7 +8,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 mod parse;
-mod text;
+mod spans;
 
 /// The events Gemini CLI calls hooks on.
 const GEMINI_EVENTS: &[&str] = &[
@@ -233,9 +233,9 @@ fn edit(
     version: Option<&HarnessVersion>,
     install: bool,
 ) -> io::Result<String> {
-    use text::{Kind, splice};
+    use spans::{Kind, splice};
     validate(&parse::settings(text)?)?;
-    let root = text::read(text)?;
+    let root = spans::read(text)?;
     let Kind::Object(members) = &root.kind else {
         return Err(invalid("settings", "an object"));
     };
@@ -260,12 +260,12 @@ fn edit(
             &vec![false; spans.len()],
             |layout| vec![layout.member("hooks", &Value::Object(events.clone()))],
         ));
-        return Ok(text::apply(text, edits));
+        return Ok(spans::apply(text, edits));
     };
     let Kind::Object(events) = &hooks.kind else {
         return Err(invalid("hooks", "an object"));
     };
-    let is_ours = |hook: &text::Spanned| {
+    let is_ours = |hook: &spans::Spanned| {
         serde_json::from_str::<Value>(&text[hook.start..hook.end]).is_ok_and(|hook| ours(&hook))
     };
     let mut removed_events = vec![false; events.len()];
@@ -314,7 +314,7 @@ fn edit(
             .collect();
         let removed: Vec<bool> = members.iter().map(|(name, _, _)| name == "hooks").collect();
         edits.extend(splice(text, &root, &spans, &removed, |_| Vec::new()));
-        return Ok(text::apply(text, edits));
+        return Ok(spans::apply(text, edits));
     }
     let spans: Vec<_> = events
         .iter()
@@ -326,7 +326,7 @@ fn edit(
             .map(|event| layout.member(event, &json!([entry(harness, event)])))
             .collect()
     }));
-    Ok(text::apply(text, edits))
+    Ok(spans::apply(text, edits))
 }
 
 /// [`edit`] over a settings value, for callers that hold one.
