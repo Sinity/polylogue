@@ -29,8 +29,9 @@ CREATE TABLE blob (
 
 -- One file as Polylogue tracks it: one location's history, or one imported file.
 CREATE TABLE input (
-  id            TEXT PRIMARY KEY,        -- hex BLAKE3 for an imported file that cannot change;
-                                         -- UUIDv7 for a location that can grow or change
+  id            TEXT PRIMARY KEY,        -- named as its origin declares (InputIdentity): a location is the first
+                                         -- 32 hex digits of BLAKE3(machine, 0x00, real path bytes); a Codex rollout
+                                         -- is 'codex:rollout:<session id>'; an imported file is its full hex BLAKE3
   format        TEXT NOT NULL            -- 'claude-code-jsonl', 'codex-rollout', 'codex-state-sqlite', 'chatgpt-export', ...
                                          -- (when it was first seen is a query over its observations, so an input
                                          --  named by content is the same row on every machine)

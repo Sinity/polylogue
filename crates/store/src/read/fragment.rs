@@ -457,7 +457,7 @@ impl Reader<'_> {
         match container {
             Reference::Message(message) | Reference::Block { message, .. } => {
                 let stored:Option<(Vec<u8>,Option<Vec<u8>>)>=self.conn()?.query_row(
-                    "SELECT s.version_hash,p.layout FROM message m JOIN message_source s ON s.message_pk=m.pk AND s.shown=1
+                    "SELECT s.version_hash,p.layout FROM message m JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
                      JOIN message_projection p ON p.version_hash=s.version_hash WHERE m.id=?1",
                     [message.to_string()],|row|Ok((row.get(0)?,row.get(1)?)),
                 ).optional()?;

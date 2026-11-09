@@ -16,6 +16,7 @@
     "messages": [
       {
         "end": 43,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -23,7 +24,7 @@
               "type": "text"
             }
           ],
-          "id": "grok-cli:synthetic@0",
+          "id": "grok-cli:synthetic~user-35085b468aa12a8a-0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "grok-cli:synthetic",

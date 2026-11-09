@@ -136,7 +136,7 @@ impl<'a> ReferenceText<'a> {
     ) -> Result<polylogue_model::bundle::MessageProjection> {
         let conn = self.original;
         let (hash, layout, blocks): (Option<Vec<u8>>, Option<Vec<u8>>, i64) = conn.query_row(
-            "SELECT s.version_hash,p.layout,(SELECT count(*) FROM block WHERE message_pk=m.pk) FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.shown=1 LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE m.pk=?1",
+            "SELECT s.version_hash,p.layout,(SELECT count(*) FROM block WHERE message_pk=m.pk) FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE m.pk=?1",
             [message], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
         let hash = hash

@@ -444,6 +444,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
         Output {
             sessions: vec![Session::new(session, SessionKind::Main)],
             messages: vec![MessageRow {
+                id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
                 end: 1,
                 message,

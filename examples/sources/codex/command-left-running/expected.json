@@ -68,6 +68,7 @@
     "messages": [
       {
         "end": 572,
+        "id_kind": "content",
         "message": {
           "at": "2026-03-01T10:00:02Z",
           "blocks": [
@@ -82,7 +83,7 @@
               "type": "tool_call"
             }
           ],
-          "id": "codex:019a0000-0000-7000-8000-000000000001@381",
+          "id": "codex:019a0000-0000-7000-8000-000000000001~assistant-1c7fbb6d0de56361-0",
           "production": {
             "response_boundary_unknown": true
           },
@@ -95,6 +96,7 @@
       },
       {
         "end": 832,
+        "id_kind": "content",
         "message": {
           "at": "2026-03-01T10:00:03Z",
           "blocks": [
@@ -109,7 +111,7 @@
               "reported_duration_ms": 1000
             }
           ],
-          "id": "codex:019a0000-0000-7000-8000-000000000001@573",
+          "id": "codex:019a0000-0000-7000-8000-000000000001~user-0f44c41da57979bc-0",
           "prompt_kind": "harness",
           "role": "user",
           "session": "codex:019a0000-0000-7000-8000-000000000001",
@@ -120,6 +122,7 @@
       },
       {
         "end": 1063,
+        "id_kind": "content",
         "message": {
           "at": "2026-03-01T10:00:04Z",
           "blocks": [
@@ -135,7 +138,7 @@
               "type": "tool_call"
             }
           ],
-          "id": "codex:019a0000-0000-7000-8000-000000000001@833",
+          "id": "codex:019a0000-0000-7000-8000-000000000001~assistant-121d6bc3fc82088d-0",
           "production": {
             "response_boundary_unknown": true
           },
@@ -148,6 +151,7 @@
       },
       {
         "end": 1327,
+        "id_kind": "content",
         "message": {
           "at": "2026-03-01T10:00:05Z",
           "blocks": [
@@ -161,7 +165,7 @@
               "reported_duration_ms": 4900
             }
           ],
-          "id": "codex:019a0000-0000-7000-8000-000000000001@1064",
+          "id": "codex:019a0000-0000-7000-8000-000000000001~user-8713621dbadc9c9e-0",
           "prompt_kind": "harness",
           "role": "user",
           "session": "codex:019a0000-0000-7000-8000-000000000001",

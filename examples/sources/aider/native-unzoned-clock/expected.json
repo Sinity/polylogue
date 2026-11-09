@@ -15,7 +15,7 @@
       {
         "session": "aider:history-e7a5dcb6a21db06af3101370655cfc8718ffa3c31071504a1821376c651f23d4",
         "kind": "aider_request",
-        "after": "aider:history-e7a5dcb6a21db06af3101370655cfc8718ffa3c31071504a1821376c651f23d4#0",
+        "after": "aider:history-e7a5dcb6a21db06af3101370655cfc8718ffa3c31071504a1821376c651f23d4~user-ebbb7ac12e575a4c-0",
         "range": [
           0,
           45
@@ -33,8 +33,9 @@
       {
         "offset": 0,
         "end": 45,
+        "id_kind": "content",
         "message": {
-          "id": "aider:history-e7a5dcb6a21db06af3101370655cfc8718ffa3c31071504a1821376c651f23d4#0",
+          "id": "aider:history-e7a5dcb6a21db06af3101370655cfc8718ffa3c31071504a1821376c651f23d4~user-ebbb7ac12e575a4c-0",
           "session": "aider:history-e7a5dcb6a21db06af3101370655cfc8718ffa3c31071504a1821376c651f23d4",
           "role": "user",
           "blocks": [

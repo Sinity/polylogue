@@ -11,14 +11,23 @@ fn prompt(chunks: Vec<Json>) -> Vec<u8> {
     .unwrap()
 }
 
-fn parse(native: &str, bytes: &[u8]) -> crate::parse::Step {
+/// A prompt the Drive collector fetched, named by its Drive file ID.
+fn parse(drive_id: &str, bytes: &[u8]) -> crate::parse::Step {
     let parser = AiStudio {
-        native: native.into(),
+        drive_id: Some(drive_id.into()),
+        native: String::new(),
         title: Some("Electrons".into()),
         state: PromptState::default(),
     };
     crate::export::fixture::parse(&mut Parse::Export(Box::new(parser)), bytes).unwrap()
 }
+
+/// A prompt read from a download or Takeout, which names the file by title.
+fn parse_at(path: &str, bytes: &[u8]) -> crate::parse::Step {
+    crate::export::fixture::parse(&mut open(Path::new(path)).unwrap(), bytes).unwrap()
+}
+
+use crate::content_ids::tests::expected;
 
 #[test]
 fn chunks_become_messages_with_thoughts_split_out() {
@@ -57,16 +66,22 @@ fn chunks_become_messages_with_thoughts_split_out() {
     assert_eq!(msgs[3].usage.output, Some(3));
     assert_eq!(msgs[3].stop_reason.as_deref(), Some("STOP"));
     assert_eq!(msgs[3].model.as_deref(), Some("gemini-3-pro-preview"));
-    assert_eq!(
-        msgs[3].parent.as_ref().unwrap().native().as_str(),
-        "9:Electrons#position:1:1"
-    );
+    assert_eq!(msgs[3].parent.as_ref(), Some(&msgs[2].id));
     assert!(
         matches!(&msgs[4].blocks[1], Block::File(a) if a.source_id.as_deref() == Some("abc123"))
     );
     assert!(matches!(&msgs[5].blocks[0], Block::Other { type_name, .. } if type_name == "error"));
-    // A chunk without an ID keeps its identity by its place.
-    assert_eq!(msgs[1].id.native().as_str(), "9:Electrons#position:1:0");
+    // A chunk without an ID is named by its content.
+    assert_eq!(
+        msgs[1].id.native().as_str(),
+        expected(
+            "Electrons",
+            "user",
+            r#"["user",{"createTime":"2026-05-17T12:27:24.102Z","role":"user","text":"what is an electron","tokenCount":6}]"#,
+            0
+        )
+    );
+    assert_eq!(step.output.messages[1].id_kind, IdKind::Content);
     assert_eq!(
         step.output.sessions[0].title.as_ref().unwrap().text,
         "Electrons"
@@ -120,12 +135,12 @@ fn code_and_images_inside_parts_are_read() {
     ], "safetyRatings": [], "thoughtSignatures": ["s"], "isEdited": true})]);
     let step = parse("p", &bytes);
     let m = &step.output.messages[1].message;
-    assert!(
-        matches!(&m.blocks[1], Block::ToolCall { call_id: Some(c), .. } if c == "1:p#position:1:0:code1")
-    );
+    // A call is named after the message that makes it.
+    let call = format!("{}:code1", m.id.native().as_str());
+    assert!(matches!(&m.blocks[1], Block::ToolCall { call_id: Some(c), .. } if *c == call));
     assert!(matches!(
         &m.blocks[2],
-        Block::ToolResult { call_id: Some(c), outcome: ToolOutcome::Error { .. }, .. } if c == "1:p#position:1:0:code1"
+        Block::ToolResult { call_id: Some(c), outcome: ToolOutcome::Error { .. }, .. } if *c == call
     ));
     assert!(matches!(&m.blocks[3], Block::Image(a) if a.blob.is_some()));
     assert!(
@@ -158,15 +173,11 @@ fn recognizes_prompts_by_their_first_key() {
     ));
     assert!(!recognize(Path::new("/d/x.json"), b"{\"sessionId\": 1}"));
     assert_eq!(
-        native_of(Path::new(
+        name_of(Path::new(
             "/t.zip!/Takeout/Drive/Google AI Studio/Electrons"
         ))
         .as_deref(),
         Some("Electrons")
-    );
-    assert_eq!(
-        title_of(Path::new("/s/polylogue/drive/ai-studio/1AbC.json")),
-        None
     );
 }
 
@@ -254,14 +265,24 @@ fn adjacent_chunks_keep_their_own_ids_usage_and_source_ranges() {
     let step = parse("p", &bytes);
     let rows = &step.output.messages;
     assert_eq!(rows.len(), 5);
-    let expected = [
-        "1:p#id:8:question",
-        "1:p#id:7:thought",
-        "1:p#position:1:2",
-        "1:p#position:1:4",
+    let wanted = [
+        "1:p#id:8:question".to_owned(),
+        "1:p#id:7:thought".to_owned(),
+        expected(
+            "p",
+            "assistant",
+            r#"["assistant",{"role":"model","text":"answer","tokenCount":5}]"#,
+            0,
+        ),
+        expected(
+            "p",
+            "user",
+            r#"["user",{"inlineImage":{"data":"aGk=","mimeType":"image/png"},"role":"user","text":"next"}]"#,
+            0,
+        ),
     ];
     for (i, row) in rows[1..].iter().enumerate() {
-        assert_eq!(row.message.id.native().as_str(), expected[i]);
+        assert_eq!(row.message.id.native().as_str(), wanted[i]);
         assert_eq!(row.message.parent.as_ref(), Some(&rows[i].message.id));
         let source: Json =
             serde_json::from_slice(&bytes[row.offset as usize..row.end as usize]).unwrap();
@@ -275,7 +296,7 @@ fn adjacent_chunks_keep_their_own_ids_usage_and_source_ranges() {
 }
 
 #[test]
-fn native_ids_positions_and_the_system_header_cannot_name_the_same_message() {
+fn native_ids_content_ids_and_the_system_header_cannot_name_the_same_message() {
     let bytes = prompt(vec![
         json!({"role": "user", "id": "1", "text": "native ID"}),
         json!({"role": "model", "text": "position one"}),
@@ -293,7 +314,18 @@ fn native_ids_positions_and_the_system_header_cannot_name_the_same_message() {
     assert_eq!(ids.len(), 5);
     assert_eq!(unique.len(), ids.len(), "{ids:?}");
     assert_eq!(ids[1], "ai-studio:1:p#id:1:1");
-    assert_eq!(ids[2], "ai-studio:1:p#position:1:1");
+    assert_eq!(
+        ids[2],
+        format!(
+            "ai-studio:{}",
+            expected(
+                "p",
+                "assistant",
+                r#"["assistant",{"role":"model","text":"position one"}]"#,
+                0
+            )
+        )
+    );
     let other = parse(
         "p#id:1",
         &prompt(vec![
@@ -377,4 +409,95 @@ fn native_chunk_clock_is_intrinsic_and_drive_file_clock_is_file_mtime() {
         Some(Precision::Second)
     );
     assert!(listed.output.messages.is_empty());
+}
+
+#[test]
+fn ai_studio_deleted_chunk_keeps_the_other_ids() {
+    let chunks = vec![
+        json!({"role": "user", "text": "A"}),
+        json!({"role": "model", "text": "B"}),
+        json!({"role": "user", "text": "C"}),
+        json!({"role": "model", "text": "D"}),
+    ];
+    let ids = |chunks: Vec<Json>| -> Vec<String> {
+        parse("p", &prompt(chunks))
+            .output
+            .messages
+            .iter()
+            .skip(1)
+            .map(|row| row.message.id.to_string())
+            .collect()
+    };
+    let before = ids(chunks.clone());
+    let mut without_b = chunks;
+    without_b.remove(1);
+    assert_eq!(
+        ids(without_b),
+        [before[0].clone(), before[2].clone(), before[3].clone()]
+    );
+}
+
+#[test]
+fn unchanged_chunk_reference_survives_rewrite() {
+    // A Drive revision that edits one chunk and appends another: the
+    // unchanged chunks keep their IDs, so a note on them keeps its target.
+    let before = parse(
+        "p",
+        &prompt(vec![
+            json!({"role": "user", "text": "keep me"}),
+            json!({"role": "model", "text": "first draft"}),
+        ]),
+    );
+    let after = parse(
+        "p",
+        &prompt(vec![
+            json!({"role": "user", "text": "keep me"}),
+            json!({"role": "model", "text": "second draft"}),
+            json!({"role": "user", "text": "more"}),
+        ]),
+    );
+    let id = |step: &crate::parse::Step, i: usize| step.output.messages[i].message.id.clone();
+    assert_eq!(id(&before, 1), id(&after, 1));
+    assert_ne!(id(&before, 2), id(&after, 2));
+}
+
+#[test]
+fn two_untitled_prompts_give_two_sessions() {
+    let first = parse_at(
+        "/h/Takeout/Drive/Google AI Studio/Untitled prompt",
+        &prompt(vec![
+            json!({"role": "user", "text": "about rivers", "createTime": "2026-01-01T00:00:00Z"}),
+        ]),
+    );
+    let second = parse_at(
+        "/h/other/Takeout/Drive/Google AI Studio/Untitled prompt",
+        &prompt(vec![
+            json!({"role": "user", "text": "about mountains", "createTime": "2026-02-01T00:00:00Z"}),
+        ]),
+    );
+    let session = |step: &crate::parse::Step| step.output.sessions[0].id.clone();
+    assert_ne!(session(&first), session(&second));
+    assert!(session(&first).native().as_str().starts_with("content-"));
+    // The title is still the file name; it is not the identity.
+    assert_eq!(
+        first.output.sessions[0].title.as_ref().unwrap().text,
+        "Untitled prompt"
+    );
+    let renamed = parse_at(
+        "/h/Takeout/Drive/Google AI Studio/Rivers",
+        &prompt(vec![
+            json!({"role": "user", "text": "about rivers", "createTime": "2026-01-01T00:00:00Z"}),
+        ]),
+    );
+    assert_eq!(session(&renamed), session(&first));
+}
+
+#[test]
+fn the_drive_collector_names_a_prompt_by_its_file_id() {
+    let step = parse_at(
+        "/h/.local/share/polylogue/drive/ai-studio/1AbC.json",
+        &prompt(vec![json!({"role": "user", "text": "hello"})]),
+    );
+    assert_eq!(step.output.sessions[0].id.to_string(), "ai-studio:1AbC");
+    assert!(step.output.sessions[0].title.is_none());
 }

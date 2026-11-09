@@ -3,7 +3,7 @@ use polylogue_model::{Block, ErrorReason, Role, ToolOutcome, UnknownReason};
 use serde_json::json;
 
 fn header(profile: &str) -> Json {
-    json!({"db":"state.db","at_ms":9,"schema":{"sessions":"CREATE TABLE sessions(id TEXT PRIMARY KEY)","messages":"CREATE TABLE messages(id INTEGER PRIMARY KEY)"},"source":{"machine":"synthetic-machine","path":format!("/synthetic/{profile}/state.db")}})
+    json!({"db":"state.db","at_ms":9,"schema":{"sessions":"CREATE TABLE sessions(id TEXT PRIMARY KEY)","messages":"CREATE TABLE messages(id INTEGER PRIMARY KEY)"},"source":{"machine":"synthetic-machine","path":format!("/synthetic/.hermes/profiles/{profile}/state.db")}})
 }
 fn session(id: &str, parent: Option<&str>, end: Option<&str>) -> Json {
     json!({"t":"sessions","k":[id],"r":{"id":id,"source":"cli","model":"supplied-model","model_config":"{}","parent_session_id":parent,"end_reason":end,"started_at":0,"title":"Native title"}})
@@ -112,6 +112,34 @@ fn profiles_bind_exports_and_unbound_or_conflicting_exports_do_not_guess() {
     let conflicting = parse([vec![header("a"), header("b")], records].concat());
     assert!(conflicting.output.messages.is_empty());
     assert!(!conflicting.counts.skipped.is_empty());
+}
+
+#[test]
+fn hermes_home_move_keeps_session_ids() {
+    let records = vec![session("s", None, None), message(1, "s", "user", "body")];
+    let at = |machine: &str, path: &str| {
+        let mut header = header("unused");
+        header["source"] = json!({"machine": machine, "path": path});
+        parse([vec![header], records.clone()].concat())
+    };
+    let before = at("first-machine", "/home/one/.hermes/profiles/work/state.db");
+    let moved = at("second-machine", "/srv/hermes-home/profiles/work/state.db");
+    assert_eq!(before.output.sessions[0].id, moved.output.sessions[0].id);
+    assert_eq!(
+        before.output.sessions[0].id.to_string(),
+        "hermes:s@profile-work"
+    );
+    assert_eq!(
+        before.output.messages[0].message.id,
+        moved.output.messages[0].message.id
+    );
+    let home = at("first-machine", "/home/one/.hermes/state.db");
+    let other_home = at("first-machine", "/elsewhere/hermes/state.db");
+    assert_eq!(
+        home.output.sessions[0].id.to_string(),
+        "hermes:s@profile-default"
+    );
+    assert_eq!(home.output.sessions[0].id, other_home.output.sessions[0].id);
 }
 
 #[test]

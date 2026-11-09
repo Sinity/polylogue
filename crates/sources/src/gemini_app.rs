@@ -10,10 +10,10 @@
 //! own. Responses are HTML in the export and are kept as text.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 use crate::RecordOutcome;
-use crate::document::{Sink, message_id, session_id};
+use crate::document::{Sink, session_id};
 use crate::export::{ExportParser, ExportState};
 use crate::parse::{MessageRow, Parse};
 use polylogue_model::{
@@ -31,10 +31,14 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 }
 
 pub fn open(_path: &Path) -> Option<Parse> {
-    Some(Parse::Export(Box::new(GeminiApp)))
+    Some(Parse::Export(Box::new(GeminiApp::default())))
 }
 
-pub struct GeminiApp;
+#[derive(Default)]
+pub struct GeminiApp {
+    /// Names the turns, which the activity page gives no IDs.
+    ids: crate::content_ids::ContentIds,
+}
 
 const CELL: &str = "<div class=\"outer-cell";
 const BODY: &str = "mdl-typography--body-1\">";
@@ -60,6 +64,7 @@ impl ExportParser for GeminiApp {
         reader: &mut dyn crate::export::Input,
         items: &mut dyn crate::export::ItemSink,
     ) -> Result<crate::export::ScanStats, crate::export::ScanError> {
+        self.ids = Default::default();
         stream::scan(reader, |range, bytes| {
             let cell = String::from_utf8_lossy(bytes);
             let at = entry(&cell).and_then(|e| e.at).map(|t| t.unix_ms());
@@ -82,13 +87,17 @@ impl ExportParser for GeminiApp {
                 .record("activity", &RecordOutcome::unreadable("no content cell"));
             return Ok(());
         };
-        let stamp =
-            e.at.map(|t| t.unix_ms().to_string())
-                .unwrap_or_else(|| e.at_text.clone());
-        let native = e
-            .conversation
-            .clone()
-            .unwrap_or_else(|| format!("entry-{stamp}"));
+        // An entry outside a conversation is its own session, named by what
+        // was asked and answered: its time's text depends on the zone the
+        // export was made in.
+        let native = e.conversation.clone().unwrap_or_else(|| {
+            let hash = canonical_json::canonical_hash(
+                "polylogue-gemini-activity-entry",
+                &(&e.prompt, &e.files, &e.response, &e.notes),
+            )
+            .expect("strings have a canonical form");
+            format!("entry-{}", &hash.to_hex().as_str()[..32])
+        });
         let Some(sid) = session_id(ORIGIN, &native) else {
             sink.records.record(
                 &e.verb,
@@ -124,14 +133,6 @@ impl ExportParser for GeminiApp {
             sink.records.record(&e.verb, &RecordOutcome::Used);
             return Ok(());
         }
-        let (Some(user_id), Some(reply_id)) = (
-            message_id(ORIGIN, &format!("{native}#{stamp}-prompt")),
-            message_id(ORIGIN, &format!("{native}#{stamp}-response")),
-        ) else {
-            sink.records
-                .record(&e.verb, &RecordOutcome::unreadable("unusable message ID"));
-            return Ok(());
-        };
         let mut prompt_blocks = vec![Block::Text { text: e.prompt }];
         prompt_blocks.extend(e.files.iter().map(|f| {
             Block::File(Attachment {
@@ -140,11 +141,6 @@ impl ExportParser for GeminiApp {
                 ..Attachment::default()
             })
         }));
-        let user = message(user_id.clone(), &sid, Role::User, e.at, prompt_blocks);
-        let mut user = user;
-        user.parent = state.last_message(&sid)?;
-        user.attrs
-            .insert("activity_time".into(), Json::String(e.at_text.clone()));
         let mut reply_blocks = Vec::new();
         if !e.response.is_empty() {
             reply_blocks.push(Block::Text {
@@ -157,27 +153,48 @@ impl ExportParser for GeminiApp {
                 data: Json::String(note.clone()),
             });
         }
-        for row in [
-            Some(user),
-            (!reply_blocks.is_empty()).then(|| {
-                let mut m = message(reply_id.clone(), &sid, Role::Assistant, e.at, reply_blocks);
-                m.parent = Some(user_id.clone());
-                m.attrs
-                    .insert("activity_time".into(), Json::String(e.at_text.clone()));
-                m
-            }),
-        ]
-        .into_iter()
-        .flatten()
-        {
+        let Some(user_id) =
+            self.ids
+                .next(&sid, Role::User, &crate::content_ids::text(&prompt_blocks))
+        else {
+            sink.records
+                .record(&e.verb, &RecordOutcome::unreadable("unusable message ID"));
+            return Ok(());
+        };
+        let mut user = message(user_id.clone(), &sid, Role::User, e.at, prompt_blocks);
+        user.parent = state.last_message(&sid)?;
+        user.attrs
+            .insert("activity_time".into(), Json::String(e.at_text.clone()));
+        let mut last = user_id.clone();
+        let mut rows = vec![user];
+        if !reply_blocks.is_empty() {
+            let Some(reply_id) = self.ids.next(
+                &sid,
+                Role::Assistant,
+                &crate::content_ids::text(&reply_blocks),
+            ) else {
+                sink.records
+                    .record(&e.verb, &RecordOutcome::unreadable("unusable message ID"));
+                return Ok(());
+            };
+            let mut reply = message(reply_id.clone(), &sid, Role::Assistant, e.at, reply_blocks);
+            reply.parent = Some(user_id);
+            reply
+                .attrs
+                .insert("activity_time".into(), Json::String(e.at_text.clone()));
+            last = reply_id;
+            rows.push(reply);
+        }
+        for row in rows {
             let offset = sink.position();
             sink.out.messages.push(MessageRow {
+                id_kind: polylogue_model::IdKind::Content,
                 offset,
                 end: offset + 1,
                 message: row,
             });
         }
-        state.set_last_message(&sid, &reply_id)?;
+        state.set_last_message(&sid, &last)?;
         sink.records.record("Prompted", &RecordOutcome::Used);
         Ok(())
     }

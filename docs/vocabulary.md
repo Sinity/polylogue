@@ -59,6 +59,9 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **chat action**: a turn the extension drafts or sends in a web chat on a
   user's request.
 - **native ID**: the ID an origin itself gives a session or message.
+- **content ID**: the ID of a message whose source gives none: its session, a
+  hash of its role and content, and its occurrence among equal messages
+  (`id_kind` `content`, against `native`).
 - **linked material**: a page or file a conversation cites, fetched and stored.
 
 ## Parsing

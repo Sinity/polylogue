@@ -113,13 +113,52 @@ fn without_provider_json_the_extension_turns_are_read() {
         .iter()
         .map(|r| (r.message.id.to_string(), r.message.text()))
         .collect();
+    let named = |role: &str, text: &str| {
+        format!(
+            "gemini-app:{}",
+            crate::content_ids::tests::expected("g1", role, &format!("[\"{role}\",\"{text}\"]"), 0)
+        )
+    };
     assert_eq!(
         got,
         [
-            ("gemini-app:g1#0".to_string(), "question".to_string()),
-            ("gemini-app:g1#1".to_string(), "answer".to_string())
+            (named("user", "question"), "question".to_string()),
+            (named("assistant", "answer"), "answer".to_string())
         ]
     );
+}
+
+#[test]
+fn gemini_partial_page_capture_keeps_earlier_ids() {
+    let turn = |role: &str, text: &str, ordinal: u64| json!({"role": role, "text": text, "ordinal": ordinal, "blocks": []});
+    let ids = |turns: Vec<Json>| -> Vec<(String, String)> {
+        let bytes = capture(
+            json!({}),
+            json!({"provider": "gemini", "provider_session_id": "g1", "turns": turns}),
+        );
+        run_document(&Capture, &bytes)
+            .unwrap()
+            .output
+            .messages
+            .iter()
+            .map(|r| (r.message.text(), r.message.id.to_string()))
+            .collect()
+    };
+    let whole = ids(vec![
+        turn("user", "first", 0),
+        turn("model", "one", 1),
+        turn("user", "second", 2),
+        turn("model", "two, finished", 3),
+    ]);
+    // The page had scrolled the first exchange away, and the last answer was
+    // still being written.
+    let partial = ids(vec![
+        turn("user", "second", 7),
+        turn("model", "two, fini", 8),
+    ]);
+    assert_eq!(partial[0], whole[2]);
+    assert_ne!(partial[1].1, whole[3].1);
+    assert!(whole.iter().all(|(_, id)| id != &partial[1].1));
 }
 
 #[test]

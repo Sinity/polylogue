@@ -24,8 +24,8 @@ use crate::parse::{DocumentParser, ExtractedBlob, MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
 use base64::Engine as _;
 use polylogue_model::{
-    Attachment, AttachmentDirection, BlobHash, Block, Event, Json, Message, PromptKind, Role,
-    Session, SessionKind, TitleSource,
+    Attachment, AttachmentDirection, BlobHash, Block, Event, IdKind, Json, Message, PromptKind,
+    Role, Session, SessionKind, TitleSource,
 };
 use std::path::Path;
 
@@ -352,7 +352,8 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
         .flatten()
         .collect();
     list.sort_by_key(|t| t.get("ordinal").and_then(Json::as_i64).unwrap_or(i64::MAX));
-    for (i, turn) in list.into_iter().enumerate() {
+    let mut ids = crate::content_ids::ContentIds::default();
+    for turn in list {
         let role_name = str_of(turn, "role").unwrap_or("?").to_owned();
         let header = crate::fields::header(turn, &["attachments", "blocks"]);
         sink.records.fields("turn", &header, &TURN_FIELDS);
@@ -389,20 +390,6 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
                 continue;
             }
         };
-        // A turn the page shows without an ID keeps its identity by its
-        // place in the conversation.
-        let turn_native = string_of(turn, "provider_turn_id").unwrap_or_else(|| {
-            let place = turn
-                .get("ordinal")
-                .and_then(Json::as_u64)
-                .unwrap_or(i as u64);
-            format!("{native}#{place}")
-        });
-        let Some(id) = message_id(origin, &turn_native) else {
-            sink.records
-                .record(&role_name, &RecordOutcome::unreadable("unusable turn ID"));
-            continue;
-        };
         let mut blocks: Vec<Block> = turn
             .get("blocks")
             .and_then(Json::as_array)
@@ -425,6 +412,21 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
             let stored = attachment_bytes(a, sink);
             blocks.extend(attachment(a, direction, stored));
         }
+        // A turn the page shows without an ID is named by its text, so a
+        // capture holding only the later turns, or one taken after a turn
+        // was edited, names every other turn the same.
+        let (id, id_kind) = match str_of(turn, "provider_turn_id") {
+            Some(native) => (message_id(origin, native), IdKind::Native),
+            None => (
+                ids.next(&sid, role, &crate::content_ids::text(&blocks)),
+                IdKind::Content,
+            ),
+        };
+        let Some(id) = id else {
+            sink.records
+                .record(&role_name, &RecordOutcome::unreadable("unusable turn ID"));
+            continue;
+        };
         let message = {
             let (at, time_evidence) = crate::time::parts(turn.get("timestamp").and_then(time_of));
             Message {
@@ -449,6 +451,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
         };
         let offset = sink.position();
         sink.out.messages.push(MessageRow {
+            id_kind,
             offset,
             end: offset + 1,
             message,

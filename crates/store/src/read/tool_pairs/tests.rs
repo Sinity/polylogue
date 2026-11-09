@@ -245,11 +245,13 @@ fn sparse_original_ordinals_and_hidden_current_projection_never_fall_back_to_old
         sessions: vec![Session::new(call.session.clone(), SessionKind::Main)],
         messages: vec![
             MessageRow {
+                id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
                 end: 1,
                 message: call.clone(),
             },
             MessageRow {
+                id_kind: polylogue_model::IdKind::Native,
                 offset: 1,
                 end: 2,
                 message: result.clone(),
@@ -284,7 +286,7 @@ fn sparse_original_ordinals_and_hidden_current_projection_never_fall_back_to_old
     assert_eq!(pair.result.as_ref().unwrap().source.block, Some(7));
     drop(reader);
     let conn = index(&archive);
-    conn.execute("UPDATE message_projection SET layout=?1 WHERE version_hash=(SELECT s.version_hash FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE m.id=?2 AND s.shown=1)", params![serde_json::to_vec(&(8u64, vec![6u64])).unwrap(), result.id.to_string()]).unwrap();
+    conn.execute("UPDATE message_projection SET layout=?1 WHERE version_hash=(SELECT s.version_hash FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE m.id=?2 AND s.input_pk=m.input_pk AND s.chain=m.source_chain)", params![serde_json::to_vec(&(8u64, vec![6u64])).unwrap(), result.id.to_string()]).unwrap();
     conn.execute(
         "UPDATE block SET body=?1 WHERE message_pk=(SELECT pk FROM message WHERE id=?2)",
         params![vec![255u8], result.id.to_string()],

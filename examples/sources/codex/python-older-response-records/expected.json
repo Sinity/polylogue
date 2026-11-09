@@ -52,6 +52,7 @@
     "messages": [
       {
         "end": 381,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -59,7 +60,7 @@
               "type": "text"
             }
           ],
-          "id": "codex:older-response-session@279",
+          "id": "codex:older-response-session~user-b1135cf92395a23e-0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "codex:older-response-session",
@@ -89,6 +90,7 @@
       },
       {
         "end": 692,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -105,7 +107,7 @@
               "type": "tool_call"
             }
           ],
-          "id": "codex:older-response-session@578",
+          "id": "codex:older-response-session~assistant-d4575d2248ee7322-0",
           "production": {
             "response_boundary_unknown": true
           },
@@ -117,6 +119,7 @@
       },
       {
         "end": 859,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -128,7 +131,7 @@
               "type": "tool_result"
             }
           ],
-          "id": "codex:older-response-session@693",
+          "id": "codex:older-response-session~user-7eea94d173c0a5fd-0",
           "prompt_kind": "harness",
           "role": "user",
           "session": "codex:older-response-session",
@@ -138,6 +141,7 @@
       },
       {
         "end": 989,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -154,7 +158,7 @@
               "type": "tool_call"
             }
           ],
-          "id": "codex:older-response-session@860",
+          "id": "codex:older-response-session~assistant-88895d3052077e7e-0",
           "production": {
             "response_boundary_unknown": true
           },
@@ -166,6 +170,7 @@
       },
       {
         "end": 1188,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -181,7 +186,7 @@
               "type": "tool_result"
             }
           ],
-          "id": "codex:older-response-session@990",
+          "id": "codex:older-response-session~user-08193043e3ca94bd-0",
           "prompt_kind": "harness",
           "role": "user",
           "session": "codex:older-response-session",
@@ -191,6 +196,7 @@
       },
       {
         "end": 1338,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -198,7 +204,7 @@
               "type": "text"
             }
           ],
-          "id": "codex:older-response-session@1213",
+          "id": "codex:older-response-session~assistant-a38431a38f16913b-0",
           "production": {
             "response_boundary_unknown": true
           },

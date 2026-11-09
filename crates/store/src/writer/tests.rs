@@ -200,6 +200,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
 
 fn row(offset: u64, message: Message) -> MessageRow {
     MessageRow {
+        id_kind: polylogue_model::IdKind::Native,
         offset,
         end: offset,
         message,
@@ -1083,6 +1084,8 @@ fn source_arrival_order_does_not_change_message_order_or_derived_title() {
 
 mod restating;
 
+mod content_ids;
+
 mod array_order;
 
 mod record_order;
@@ -1125,6 +1128,7 @@ fn first_build_stays_in_wal_and_finishes_while_a_read_stays_open() {
                     0,
                     0,
                     vec![MessageRow {
+                        id_kind: polylogue_model::IdKind::Native,
                         offset: 0,
                         end: 100,
                         message: text_message("m1", "a", Role::User, "synthetic first build", None),
@@ -1258,6 +1262,7 @@ fn parse_positions_and_rows_commit_atomically_during_first_build() {
             0,
             0,
             vec![MessageRow {
+                id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
                 end: 100,
                 message: text_message(
@@ -1306,6 +1311,7 @@ fn interrupted_secondary_index_finish_retries_ordinary_build() {
             0,
             0,
             vec![MessageRow {
+                id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
                 end: 100,
                 message: text_message(

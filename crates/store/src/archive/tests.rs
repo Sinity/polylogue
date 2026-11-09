@@ -250,6 +250,7 @@ fn a_stopped_process_resumes_its_committed_parse_positions() {
                 polylogue_model::SessionKind::Main,
             )],
             messages: vec![polylogue_model::MessageRow {
+                id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
                 end: 1,
                 message: crate::fixture::writer::prose("resume", 0, 1, "kept message").remove(0),

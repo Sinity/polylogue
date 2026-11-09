@@ -123,17 +123,20 @@ CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' A
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
 
 -- Every stored version that contributed to a message: one row per input chain
--- whose records hold a version of it (the shown version's row repeats the
--- message's own columns). A citation names a row here, never just an input and
--- offsets, because a rewritten input's new chain puts other bytes at the same
--- offsets (an outside review, 2026-10-12). Rebuilt with the message.
+-- whose records hold a version of it. The shown version's row is the one at the
+-- message's own (input_pk, source_chain). A citation names a row here, never
+-- just an input and offsets, because a rewritten input's new chain puts other
+-- bytes at the same offsets (an outside review, 2026-10-12). Rebuilt with the
+-- message. A message named by its content (id_kind 'content') keeps a row only
+-- from its input's latest chain once that chain is read to its end: a rewrite
+-- that no longer holds it no longer shows it.
 CREATE TABLE message_source (
   message_pk        INTEGER NOT NULL REFERENCES message(pk),
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,       -- archive.db revision.chain
   source_start      INTEGER NOT NULL,
   source_end        INTEGER NOT NULL,       -- equal to source_start until parsers report record ends
-  shown         INTEGER NOT NULL,       -- 1 for the version the message shows
+  id_kind           TEXT NOT NULL CHECK (id_kind IN ('native','content')), -- where the message ID came from
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
   main              INTEGER NOT NULL DEFAULT 1,
   arrival_rank      INTEGER NOT NULL DEFAULT 0,

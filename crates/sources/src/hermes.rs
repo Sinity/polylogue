@@ -1,7 +1,7 @@
 //! Hermes state rows, read from one stored row dump. Session facts
 //! and record identities are metadata; message bodies are decoded one at a time.
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 use crate::fields::ExpectedType as T;
 mod identity;
@@ -26,11 +26,10 @@ use std::path::Path;
 pub const LOCATIONS: &[&str] = &[".hermes/state.db", ".hermes/verification_evidence.db"];
 pub const ORIGIN: &str = "hermes";
 
-/// The ID of a session in the Hermes state database at `state_db` on
-/// `machine`, as its parsed rows name it, for the hook events Hermes sends
-/// while it runs.
-pub fn session_at(machine: &str, state_db: &Path, native: &str) -> Option<SessionId> {
-    let source = serde_json::json!({ "machine": machine, "path": state_db });
+/// The ID of a session in the Hermes state database at `state_db`, as its
+/// parsed rows name it, for the hook events Hermes sends while it runs.
+pub fn session_at(state_db: &Path, native: &str) -> Option<SessionId> {
+    let source = serde_json::json!({ "path": state_db });
     let profile = identity::profile(Some(&source)).ok()??;
     session_id(ORIGIN, &format!("{native}@profile-{profile}"))
 }
@@ -611,6 +610,7 @@ impl ExportParser for Database {
                 if let Some(prompt) = text(row, "system_prompt") {
                     let offset = sink.position();
                     sink.out.messages.push(MessageRow {
+                        id_kind: polylogue_model::IdKind::Native,
                         offset,
                         end: offset + 1,
                         message: message::system(
@@ -700,6 +700,7 @@ impl ExportParser for Database {
                         }
                         let offset = sink.position();
                         sink.out.messages.push(MessageRow {
+                            id_kind: polylogue_model::IdKind::Native,
                             offset,
                             end: offset + 1,
                             message,

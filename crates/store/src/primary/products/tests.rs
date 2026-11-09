@@ -61,6 +61,7 @@ fn complete_callback_product_roundtrip_preserves_all_semantic_maps_and_generated
     let mut output = Output {
         sessions: vec![Session::new(message.session.clone(), SessionKind::Main)],
         messages: vec![MessageRow {
+            id_kind: polylogue_model::IdKind::Native,
             offset: 7,
             end: 19,
             message: message.clone(),

@@ -163,6 +163,7 @@ fn confirmed_forward_message_associations_survive_weaker_donors_and_target_arriv
         step(
             Output {
                 messages: vec![MessageRow {
+                    id_kind: polylogue_model::IdKind::Native,
                     offset: 1,
                     end: 2,
                     message,

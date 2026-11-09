@@ -4,6 +4,7 @@ use super::*;
 fn a_parse_from_the_first_byte_restates_event_positions() {
     let w = test_archive();
     let row = MessageRow {
+        id_kind: polylogue_model::IdKind::Native,
         offset: 100,
         end: 200,
         message: text_message("a", "s", Role::User, "A", None),

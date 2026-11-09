@@ -282,7 +282,7 @@ fn session_of(harness: Harness, payload: &Value, startup: &Startup) -> Option<Se
                 .iter()
                 .find(|location| **location == "state.db")?;
             let state_db = startup.engine.root(origin.root).join(location);
-            polylogue_sources::hermes::session_at(&startup.config.identity.machine, &state_db, id)
+            polylogue_sources::hermes::session_at(&state_db, id)
         }
         _ => SessionId::parse(&format!("{}:{id}", harness.origin())).ok(),
     }

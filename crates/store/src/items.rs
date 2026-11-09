@@ -97,7 +97,7 @@ fn units(conn: &Connection, session_pk: i64) -> Result<Vec<Unit>> {
                     coalesce(s.version_hash, (SELECT CAST(count(*) || ':' || coalesce(max(b.pk), 0) AS BLOB)
                                               FROM block b WHERE b.message_pk = m.pk)),
                     m.on_active_path, m.parent_id, m.at
-             FROM message m LEFT JOIN message_source s ON s.message_pk = m.pk AND s.shown = 1
+             FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
              WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
              ORDER BY m.order_input_id, m.seq, m.record_position, m.id",
         )?

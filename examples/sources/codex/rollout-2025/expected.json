@@ -52,6 +52,7 @@
     "messages": [
       {
         "end": 325,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -59,7 +60,7 @@
               "type": "text"
             }
           ],
-          "id": "codex:019a0000-0000-7000-8000-000000000002@225",
+          "id": "codex:019a0000-0000-7000-8000-000000000002~user-2e1e40b1fdda2fa2-0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "codex:019a0000-0000-7000-8000-000000000002",
@@ -120,6 +121,7 @@
       },
       {
         "end": 735,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -131,7 +133,7 @@
               "type": "tool_result"
             }
           ],
-          "id": "codex:019a0000-0000-7000-8000-000000000002@575",
+          "id": "codex:019a0000-0000-7000-8000-000000000002~user-780b84ed937084c3-0",
           "prompt_kind": "harness",
           "role": "user",
           "session": "codex:019a0000-0000-7000-8000-000000000002",

@@ -101,6 +101,7 @@
       },
       {
         "end": 585,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -113,7 +114,7 @@
               "type": "tool_result"
             }
           ],
-          "id": "codex:tool-call-session-1@466",
+          "id": "codex:tool-call-session-1~user-a4f53d26cf1419d1-0",
           "prompt_kind": "harness",
           "role": "user",
           "session": "codex:tool-call-session-1",

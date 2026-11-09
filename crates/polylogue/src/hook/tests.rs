@@ -98,7 +98,6 @@ fn hermes_session_uses_the_resolved_source_profile_and_machine() {
         PathBuf::from("/synthetic/other-hermes"),
     );
     let expected = polylogue_sources::hermes::session_at(
-        "synthetic-machine",
         Path::new("/synthetic/other-hermes/state.db"),
         "turn-1",
     )

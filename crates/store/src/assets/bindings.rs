@@ -565,7 +565,7 @@ fn retained_bindings(
            AND EXISTS(SELECT 1 FROM message m
              JOIN message_source s ON s.message_pk=m.pk AND s.version_hash=b.source_version AND s.chain=b.chain
              JOIN input_ref i ON i.pk=s.input_pk AND i.id=b.input
-             WHERE m.id=b.message AND (?5=0 OR s.shown=1))
+             WHERE m.id=b.message AND (?5=0 OR (s.input_pk=m.input_pk AND s.chain=m.source_chain)))
          ORDER BY b.input,b.chain,b.import_id,b.source_version,b.declared_input,b.declared_chain,b.declared_import_id,b.claim"
     )?;
     let mut rows = statement.query(params![

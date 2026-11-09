@@ -152,6 +152,7 @@
       },
       {
         "end": 648,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -164,7 +165,7 @@
               "type": "tool_result"
             }
           ],
-          "id": "codex:interleaved-session-1@544",
+          "id": "codex:interleaved-session-1~user-2a59c35cb3d52f98-0",
           "prompt_kind": "harness",
           "role": "user",
           "session": "codex:interleaved-session-1",
@@ -220,6 +221,7 @@
       },
       {
         "end": 1108,
+        "id_kind": "content",
         "message": {
           "blocks": [
             {
@@ -231,7 +233,7 @@
               "type": "tool_result"
             }
           ],
-          "id": "codex:interleaved-session-1@995",
+          "id": "codex:interleaved-session-1~user-de32bcad6d183651-0",
           "prompt_kind": "harness",
           "role": "user",
           "session": "codex:interleaved-session-1",

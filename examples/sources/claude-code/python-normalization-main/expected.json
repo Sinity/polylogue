@@ -248,6 +248,7 @@
       },
       {
         "end": 2397,
+        "id_kind": "content",
         "message": {
           "at": "2026-07-01T10:00:06Z",
           "blocks": [
@@ -256,7 +257,7 @@
               "type": "text"
             }
           ],
-          "id": "claude-code:claude-normalization-main@2211",
+          "id": "claude-code:claude-normalization-main~user-adda76ed311ff878-0",
           "parent": "claude-code:main-context",
           "prompt_kind": "harness",
           "role": "user",
@@ -342,6 +343,7 @@
       },
       {
         "end": 4088,
+        "id_kind": "content",
         "message": {
           "at": "2026-07-01T10:00:10Z",
           "blocks": [
@@ -351,7 +353,7 @@
             }
           ],
           "duration_ms": 250,
-          "id": "claude-code:claude-normalization-main@3682",
+          "id": "claude-code:claude-normalization-main/sidechain~assistant-36451488b358ecdf-0",
           "model": "claude-opus-4-6",
           "parent": "claude-code:main-fg-result",
           "reported_cost_usd": 0.025,

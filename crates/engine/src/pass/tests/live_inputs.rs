@@ -99,6 +99,7 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
         modules: &[],
         support: Support::Parsed,
         arrival: Arrival::Live,
+        input_identity: polylogue_sources::InputIdentity::Location,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,

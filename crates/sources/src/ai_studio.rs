@@ -12,7 +12,7 @@
 //! text; joined, they equal the chunk's `text`.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
@@ -23,9 +23,9 @@ use crate::parse::{ExtractedBlob, MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
 use base64::Engine as _;
 use polylogue_model::{
-    Attachment, AttachmentDirection, BlobHash, Block, ErrorReason, Event, Json, Link, LinkKind,
-    Message, PromptKind, Role, Session, SessionKind, TitleSource, ToolAction, ToolOutcome,
-    UnknownReason, Usage,
+    Attachment, AttachmentDirection, BlobHash, Block, ErrorReason, Event, IdKind, Json, Link,
+    LinkKind, Message, PromptKind, Role, Session, SessionKind, TitleSource, ToolAction,
+    ToolOutcome, UnknownReason, Usage,
 };
 use std::path::Path;
 
@@ -64,19 +64,31 @@ pub fn open(path: &Path) -> Option<Parse> {
     if is_listing(path) {
         return Some(Parse::Export(Box::new(Listing::default())));
     }
-    let native = native_of(path)?;
-    let title = title_of(path);
-    Some(Parse::Export(Box::new(AiStudio {
-        native,
-        title,
-        state: PromptState::default(),
+    let name = name_of(path)?;
+    let in_spool = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .is_some_and(|n| n == "ai-studio");
+    Some(Parse::Export(Box::new(if in_spool {
+        AiStudio {
+            drive_id: Some(name),
+            native: String::new(),
+            title: None,
+            state: PromptState::default(),
+        }
+    } else {
+        AiStudio {
+            drive_id: None,
+            native: String::new(),
+            title: Some(name),
+            state: PromptState::default(),
+        }
     })))
 }
 
-/// The prompt's identity: the Drive file ID the collector names its files
-/// by, otherwise the file name, which is the prompt's title in a Drive
-/// download or Takeout (renaming a downloaded prompt makes a new session).
-fn native_of(path: &Path) -> Option<String> {
+/// The file's name without `.json`: the Drive file ID in the collector's
+/// spool, the prompt's title in a Drive download or Takeout.
+fn name_of(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
     // A zip member path ends in its own name after `!/`.
     let name = name.rsplit("!/").next()?;
@@ -84,18 +96,25 @@ fn native_of(path: &Path) -> Option<String> {
     (!stem.is_empty()).then(|| stem.to_owned())
 }
 
-fn title_of(path: &Path) -> Option<String> {
-    let in_spool = path
-        .parent()
-        .and_then(|p| p.file_name())
-        .is_some_and(|n| n == "ai-studio");
-    if in_spool {
-        return None;
+/// The prompt's identity. The Drive collector's file is named by the Drive
+/// file ID, which the listing and `branchParent` also use. A download or
+/// Takeout carries no file ID and names the file by the prompt's title,
+/// which two prompts can share and a rename changes, so its prompt is named
+/// by its content: the first chunk (which holds its creation time), or the
+/// whole document when it has no chunks.
+fn content_key(first_chunk: Option<&Json>, metadata: &Json) -> String {
+    let hash = match first_chunk {
+        Some(chunk) => canonical_json::canonical_hash("polylogue-ai-studio-first-chunk", chunk),
+        None => canonical_json::canonical_hash("polylogue-ai-studio-document", metadata),
     }
-    native_of(path)
+    .expect("a JSON value has a canonical form");
+    format!("content-{}", &hash.to_hex().as_str()[..32])
 }
 
 pub struct AiStudio {
+    /// The Drive file ID, for a prompt the collector fetched.
+    drive_id: Option<String>,
+    /// The session's native ID, set when the document is scanned.
     native: String,
     /// The file name, used as the title when the document names none.
     title: Option<String>,
@@ -116,6 +135,8 @@ struct PromptState {
     started: bool,
     parent: Option<polylogue_model::SessionId>,
     ambiguous_parent: bool,
+    /// Names the chunks that carry no `id`.
+    ids: crate::content_ids::ContentIds,
 }
 
 static DOCUMENT_FIELDS: Fields = Fields::new(&[
@@ -254,10 +275,18 @@ impl ExportParser for AiStudio {
         item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {
         self.state = PromptState::default();
+        let mut first_chunk = None;
         let (metadata, stats) =
             crate::export::scan_nested(reader, &["chunkedPrompt", "chunks"], |range, raw| {
+                if first_chunk.is_none() {
+                    first_chunk = serde_json::from_str::<Json>(raw.get()).ok();
+                }
                 item.push(range, Vec::new(), None, raw.get().as_bytes())
             })?;
+        self.native = match &self.drive_id {
+            Some(id) => id.clone(),
+            None => content_key(first_chunk.as_ref(), &metadata),
+        };
         self.state.chunks = stats.elements;
         self.state.metadata = Some(metadata);
         Ok(stats)
@@ -311,7 +340,6 @@ impl ExportParser for AiStudio {
         let chunk: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         let chunk = &chunk;
         let sid = session_id(ORIGIN, &self.native).ok_or("unusable file name")?;
-        let i = self.state.position;
         self.state.position += 1;
         let kind = chunk_role(chunk).unwrap_or("?").to_owned();
         sink.records.fields(&kind, chunk, &CHUNK_FIELDS);
@@ -330,8 +358,8 @@ impl ExportParser for AiStudio {
             }
             self.state.parent = Some(parent);
         }
-        match self.message(&sid, i, chunk, sink) {
-            Ok(mut message) => {
+        match self.message(&sid, chunk, sink) {
+            Ok((mut message, id_kind)) => {
                 if !self.state.emitted {
                     let doc = self
                         .state
@@ -379,6 +407,7 @@ impl ExportParser for AiStudio {
                         let id = message_id(ORIGIN, &message_key(&self.native, "system", ""))
                             .ok_or("unusable system id")?;
                         sink.out.messages.push(MessageRow {
+                            id_kind: polylogue_model::IdKind::Native,
                             offset: 0,
                             end: self.state.length,
                             message: plain(
@@ -407,6 +436,7 @@ impl ExportParser for AiStudio {
                 self.state.previous = Some(message.id.clone());
                 let offset = sink.position();
                 sink.out.messages.push(MessageRow {
+                    id_kind,
                     offset,
                     end: offset + 1,
                     message,
@@ -468,10 +498,9 @@ impl AiStudio {
     fn message(
         &mut self,
         sid: &polylogue_model::SessionId,
-        position: usize,
         chunk: &Json,
         sink: &mut Sink<'_>,
-    ) -> Result<Message, RecordOutcome> {
+    ) -> Result<(Message, IdKind), RecordOutcome> {
         let native_role = chunk_role(chunk);
         if native_role != Some("model") {
             self.state.pending_call = None;
@@ -483,12 +512,17 @@ impl AiStudio {
             Some(other) => return Err(RecordOutcome::unreadable(format!("unknown role {other}"))),
             None => return Err(RecordOutcome::unreadable("no role")),
         };
-        let native = match str_of(chunk, "id") {
-            Some(id) => message_key(&self.native, "id", id),
-            None => message_key(&self.native, "position", &position.to_string()),
+        // A chunk without an ID is named by its content, so deleting or
+        // inserting a chunk leaves the others' IDs alone.
+        let (id, id_kind) = match str_of(chunk, "id") {
+            Some(id) => (
+                message_id(ORIGIN, &message_key(&self.native, "id", id)),
+                IdKind::Native,
+            ),
+            None => (self.state.ids.next(sid, role, chunk), IdKind::Content),
         };
-        let id =
-            message_id(ORIGIN, &native).ok_or_else(|| RecordOutcome::unreadable("unusable id"))?;
+        let id = id.ok_or_else(|| RecordOutcome::unreadable("unusable id"))?;
+        let native = id.native().as_str().to_owned();
         let thought = chunk.get("isThought").and_then(Json::as_bool) == Some(true);
 
         let mut blocks = text_blocks(chunk, thought);
@@ -602,7 +636,7 @@ impl AiStudio {
             self.state.pending_call = None;
             self.state.ambiguous_calls = false;
         }
-        Ok(message)
+        Ok((message, id_kind))
     }
 }
 

@@ -224,8 +224,9 @@ answers, never connections or SQL.
 ## Deletion
 
 Polylogue has no deletion. Re-parse is not deletion: it replaces a chain's
-parsed rows with a new reading of the same stored bytes, and the earlier
-reading stays as an earlier version ([versioned rows](archive.md#versioned-rows)).
+parsed rows with a new reading of the same stored bytes, which stay, so any
+reading can be produced again; rows read from other chains and other inputs
+stay as they are ([versioned rows](archive.md#versioned-rows)).
 A secret that matters is edited out of its source by the operator or an agent,
 as an exceptional act; both revisions stay in the archive. In primary mode,
 Sinex's lifecycle (archive, restore, tombstone) applies to Polylogue's

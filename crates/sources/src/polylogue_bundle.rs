@@ -187,6 +187,7 @@ impl ExportParser for Bundle {
                     },
                 );
                 sink.out.messages.push(polylogue_model::MessageRow {
+                    id_kind: polylogue_model::IdKind::Native,
                     offset: at,
                     end: at,
                     message: record.message,

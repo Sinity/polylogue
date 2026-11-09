@@ -225,6 +225,7 @@ impl Overlay {
                     }
                     Value::Response {
                         row: Box::new(polylogue_model::MessageRow {
+                            id_kind: polylogue_model::IdKind::Native,
                             offset,
                             end,
                             message: value,

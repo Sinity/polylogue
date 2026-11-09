@@ -29,6 +29,7 @@
     "messages": [
       {
         "end": 219,
+        "id_kind": "content",
         "message": {
           "at": "2025-02-03T10:00:00Z",
           "blocks": [
@@ -43,7 +44,7 @@
               "type": "file"
             }
           ],
-          "id": "ai-studio:17:multi_turn_prompt#position:1:0",
+          "id": "ai-studio:multi_turn_prompt~user-2391aebd01ef8b28-0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:multi_turn_prompt",
@@ -54,6 +55,7 @@
       },
       {
         "end": 382,
+        "id_kind": "content",
         "message": {
           "at": "2025-02-03T10:00:30Z",
           "blocks": [
@@ -62,8 +64,8 @@
               "type": "thinking"
             }
           ],
-          "id": "ai-studio:17:multi_turn_prompt#position:1:1",
-          "parent": "ai-studio:17:multi_turn_prompt#position:1:0",
+          "id": "ai-studio:multi_turn_prompt~assistant-b29faa5a12557018-0",
+          "parent": "ai-studio:multi_turn_prompt~user-2391aebd01ef8b28-0",
           "role": "assistant",
           "session": "ai-studio:multi_turn_prompt",
           "attrs": {
@@ -76,6 +78,7 @@
       },
       {
         "end": 676,
+        "id_kind": "content",
         "message": {
           "at": "2025-02-03T10:01:00Z",
           "blocks": [
@@ -84,8 +87,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:17:multi_turn_prompt#position:1:2",
-          "parent": "ai-studio:17:multi_turn_prompt#position:1:1",
+          "id": "ai-studio:multi_turn_prompt~assistant-b0d63cf9d48ff28c-0",
+          "parent": "ai-studio:multi_turn_prompt~assistant-b29faa5a12557018-0",
           "role": "assistant",
           "session": "ai-studio:multi_turn_prompt",
           "stop_reason": "STOP",
@@ -111,6 +114,7 @@
       },
       {
         "end": 778,
+        "id_kind": "content",
         "message": {
           "at": "2025-02-03T10:01:30Z",
           "blocks": [
@@ -119,8 +123,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:17:multi_turn_prompt#position:1:3",
-          "parent": "ai-studio:17:multi_turn_prompt#position:1:2",
+          "id": "ai-studio:multi_turn_prompt~user-f41eb085e226ca70-0",
+          "parent": "ai-studio:multi_turn_prompt~assistant-b0d63cf9d48ff28c-0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:multi_turn_prompt",
@@ -131,6 +135,7 @@
       },
       {
         "end": 953,
+        "id_kind": "content",
         "message": {
           "at": "2025-02-03T10:02:00Z",
           "blocks": [
@@ -139,8 +144,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:17:multi_turn_prompt#position:1:4",
-          "parent": "ai-studio:17:multi_turn_prompt#position:1:3",
+          "id": "ai-studio:multi_turn_prompt~assistant-74dd86d4a7e927f9-0",
+          "parent": "ai-studio:multi_turn_prompt~user-f41eb085e226ca70-0",
           "role": "assistant",
           "session": "ai-studio:multi_turn_prompt",
           "stop_reason": "STOP",

@@ -174,3 +174,46 @@ fn source_local_zone_is_retained_and_ambiguous_zone_is_unknown() {
         "Jul 27, 2026, 10:59:30 PM CST"
     );
 }
+
+#[test]
+fn takeouts_with_different_zone_text_give_one_copy() {
+    // One turn, exported once where the zone name resolves (CEST) and once
+    // where it is ambiguous (CST, which stays unknown): the turn's text,
+    // not its time's text, names it.
+    let export = |time: &str, app: Option<&str>| {
+        let html = format!(
+            "<html><body>{}</body></html>",
+            cell(
+                &format!("Prompted\u{a0}a question<br>{time}<br><p>an answer</p>"),
+                app
+            )
+        );
+        crate::export::fixture::parse(
+            &mut open(Path::new("MyActivity.html")).unwrap(),
+            html.as_bytes(),
+        )
+        .unwrap()
+    };
+    let ids = |step: &crate::parse::Step| -> Vec<String> {
+        step.output
+            .messages
+            .iter()
+            .map(|row| {
+                assert_eq!(row.id_kind, polylogue_model::IdKind::Content);
+                row.message.id.to_string()
+            })
+            .collect()
+    };
+    for app in [Some("abc123"), None] {
+        let resolved = export("Jul 27, 2026, 10:59:30\u{202f}PM CEST", app);
+        let unresolved = export("Jul 27, 2026, 9:59:30\u{202f}PM CST", app);
+        assert!(resolved.output.messages[0].message.at.is_some());
+        assert!(unresolved.output.messages[0].message.at.is_none());
+        assert_eq!(ids(&resolved).len(), 2);
+        assert_eq!(ids(&resolved), ids(&unresolved), "{app:?}");
+        assert_eq!(
+            resolved.output.sessions[0].id,
+            unresolved.output.sessions[0].id
+        );
+    }
+}

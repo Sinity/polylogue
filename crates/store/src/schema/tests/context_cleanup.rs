@@ -17,8 +17,8 @@ fn repeated_source_upserts_keep_context_bodies_and_their_cleanup_markers() {
                  INSERT INTO message(pk,id,session_pk,order_input_pk,order_input_id,seq,role,written_by,input_pk)
                     VALUES(1,'claude-code:response',1,1,'context-input',0,'assistant','model',1);
                  INSERT INTO message_version VALUES(x'01',x'616263'),(x'02',x'646566');
-                 INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,shown,session_pk,version_hash)
-                    VALUES(1,1,17,0,4,1,1,x'01');
+                 INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,version_hash)
+                    VALUES(1,1,17,0,4,'native',1,x'01');
                  INSERT INTO changed_version VALUES('message',x'01');
                  INSERT INTO parser_context_state VALUES(1,17,'reading=1',4);
                  INSERT INTO parser_context VALUES(1,17,'reading=1',4,'retained-key',x'636f6e74657874',x'01');
@@ -33,8 +33,8 @@ fn repeated_source_upserts_keep_context_bodies_and_their_cleanup_markers() {
         // Revisiting an old version must reuse its pending cleanup marker.
         for hash in [vec![2u8], vec![1], vec![2]] {
             conn.execute(
-                    "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,shown,session_pk,version_hash)
-                     VALUES(1,1,17,0,4,1,1,?1)
+                    "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,version_hash)
+                     VALUES(1,1,17,0,4,'native',1,?1)
                      ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET version_hash=excluded.version_hash",
                     [hash],
                 ).unwrap();

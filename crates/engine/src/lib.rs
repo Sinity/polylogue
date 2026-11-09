@@ -505,13 +505,8 @@ impl Engine {
         Ok(self.writer.derive()?)
     }
 
-    /// A location's input id: stable for one path on one machine.
     fn location_id(&self, path: &Path) -> String {
-        let mut h = blake3::Hasher::new();
-        h.update(self.config.machine.as_bytes());
-        h.update(b"\0");
-        h.update(path.as_os_str().as_encoded_bytes());
-        h.finalize().to_hex()[..32].to_owned()
+        location_id(&self.config.machine, path)
     }
 
     /// Cached confirmed state keeps its original token until invalidation.
@@ -593,6 +588,26 @@ impl Engine {
             container: None,
         }
     }
+}
+
+/// A location's input ID ([`polylogue_sources::InputIdentity::Location`]):
+/// the first 32 hex digits of `blake3(machine \0 real path bytes)`, stable
+/// for one file on one machine. The real path has its directory's symlinks
+/// resolved, so a file reached through a linked directory (`~/.claude`
+/// linked to `$CLAUDE_CONFIG_DIR`) is one input; the file itself need not
+/// exist, so a deleted file keeps its ID.
+pub(crate) fn location_id(machine: &str, path: &Path) -> String {
+    let real = match (path.parent(), path.file_name()) {
+        (Some(directory), Some(name)) => std::fs::canonicalize(directory)
+            .map(|directory| directory.join(name))
+            .unwrap_or_else(|_| path.to_owned()),
+        _ => path.to_owned(),
+    };
+    let mut h = blake3::Hasher::new();
+    h.update(machine.as_bytes());
+    h.update(b"\0");
+    h.update(real.as_os_str().as_encoded_bytes());
+    h.finalize().to_hex()[..32].to_owned()
 }
 
 #[cfg(test)]

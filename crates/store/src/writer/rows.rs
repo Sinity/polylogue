@@ -301,6 +301,12 @@ fn apply_rows(
         crate::repo_lookup::upsert_lookup(tx, l, input_pk, chain, counter)?;
     }
     {
+        for (message_pk, source_input, source_chain) in &choices.dropped_message_sources {
+            tx.prepare_cached(
+                "DELETE FROM message_source WHERE message_pk=?1 AND input_pk=?2 AND chain=?3",
+            )?
+            .execute(params![message_pk, source_input, source_chain])?;
+        }
         for pk in choices.messages.keys() {
             written += u64::from(rows.refresh_message(*pk)?);
         }
@@ -595,22 +601,22 @@ impl RowWriter<'_, '_> {
                 pk
             }
         };
+        let id_kind = row.id_kind.as_str();
         if new {
             self.tx.prepare_cached(
-                "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,shown,complete,version_hash,session_pk,main,arrival_rank,seq,record_position)
+                "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,complete,version_hash,session_pk,main,arrival_rank,seq,record_position)
                  VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12)"
-            )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,v.complete,v.hash,session_pk,main,self.rank,position.0,position.1,false])?;
+            )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,v.complete,v.hash,session_pk,main,self.rank,position.0,position.1,id_kind])?;
             return Ok(false);
         }
         self.tx.prepare_cached(
-            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,shown,complete,version_hash,session_pk,main,arrival_rank,seq,record_position)
-             VALUES (?1,?2,?3,?4,?5,0,?6,?7,?8,?9,?10,?11,?12)
+            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,complete,version_hash,session_pk,main,arrival_rank,seq,record_position)
+             VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12)
              ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,
-             source_end=excluded.source_end,complete=excluded.complete,version_hash=excluded.version_hash,
-             shown=CASE WHEN message_source.version_hash=excluded.version_hash THEN message_source.shown ELSE 0 END,
+             source_end=excluded.source_end,id_kind=excluded.id_kind,complete=excluded.complete,version_hash=excluded.version_hash,
              session_pk=excluded.session_pk,main=excluded.main,arrival_rank=excluded.arrival_rank,
              seq=excluded.seq,record_position=excluded.record_position"
-        )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,v.complete,v.hash,session_pk,main,self.rank,position.0,position.1])?;
+        )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,v.complete,v.hash,session_pk,main,self.rank,position.0,position.1,id_kind])?;
         Ok(false)
     }
 
@@ -662,7 +668,6 @@ impl RowWriter<'_, '_> {
                 "UPDATE session SET changed=?2 WHERE pk=?1",
                 params![session_pk, self.counter],
             )?;
-            self.mark_shown(pk, &v)?;
             self.update_event_anchors(pk, true)?;
             return Ok(false);
         }
@@ -677,16 +682,7 @@ impl RowWriter<'_, '_> {
         self.clear_blocks(pk)?;
         self.update_message(pk, m, session_pk, &v, order)?;
         self.insert_blocks(pk, session_pk, m, prepared)?;
-        self.mark_shown(pk, &v)?;
         Ok(true)
-    }
-
-    fn mark_shown(&self, pk: i64, v: &Version) -> Result<()> {
-        self.tx.execute(
-            "UPDATE message_source SET shown=(input_pk=?2 AND chain=?3) WHERE message_pk=?1",
-            params![pk, v.input_pk, v.chain],
-        )?;
-        Ok(())
     }
 
     fn insert_message(
