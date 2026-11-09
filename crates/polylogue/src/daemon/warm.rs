@@ -28,8 +28,6 @@ use std::time::{Duration, Instant};
 
 /// Recent `similar:` texts whose query vectors are kept.
 const QUERY_VECTORS: usize = 256;
-/// A count this quick is repeated inside the `status` request.
-const QUICK_COUNT: Duration = Duration::from_millis(50);
 
 /// The most recently used entries, by key, at most `capacity`.
 struct Recent<V> {
@@ -240,29 +238,19 @@ impl Warm {
             .map_err(|e| e.to_string())
     }
 
-    /// The archive counts for `status`. When the last count was quick
-    /// (under [`QUICK_COUNT`]) and is older than `position`, it counts again
-    /// now, so a small archive's status is exact; otherwise it answers from
-    /// memory and asks the worker for newer counts. `None` until the first
-    /// count ends. After a failure, the worker retries while previous counts stay available.
-    pub fn counts(&self, reader: &Reader<'_>, position: &str) -> Option<Counted> {
+    /// The archive counts for `status`: the worker's last published count.
+    /// When it is older than `position`, the worker is asked to count again
+    /// and `status` answers with the older count and its position. `status`
+    /// never counts itself: a count takes time proportional to the archive,
+    /// and an earlier quick count says nothing about an archive that has
+    /// since grown. `None` until the first count ends. After a failure, the
+    /// worker retries while previous counts stay available.
+    pub fn counts(&self, position: &str) -> Option<Counted> {
         let held = self.archive_counts.lock().ok()?.clone();
-        match held {
-            Some(c) if c.position == position => Some(c),
-            Some(c) if c.took < QUICK_COUNT && self.count_error().is_none() => {
-                match self.record_count(count(reader, position)) {
-                    Some(counted) => Some(counted),
-                    None => {
-                        self.request_count();
-                        Some(c)
-                    }
-                }
-            }
-            held => {
-                self.request_count();
-                held
-            }
+        if held.as_ref().is_none_or(|c| c.position != position) {
+            self.request_count();
         }
+        held
     }
 
     /// Whether the index has caught up at `position`. The answer is computed
