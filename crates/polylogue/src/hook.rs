@@ -3,11 +3,11 @@
 //! (the default), Codex, Gemini CLI and Hermes.
 //!
 //! Every event is appended as one line to the hook spool file of the calling
-//! harness process, with `O_APPEND` and no fsync, naming the harness's
-//! origin and session and the harness process's identity (pid, start time
-//! and boot), which the live fold uses as the session's root process; the
-//! daemon reads those files like any other growing file. Some events also
-//! ask the daemon for context:
+//! harness process, with `O_APPEND` and synced to disk before the hook
+//! returns, naming the harness's origin and session and the harness
+//! process's identity (pid, start time and boot), which the live fold uses
+//! as the session's root process; the daemon reads those files like any
+//! other growing file. Some events also ask the daemon for context:
 //!
 //! - the session's start (`SessionStart`; Hermes: `pre_llm_call` on its
 //!   first turn): the session-start brief. Removing the hooks is the only
@@ -178,6 +178,9 @@ fn append_record(
         .mode(0o600)
         .open(dir.join(format!("{process}.ndjson")))?;
     f.write_all(&line)?;
+    // Hook-only facts exist nowhere else, so the line is on disk before the
+    // harness carries on.
+    f.sync_data()?;
     Ok(event_id)
 }
 

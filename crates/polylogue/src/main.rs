@@ -39,7 +39,10 @@ use std::process::ExitCode;
 /// mimalloc instead of glibc's allocator: a first build's sixteen parse
 /// threads fragmented glibc's arenas by about 1 GB beyond the live heap
 /// (heaptrack against RSS, 2026-10-19); mimalloc kept RSS 650 MB lower at
-/// the same speed.
+/// the same speed. Built without transparent huge pages (`no_thp`): marking
+/// its arena for them cost every short-lived process about 2 ms at the
+/// median and 15–30 ms at p95 (hook and `--version`), and the daemon parsed
+/// a 457 MB first build faster without them (2026-11-09).
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
