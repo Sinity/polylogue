@@ -58,10 +58,11 @@ jobs:
       # Pull requests run the tests their changes can affect; master runs all.
       - name: cargo xtask check
         run: cargo xtask check ${{ github.event_name == 'pull_request' && '--changed-base HEAD^1' || '' }}
+      # A failed test leaves a valid build, so it is saved too.
       - name: Save master's build
-        if: github.ref == 'refs/heads/master'
+        if: ${{ !cancelled() && github.ref == 'refs/heads/master' }}
         run: git rev-parse HEAD > target/source-commit
-      - if: github.ref == 'refs/heads/master'
+      - if: ${{ !cancelled() && github.ref == 'refs/heads/master' }}
         uses: actions/cache/save@v4
         with:
           path: |
