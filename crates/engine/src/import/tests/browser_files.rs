@@ -90,7 +90,15 @@ fn an_unknown_hash_keeps_the_conversation_and_leaves_the_file_not_fetched() {
     let path = w.dir.path().join("capture.json");
     let file = json!({"provider_attachment_id":"file1", "message_provider_id":"m1", "blob":BlobHash::of(b"absent").to_string()});
     std::fs::write(&path, capture(file, "2026-10-27T00:00:00Z")).unwrap();
-    let report = engine.import(std::slice::from_ref(&path)).unwrap();
+    let report = engine
+        .import_with_options(
+            std::slice::from_ref(&path),
+            &ImportOptions {
+                format: Some("browser-capture".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     assert!(report.pass.errors.is_empty(), "{report:?}");
     let reader = engine.reads.reader().unwrap();
     let session = SessionId::parse("gemini-app:files").unwrap();

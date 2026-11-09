@@ -41,6 +41,7 @@ pub use live::{
 pub mod measure;
 pub mod older_archive;
 mod ordered_blocks;
+pub mod predecessor;
 pub mod primary;
 pub mod query;
 pub mod query_objects;

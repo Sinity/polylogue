@@ -132,6 +132,7 @@ fn without_sources_an_import_is_stored_and_the_loop_then_becomes_idle() {
         &mut engine,
         vec![LoopMsg::Import {
             paths: vec![path],
+            format: None,
             from_archive: None,
             dry_run: false,
             authorship: Authorship {

@@ -285,10 +285,11 @@ impl Inner {
             let again = !seen.insert(b.input.id.clone());
             if b.input.arrival_rank == 2 && b.new_blob.is_some() && (known.is_some() || again) {
                 let new_blob = b.new_blob.as_ref().expect("checked new_blob");
+                // Empty bytes are stored with no extent.
                 let same: bool = tx.query_row(
-                    "SELECT count(*) = 1 AND min(offset) = 0 AND min(length) = ?3 AND min(blob) = ?4
-                     FROM extent WHERE input = ?1 AND chain = (SELECT chain FROM revision WHERE input = ?1 ORDER BY number DESC LIMIT 1)
-                     AND ?2 = ?3",
+                    "SELECT CASE WHEN ?2 <> ?3 THEN 0 WHEN ?3 = 0 THEN count(*) = 0
+                            ELSE count(*) = 1 AND min(offset) = 0 AND min(length) = ?3 AND min(blob) = ?4 END
+                     FROM extent WHERE input = ?1 AND chain = (SELECT chain FROM revision WHERE input = ?1 ORDER BY number DESC LIMIT 1)",
                     params![b.input.id, known.map_or(b.length as i64, |k| k.1), b.length as i64, &new_blob.hash.0[..]],
                     |r| r.get(0),
                 )?;

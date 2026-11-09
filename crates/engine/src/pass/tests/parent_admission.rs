@@ -50,6 +50,7 @@ fn queued_import_checks_its_captured_parent_before_source_admission() {
         let (reply, wait) = sync_channel(1);
         tx.send(LoopMsg::Import {
             paths: vec![path.clone()],
+            format: None,
             from_archive: None,
             dry_run: false,
             authorship: authorship.clone(),
@@ -73,6 +74,7 @@ fn queued_import_checks_its_captured_parent_before_source_admission() {
         let (reply, wait) = sync_channel(1);
         tx.send(LoopMsg::Import {
             paths: vec![path.clone()],
+            format: None,
             from_archive: None,
             dry_run: false,
             authorship,

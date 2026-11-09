@@ -26,6 +26,7 @@ flate2 = "1"
 tar = "0.4"
 rustix.workspace = true
 sha2 = "0.10"
+unicode-normalization.workspace = true
 
 [features]
 # Test support: arm the store's fault points.

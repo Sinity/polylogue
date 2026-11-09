@@ -236,7 +236,7 @@ fn refused(message: impl Into<String>) -> StoreError {
 }
 
 /// A path as an SQLite URI file name.
-fn uri(path: &Path) -> String {
+pub(crate) fn uri(path: &Path) -> String {
     let mut out = String::from("file:");
     for c in path.to_string_lossy().chars() {
         match c {
@@ -252,7 +252,7 @@ fn uri(path: &Path) -> String {
 /// Opens one database of the older archive without writing anything next to
 /// it. A database with a write-ahead log holding frames is copied with its
 /// log into `copies` and the copy is opened, so its committed state is read.
-fn open_source(
+pub(crate) fn open_source(
     path: &Path,
     copies: &mut Option<tempfile::TempDir>,
     scratch: &Path,
@@ -288,10 +288,13 @@ fn open_source(
 }
 
 /// Each table's columns, in order, as `sql` declares them.
-fn tables_of(conn: &Connection) -> Result<BTreeMap<String, Vec<String>>> {
+pub(crate) fn tables_of(conn: &Connection) -> Result<BTreeMap<String, Vec<String>>> {
     let names: Vec<String> = conn
         .prepare(
-            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            // A virtual table's module may not be loaded here; its backing
+            // tables are ordinary tables and are listed.
+            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+             AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'",
         )?
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
@@ -1103,7 +1106,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn json_value(value: ValueRef<'_>) -> serde_json::Value {
+pub(crate) fn json_value(value: ValueRef<'_>) -> serde_json::Value {
     match value {
         ValueRef::Null => serde_json::Value::Null,
         ValueRef::Integer(n) => n.into(),

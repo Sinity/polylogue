@@ -82,21 +82,7 @@ impl OlderArchiveReport {
     }
 
     fn tally(&mut self, class: &str, n: u64, outcome: &Restored, row: &str) {
-        let count = self.count(class);
-        count.found += n;
-        match outcome {
-            Restored::Stored => count.stored += n,
-            Restored::Present => count.present += n,
-            Restored::Refused(reason) => {
-                count.refused += n;
-                let reason = reason.clone();
-                self.refused.push(RefusedRow {
-                    class: class.to_owned(),
-                    row: row.to_owned(),
-                    reason,
-                });
-            }
-        }
+        tally(&mut self.classes, &mut self.refused, class, n, outcome, row);
     }
 
     /// Rows counted with the row that carries them (a revision with its
@@ -112,13 +98,44 @@ impl OlderArchiveReport {
     }
 
     fn keep(&mut self, class: &str, n: u64) {
-        let count = self.count(class);
-        count.found += n;
-        count.kept += n;
+        keep(&mut self.classes, class, n);
     }
 }
 
-fn restored(outcome: &polylogue_model::user::UserOutcome) -> Restored {
+/// Counts `n` rows of `class` with one outcome; a refusal is listed once,
+/// naming `row`.
+pub(super) fn tally(
+    classes: &mut BTreeMap<String, ClassCount>,
+    refused: &mut Vec<RefusedRow>,
+    class: &str,
+    n: u64,
+    outcome: &Restored,
+    row: &str,
+) {
+    let count = classes.entry(class.to_owned()).or_default();
+    count.found += n;
+    match outcome {
+        Restored::Stored => count.stored += n,
+        Restored::Present => count.present += n,
+        Restored::Refused(reason) => {
+            count.refused += n;
+            refused.push(RefusedRow {
+                class: class.to_owned(),
+                row: row.to_owned(),
+                reason: reason.clone(),
+            });
+        }
+    }
+}
+
+/// Counts `n` rows of `class` kept only verbatim in the rows input.
+pub(super) fn keep(classes: &mut BTreeMap<String, ClassCount>, class: &str, n: u64) {
+    let count = classes.entry(class.to_owned()).or_default();
+    count.found += n;
+    count.kept += n;
+}
+
+pub(super) fn restored(outcome: &polylogue_model::user::UserOutcome) -> Restored {
     if outcome.repeat {
         Restored::Present
     } else {
@@ -130,7 +147,7 @@ fn restored(outcome: &polylogue_model::user::UserOutcome) -> Restored {
 /// here, is invalid, or names something missing) refuses that row; any
 /// other error (the writer, the disk, SQLite) stops the import, so a
 /// failure of this host is never reported as a refused row.
-fn refusal(error: polylogue_store::StoreError) -> Result<Restored, EngineError> {
+pub(super) fn refusal(error: polylogue_store::StoreError) -> Result<Restored, EngineError> {
     match error {
         polylogue_store::StoreError::Conflict(_)
         | polylogue_store::StoreError::Invalid(_)
@@ -190,7 +207,7 @@ impl Engine {
         let current = if dry_run {
             None
         } else {
-            self.store_kept_member(root, "rows.jsonl", rows_bytes, authorship)?;
+            self.store_kept_member(root, "archive.db", "rows.jsonl", rows_bytes, authorship)?;
             let chain = self
                 .reads
                 .reader()?
@@ -223,7 +240,13 @@ impl Engine {
                 .prepare_write(|out| older.write_refused_inputs(&refused_inputs, out))?;
             report.refused_inputs = Some(set_aside.hash().to_string());
             if !dry_run {
-                self.store_kept_member(root, "refused-inputs.jsonl", set_aside, authorship)?;
+                self.store_kept_member(
+                    root,
+                    "archive.db",
+                    "refused-inputs.jsonl",
+                    set_aside,
+                    authorship,
+                )?;
             }
         }
         self.import_older_authored(&older, current.as_ref(), &mut report)?;
@@ -277,17 +300,18 @@ impl Engine {
         Ok(report)
     }
 
-    /// Stores `bytes` as an imported kept file, `archive.db!/<member>` of
+    /// Stores `bytes` as an imported kept file, `<container>!/<member>` in
     /// the older folder `root`.
-    fn store_kept_member(
+    pub(super) fn store_kept_member(
         &mut self,
         root: &Path,
+        container: &str,
         member: &str,
         bytes: polylogue_store::staging::PreparedBytes,
         authorship: Option<&polylogue_model::authorship::Authorship>,
     ) -> Result<(), EngineError> {
         let mut import = ImportReport::default();
-        let at = root.join("archive.db!").join(member);
+        let at = root.join(format!("{container}!")).join(member);
         let origin = polylogue_sources::origin::by_name(KEPT)
             .ok_or_else(|| std::io::Error::other("the kept-file origin is not declared"))?;
         let imported = polylogue_store::ImportMember {

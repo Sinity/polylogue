@@ -13,6 +13,7 @@ pub(crate) mod exports;
 mod legacy;
 pub(crate) mod older_archive;
 mod package;
+pub(crate) mod predecessor;
 mod recognition;
 
 impl Engine {
@@ -48,6 +49,26 @@ impl Engine {
         }
         if options.dry_run {
             return Err(std::io::Error::other("--dry-run applies to --from-archive").into());
+        }
+        if let Some(format) = options.format.as_deref()
+            && format != predecessor::ARCHIVE
+            && predecessor::STORES.contains(&format)
+        {
+            let [path] = paths else {
+                return Err(std::io::Error::other(format!(
+                    "--format {format} names one predecessor store"
+                ))
+                .into());
+            };
+            if options.explain {
+                return Err(
+                    std::io::Error::other(format!("--explain does not apply to {format}")).into(),
+                );
+            }
+            report.predecessor =
+                Some(self.import_predecessor_store(format, path, options.authorship.as_ref())?);
+            report.pass.seconds = started.elapsed().as_secs_f64();
+            return Ok(report);
         }
         for path in paths {
             let members = match package::stage(path, &self.archive, options.format.as_deref()) {

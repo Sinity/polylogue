@@ -233,7 +233,9 @@ pub(super) fn declared(
             return Ok(Some(origin));
         }
     }
-    for name in ["browser-capture", "hook-spool", "hermes", "claude-design"] {
+    // The predecessor's hook and browser-capture spools are read only when
+    // named with --format, like its other stores.
+    for name in ["hermes", "claude-design"] {
         if let Some(origin) = polylogue_sources::origin::by_name(name)
             && (origin.recognize)(path, &head[..n])
         {

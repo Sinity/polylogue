@@ -701,6 +701,11 @@ const WRITTEN: &[Command] = &[
                 "Files or directories on the daemon host; relative paths require a native caller working directory",
             ),
             opt(
+                "format",
+                Kind::Text,
+                "Read the paths as this declared structure (an origin name), or as one of the predecessor's stores: predecessor-archive (a folder with source.db and blob/), predecessor-user-db (its user.db) or predecessor-vectors (one of its vector stores)",
+            ),
+            opt(
                 "from_archive",
                 Kind::Text,
                 "The folder of an archive written before the version 1 baseline, imported once in place of paths",

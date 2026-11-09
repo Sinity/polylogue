@@ -40,6 +40,7 @@ mod collectors;
 mod databases;
 mod import;
 pub use import::older_archive::{ClassCount, OlderArchiveReport, RefusedRow};
+pub use import::predecessor::PredecessorReport;
 mod parser_checkpoint;
 mod pass;
 mod plan;
@@ -360,6 +361,9 @@ pub struct ImportReport {
     /// What became of each row of an archive in the older format.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub older_archive: Option<OlderArchiveReport>,
+    /// What became of each row of one of the Python predecessor's stores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predecessor: Option<PredecessorReport>,
 }
 
 /// Historical authored records restored through the frozen import ingress.
@@ -389,6 +393,9 @@ pub enum LoopMsg {
     Changed,
     Import {
         paths: Vec<PathBuf>,
+        /// The declared structure the paths are read as, or the predecessor
+        /// store they are.
+        format: Option<String>,
         /// An archive in the older format to import, in place of paths.
         from_archive: Option<PathBuf>,
         dry_run: bool,
