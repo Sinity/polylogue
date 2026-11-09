@@ -97,16 +97,22 @@ fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The snippet with its marks wrapped by `open`/`close`.
+/// The snippet with its marks (character ranges) wrapped by `open`/`close`.
 fn marked(snippet: &Value, open: &str, close: &str, escape: fn(&str) -> String) -> Option<String> {
     let text = snippet["text"].as_str()?;
+    // Byte offset of each character position, the end included.
+    let bytes: Vec<usize> = text
+        .char_indices()
+        .map(|(at, _)| at)
+        .chain([text.len()])
+        .collect();
     let mut marks: Vec<(usize, usize)> = snippet["marks"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|m| Some((m[0].as_u64()? as usize, m[1].as_u64()? as usize)))
-        .filter(|(s, e)| {
-            s <= e && *e <= text.len() && text.is_char_boundary(*s) && text.is_char_boundary(*e)
+        .filter_map(|m| {
+            let (s, e) = (m[0].as_u64()? as usize, m[1].as_u64()? as usize);
+            (s <= e).then_some((*bytes.get(s)?, *bytes.get(e)?))
         })
         .collect();
     marks.sort_unstable();

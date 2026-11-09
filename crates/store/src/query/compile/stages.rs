@@ -202,7 +202,15 @@ impl<'a> Compiler<'a> {
             AggregateFunction::CountDistinct => {
                 (format!("count(DISTINCT {expr})"), ColKind::Number)
             }
-            AggregateFunction::Sum => (value(format!("sum({expr})"), kind), kind),
+            // A sum over no rows is 0; a sum whose members are all unknown
+            // stays unknown and the unknown count says so.
+            AggregateFunction::Sum => (
+                value(
+                    format!("CASE WHEN count(*) = 0 THEN 0 ELSE sum({expr}) END"),
+                    kind,
+                ),
+                kind,
+            ),
             AggregateFunction::Avg => (value(format!("avg({expr})"), kind), kind),
             AggregateFunction::Min => (value(format!("min({expr})"), kind), kind),
             AggregateFunction::Max => (value(format!("max({expr})"), kind), kind),

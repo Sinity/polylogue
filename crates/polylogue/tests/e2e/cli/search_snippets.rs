@@ -63,9 +63,9 @@ fn run(term: &str, earlier: bool, output: bool) {
         for mark in marks {
             let start = mark[0].as_u64().unwrap() as usize;
             let end = mark[1].as_u64().unwrap() as usize;
-            assert!(start < end && end <= shown.len());
-            assert!(shown.is_char_boundary(start) && shown.is_char_boundary(end));
-            assert_eq!(&shown[start..end], term);
+            assert!(start < end && end <= shown.chars().count());
+            let marked: String = shown.chars().skip(start).take(end - start).collect();
+            assert_eq!(marked, term);
         }
         let unicode_query = if output {
             "messages where output:lodz"
@@ -87,8 +87,8 @@ fn run(term: &str, earlier: bool, output: bool) {
         for mark in marks {
             let start = mark[0].as_u64().unwrap() as usize;
             let end = mark[1].as_u64().unwrap() as usize;
-            assert!(unicode_text.is_char_boundary(start) && unicode_text.is_char_boundary(end));
-            assert_eq!(&unicode_text[start..end], "Łódź");
+            let marked: String = unicode_text.chars().skip(start).take(end - start).collect();
+            assert_eq!(marked, "Łódź");
         }
     });
 }

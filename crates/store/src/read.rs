@@ -803,13 +803,16 @@ impl Reader<'_> {
             .optional()?)
     }
 
-    /// The stored title selected for display, separate from source metadata.
+    /// The title the session is shown with ([`crate::session_sql::display_title`]).
     /// A recorded empty string stays present; a missing title stays unknown.
     pub fn display_title(&self, id: &SessionId) -> Result<Option<String>> {
         Ok(self
             .conn()?
             .query_row(
-                "SELECT coalesce(title, derived_title) FROM session WHERE id = ?1",
+                &format!(
+                    "SELECT {} FROM session WHERE id = ?1",
+                    crate::session_sql::display_title("session")
+                ),
                 [id.to_string()],
                 |row| row.get(0),
             )
@@ -1580,4 +1583,25 @@ impl Reader<'_> {
     pub fn with_clock<T>(&self, clock: &query_language::time::Clock, f: impl FnOnce() -> T) -> T {
         self.calendar.with_clock(clock, f)
     }
+}
+
+/// The sessions whose authored titles changed after archive position
+/// `after`: a title written, revised or withdrawn changes how its session is
+/// shown, though no session row changed.
+pub(crate) fn retitled_sessions(
+    conn: &rusqlite::Connection,
+    after: i64,
+) -> Result<std::collections::BTreeSet<String>> {
+    let mut sessions = std::collections::BTreeSet::new();
+    let mut statement = conn.prepare_cached(
+        "SELECT DISTINCT substr(l.ref, 9) FROM source_assertion a \
+         JOIN source_link l ON l.record = a.id AND l.role = 'about' \
+         WHERE a.root = ?1 AND a.kind = 'title' AND l.ref LIKE 'session:%'",
+    )?;
+    for root in crate::assertions::changed_roots(conn, after)? {
+        for id in statement.query_map([&root], |r| r.get::<_, String>(0))? {
+            sessions.insert(id?);
+        }
+    }
+    Ok(sessions)
 }

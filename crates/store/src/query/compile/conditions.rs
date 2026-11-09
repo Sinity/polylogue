@@ -208,6 +208,12 @@ impl<'a> Compiler<'a> {
                     if native || (reference.starts_with("message:") && reference.contains("..")) {
                         return self.native_reference(reference, scope, c.span);
                     }
+                    // Membership in a kept result is designed and has no producer yet.
+                    if reference.starts_with("in:result:") {
+                        return Err(QueryError::NotBuilt {
+                            what: "in:result: conditions".into(),
+                        });
+                    }
                     // Pages and commits are designed reference forms with no producer yet.
                     if let Some(kind @ ("page" | "file")) =
                         reference.split_once(':').map(|(kind, _)| kind)
@@ -341,6 +347,45 @@ impl<'a> Compiler<'a> {
         })
     }
 
+    /// The positive terms of a top-level condition, for the snippet
+    /// ([`SnippetTerms`]): words under `NOT` and reference words are left
+    /// out, and an `OR` keeps its branches.
+    pub(super) fn positive_terms(&self, c: &Condition, unit: Unit) -> Option<SnippetTerms> {
+        use crate::search::SnippetIndex;
+        let collect = |all: &[Condition]| -> Vec<SnippetTerms> {
+            all.iter()
+                .filter_map(|x| self.positive_terms(x, unit))
+                .collect()
+        };
+        let one =
+            |mut parts: Vec<SnippetTerms>, many: fn(Vec<SnippetTerms>) -> SnippetTerms| match parts
+                .len()
+            {
+                0 => None,
+                1 => parts.pop(),
+                _ => Some(many(parts)),
+            };
+        match &c.kind {
+            ConditionKind::Text { text, mode }
+                if text_unit(unit) && !self.is_reference(c, unit) =>
+            {
+                Some(SnippetTerms::Word {
+                    text: search_word(text, *mode).ok()?,
+                    index: SnippetIndex::Prose,
+                })
+            }
+            ConditionKind::Match { field, value } if field.eq_ignore_ascii_case("output") => {
+                Some(SnippetTerms::Word {
+                    text: value_text(value).ok()?.to_owned(),
+                    index: SnippetIndex::Output,
+                })
+            }
+            ConditionKind::And { conditions } => one(collect(conditions), SnippetTerms::All),
+            ConditionKind::Or { conditions } => one(collect(conditions), SnippetTerms::Any),
+            _ => None,
+        }
+    }
+
     /// A full-text condition over one index. Terms ANDed together must all
     /// occur in the same message (or block).
     pub(super) fn text(
@@ -363,7 +408,6 @@ impl<'a> Compiler<'a> {
                     position: span.start,
                 });
             };
-            self.text_terms.push(word.trim_end_matches('*').to_owned());
             phrases.push(p);
         }
         let refuse = |unit: Unit| QueryError::Invalid {

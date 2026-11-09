@@ -11,8 +11,13 @@ fn unit_schema(unit: &str, catalog: &Catalog) -> Result<OutputSchema, QueryError
     let unit = catalog
         .unit(unit)
         .ok_or_else(|| error(format!("unknown output unit {unit:?}")))?;
-    let product = crate::units::Unit::from_name(&unit.name)
-        .ok_or_else(|| error(format!("unknown native output unit {:?}", unit.name)))?;
+    let product = crate::units::Unit::from_name(&unit.name).ok_or_else(|| {
+        if crate::units::DesignedUnit::named(&unit.name).is_some() {
+            not_built(&format!("unit {}", unit.name))
+        } else {
+            error(format!("unknown native output unit {:?}", unit.name))
+        }
+    })?;
     let spec = crate::units::spec(product);
     // The queryable catalog also contains reference atoms and filter-only fields.
     // Frozen output schemas describe exactly what the native producer emits.

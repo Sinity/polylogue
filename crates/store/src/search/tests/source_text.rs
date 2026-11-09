@@ -73,8 +73,12 @@ fn chosen_hit_batches_preserve_source_text_and_ignore_unselected_corruption() {
         Within::Message(message),
         Within::Session(session),
     ];
-    let terms = ["needleprivate".into()];
-    let snippets = reader.snippets("needleprivate", &scopes, &terms).unwrap();
+    let queries = [SnippetQuery {
+        index: SnippetIndex::Prose,
+        fts: "needleprivate".into(),
+        words: vec!["needleprivate"],
+    }];
+    let snippets = reader.snippets(&queries, &scopes).unwrap();
     assert_eq!(snippets.len(), 3);
     let first = snippets[0].as_ref().unwrap();
     assert!(first.text.contains("needleprivate"));
@@ -92,34 +96,25 @@ fn chosen_hit_batches_preserve_source_text_and_ignore_unselected_corruption() {
     let ordinary = crate::encoding::pack_text("ordinary header").unwrap();
     write.execute("UPDATE text SET body=?1 WHERE id=(SELECT text_id FROM block WHERE message_pk=?2 LIMIT 1)", params![ordinary, header]).unwrap();
     let fresh = pool.reader().unwrap();
-    let changed = fresh.snippets("needleprivate", &scopes, &terms).unwrap();
+    let changed = fresh.snippets(&queries, &scopes).unwrap();
     assert!(changed[0].as_ref().unwrap().text.contains("needleprivate"));
     drop(fresh);
-    assert_eq!(
-        reader.snippets("needleprivate", &scopes, &terms).unwrap(),
-        snippets
-    );
+    assert_eq!(reader.snippets(&queries, &scopes).unwrap(), snippets);
     write
         .execute("UPDATE block SET body=X'00' WHERE message_pk=?1", [header])
         .unwrap();
     let fresh = pool.reader().unwrap();
-    assert_eq!(
-        fresh.snippets("needleprivate", &scopes, &terms).unwrap(),
-        snippets
-    );
+    assert_eq!(fresh.snippets(&queries, &scopes).unwrap(), snippets);
     drop(fresh);
     write
         .execute("UPDATE block SET body=X'00' WHERE message_pk=?1", [message])
         .unwrap();
     let fresh = pool.reader().unwrap();
     assert!(
-        fresh.snippets("needleprivate", &scopes, &terms).is_err(),
+        fresh.snippets(&queries, &scopes).is_err(),
         "corruption in the selected hit must refuse the read"
     );
-    assert_eq!(
-        reader.snippets("needleprivate", &scopes, &terms).unwrap(),
-        snippets
-    );
+    assert_eq!(reader.snippets(&queries, &scopes).unwrap(), snippets);
 }
 
 #[test]
@@ -164,13 +159,13 @@ fn credential_shaped_hits_keep_their_text_even_after_an_open_key_header() {
         .unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let terms = ["wombat".into()];
+    let queries = [SnippetQuery {
+        index: SnippetIndex::Prose,
+        fts: "wombat".into(),
+        words: vec!["wombat"],
+    }];
     let snippets = reader
-        .snippets(
-            "wombat",
-            &[Within::Message(first), Within::Message(after)],
-            &terms,
-        )
+        .snippets(&queries, &[Within::Message(first), Within::Message(after)])
         .unwrap();
     let first = snippets[0].as_ref().unwrap();
     assert_eq!(first.text, "wombat token AKIAIOSFODNN7EXAMPLE here");

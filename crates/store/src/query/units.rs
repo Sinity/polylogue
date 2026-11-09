@@ -276,6 +276,10 @@ pub fn spec(unit: Unit) -> &'static UnitSpec {
 use ColKind::*;
 use Expr::Template as T;
 
+fn display_title(a: &Aliases) -> String {
+    crate::session_sql::display_title(&a.s)
+}
+
 const fn d(sql: Expr, unless: &'static [&'static str], unless_reference: bool) -> Default {
     Default {
         sql,
@@ -406,7 +410,7 @@ pub static UNITS: &[UnitSpec] = &[
             ("id", Expr::Template("{s}.id"), Text),
             ("origin", T("{s}.origin"), Text),
             ("kind", T("{s}.kind"), Text),
-            ("title", T("COALESCE({s}.title, {s}.derived_title)"), Text),
+            ("title", Expr::Fn(display_title), Text),
             ("started", T("{s}.started_at"), Time),
             ("last_active", T("{s}.last_activity_at"), Time),
             ("cwd", T("{s}.cwd"), Text),

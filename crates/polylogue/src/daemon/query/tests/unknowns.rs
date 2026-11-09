@@ -118,6 +118,29 @@ fn near_says_how_many_rows_have_no_vector() {
     );
 }
 
+/// A provider that cannot embed the query leaves the rows unranked and the
+/// answer incomplete; the query does not fail.
+#[test]
+fn similar_with_the_provider_down_answers_unranked_and_incomplete() {
+    let w = morrow();
+    let near = |_: &str| Err("the embedding provider refused the connection".to_owned());
+    let mut request = ask("kind:* similar:\"ambiguous date formats\"");
+    request.embeddings = true;
+    request.near = Some(&near);
+    let v = run_q(&w, request).unwrap();
+    assert_eq!(v["count"], 8, "{v}");
+    assert!(
+        v["incomplete"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n.as_str().is_some_and(|n| n.contains(
+                "semantic ranking failed (the embedding provider refused the connection)"
+            ))),
+        "{v}"
+    );
+}
+
 #[test]
 fn hybrid_search_keeps_text_ranks_when_vectors_are_missing() {
     let w = morrow();

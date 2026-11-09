@@ -155,6 +155,35 @@ fn numeric_aggregates_execute_expressions_intervals_and_complete_pairs() {
 }
 
 #[test]
+fn sum_over_no_rows_is_zero() {
+    let (_dir, fixture) = fixture();
+    let answer = &rows(
+        &fixture,
+        "sessions where repo:north | agg sum(input_tokens) as total, sum(cost) as spent",
+    )[0];
+    assert_eq!(answer["total"], 0, "{answer}");
+    assert_eq!(answer["spent"], 0.0, "{answer}");
+    assert_eq!(answer["unknown_input_tokens"], 0, "{answer}");
+}
+
+#[test]
+fn sum_with_unknown_member_stays_unknown() {
+    let (_dir, fixture) = fixture();
+    let only_unknown = &rows(
+        &fixture,
+        "sessions where id:claude-code:u | agg sum(input_tokens) as total",
+    )[0];
+    assert_eq!(only_unknown["total"], Value::Null, "{only_unknown}");
+    assert_eq!(only_unknown["unknown_input_tokens"], 1, "{only_unknown}");
+    let mixed = &rows(
+        &fixture,
+        "sessions where repo:west | agg sum(input_tokens) as total",
+    )[0];
+    assert_eq!(mixed["total"], 5, "{mixed}");
+    assert_eq!(mixed["unknown_input_tokens"], 1, "{mixed}");
+}
+
+#[test]
 fn conditional_expression_is_lazy_and_keeps_the_selected_native_kind() {
     let (_dir, fixture) = fixture();
     let options = opts(&[]);

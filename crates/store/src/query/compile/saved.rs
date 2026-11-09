@@ -270,7 +270,7 @@ impl Compiler<'_> {
             native_sources: Some(vec![]),
             time_text_columns,
             ranked: false,
-            text_terms: vec![],
+            snippet_terms: vec![],
             id_checks: vec![],
             change_generations: vec![],
             assertion_cutoffs: vec![],
