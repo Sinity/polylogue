@@ -146,7 +146,15 @@ fn every_catalog_key_changes_an_output() {
     // that differs from the default. Local embeddings are on where a case
     // reads the provider's other settings.
     type Output = fn(&Snapshot) -> String;
-    let cases: &[(&str, &str, &[(&str, &str)], Output)] = &[
+    /// A key, a non-default value, other settings the consumer needs, and the
+    /// consumer's output.
+    type Case = (
+        &'static str,
+        &'static str,
+        &'static [(&'static str, &'static str)],
+        Output,
+    );
+    let cases: &[Case] = &[
         ("browser.actions", "on", &[], |s| {
             format!("{:?}", s.browser_actions())
         }),
