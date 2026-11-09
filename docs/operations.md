@@ -167,8 +167,7 @@ Deployment configuration is loaded once by `main`, from the config file, then fl
 | the away command, value targets and action commands | deployment: `signals.toml` | which programs may be run or written to |
 | enabled variants | authored `setting` | which translations or summaries readers show ([assertions.md#variants](assertions.md#variants)) |
 | quiet hours and the interrupt budget `signal.interrupts_per_hour` | standalone: authored `setting`; in primary mode Sinex's, applied by Sinex's deliverer | the operator's attention |
-| subscription plans and price facts | authored `setting` | facts only the operator knows |
-| fetching linked attachments from third parties (`fetch-links`) | authored `setting` | sends requests out of the machine |
+| subscription plans (`plan.<provider>`) | authored `setting` | facts only the operator knows |
 
 `polylogue.toml` holds `archive`, `[http]` (`listen`, `auth_token_file`) and, standalone, `[day]` (`zone`, `start`). `--config` chooses the file, and its directory also holds `sinex.toml` and `signals.toml`; without the flag all three live under `$XDG_CONFIG_HOME/polylogue/`. `--archive`, `--listen` and `--auth-token-file` override the file, and `POLYLOGUE_LISTEN` and `POLYLOGUE_AUTH_TOKEN_FILE` override the flags. Relative paths in a file resolve against that file; relative flags against the working directory. Standalone, `[day]` may name either value or neither: the zone defaults to the host's named zone (`TZ`, then `/etc/localtime`) and the start to `04:00:00`, so Polylogue and Sinex on one host share one logical day. An invalid zone, or a host zone without an IANA name, refuses start-up. In primary mode a local `[day]` is refused, because the day is Sinex's.
 

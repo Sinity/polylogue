@@ -548,7 +548,7 @@ fn a_delivery_its_own_request_could_not_store_but_an_event_request_did_counts_as
             },
             at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
             write: polylogue_model::user::UserWrite::SetSetting {
-                key: "fetch-links".into(),
+                key: "drive.ai-studio".into(),
                 value: "on".into(),
                 machine: None,
             },

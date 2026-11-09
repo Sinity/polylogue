@@ -97,6 +97,9 @@ pub struct PageCursor {
     /// A continuation with other options is refused; the page budget may
     /// change for one page.
     pub options: String,
+    /// The variants the reading renders, resolved on its first page, so a
+    /// continuation renders the same ones whatever the setting says now.
+    pub variants: Vec<String>,
     pub versions: BlobHash,
     pub position: PagePosition,
     pub direction: ReadDirection,

@@ -1103,7 +1103,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "setting",
-        help: "List the typed runtime settings catalog, read KEY, or write KEY VALUE. Includes reading.variants, browser.actions, embed.*, plan.* and price.*. Standalone attention settings are local; primary attention names its Sinex owner",
+        help: "List the typed runtime settings catalog, read KEY, or write KEY VALUE. Includes reading.variants, browser.actions, embed.* and plan.*. Standalone attention settings are local; primary attention names its Sinex owner",
         reason: "Inspect declared runtime settings and author changes at their declared scope",
         latency: command_surface::LatencyClass::Local,
         args: &[

@@ -116,6 +116,7 @@ impl crate::daemon::handler::Handler for Read {
         };
         let reader = call.reader()?;
         let context = call.context()?;
+        let request = with_variants(&reader, call.daemon, request)?;
         Ok(page(&reader, call.daemon, &request, &context))
     }
 }
@@ -132,6 +133,7 @@ impl crate::daemon::handler::Streams for Read {
     ) -> Result<(), Failure> {
         let request = ReadRequest::from_arguments(arguments, None)
             .map_err(|message| Failure::new("bad_request", message))?;
+        let request = with_variants(&call.reader()?, call.daemon, request)?;
         produce(&request, call.daemon, context, output).unwrap_or_else(|| {
             Err(Failure::new(
                 "bad_request",
@@ -139,6 +141,36 @@ impl crate::daemon::handler::Streams for Read {
             ))
         })
     }
+}
+
+/// The read with the variants it renders resolved once: the request's own
+/// (`none` for the originals), else those its cursor's first page rendered,
+/// else the `reading.variants` setting.
+pub(crate) fn with_variants(
+    reader: &Reader<'_>,
+    d: &Daemon,
+    mut request: ReadRequest,
+) -> Result<ReadRequest, Failure> {
+    if request.options.variants == ["none"] {
+        request.options.variants.clear();
+        return Ok(request);
+    }
+    if !request.options.variants.is_empty() {
+        return Ok(request);
+    }
+    request.options.variants = match &request.cursor {
+        Some(text) => {
+            PageCursor::open(text, &cursor_seal(reader)?)
+                .map_err(cursor_failure)?
+                .variants
+        }
+        None => reader
+            .settings_snapshot(d.config.requests.machine())?
+            .reading_variants()
+            .map_err(|error| Failure::new("conflict", error))?
+            .to_vec(),
+    };
+    Ok(request)
 }
 
 /// What read cursors are sealed with: this index generation's key and the
@@ -932,6 +964,7 @@ fn rows_page(
                 let cursor = PageCursor {
                     target: reading.target.clone(),
                     options: reading.digest.clone(),
+                    variants: reading.options.variants.clone(),
                     versions: PageCursor::version(&[]),
                     position: PagePosition::Record {
                         anchor_row: row,

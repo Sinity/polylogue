@@ -132,6 +132,7 @@ The compaction summary is a message (`written_by: harness`, `prompt_kind: compac
 A [variant](assertions.md#variants) is transformed content (a translation, transliteration, simplification or summary) bound to an exact source revision, with each variant message and block mapped to its original.
 
 - **Enabled variants are a setting every read follows**: terminal, web and bundles alike. Where an enabled variant exists its text replaces the original's in the layout, each such message header carries a visible mark (`≈ en`), and the read starts with the indicator `variant: en (from revision R)`.
+- The setting is resolved once, on a reading's first page; its cursor carries the variants, so later pages render the same ones even if the setting changes meanwhile.
 - `--variant LANG` selects one for this read; `--variant none` shows originals; `--variant LANG --beside` shows variant and original side by side, aligned by mapped part.
 - A variant bound to an older revision than the one shown is marked `stale` and applied only when asked for.
 - Assertions of a translated session show their own variants; originals are not shown on a variant.

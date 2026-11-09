@@ -572,10 +572,13 @@ pub fn standard(root: &Path) -> Standard {
 
     // Two values of one archive-wide setting and one per-machine setting.
     let setting = "INSERT INTO setting(id, machine, key, value, author, set_at, commit_seq) VALUES (?1, ?2, ?3, ?4, 'operator', ?5, ?6)";
-    sql(setting, &[&"s1", &"*", &"fetch-links", &"on", &15_000, &25]);
     sql(
         setting,
-        &[&"s2", &"*", &"fetch-links", &"off", &16_000, &26],
+        &[&"s1", &"*", &"drive.ai-studio", &"on", &15_000, &25],
+    );
+    sql(
+        setting,
+        &[&"s2", &"*", &"drive.ai-studio", &"off", &16_000, &26],
     );
     sql(
         setting,
