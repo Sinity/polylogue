@@ -142,8 +142,8 @@ impl Catalog {
             .cache_write
             .map(|w| w.saturating_sub(write_1h.unwrap_or(0)));
         let mut usd_e6 = input as f64 * in_rate + output as f64 * out_rate;
-        // Reasoning is billed at the output rate; sources that count it
-        // inside output store it in its own count only.
+        // Reasoning is billed at the output rate and is never part of
+        // `output` (see `Usage::output`).
         usd_e6 += usage.reasoning.unwrap_or(0) as f64 * out_rate;
         for (tokens, rate) in [
             (usage.cached_input, cached_rate),

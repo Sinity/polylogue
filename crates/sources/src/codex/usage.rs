@@ -122,8 +122,9 @@ impl Observer {
         let output = n("output_tokens");
         let cached =
             n("cached_input_tokens").filter(|cached| input.is_none_or(|input| *cached <= input));
-        let reasoning = n("reasoning_output_tokens")
-            .filter(|reasoning| output.is_none_or(|output| *reasoning <= output));
+        let reported_reasoning = n("reasoning_output_tokens");
+        let reasoning =
+            reported_reasoning.filter(|reasoning| output.is_none_or(|output| *reasoning <= output));
         let usage = Usage {
             input: input
                 .zip(cached)
@@ -132,9 +133,14 @@ impl Observer {
             // OpenAI does not bill cache writes. The native token Event
             // preserves any supplied field without inventing a charged lane.
             cache_write: None,
-            output: output
-                .zip(reasoning)
-                .and_then(|(output, reasoning)| output.checked_sub(reasoning)),
+            // Output excludes reasoning. Unreported reasoning leaves reasoning
+            // unknown and output whole; reasoning above output leaves output
+            // unknown.
+            output: match (output, reported_reasoning) {
+                (Some(output), Some(reasoning)) => output.checked_sub(reasoning),
+                (output, None) => output,
+                (None, Some(_)) => None,
+            },
             reasoning,
             service_tier: tier,
             ..Usage::default()

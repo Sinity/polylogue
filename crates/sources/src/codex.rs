@@ -16,7 +16,7 @@
 //! and their parent session, and the rest is accounted as copied.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 pub mod database;
 mod fields;

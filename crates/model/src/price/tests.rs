@@ -66,6 +66,20 @@ fn reasoning_is_billed_at_the_output_rate() {
 }
 
 #[test]
+fn claude_thinking_is_priced_once() {
+    // A response of 1M output tokens of which 400k are thinking: the parser
+    // stores 600k output and 400k reasoning, billed as 1M at the output rate.
+    let c = Catalog::builtin();
+    let mut u = usage(0, None, None, 600_000);
+    u.reasoning = Some(400_000);
+    let out = c.price("claude-opus-4-1").unwrap().output;
+    assert_eq!(
+        c.cost_nusd(Some("claude-opus-4-1"), &u),
+        Some((out * 1e9) as i64)
+    );
+}
+
+#[test]
 fn the_models_in_use_are_priced() {
     let c = Catalog::builtin();
     for m in [

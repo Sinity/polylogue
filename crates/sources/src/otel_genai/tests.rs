@@ -59,6 +59,29 @@ fn repeated_history_is_written_once_in_order() {
 }
 
 #[test]
+fn cached_above_input_leaves_input_unknown() {
+    let user = json!({"role": "user", "parts": [{"type": "text", "content": "hi"}]});
+    let reply = json!({"role": "assistant", "parts": [{"type": "text", "content": "hello"}]});
+    let mut span = chat_span(
+        "a",
+        1_000_000_000_000,
+        json!([user]),
+        json!([reply]),
+        (10, 4),
+    );
+    span["attributes"]
+        .as_array_mut()
+        .unwrap()
+        .push(attr("gen_ai.usage.cache_read.input_tokens", json!(12)));
+    let doc = json!({"resourceSpans": [{"resource": {"attributes": []},
+        "scopeSpans": [{"scope": {"name": "s"}, "spans": [span]}]}]});
+    let step = parse(&serde_json::to_vec(&doc).unwrap());
+    let reply = &step.output.messages[1].message.usage;
+    assert_eq!(reply.input, None);
+    assert_eq!(reply.cached_input, Some(12));
+}
+
+#[test]
 fn line_per_document_exports_are_read() {
     let one = json!({"resourceSpans": [{"scopeSpans": [{"spans": [
         chat_span("a", 1_000_000_000_000,
