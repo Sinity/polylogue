@@ -8,7 +8,6 @@ use polylogue_model::query_objects::{
 use query_language::identity::{QuestionId, question_id_from_normal_form};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeMap;
-pub(crate) mod evolution;
 
 fn invalid(message: impl Into<String>) -> StoreError {
     StoreError::Invalid(message.into())
@@ -111,24 +110,9 @@ pub(crate) fn validate_result_bindings(
                 "canonical result schema {reference}"
             )));
         };
-        let query_language::catalog::OutputSource::Result { part, .. } = &output.source else {
-            unreachable!()
-        };
-        let id = reference.strip_prefix("result:").unwrap_or(reference);
-        let original = &bindings.kept[id];
-        let proof = match part {
-            query_language::ast::ResultPart::Rows => &original.output_metadata.rows,
-            query_language::ast::ResultPart::Matches => &original.output_metadata.matches,
-        };
-        let unproven_fields = match proof {
-            polylogue_model::kept::SchemaProof::Unproven => None,
-            polylogue_model::kept::SchemaProof::Captured {
-                unproven_fields, ..
-            } => Some(unproven_fields),
-        };
-        if canonical.schema != output.schema || unproven_fields != output.unproven_fields.as_ref() {
+        if canonical.schema != output.schema {
             return Err(invalid(format!(
-                "frozen result schema {reference} differs from its canonical column metadata"
+                "saved result schema {reference} differs from its canonical column metadata"
             )));
         }
     }
@@ -136,7 +120,6 @@ pub(crate) fn validate_result_bindings(
 }
 
 pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
-    run.validate_evolution().map_err(invalid)?;
     if run.machine.trim().is_empty() {
         return Err(invalid("a query run requires its accepting machine"));
     }
@@ -146,14 +129,6 @@ pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
         return Err(invalid("a query run has an invalid read position"));
     }
     match &run.binding {
-        RunBinding::RetiredRead { .. } | RunBinding::Unavailable { .. } => {
-            if run.question.is_none() {
-                return Err(invalid(
-                    "a retained unavailable invocation requires its original question",
-                ));
-            }
-            Ok(())
-        }
         RunBinding::Original { execution } => validate_execution(run, execution),
         RunBinding::OriginalObject { execution } => {
             if run.question.is_some() {
@@ -166,19 +141,6 @@ pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
     }
 }
 fn validate_execution(run: &QueryRun, execution: &ExecutionBinding) -> Result<()> {
-    if run.historical_source.is_some()
-        && execution
-            .replay
-            .context
-            .versions
-            .get("catalog")
-            .map(String::as_str)
-            != Some(polylogue_query::plan::catalog_fingerprint())
-    {
-        return Err(invalid(
-            "migrated execution requires current native declarations",
-        ));
-    }
     if Some(execution.replay.context.question) != run.question {
         return Err(invalid(
             "a query run's replay context names another question",

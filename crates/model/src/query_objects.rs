@@ -15,37 +15,12 @@ use query_language::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub mod evolution;
-
-/// Immutable format-1 input retained by the numbered representation upgrade.
-/// This is evidence for original identity and custody, never an operation input.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct HistoricalQuerySource {
-    pub format: QuerySourceFormat,
-    pub record: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub enum QuerySourceFormat {
-    #[serde(rename = "structured_query_v1")]
-    StructuredQueryV1,
-    #[serde(rename = "retired_read_v2")]
-    RetiredReadV2,
-}
-
-/// Semantic source declaration captured with a question. Missing proof never
-/// authenticates a retained text or JSON matching policy.
+/// Semantic source declaration captured with a question.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SourceOutput {
     pub source: OutputSource,
     pub schema: OutputSchema,
-    /// Kept-result declaration proof: None lacks original evidence, Some([])
-    /// captures every field, Some(names) retains the named uncertainties.
-    /// Saved sources establish their declarations through the frozen body.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unproven_fields: Option<Vec<String>>,
 }
 impl SourceOutput {
     pub fn catalog_output(&self) -> query_language::catalog::SourceOutput {
@@ -60,12 +35,10 @@ impl SourceOutput {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QueryObject {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub historical_source: Option<Box<HistoricalQuerySource>>,
     pub id: QuestionId,
     pub normal_form: serde_json::Value,
     pub parameters: BTreeMap<String, String>,
-    pub body: QuestionBody,
+    pub query: Query,
     pub source_outputs: Vec<SourceOutput>,
     pub definitions: Vec<FrozenQueryDefinition>,
     pub dependencies: Vec<QuestionId>,
@@ -76,106 +49,11 @@ pub struct QueryObject {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenQueryDefinition {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub historical_source: Option<Box<HistoricalQuerySource>>,
     pub question: QuestionId,
     pub normal_form: serde_json::Value,
     pub parameters: BTreeMap<String, String>,
-    pub body: QuestionBody,
+    pub query: Query,
     pub source_outputs: Vec<SourceOutput>,
-}
-
-/// A retained definition has either executable current syntax or a proved
-/// historical reason why it cannot execute. Original syntax stays in its source.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QuestionBody {
-    Executable { query: Query },
-    Unavailable { reason: QueryUnavailable },
-}
-impl QuestionBody {
-    pub fn query(&self) -> Result<&Query, QueryUnavailable> {
-        match self {
-            Self::Executable { query } => Ok(query),
-            Self::Unavailable { reason } => Err(reason.clone()),
-        }
-    }
-    pub fn query_mut(&mut self) -> Result<&mut Query, QueryUnavailable> {
-        match self {
-            Self::Executable { query } => Ok(query),
-            Self::Unavailable { reason } => Err(reason.clone()),
-        }
-    }
-    pub fn into_query(self) -> Result<Query, QueryUnavailable> {
-        match self {
-            Self::Executable { query } => Ok(query),
-            Self::Unavailable { reason } => Err(reason),
-        }
-    }
-}
-#[derive(
-    Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, thiserror::Error,
-)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QueryUnavailable {
-    #[error(
-        "the retained definition uses a computed time bound that its original Polylogue backend did not execute"
-    )]
-    ComputedTimeBound,
-    #[error(
-        "the retained definition tests whether a computed value exists, which its original Polylogue backend did not execute"
-    )]
-    ComputedExistence,
-    #[error(
-        "the retained definition uses span overlap, which its original Polylogue backend did not execute"
-    )]
-    SpanOverlap,
-    #[error(
-        "the retained definition uses a temporal stage that its original Polylogue backend did not execute"
-    )]
-    TemporalStage,
-    #[error(
-        "the retained definition uses the original {source_kind} source, which Polylogue did not execute"
-    )]
-    NativeSource { source_kind: HistoricalNativeSource },
-    #[error("the retained definition depends on unavailable query:{question}")]
-    Dependency { question: QuestionId },
-    #[error(
-        "the retained definition projects the retired private storage key of {unit}; current queries use stable object identities"
-    )]
-    RetiredStorageKey { unit: String },
-    #[error(
-        "the retained definition projects matches of {unit}, which its original Polylogue backend did not execute"
-    )]
-    MatchUnit { unit: String },
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum HistoricalNativeSource {
-    Walk,
-    Recall,
-    RecallLast,
-    RecallMark,
-}
-impl std::fmt::Display for HistoricalNativeSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Walk => "walk",
-            Self::Recall => "recall",
-            Self::RecallLast => "recall last",
-            Self::RecallMark => "recall mark",
-        })
-    }
-}
-impl QueryObject {
-    pub fn executable_ast(&self) -> Result<&Query, QueryUnavailable> {
-        self.body.query()
-    }
-}
-impl FrozenQueryDefinition {
-    pub fn executable_ast(&self) -> Result<&Query, QueryUnavailable> {
-        self.body.query()
-    }
 }
 
 /// A saved definition as it was bound, including its actual syntax.
@@ -408,8 +286,6 @@ pub enum RunOutcome {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QueryRun {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub historical_source: Option<Box<HistoricalQuerySource>>,
     pub id: crate::RunId,
     pub question: Option<QuestionId>,
     pub at: Timestamp,
@@ -423,15 +299,6 @@ pub struct QueryRun {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RunBinding {
-    /// An invocation whose original query has no current executable representation.
-    Unavailable {
-        reason: QueryUnavailable,
-    },
-    /// A source-versioned invocation of the retired content-position reader.
-    /// It remains inspectable evidence and grants no current replay authority.
-    RetiredRead {
-        invocation: RetiredReadInvocation,
-    },
     OriginalObject {
         execution: Box<ObjectExecutionBinding>,
     },
@@ -439,34 +306,17 @@ pub enum RunBinding {
         execution: Box<ExecutionBinding>,
     },
 }
-/// Actual invocation shape retained from the retired source, never a current cursor.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RetiredReadInvocation {
-    Original {
-        binding_hash: crate::BlobHash,
-    },
-    Continuation {
-        root: crate::RunId,
-        binding_hash: crate::BlobHash,
-        seek: serde_json::Value,
-    },
-}
 impl RunBinding {
     pub fn original(&self) -> Option<&ExecutionBinding> {
         match self {
             Self::Original { execution } => Some(execution),
-            Self::OriginalObject { .. } | Self::RetiredRead { .. } | Self::Unavailable { .. } => {
-                None
-            }
+            Self::OriginalObject { .. } => None,
         }
     }
     pub fn original_mut(&mut self) -> Option<&mut ExecutionBinding> {
         match self {
             Self::Original { execution } => Some(execution),
-            Self::OriginalObject { .. } | Self::RetiredRead { .. } | Self::Unavailable { .. } => {
-                None
-            }
+            Self::OriginalObject { .. } => None,
         }
     }
     /// Stable action identity belongs to the original execution, not the page.
@@ -474,208 +324,17 @@ impl RunBinding {
         match self {
             Self::Original { execution } => execution.hash(),
             Self::OriginalObject { execution } => execution.hash(),
-            Self::Unavailable { .. } => Err(evolution_error(
-                "unavailable invocations require original binding custody",
-            )),
-            Self::RetiredRead { invocation } => Ok(match invocation {
-                RetiredReadInvocation::Original { binding_hash }
-                | RetiredReadInvocation::Continuation { binding_hash, .. } => *binding_hash,
-            }),
         }
     }
 }
 impl QueryRun {
-    /// Preserve an invocation whose content-position reader was explicitly retired.
-    pub fn from_retired_read_v2(source: serde_json::Value) -> Result<Self, String> {
-        let current = evolution::retired_read_run(&source)?;
-        let mut run: Self = serde_json::from_value(current).map_err(|error| error.to_string())?;
-        run.historical_source = Some(Box::new(HistoricalQuerySource {
-            format: QuerySourceFormat::RetiredReadV2,
-            record: source,
-        }));
-        run.validate_evolution()?;
-        Ok(run)
-    }
-    /// The numbered format-1 upgrade retains the exact JSON used by hash custody.
-    pub fn from_structured_v1(source: serde_json::Value, catalog: &str) -> Result<Self, String> {
-        let current = evolution::query_run(&source, catalog)?;
-        let mut run: Self = serde_json::from_value(current).map_err(|error| error.to_string())?;
-        run.historical_source = Some(Box::new(HistoricalQuerySource {
-            format: QuerySourceFormat::StructuredQueryV1,
-            record: source,
-        }));
-        run.validate_evolution()?;
-        Ok(run)
-    }
-    /// Check the executable representation before consulting original evidence.
-    pub fn validate_evolution(&self) -> Result<(), String> {
-        let catalog = self
-            .binding
-            .original()
-            .and_then(|execution| execution.replay.context.versions.get("catalog"))
-            .map(String::as_str)
-            .unwrap_or("");
-        if matches!(self.binding, RunBinding::Unavailable { .. })
-            && !matches!(
-                self.historical_source.as_deref(),
-                Some(HistoricalQuerySource {
-                    format: QuerySourceFormat::StructuredQueryV1,
-                    ..
-                })
-            )
-        {
-            return Err(
-                "unavailable invocations require their exact structured source evidence".into(),
-            );
-        }
-        if matches!(self.binding, RunBinding::RetiredRead { .. })
-            && !matches!(
-                self.historical_source.as_deref(),
-                Some(HistoricalQuerySource {
-                    format: QuerySourceFormat::RetiredReadV2,
-                    ..
-                })
-            )
-        {
-            return Err(
-                "retired read invocations require their exact versioned source evidence".into(),
-            );
-        }
-        validate_evolution(self, self.historical_source.as_deref(), |source| match self
-            .historical_source
-            .as_deref()
-            .map(|source| source.format)
-        {
-            Some(QuerySourceFormat::RetiredReadV2) => evolution::retired_read_run(source),
-            _ => evolution::query_run(source, catalog),
-        })
-    }
     pub fn binding_hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
-        if let Some(source) = &self.historical_source {
-            self.validate_evolution().map_err(evolution_error)?;
-            let binding = &source.record["binding"];
-            if binding["kind"] == "continuation" {
-                return serde_json::from_value(binding["binding_hash"].clone());
-            }
-            let domain: &[u8] = match binding["kind"].as_str() {
-                Some("original") => b"polylogue-execution-binding-v1\0",
-                Some("original_object") => b"polylogue-object-execution-binding-v1\0",
-                _ => return Err(evolution_error("invalid historical binding kind")),
-            };
-            return metadata_hash(domain, &binding["execution"]);
-        }
         self.binding.binding_hash()
     }
     /// Integrity of this exact invocation, including its position and envelope.
     pub fn record_hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
-        if let Some(source) = &self.historical_source {
-            self.validate_evolution().map_err(evolution_error)?;
-            metadata_hash(b"polylogue-query-run-begin-v1\0", &source.record)
-        } else {
-            metadata_hash(b"polylogue-query-run-begin-v1\0", self)
-        }
+        metadata_hash(b"polylogue-query-run-begin-v1\0", self)
     }
-}
-
-impl QueryObject {
-    /// Upgrade an explicit immutable structured format-1 input.
-    pub fn from_structured_v1(source: serde_json::Value) -> Result<Self, String> {
-        let current = evolution::query_object(&source)?;
-        let mut object: Self =
-            serde_json::from_value(current).map_err(|error| error.to_string())?;
-        for (node, old) in object.definitions.iter_mut().zip(
-            source["definitions"]
-                .as_array()
-                .ok_or("historical definitions are not an array")?,
-        ) {
-            node.historical_source = Some(Box::new(HistoricalQuerySource {
-                format: QuerySourceFormat::StructuredQueryV1,
-                record: old.clone(),
-            }));
-        }
-        object.historical_source = Some(Box::new(HistoricalQuerySource {
-            format: QuerySourceFormat::StructuredQueryV1,
-            record: source,
-        }));
-        object.validate_evolution()?;
-        Ok(object)
-    }
-    /// A migrated object must be exactly the named conversion of its source.
-    pub fn validate_evolution(&self) -> Result<(), String> {
-        if matches!(self.body, QuestionBody::Unavailable { .. }) && self.historical_source.is_none()
-        {
-            return Err(
-                "unavailable questions require their exact historical source evidence".into(),
-            );
-        }
-        if self.definitions.iter().any(|node| {
-            matches!(node.body, QuestionBody::Unavailable { .. })
-                && node.historical_source.is_none()
-        }) {
-            return Err(
-                "unavailable dependencies require their exact historical source evidence".into(),
-            );
-        }
-        if self
-            .historical_source
-            .as_ref()
-            .is_some_and(|source| source.format != QuerySourceFormat::StructuredQueryV1)
-            || self.definitions.iter().any(|node| {
-                node.historical_source
-                    .as_ref()
-                    .is_some_and(|source| source.format != QuerySourceFormat::StructuredQueryV1)
-            })
-        {
-            return Err("query objects require structured-query source evidence".into());
-        }
-        let closure: Vec<_> = self
-            .definitions
-            .iter()
-            .filter_map(|node| {
-                node.historical_source
-                    .as_ref()
-                    .map(|source| source.record.clone())
-            })
-            .collect();
-        for node in &self.definitions {
-            if let Some(source) = &node.historical_source {
-                validate_evolution(node, Some(source), |old| {
-                    evolution::frozen_definition(old, &closure)
-                })?;
-            }
-        }
-        let mut executable = self.clone();
-        for node in &mut executable.definitions {
-            node.historical_source = None;
-        }
-        validate_evolution(
-            &executable,
-            self.historical_source.as_deref(),
-            evolution::query_object,
-        )
-    }
-}
-fn evolution_error(message: impl std::fmt::Display) -> serde_json::Error {
-    <serde_json::Error as serde::ser::Error>::custom(message)
-}
-fn validate_evolution(
-    current: &impl Serialize,
-    source: Option<&HistoricalQuerySource>,
-    convert: impl FnOnce(&serde_json::Value) -> Result<serde_json::Value, String>,
-) -> Result<(), String> {
-    let Some(source) = source else { return Ok(()) };
-    if source.record.get("historical_source").is_some() {
-        return Err("historical evidence cannot contain nested evidence".into());
-    }
-    let mut executable = serde_json::to_value(current).map_err(|error| error.to_string())?;
-    executable
-        .as_object_mut()
-        .ok_or("expected query record")?
-        .remove("historical_source");
-    if convert(&source.record)? != executable {
-        return Err("query representation differs from its numbered source conversion".into());
-    }
-    Ok(())
 }
 
 /// Completion never replaces the immutable execution inputs.

@@ -91,7 +91,6 @@ fn execute<T>(
         .hash()
         .map_err(|error| Failure::new("internal", error))?;
     let begin = QueryRun {
-        historical_source: None,
         id: id.clone(),
         question: None,
         at: operation.ran_at,

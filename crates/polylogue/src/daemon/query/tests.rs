@@ -1534,8 +1534,7 @@ fn keep_retains_the_bound_logical_declarations_of_same_name_text_casts() {
         let body = keep(&reader, ask(text)).unwrap();
         let metadata: OutputMetadata =
             serde_json::from_value(body["output_metadata"].clone()).unwrap();
-        metadata.validate().unwrap();
-        let schema = metadata.rows.schema().expect("actual producer declaration");
+        let schema = metadata.rows.as_ref().expect("actual producer declaration");
         assert_eq!(
             schema
                 .fields
@@ -1553,50 +1552,4 @@ fn keep_retains_the_bound_logical_declarations_of_same_name_text_casts() {
             ["id", "cwd"]
         );
     }
-}
-
-#[test]
-fn keeping_again_preserves_unproven_policy_until_an_explicit_cast_establishes_it() {
-    use polylogue_model::kept::OutputMetadata;
-    let mut archive = morrow();
-    archive.fx.kept_result("old-policy", "sessions | fields cwd", &json!({
-        "unit":"sessions","shape":"rows","columns":[{"name":"cwd","kind":"text"}],"rows":[{"cwd":"/work/module-other"}]
-    }).to_string()).unwrap();
-    let capture = |archive: &TestArchive, text: &str| {
-        let pool = archive.fx.reads().unwrap();
-        let reader = pool.reader().unwrap();
-        keep(&reader, ask(text)).unwrap()
-    };
-    let copied = capture(&archive, "result:old-policy");
-    let metadata: OutputMetadata =
-        serde_json::from_value(copied["output_metadata"].clone()).unwrap();
-    assert!(metadata.rows.unproven_field("cwd"));
-    archive
-        .fx
-        .kept_result("copied-policy", "result:old-policy", &copied.to_string())
-        .unwrap();
-    let error = run_q(
-        &archive,
-        ask("result:copied-policy | where cwd:/work/module"),
-    )
-    .unwrap_err();
-    assert!(
-        error.to_string().contains("logical matching policy"),
-        "{error:?}"
-    );
-    let cast = capture(&archive, "result:old-policy | fields text(cwd) as cwd");
-    let metadata: OutputMetadata = serde_json::from_value(cast["output_metadata"].clone()).unwrap();
-    assert!(!metadata.rows.unproven_field("cwd"));
-    archive
-        .fx
-        .kept_result(
-            "cast-policy",
-            "result:old-policy | fields text(cwd) as cwd",
-            &cast.to_string(),
-        )
-        .unwrap();
-    assert_eq!(
-        run_q(&archive, ask("result:cast-policy | where cwd:/work/module")).unwrap()["rows"],
-        json!([{"cwd":"/work/module-other"}])
-    );
 }

@@ -1,8 +1,6 @@
 //! Canonical object admission and replay use the product's native declarations.
 use super::*;
-use polylogue_model::query_objects::{
-    FrozenQueryDefinition, QueryEdge, QueryObject, QuestionBody, SourceOutput,
-};
+use polylogue_model::query_objects::{FrozenQueryDefinition, QueryEdge, QueryObject, SourceOutput};
 use query_language::identity;
 use std::collections::{BTreeSet, VecDeque};
 
@@ -10,11 +8,6 @@ fn invalid(message: impl Into<String>) -> QueryError {
     QueryError::Invalid {
         message: message.into(),
         position: 0,
-    }
-}
-fn unavailable(reason: polylogue_model::query_objects::QueryUnavailable) -> QueryError {
-    QueryError::Unavailable {
-        what: reason.to_string(),
     }
 }
 fn language(error: query_language::Error) -> QueryError {
@@ -149,40 +142,13 @@ fn used_outputs(
     }
     Ok(outputs)
 }
-fn capture_outputs(
-    query: &Query,
-    catalog: &Catalog,
-    bindings: &Bindings,
-) -> Result<Vec<SourceOutput>, QueryError> {
+fn capture_outputs(query: &Query, catalog: &Catalog) -> Result<Vec<SourceOutput>, QueryError> {
     used_outputs(query, catalog)?
         .into_iter()
         .map(|output| {
-            let unproven_fields = match &output.source {
-                OutputSource::Result { reference, part } => {
-                    let id = reference
-                        .strip_prefix("result:")
-                        .ok_or_else(|| invalid("kept output has no canonical result identity"))?;
-                    let kept = bindings
-                        .kept
-                        .get(id)
-                        .ok_or_else(|| invalid("kept output has no declaration evidence"))?;
-                    let proof = match part {
-                        ResultPart::Rows => &kept.output_metadata.rows,
-                        ResultPart::Matches => &kept.output_metadata.matches,
-                    };
-                    match proof {
-                        polylogue_model::kept::SchemaProof::Unproven => None,
-                        polylogue_model::kept::SchemaProof::Captured {
-                            unproven_fields, ..
-                        } => Some(unproven_fields.clone()),
-                    }
-                }
-                OutputSource::Saved { .. } => None,
-            };
             Ok(SourceOutput {
                 source: output.source,
                 schema: output.schema,
-                unproven_fields,
             })
         })
         .collect()
@@ -195,38 +161,10 @@ fn edge_key(edge: &QueryEdge) -> String {
         QueryEdge::In { query } => format!("in:{query}"),
     }
 }
-fn inline_identity(
-    query: &Query,
-    native: &Catalog,
-    captured: &[FrozenQueryDefinition],
-) -> Result<QuestionId, QueryError> {
-    let form = identity::normal_form(query, native).map_err(language)?;
-    let mut original = None;
-    for node in captured {
-        let Ok(query) = node.executable_ast() else {
-            continue;
-        };
-        if node.parameters.is_empty()
-            && identity::normal_form(query, native).map_err(language)? == form
-        {
-            if original.is_some_and(|old| old != node.question) {
-                return Err(invalid(
-                    "one evolved inline query has conflicting original identities",
-                ));
-            }
-            original = Some(node.question);
-        }
-    }
-    original.map_or_else(
-        || identity::question_id_from_normal_form(&form, &BTreeMap::new()).map_err(language),
-        Ok,
-    )
+fn inline_identity(query: &Query, native: &Catalog) -> Result<QuestionId, QueryError> {
+    identity::question_id(query, native, &BTreeMap::new()).map_err(language)
 }
-fn edges(
-    query: &Query,
-    native: &Catalog,
-    captured: &[FrozenQueryDefinition],
-) -> Result<Vec<QueryEdge>, QueryError> {
+fn edges(query: &Query, native: &Catalog) -> Result<Vec<QueryEdge>, QueryError> {
     let output = std::cell::RefCell::new(Vec::new());
     let mut query = query.clone();
     walk(
@@ -247,7 +185,7 @@ fn edges(
                 | TransformKind::Diff { query } = &stage.kind
                 {
                     output.borrow_mut().push(QueryEdge::Combine {
-                        query: inline_identity(query, native, captured)?,
+                        query: inline_identity(query, native)?,
                     });
                 }
             }
@@ -259,7 +197,7 @@ fn edges(
                     query: parse_id(name)?,
                 }),
                 ConditionKind::In { query, .. } => output.borrow_mut().push(QueryEdge::In {
-                    query: inline_identity(query, native, captured)?,
+                    query: inline_identity(query, native)?,
                 }),
                 _ => {}
             }
@@ -286,7 +224,7 @@ pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
     if let Some(object) = &plan.retained_object {
         return Ok(object.clone());
     }
-    let outputs = capture_outputs(&plan.identity, &plan.identity_catalog, &plan.bindings)?;
+    let outputs = capture_outputs(&plan.identity, &plan.identity_catalog)?;
     let native = &plan.identity_catalog;
     let mut frozen = plan.frozen.clone();
     // Inline composition bodies have canonical custody just like named inputs.
@@ -303,15 +241,12 @@ pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
                 .map_err(language)?;
             if !frozen.iter().any(|node| node.question == question) {
                 frozen.push(FrozenQueryDefinition {
-                    historical_source: None,
                     question,
                     normal_form: identity::normal_form(query, &plan.identity_catalog)
                         .map_err(language)?,
                     parameters: BTreeMap::new(),
-                    body: QuestionBody::Executable {
-                        query: query.clone(),
-                    },
-                    source_outputs: capture_outputs(query, &plan.identity_catalog, &plan.bindings)?,
+                    query: query.clone(),
+                    source_outputs: capture_outputs(query, &plan.identity_catalog)?,
                 });
             }
             Ok(())
@@ -320,15 +255,12 @@ pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
     )?;
     frozen.sort_by_key(|node| node.question.to_string());
     frozen.dedup_by_key(|node| node.question);
-    let edges = edges(&plan.identity, native, &[])?;
+    let edges = edges(&plan.identity, native)?;
     let object = QueryObject {
-        historical_source: None,
         id: plan.question_id,
         normal_form: identity::normal_form(&plan.identity, native).map_err(language)?,
         parameters: BTreeMap::new(),
-        body: QuestionBody::Executable {
-            query: plan.identity.clone(),
-        },
+        query: plan.identity.clone(),
         source_outputs: outputs,
         definitions: frozen,
         dependencies: dependencies(&edges),
@@ -346,19 +278,6 @@ fn all_outputs(object: &QueryObject) -> Result<Vec<SourceOutput>, QueryError> {
             .flat_map(|node| node.source_outputs.iter()),
     ) {
         let output = output.clone();
-        if let Some(fields) = &output.unproven_fields {
-            let names: BTreeSet<_> = fields.iter().collect();
-            if names.len() != fields.len()
-                || fields
-                    .iter()
-                    .any(|name| !output.schema.fields.iter().any(|field| &field.name == name))
-            {
-                return Err(invalid(
-                    "unproven source declarations must name distinct emitted fields",
-                ));
-            }
-        }
-
         if let Some(previous) = outputs.iter().find(|old| old.source == output.source) {
             if previous != &output {
                 return Err(invalid("conflicting frozen output schemas"));
@@ -378,24 +297,14 @@ pub fn saved_query_bindings(
     let native = runtime_catalog(object)?;
     let mut saved = replay_bindings(object, &native)?.saved;
     let id = object.id.to_string();
-    let (text, body) = match &object.body {
-        QuestionBody::Executable { query } => {
-            let syntax = query_language::format::format_query(query, &native).map_err(language)?;
-            (
-                syntax.clone(),
-                crate::SavedQueryBody::Frozen {
-                    object: Some(std::sync::Arc::new(object.clone())),
-                    syntax,
-                },
-            )
-        }
-        QuestionBody::Unavailable { reason } => (
-            format!("query:{id}"),
-            crate::SavedQueryBody::Unavailable {
-                reason: reason.to_string(),
-            },
-        ),
-    };
+    let syntax = query_language::format::format_query(&object.query, &native).map_err(language)?;
+    let (text, body) = (
+        syntax.clone(),
+        crate::SavedQueryBody::Frozen {
+            object: Some(std::sync::Arc::new(object.clone())),
+            syntax,
+        },
+    );
     saved.insert(
         id.clone(),
         vec![crate::SavedQuery {
@@ -413,34 +322,15 @@ pub fn saved_query_bindings(
 
 pub(super) fn frozen_root(object: &QueryObject) -> FrozenQueryDefinition {
     FrozenQueryDefinition {
-        historical_source: object.historical_source.as_ref().map(|source| {
-            let mut record = source.record.clone();
-            record
-                .as_object_mut()
-                .expect("validated historical object")
-                .retain(|key, _| {
-                    matches!(
-                        key.as_str(),
-                        "normal_form" | "parameters" | "identity_ast" | "source_outputs"
-                    )
-                });
-            record["question"] =
-                serde_json::to_value(object.id).expect("question identity serialization");
-            Box::new(polylogue_model::query_objects::HistoricalQuerySource {
-                format: source.format,
-                record,
-            })
-        }),
         question: object.id,
         normal_form: object.normal_form.clone(),
         parameters: object.parameters.clone(),
-        body: object.body.clone(),
+        query: object.query.clone(),
         source_outputs: object.source_outputs.clone(),
     }
 }
 
-/// Select a proven node and exactly its retained dependency closure. Reusing a
-/// captured node never derives its original identity from its upgraded text.
+/// Select a saved node and exactly its dependency closure.
 pub(super) fn retained_definition(
     object: &QueryObject,
     question: QuestionId,
@@ -457,15 +347,7 @@ pub(super) fn retained_definition(
             .ok_or_else(|| invalid("saved query differs from its declared semantic hash"))?
     };
     let native = runtime_catalog(object)?;
-    let mut queue = VecDeque::from(dependencies(&edges(
-        node.executable_ast().map_err(unavailable)?,
-        &native,
-        if node.historical_source.is_some() {
-            &object.definitions
-        } else {
-            &[]
-        },
-    )?));
+    let mut queue = VecDeque::from(dependencies(&edges(&node.query, &native)?));
     let mut seen = BTreeSet::new();
     let mut closure = Vec::new();
     while let Some(id) = queue.pop_front() {
@@ -477,15 +359,7 @@ pub(super) fn retained_definition(
             .iter()
             .find(|node| node.question == id)
             .ok_or_else(|| invalid(format!("missing retained query:{id}")))?;
-        queue.extend(dependencies(&edges(
-            dependency.executable_ast().map_err(unavailable)?,
-            &native,
-            if dependency.historical_source.is_some() {
-                &object.definitions
-            } else {
-                &[]
-            },
-        )?));
+        queue.extend(dependencies(&edges(&dependency.query, &native)?));
         closure.push(dependency.clone());
     }
     Ok((node, closure))
@@ -500,25 +374,14 @@ fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, Q
     let captured = std::sync::Arc::new(object.clone());
     for node in &object.definitions {
         let id = node.question.to_string();
-        let (text, body) = match &node.body {
-            QuestionBody::Executable { query } => {
-                let syntax =
-                    query_language::format::format_query(query, native).map_err(language)?;
-                (
-                    syntax.clone(),
-                    crate::SavedQueryBody::Frozen {
-                        object: Some(captured.clone()),
-                        syntax,
-                    },
-                )
-            }
-            QuestionBody::Unavailable { reason } => (
-                format!("query:{id}"),
-                crate::SavedQueryBody::Unavailable {
-                    reason: reason.to_string(),
-                },
-            ),
-        };
+        let syntax = query_language::format::format_query(&node.query, native).map_err(language)?;
+        let (text, body) = (
+            syntax.clone(),
+            crate::SavedQueryBody::Frozen {
+                object: Some(captured.clone()),
+                syntax,
+            },
+        );
         bindings.saved.insert(
             id.clone(),
             vec![crate::SavedQuery {
@@ -591,25 +454,16 @@ fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, Q
             match part {
                 ResultPart::Rows => {
                     kept.columns = columns;
-                    kept.output_metadata.rows = source_proof(&output);
+                    kept.output_metadata.rows = Some(output.schema.clone());
                 }
                 ResultPart::Matches => {
                     kept.match_columns = columns;
-                    kept.output_metadata.matches = source_proof(&output);
+                    kept.output_metadata.matches = Some(output.schema.clone());
                 }
             }
         }
     }
     Ok(bindings)
-}
-fn source_proof(output: &SourceOutput) -> polylogue_model::kept::SchemaProof {
-    match &output.unproven_fields {
-        None => polylogue_model::kept::SchemaProof::Unproven,
-        Some(fields) => polylogue_model::kept::SchemaProof::Captured {
-            schema: output.schema.clone(),
-            unproven_fields: fields.clone(),
-        },
-    }
 }
 fn expand(query: &Query, native: &Catalog, bindings: &Bindings) -> Result<Query, QueryError> {
     let text = query_language::format::format_query(query, native).map_err(language)?;
@@ -624,19 +478,16 @@ fn check_node(
     parameters: &BTreeMap<String, String>,
     query: &Query,
     outputs: &[SourceOutput],
-    historical: bool,
 ) -> Result<(), QueryError> {
     let native = catalog(outputs);
     let actual = identity::question_id_from_normal_form(form, parameters).map_err(language)?;
-    if actual != id
-        || (!historical && identity::normal_form(query, &native).map_err(language)? != *form)
-    {
+    if actual != id || identity::normal_form(query, &native).map_err(language)? != *form {
         return Err(invalid(
             "question identity, normal form and typed syntax disagree",
         ));
     }
     let bound = query_language::bind::bind(query, &native).map_err(language)?;
-    if !historical && identity::normal_form(bound.query(), &native).map_err(language)? != *form {
+    if identity::normal_form(bound.query(), &native).map_err(language)? != *form {
         return Err(invalid(
             "canonical question changes when bound to native declarations",
         ));
@@ -652,54 +503,6 @@ fn check_node(
 /// Validate current executable semantics using owned native declarations and
 /// the complete immutable definition closure. This function performs no reads.
 pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
-    object.validate_evolution().map_err(invalid)?;
-    let historical_closure: Vec<_> = object
-        .definitions
-        .iter()
-        .filter_map(|node| {
-            node.historical_source
-                .as_ref()
-                .map(|source| source.record.clone())
-        })
-        .collect();
-    if let Some(source) = &object.historical_source {
-        let nodes = std::iter::once((&source.record, &object.source_outputs)).chain(
-            source.record["definitions"]
-                .as_array()
-                .ok_or_else(|| invalid("historical definition closure is not an array"))?
-                .iter()
-                .zip(object.definitions.iter())
-                .map(|(old, current)| (old, &current.source_outputs)),
-        );
-        for (old, outputs) in nodes {
-            let form = polylogue_model::query_objects::evolution::legacy_definition_normal_form(
-                old,
-                &catalog(outputs),
-                &historical_closure,
-            )
-            .map_err(invalid)?;
-            if form != old["normal_form"] {
-                return Err(invalid(
-                    "historical question normal form does not identify its original syntax",
-                ));
-            }
-        }
-    }
-    for node in &object.definitions {
-        if let Some(source) = &node.historical_source {
-            let form = polylogue_model::query_objects::evolution::legacy_definition_normal_form(
-                &source.record,
-                &catalog(&node.source_outputs),
-                &historical_closure,
-            )
-            .map_err(invalid)?;
-            if form != source.record["normal_form"] {
-                return Err(invalid(
-                    "historical dependency normal form does not identify its original syntax",
-                ));
-            }
-        }
-    }
     let actual = identity::question_id_from_normal_form(&object.normal_form, &object.parameters)
         .map_err(language)?;
     if actual != object.id {
@@ -717,36 +520,15 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
             ));
         }
     }
-    if matches!(object.body, QuestionBody::Unavailable { .. }) {
-        return Ok(());
-    }
-    if object
-        .definitions
-        .iter()
-        .any(|node| matches!(node.body, QuestionBody::Unavailable { .. }))
-    {
-        return Err(invalid(
-            "an executable question cannot depend on an unavailable definition",
-        ));
-    }
     let native = runtime_catalog(object)?;
     check_node(
         object.id,
         &object.normal_form,
         &object.parameters,
-        object.executable_ast().map_err(unavailable)?,
+        &object.query,
         &object.source_outputs,
-        object.historical_source.is_some(),
     )?;
-    let actual_edges = edges(
-        object.executable_ast().map_err(unavailable)?,
-        &native,
-        if object.historical_source.is_some() {
-            &object.definitions
-        } else {
-            &[]
-        },
-    )?;
+    let actual_edges = edges(&object.query, &native)?;
     if actual_edges != object.edges || dependencies(&actual_edges) != object.dependencies {
         return Err(invalid(
             "question composition edges do not match its syntax",
@@ -758,9 +540,8 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
             node.question,
             &node.normal_form,
             &node.parameters,
-            node.executable_ast().map_err(unavailable)?,
+            &node.query,
             &node.source_outputs,
-            object.historical_source.is_some() || node.historical_source.is_some(),
         )?;
         if by_id.insert(node.question.to_string(), node).is_some() {
             return Err(invalid("duplicate frozen question body"));
@@ -776,15 +557,7 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
         let node = by_id
             .get(&key)
             .ok_or_else(|| invalid(format!("missing frozen question {id}")))?;
-        queue.extend(dependencies(&edges(
-            node.executable_ast().map_err(unavailable)?,
-            &native,
-            if node.historical_source.is_some() {
-                &object.definitions
-            } else {
-                &[]
-            },
-        )?));
+        queue.extend(dependencies(&edges(&node.query, &native)?));
     }
     if seen.len() != by_id.len() {
         return Err(invalid("question contains an unrelated frozen definition"));
@@ -813,11 +586,7 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
             }
         }
     }
-    let _ = expand(
-        object.executable_ast().map_err(unavailable)?,
-        &native,
-        &bindings,
-    )?;
+    let _ = expand(&object.query, &native, &bindings)?;
     Ok(())
 }
 /// Reconstruct a pure plan without resolving current aliases or reading data.
@@ -830,9 +599,7 @@ pub fn replay(object: &QueryObject, expected_catalog: &str) -> Result<Plan, Quer
     }
     validate_object(object)?;
     let native = runtime_catalog(object)?;
-    let original =
-        query_language::bind::bind(object.executable_ast().map_err(unavailable)?, &native)
-            .map_err(language)?;
+    let original = query_language::bind::bind(&object.query, &native).map_err(language)?;
     let expanded = expand(
         original.query(),
         &native,
@@ -847,7 +614,7 @@ pub fn replay(object: &QueryObject, expected_catalog: &str) -> Result<Plan, Quer
         original,
         expanded,
         text,
-        identity: object.executable_ast().map_err(unavailable)?.clone(),
+        identity: object.query.clone(),
         bindings,
         catalog: native.clone(),
         definitions: vec![],

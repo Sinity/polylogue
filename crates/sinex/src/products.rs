@@ -5,10 +5,24 @@ use polylogue_model::user::UserWrite;
 use polylogue_model::{Block, WrittenBy};
 use polylogue_store::primary::products::Product;
 use serde_json::{Value, json};
-mod source_formats;
-pub(crate) use source_formats::decode_source;
-#[cfg(test)]
-pub(crate) use source_formats::historical_source_declarations;
+
+/// Decode a confirmed fact whose kind definition is the one Polylogue declares.
+pub(crate) fn decode_source(
+    kind: &sinex_model::KindRef,
+    definition_hash: &str,
+    payload: Value,
+) -> Result<Product> {
+    match crate::kinds::declared_definition(kind) {
+        Some(current) if current == definition_hash => decode(&kind.name, payload),
+        Some(_) => Err(Error::Invalid(
+            "a confirmed event's kind definition differs from Polylogue's".into(),
+        )),
+        None => Err(Error::Invalid(format!(
+            "unsupported Polylogue kind {}@{}",
+            kind.name, kind.version
+        ))),
+    }
+}
 
 pub(crate) fn require_source(product: &Product) -> Result<()> {
     if product

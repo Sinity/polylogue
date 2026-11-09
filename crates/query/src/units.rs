@@ -10,7 +10,6 @@ pub enum Unit {
     Files,
     Events,
     Assertions,
-    ImportedNotes,
     Links,
     Turns,
     Deliveries,
@@ -383,49 +382,6 @@ pub static UNITS: &[UnitSpec] = &[
             prefix: "session",
             target: Unit::Sessions,
         }],
-    },
-    UnitSpec {
-        unit: Unit::ImportedNotes,
-        name: "imported_notes",
-        singular: "imported_note",
-        in_session: false,
-        identity: &["id", "input"],
-        main_time: Some("created_at"),
-        columns: &[
-            ColumnSpec {
-                name: "id",
-                kind: Text,
-            },
-            ColumnSpec {
-                name: "kind",
-                kind: Text,
-            },
-            ColumnSpec {
-                name: "key",
-                kind: Text,
-            },
-            ColumnSpec {
-                name: "value",
-                kind: Text,
-            },
-            ColumnSpec {
-                name: "author",
-                kind: Text,
-            },
-            ColumnSpec {
-                name: "created_at",
-                kind: Time,
-            },
-            ColumnSpec {
-                name: "first_note",
-                kind: Text,
-            },
-            ColumnSpec {
-                name: "target",
-                kind: Text,
-            },
-        ],
-        relations: &[],
     },
     UnitSpec {
         unit: Unit::Assertions,

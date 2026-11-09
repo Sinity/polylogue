@@ -17,11 +17,7 @@ fn requests_round_trip_with_an_op_tag() {
 }
 
 #[test]
-fn context_is_an_internal_plan_and_the_predecessor_wire_operation_is_retired() {
-    let predecessor = serde_json::json!({
-        "op":"context", "request_id":"r1", "ask":{"ask":"session_start","cwd":"/x","source":"resume"}, "sender":"hook"
-    });
-    assert!(serde_json::from_value::<Request>(predecessor).is_err());
+fn brief_arguments_carry_the_start_source() {
     let arguments: crate::protocol::context::Brief =
         serde_json::from_value(serde_json::json!({"cwd":"/x","source":"resume"})).unwrap();
     assert_eq!(arguments.source, crate::briefing::StartSource::Resume);

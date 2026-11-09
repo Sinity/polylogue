@@ -288,12 +288,7 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let mut import = ImportReport::default();
         let at = root.join("archive.db!").join(member);
-        let origin_name = if member == "rows.jsonl" {
-            polylogue_sources::older_archive_rows::ORIGIN
-        } else {
-            KEPT
-        };
-        let origin = polylogue_sources::origin::by_name(origin_name)
+        let origin = polylogue_sources::origin::by_name(KEPT)
             .ok_or_else(|| std::io::Error::other("the kept-file origin is not declared"))?;
         let imported = polylogue_store::ImportMember {
             version: 1,

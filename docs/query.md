@@ -50,7 +50,6 @@ Each unit declares, once, its rows, key and identity, default filters, default o
 | `messages`, `blocks`, `tool_calls`, `documents`, `attachments`, `events`, `links`, `turns`, `files` | as parsed ([sessions.md](sessions.md)) |
 | `pastes` | paste spans: content hash, source of the span, state, message and session; `group by hash` gives repeats |
 | `assertions` | assertions ([assertions.md](assertions.md)) |
-| `imported_notes` | original note rows from imported archives written before the version 1 baseline |
 | `variants` | variants and their parts ([assertions.md](assertions.md#variants)) |
 | `deliveries` | deliveries ([agents.md](agents.md#deliveries)) |
 | `changes` | the change feed as rows |
@@ -66,17 +65,6 @@ Field rules:
 - **Assertion fields**, on `assertions` and as conditions on any unit through `kv:`: `kind`, `key`, `value`, `author`, `by_operator`, `agent`, `unattributed`, `via`, `about`, `evidence`, `scope`, `origin`, `current`, `conflict`, `withdrawn`, `judged`, `judged_by`, `expired`, `changed_since`, `waiting`, `pass`, `rubric`. On any unit: `tag:<name>[:<value>]`, `title:`, `kv:<kind>.<key>=<value>`, `hidden:`, `referenced_by:<ref>`. Grain is strict: an assertion about a session never matches its messages.
 - **Variant fields:** `variant:true` admits variant text into text search; `lang:<code>` matches variant parts in that language and messages by their derived `lang`.
 - **Names shared with Sinex** keep their meaning per product: `evidence_until:` is Polylogue's as-of field, and Sinex's "as of" is a different concept. Polylogue does not retain historical query membership at earlier read positions: `| as of POSITION|TIME` answers `not_yet_available`. `evidence_until:` selects evidence received by then, read with current parsers and prices.
-
-### Original notes from imported archives
-
-`imported_notes` reads the original Notes corpus kept by `import --from-archive`.
-It retains raw text values (including JSON spelling), original IDs, targets,
-writer times and write-counter currency. It includes original kinds that have
-no current assertion counterpart. Current assertion writes belong to
-`assertions`; they do not add rows to this historical source.
-
-Its parser and source-byte provenance are defined with the
-[older archive input format](capture.md#an-archive-from-before-the-baseline).
 
 ## Defaults
 
@@ -172,37 +160,6 @@ Queries, their runs, kept results, figures and findings are stored objects with 
 - **Shipped saved queries** are data in the code, listed beside the operator's own and without an author: `running`, `live`, `notices`, `changes`, `triage`, `needs-review` (non-operator assertions not yet judged by the counted judges), `open-questions`, `unjudged-agent-notes`, `resume_candidates`. A saved query of one's own with the same name takes precedence; withdrawing it brings the shipped one back. Shortcuts are shipped saved queries, never text builders.
 - **`query:triage`** orders sessions across all repositories by a visible sum of named facts, each shown with its contribution: a failed command never followed by a success of the same command; three or more consecutive failures of one normalized command; cost or duration at least three times the repository's 30-day median; three or more operator corrections; open questions and problems. Tagging a session `triaged` removes it; later activity brings it back.
 
-### Stored representations
-
-Current writes use the current grammar and executable body. Stored-data evolution
-is a numbered representation upgrade. It retains each original JSON value under
-its named source format, validates the original normal form and identity, and
-checks that the named conversion yields the stored current representation.
-Historical decoding belongs to the owning source boundary, while current command
-admission accepts the current grammar. Immutable producer records keep their
-original representation; their adapter supplies the validated current product.
-
-A stored question body is either executable current syntax or an explicit
-unavailable state backed by its original source. The upgrade retains definitions
-whose original backend never implemented their construct, together with queries
-that depended on the retired private SQL row key. Their question identity, normal
-form, closure, output declarations and original JSON remain inspectable. Running
-one returns its specific unavailable reason; opening the archive and running other
-questions continue normally. Current writes require executable bodies. Retained
-invocations of an unavailable definition keep their original binding and invocation
-hashes without supplying a current replay binding.
-
-#### Retired content-position invocations
-
-The numbered query representation upgrade preserves Run2 invocations of the
-retired content-position reader as `retired_read` bindings. Original invocations
-and continuations remain distinct. A continuation retains its original root run,
-binding hash and position; the complete original record, including its accepted
-request, supplies the unchanged invocation hash. Raw run reads expose that
-evidence. These records supply no current execution binding, and their positions
-are never interpreted as current page cursors. Current executions cannot create a
-retired binding without its exact versioned source proof.
-
 ### Kept results
 
 `QUERY keep [--name N]` (and `keep` over MCP and HTTP, `--keep` on recall) stores the answer as it is now under `result:<uuidv7>`. It records:
@@ -218,7 +175,7 @@ Rules:
 
 - **Ranking is kept, or the keep is refused.** Keeping a ranked answer whose ranking is incomplete is `refused` with the missing list named; the caller can keep the unranked membership by removing the ranking term.
 - **Reading back** `result:<id>` (or `#<row>`, `.matches`) reads the stored rows, never a re-run; only stages may follow (`result:<id> | group by origin | count`). Re-running is running `query:<hash>`. Where a derivation version changed since, the read says so ("computed under prices `<hash>`, now `<hash>`").
-- A kept result retains the producer's bound logical declarations alongside its physical columns, so same-name `text(id) as id` and `text(cwd) as cwd` keep text matching. Declarations do not grant native field, period or position access. Numbered format evolution marks older declarations without original catalog proof as unproven; their rows remain readable, sortable and groupable. Natural matching and type-dependent prefixes over an unproven declaration return unavailable. An explicit `text(E)` establishes text matching, while copying or re-keeping a field preserves its uncertainty. Canonical questions and their frozen definitions retain that proof on each source declaration. Replay preserves unknown matching policy; a missing proof never authenticates text or JSON matching. Reading a canonical question checks its retained declaration against the immutable result it names.
+- A kept result retains the producer's bound logical declarations alongside its physical columns, so same-name `text(id) as id` and `text(cwd) as cwd` keep text matching. Declarations do not grant native field, period or position access. Canonical questions and their frozen definitions retain each source declaration, and reading a canonical question checks its retained declaration against the immutable result it names.
 - Stages over a kept result use its captured shape, columns and values, including a shaped result with no native row unit. Missing fields and native time or position evidence are not fetched from current rows. Captured native identity is retained when present; otherwise each stored item has an identity from the result, part and stored ordinal, so equal values remain distinct when paged.
 - **Membership:** `in:result:<id>` restricts any query of the result's unit to its rows; a bulk write over an exact reviewed population uses it.
 - **One kept result, many uses:** assertions, page slots, briefs, watch baselines and written-out bundles cite the same `result:<id>`; nothing copies rows.

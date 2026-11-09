@@ -173,48 +173,6 @@ fn unsupported_versions_and_changed_kind_definitions_are_refused() {
 }
 
 #[test]
-fn historical_query_projection_keeps_its_original_native_custody() {
-    let declaration = crate::products::historical_source_declarations()
-        .into_iter()
-        .find(|declaration| {
-            declaration.kind.name == "polylogue.query" && declaration.kind.version == 1
-        })
-        .unwrap();
-    let normal_form = json!({"source":{"kind":"unit","unit":"sessions","condition":null},"attach":[],"stages":[]});
-    let question = query_language::identity::question_id_from_normal_form(
-        &normal_form,
-        &std::collections::BTreeMap::new(),
-    )
-    .unwrap();
-    let mut syntax = normal_form.clone();
-    syntax["source"]["implicit"] = false.into();
-    let source = json!({"id":question,"normal_form":normal_form,"parameters":{},"identity_ast":syntax,"source_outputs":[],"definitions":[],"dependencies":[],"edges":[]});
-    let payload =
-        json!({"record_key":"synthetic-query","record":{"product":"query","object":source}});
-    let mut event = event("polylogue.query", 1, declaration.definition_hash(), payload);
-    event.source_ref.as_mut().unwrap().version = 4;
-    event.source_fingerprint = Some("7".repeat(64));
-    let projected = decode_event(&event).unwrap();
-    let native = projected.native.unwrap();
-    assert_eq!(native.kind.version, 1);
-    assert_eq!(native.origin.source.as_ref().unwrap().version, 4);
-    assert_eq!(native.kind_definition_hash, event.kind_definition_hash);
-    assert_eq!(
-        native.projection.payload_hash,
-        event.projection.payload_hash
-    );
-    assert_eq!(native.origin.source_fingerprint, event.source_fingerprint);
-    assert_eq!(native.origin.producer_identity, event.producer_identity);
-    let ConfirmedChange::Live(product) = projected.change else {
-        panic!("historical source was refused")
-    };
-    let Product::Query { object } = *product else {
-        panic!("query source changed kind")
-    };
-    assert_eq!(object.historical_source.unwrap().record, source);
-}
-
-#[test]
 fn no_position_retirement_requires_post_ack_head_in_the_applied_scope() {
     let state = crate::tests::applied(42);
     let before = std::time::Instant::now();

@@ -126,10 +126,8 @@ fn context_requires_prepared_membership_and_does_not_inherit_current_branch_filt
     );
 }
 #[test]
-fn view_names_have_no_predecessor_aliases_and_options_name_the_supported_views() {
-    for name in ["full", "prompts", "actions", "unknown"] {
-        assert!(View::parse(name).is_none());
-    }
+fn unknown_view_names_are_refused_and_options_name_the_supported_views() {
+    assert!(View::parse("unknown").is_none());
     assert_eq!(View::ALL.len(), View::NAMES.len());
     let invalid = ReadOptions {
         view: View::Dialogue,

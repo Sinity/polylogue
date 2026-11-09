@@ -22,13 +22,10 @@ pub(crate) fn phases() -> Vec<(String, Product)> {
     let mut syntax = normal_form.clone();
     syntax["source"]["implicit"] = false.into();
     let object = QueryObject {
-        historical_source: None,
         id,
         normal_form,
         parameters,
-        body: polylogue_model::query_objects::QuestionBody::Executable {
-            query: serde_json::from_value(syntax).unwrap(),
-        },
+        query: serde_json::from_value(syntax).unwrap(),
         source_outputs: vec![],
         definitions: vec![],
         dependencies: vec![],
@@ -39,7 +36,6 @@ pub(crate) fn phases() -> Vec<(String, Product)> {
         DaySetting::new(jiff::tz::TimeZone::UTC, jiff::civil::time(4, 0, 0, 0)).unwrap(),
     );
     let run = QueryRun {
-        historical_source: None,
         id: RunId::parse("00000000-0000-7000-8000-000000000001").unwrap(),
         question: Some(id),
         at: Timestamp::from_unix_ms(1000).unwrap(),
@@ -60,7 +56,7 @@ pub(crate) fn phases() -> Vec<(String, Product)> {
         binding: RunBinding::Original {
             execution: Box::new(ExecutionBinding {
                 replay: ReplayBinding {
-                    bound_ast: object.executable_ast().unwrap().clone(),
+                    bound_ast: object.query.clone(),
                     source_outputs: vec![],
                     definitions: vec![],
                     context: CursorContext {

@@ -67,12 +67,7 @@ impl PreparedSelection<'_> {
                     root: definition.root.clone(),
                     revision: definition.revision.clone(),
                     question: definition.question_id,
-                    ast: frozen
-                        .executable_ast()
-                        .map_err(|reason| QueryError::Unavailable {
-                            what: reason.to_string(),
-                        })?
-                        .clone(),
+                    ast: frozen.query.clone(),
                 })
             })
             .collect::<Result<Vec<_>, SelectionError>>()?;
@@ -85,12 +80,7 @@ impl PreparedSelection<'_> {
             );
         }
         let replay = ReplayBinding {
-            bound_ast: object
-                .body
-                .into_query()
-                .map_err(|reason| QueryError::Unavailable {
-                    what: reason.to_string(),
-                })?,
+            bound_ast: object.query,
             source_outputs: object.source_outputs,
             definitions,
             context: CursorContext {

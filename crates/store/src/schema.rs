@@ -1,8 +1,7 @@
 //! Table declarations. Each database has one baseline: an empty file is
 //! created at version 1 with exactly the tables declared here, and a file at
 //! version 1 with these tables opens. A newer file, or one whose tables differ
-//! (an archive in another format), is refused unchanged. Later schema changes
-//! are numbered in-place migrations applied by [`ensure`]; there are none yet.
+//! (an archive in another format), is refused unchanged.
 
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
@@ -49,50 +48,11 @@ pub(crate) const QUERY_OBJECTS: &str = concat!(
 pub(crate) const READ_INDEXES: &str = include_str!("schema/index_reads.sql");
 pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
-/// The steps that bring `archive.db` forward from the baseline: the first
-/// takes version 1 to version 2, and so on. A change to the archive tables
-/// appends one step, which must leave exactly the tables [`ARCHIVE`] creates.
-pub(crate) const ARCHIVE_MIGRATIONS: &[Migration] = &[
-    Migration::Data {
-        name: "structured query representation v2",
-        apply: crate::query_objects::evolution::archive_v2,
-    },
-    Migration::Data {
-        name: "kept output declarations v2",
-        apply: crate::kept::archive_v3,
-    },
-    Migration::Data {
-        name: "query admission positions",
-        apply: crate::query_objects::evolution::archive_v4,
-    },
-];
-
-/// A numbered upgrade has one transaction, including its data conversion.
-pub(crate) enum Migration {
-    #[cfg(test)]
-    Sql(&'static str),
-    Data {
-        name: &'static str,
-        apply: fn(&Connection) -> Result<()>,
-    },
-}
-impl Migration {
-    fn apply(&self, conn: &Connection) -> Result<()> {
-        match self {
-            #[cfg(test)]
-            Self::Sql(sql) => conn.execute_batch(sql).map_err(Into::into),
-            Self::Data { name, apply } => {
-                apply(conn).map_err(|error| StoreError::Invalid(format!("{name}: {error}")))
-            }
-        }
-    }
-}
-
-/// The version [`ARCHIVE`] creates.
-pub const ARCHIVE_VERSION: u32 = 1 + ARCHIVE_MIGRATIONS.len() as u32;
+/// The version every baseline database is created at.
+pub const ARCHIVE_VERSION: u32 = 1;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 7;
+pub const INDEX_VERSION: u32 = 1;
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
 /// after the baseline ("PLG1"). A non-empty file without it was written by an
@@ -194,31 +154,7 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         if primary {
             tx.execute_batch(include_str!("primary/projection/read_indexes.sql"))?;
         }
-        if found == 1 {
-            crate::query_objects::evolution::index_v2(&tx, primary)?;
-        }
-        if found == 1 || found == 2 {
-            crate::kept::index_v3(&tx, primary)?;
-        }
-        if (1..=3).contains(&found) {
-            crate::query_objects::evolution::index_v4(&tx, primary)?;
-            set_version(&tx, INDEX_VERSION)?;
-        }
-        if (1..=4).contains(&found) {
-            tx.execute_batch(crate::parser_context::SCHEMA)?;
-            tx.execute_batch("ALTER TABLE parse_state ADD COLUMN stopped_attempt BLOB CHECK(stopped_attempt IS NULL OR status IN ('refused','failed'));")?;
-            set_version(&tx, INDEX_VERSION)?;
-        }
-        if (1..=5).contains(&found) {
-            tx.execute_batch(include_str!("schema/index_6.sql"))?;
-            tx.execute_batch(include_str!("schema/version_cleanup.sql"))?;
-            set_version(&tx, INDEX_VERSION)?;
-        }
-        if (1..=6).contains(&found) {
-            crate::writer::resolve::versions::reproject_link_evidence(&tx)?;
-            set_version(&tx, INDEX_VERSION)?;
-        }
-        let matches = (1..=INDEX_VERSION).contains(&found)
+        let matches = found == INDEX_VERSION
             && if building(&tx)? {
                 same_build_schema_in(&tx, primary)?
             } else {
@@ -245,7 +181,7 @@ pub fn building(conn: &Connection) -> Result<bool> {
     Ok(value.as_deref() == Some("1"))
 }
 
-/// Creates `archive.db` in an empty file and brings an older one forward.
+/// Creates `archive.db` in an empty file, or opens one at the baseline.
 pub fn ensure_archive(conn: &Connection) -> Result<()> {
     crate::sql_functions::register(conn)?;
     check_format(conn, "archive")?;
@@ -254,35 +190,19 @@ pub fn ensure_archive(conn: &Connection) -> Result<()> {
     if version(conn)? == 0 {
         conn.pragma_update(None, "application_id", FORMAT_ID)?;
     }
-    ensure(conn, "archive", &[ARCHIVE], ARCHIVE_MIGRATIONS)
+    ensure(conn, "archive", &[ARCHIVE])
 }
 
-/// Creates `embeddings.db` or upgrades its model-revision metadata in place.
+/// Creates `embeddings.db`, or opens one at the baseline.
 pub(crate) fn ensure_embeddings(conn: &Connection) -> Result<()> {
-    ensure(
-        conn,
-        "embeddings",
-        &[EMBEDDINGS],
-        &[Migration::Data {
-            name: "model vector snapshot revisions",
-            apply: |conn| {
-                conn.execute_batch(include_str!("schema/embeddings_2.sql"))?;
-                Ok(())
-            },
-        }],
-    )
+    ensure(conn, "embeddings", &[EMBEDDINGS])
 }
 
-/// Creates the database from `sql` in an empty file, or applies the
-/// migrations it lacks in one transaction. A database newer than the
-/// migrations, or whose tables then differ from `sql`, is refused unchanged.
-pub(crate) fn ensure(
-    conn: &Connection,
-    database: &'static str,
-    sql: &[&str],
-    migrations: &[Migration],
-) -> Result<()> {
-    let current = 1 + migrations.len() as u32;
+/// Creates the database from `sql` in an empty file, or opens one at the
+/// baseline whose tables match `sql`. A newer database, or one whose tables
+/// differ, is refused unchanged.
+pub(crate) fn ensure(conn: &Connection, database: &'static str, sql: &[&str]) -> Result<()> {
+    let current = 1;
     let found = version(conn)?;
     if found > current {
         return Err(StoreError::NewerSchema {
@@ -296,16 +216,9 @@ pub(crate) fn ensure(
         for part in sql {
             tx.execute_batch(part)?;
         }
-    } else {
-        for step in &migrations[found as usize - 1..] {
-            step.apply(&tx)?;
-        }
-        if !same_schema(&tx, sql)? {
-            return Err(StoreError::NoMigration { database, found });
-        }
-    }
-    if found != current {
         set_version(&tx, current)?;
+    } else if !same_schema(&tx, sql)? {
+        return Err(StoreError::NoMigration { database, found });
     }
     tx.commit()?;
     Ok(())

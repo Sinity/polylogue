@@ -820,25 +820,3 @@ pub(crate) fn event_text(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<Strin
     }).collect();
     any_of(x, parts)
 }
-
-pub(crate) fn imported_note_target(
-    c: &mut Compiler<'_>,
-    x: &Call<'_, '_>,
-) -> Result<String, QueryError> {
-    let p = c.text_param(&x.value()?);
-    let r = x.row();
-    Ok(format!(
-        "EXISTS(SELECT 1 FROM imported_note_target t WHERE t.input_pk={r}.input_pk AND t.source_chain IS {r}.source_chain AND t.note_id={r}.id AND (t.ref={p} OR t.ref='session:'||{p}))"
-    ))
-}
-
-pub(crate) fn imported_note_evidence_until(
-    c: &mut Compiler<'_>,
-    x: &Call<'_, '_>,
-) -> Result<String, QueryError> {
-    let end = c.time(x.name, &x.value()?, x.span)?.end_ms()?;
-    let r = x.row();
-    Ok(format!(
-        "({r}.created_at<{end} AND NOT EXISTS(SELECT 1 FROM imported_note_raw later WHERE later.input_pk={r}.input_pk AND later.source_chain IS {r}.source_chain AND later.first_note={r}.first_note AND later.commit_seq>{r}.commit_seq AND later.created_at<{end}) AND NOT EXISTS(SELECT 1 FROM imported_note_relation w JOIN imported_note_raw wn ON wn.input_pk=w.input_pk AND wn.source_chain IS w.source_chain AND wn.id=w.note_id WHERE w.input_pk={r}.input_pk AND w.source_chain IS {r}.source_chain AND w.kind='withdraws' AND w.other='note:'||{r}.first_note AND wn.created_at<{end}))"
-    ))
-}

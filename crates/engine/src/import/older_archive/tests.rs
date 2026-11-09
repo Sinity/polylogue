@@ -270,21 +270,8 @@ fn every_class_of_row_round_trips_with_its_identity_and_bytes() {
     assert_eq!(imported.len(), original.len());
     for (imported, original) in imported.iter().zip(&original) {
         assert_eq!(&imported[..5], &original[..5]);
-        let mut body: serde_json::Value = serde_json::from_str(&imported[5]).unwrap();
-        body.as_object_mut().unwrap().remove("output_metadata");
-        assert_eq!(
-            body,
-            serde_json::from_str::<serde_json::Value>(&original[5]).unwrap()
-        );
+        assert_eq!(imported[5], original[5]);
     }
-
-    assert_eq!(
-        rows(
-            &target,
-            "SELECT json_extract(rows_json,'$.output_metadata.version'),json_extract(rows_json,'$.output_metadata.rows.kind') FROM kept_result"
-        ),
-        [vec!["2".to_owned(), "unproven".to_owned()]]
-    );
 
     // Vectors and the permanent failure, with their values and times.
     let older_vectors = read_only(&w.older.root.join("embeddings.db"));
@@ -302,7 +289,7 @@ fn every_class_of_row_round_trips_with_its_identity_and_bytes() {
             &target,
             &format!("SELECT format FROM input WHERE id = '{rows_input}'")
         ),
-        [[polylogue_sources::older_archive_rows::ORIGIN.to_owned()]]
+        [[KEPT.to_owned()]]
     );
 }
 
@@ -677,183 +664,4 @@ fn a_refused_input_is_set_aside_with_every_row_and_its_stored_bytes() {
             .filter(|line| line["row"]["place"] == "inline")
             .all(|line| line["row"]["data"]["sqlite_blob_hex"].is_string())
     );
-}
-
-/// Original Notes queries read the preserved rows, including kinds that the
-/// assertion importer cannot express. The predecessor SQL is an independent oracle.
-#[test]
-fn imported_notes_match_the_original_sql_and_replay_prior_kept_imports() {
-    let mut w = setup();
-    let source = rusqlite::Connection::open(w.older.root.join("archive.db")).unwrap();
-    for id in [
-        "CaseA",
-        "caseB",
-        "éclair",
-        "Éclair",
-        "literal%one",
-        "literal_one",
-        "literal\\one",
-        "nul\0tail",
-    ] {
-        source.execute("INSERT INTO note(id,first_note,kind,key,value,author,machine,created_at,valid_until,commit_seq) SELECT ?1,?1,'note',NULL,?2,'operator',machine,15000,NULL,99 FROM note LIMIT 1",rusqlite::params![id," { \"x\": 1 } "]).unwrap();
-    }
-    drop(source);
-    let older = OlderArchive::open(&w.older.root, &w.root.join("copies")).unwrap();
-    let (bytes, _) = w
-        .engine
-        .archive
-        .prepare_write(|out| older.write_rows(out))
-        .unwrap();
-    let input = bytes.hash().to_string();
-    let path = w.older.root.join("archive.db!").join("rows.jsonl");
-    let member = polylogue_store::ImportMember {
-        version: 1,
-        import_id: "older-row-test".into(),
-        member: "rows.jsonl".into(),
-        authorship: None,
-        format: None,
-    };
-    // This is the exact retained-file route used before the rows had a parser.
-    w.engine
-        .store_import_group(
-            vec![(
-                path,
-                polylogue_sources::origin::by_name(KEPT).unwrap(),
-                None,
-                Captured {
-                    prepared: bytes,
-                    head: Vec::new(),
-                    member: Some(member),
-                    container: None,
-                },
-            )],
-            &mut ImportReport::default(),
-        )
-        .unwrap();
-    let pass = w.engine.run_pass().unwrap();
-    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    let original = read_only(&w.older.root.join("archive.db"));
-    let expected = rows(
-        &original,
-        "SELECT n.id,n.kind,n.key,n.value,n.author,n.created_at,n.first_note,(SELECT group_concat(ref,' ') FROM (SELECT t.ref FROM note_target t WHERE t.note_id=n.id ORDER BY t.ref)) AS target FROM note n WHERE n.kind<>'withdrawal' AND NOT EXISTS(SELECT 1 FROM note later WHERE later.first_note=n.first_note AND later.commit_seq>n.commit_seq) AND NOT EXISTS(SELECT 1 FROM note_relation w WHERE w.kind='withdraws' AND w.other='note:'||n.first_note) ORDER BY n.created_at DESC,n.id DESC",
-    );
-    let columns = [
-        "id",
-        "kind",
-        "key",
-        "value",
-        "author",
-        "created_at",
-        "first_note",
-        "target",
-    ];
-    let selected=w.engine.reads.reader().unwrap().query("SELECT id,kind,key,value,author,created_at,first_note,target,input FROM imported_note WHERE kind<>'withdrawal' AND current AND NOT withdrawn ORDER BY created_at DESC,id DESC",&[]).unwrap();
-    let got = selected
-        .iter()
-        .map(|row| {
-            columns
-                .iter()
-                .map(|name| match &row[*name] {
-                    serde_json::Value::Null => "NULL".to_owned(),
-                    serde_json::Value::String(s) => s.clone(),
-                    v => v.to_string(),
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(got, expected);
-    assert!(selected.iter().all(|row| row["input"] == input));
-    assert!(selected.iter().any(|row| row["kind"] == "distillate"));
-    let options = polylogue_store::query::Options {
-        clock: polylogue_store::query::time::Clock::new(
-            jiff::Timestamp::from_millisecond(20_000).unwrap(),
-            query_language::time::DaySetting::new(
-                jiff::tz::TimeZone::get("UTC").unwrap(),
-                jiff::civil::Time::constant(0, 0, 0, 0),
-            )
-            .unwrap(),
-        ),
-        origins: Vec::new(),
-        page_size: None,
-        random_seed: None,
-        embeddings: false,
-        self_session: None,
-        saved: Default::default(),
-        fields: Vec::new(),
-        kept: Default::default(),
-        chat_pages: Vec::new(),
-    };
-    let default_program = polylogue_store::query::compile("imported_notes", &options).unwrap();
-    assert_eq!(
-        default_program
-            .columns
-            .iter()
-            .map(|column| column.name.as_str())
-            .collect::<Vec<_>>(),
-        columns
-    );
-    let mut default_rows = w
-        .engine
-        .reads
-        .reader()
-        .unwrap()
-        .query_rows(&default_program)
-        .unwrap();
-    for row in &mut default_rows {
-        polylogue_store::query::execute::present(&default_program, row).unwrap();
-    }
-    assert_eq!(
-        default_rows
-            .iter()
-            .map(|row| row["id"].clone())
-            .collect::<Vec<_>>(),
-        selected
-            .iter()
-            .map(|row| row["id"].clone())
-            .collect::<Vec<_>>()
-    );
-    for prefix in ["c", "é", "É", "literal%", "literal_", "literal\\", "nul\0"] {
-        let pattern = format!(
-            "{}%",
-            prefix
-                .replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
-        );
-        let expected = original
-            .prepare("SELECT id FROM note WHERE id LIKE ?1 ESCAPE '\\' ORDER BY id")
-            .unwrap()
-            .query_map([pattern], |row| row.get::<_, String>(0))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        let text = format!(
-            "imported_notes where id:{} | fields id | sort by id",
-            polylogue_store::query::quoted(prefix)
-        );
-        let program = polylogue_store::query::compile(&text, &options).unwrap();
-        let mut actual = w
-            .engine
-            .reads
-            .reader()
-            .unwrap()
-            .query_rows(&program)
-            .unwrap();
-        for row in &mut actual {
-            polylogue_store::query::execute::present(&program, row).unwrap();
-        }
-        assert_eq!(
-            actual
-                .iter()
-                .map(|row| row["id"].as_str().unwrap().to_owned())
-                .collect::<Vec<_>>(),
-            expected,
-            "prefix {prefix:?}"
-        );
-    }
-
-    // A new pass uses the same stored chain and emits no duplicate source rows.
-    assert!(w.engine.run_pass().unwrap().errors.is_empty());
-    let repeated=w.engine.reads.reader().unwrap().query("SELECT id,kind,key,value,author,created_at,first_note,target,input FROM imported_note WHERE kind<>'withdrawal' AND current AND NOT withdrawn ORDER BY created_at DESC,id DESC",&[]).unwrap();
-    assert_eq!(selected, repeated);
 }

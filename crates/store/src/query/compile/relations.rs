@@ -729,11 +729,6 @@ impl<'a> Compiler<'a> {
                     .as_ref()
                     .and_then(|typing| typing.operand(&scope.path.field("kind").field("left")))
                     .map(|operand| operand.result.clone());
-                if *op == Op::Prefix
-                    && let Some(info) = &info
-                {
-                    self.require_match_policy(info)?;
-                }
                 let path = *op == Op::Prefix
                     && info.as_ref().is_some_and(|info| {
                         info.field.natural_match() == query_language::catalog::NaturalMatch::Subtree
@@ -795,11 +790,6 @@ impl<'a> Compiler<'a> {
             }
             ConditionKind::Match { field, value } => {
                 let info = scope.fields.and_then(|scope| scope.field(field));
-                if !matches!(value, Value::Any)
-                    && let Some(info) = info
-                {
-                    self.require_match_policy(info)?;
-                }
                 if !matches!(value, Value::Any)
                     && info.is_some_and(|info| {
                         matches!(info.field.kind, query_language::catalog::FieldKind::List(_))
@@ -1440,25 +1430,6 @@ impl Compiler<'_> {
         relation.sources.clear();
         relation.open_fields = false;
         relation.group = None;
-        Ok(())
-    }
-}
-
-impl Compiler<'_> {
-    fn require_match_policy(
-        &self,
-        info: &query_language::scope::FieldInfo,
-    ) -> Result<(), QueryError> {
-        if let Some((reference, field)) =
-            polylogue_query::compile::unproven_match_policy(info, &self.opts.kept)
-        {
-            return Err(QueryError::Unavailable {
-                what: format!(
-                    "{reference} did not retain logical matching policy for {field:?}; use an explicit text({}) cast to establish text matching",
-                    info.field.name
-                ),
-            });
-        }
         Ok(())
     }
 }

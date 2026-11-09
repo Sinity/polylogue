@@ -2158,7 +2158,6 @@ version = "0.1.0"
 dependencies = [
  "authored",
  "blake3",
- "historical-query-format-v1",
  "jiff",
  "query-language",
  "schemars",

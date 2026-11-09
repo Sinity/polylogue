@@ -166,11 +166,6 @@ pub(crate) fn native_time(unit: Unit, field: &str, a: &Aliases) -> Option<Native
             NativeTimeStorage::Latest,
         ),
         (Events, "at") => ("{r}.at", "{r}.fields", NativeTimeStorage::Event),
-        (ImportedNotes, "created_at") => (
-            "{r}.created_at",
-            "(SELECT e.fields FROM event e WHERE e.pk={r}.pk)",
-            NativeTimeStorage::Event,
-        ),
         (Documents, "source_time") => (
             "{r}.source_time",
             "(SELECT {r}_time.time FROM document_source {r}_time WHERE {r}_time.document_pk={r}.pk AND {r}_time.input_pk={r}.input_pk AND {r}_time.chain={r}.source_chain AND {r}_time.shown=1)",
@@ -515,23 +510,6 @@ f(Links,"child").custom(custom::link_child).sql("{r}.child_id"),
 f(Links,"pending").sql("(NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = {r}.parent_id))"),
 f(Links,"evidence").sql("{r}.evidence"),
 f(Links,"branch_point").sql("{r}.branch_point"),
-f(ImportedNotes,"id").sql("{r}.id"),
-f(ImportedNotes,"input").sql("{r}.input"),
-f(ImportedNotes,"kind").sql("{r}.kind"),
-f(ImportedNotes,"key").sql("{r}.key"),
-f(ImportedNotes,"value").sql("{r}.value"),
-f(ImportedNotes,"author").sql("{r}.author"),
-f(ImportedNotes,"created_at").sql("{r}.created_at"),
-f(ImportedNotes,"first_note").sql("{r}.first_note"),
-f(ImportedNotes,"write_counter").sql("{r}.commit_seq"),
-f(ImportedNotes,"current").sql("{r}.current"),
-f(ImportedNotes,"withdrawn").sql("{r}.withdrawn"),
-f(ImportedNotes,"agent").sql("({r}.author='agent' OR {r}.author LIKE 'agent:%')"),
-f(ImportedNotes,"judged").sql_fn(imported_notes_judged),
-f(ImportedNotes,"target").custom(custom::imported_note_target).sql("{r}.target"),
-f(ImportedNotes,"since").custom(custom::since),
-f(ImportedNotes,"until").custom(custom::until),
-f(ImportedNotes,"evidence_until").custom(custom::imported_note_evidence_until),
 f(Assertions,"id").sql("{r}.id"),
 f(Assertions,"reference").sql("pl_assertion_ref({r}.root,{r}.id)"),
 f(Assertions,"kind").sql("{r}.kind"),
@@ -929,10 +907,3 @@ pub(crate) fn working_directories(s: &str) -> String {
 }
 #[cfg(test)]
 mod tests;
-
-fn imported_notes_judged(a: &Aliases) -> String {
-    let r = &a.row;
-    format!(
-        "(SELECT j.key FROM imported_note j JOIN imported_note_target t ON t.input_pk=j.input_pk AND t.source_chain IS j.source_chain AND t.note_id=j.id WHERE j.input_pk={r}.input_pk AND j.source_chain IS {r}.source_chain AND j.kind='judgment' AND j.author='operator' AND j.current AND NOT j.withdrawn AND t.ref='note:'||{r}.id ORDER BY j.commit_seq DESC LIMIT 1)"
-    )
-}

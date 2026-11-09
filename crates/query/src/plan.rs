@@ -92,41 +92,6 @@ impl Plan {
             .filter(|name| produced.fields.iter().any(|field| &field.name == name));
         Ok(produced)
     }
-    /// A re-kept field inherits uncertainty from its actual input; fixed
-    /// expressions such as text(E) establish a new declaration.
-    pub fn output_proof_for_columns(
-        &self,
-        columns: &[crate::Column],
-        actual: &BTreeMap<String, crate::Kept>,
-    ) -> Result<polylogue_model::kept::SchemaProof, QueryError> {
-        let schema = self.output_schema_for_columns(columns)?;
-        let query = self
-            .expanded
-            .typing()
-            .query(&Default::default())
-            .expect("bound root query");
-        let scope = query
-            .transforms
-            .last()
-            .map_or(&query.source, |stage| &stage.after);
-        let unproven_fields = columns
-            .iter()
-            .filter_map(|column| {
-                let info = scope.field(&column.name).or_else(|| {
-                    scope
-                        .fields
-                        .iter()
-                        .find(|info| info.field.name.replace(['.', '-'], "_") == column.name)
-                });
-                info.and_then(|info| crate::compile::unproven_match_policy(info, actual))
-                    .map(|_| column.name.clone())
-            })
-            .collect();
-        Ok(polylogue_model::kept::SchemaProof::Captured {
-            schema,
-            unproven_fields,
-        })
-    }
     /// Queryable fields of this exact resolved relation, separate from columns.
     pub fn relation_scope(&self) -> Result<query_language::catalog::OutputSchema, QueryError> {
         let produced = self.output_schema()?;

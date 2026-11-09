@@ -119,18 +119,7 @@ fn canonical_assertion_arguments_refuse_empty_work_and_nonexact_revision_bases()
 }
 
 #[test]
-fn predecessor_note_commands_are_retired_in_favor_of_the_canonical_operations() {
-    for name in [
-        "note add",
-        "note tag",
-        "note accept",
-        "note reject",
-        "note list",
-        "note read",
-    ] {
-        assert!(command(name).is_none(), "{name}");
-    }
-    assert!(crate::cli::parse(&["polylogue", "note", "add", "repo:x", "-m", "b"]).is_err());
+fn assertion_operations_are_registered_on_every_surface() {
     for name in ["assert", "assert-query", "revise", "withdraw"] {
         let command = crate::commands::command(name).unwrap();
         assert!(command.register.is_some() && command.typed_schemas.is_some());

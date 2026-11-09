@@ -50,11 +50,7 @@ const CHAIN_STATES: &str = r#"WITH inputs AS MATERIALIZED (
                 SELECT input, min(rowid) AS observation
                 FROM source_observation GROUP BY input
             ), formats AS (
-                SELECT o.input, o.path, CASE WHEN json_extract(o.details_json, '$.import_format')='export-file'
-                         AND json_extract(o.details_json, '$.import.member')='rows.jsonl'
-                         AND replace(o.path,char(92),'/') LIKE '%/archive.db!/rows.jsonl'
-                     THEN 'polylogue-archive-rows'
-                     ELSE json_extract(o.details_json, '$.import_format') END AS format,
+                SELECT o.input, o.path, json_extract(o.details_json, '$.import_format') AS format,
                     row_number() OVER (PARTITION BY o.input
                         ORDER BY (json_extract(o.details_json, '$.import_format') = 'export-file'),
                                  o.rowid DESC) AS choice

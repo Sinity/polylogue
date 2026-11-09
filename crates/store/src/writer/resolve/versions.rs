@@ -1116,35 +1116,3 @@ fn choose_link(
         link,
     }))
 }
-
-/// Index 6 -> 7, inside the schema owner's transaction. Only relations with
-/// multiple contributors could retain source-winner-dependent evidence.
-pub(crate) fn reproject_link_evidence(tx: &rusqlite::Transaction<'_>) -> Result<()> {
-    let mut candidates = tx.prepare(
-        "SELECT link_pk FROM link_source GROUP BY link_pk HAVING count(*)>1 ORDER BY link_pk",
-    )?;
-    let mut rows = candidates.query([])?;
-    let mut counter = None;
-    while let Some(row) = rows.next()? {
-        let pk: i64 = row.get(0)?;
-        let sources = link_sources(tx, pk)?;
-        let choice = choose_link(tx, &sources, None)?
-            .ok_or_else(|| StoreError::Invalid("link lost its source contributions".into()))?;
-        let changed = tx.execute(
-            "UPDATE link SET evidence=?2 WHERE pk=?1 AND evidence IS NOT ?2",
-            params![pk, choice.link.evidence],
-        )?;
-        if changed != 0 {
-            let changed_at = match counter {
-                Some(value) => value,
-                None => {
-                    let value = crate::archive::bump_counter(tx)?;
-                    counter = Some(value);
-                    value
-                }
-            };
-            tx.execute("UPDATE session SET changed=?2 WHERE id IN (SELECT parent_id FROM link WHERE pk=?1 UNION SELECT child_id FROM link WHERE pk=?1)", params![pk, changed_at])?;
-        }
-    }
-    Ok(())
-}

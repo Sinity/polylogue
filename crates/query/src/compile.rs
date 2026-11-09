@@ -3,7 +3,6 @@ use crate::{QueryError, ast::*};
 use query_language::time::Clock;
 use serde::{Deserialize, Serialize};
 mod kept;
-pub use kept::unproven_match_policy;
 pub(crate) mod saved;
 pub(crate) mod schema;
 pub(crate) mod source;
