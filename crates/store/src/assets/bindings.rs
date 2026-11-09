@@ -23,7 +23,7 @@ pub struct BindingContext {
     pub import_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BindingSelection {
     pub context: BindingContext,
@@ -173,7 +173,7 @@ impl AttachmentBindingRecord {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BindingResolution {
     pub selection: BindingSelection,
     pub claim: AttachmentBinding,
@@ -181,7 +181,7 @@ pub struct BindingResolution {
     pub members: Vec<ReceivingMember>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BindingContexts {
     pub state: AttachmentState,
     /// Retained binding contexts, including distinct conflicting claim facts.

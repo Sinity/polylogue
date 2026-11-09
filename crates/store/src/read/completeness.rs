@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::ops::ControlFlow;
 
 /// Supplied by the owning native-origin registry, never inferred from a stored cursor.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReadingContract {
     Expected {
@@ -30,9 +30,7 @@ impl ReadingContract {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompletenessReason {
     MissingDeclaration,
@@ -51,7 +49,7 @@ pub enum CompletenessReason {
     StreamBehind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", content = "reasons", rename_all = "snake_case")]
 pub enum CompletenessDimension {
     Complete,
@@ -65,7 +63,7 @@ impl CompletenessDimension {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadCompleteness {
     pub parsing: CompletenessDimension,
     pub derivation: CompletenessDimension,

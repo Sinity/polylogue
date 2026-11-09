@@ -788,7 +788,7 @@ pub enum QueryCustody {
     Queued,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueryLookup<T> {
     pub value: T,

@@ -223,7 +223,7 @@ pub struct OrderKey {
 }
 
 /// How one record ended. Every record ends in exactly one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RecordOutcome {
     /// The record became rows: messages, events, links, session facts.
