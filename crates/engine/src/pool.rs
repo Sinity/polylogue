@@ -749,10 +749,6 @@ pub(crate) fn run(
         source.lock().expect("import reader lock").consume(upto);
     }
     out.checkpoint = parse.last().and_then(|step| step.checkpoint.clone());
-    // The keyed context's changes travel to the writer in the batch's
-    // checkpoint. The loop keeps the state until the input's next job, which
-    // reads the admitted context from the index, so it keeps it without them:
-    // they hold every key the range wrote, many times the rest of the state.
     for state in [
         out.parser_state.as_mut(),
         out.checkpoint
@@ -762,9 +758,7 @@ pub(crate) fn run(
     .into_iter()
     .flatten()
     {
-        if let Some(state) = state.as_object_mut() {
-            state.remove(polylogue_model::parser_context::FIELD);
-        }
+        crate::parser_checkpoint::without_context_changes(state);
     }
     let batch = Batch {
         required_disposition: job

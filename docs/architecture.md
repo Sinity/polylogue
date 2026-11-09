@@ -153,7 +153,10 @@ Building the archive overlaps every stage:
   goes to the worker that went idle last, so the ranges of one large input
   run on one worker and reuse the memory its previous range freed, and the
   pass holds about one job's memory per job in flight rather than one per
-  worker;
+  worker; a new input starts only when its first range can be queued at
+  once, so the inputs a pass has started finish before it starts more, and
+  the parser state kept between an input's ranges leaves out the keyed
+  context's changes, which the next range reads from the index;
 - one writer that only appends and commits;
 - consumers of committed positions: derived data, the request-log projection
   and the completion catalog;
