@@ -684,7 +684,6 @@ fn selected_latest_user_message_does_not_include_later_assistant_bodies() {
     );
 }
 
-/// law: pl.read.page-append-stable
 #[test]
 fn a_cursor_on_a_live_session_continues_after_appended_messages() {
     let d = test_daemon::start("placeholder");
@@ -747,7 +746,6 @@ fn a_cursor_on_a_live_session_continues_after_appended_messages() {
     assert_eq!(text.value, expected);
 }
 
-/// law: pl.read.page-no-proof
 #[test]
 fn continuation_pages_write_nothing() {
     let d = test_daemon::start("a synthetic prompt long enough for several pages of reading");

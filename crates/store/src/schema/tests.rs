@@ -14,7 +14,6 @@ fn every_schema_applies_to_an_empty_database() {
     }
 }
 
-/// law: one-baseline
 #[test]
 fn every_database_starts_at_its_current_version() {
     assert_eq!(ARCHIVE_VERSION, 1);
@@ -34,7 +33,6 @@ fn every_database_starts_at_its_current_version() {
     }
 }
 
-/// law: one-baseline
 #[test]
 fn an_index_at_another_version_is_refused_without_removing_rows() {
     let conn = Connection::open_in_memory().unwrap();
@@ -182,7 +180,6 @@ fn read_indexes_are_added_in_place_and_survive_reopen() {
     assert!(!same_index_schema_in(&conn, false).unwrap());
 }
 
-/// law: one-baseline
 #[test]
 fn an_archive_written_before_the_baseline_is_an_older_format_and_stays_as_it_is() {
     // An archive with tables and a version but no format identity, as every

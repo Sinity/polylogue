@@ -131,7 +131,6 @@ fn assertion_text_uses_declared_prose_fields_and_preserves_recorded_empty_string
     }
 }
 
-/// law: record.authorship-non-null
 #[test]
 fn a_stored_fact_without_author_channel_machine_or_time_does_not_decode() {
     let complete = serde_json::json!({

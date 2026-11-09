@@ -4,11 +4,11 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 
 ## Principles
 
-- **Every relevant origin, at full fidelity.** Every AI tool whose sessions the user has is captured, with every side file that carries conversation content, context or harness-side evidence, even before a parser for it exists, because harnesses prune their own files and a pruned file is lost. A degraded form (a flattened transcript, a page scrape where the provider's data is available) is never the stored record. Ruling, 2026-02-15: "better to capture way huge schemas rather than missing something, anything at all." (cc-queued:7ebe20ed-a8bf-4392-98ab-bce1ea619c70@2026-02-15T02:42:31.922Z).
-- **Nothing disappears silently.** Every file under a declared root is collected, ignored with a recorded reason, or reported unrecognized. Ruling, 2026-07-31: "we dont want things we wrongfully classify to disappear, being silently skipped over forever. we want to account for things." (cc:38baa1de-9715-48fa-8175-f2a29d92800e:bc4b84cc-1c23-46df-bd01-dbb4219d5d47).
-- **Fixed locations, strict recognition, fail closed.** Polylogue reads data where each tool writes it; there are no path settings and no custom roots. Input that does not match its declared shape is refused, never reinterpreted. Ruling, 2026-09-27: "fail early, fail close etc. reject input which is not correct" (cc:62be45f2-6c40-49ce-a88e-bc566948628c:75bf98d6-b1e7-461a-bd53-501ec33de178).
+- **Every relevant origin, at full fidelity.** Every AI tool whose sessions the user has is captured, with every side file that carries conversation content, context or harness-side evidence, even before a parser for it exists, because harnesses prune their own files and a pruned file is lost. A degraded form (a flattened transcript, a page scrape where the provider's data is available) is never the stored record. (ruling 2026-02-15, cc-queued:7ebe20ed-a8bf-4392-98ab-bce1ea619c70@2026-02-15T02:42:31.922Z).
+- **Nothing disappears silently.** Every file under a declared root is collected, ignored with a recorded reason, or reported unrecognized. (ruling 2026-07-31, cc:38baa1de-9715-48fa-8175-f2a29d92800e:bc4b84cc-1c23-46df-bd01-dbb4219d5d47).
+- **Fixed locations, strict recognition, fail closed.** Polylogue reads data where each tool writes it; there are no path settings and no custom roots. Input that does not match its declared shape is refused, never reinterpreted. (ruling 2026-09-27, cc:62be45f2-6c40-49ce-a88e-bc566948628c:75bf98d6-b1e7-461a-bd53-501ec33de178).
 - **Live is the normal case.** A growing file is tailed; a live origin needs no import step.
-- **Exports arrive by hand.** Provider exports are brought in with `polylogue import`; nothing is picked up from a download or inbox directory. Ruling, 2026-07-06: "we dont' import from stuff 'sitting in inbox'. this is just ephemeral dirty copy." (cc-queued:f7680f9c-32e4-4f2f-9180-b9977e1f4702@2026-07-06T17:12:07.017Z).
+- **Exports arrive by hand.** Provider exports are brought in with `polylogue import`; nothing is picked up from a download or inbox directory. (ruling 2026-07-06, cc-queued:f7680f9c-32e4-4f2f-9180-b9977e1f4702@2026-07-06T17:12:07.017Z).
 - **Databases are captured as rows, not images** ([Tool databases](#tool-databases)).
 - **No size limit on valid input.** Payloads, attachments and export members of any size stream through.
 
@@ -193,23 +193,3 @@ Gemini activity times keep their original text and zone. Explicit offsets are re
 - **field accounting:** `unused` paths per origin and reading version ([archive.md](archive.md#parsing)).
 
 Its figures and verdicts use the shared status format of [command-surface](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/command-surface.md); the rest of status is in [operations.md](operations.md#status). The health report raises an item for every non-empty `unrecognized` class, every refusal, every unwired hook event, and every origin silent for longer than its own usual gap. Status is computed on request from stored facts; nothing is checked on a schedule.
-
-## Laws
-
-- **classes-partition-files**: a synthetic root with one file per class reports each as `collected`, `ignored` (with its reason) or `unrecognized`, and the classes partition the files.
-- **rename-moves-class**: renaming a collected file to an unknown extension moves it to `unrecognized` at the next discovery event.
-- **collect-without-parser**: a declared origin with no parser stores its files and reports `no_parser_yet`.
-- **refused-stays-refused**: a file failing its origin's shape check is `refused` with a reason and appears under no other origin.
-- **known-locations-fully-recognized**: a fixture tree holding every listed location of each live origin has no `unrecognized` file.
-- **root-follows-tool-variable**: setting the tool's home variable moves the root; no Polylogue setting does.
-- **hook-event-recorded**: a synthetic event of each type lands in the spool and in the index.
-- **hook-never-creates-session**: a hook event for an unknown session creates no session.
-- **hook-line-durable**: a hook line survives a crash after the hook returns.
-- **spool-lines-match-rollback-fixture**: the hook writes exactly the line shapes of its rollback fixture (every harness, an event with and without a session, native observations, an emission receipt), each line starting with a key a spool reader recognizes it by, and this build's reader takes every fixture line.
-- **drive-revisions**: against a fake Drive, three revisions and one `driveImage` give one session with three revisions and the image's bytes; a deleted prompt keeps its revisions and is marked gone.
-- **import-every-structure**: a fixture for every row of the structures table imports; an unrelated JSONL file is refused with the structures tried and nothing is stored.
-- **reimport-changes-nothing**: importing identical bytes again changes nothing, and a byte-identical copy of a container is `already_stored`.
-- **newer-export-keeps-dropped-field**: a newer export that lacks a field keeps the older export's value.
-- **corrupt-member-refuses-container**: a corrupt member refuses its container before anything is stored.
-- **container-streams**: every member of a container far larger than memory streams with bounded memory.
-- **tool-database-keeps-deleted-rows**: a row deleted by the tool after one capture stays in the archive, and no database image or side file is written.

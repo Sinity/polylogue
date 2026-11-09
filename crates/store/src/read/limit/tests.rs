@@ -81,7 +81,7 @@ fn concurrent_reads_keep_separate_deadlines_and_cancellation() {
     let long = ReadLimit::new(Duration::from_secs(30), Default::default());
     std::thread::scope(|scope| {
         // The short deadline may pass while its reader is still opening; the
-        // law is that it ends that read alone, wherever it is.
+        // rule is that it ends that read alone, wherever it is.
         let a = scope.spawn(|| short.scope(|| pool.reader()?.query(SLOW, &[])));
         let b = scope.spawn(|| long.scope(|| pool.reader()?.query(SLOW, &[])));
         started(&long);

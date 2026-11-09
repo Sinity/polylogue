@@ -2,7 +2,6 @@ use super::run;
 use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
 use query_language::time::DaySetting;
 
-/// law: a measure is the first SQL a fresh reader runs
 #[test]
 fn measures_on_a_fresh_reader_see_current_tags_without_a_preceding_query() {
     let dir = tempfile::tempdir().unwrap();

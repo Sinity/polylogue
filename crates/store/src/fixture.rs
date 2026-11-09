@@ -729,7 +729,7 @@ impl Fixture {
     }
 
     /// A current saved definition from the same real prepared Plan used by
-    /// query execution. Independent roots permit imported-name conflict laws.
+    /// query execution. Independent roots permit imported-name conflict tests.
     pub fn saved_query(
         &mut self,
         name: &str,

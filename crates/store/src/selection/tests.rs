@@ -930,7 +930,6 @@ fn a_selection_failure_carries_the_store_code_every_surface_uses() {
     }
 }
 
-/// law: cwd-reads-directory-key-range
 /// `cwd:` finds sessions through a key range over the directories sessions
 /// recorded, never by reading every session row, at a deep directory and at
 /// `/`; and it matches whole path components.

@@ -436,7 +436,7 @@ fn sparse_fact_admission_precedes_raw_bytes_and_unions_without_regression() {
 }
 
 #[test]
-fn sparse_distinct_source_versions_keep_the_existing_selection_law() {
+fn sparse_distinct_source_versions_keep_the_existing_selection_rule() {
     let w = test_archive();
     let message = original();
     let first = selected(&message, &[0]);

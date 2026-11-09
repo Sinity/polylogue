@@ -68,7 +68,6 @@ fn a_cursor_names_its_own_reading() {
     );
 }
 
-/// law: pl.read.page-rewrite-stale
 #[test]
 fn only_a_moved_rewrite_version_stales() {
     let cursor = cursor();

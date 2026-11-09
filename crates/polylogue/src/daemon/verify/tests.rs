@@ -1,7 +1,6 @@
 use crate::daemon::Request;
 use polylogue_store::verify::Verification;
 
-/// law: verify-manifest-hashes-each-revision
 #[test]
 fn verify_through_the_daemon_checks_the_archive_and_writes_a_new_manifest() {
     let daemon = crate::test_daemon::start("words to verify");

@@ -4,14 +4,14 @@ The workbench is the web interface the daemon serves: reading, searching, measur
 
 ## Principles
 
-- **A full designed interface, built from the designs.** Every view below is specified to the fidelity its board draws; the [visual baselines](#visual-baselines) are built faithfully, and views without a board are drawn before they are built. Ruling, 2026-05-02: "I really want full aesthetic and functional webui" (chatgpt:69f4b473-d540-83eb-b0ad-ad26c9ea32b1:a8aa12ec-7b2b-4678-a766-b0f5e5a5a312). Ruling, 2026-10-27: "wasn't it actually designed? what happened to that? why it's so basic?" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3c3dd59f-4560-4fee-95d4-5c43b6c94ca5).
+- **A full designed interface, built from the designs.** Every view below is specified to the fidelity its board draws; the [visual baselines](#visual-baselines) are built faithfully, and views without a board are drawn before they are built. (ruling 2026-05-02, chatgpt:69f4b473-d540-83eb-b0ad-ad26c9ea32b1:a8aa12ec-7b2b-4678-a766-b0f5e5a5a312). (ruling 2026-10-27, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3c3dd59f-4560-4fee-95d4-5c43b6c94ca5).
 - **A shell over the same operations.** Every action is a command-table row reachable from the CLI and MCP; there is no web-only endpoint, and every view shows the CLI command that reproduces it.
-- **Where the operator works with agents.** Live sessions are followed, answered, approved, steered, interrupted, resumed and pinged from the web ([Running](#running-running), [live-session control](#live-session-control-panel)). Ruling, 2026-06-18: "ability to actually real-time interact with all sessions through (our) webui" (journal 2026-06-18 21:56).
-- **Live, never polling.** Views update from the change feed. Ruling, 2026-07-03: "lag from realtime of all sorts, especially in webui (things should feel ~instant)" (cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:e72e1c54-c67d-4f23-9649-c84390ffd442).
+- **Where the operator works with agents.** Live sessions are followed, answered, approved, steered, interrupted, resumed and pinged from the web ([Running](#running-running), [live-session control](#live-session-control-panel)). (ruling 2026-06-18, journal 2026-06-18 21:56).
+- **Live, never polling.** Views update from the change feed. (ruling 2026-07-03, cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:e72e1c54-c67d-4f23-9649-c84390ffd442).
 - **Every visible fact has provenance.** A chip, figure or line opens where it came from ([inspector](#inspector-and-provenance)).
 - **Pages are the centre of work, and optional.** The model is [pages.md](pages.md); the views are [Pages](#pages-pages-ppage).
 - **Durable state lives in the archive.** The browser holds only view state in progress ([what the browser holds](#what-the-browser-holds)).
-- **Verified by running it.** Checks drive a real browser against the real daemon. Ruling, 2026-05-03: "I do not believe you can implemtn full aesthetics as they should be, full fucniaolity, interactivity - without ever runnign thigns." (cc-queued:d227b344-a871-4be1-bdf0-30c59ff1db7d@2026-05-03T18:16:47Z).
+- **Verified by running it.** Checks drive a real browser against the real daemon. (ruling 2026-05-03, cc-queued:d227b344-a871-4be1-bdf0-30c59ff1db7d@2026-05-03T18:16:47Z).
 - **Stored text is shown as it is.** No view masks, flags or reveals spans, and there is no delete action, because Polylogue has no deletion ([architecture.md](architecture.md#deletion)).
 - **No dependency on one desktop.** Desktop integration (opening an editor, a file manager, a terminal, the clipboard) goes through the desktop's own services; a desktop or window manager named on this page is an example of a deployment.
 
@@ -73,7 +73,7 @@ Parts of MK3.1 that do not bind: the redaction policy, redacted paths and "copy 
 | status panels: archive counts, sources with lag, capture, recent, diagnostics | MK2's terminal cockpit, as the [Status](#status-status) view and the status strip. No terminal UI is built now, and diagnostics suggest ordinary commands only |
 | fuzzy selector: descriptor-driven, preview pane, multi-select, print or open the choice | MK2, for the CLI picker ([interfaces.md](interfaces.md#picker)) |
 | CLI: bare overview with source bars, completion popup with counts, opening the latest session in the web reader | MK2, for the CLI ([interfaces.md](interfaces.md#completion)) |
-| data-flow invariants: any surface renders anything by reference alone; nothing leaves the machine unless the user writes it out or configures a listen address | MK2, as the laws `any-surface-by-reference` and `nothing-leaves-unasked` |
+| data-flow invariants: any surface renders anything by reference alone; nothing leaves the machine unless the user writes it out or configures a listen address | MK2 |
 | bundles from multi-select, message references without copied payloads | MK2; MK3.1 10 for the flow. The bundle's manifest carries references and content hashes |
 
 The MK2 board is drawn for the Python predecessor, so its command and module names (`polylogued`, `ops doctor`, `--fix` targets, Python file names) are the predecessor's; the commands are those in [interfaces.md](interfaces.md#commands), and there are no repair commands. Its roadmap and inventory artboards show the predecessor's plan, not views. MK2's MCP role gate (read, write, admin) and its MCP server with direct archive access do not apply: agents get every power ([architecture.md](architecture.md#principles)), and the daemon is the only process on the archive.
@@ -109,7 +109,7 @@ Parts of the canvas boards and mockups that do not bind, because the text decide
 
 ## Views without a board
 
-Views that no board draws are drawn in Claude Design before they are built, with at least two variants wherever layout is a real choice; the operator picks one, and the chosen board becomes that view's baseline. Ruling, 2026-10-11: "I wnat you to mkae use of claude design all over the specs etc., for all UX, workbench design, CLI etc." (cc:56c7f026-fd50-4480-b484-72f1299a534c:f8272f95-186a-4719-8145-42140988f004).
+Views that no board draws are drawn in Claude Design before they are built, with at least two variants wherever layout is a real choice; the operator picks one, and the chosen board becomes that view's baseline. (ruling 2026-10-11, cc:56c7f026-fd50-4480-b484-72f1299a534c:f8272f95-186a-4719-8145-42140988f004).
 
 The views without a board: the heatmap, the firehose, the note page, triage, analysis, the live-session control panel, the context composer, the flow panel, and the extension's in-page UI. Their behaviour below binds; their layout does not until the board exists.
 
@@ -279,7 +279,7 @@ The rows are the shipped saved query `query:running`.
 - Order: waiting, working, idle, unknown. **Stopped** lists `stale` sessions with their evidence (`process gone at 13:40, no end event`).
 - Footer: the state legend and `Same rows as polylogue query:running`.
 
-**Work tree and context flow.** A row expands into its logical session's physical sessions (subagents, forks, continuations) with what flowed on each edge: subagent instruction and final answer; brief, takeover and ping deliveries (prepared, delivered, used; size; references; what was left out); compaction boundaries with what they evicted. The same graph is the reader's flow panel. Ruling, 2026-07-03: "how does context flow between them, what do subagents return" (cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:e72e1c54-c67d-4f23-9649-c84390ffd442).
+**Work tree and context flow.** A row expands into its logical session's physical sessions (subagents, forks, continuations) with what flowed on each edge: subagent instruction and final answer; brief, takeover and ping deliveries (prepared, delivered, used; size; references; what was left out); compaction boundaries with what they evicted. The same graph is the reader's flow panel. (ruling 2026-07-03, cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:e72e1c54-c67d-4f23-9649-c84390ffd442).
 
 A row opens the reader at Latest with following on. Each live row carries the [live-session controls](#live-session-control-panel) inline, and a waiting row's pending permission shows **Approve** and **Deny** directly. **Open in terminal** appears when the harness's terminal is known through the desktop's services; otherwise the resume command is offered to copy. `x` selects rows for a stack. The view updates in place, recomputes at each state's `until`, reorders only when no row has focus, and announces "1 session now waiting" to screen readers.
 
@@ -326,7 +326,7 @@ The most important surface. Message rendering and read views are [reading.md](re
 | Pastes | typed text plain; a pasted span shaded with its evidence line; unknown authorship hatched; a paste over 20 lines folds as `paste · 214 lines · copy · copy typed-only` |
 | Attachments | images inline; other files `▣ name (media type, size)` with **Download** and **Reveal in file manager** (daemon rows using the desktop's services); SVG and HTML as links, never inline; the availability state and who supplied it ([sessions.md](sessions.md#attachments)) |
 
-**Tool families.** Each recognised tool family has its own expanded body, and every family still collapses to the one line above. A call's family comes from the tool-family table of the derived data ([measures.md](measures.md#catalog)); an unrecognised tool uses the generic body. Ruling, 2026-07-03: "custom rendering of various detected standard toolcalls … Think ambitiously" (cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:060b830b-16dc-4ac6-b463-7dd5deea1830).
+**Tool families.** Each recognised tool family has its own expanded body, and every family still collapses to the one line above. A call's family comes from the tool-family table of the derived data ([measures.md](measures.md#catalog)); an unrecognised tool uses the generic body. (ruling 2026-07-03, cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:060b830b-16dc-4ac6-b463-7dd5deea1830).
 
 | Family | Expanded body |
 |---|---|
@@ -470,7 +470,7 @@ Every table has its own CLI command. Dollars show two decimals in tables and the
 
 ### Analysis `/analysis?q=…`
 
-Renders any `| measure` or `| agg` query, or a kept figure, as **a chart and its table**. The chart form follows the answer's shape: a series over time → bars per grain (lines for cumulative measures); a grouped count or sum → horizontal bars sorted by value; a distribution → a histogram or a percentile strip (nearest-rank percentiles); survival → a step curve; a comparison across groups → paired bars with denominators. Every chart shows its unit, denominator query, scope, the count of unknowns (hatched, never zero) and the product's validity note ([measures.md](measures.md#rules)); each bar or point opens the rows behind it. Charts are SVG rendered by the daemon from the typed answer, with the shell adding hover and selection; there is no charting script. **Keep as figure** turns the shown query into a citable figure for a page's figure slot. Shipped saved queries open here first: **where the time went** (time per session, repository or day split into model working, tool running by family, waiting on the operator and idle), **operator interventions**, and **context pressure** (context size per response and what each compaction dropped). Ruling, 2026-08-02: an HTML reporting skill is "best just thought of as a stopgap, and we'd build such capabilities into polylgoue webui, properly" (cc:72ace629-1777-4df9-ba71-9eb58505ea65:a622d056-3f3c-458a-b265-73eba5e904bd).
+Renders any `| measure` or `| agg` query, or a kept figure, as **a chart and its table**. The chart form follows the answer's shape: a series over time → bars per grain (lines for cumulative measures); a grouped count or sum → horizontal bars sorted by value; a distribution → a histogram or a percentile strip (nearest-rank percentiles); survival → a step curve; a comparison across groups → paired bars with denominators. Every chart shows its unit, denominator query, scope, the count of unknowns (hatched, never zero) and the product's validity note ([measures.md](measures.md#rules)); each bar or point opens the rows behind it. Charts are SVG rendered by the daemon from the typed answer, with the shell adding hover and selection; there is no charting script. **Keep as figure** turns the shown query into a citable figure for a page's figure slot. Shipped saved queries open here first: **where the time went** (time per session, repository or day split into model working, tool running by family, waiting on the operator and idle), **operator interventions**, and **context pressure** (context size per response and what each compaction dropped). (ruling 2026-08-02, cc:72ace629-1777-4df9-ba71-9eb58505ea65:a622d056-3f3c-458a-b265-73eba5e904bd).
 
 ### Pastes, attachments, topics
 
@@ -517,45 +517,3 @@ Every change shows who made it and when.
 | Keyboard and local interaction | ≤ 100 ms |
 
 A missed budget is a defect. Figures are paired benchmark runs ([testing.md](testing.md#benchmarks)); no test asserts elapsed time.
-
-## Laws
-
-Checks run a real browser over the DevTools protocol against the real daemon on the [Morrow](testing.md#morrow) archive with the clock at 2026-10-08 12:00 Europe/Warsaw (live views: the live set at 2026-10-09 15:00).
-
-- **footer-command-reproduces-view**: every view's rows equal the rows of the CLI command its footer shows (IDs, counts, order), for every view and for a filtered `near:` query across HTTP, CLI and MCP.
-- **no-web-only-capability**: no web route serves a capability that is not a command-table row.
-- **web-writes-authored-by-daemon**: every write from the web is stored with author `operator` and `via: web` (or `extension`), computed by the daemon; a request carrying an author field is refused as invalid.
-- **retry-writes-once**: a retried write with the same `request_id` creates one record.
-- **live-update-never-moves-reader**: a live update never moves the reader, steals focus or removes a text selection; following appends only at the end.
-- **stale-reply-never-wins**: a stale reply never overwrites a newer selection.
-- **unknown-never-zero**: an unknown value is never rendered as zero, `$0` or a zero-height bar.
-- **disabled-action-has-reason**: every disabled action shows its reason, taken from the operation's availability answer.
-- **four-states-without-modal**: every view renders its four states without a modal, each with a recovery command, and no recovery is a repair command.
-- **ping-delivered-once**: a ping sent from the web is delivered once, to a live session at its next context-accepting hook event or to an ended one by one run of its harness's resume command; the delivery records the concrete session and never retargets.
-- **launch-mints-no-lineage**: continuing or branching from the web creates no lineage link by itself; a link appears only when the new session's transcript shows the delivery.
-- **context-copy-has-manifest**: Copy as context includes a manifest listing every included reference with its `seen_hash`, and records a `prepared` delivery whose ID appears in the copied text.
-- **archive-path-never-sent**: no HTTP payload contains the archive directory's path.
-- **any-surface-by-reference**: every view a reference opens renders from the reference alone, with no state held by another surface; opening the same reference from the CLI's `read --to browser`, a pasted URL and a fresh browser gives the same view.
-- **nothing-leaves-unasked**: nothing leaves the machine through the workbench except a file the operator saves and acts the operator takes toward a provider through the extension; the web answers only on the configured listen address with its authentication, and a non-loopback address without a token refuses to start.
-- **stored-text-unchanged**: no view, file or copy masks, flags or redacts stored text; a synthetic credential in a Morrow message appears byte-identical in the reader, the share file and a copied pack.
-- **preferences-in-archive**: product state persists as archive settings; clearing browser storage changes no view preference.
-- **csp-on-every-route**: the CSP header is present on every route, and a browser run records no CSP violation.
-- **fixed-slots-never-change**: fixed slots never change; following slots show the current revision; two heads render as a conflict.
-- **pages-store-references**: pages, bundles and stories store references, never copied text; the quoted text equals the archive message.
-- **key-parity-with-picker**: every key shared with the CLI picker does the same action there.
-
-Checks on Morrow, each a test:
-- Home shows 8 sessions, 7 top-level, 17 prompts, 35 tool calls, the known cost with the price table's unknowns, the `atis-latch` notice, and a links column naming the fork, continuation, subagent and abandoned branch for #6, #4, #2 and #7.
-- Running at 15:00: the waiting session (permission for Bash `cargo test --all`) first with **Approve** and **Deny**; the working session with `job-morrow-7` and the `cargo test parser` child linked to its tool call; the stale session under Stopped with "process gone at 13:40"; the peer warning. At 15:15 with no events the waiting session stays waiting and the working one changes per its `until`. Approving records an act authored `operator` via web.
-- Search `chrono`: 3 sessions; subagent hits under #2; the decision note on the 10:56 hit; the defaults line names #4's inherited copies and #7's abandoned branch, and "include them" adds them; a bare `chrono` typed in the field is refused with the `find chrono` form.
-- Reader #2: 13 of 18 messages shown with the folded-results footer; `cargo test` reads `error exit 101 3m 43s` with the FAILED line; `Read` lines show no duration; the Edit expands to a diff; the Agent line expands to the delegation card; the provenance tab of the 10:37 call shows input, byte range, hash and parser version; `1` sets the outcome solved. #4 shows the compaction line (14:40, 182k → 14.5k) and the inherited line of 18 messages; #7 shows the branch line (21:04) and **show branches**.
-- A 100,000-message synthetic session opens its first, middle and last pages within budget and keeps a selection across window moves.
-- Report #2 reproduces the board's figures, and "1 error, fixed later" is derived.
-- Sharing 10:37–10:52 plus the claim writes one self-contained HTML file with no archive path and the stored text unchanged, through the `read` row.
-- Claims: the claim on #2 `holds`; "every test run passed" `fails` with the 10:37 row; `/judge` shows "2 of 3".
-- Pages: `page new --template investigation morrow-next-friday` and adding `msg_01a20000a11` under Evidence gives the Page board; the `::finding` marker in #6's final model message appears under Findings authored by `codex:…0006` without reload; reordering leaves the note's revision unchanged; the table of contents equals the CLI's; history shows the page before the finding; a ping to an ended member runs its resume command once and lists the delivery.
-- Compare #5 and #6 by lineage pairs the shared prefix as `same`, shows the fork point, and shows every message once.
-- Timeline: a 02:30 message lands on the previous logical day; dragging a window supersedes the earlier request.
-- Cost since Oct 01: known `$5.86 (exact 5.8626)`, 4 unknown; Oct 04 and Oct 07 hatched.
-- Analysis renders a kept figure with its denominator and hatched unknowns, and a bar opens its rows.
-- Each run stores screenshots of every view at 1,440 and 390 px in light and dark, an accessibility report, a keyboard-only journey, and screencasts usable in the README.

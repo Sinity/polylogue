@@ -405,7 +405,6 @@ fn projection_preserves_exact_attachment_slots_and_ambiguous_same_hash_claims() 
     dialogue.validate().unwrap();
 }
 
-/// law: pl.read.surf-fold-kinds
 #[test]
 fn fold_words_and_options_round_trip_through_one_table() {
     let mut options = ReadOptions::default();
@@ -442,7 +441,6 @@ fn fold_words_and_options_round_trip_through_one_table() {
     ));
 }
 
-/// law: pl.read.surf-fold-kinds
 #[test]
 fn spawn_levels_and_the_help_come_from_the_fold_table() {
     for (word, expected) in [

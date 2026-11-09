@@ -82,7 +82,7 @@ fn selected_passage_notes_survive_restart_and_identical_retries() {
     let data = notes(&host);
     assert_eq!(data.len(), 1);
     // This in-process host uses the actual test process socket identity.
-    // The external browser-host law checks Extension -> Operator attribution.
+    // The external browser-host test checks Extension -> Operator attribution.
     let request = runtime
         .daemon
         .reads

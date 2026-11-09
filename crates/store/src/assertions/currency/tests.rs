@@ -1,4 +1,4 @@
-//! Laws of the stored currency index and the assertion write path, run
+//! Tests of the stored currency index and the assertion write path, run
 //! through the real writer on a standalone archive.
 use crate::fixture::authored::{operator_request, request};
 use crate::fixture::writer::WriterArchive;
@@ -121,8 +121,6 @@ impl World {
     }
 }
 
-/// law: authored.currency.middle-withdrawal
-/// law: currency.middle-withdrawal
 #[test]
 fn withdrawing_a_middle_revision_leaves_the_newest_current_without_a_conflict() {
     let mut world = World::new();
@@ -145,7 +143,6 @@ fn withdrawing_a_middle_revision_leaves_the_newest_current_without_a_conflict() 
     assert!(world.heads(&r1).is_empty());
 }
 
-/// law: currency.stale-base
 #[test]
 fn a_command_on_a_stale_base_is_refused_and_a_forking_channel_makes_a_visible_conflict() {
     let mut world = World::new();
@@ -192,7 +189,6 @@ fn a_command_on_a_stale_base_is_refused_and_a_forking_channel_makes_a_visible_co
     assert_eq!(world.heads(&r1), vec![resolved]);
 }
 
-/// law: kind.uniqueness
 #[test]
 fn a_second_write_into_a_held_slot_revises_and_an_equal_tag_is_already_there() {
     let mut world = World::new();
@@ -237,7 +233,6 @@ fn a_second_write_into_a_held_slot_revises_and_an_equal_tag_is_already_there() {
     assert_eq!(world.heads(&rewritten.id), vec![rewritten.id.clone()]);
 }
 
-/// law: kind.single-valued-bulk
 #[test]
 fn a_single_valued_mark_over_several_rows_is_refused_and_writes_nothing() {
     let mut world = World::new();
@@ -265,8 +260,6 @@ fn a_single_valued_mark_over_several_rows_is_refused_and_writes_nothing() {
     assert_eq!(world.heads(&first.id), vec![second.id]);
 }
 
-/// law: request.atomic
-/// law: request.numbering
 #[test]
 fn a_request_commits_all_of_its_writes_or_none_and_numbers_them_from_one() {
     let mut world = World::new();
@@ -321,7 +314,6 @@ fn a_request_commits_all_of_its_writes_or_none_and_numbers_them_from_one() {
     );
 }
 
-/// law: link.relation-implies-about
 #[test]
 fn a_relation_also_points_about_the_same_revision() {
     let mut world = World::new();
@@ -359,7 +351,6 @@ fn a_relation_also_points_about_the_same_revision() {
     );
 }
 
-/// law: record.authorship-non-null
 #[test]
 fn every_stored_assertion_has_author_channel_machine_and_time() {
     let mut world = World::new();
@@ -381,7 +372,6 @@ fn every_stored_assertion_has_author_channel_machine_and_time() {
     }
 }
 
-/// law: currency.read-cost
 #[test]
 fn reading_current_assertions_about_a_target_uses_indexes_only() {
     let dir = tempfile::tempdir().unwrap();
@@ -495,7 +485,6 @@ fn archive() -> Connection {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
-    /// law: currency.index-equals-function
     #[test]
     fn the_stored_index_equals_the_rule_after_every_write(
         generated in authored::generator::history(24),
@@ -509,8 +498,6 @@ proptest! {
         }
     }
 
-    /// law: authored.currency.pure-function
-    /// law: currency.pure-function
     #[test]
     fn stored_currency_ignores_arrival_order_counters_and_clocks(
         generated in authored::generator::history(24),

@@ -34,7 +34,6 @@ fn slots(input: &NewAssertion, author: &Author, rubric: Option<&Reference>) -> V
     unique(input, author, rubric).unwrap().slots
 }
 
-/// law: kind.uniqueness
 #[test]
 fn title_and_tag_slots_use_their_targets_and_ignore_tag_confidence() {
     let title = input(
@@ -88,7 +87,6 @@ fn title_and_tag_slots_use_their_targets_and_ignore_tag_confidence() {
     assert_eq!(unique(&note, &Author::Operator, None), None);
 }
 
-/// law: kind.uniqueness
 #[test]
 fn annotation_slots_keep_the_rubric_revision_and_computed_author_distinct() {
     let annotation = input(
@@ -127,7 +125,6 @@ fn annotation_slots_keep_the_rubric_revision_and_computed_author_distinct() {
     ));
 }
 
-/// law: kind.uniqueness
 #[test]
 fn memory_scope_and_setting_target_host_are_part_of_the_slot() {
     let global = input(
@@ -185,7 +182,6 @@ fn memory_scope_and_setting_target_host_are_part_of_the_slot() {
     assert_ne!(first, second);
 }
 
-/// law: kind.uniqueness
 #[test]
 fn every_kind_declares_only_components_the_writer_supplies() {
     for kind in AssertionKind::ALL {
@@ -207,7 +203,6 @@ fn every_kind_declares_only_components_the_writer_supplies() {
     assert!(!AssertionKind::Tag.spec().single_valued_mark());
 }
 
-/// law: kind.no-blocker
 #[test]
 fn blocker_is_not_a_kind_and_hidden_is() {
     assert_eq!(AssertionKind::from_name("blocker"), None);

@@ -834,16 +834,11 @@ mod attachments;
 
 mod pages;
 
-mod benchmark;
-
 mod notes;
 mod search_api;
-mod search_measurements;
 mod timeline;
 
 mod cancellation;
-mod day_cost_measurements;
-mod measurement;
 
 fn read_url(target: &str, extra: &[(&str, &str)]) -> String {
     let encode = polylogue_render::html::encode_path_segment;

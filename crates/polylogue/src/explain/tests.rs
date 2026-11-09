@@ -195,7 +195,6 @@ fn derived_pages_and_fields_expose_the_same_validity_and_parameters() {
     assert_eq!(field["construct"]["catalog"], "K15");
 }
 
-/// law: mcp-detail-on-demand
 #[test]
 fn capabilities_publish_each_operation_with_its_tool_unlisted_arguments_and_answer() {
     let capabilities = entries("capabilities", None).unwrap();

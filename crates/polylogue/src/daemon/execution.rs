@@ -10,13 +10,7 @@ use std::time::Duration;
 pub const DEFAULT_READ_TIMEOUT_MS: u64 = 30_000;
 
 pub fn timeout() -> Duration {
-    Duration::from_millis(
-        std::env::var("POLYLOGUE_READ_TIMEOUT_MS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_READ_TIMEOUT_MS),
-    )
+    Duration::from_millis(DEFAULT_READ_TIMEOUT_MS)
 }
 
 /// Absolute Unix milliseconds on the wire; the daemon converts once to a

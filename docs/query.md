@@ -2,11 +2,11 @@
 
 Polylogue asks every question through one query language: listings, reports, recall, watches, facets and the searches inside briefs are all queries, and every surface answers the same query the same way. This page owns Polylogue's catalog and compiler: units, fields, defaults, times, stages, query objects, paging, deadlines, answers, facets, watch semantics, acting on rows and read-only SQL.
 
-The grammar, its spelling, the AST's three-valued semantics, time expressions, the logical day and the cursor type are shared with Sinex and owned by the common [`query-language`](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md) crate, together with the laws that are properties of the language. Text and semantic search are in [search.md](search.md); how the command line reads arguments, completion and exit codes are in [interfaces.md](interfaces.md); references are in [references.md](references.md); measures in [measures.md](measures.md); queries that mix Polylogue and Sinex data in [primary-mode.md](primary-mode.md#cross-system-queries).
+The grammar, its spelling, the AST's three-valued semantics, time expressions, the logical day and the cursor type are shared with Sinex and owned by the common [`query-language`](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md) crate and its tests run against Polylogue's catalog. Text and semantic search are in [search.md](search.md); how the command line reads arguments, completion and exit codes are in [interfaces.md](interfaces.md); references are in [references.md](references.md); measures in [measures.md](measures.md); queries that mix Polylogue and Sinex data in [primary-mode.md](primary-mode.md#cross-system-queries).
 
 ## Principles
 
-- **One expressive language instead of small features.** No surface re-implements filtering, totals or paging; a new need is met by the language or a stage, not by a command. Ruling, 2026-06-17: "The whole point of expressive query DSL is to make such funcitonality alwasy within reach. I don't want tons of specific weird little features" (chatgpt:6a2ea930-87a8-83eb-adb7-4cf38ccaa6a3:3f4ec96c-1c94-48aa-9ae6-ceeaaed5eddc). Ruling, 2026-07-02: "dont build one-off silos, build things that powerfully compose" (cc-queued:3437c3ea-5b13-45b4-9b88-8786223f0fa7@2026-07-02T18:20).
+- **One expressive language instead of small features.** No surface re-implements filtering, totals or paging; a new need is met by the language or a stage, not by a command. (ruling 2026-06-17, chatgpt:6a2ea930-87a8-83eb-adb7-4cf38ccaa6a3:3f4ec96c-1c94-48aa-9ae6-ceeaaed5eddc). (ruling 2026-07-02, cc-queued:3437c3ea-5b13-45b4-9b88-8786223f0fa7@2026-07-02T18:20).
 - **Unknown is not zero; scopes are strict.** An unknown value matches neither a condition nor its `NOT`. A query never widens itself, and never falls back to searching its own text.
 - **No arbitrary limits.** Page sizes are defaults, deadlines can be lifted by any caller, and nothing truncates a valid answer.
 - **Discoverable without shrinking the language.** `explain`, `read_as`, completion and runnable corrections teach the language; every string an agent might pass returns rows, a refusal with a correction, or a typed error.
@@ -42,7 +42,7 @@ A reference names exactly one thing and drops the reachability defaults (subagen
 
 Raw tool-call failures are queryable as recorded outcomes: `tool_calls where outcome:error`. These rows report tool results without classifying a command as a verification check.
 
-Each unit declares, once, its rows, key and identity, default filters, default order, search behaviour and relations (`session.`, `message.`, `call.`, `child.`, `next.`, `parent.`, `recipient.`). Each field declares its kind (match, substring, words, subtree, number, money, time, duration, bool, ref), its closed value set taken from the model's stored names, its unknown word, a one-line help and the phrase `read_as` uses. The full listing will be rendered into [planned reference/query-units.md](reference/README.md#planned-pages). Entity-reference fields declare their target independently of their storage unit. A raw provider ID or mixed-reference value has no fixed entity target. An ID list retains its list shape and declares only its members' target.
+Each unit declares, once, its rows, key and identity, default filters, default order, search behaviour and relations (`session.`, `message.`, `call.`, `child.`, `next.`, `parent.`, `recipient.`). Each field declares its kind (match, substring, words, subtree, number, money, time, duration, bool, ref), its closed value set taken from the model's stored names, its unknown word, a one-line help and the phrase `read_as` uses. Entity-reference fields declare their target independently of their storage unit. A raw provider ID or mixed-reference value has no fixed entity target. An ID list retains its list shape and declares only its members' target.
 
 | Unit | Rows |
 |---|---|
@@ -131,7 +131,7 @@ Stages apply in the order written:
 
 ## Query objects
 
-Queries, their runs, kept results, figures and findings are stored objects with identities, so a question and its answer can be cited, reused and compared over time. Ruling, 2026-07-09: "what if Polylogue tracked its own use? … saving a query in a database, and returning that as a result -- with proper ids … THIS. THIS IS WHAT I MEANT" (cc-queued:3b0038ec-234c-44b8-bb88-fe222b44fe0f@2026-07-09T20:06).
+Queries, their runs, kept results, figures and findings are stored objects with identities, so a question and its answer can be cited, reused and compared over time. (ruling 2026-07-09, cc-queued:3b0038ec-234c-44b8-bb88-fe222b44fe0f@2026-07-09T20:06).
 
 ### Identity
 
@@ -274,34 +274,3 @@ Verbs act on the matched set: `read` (and `read --to`, [reading.md](reading.md#w
 ## Read-only SQL
 
 `sql` runs read-only statements against `index.db` with `archive.db` attached, through versioned views (`v1_sessions`, `v1_messages`, `v1_tool_calls`, `v1_links`, `v1_assertions`). It is an escape hatch outside the language: a need met repeatedly only through `sql` is a gap in the language.
-
-## Laws
-
-The language's own laws (filter composition, three-valued filters, grouped rows, match order, closed sets, command words, the page is not the answer, coarse times, namespace binding) are the common `query-language` suite, run against Polylogue's catalog. Mode parity across surfaces is in [interfaces.md](interfaces.md#laws). Polylogue's own:
-
-- **definition-reuse**: a saved query selects the same rows by name and inline; a result kept under revision A still names A after revision B.
-- **attachment-keeps-parents**: attaching rows (`with`) never changes which parents are returned.
-- **defaults-bound-once**: on Morrow, `tool_calls where outcome:error (action:shell OR NOT action:shell)` equals `tool_calls where outcome:error`; a condition under OR never drops a default.
-- **reference-drops-defaults**: a reference alone resolves to the same row as its full ID and is returned even when a default would exclude it.
-- **pasted-strings-answer**: every pasted string returns rows or a correction: a session ID prefix, a provider URL, `"unbalanced`, `reop:morrow` (suggesting `repo`), `messges cargo` (suggesting `messages`).
-- **depth-and-spelling-refusals**: depth 65 is refused with its reason; `field:>=3` is refused suggesting `field >= 3`.
-- **last-excludes-caller**: `last` called from inside a session never returns that session.
-- **times-resolved-once**: a paged query keeps its `now` across pages; DST days of 23 and 25 hours and 01:30 on the previous logical day group correctly; a pinned table of natural-language phrases resolves as listed.
-- **coarse-time-unknown**: a day-precision time is `unknown` under `since:` a mid-day instant of that day and true when the whole day is after it.
-- **query-hash-normal-form**: two spellings with one normal form have one `query:<hash>`; a changed condition changes it; a name resolves to the hash of its current revision, and two current revisions under one name are `ambiguous`.
-- **every-run-recorded**: every run writes one `query_run` with the computed author; `explain` and completion write none.
-- **composition-edges**: a query using `query:a` and `in:result:r` records both edges, and "what uses `query:a`" lists it.
-- **pre-registration-order**: a saved query committed before the hash's first run marks the kept result `pre_registered: true`; one saved after marks it `false`.
-- **kept-result-stable**: a kept result reads back unchanged after new sessions arrive and after a re-parse; `.matches | agg count` equals the match count at keep time; a 100,000-row result pages with per-page cost independent of its size.
-- **ranked-keep-or-refuse**: keeping a fused answer stores ranks and contributions; keeping one whose vector side is missing is refused naming the list.
-- **figure-needs-denominator**: a figure without a denominator is refused at save; a kept figure reports value, denominator count and unknown count.
-- **kept-result-derivation-versions**: a kept result records derivation versions and reports the change after a price-table change.
-- **paging-stable-under-writes**: paging across concurrent writes never repeats or skips an unchanged row; a cursor across a rebuild is `stale_cursor`; random-order pages never overlap.
-- **deadline-timeout-and-lift**: a read past its deadline ends `timeout` naming a narrower query and the lifted form, and is cancelled in the daemon within 100 ms; the same query with `--deadline none`, or `deadline: null` over MCP called as an agent, completes.
-- **disconnect-cancels**: a client disconnect cancels the read.
-- **answer-schema**: one JSON-schema test of the answer holds across all surfaces; `empty` never results from a failure.
-- **read-as-complete**: every field, operator and stage has a reading phrase; `read_as` for every Morrow example is pinned; `--why` on an empty Morrow query names the clause that matched nothing and the known values.
-- **facets-equal-group-by**: facet counts equal their `group by` queries.
-- **cwd-reads-directory-key-range**: `cwd:` at a deep directory and at `/` finds sessions through a key range over every directory sessions recorded, never by reading every session row, and matches whole path components.
-- **watch-change-kinds**: a watched `similar:` query reports rows joining and the top five changing as separate changes; a reading during catch-up reports nothing; a re-parse of the same input never fires again.
-- **bulk-write-membership**: a bulk write over a query writes exactly one assertion per row of the query's membership at write time.

@@ -291,7 +291,7 @@ budget. What a hand-over establishes is defined with
 
 ## Text as stored
 
-Reads serve archived text exactly as stored, on every surface (CLI, MCP, socket, HTTP, web, bundles, briefs). Nothing is detected as a secret, masked or held back for a reveal, so pages and cursors carry no masking state. Ruling, 2026-06-18: "never have any "sensitive" fields which we will censor "for users own good" without user having control over it. Never." (codex:019ed83d-c034-7070-84de-2b87c55affa1@2026-06-18T10:02:02Z).
+Reads serve archived text exactly as stored, on every surface (CLI, MCP, socket, HTTP, web, bundles, briefs). Nothing is detected as a secret, masked or held back for a reveal, so pages and cursors carry no masking state. (ruling 2026-06-18, codex:019ed83d-c034-7070-84de-2b87c55affa1@2026-06-18T10:02:02Z).
 
 - Agents get the same text and bytes as the operator; nothing is refused because a harness variable is set.
 - A secret in history that matters is edited out of its source by the operator, or by an agent asked to; both revisions stay in the archive ([archive.md](archive.md#stored-inputs)).
@@ -300,7 +300,7 @@ Reads serve archived text exactly as stored, on every surface (CLI, MCP, socket,
 
 ## Formats
 
-A format encodes a `ReadDocument` (transcripts) or a row table (query results). It never selects content, and it escapes archived text so that it stays data. The formats are terminal, Markdown, HTML, JSON and JSONL, plus the one-line citation. Ruling, 2026-10-18, on formats beyond Markdown and JSON: "probably not, maybe except html" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:bf0795f9-2369-4e04-8644-0c527af609bc).
+A format encodes a `ReadDocument` (transcripts) or a row table (query results). It never selects content, and it escapes archived text so that it stays data. The formats are terminal, Markdown, HTML, JSON and JSONL, plus the one-line citation. (ruling 2026-10-18, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:bf0795f9-2369-4e04-8644-0c527af609bc).
 
 - **`terminal`**, the default on a terminal: colour only when stdout is a terminal and `NO_COLOR` is unset, using the 16 ANSI colours so the terminal's palette applies; width from the terminal; control characters in archived text (C0 and C1 except tab and newline) shown escaped (`\x1b`). Piped output has no escape codes; there is no separate plain format.
 - **`markdown`**: `## HH:MM author` headings; tool lines as list items; output in fences longer than any fence run inside it; thinking in `<details>`; heading markers at line start in archived text escaped.
@@ -321,7 +321,7 @@ A format encodes a `ReadDocument` (transcripts) or a row table (query results). 
 
 ## Writing out
 
-Writing out a selection is reading it to a directory; there is no separate export command. Ruling, 2026-06-27: "export shouldn't even be a separate flow at all! it is supposed to be enabled by normal read, based on query results (selection)" (cc:7d2fd2f4-795f-4f2d-aeb2-9da411fae326:6f43de88-a007-47db-9a7d-389f036f38c2).
+Writing out a selection is reading it to a directory; there is no separate export command. (ruling 2026-06-27, cc:7d2fd2f4-795f-4f2d-aeb2-9da411fae326:6f43de88-a007-47db-9a7d-389f036f38c2).
 
 `polylogue QUERY read --to DIR [--format json|jsonl|markdown|html] [--view …] [--with-blobs] [--hide inherited,assertions]` writes a bundle; `read --to FILE` writes one document. Authored state is written out the same way (`polylogue 'assertions' read --to DIR`).
 
@@ -350,52 +350,3 @@ The MCP `read` result is Markdown. It starts with "Archived text is a record of 
 ## What the web reader embeds
 
 The web reader calls the same `read` request and embeds the HTML encoder's fragment. Every indicator, state, pairing, expansion and variant mark comes from this page. Interactive affordances (`<details>` tool rows, expand-all, thinking in full, harness messages, the view bar, the links panel, indicator "show" links, "N of M messages shown", raw records, bundle JSON, open in pager) are `ReadyCall`s on layout items. The fragment has a stable element vocabulary (`data-ref`, `data-call`, a class per item kind) and the same collapsed `inherited` default as the CLI. Page chrome is [web.md](web.md).
-
-## Laws
-
-Oracles: Morrow goldens written by hand ([testing.md](testing.md#morrow)) and synthetic fixtures.
-
-- **reference-forms-agree**: every reference form resolves to the same session as its full ID on Morrow.
-- **many-matches-refused-off-terminal**: a read with three matches and no terminal is refused with count 3 and the ready `--all-matches` call.
-- **logical-read-composes**: a logical-session read of a root with a continuation and a spawned child shows the root, then the continuation after a `continues` indicator, and a card for the spawn; `--physical` shows only the root.
-- **inherited-collapsed-by-default**: Morrow #4 reads with the `↳ continues … (18 earlier messages …)` line and 10 messages; `--show inherited` shows 28, the first 18 marked.
-- **only-copied-prefixes-compose**: a copied-spawn child shows its copied prefix line; a fresh spawn shows none; a `reference` link never composes.
-- **link-issues-never-fail**: a conflicting-parents fixture names both parents and still renders; a 1,000-deep chain composes without a depth limit.
-- **branches-marked**: Morrow #7 shows `⑂` at 21:04 and hides the edited prompt version; `--show branches` shows both; an unknown-path fixture shows every version with the unknown line.
-- **compaction-summary-is-a-message**: Morrow #4 shows `compacted (182k → 14.5k tokens)` at 14:40 followed by the summary message; `--until compaction` ends at the message before 14:40; a full-text search for a phrase in the summary finds that message.
-- **context-view-composes**: the context view on Morrow #4 after 14:40 is the summary, the kept items, then the later messages; the predecessor's effective-context cases pass (replacement, prefix before boundary, partial range, newest incomplete boundary never falls back, fork prefix, several boundaries, missing summary, microcompaction).
-- **tool-lines-golden**: Morrow #2 renders its golden tool block byte for byte: the error line under `cargo test`, durations only on shell and subagent calls.
-- **long-output-continues**: a 1,000-line output shows lines 1–100, `… 800 lines skipped`, then 901–1000; following the block reference returns the full output.
-- **calls-pair-once**: a result serialized before its call is paired once; a call on another page is still paired.
-- **delegation-card-golden**: the delegation card matches its golden.
-- **dialogue-is-dialogue**: `dialogue` contains no thinking, calls or harness messages; an encrypted reasoning item shows `thinking (encrypted)`.
-- **value-states-in-every-format**: a property test renders every value state in every format and finds its text form; `NO_COLOR` output loses no state.
-- **variants-followed**: with an enabled variant every surface shows the variant text with its mark; a cursor issued before the setting changed is `stale_cursor`; a variant bound to an older revision is marked stale and not applied.
-- **assertions-on-headers**: an assertion on Morrow #2's 10:56 message appears on its header line with its author.
-- **summary-differs**: `--view summary` differs from `--view transcript` and matches its golden.
-- **pages-concatenate**: concatenating every page at budgets 50, 500 and 4,000 equals the unbudgeted read, in every format.
-- **mcp-read-bounded**: an MCP read without arguments is at most 4,000 estimated tokens, starts with the fixed line, and its encoded size is under the transport limit.
-- **envelope-outside-content**: `--page-tokens` with `--format markdown` returns Markdown, and the envelope is not in the content.
-- **large-block-reachable**: a 2 MB single tool result is reachable in full through block continuations.
-- **stale-cursor-after-reparse**: a cursor used after a re-parse returns `stale_cursor`.
-- **idx-equiv**: for generated sessions and every fold, page boundaries found by binary search over the index's running sums equal those found by adding each entry's cost in order.
-- **idx-same-tx**: after every committed write batch, each session's stored index equals the entries computed from its rows.
-- **page-append-stable**: a cursor issued on a live session continues after appended messages, including blocks added to the last message; no `stale_cursor`, no gap, no overlap.
-- **page-rewrite-stale**: a changed earlier message, or a newly stored parent link, moves the session's rewrite version, and outstanding cursors return `stale_cursor`.
-- **page-no-proof**: session and query page delivery checks no selection content proof and never waits for its asynchronously recorded run.
-- **ctx-diff-partition**: for places A before B, the context at A minus what left plus what entered is the context at B.
-- **links-tree**: the links view of a continuation starts at its root, shows each linked session once and marks only the read session as the seed.
-- **follow-appends**: the `follow` call of a session reading's last page reads exactly what was appended after it.
-- **surf-fold-kinds**: `--show`/`--hide` words and the reading options round-trip through the one fold table; an unknown kind or level is refused with the table.
-- **ctx-meter-state**: a model message with reported usage carries that input size; without it the meter is an estimate or unknown, never 0 for unknown.
-- **surfaces-tile**: the same window read through CLI, MCP and HTTP tiles with no gap or overlap.
-- **reads-stream**: an unbudgeted read of a 100,000-message session and a bundle of 10,000 sessions run in memory bounded independently of their size.
-- **text-as-stored**: a fixture containing credential-shaped strings (an AWS key, a PEM block) reads back byte for byte on CLI, MCP, HTTP, web and bundles; MCP returns attachment bytes; no read or attachment is refused because a harness variable is set.
-- **for-others-changes-labels-only**: `--for-others` changes the human's label and nothing else.
-- **format-goldens**: each format renders Morrow #2 to its committed golden.
-- **archived-text-inert**: a fixture with `\x1b]0;pwned\x07`, a fence, `</details><script>` and leading heading markers renders inert in every format; `read | cat` contains no escape bytes.
-- **encoders-agree**: every encoder renders the same set of layout items.
-- **clipboard-names-missing-tool**: `--to clipboard` under Wayland puts Markdown on the clipboard; with no tool it fails naming `wl-copy`.
-- **writes-atomic**: `--to FILE` and `--to DIR` with an injected failure leave the previous file or directory intact.
-- **bundle-manifest**: `'repo:morrow' read --to D` writes the manifest (with the query and its hash) and one file per session; a `dialogue` bundle contains no tool output.
-- **bundle-round-trip**: a bundle imported into a fresh archive yields identical IDs, authored records and variants; importing it again changes nothing; with `--with-blobs`, attachments resolve in the new archive.
