@@ -1,5 +1,6 @@
-//! Splitting a line input into records. A record is one complete line; a trailing line without
-//! its newline is not a record yet and is left for the next append.
+//! Splitting a line input into records. A record is one complete line. A trailing line without
+//! its newline is not a record yet and is left for the next append, unless the input is
+//! finished (an import, an export member): then the end of the bytes ends the last record.
 
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 1;
@@ -14,12 +15,11 @@ pub struct Record<'a> {
 
 /// Complete records in `bytes`, which start at `base` in the input, and how
 /// many bytes they cover. Blank lines are skipped: they hold no record.
-pub fn lines(bytes: &[u8], base: u64) -> (Vec<Record<'_>>, usize) {
+/// `finished` says the bytes reach the end of an input that will not grow,
+/// so a trailing line without its newline is a record too.
+pub fn lines<'a>(bytes: &'a [u8], base: u64, finished: bool) -> (Vec<Record<'a>>, usize) {
     let mut records = Vec::new();
-    let mut start = 0;
-    while let Some(len) = bytes[start..].iter().position(|&b| b == b'\n') {
-        let end = start + len;
-        let mut line = &bytes[start..end];
+    let mut push = |start: usize, mut line: &'a [u8]| {
         if let [rest @ .., b'\r'] = line {
             line = rest;
         }
@@ -29,7 +29,16 @@ pub fn lines(bytes: &[u8], base: u64) -> (Vec<Record<'_>>, usize) {
                 bytes: line,
             });
         }
+    };
+    let mut start = 0;
+    while let Some(len) = bytes[start..].iter().position(|&b| b == b'\n') {
+        let end = start + len;
+        push(start, &bytes[start..end]);
         start = end + 1;
+    }
+    if finished && start < bytes.len() {
+        push(start, &bytes[start..]);
+        start = bytes.len();
     }
     (records, start)
 }

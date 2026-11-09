@@ -447,13 +447,18 @@ impl Engine {
             .ok_or_else(|| std::io::Error::other("a stored import has no revision"))?;
         let version = origin.reading_version();
         let reading = reader.parser_checkpoint(&input.id, stored.chain, &version)?;
-        if (progress.parsed_upto == size || progress.waiting)
-            && progress.parsed
+        // An import does not grow, so a reading that waits on its last
+        // record is unfinished and is read again; a recorded stop at its
+        // length stays settled for the same program.
+        if progress.parsed
             && reading.as_ref().is_some_and(|reading| {
                 reading.reading_version == version
-                    && (!reading.progress.stopped()
-                        || (reading.progress.at_length() == Some(size)
-                            && reading.stopped_attempt == Some(self.stopped_attempt)))
+                    && if reading.progress.stopped() {
+                        reading.progress.at_length() == Some(size)
+                            && reading.stopped_attempt == Some(self.stopped_attempt)
+                    } else {
+                        progress.parsed_upto == size
+                    }
             })
         {
             return Ok(None);
@@ -483,6 +488,7 @@ impl Engine {
             false,
         );
         plan.parser_chain = Some(stored.chain);
+        plan.input_finished = true;
         // The operator is waiting on an import.
         plan.priority = Priority::Live;
         Ok(Some(plan))

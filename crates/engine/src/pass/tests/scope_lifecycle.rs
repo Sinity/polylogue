@@ -137,13 +137,14 @@ impl StepParser for Held {
         state: Option<&Json>,
         bytes: &[u8],
         base: u64,
+        finished: bool,
         context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, Json), polylogue_sources::ParseError> {
         if let Some(control) = CONTROL.lock().unwrap().take() {
             control.started.send(()).unwrap();
             control.release.recv().unwrap();
         }
-        self.0.step(state, bytes, base, context)
+        self.0.step(state, bytes, base, finished, context)
     }
 }
 fn held(path: &Path) -> Option<Parse> {

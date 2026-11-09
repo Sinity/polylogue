@@ -71,15 +71,27 @@ pub enum ParseError {
     Context(String),
 }
 
-/// Parses the complete records in `bytes`, which start at `base` in the
-/// input, continuing from `parser_state`.
+/// Parses the complete records in `bytes`, which start at `base` in an input
+/// that may still grow, continuing from `parser_state`.
 pub fn run<P: Parser>(
     parser: &P,
     parser_state: &mut P::ParserState,
     bytes: &[u8],
     base: u64,
 ) -> Result<Step, ParseError> {
-    let (records, consumed) = lines::lines(bytes, base);
+    run_to(parser, parser_state, bytes, base, false)
+}
+
+/// [`run`], where `finished` says the bytes reach the end of an input that
+/// will not grow, so its last line is a record even without a newline.
+pub fn run_to<P: Parser>(
+    parser: &P,
+    parser_state: &mut P::ParserState,
+    bytes: &[u8],
+    base: u64,
+    finished: bool,
+) -> Result<Step, ParseError> {
+    let (records, consumed) = lines::lines(bytes, base, finished);
     let mut output = Output::default();
     let mut sink = Records::lines(records.len() as u64);
     for record in records {
@@ -120,12 +132,14 @@ pub fn run<P: Parser>(
 
 /// A parser with its parser state stored as JSON, so the engine can drive any
 /// origin without knowing its parser state type.
+/// `finished` says the bytes reach the end of an input that will not grow.
 pub trait StepParser: Send {
     fn step(
         &self,
         parser_state: Option<&Json>,
         bytes: &[u8],
         base: u64,
+        finished: bool,
         context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, Json), ParseError>;
 }
@@ -136,6 +150,7 @@ impl<P: Parser + Send> StepParser for P {
         parser_state: Option<&Json>,
         bytes: &[u8],
         base: u64,
+        finished: bool,
         context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, Json), ParseError> {
         let mut state = match parser_state {
@@ -143,7 +158,7 @@ impl<P: Parser + Send> StepParser for P {
             None => P::ParserState::default(),
         };
         self.bind_context(&mut state, context.clone());
-        let step = run(self, &mut state, bytes, base)?;
+        let step = run_to(self, &mut state, bytes, base, finished)?;
         context.check().map_err(ParseError::Context)?;
         let parser_state = serde_json::to_value(&state).map_err(ParseError::ParserState)?;
         Ok((step, parser_state))
@@ -215,8 +230,9 @@ impl Parse {
         matches!(self, Parse::Document(_))
     }
 
-    /// One step over `bytes`, which start at `base` in the input. A
-    /// document is given whole, from its first byte, and has no parser state.
+    /// One step over `bytes`, which start at `base` in an input that may
+    /// still grow. A document is given whole, from its first byte, and has
+    /// no parser state.
     pub fn step(
         &self,
         parser_state: Option<&Json>,
@@ -224,11 +240,25 @@ impl Parse {
         base: u64,
         context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, Json), ParseError> {
+        self.step_to(parser_state, bytes, base, false, context)
+    }
+
+    /// [`Parse::step`], where `finished` says the bytes reach the end of an
+    /// input that will not grow (an import, an export member).
+    fn step_to(
+        &self,
+        parser_state: Option<&Json>,
+        bytes: &[u8],
+        base: u64,
+        finished: bool,
+        context: &polylogue_model::parser_context::Handle,
+    ) -> Result<(Step, Json), ParseError> {
         match self {
             Parse::Export(_) => Err(ParseError::Export),
-            Parse::Lines(p) => p.step(parser_state, bytes, base, context),
+            Parse::Lines(p) => p.step(parser_state, bytes, base, finished, context),
             Parse::CaptureLog(_) => {
-                let (mut steps, parser_state) = self.steps(parser_state, bytes, base, context)?;
+                let (mut steps, parser_state) =
+                    self.steps(parser_state, bytes, base, finished, context)?;
                 if steps.len() != 1 {
                     return Err(ParseError::CaptureLog(
                         "use steps for a range holding several captures".into(),
@@ -247,17 +277,19 @@ impl Parse {
 
     /// A range can hold several complete captures. Each stays a separate
     /// writer step, so reading them together keeps every intermediate version.
+    /// `finished` says the bytes reach the end of an input that will not grow.
     pub fn steps(
         &self,
         parser_state: Option<&Json>,
         bytes: &[u8],
         base: u64,
+        finished: bool,
         context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Vec<Step>, Json), ParseError> {
         match self {
             Parse::CaptureLog(parser) => Ok((capture_steps(&**parser, bytes, base)?, Json::Null)),
             _ => self
-                .step(parser_state, bytes, base, context)
+                .step_to(parser_state, bytes, base, finished, context)
                 .map(|(step, parser_state)| (vec![step], parser_state)),
         }
     }

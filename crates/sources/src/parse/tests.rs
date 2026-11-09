@@ -109,21 +109,25 @@ fn capture_logs_verify_complete_captures_and_wait_on_incomplete_suffixes() {
     let mut bytes = MAGIC.to_vec();
     bytes.extend(Header::of(body).encode());
     bytes.extend(body);
-    let (steps, _) = parser.steps(None, &bytes, 0, &Default::default()).unwrap();
+    let (steps, _) = parser
+        .steps(None, &bytes, 0, false, &Default::default())
+        .unwrap();
     assert_eq!(steps.len(), 1);
     assert_eq!(steps[0].consumed, bytes.len() as u64);
     assert!(steps[0].repeats_whole_conversations);
     let end = bytes.len();
     bytes.extend(&Header::of(body).encode()[..10]);
-    let (steps, _) = parser.steps(None, &bytes, 0, &Default::default()).unwrap();
+    let (steps, _) = parser
+        .steps(None, &bytes, 0, false, &Default::default())
+        .unwrap();
     assert_eq!(steps[0].consumed, end as u64);
     let (waiting, _) = parser
-        .steps(None, &bytes[end..], end as u64, &Default::default())
+        .steps(None, &bytes[end..], end as u64, false, &Default::default())
         .unwrap();
     assert_eq!(waiting[0].consumed, 0);
     bytes[end - 1] = b'[';
     assert!(matches!(
-        parser.steps(None, &bytes, 0, &Default::default()),
+        parser.steps(None, &bytes, 0, false, &Default::default()),
         Err(ParseError::CaptureLog(_))
     ));
 }
@@ -159,7 +163,9 @@ fn capture_event_ranges_name_the_capture_in_whole_and_incremental_reads() {
         expected.push((start, bytes.len() as u64));
     }
     let parser = Parse::CaptureLog(Box::new(DocumentEvent));
-    let (steps, _) = parser.steps(None, &bytes, 0, &Default::default()).unwrap();
+    let (steps, _) = parser
+        .steps(None, &bytes, 0, false, &Default::default())
+        .unwrap();
     assert_eq!(steps.len(), 2);
     for (step, &range) in steps.iter().zip(&expected) {
         assert_eq!(step.output.events[0].range, Some(range));
@@ -167,7 +173,13 @@ fn capture_event_ranges_name_the_capture_in_whole_and_incremental_reads() {
     }
     let start = steps[0].consumed as usize;
     let (later, _) = parser
-        .steps(None, &bytes[start..], start as u64, &Default::default())
+        .steps(
+            None,
+            &bytes[start..],
+            start as u64,
+            false,
+            &Default::default(),
+        )
         .unwrap();
     assert_eq!(later[0].output.events, steps[1].output.events);
 }
