@@ -2052,6 +2052,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.21",
+ "unicode-normalization",
  "uuid",
  "zip",
  "zstd",
