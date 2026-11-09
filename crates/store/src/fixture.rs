@@ -654,6 +654,29 @@ impl Fixture {
         value: &str,
         at: polylogue_model::Timestamp,
     ) -> Result<String> {
+        self.user_at(
+            polylogue_model::user::UserWrite::SetSetting {
+                key: key.into(),
+                value: value.into(),
+                machine: None,
+            },
+            at,
+        )
+    }
+
+    /// An operator's write through the same write path a command takes:
+    /// uniqueness slots, stale bases and revisions are checked.
+    pub fn user(&mut self, write: polylogue_model::user::UserWrite) -> Result<String> {
+        let at = polylogue_model::Timestamp::from_unix_ms(self.commit_seq + 1)
+            .expect("synthetic fixture counter is a timestamp");
+        self.user_at(write, at)
+    }
+
+    fn user_at(
+        &mut self,
+        write: polylogue_model::user::UserWrite,
+        at: polylogue_model::Timestamp,
+    ) -> Result<String> {
         self.commit_seq += 1;
         let id = format!("s{}", self.commit_seq);
         let request = polylogue_model::user::UserRequest {
@@ -664,11 +687,7 @@ impl Fixture {
                 author: polylogue_model::Author::Operator,
                 via: polylogue_model::authorship::Channel::Cli,
             },
-            write: polylogue_model::user::UserWrite::SetSetting {
-                key: key.into(),
-                value: value.into(),
-                machine: None,
-            },
+            write,
         };
         let original = self.index.unchecked_transaction()?;
         let tx = self.notes.transaction()?;

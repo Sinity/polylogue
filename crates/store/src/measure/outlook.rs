@@ -75,26 +75,39 @@ pub struct Outlook {
     pub untimed_boundary_items: u64,
     pub untimed_reports: u64,
     pub billing_before_setting: &'static str,
+    /// Intervals where two plan settings written apart were both current, so
+    /// which plan applied is unknown.
+    pub conflicting_plan_intervals: u64,
+}
+
+/// A plan over one interval: set, unset, or unknown while two plan settings
+/// written apart were both current.
+enum PlanAt {
+    Set(Plan),
+    Unset,
+    Conflict,
 }
 
 /// Archive-wide plan assertions apply from their own recorded time.
-fn plans(reader: &Reader<'_>, provider: &str, now: i64) -> Result<Vec<(i64, Option<Plan>)>> {
+fn plans(reader: &Reader<'_>, provider: &str, now: i64) -> Result<Vec<(i64, PlanAt)>> {
+    use crate::assertions::settings::SettingAt;
     let now = polylogue_model::Timestamp::from_unix_ms(now)
         .ok_or_else(|| StoreError::Invalid("plan history time is out of range".into()))?;
     let mut result = Vec::new();
     for (at, value) in reader.archive_setting_history(&format!("plan.{provider}"), now)? {
         let plan = match value {
-            Some(polylogue_model::settings::Value::Plan(plan)) => Some(plan),
-            None => None,
-            Some(_) => {
+            SettingAt::Value(Some(polylogue_model::settings::Value::Plan(plan))) => {
+                validate_plan(&plan)?;
+                PlanAt::Set(plan)
+            }
+            SettingAt::Value(None) => PlanAt::Unset,
+            SettingAt::Conflict(_) => PlanAt::Conflict,
+            SettingAt::Value(Some(_)) => {
                 return Err(StoreError::Invalid(format!(
                     "plan.{provider} has another setting type"
                 )));
             }
         };
-        if let Some(p) = &plan {
-            validate_plan(p)?;
-        }
         result.push((at.unix_ms(), plan));
     }
     Ok(result)
@@ -122,15 +135,27 @@ pub fn outlook(
         untimed_boundary_items: 0,
         untimed_reports: 0,
         billing_before_setting: "unknown",
+        conflicting_plan_intervals: 0,
     };
     if provider.is_empty() {
         answer.reason = Some("provider_required");
         return Ok(answer);
     }
     let history = plans(reader, provider, now)?;
-    let Some((_, Some(current))) = history.last() else {
-        answer.reason = Some("plan_not_configured");
-        return Ok(answer);
+    answer.conflicting_plan_intervals = history
+        .iter()
+        .filter(|(_, plan)| matches!(plan, PlanAt::Conflict))
+        .count() as u64;
+    let current = match history.last() {
+        Some((_, PlanAt::Set(current))) => current,
+        Some((_, PlanAt::Conflict)) => {
+            answer.reason = Some("plan_conflict");
+            return Ok(answer);
+        }
+        _ => {
+            answer.reason = Some("plan_not_configured");
+            return Ok(answer);
+        }
     };
     let Some(anchor) = current.cycle_anchor_day else {
         answer.reason = Some("no_cycle_anchor");
@@ -139,7 +164,8 @@ pub fn outlook(
     let window = window(now, anchor)?;
     let mut data = vec![];
     for (i, (at, plan)) in history.iter().enumerate() {
-        let Some(plan) = plan else {
+        // An unset or conflicting interval attributes no responses to a plan.
+        let PlanAt::Set(plan) = plan else {
             continue;
         };
         let from = window.start.max(*at);

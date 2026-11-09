@@ -48,6 +48,9 @@ fn setting(
             .collect(),
     }
 }
+fn known(value: bool) -> SettingAt {
+    SettingAt::Value(Some(settings::Value::Boolean(value)))
+}
 fn withdraw(id: &str, target: &str, at: Option<i64>) -> AssertionFact {
     AssertionFact {
         id: id.into(),
@@ -95,15 +98,15 @@ fn setting_history_follows_withdrawal_and_restoration_by_writer_clock() {
     assert_eq!(
         history(&conn, "browser.actions", date(4)).unwrap(),
         vec![
-            (date(1), Some(settings::Value::Boolean(true))),
-            (date(2), Some(settings::Value::Boolean(false))),
-            (date(3), Some(settings::Value::Boolean(true))),
-            (date(4), Some(settings::Value::Boolean(false))),
+            (date(1), known(true)),
+            (date(2), known(false)),
+            (date(3), known(true)),
+            (date(4), known(false)),
         ]
     );
     assert_eq!(
         history(&conn, "browser.actions", date(1)).unwrap(),
-        vec![(date(1), Some(settings::Value::Boolean(true)))]
+        vec![(date(1), known(true))]
     );
 }
 
@@ -131,14 +134,75 @@ fn setting_history_forks_never_choose_the_latest_writer_clock() {
     ];
     super::super::apply(&conn, &facts, 1).unwrap();
     conn.execute_batch("BEGIN").unwrap();
-    assert!(
-        matches!(history(&conn,"browser.actions",date(3)),Err(StoreError::Ambiguous {candidates,..}) if candidates==vec!["assertion:setting@left","assertion:setting@right"])
+    assert_eq!(
+        history(&conn, "browser.actions", date(3))
+            .unwrap()
+            .last()
+            .unwrap(),
+        &(
+            date(3),
+            SettingAt::Conflict(vec![
+                "assertion:setting@left".into(),
+                "assertion:setting@right".into()
+            ])
+        )
     );
     assert_eq!(
         history(&conn, "browser.actions", date(2))
             .unwrap()
             .last()
             .unwrap(),
-        &(date(2), Some(settings::Value::Boolean(false)))
+        &(date(2), known(false))
+    );
+}
+
+#[test]
+fn history_reports_conflict_interval_as_unknown() {
+    let conn = db();
+    // Two hosts each set the key first; a later revision naming both heads
+    // resolves it.
+    let mut resolved = setting(
+        "laptop",
+        "settled",
+        "browser.actions",
+        false,
+        Some(3),
+        Some("assertion:laptop@laptop"),
+    );
+    resolved.links.push(AssertionLink {
+        role: LinkRole::Revises,
+        reference: reference("assertion:desktop@desktop"),
+        seen_hash: None,
+        quote: None,
+    });
+    let facts = [
+        setting("laptop", "laptop", "browser.actions", true, Some(1), None),
+        setting(
+            "desktop",
+            "desktop",
+            "browser.actions",
+            false,
+            Some(2),
+            None,
+        ),
+        resolved,
+    ];
+    for (i, fact) in facts.iter().enumerate() {
+        super::super::apply(&conn, std::slice::from_ref(fact), i as i64 + 1).unwrap();
+    }
+    conn.execute_batch("BEGIN").unwrap();
+    assert_eq!(
+        history(&conn, "browser.actions", date(3)).unwrap(),
+        vec![
+            (date(1), known(true)),
+            (
+                date(2),
+                SettingAt::Conflict(vec![
+                    "assertion:desktop@desktop".into(),
+                    "assertion:laptop@laptop".into()
+                ])
+            ),
+            (date(3), known(false)),
+        ]
     );
 }

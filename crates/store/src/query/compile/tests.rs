@@ -702,6 +702,8 @@ mod titles;
 
 mod relations;
 
+mod slots;
+
 mod combine;
 
 #[test]
