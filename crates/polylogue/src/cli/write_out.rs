@@ -162,7 +162,14 @@ fn through_pager(
         .stdin(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("starting the pager `{}`: {e}", startup.pager))?;
-    let mut input = pager.stdin.take().expect("piped pager input");
+    let mut input = BoldFirstLine {
+        out: pager.stdin.take().expect("piped pager input"),
+        state: if format == polylogue_render::Format::Terminal && startup.output.stdout_color() {
+            Bold::Before
+        } else {
+            Bold::Done
+        },
+    };
     let mut code = answer.exit_code();
     let shown = (|| -> Result<(), DeliveryError> {
         // A pager closed before the end has shown what its reader wanted.
@@ -205,6 +212,46 @@ fn through_pager(
     drop(input);
     pager.wait().map_err(|e| e.to_string())?;
     shown.map(|()| code)
+}
+
+/// Where a stream is in bolding its first line.
+enum Bold {
+    Before,
+    Inside,
+    Done,
+}
+
+/// Writes through, with the first line in bold, as
+/// [`polylogue_render::terminal::bold_first_line`] does for a whole text.
+struct BoldFirstLine<W> {
+    out: W,
+    state: Bold,
+}
+
+impl<W: Write> Write for BoldFirstLine<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        if let Bold::Before = self.state {
+            self.out.write_all(b"\x1b[1m")?;
+            self.state = Bold::Inside;
+        }
+        if let Bold::Inside = self.state
+            && let Some(end) = bytes.iter().position(|&b| b == b'\n')
+        {
+            self.out.write_all(&bytes[..end])?;
+            self.out.write_all(b"\x1b[0m")?;
+            self.out.write_all(&bytes[end..])?;
+            self.state = Bold::Done;
+            return Ok(bytes.len());
+        }
+        self.out.write_all(bytes)?;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
 }
 
 fn invalid(message: impl ToString) -> io::Error {
