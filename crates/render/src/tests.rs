@@ -3027,9 +3027,10 @@ fn format_goldens_terminal() {
 
 #[test]
 fn format_goldens_markdown() {
+    // The document ends with a fence and a blank line; the file cannot.
     assert_eq!(
-        encode(&every_kind_document(), Format::Markdown),
-        include_str!("../tests/goldens/every_kind.markdown")
+        encode(&every_kind_document(), Format::Markdown).trim_end(),
+        include_str!("../tests/goldens/every_kind.markdown").trim_end()
     );
 }
 

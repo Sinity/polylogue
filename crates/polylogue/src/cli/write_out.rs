@@ -140,13 +140,22 @@ fn one_page(
 }
 
 /// On a terminal: every page of the reading, following each page's `next`,
-/// written into the pager as it arrives, so the whole read is shown.
+/// encoded as one document into the pager as the pages arrive, so the
+/// whole read is shown once, under one header.
 fn through_pager(
     archive: &Archive,
     startup: &crate::config::Startup,
     mut answer: command_surface::Answer<serde_json::Value>,
     format: polylogue_render::Format,
 ) -> Result<u8, DeliveryError> {
+    let page_of = |answer: &command_surface::Answer<serde_json::Value>| {
+        let Some(value) = answer.value() else {
+            return Err(DeliveryError::Answer(Box::new(answer.clone())));
+        };
+        serde_json::from_value::<ReadPage>(value.clone())
+            .map_err(|e| DeliveryError::Text(e.to_string()))
+    };
+    let first = page_of(&answer)?;
     let mut pager = std::process::Command::new("sh")
         .arg("-c")
         .arg(&startup.pager)
@@ -156,20 +165,41 @@ fn through_pager(
     let mut input = pager.stdin.take().expect("piped pager input");
     let mut code = answer.exit_code();
     let shown = (|| -> Result<(), DeliveryError> {
+        // A pager closed before the end has shown what its reader wanted.
+        let closed = |error: &io::Error| error.kind() == io::ErrorKind::BrokenPipe;
+        page_notes(startup, &answer);
+        let mut encoder = match polylogue_render::Encoder::new(
+            &first.document.header,
+            format,
+            polylogue_render::EncodeOptions::default(),
+            &mut input,
+        ) {
+            Ok(encoder) => encoder,
+            Err(error) if closed(&error) => return Ok(()),
+            Err(error) => return Err(error.to_string().into()),
+        };
+        let mut page = first;
         loop {
-            let (encoded, next) = encode_page(startup, &answer, format)?;
-            page_notes(startup, &answer);
-            // A pager closed before the end has shown what its reader wanted.
-            if input.write_all(&encoded).is_err() {
-                return Ok(());
+            for item in &page.document.items {
+                match encoder.push(item) {
+                    Ok(()) => {}
+                    Err(error) if closed(&error) => return Ok(()),
+                    Err(error) => return Err(error.to_string().into()),
+                }
             }
-            let Some(next) = next else {
-                return Ok(());
+            let Some(next) = page.document.footer.next.clone() else {
+                return match encoder.finish(&page.document.footer) {
+                    Ok(()) => Ok(()),
+                    Err(error) if closed(&error) => Ok(()),
+                    Err(error) => Err(error.to_string().into()),
+                };
             };
             let call: command_surface::RunnableRequest =
                 serde_json::from_value(next.http.arguments.clone()).map_err(|e| e.to_string())?;
             answer = crate::client::call_ready(archive, &call).map_err(|e| e.to_string())?;
             code = code.max(answer.exit_code());
+            page_notes(startup, &answer);
+            page = page_of(&answer)?;
         }
     })();
     drop(input);

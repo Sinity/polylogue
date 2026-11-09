@@ -104,7 +104,7 @@ fn three_prompts(dir: &std::path::Path) -> (crate::Fixture, super::Daemon) {
     let project = home.join(".claude/projects/-pager");
     std::fs::create_dir_all(&project).unwrap();
     let lines: String = [
-        ("u1", "first marker alpha"),
+        ("u1", "opening question"),
         ("u2", "second marker beta"),
         ("u3", "third marker gamma"),
     ]
@@ -148,7 +148,7 @@ fn read_without_json_on_pipe_prints_continue_command_on_stderr() {
     let out = cli(&env, SMALL_PAGE);
     assert!(out.status.success(), "{out:?}");
     let stdout = String::from_utf8(out.stdout.clone()).unwrap();
-    assert!(stdout.contains("first marker alpha"), "{stdout}");
+    assert!(stdout.contains("opening question"), "{stdout}");
     assert!(!stdout.contains("third marker gamma"), "{stdout}");
     assert!(!stdout.contains("--cursor"), "the page alone is on stdout");
     let next = continue_command(&out).expect("a continue command on stderr");
@@ -180,7 +180,7 @@ fn read_pages_tile_with_no_gap_or_overlap() {
     assert!(pages > 1, "the small budget must page");
     assert_eq!(
         joined.text(),
-        "first marker alphasecond marker betathird marker gamma"
+        "opening questionsecond marker betathird marker gamma"
     );
 }
 
@@ -215,11 +215,16 @@ fn read_on_terminal_shows_whole_session_through_pager() {
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success(), "{output:?}");
     let shown = String::from_utf8(reader.join().unwrap()).unwrap();
-    for marker in [
-        "first marker alpha",
-        "second marker beta",
-        "third marker gamma",
-    ] {
+    // One document under one header, every message once.
+    assert_eq!(
+        shown
+            .matches("session:claude-code:pager · transcript")
+            .count(),
+        1,
+        "{shown}"
+    );
+    assert!(shown.contains("opening question"), "{shown}");
+    for marker in ["second marker beta", "third marker gamma"] {
         assert_eq!(shown.matches(marker).count(), 1, "{marker} in {shown}");
     }
     assert!(!String::from_utf8_lossy(&output.stderr).contains("continue:"));

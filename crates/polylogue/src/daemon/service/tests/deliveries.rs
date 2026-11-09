@@ -404,6 +404,10 @@ fn lesson(d: &test_daemon::TestDaemon, text: &str) {
     };
     crate::test_answers::ok(
         crate::test_daemon::Call::new("assert", serde_json::json!({"assertions": [lesson]}))
+            .authorship(polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            })
             .answer(&d.daemon),
     );
 }
