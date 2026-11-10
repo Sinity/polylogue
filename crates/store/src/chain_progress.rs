@@ -318,10 +318,11 @@ pub(crate) fn counts(conn: &Connection) -> Result<Vec<(String, String, State, u6
         counts.push((
             row.get(0)?,
             row.get(1)?,
-            State::from_stored(&state)?,
-            u64::try_from(n).map_err(|_| {
-                crate::StoreError::Invalid("a chain progress count is negative".into())
+            State::from_stored(&state).ok_or_else(|| {
+                crate::StoreError::stored(2, format!("chain progress state {state:?} is not known"))
             })?,
+            u64::try_from(n)
+                .map_err(|_| crate::StoreError::stored(3, format!("chain progress count {n}")))?,
         ));
     }
     Ok(counts)
@@ -338,18 +339,14 @@ pub(crate) enum State {
 }
 
 impl State {
-    fn from_stored(state: &str) -> Result<Self> {
-        Ok(match state {
+    fn from_stored(state: &str) -> Option<Self> {
+        Some(match state {
             "no_checkpoint" => Self::NoCheckpoint,
             "current" => Self::Current,
             "no_parser" => Self::NoParser,
             "partial" => Self::Partial,
             "behind" => Self::Behind,
-            other => {
-                return Err(crate::StoreError::Invalid(format!(
-                    "chain progress state {other:?} is not known"
-                )));
-            }
+            _ => return None,
         })
     }
 }

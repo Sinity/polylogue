@@ -18,7 +18,7 @@ pub(super) const DERIVATION: super::Derivation = super::Derivation {
     class: super::Class::Fold,
     // Bumped when the rules change; every session is derived again.
     products: &[],
-    version: super::Version::Rules(2),
+    version: super::Version::Rules(3),
     // Reads tool calls' commands and outcomes.
     after: &["tool_calls"],
     dirtied_by: &[],
