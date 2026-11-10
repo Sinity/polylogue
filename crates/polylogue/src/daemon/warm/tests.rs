@@ -226,11 +226,12 @@ fn older_vector_snapshot_does_not_replace_newer_cached_values() {
         )
         .unwrap();
     let first = writer.load(key).unwrap();
+    // A later write: another text's vector.
     writer
         .put(
             key,
             &[Vector {
-                text_hash: vec![1],
+                text_hash: vec![2],
                 chunk: 0,
                 values: vec![0., 1.],
             }],
