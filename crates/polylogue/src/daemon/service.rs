@@ -909,6 +909,8 @@ pub struct Runtime {
     scope: Option<super::scope::ScopeWorker>,
     completion_scope: Option<polylogue_store::ScopeInvalidation>,
     engine: Option<JoinHandle<std::io::Result<()>>>,
+    /// Ends the loop's pass at its next batch when the daemon stops.
+    pub(crate) engine_stop: Option<polylogue_engine::StopRequest>,
     lock: Option<polylogue_store::ArchiveLock>,
     worker_events: tokio::sync::watch::Sender<Option<&'static str>>,
     /// Set once by a loop run until idle, when it ends.
@@ -937,11 +939,15 @@ impl Runtime {
         Ok(())
     }
 
-    /// Refuses new requests and wakes readers waiting for a reader slot,
-    /// before transports and workers are joined. Readers and writes already
-    /// running finish as usual.
+    /// Refuses new requests, wakes readers waiting for a reader slot and
+    /// asks the loop to end its pass at the next batch, before transports
+    /// and workers are joined. Readers and writes already running finish as
+    /// usual.
     pub fn stop_accepting(&self) {
         self.daemon.stopping.store(true, Ordering::Release);
+        if let Some(stop) = &self.engine_stop {
+            stop.request();
+        }
         self.daemon.warm.clear();
         self.daemon.reads.close();
     }
@@ -1293,6 +1299,7 @@ pub fn start(
         scope: None,
         completion_scope: Some(completion_scope),
         engine: None,
+        engine_stop: None,
         lock: Some(lock),
         worker_events: tokio::sync::watch::channel(None).0,
         idle: Arc::new(tokio::sync::watch::channel(None).0),
@@ -1326,6 +1333,7 @@ pub fn start(
         }
         return Ok(runtime);
     };
+    runtime.engine_stop = Some(engine.stop_request());
     let (ready, wait) = sync_channel(1);
     let worker_events = runtime.worker_events.clone();
     let idle = Arc::clone(&runtime.idle);

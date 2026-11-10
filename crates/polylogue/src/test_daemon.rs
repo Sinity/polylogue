@@ -198,10 +198,24 @@ impl TestDaemon {
         self.restart_after_stop(|| {});
     }
 
-    fn restart_after_stop(&mut self, reset: impl FnOnce()) {
+    /// Stops the daemon the way SIGTERM does: no new requests, the socket
+    /// closed, then every worker joined.
+    pub(crate) fn stop(&mut self) -> std::io::Result<()> {
         self.runtime.stop_accepting();
-        self.server.shutdown().unwrap();
-        self.runtime.shutdown().unwrap();
+        self.server.shutdown()?;
+        self.runtime.shutdown()
+    }
+
+    /// The request [`Self::stop`] makes of the loop, to observe it.
+    pub(crate) fn engine_stop(&self) -> polylogue_engine::StopRequest {
+        self.runtime
+            .engine_stop
+            .clone()
+            .expect("the daemon runs a loop")
+    }
+
+    fn restart_after_stop(&mut self, reset: impl FnOnce()) {
+        self.stop().unwrap();
         reset();
         self.runtime = service::start(
             Arc::clone(&self.daemon.config),

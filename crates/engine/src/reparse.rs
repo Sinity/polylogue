@@ -77,6 +77,7 @@ impl Engine {
         let workers = self.config.workers.max(1).min(count);
         let read_memory = self.config.reader_memory_per_connection()?;
         let stopped_attempt = self.stopped_attempt;
+        let stop = self.stop.clone();
         let archive = self.archive.clone();
         let blobs = Arc::clone(&self.blobs);
         let writer = self.writer.sender()?;
@@ -91,10 +92,16 @@ impl Engine {
                 let memory = &memory;
                 let archive = &archive;
                 let blobs = &blobs;
+                let stop = &stop;
                 std::thread::Builder::new()
                     .name(format!("pl-reading-{worker}"))
                     .spawn_scoped(scope, move || {
                         loop {
+                            // After a stop request the queue is left for the
+                            // loop below to take back.
+                            if stop.requested() {
+                                break;
+                            }
                             let plan = { waiting.lock().expect("reading queue").pop_front() };
                             let Some(mut plan) = plan else { break };
                             polylogue_store::timing::reading_queue(-1, 0);
@@ -188,7 +195,22 @@ impl Engine {
             let mut commits: VecDeque<(Plan, CommitReply)> = VecDeque::new();
             let mut checked = Instant::now();
             let every = self.config.live_every.max(Duration::from_millis(10));
+            let mut stopping = false;
             while remaining > 0 {
+                if !stopping && self.stop.requested() {
+                    // Readings being prepared commit; the rest are not started.
+                    stopping = true;
+                    let unstarted: Vec<Plan> =
+                        waiting.lock().expect("reading queue").drain(..).collect();
+                    remaining -= unstarted.len();
+                    polylogue_store::timing::reading_queue(-(unstarted.len() as i64), 0);
+                    for plan in unstarted {
+                        self.release_reading(&mut busy, &plan.path);
+                    }
+                    if remaining == 0 {
+                        break;
+                    }
+                }
                 while let Some((plan, reply)) = commits.pop_front() {
                     match reply.try_recv() {
                         Ok(written) => self.reading_committed(&mut busy, plan, written, pass),
