@@ -1984,6 +1984,15 @@ impl Inner {
         for (b, chain) in indexed.iter().zip(chains) {
             if let Some(chain) = chain {
                 for p in &b.parse {
+                    let resolution = p
+                        .resolution
+                        .as_ref()
+                        .filter(|resolution| resolution.chain == chain)
+                        .ok_or_else(|| {
+                            StoreError::Invalid(
+                                "a parsed step was not resolved for its input chain".into(),
+                            )
+                        })?;
                     let receipt = crate::source::Source::reading_receipt(
                         &itx,
                         &b.input.id,
@@ -1994,7 +2003,7 @@ impl Inner {
                         &itx,
                         b,
                         p,
-                        chain,
+                        resolution,
                         counter,
                         self.first_build.as_deref(),
                         Some(&receipt),

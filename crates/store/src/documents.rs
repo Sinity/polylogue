@@ -18,7 +18,7 @@ pub(crate) struct Source<'a> {
     pub packed: &'a HashMap<[u8; 32], Vec<u8>>,
     /// Set during a first build ([`crate::first_build`]).
     pub first_build: Option<&'a crate::first_build::FirstBuild>,
-    pub keys: Option<&'a crate::writer::resolve::ResolvedKeys>,
+    pub keys: &'a crate::writer::resolve::ResolvedKeys,
 }
 
 pub(crate) fn write(
@@ -35,9 +35,7 @@ pub(crate) fn write(
     }
     let doc = &row.document;
     let time = doc.source_time.map(|t| t.unix_ms());
-    let keys = source
-        .keys
-        .ok_or_else(|| StoreError::Invalid("document reading has no resolved key".into()))?;
+    let keys = source.keys;
     let reserved = keys.get(
         crate::writer::resolve::Kind::Document,
         doc.id.to_string().as_bytes(),
@@ -95,7 +93,7 @@ pub(crate) fn apply_choice(
         counter,
         packed: &packed,
         first_build,
-        keys: Some(keys),
+        keys,
     };
     if choice.changed {
         let document = choice.document.as_ref().ok_or_else(|| {
@@ -173,13 +171,12 @@ fn insert_blocks(
         .zip(&prepared.data)
         .enumerate()
     {
-        let keys = source.keys.ok_or_else(|| {
-            StoreError::Invalid("document blocks have no resolved text keys".into())
-        })?;
         let text = prepared.texts[idx]
             .as_ref()
             .map(|hash| {
-                keys.get(crate::writer::resolve::Kind::Text, hash)
+                source
+                    .keys
+                    .get(crate::writer::resolve::Kind::Text, hash)
                     .map(|key| key.pk)
             })
             .transpose()?;

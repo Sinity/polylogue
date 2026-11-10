@@ -11,9 +11,15 @@ pub struct ChainReading {
     path: tempfile::TempPath,
     first: bool,
     decoded: Vec<crate::staging::PreparedBatch>,
-    keys: Option<Arc<resolve::ResolvedKeys>>,
-    chain: Option<i64>,
+    resolved: Option<ResolvedChain>,
     release: InFlight,
+}
+
+/// The row identities a chain reading's steps were resolved with, and the
+/// chain they were resolved for.
+struct ResolvedChain {
+    keys: Arc<resolve::ResolvedKeys>,
+    chain: i64,
 }
 impl ChainReading {
     pub fn new() -> Result<Self> {
@@ -23,8 +29,7 @@ impl ChainReading {
             path,
             first: true,
             decoded: Vec::new(),
-            keys: None,
-            chain: None,
+            resolved: None,
             release: InFlight::default(),
         })
     }
@@ -55,6 +60,7 @@ impl ChainReading {
                 StoreError::Invalid("a completed reading cannot be extended".into())
             })?,
             step,
+            None,
         )?;
         self.first = false;
         Ok(())
@@ -76,7 +82,7 @@ impl ChainReading {
     ) -> Result<()> {
         self.finish()?;
         let mut input = BufReader::new(std::fs::File::open(&self.path)?);
-        while let Some(step) = read_step(&mut input)? {
+        while let Some((step, _)) = read_step(&mut input)? {
             apply(&step)?;
         }
         Ok(())
@@ -84,23 +90,28 @@ impl ChainReading {
 
     /// Prepared steps keep the shared position lease alive until all readings
     /// have been dropped after the transaction result.
-    pub(crate) fn visit(&mut self, mut apply: impl FnMut(&ParseStep) -> Result<()>) -> Result<()> {
+    pub(crate) fn visit(
+        &mut self,
+        chain: i64,
+        mut apply: impl FnMut(&ParseStep, &resolve::Resolution) -> Result<()>,
+    ) -> Result<()> {
         self.finish()?;
-        let keys = self
-            .keys
-            .as_ref()
-            .ok_or_else(|| StoreError::Invalid("a chain reading has no resolved keys".into()))?;
-        let chain = self
-            .chain
-            .ok_or_else(|| StoreError::Invalid("a chain reading has no resolved chain".into()))?;
+        let resolved = self.resolved_for(chain)?;
         let mut reader = BufReader::new(std::fs::File::open(&self.path)?);
-        while let Some(mut step) = read_step(&mut reader)? {
-            step.prepared.keys = Some(Arc::clone(keys));
-            step.prepared.chain = Some(chain);
-            apply(&step)?;
+        while let Some((step, resolution)) = read_resolved_step(&mut reader, resolved)? {
+            apply(&step, &resolution)?;
         }
         Ok(())
     }
+    fn resolved_for(&self, chain: i64) -> Result<&ResolvedChain> {
+        self.resolved
+            .as_ref()
+            .filter(|resolved| resolved.chain == chain)
+            .ok_or_else(|| {
+                StoreError::Invalid("a chain reading was not resolved for its chain".into())
+            })
+    }
+
     pub(super) fn resolve(
         &mut self,
         resolver: &Arc<resolve::Resolver>,
@@ -212,16 +223,16 @@ fn prepare_readings(
             let mut output = BufWriter::new(file);
             let location = history.add_path(&path);
             let mut reader = BufReader::new(std::fs::File::open(&reading.reading.path)?);
-            while let Some(mut step) = read_step(&mut reader)? {
+            while let Some((mut step, _)) = read_step(&mut reader)? {
                 attachments::normalize_known(&mut step, &history.available)?;
-                projection.step(reading.input, reading.chain, &mut step)?;
+                let choices = projection.step(reading.input, reading.chain, &mut step)?;
                 let offset = output.stream_position()?;
-                write_step(&mut output, &step)?;
+                write_step(&mut output, &step, Some(&choices))?;
                 output.flush()?;
                 history.record(
                     input,
                     reading.chain,
-                    &step,
+                    &choices,
                     Location {
                         path: location,
                         offset,
@@ -236,8 +247,10 @@ fn prepare_readings(
         let lease = Arc::new(lease);
         for (reading, path) in readings.iter_mut().zip(prepared) {
             reading.reading.path = path;
-            reading.reading.keys = Some(Arc::clone(&keys));
-            reading.reading.chain = Some(reading.chain);
+            reading.reading.resolved = Some(ResolvedChain {
+                keys: Arc::clone(&keys),
+                chain: reading.chain,
+            });
             let lease = Arc::clone(&lease);
             reading.reading.release = InFlight::new(move || drop(lease));
         }
@@ -259,7 +272,7 @@ fn gather<'a>(
         let mut reader = BufReader::new(std::fs::File::open(&reading.reading.path)?);
         loop {
             let offset = reader.stream_position()?;
-            let Some(mut step) = read_step(&mut reader)? else {
+            let Some((mut step, _)) = read_step(&mut reader)? else {
                 break;
             };
             if let ReadingLookup::Archive(archive) = source {
@@ -299,7 +312,13 @@ fn gather<'a>(
     Ok((keys, history))
 }
 
-fn write_step(file: &mut BufWriter<std::fs::File>, step: &ParseStep) -> Result<()> {
+/// Writes one step record; a resolved reading's records carry the versions
+/// chosen for the step.
+fn write_step(
+    file: &mut BufWriter<std::fs::File>,
+    step: &ParseStep,
+    choices: Option<&resolve::membership::Choices>,
+) -> Result<()> {
     let start = file.stream_position()?;
     file.write_all(&0u64.to_le_bytes())?;
     let mut encoder = zstd::stream::write::Encoder::new(&mut *file, 1)?;
@@ -314,7 +333,7 @@ fn write_step(file: &mut BufWriter<std::fs::File>, step: &ParseStep) -> Result<(
             &step.prepared.events,
             texts,
             step.prepared.released,
-            &step.prepared.choices,
+            choices,
         ),
     )?;
     encoder.finish()?;
@@ -325,7 +344,9 @@ fn write_step(file: &mut BufWriter<std::fs::File>, step: &ParseStep) -> Result<(
     Ok(())
 }
 
-fn read_step(reader: &mut BufReader<std::fs::File>) -> Result<Option<ParseStep>> {
+fn read_step(
+    reader: &mut BufReader<std::fs::File>,
+) -> Result<Option<(ParseStep, Option<resolve::membership::Choices>)>> {
     let mut size = [0u8; 8];
     let read = reader.read(&mut size[..1])?;
     if read == 0 {
@@ -345,11 +366,29 @@ fn read_step(reader: &mut BufReader<std::fs::File>) -> Result<Option<ParseStep>>
         events,
         texts: texts.into_iter().collect(),
         released,
-        keys: None,
-        chain: None,
-        choices,
     };
-    Ok(Some(step))
+    Ok(Some((step, choices)))
+}
+
+/// Reads one record of a resolved reading together with its resolution.
+fn read_resolved_step(
+    reader: &mut BufReader<std::fs::File>,
+    resolved: &ResolvedChain,
+) -> Result<Option<(ParseStep, resolve::Resolution)>> {
+    let Some((step, choices)) = read_step(reader)? else {
+        return Ok(None);
+    };
+    let choices = choices.ok_or_else(|| {
+        StoreError::Invalid("a resolved chain step has no chosen versions".into())
+    })?;
+    Ok(Some((
+        step,
+        resolve::Resolution {
+            keys: Arc::clone(&resolved.keys),
+            chain: resolved.chain,
+            choices,
+        },
+    )))
 }
 
 #[derive(serde::Deserialize)]
@@ -398,8 +437,14 @@ impl<'a> History<'a> {
         paths.push(path.to_path_buf());
         index
     }
-    fn record(&self, input: i64, chain: i64, step: &ParseStep, location: Location) {
-        if let Some(choices) = &step.prepared.choices {
+    fn record(
+        &self,
+        input: i64,
+        chain: i64,
+        choices: &resolve::membership::Choices,
+        location: Location,
+    ) {
+        {
             for hash in choices.message_versions.keys() {
                 self.messages.borrow_mut().insert(hash.0.to_vec(), location);
             }
@@ -422,14 +467,17 @@ impl<'a> History<'a> {
             }
         }
     }
-    fn step(&self, location: Location) -> Result<ParseStep> {
+    fn step(
+        &self,
+        location: Location,
+    ) -> Result<(ParseStep, Option<resolve::membership::Choices>)> {
         let path = self.paths.borrow()[location.path].clone();
         let mut reader = BufReader::new(std::fs::File::open(path)?);
         reader.seek(SeekFrom::Start(location.offset))?;
-        let mut step = read_step(&mut reader)?
+        let (mut step, choices) = read_step(&mut reader)?
             .ok_or_else(|| StoreError::Invalid("a scratch offset has no chain step".into()))?;
         attachments::normalize_known(&mut step, &self.available)?;
-        Ok(step)
+        Ok((step, choices))
     }
 }
 impl resolve::membership::ValueSource for History<'_> {
@@ -439,8 +487,7 @@ impl resolve::membership::ValueSource for History<'_> {
         };
         Ok(self
             .step(location)?
-            .prepared
-            .choices
+            .1
             .and_then(|mut choices| choices.sessions.remove(&pk)))
     }
     fn event_source(
@@ -457,7 +504,7 @@ impl resolve::membership::ValueSource for History<'_> {
         else {
             return Ok(None);
         };
-        Ok(self.step(location)?.prepared.choices.and_then(|choices| {
+        Ok(self.step(location)?.1.and_then(|choices| {
             choices
                 .event_sources
                 .into_iter()
@@ -470,10 +517,10 @@ impl resolve::membership::ValueSource for History<'_> {
         let Some(location) = self.assertions.borrow().get(&(kind, pk)).copied() else {
             return Ok(None);
         };
-        let choices =
-            self.step(location)?.prepared.choices.ok_or_else(|| {
-                StoreError::Invalid("a value offset has no prepared choices".into())
-            })?;
+        let choices = self
+            .step(location)?
+            .1
+            .ok_or_else(|| StoreError::Invalid("a value offset has no prepared choices".into()))?;
         let values = if kind == resolve::Kind::EventValue {
             choices.event_values
         } else {
@@ -488,8 +535,8 @@ impl resolve::membership::ValueSource for History<'_> {
         let Some(location) = self.messages.borrow().get(hash).copied() else {
             return Ok(None);
         };
-        let step = self.step(location)?;
-        if let Some(value) = step.prepared.choices.as_ref().and_then(|choices| {
+        let (step, choices) = self.step(location)?;
+        if let Some(value) = choices.as_ref().and_then(|choices| {
             choices
                 .message_versions
                 .get(&BlobHash(hash.try_into().ok()?))
@@ -511,7 +558,7 @@ impl resolve::membership::ValueSource for History<'_> {
         let Some(location) = self.documents.get(hash).copied() else {
             return Ok(None);
         };
-        let step = self.step(location)?;
+        let (step, _) = self.step(location)?;
         Ok(step
             .output
             .documents
@@ -585,7 +632,7 @@ impl Inner {
         let mut reader = BufReader::new(file);
         let mut all_replayed = true;
         let mut has_step = false;
-        while let Some(step) = read_step(&mut reader)? {
+        while let Some((step, _)) = read_step(&mut reader)? {
             has_step = true;
             if step.delivery.is_none()
                 || crate::wire_shapes::admit_export(&self.index, &input.id, chain, length, &step)?
@@ -617,11 +664,10 @@ impl Inner {
             basis: None,
             release: Default::default(),
         };
+        let resolved = reading.resolved_for(chain)?;
         let mut written = 0;
         let mut first = true;
-        while let Some(mut step) = read_step(&mut reader)? {
-            step.prepared.keys = reading.keys.clone();
-            step.prepared.chain = Some(chain);
+        while let Some((step, resolution)) = read_resolved_step(&mut reader, resolved)? {
             if first && !step.reset {
                 return Err(StoreError::Invalid(
                     "a chain replacement must start at its first record".into(),
@@ -649,7 +695,7 @@ impl Inner {
                 &tx,
                 &batch,
                 &step,
-                chain,
+                &resolution,
                 counter,
                 self.first_build.as_deref(),
                 Some(&receipt),

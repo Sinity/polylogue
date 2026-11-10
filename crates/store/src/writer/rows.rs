@@ -18,7 +18,7 @@ pub(super) fn write_rows(
     tx: &Transaction<'_>,
     b: &Batch,
     p: &ParseStep,
-    chain: i64,
+    resolution: &resolve::Resolution,
     counter: i64,
     first_build: Option<&FirstBuild>,
     receipt: Option<&crate::wire_shapes::ReadingReceipt>,
@@ -29,7 +29,7 @@ pub(super) fn write_rows(
         b,
         p,
         ReadingWrite {
-            chain,
+            resolution,
             counter,
             first_build,
             confirmed: false,
@@ -47,7 +47,7 @@ pub(super) fn write_replacement_rows(
     tx: &Transaction<'_>,
     b: &Batch,
     p: &ParseStep,
-    chain: i64,
+    resolution: &resolve::Resolution,
     counter: i64,
     first_build: Option<&FirstBuild>,
     receipt: Option<&crate::wire_shapes::ReadingReceipt>,
@@ -58,7 +58,7 @@ pub(super) fn write_replacement_rows(
         b,
         p,
         ReadingWrite {
-            chain,
+            resolution,
             counter,
             first_build,
             confirmed: false,
@@ -76,7 +76,7 @@ pub(super) fn write_confirmed_rows(
     tx: &Transaction<'_>,
     b: &Batch,
     p: &ParseStep,
-    chain: i64,
+    resolution: &resolve::Resolution,
     counter: i64,
     first_build: Option<&FirstBuild>,
     receipt: Option<&crate::wire_shapes::ReadingReceipt>,
@@ -87,7 +87,7 @@ pub(super) fn write_confirmed_rows(
         b,
         p,
         ReadingWrite {
-            chain,
+            resolution,
             counter,
             first_build,
             confirmed: true,
@@ -99,7 +99,7 @@ pub(super) fn write_confirmed_rows(
 }
 
 struct ReadingWrite<'a> {
-    chain: i64,
+    resolution: &'a resolve::Resolution,
     counter: i64,
     first_build: Option<&'a FirstBuild>,
     confirmed: bool,
@@ -115,7 +115,7 @@ fn apply_rows(
     context: ReadingWrite<'_>,
 ) -> Result<u64> {
     let ReadingWrite {
-        chain,
+        resolution,
         counter,
         first_build,
         confirmed,
@@ -125,18 +125,9 @@ fn apply_rows(
     } = context;
     p.counts.check()?;
     p.prepared.validate(&p.output)?;
-    let keys = p.prepared.keys.as_deref().ok_or_else(|| {
-        StoreError::Invalid("an indexed reading has no resolved natural keys".into())
-    })?;
-    let choices =
-        p.prepared.choices.as_ref().ok_or_else(|| {
-            StoreError::Invalid("an indexed reading has no resolved versions".into())
-        })?;
-    if p.prepared.chain != Some(chain) {
-        return Err(StoreError::Invalid(
-            "prepared reading has another input chain".into(),
-        ));
-    }
+    let chain = resolution.chain;
+    let keys = &*resolution.keys;
+    let choices = &resolution.choices;
     let input_pk = keys.get(resolve::Kind::Input, b.input.id.as_bytes())?.pk;
     validate_range(b, p)?;
     if !crate::wire_shapes::admit_export(tx, &b.input.id, chain, b.length, p)? {
@@ -223,14 +214,10 @@ fn apply_rows(
         counter,
         packed: &p.prepared.texts,
         first_build,
-        keys: Some(keys),
+        keys,
     };
     for (i, row) in p.output.documents.iter().enumerate() {
-        if p.prepared
-            .choices
-            .as_ref()
-            .is_some_and(|choices| !choices.keep_documents[i])
-        {
+        if !choices.keep_documents[i] {
             continue;
         }
         let prepared = &p.prepared.documents[i];
@@ -252,11 +239,7 @@ fn apply_rows(
     // record breaks the tie.
     let mut in_record: HashMap<u64, i64> = HashMap::new();
     for (i, row) in p.output.messages.iter().enumerate() {
-        if p.prepared
-            .choices
-            .as_ref()
-            .is_some_and(|choices| !choices.keep_messages[i])
-        {
+        if !choices.keep_messages[i] {
             continue;
         }
         let session_pk = rows.session_pk(&mut sessions, &row.message.session)?;
@@ -279,6 +262,7 @@ fn apply_rows(
                 input_pk,
                 chain,
             },
+            keys,
             p,
             i,
         )?;

@@ -504,12 +504,12 @@ fn confirmed_readings_resolve_and_apply_without_a_local_source_database() {
     let tx = index.transaction().unwrap();
     readings[0]
         .3
-        .visit(|step| {
+        .visit(41, |step, resolution| {
             rows::write_confirmed_rows(
                 &tx,
                 &input,
                 step,
-                41,
+                resolution,
                 1,
                 None,
                 Some(&fixture_receipt()),
@@ -759,12 +759,12 @@ fn apply_confirmed_readings(
             basis: None,
             release: InFlight::default(),
         };
-        reading.visit(|step| {
+        reading.visit(*chain, |step, resolution| {
             write_rows(
                 &tx,
                 &batch,
                 step,
-                *chain,
+                resolution,
                 1,
                 None,
                 Some(&fixture_receipt()),
@@ -1113,7 +1113,7 @@ fn confirmed_projection_applies_live_facts_after_an_archived_byte_prefix() {
             &tx,
             &input,
             &input.parse[0],
-            1,
+            input.parse[0].resolution.as_ref().unwrap(),
             1,
             None,
             Some(&fixture_receipt()),
@@ -1130,7 +1130,7 @@ fn confirmed_projection_applies_live_facts_after_an_archived_byte_prefix() {
         &tx,
         &input,
         &input.parse[0],
-        1,
+        input.parse[0].resolution.as_ref().unwrap(),
         1,
         None,
         Some(&fixture_receipt()),
@@ -1347,7 +1347,7 @@ fn retained_event_admission_precedes_raw_receipts_and_survives_missing_source_ma
         &tx,
         &confirmed,
         &confirmed.parse[0],
-        1,
+        confirmed.parse[0].resolution.as_ref().unwrap(),
         999,
         None,
         Some(&control),
@@ -1496,7 +1496,7 @@ fn canonical_fold_receipts_survive_raw_mapping_absence_and_cache_rebuild() {
             &tx,
             batch,
             &batch.parse[0],
-            1,
+            batch.parse[0].resolution.as_ref().unwrap(),
             2000,
             None,
             Some(&control),

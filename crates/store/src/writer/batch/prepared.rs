@@ -10,9 +10,6 @@ pub(crate) struct PreparedRows {
     pub(in crate::writer) texts: HashMap<[u8; 32], Vec<u8>>,
     pub(in crate::writer) events: Vec<(String, Vec<u8>)>,
     pub(in crate::writer) released: bool,
-    pub(in crate::writer) keys: Option<Arc<super::super::resolve::ResolvedKeys>>,
-    pub(in crate::writer) chain: Option<i64>,
-    pub(in crate::writer) choices: Option<super::super::resolve::membership::Choices>,
 }
 
 impl PreparedRows {
@@ -209,9 +206,6 @@ impl ParseStep {
             texts,
             events,
             released: true,
-            keys: None,
-            chain: None,
-            choices: None,
         };
         for blocks in self
             .output
