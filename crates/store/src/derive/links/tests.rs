@@ -304,6 +304,34 @@ fn links_fold_after_append_equals_full_recompute() {
         bash("t", 1, 4_000, "git commit -m x", true, "[main 9b8c7d6] x"),
     );
     check(&w, "another session");
+    // The same commit and pull request reported again by calls timed before
+    // the ones already stored: the earlier calls' evidence is kept.
+    w.write(
+        "t",
+        bash(
+            "t",
+            2,
+            6_000,
+            "gh pr create --fill",
+            true,
+            "https://github.com/Sinity/polylogue/pull/6400/files\n",
+        ),
+    );
+    check(&w, "pull request");
+    let mut earlier = bash("t", 3, 3_000, "git commit -m x", true, "[main 9b8c7d6] x");
+    earlier.extend(bash(
+        "t",
+        4,
+        2_000,
+        "gh pr create --fill",
+        true,
+        "https://github.com/Sinity/polylogue/pull/6400.\n",
+    ));
+    w.write("t", earlier);
+    check(
+        &w,
+        "same commit and pull request arriving out of time order",
+    );
     seen.dedup();
-    assert!(seen.len() >= 4, "{seen:?}");
+    assert_eq!(seen.len(), 7, "{seen:?}");
 }

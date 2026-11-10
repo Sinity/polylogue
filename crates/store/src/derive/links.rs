@@ -58,6 +58,8 @@ fn committed(output: &str) -> Vec<String> {
 }
 
 /// Pull request URLs in `gh pr create` output: `(owner/repo, number, url)`.
+/// The URL is the pull request's own, so a link does not depend on which
+/// mention of it (a `/files` suffix, trailing punctuation) was read first.
 fn pull_requests(output: &str) -> Vec<(String, i64, String)> {
     output
         .split_whitespace()
@@ -70,7 +72,11 @@ fn pull_requests(output: &str) -> Vec<(String, i64, String)> {
                 .trim_end_matches(|c: char| !c.is_ascii_digit())
                 .parse()
                 .ok()?;
-            (pull == "pull").then(|| (format!("{owner}/{repo}"), n, w.to_owned()))
+            (pull == "pull").then(|| {
+                let repo = format!("{owner}/{repo}");
+                let url = format!("https://github.com/{repo}/pull/{n}");
+                (repo, n, url)
+            })
         })
         .collect()
 }
@@ -143,9 +149,19 @@ fn add_links(tx: &Transaction<'_>, session_pk: i64, calls: Vec<(i64, String)>) -
             match (stage.program.as_str(), stage.subcommand()) {
                 ("git", Some("commit")) => {
                     for hash in committed(output.as_deref().unwrap_or("")) {
+                        // The evidence is the first call in session order to
+                        // report the hash, whichever order the calls arrived in.
                         tx.prepare_cached(
-                            "INSERT OR IGNORE INTO commit_link(session_pk, commit_hash, evidence_block_pk, evidence)
-                             SELECT ?1, ?2, call_block_pk, 'commit-output' FROM tool_call WHERE pk = ?3",
+                            "INSERT INTO commit_link(session_pk, commit_hash, evidence_block_pk, evidence)
+                             SELECT ?1, ?2, call_block_pk, 'commit-output' FROM tool_call WHERE pk = ?3
+                             ON CONFLICT(session_pk, commit_hash) DO UPDATE
+                               SET evidence_block_pk = excluded.evidence_block_pk
+                             WHERE commit_link.evidence = 'commit-output' AND EXISTS (
+                               SELECT 1 FROM tool_call new, tool_call old
+                               WHERE new.call_block_pk = excluded.evidence_block_pk
+                                 AND old.call_block_pk = commit_link.evidence_block_pk
+                                 AND (new.at IS NULL, ifnull(new.at, 0), new.pk)
+                                   < (old.at IS NULL, ifnull(old.at, 0), old.pk))",
                         )?
                         .execute(params![session_pk, hash, call_pk])?;
                     }
