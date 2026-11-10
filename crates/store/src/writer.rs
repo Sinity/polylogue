@@ -476,7 +476,6 @@ impl Writer {
             location: archive.clone(),
             sinex,
             stream_error: None,
-            appended: None,
         };
 
         let handle = std::thread::Builder::new()
@@ -1146,10 +1145,6 @@ struct Inner {
     commits: crate::completion::CommitEvents,
     resolver: Arc<resolve::Resolver>,
     segment: Option<hashed_blobs::SegmentWriter>,
-    /// A file group whose bytes are appended and whose sync may be running;
-    /// it commits once the next group has appended, or when the writer has
-    /// nothing else to do, and is answered after its commit.
-    appended: Option<(staging::AppendedGroup, staging::Replies)>,
     archive: Connection,
     index: Connection,
     report: WriteReport,
@@ -1245,24 +1240,6 @@ impl Inner {
         }
     }
 
-    /// The next message. While a file group is appended, an empty queue
-    /// commits and answers it before the writer waits.
-    fn next_message(&mut self, rx: &Receiver<Msg>) -> Option<Msg> {
-        if self.appended.is_some() {
-            match rx.try_recv() {
-                Ok(message) => return Some(message),
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
-                    let turn = Arc::clone(&self.search.turn);
-                    let _turn = turn
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    self.finish_appended();
-                }
-            }
-        }
-        rx.recv().ok()
-    }
-
     fn run(&mut self, rx: &Receiver<Msg>) {
         let _worker = crate::timing::worker();
         let mut flushes = Vec::new();
@@ -1287,8 +1264,9 @@ impl Inner {
         let mut blobs = Vec::new();
         let mut older_groups = Vec::new();
         loop {
-            let Some(first) = self.next_message(rx) else {
-                break;
+            let first = match rx.recv() {
+                Ok(first) => first,
+                Err(_) => break,
             };
             let _busy = crate::timing::writer_started();
             self.serve_users();
@@ -1405,14 +1383,10 @@ impl Inner {
                         false
                     }
                 };
-            // Only further file groups may append while one is appended;
-            // anything else sees it committed first.
-            let mut other = !appends_only(&first);
             if push(first, &mut group, &mut rows, &mut bytes) {
                 while rows < ROWS_PER_TRANSACTION && bytes < BYTES_PER_TRANSACTION {
                     match rx.try_recv() {
                         Ok(m) => {
-                            other |= !appends_only(&m);
                             if !push(m, &mut group, &mut rows, &mut bytes) {
                                 break;
                             }
@@ -1420,9 +1394,6 @@ impl Inner {
                         Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
                     }
                 }
-            }
-            if other {
-                self.finish_appended();
             }
             for (events, reply) in confirmations.drain(..) {
                 let _ = reply.send(self.apply_confirmed(&events));
@@ -1561,7 +1532,6 @@ impl Inner {
                 break;
             }
         }
-        self.finish_appended();
         let _ = self.finish_build();
         let closed = self.refresh_chain_progress().and_then(|()| {
             if self.sinex.is_none() {
@@ -2059,11 +2029,6 @@ impl Inner {
         self.report.transactions += 1;
         Ok(())
     }
-}
-
-/// Messages a writer turn may handle while a file group stays appended.
-fn appends_only(message: &Msg) -> bool {
-    matches!(message, Msg::StoreGroup(..) | Msg::Wake)
 }
 
 /// The input bytes a batch was parsed from (or stored, when unparsed).

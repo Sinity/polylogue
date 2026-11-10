@@ -123,7 +123,14 @@ local state is `index.db`, the embeddings store and the producer spool
 Writes reach disk in one order:
 
 1. Bytes are appended to a segment and synced, once per write group, on a
-   dedicated thread overlapped with the next group.
+   dedicated thread. Groups waiting together share one append and one sync.
+   The next group is appended only after this group commits: appending it
+   during the sync left its pages unwritten while the commit's database syncs
+   ran, which then paid for them. In paired release-build runs with groups
+   arriving faster than they are stored, the overlapped writer answered a
+   group later than the serial one (typical latency 3.2 s against 2.4 s for
+   2 MiB groups, 1.2 s against 0.8 s for 256 KiB groups), also when each
+   appended range's writeback was started early.
 2. The extents and the rows that cite them commit in one transaction.
 3. `index.db` saves the archive and request-log positions it has applied, in
    the same transaction as the rows it applied.
