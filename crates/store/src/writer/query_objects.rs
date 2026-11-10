@@ -92,7 +92,10 @@ impl Writer {
 impl WriterSender {
     /// Hand a read's question, its run and the run's outcome to the writer
     /// without waiting for them: the writer commits them on its next turn,
-    /// after the answer has gone. The read never waits on custody.
+    /// after the answer has gone. The read never waits on custody or for
+    /// room in the queue. The records enter the queue before the read
+    /// answers, in order, so a later request is queued behind them; only
+    /// when the queue is full does a thread hand over the rest.
     pub fn record_after_answer(
         &self,
         object: QueryObject,
@@ -100,17 +103,32 @@ impl WriterSender {
         outcome: QueryRunOutcome,
     ) -> Result<()> {
         let (object_reply, _) = sync_channel(1);
-        self.0
-            .send_user(UserMsg::QueryObject(Box::new(object), None, object_reply))
-            .map_err(|_| StoreError::WriterGone)?;
         let (run_reply, _) = sync_channel(1);
-        self.0
-            .send_user(UserMsg::QueryRun(Box::new(run), None, run_reply))
-            .map_err(|_| StoreError::WriterGone)?;
         let (outcome_reply, _) = sync_channel(1);
-        self.0
-            .send_user(UserMsg::QueryRunOutcome(Box::new(outcome), outcome_reply))
-            .map_err(|_| StoreError::WriterGone)?;
+        let mut messages = vec![
+            UserMsg::QueryObject(Box::new(object), None, object_reply),
+            UserMsg::QueryRun(Box::new(run), None, run_reply),
+            UserMsg::QueryRunOutcome(Box::new(outcome), outcome_reply),
+        ]
+        .into_iter();
+        while let Some(message) = messages.next() {
+            match self.0.try_send_user(message) {
+                Ok(()) => {}
+                Err(None) => return Err(StoreError::WriterGone),
+                Err(Some(message)) => {
+                    let queue = self.0.clone();
+                    let rest: Vec<UserMsg> = std::iter::once(message).chain(messages).collect();
+                    std::thread::spawn(move || {
+                        for message in rest {
+                            if queue.send_user(message).is_err() {
+                                break;
+                            }
+                        }
+                    });
+                    return Ok(());
+                }
+            }
+        }
         Ok(())
     }
 

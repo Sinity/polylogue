@@ -197,6 +197,29 @@ fn clients_wait_with_deadlines_only_for_reads_and_explicit_stream_limits() {
 }
 
 #[test]
+fn only_read_only_requests_end_the_client_wait_at_their_read_deadline() {
+    use polylogue_model::assertion::{AssertionKind, NewAssertion};
+    let assertion = NewAssertion {
+        kind: AssertionKind::Lesson,
+        key: None,
+        value: Some(serde_json::json!("a lesson")),
+        valid_until: None,
+        links: vec![],
+    };
+    // assert-query reads under its deadline in the daemon, then writes. The
+    // write may wait on the writer after the read finished, so the client
+    // waits for the daemon's answer instead of giving up at the read deadline.
+    let assert_query = crate::client::request(
+        "assert-query",
+        serde_json::json!({"query": "messages", "assertion": assertion}),
+        "aq-1".into(),
+    );
+    assert_eq!(crate::client::connection_budget(&assert_query, None), None);
+    let status = crate::client::request("status", serde_json::json!({}), "status-1".into());
+    assert!(crate::client::connection_budget(&status, None).is_some());
+}
+
+#[test]
 fn shell_completion_escapes_daemon_help_and_omits_control_values() {
     let data = serde_json::json!([
         {"value": "tag:ordinary", "help": "\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\u{202e}"},

@@ -1534,3 +1534,31 @@ fn a_refused_reading_in_a_group_of_independent_inputs_costs_only_itself() {
     assert!(texts(&w, "refused").is_empty());
     assert_eq!(texts(&w, "accepted"), ["accepted body"]);
 }
+
+#[test]
+fn a_user_write_wakes_an_idle_writer_while_the_bulk_queue_lock_is_held() {
+    let w = test_archive();
+    let sender = w.writer.sender().unwrap();
+    // A bulk sender holding the queue's lock (as one waiting for room does)
+    // must not stop a user write from waking the idle writer.
+    let held = sender.0.bulk.lock().unwrap();
+    let (done, finished) = sync_channel(1);
+    std::thread::spawn({
+        let sender = sender.clone();
+        move || {
+            let outcome = sender.user(crate::fixture::authored::operator_request(
+                crate::user_writes::new_request_id(),
+                polylogue_model::user::UserWrite::SetSetting {
+                    key: "browser.actions".into(),
+                    value: "on".into(),
+                    machine: None,
+                },
+            ));
+            let _ = done.send(outcome.is_ok());
+        }
+    });
+    // Bounds a hang only; a woken writer commits a setting in milliseconds.
+    let committed = finished.recv_timeout(std::time::Duration::from_secs(30));
+    drop(held);
+    assert_eq!(committed, Ok(true));
+}

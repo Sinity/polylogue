@@ -734,8 +734,8 @@ fn continuation_pages_write_nothing() {
         8,
         None,
     );
-    // The first page's run record goes to the writer after the answer; a
-    // blocking write behind it is a barrier.
+    // The first page's run record enters the writer's queue before the page
+    // answers; a blocking write queued after it commits after it.
     d.set("browser.actions", "on");
     let before = d.daemon.reads.reader().unwrap().change_position().unwrap();
     let mut cursor = next(&first);

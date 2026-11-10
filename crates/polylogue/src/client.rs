@@ -73,7 +73,8 @@ pub fn call(
 }
 
 /// How long a client waits for the answer: the request's read deadline
-/// with the protocol's grace, none for a write, within the parent's bound.
+/// with the protocol's grace for a read-only request, none for one that
+/// writes, within the parent's bound.
 pub(crate) fn connection_budget(
     request: &command_surface::RunnableRequest,
     parent_deadline_ms: Option<i64>,
@@ -94,7 +95,10 @@ pub(crate) fn connection_budget(
         })
     });
     let deadline = match policy {
-        Some(policy) if !policy.read_phase => command_surface::Deadline::None,
+        // A request that reads and then writes may wait on the writer after its
+        // read finished; the write is the user's, so the client waits for the
+        // daemon's answer, which reports a read that overran its deadline itself.
+        Some(policy) if !policy.read_only => command_surface::Deadline::None,
         Some(policy)
             if !policy.default_deadline
                 && request.deadline == command_surface::Deadline::Default =>
