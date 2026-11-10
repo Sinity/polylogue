@@ -966,3 +966,59 @@ fn a_readings_receipts_are_stored_once_and_read_back_whole() {
         assert_eq!(shape.types["string"].last, range(2, 10, 20));
     }
 }
+
+/// A live append writes shape and type rows only for the paths its records
+/// held; the reading's other paths keep their rows untouched.
+#[test]
+fn live_append_writes_only_observed_paths() {
+    let mut conn = database();
+    store(
+        &mut conn,
+        source(1, 1, 30, 1),
+        &step(
+            "v1",
+            0..10,
+            false,
+            vec![
+                root(),
+                shape("/a", "string", &["string"]),
+                shape("/b", "number", &["number"]),
+                shape("/c", "boolean", &["boolean"]),
+            ],
+        ),
+    );
+    conn.execute_batch(
+        "CREATE TEMP TABLE written(path TEXT NOT NULL);
+         CREATE TEMP TRIGGER shape_insert AFTER INSERT ON main.wire_shape BEGIN INSERT INTO written VALUES (new.path); END;
+         CREATE TEMP TRIGGER shape_update AFTER UPDATE ON main.wire_shape BEGIN INSERT INTO written VALUES (new.path); END;
+         CREATE TEMP TRIGGER shape_delete AFTER DELETE ON main.wire_shape BEGIN INSERT INTO written VALUES (old.path); END;
+         CREATE TEMP TRIGGER type_insert AFTER INSERT ON main.wire_type BEGIN INSERT INTO written VALUES (new.path); END;
+         CREATE TEMP TRIGGER type_update AFTER UPDATE ON main.wire_type BEGIN INSERT INTO written VALUES (new.path); END;
+         CREATE TEMP TRIGGER type_delete AFTER DELETE ON main.wire_type BEGIN INSERT INTO written VALUES (old.path); END;",
+    )
+    .unwrap();
+    store(
+        &mut conn,
+        source(1, 1, 30, 2),
+        &step(
+            "v1",
+            10..20,
+            false,
+            vec![root(), shape("/a", "string", &["string"])],
+        ),
+    );
+    let written: std::collections::BTreeSet<String> = conn
+        .prepare("SELECT path FROM written")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        written,
+        std::collections::BTreeSet::from(["".to_owned(), "/a".to_owned()])
+    );
+    let report = read(&conn, Scope::current(None)).unwrap();
+    assert_eq!(at(&report, "/a").types["string"].count, 2);
+    assert_eq!(at(&report, "/b").types["number"].count, 1);
+}
