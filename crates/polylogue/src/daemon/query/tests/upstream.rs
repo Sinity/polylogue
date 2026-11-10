@@ -64,12 +64,12 @@ fn upstream_gone_kept() {
         drop(engine);
         let order = format!("newer first: {newer_first}");
         assert_eq!(
-            ids(&home, "sessions source:gone"),
+            ids(&home, "sessions where source:gone"),
             ["chatgpt:deleted"],
             "{order}"
         );
         assert_eq!(
-            ids(&home, "sessions source:present"),
+            ids(&home, "sessions where source:present"),
             ["chatgpt:kept", "chatgpt:recent"],
             "{order}"
         );
