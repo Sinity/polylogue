@@ -100,7 +100,8 @@ fn span_and_lanes_match_a_hand_computed_session() {
         (RULE_VERSION, serde_json::to_value(&span).unwrap()),
         (
             // 2: the human lane is unknown without a provider turn end.
-            2,
+            // 3: a stored prefix ends at a session order of the message.
+            3,
             serde_json::json!({
                 "first_at":0,"last_at":4500000,"time_source":"messages","wall_ms":4500000,"clustered_ms":3720000,"tool_sum_ms":3434000,"tool_union_ms":1704000,"tool_overlap_ms":1730000,
                 "tool_untimed":0,"tool_no_result":0,"tool_same_timestamp":0,"tool_reversed":0,"timed_messages":18,"untimed_messages":0,"unordered_gaps":0,"first_failure_at":2262000,"prompts_to_failure":1,"prompted":true,"ends_with":"model_text","ends_with_message":"m17","last_stop_reason":"end_turn"
@@ -658,7 +659,7 @@ fn a_stored_prefix_changes_shape_only_with_a_new_rule_version() {
     // another shape would not decode. Bumping RULE_VERSION derives every
     // session from its start, so a change here needs a new version.
     let prefix = Prefix {
-        end: Some((("s".into(), 1, 2, "m".into()), 3)),
+        end: Some((("1order".into(), "m".into()), 3)),
         script: true,
         first: Some(4),
         last: Some(5),
@@ -689,9 +690,9 @@ fn a_stored_prefix_changes_shape_only_with_a_new_rule_version() {
     assert_eq!(
         (RULE_VERSION, serde_json::to_value(&prefix).unwrap()),
         (
-            2,
+            3,
             json!({
-                "end":[["s",1,2,"m"],3],"script":true,"first":4,"last":5,"timed":6,"untimed":7,
+                "end":[["1order","m"],3],"script":true,"first":4,"last":5,"timed":6,"untimed":7,
                 "unordered_gaps":8,"previous":[9,"model"],"tools":10,"intervals":11,"tool_untimed":12,
                 "tool_no_result":13,"tool_same_timestamp":14,"tool_reversed":15,"tool_sum_ms":16,
                 "tool_union_ms":17,"clustered_ms":18,"prompts":19,"failure":[20,21],"stop_reported":true,

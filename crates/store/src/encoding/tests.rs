@@ -316,3 +316,18 @@ fn boundary_suppliedness_and_unassociated_usage_survive_row_codecs() {
 }
 
 mod columns;
+
+proptest::proptest! {
+    /// Comparing two session orders compares (order time, input ID,
+    /// sequence, record position), with an unknown time first.
+    #[test]
+    fn session_order_text_sorts_as_its_fields(
+        a in (proptest::option::of(proptest::num::i64::ANY), "[a-c]{0,3}", proptest::num::i64::ANY, -2i64..3),
+        b in (proptest::option::of(proptest::num::i64::ANY), "[a-c]{0,3}", proptest::num::i64::ANY, -2i64..3),
+    ) {
+        let text = |(time, input, seq, position): &(Option<i64>, String, i64, i64)| {
+            session_order(*time, input, *seq, *position)
+        };
+        proptest::prop_assert_eq!(text(&a).cmp(&text(&b)), a.cmp(&b));
+    }
+}

@@ -207,7 +207,10 @@ fn metadata_order_has_an_id_tiebreak_and_never_reads_message_bodies() {
     );
     let index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     index
-        .execute("UPDATE message SET record_position=0", [])
+        .execute(
+            "UPDATE message SET session_order='0' WHERE source_start=20",
+            [],
+        )
         .unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();

@@ -472,10 +472,7 @@ impl Compiler<'_> {
         let spec = units::spec(source.unit);
         let (terms, admission) = match source.unit {
             Unit::ToolCalls => (
-                format!(
-                    "{}.order_input_id, {}.seq, {}.record_position, {}.id, {}.idx",
-                    a.m, a.m, a.m, a.m, a.cb
-                ),
+                format!("{}.session_order, {}.id, {}.idx", a.m, a.m, a.cb),
                 format!(
                     "{} AND {}",
                     fields::own_messages(&a.m, None),

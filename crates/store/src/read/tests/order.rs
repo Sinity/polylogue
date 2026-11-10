@@ -35,7 +35,7 @@ fn tied_source_positions_use_ids_in_physical_logical_prompt_and_fingerprint_read
         crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
             .unwrap();
     conn.execute(
-        "UPDATE message SET seq=CASE WHEN id='claude-code:zz-earlier' THEN 0 ELSE 7 END",
+        "UPDATE message SET session_order=CASE WHEN id='claude-code:zz-earlier' THEN '0' ELSE '7' END",
         [],
     )
     .unwrap();
@@ -50,7 +50,7 @@ fn tied_source_positions_use_ids_in_physical_logical_prompt_and_fingerprint_read
         if changed_plan {
             // Reverse tied native IDs in the actual read index. Row identities,
             // bodies and source positions remain unchanged.
-            conn.execute_batch("DROP INDEX message_session; CREATE INDEX message_session ON message(session_pk,order_input_id,seq,record_position,id DESC)").unwrap();
+            conn.execute_batch("DROP INDEX message_session; CREATE INDEX message_session ON message(session_pk,session_order,id DESC)").unwrap();
         }
         let r = pool.reader().unwrap();
         for with_parents in [false, true] {

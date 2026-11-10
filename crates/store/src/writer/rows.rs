@@ -160,6 +160,7 @@ fn apply_rows(
                 .filter(|n| *n > 0)
         },
         input_pk,
+        input_id: &b.input.id,
         chain,
         route: b.input.route,
         counter,
@@ -254,7 +255,9 @@ fn apply_rows(
         };
         // A kind this step states needs no lookup.
         let main = choices.message_mains[i];
-        written += u64::from(rows.write_message(row, session_pk, prepared, position, main)?);
+        let order_time = choices.message_order_times[i];
+        written +=
+            u64::from(rows.write_message(row, session_pk, prepared, position, order_time, main)?);
         super::native_hook_fields::write(
             tx,
             super::native_hook_fields::Source {
@@ -494,6 +497,7 @@ pub(super) struct RowWriter<'a, 't> {
     source_admitted: Option<i64>,
     tx: &'a Transaction<'t>,
     input_pk: i64,
+    input_id: &'a str,
     chain: i64,
     /// The input's route; a message row read from page text has its own.
     route: Route,
@@ -616,6 +620,7 @@ impl RowWriter<'_, '_> {
         session_pk: i64,
         prepared: &PreparedMessage,
         position: (i64, i64),
+        order_time: Option<i64>,
         main: bool,
     ) -> Result<bool> {
         let m = &row.message;
@@ -639,7 +644,13 @@ impl RowWriter<'_, '_> {
                     self.tx,
                     self.keys.get(resolve::Kind::Message, id.as_bytes())?.pk,
                 )?;
-                let pk = self.insert_message(m, session_pk, &v, (self.input_pk, position))?;
+                let order = crate::encoding::session_order(
+                    order_time,
+                    self.input_id,
+                    position.0,
+                    position.1,
+                );
+                let pk = self.insert_message(m, session_pk, &v, &order)?;
                 if let Some(first) = self.first_build {
                     first.add_message(&id, pk);
                 }
@@ -651,19 +662,19 @@ impl RowWriter<'_, '_> {
         let (route, completion) = (route.as_str(), completion.as_str());
         if new {
             self.tx.prepare_cached(
-                "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_hash,session_pk,main,route,seq,record_position)
-                 VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12)"
-            )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,hash,session_pk,main,route,position.0,position.1,id_kind])?;
+                "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_hash,session_pk,main,route,seq,record_position,order_time)
+                 VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14)"
+            )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,hash,session_pk,main,route,position.0,position.1,id_kind,order_time])?;
             return Ok(false);
         }
         self.tx.prepare_cached(
-            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_hash,session_pk,main,route,seq,record_position)
-             VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12)
+            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_hash,session_pk,main,route,seq,record_position,order_time)
+             VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14)
              ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,
              source_end=excluded.source_end,id_kind=excluded.id_kind,completion=excluded.completion,version_hash=excluded.version_hash,
              session_pk=excluded.session_pk,main=excluded.main,route=excluded.route,
-             seq=excluded.seq,record_position=excluded.record_position"
-        )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,hash,session_pk,main,route,position.0,position.1,id_kind])?;
+             seq=excluded.seq,record_position=excluded.record_position,order_time=excluded.order_time"
+        )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,hash,session_pk,main,route,position.0,position.1,id_kind,order_time])?;
         Ok(false)
     }
 
@@ -707,11 +718,21 @@ impl RowWriter<'_, '_> {
             return Ok(true);
         };
         let choice = choice.as_ref().expect("selected message");
-        let order = choice.order;
+        let order = &choice.order;
         if !choice.changed {
-            self.tx.execute("UPDATE message SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,
-                order_input_pk=?6,order_input_id=(SELECT id FROM input_ref WHERE pk=?6),seq=?7,record_position=?8,in_progress=?9 WHERE pk=?1",
-                params![pk,v.input_pk,v.chain,v.start,v.end,order.0,order.1.0,order.1.1,v.in_progress])?;
+            self.tx.execute(
+                "UPDATE message SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,
+                session_order=?6,in_progress=?7 WHERE pk=?1",
+                params![
+                    pk,
+                    v.input_pk,
+                    v.chain,
+                    v.start,
+                    v.end,
+                    order,
+                    v.in_progress
+                ],
+            )?;
             self.tx.execute(
                 "UPDATE session SET changed=?2 WHERE pk=?1",
                 params![session_pk, self.counter],
@@ -748,7 +769,7 @@ impl RowWriter<'_, '_> {
         m: &Message,
         session_pk: i64,
         v: &Version,
-        order: (i64, (i64, i64)),
+        order: &str,
     ) -> Result<i64> {
         self.set_message(None, m, session_pk, v, order)
     }
@@ -759,7 +780,7 @@ impl RowWriter<'_, '_> {
         m: &Message,
         session_pk: i64,
         v: &Version,
-        order: (i64, (i64, i64)),
+        order: &str,
     ) -> Result<()> {
         self.set_message(Some(pk), m, session_pk, v, order)
             .map(drop)
@@ -773,7 +794,7 @@ impl RowWriter<'_, '_> {
         m: &Message,
         session_pk: i64,
         v: &Version,
-        order: (i64, (i64, i64)),
+        order: &str,
     ) -> Result<i64> {
         let written_by = polylogue_model::WrittenBy::of(m.role, m.prompt_kind).as_str();
         let words: i64 = m
@@ -801,28 +822,26 @@ impl RowWriter<'_, '_> {
         let u = &m.usage;
         let n = |x: Option<u64>| x.map(|x| x as i64);
         let sql = if pk.is_some() {
-            "UPDATE message SET session_pk = ?2, order_input_pk = ?3, seq = ?4,
-                 role = ?5, written_by = ?6, prompt_kind = ?7, model = ?8, at = ?9,
-                 parent_id = ?10, input_pk = ?11, source_chain = ?12, source_start = ?13,
-                 source_end = ?25, in_progress = ?14, input_tokens = ?15, output_tokens = ?16,
-                 cache_read_tokens = ?17, cache_write_tokens = ?18, reasoning_tokens = ?19,
-                 service_tier = ?20, stop_reason = ?21, duration_ms = ?22, attrs_json = ?23,
-                 words = ?24, cost_nusd = ?31, provider_cost_nusd = ?26,
-                 cache_write_5m_tokens = ?27, cache_write_1h_tokens = ?28, speed = ?29,
-                 record_position = ?30, at_time = ?33,
-                 order_input_id = (SELECT id FROM input_ref WHERE pk = ?3)
-             WHERE pk = ?1 AND pk = ?32"
+            "UPDATE message SET session_pk = ?2, session_order = ?3,
+                 role = ?4, written_by = ?5, prompt_kind = ?6, model = ?7, at = ?8,
+                 parent_id = ?9, input_pk = ?10, source_chain = ?11, source_start = ?12,
+                 source_end = ?24, in_progress = ?13, input_tokens = ?14, output_tokens = ?15,
+                 cache_read_tokens = ?16, cache_write_tokens = ?17, reasoning_tokens = ?18,
+                 service_tier = ?19, stop_reason = ?20, duration_ms = ?21, attrs_json = ?22,
+                 words = ?23, cost_nusd = ?29, provider_cost_nusd = ?25,
+                 cache_write_5m_tokens = ?26, cache_write_1h_tokens = ?27, speed = ?28,
+                 at_time = ?31
+             WHERE pk = ?1 AND pk = ?30"
         } else {
-            "INSERT INTO message(pk, id, session_pk, order_input_pk, seq, role, written_by,
+            "INSERT INTO message(pk, id, session_pk, session_order, role, written_by,
                  prompt_kind, model, at, parent_id, input_pk, source_chain, source_start,
                  source_end, in_progress, input_tokens, output_tokens, cache_read_tokens,
                  cache_write_tokens, reasoning_tokens, service_tier, stop_reason, duration_ms,
                  attrs_json, words, provider_cost_nusd,
-                 cache_write_5m_tokens, cache_write_1h_tokens, speed, record_position,
-                 cost_nusd, order_input_id, at_time)
-             VALUES (?32, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?25, ?14, ?15,
-                 ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?26, ?27, ?28, ?29, ?30, ?31,
-                 (SELECT id FROM input_ref WHERE pk = ?3), ?33)"
+                 cache_write_5m_tokens, cache_write_1h_tokens, speed,
+                 cost_nusd, at_time)
+             VALUES (?30, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?24, ?13, ?14,
+                 ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?25, ?26, ?27, ?28, ?29, ?31)"
         };
         let first: rusqlite::types::Value = match pk {
             Some(pk) => pk.into(),
@@ -831,8 +850,7 @@ impl RowWriter<'_, '_> {
         self.tx.prepare_cached(sql)?.execute(params![
             first,
             session_pk,
-            order.0,
-            order.1.0,
+            order,
             name(&m.role),
             written_by,
             m.prompt_kind.map(|k| name(&k)),
@@ -861,7 +879,6 @@ impl RowWriter<'_, '_> {
                 .map(|w| w.saturating_sub(u.cache_write_1h.unwrap_or(0)) as i64),
             n(u.cache_write_1h),
             u.speed,
-            order.1.1,
             // The cost derivation's value, written with the row so a first
             // build's derive does not rewrite every priced message.
             polylogue_model::Catalog::builtin().cost_nusd(m.model.as_deref(), u),
@@ -883,9 +900,15 @@ impl RowWriter<'_, '_> {
 
     /// Events can precede their message, or survive its replacement.
     fn update_event_anchors(&self, message_pk: i64, present: bool) -> Result<()> {
+        // An event placed by its message takes the seq of the message's
+        // main reading; a message inserted before its reading takes 0 until
+        // its reading is stored.
         let (id, seq): (String, i64) = self
             .tx
-            .prepare_cached("SELECT id,seq FROM message WHERE pk=?1")?
+            .prepare_cached(
+                "SELECT m.id,coalesce(s.seq,0) FROM message m LEFT JOIN message_source s
+                 ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain WHERE m.pk=?1",
+            )?
             .query_row([message_pk], |r| Ok((r.get(0)?, r.get(1)?)))?;
         let pk = present.then_some(message_pk);
         let seq = if present { seq } else { 0 };

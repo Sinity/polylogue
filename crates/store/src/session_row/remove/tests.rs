@@ -16,8 +16,17 @@ fn database() -> Connection {
 }
 
 fn message(tx: &Transaction<'_>, pk: i64, session: i64) {
-    tx.execute("INSERT INTO message(pk,id,session_pk,order_input_pk,order_input_id,seq,role,written_by,input_pk)
-        VALUES(?1,?2,?3,1,'first',?1,'user','human',1)",params![pk,format!("claude-code:m-{pk}"),session]).unwrap();
+    tx.execute(
+        "INSERT INTO message(pk,id,session_pk,session_order,role,written_by,input_pk)
+        VALUES(?1,?2,?3,?4,'user','human',1)",
+        params![
+            pk,
+            format!("claude-code:m-{pk}"),
+            session,
+            format!("{pk:08}")
+        ],
+    )
+    .unwrap();
 }
 
 #[test]

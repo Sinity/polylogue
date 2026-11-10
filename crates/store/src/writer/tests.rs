@@ -16,6 +16,7 @@ mod resolution;
 mod routes;
 mod saved;
 mod scoped;
+mod session_order;
 mod sparse_projection;
 mod tool_durations;
 

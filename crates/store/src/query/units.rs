@@ -353,13 +353,7 @@ const MESSAGE_DEFAULTS: &[Default] = &[
 pub fn adjacent_call(a: &Aliases, previous: bool) -> String {
     let cmp = if previous { "<" } else { ">" };
     let dir = if previous { " DESC" } else { "" };
-    let order = [
-        "qm.order_input_id",
-        "qm.seq",
-        "qm.record_position",
-        "qm.id",
-        "qb.idx",
-    ];
+    let order = ["qm.session_order", "qm.id", "qb.idx"];
     format!(
         "SELECT tq.pk FROM tool_call tq JOIN block qb ON qb.pk = tq.call_block_pk JOIN message qm ON qm.pk = qb.message_pk WHERE tq.session_pk = {}.session_pk AND {} AND {} AND ({}) {cmp} ({}) ORDER BY {} LIMIT 1",
         a.t,
@@ -367,9 +361,7 @@ pub fn adjacent_call(a: &Aliases, previous: bool) -> String {
         fields::counts_as_action("tq"),
         order.join(", "),
         [
-            format!("{}.order_input_id", a.m),
-            format!("{}.seq", a.m),
-            format!("{}.record_position", a.m),
+            format!("{}.session_order", a.m),
             format!("{}.id", a.m),
             format!("{}.idx", a.cb)
         ]
@@ -385,12 +377,10 @@ pub fn adjacent_call(a: &Aliases, previous: bool) -> String {
 /// Position in the complete counted-call scope, before query filtering.
 pub fn call_position(a: &Aliases) -> String {
     format!(
-        "(SELECT count(*) FROM tool_call pt JOIN block pb ON pb.pk=pt.call_block_pk JOIN message pm ON pm.pk=pb.message_pk WHERE pt.session_pk={}.session_pk AND {} AND {} AND (pm.order_input_id,pm.seq,pm.record_position,pm.id,pb.idx) <= ({}.order_input_id,{}.seq,{}.record_position,{}.id,{}.idx))",
+        "(SELECT count(*) FROM tool_call pt JOIN block pb ON pb.pk=pt.call_block_pk JOIN message pm ON pm.pk=pb.message_pk WHERE pt.session_pk={}.session_pk AND {} AND {} AND (pm.session_order,pm.id,pb.idx) <= ({}.session_order,{}.id,{}.idx))",
         a.t,
         fields::own_messages("pm", None),
         fields::counts_as_action("pt"),
-        a.m,
-        a.m,
         a.m,
         a.m,
         a.cb
@@ -998,14 +988,14 @@ pub fn turns() -> String {
        sum(tm.cost_nusd) AS cost_nusd \
      FROM (SELECT o.*, \
          sum(CASE WHEN o.hp AND (o.prompt_kind = 'command' OR NOT o.prev_hp) THEN 1 ELSE 0 END) \
-           OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq, o.record_position, o.id \
+           OVER (PARTITION BY o.session_pk ORDER BY o.session_order, o.id \
                  ROWS UNBOUNDED PRECEDING) AS turn, \
-         row_number() OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq, o.record_position, o.id) AS ord \
-       FROM (SELECT m.pk, m.id, m.session_pk, m.order_input_id, m.seq, m.record_position, m.role, m.written_by, m.prompt_kind, \
+         row_number() OVER (PARTITION BY o.session_pk ORDER BY o.session_order, o.id) AS ord \
+       FROM (SELECT m.pk, m.id, m.session_pk, m.session_order, m.role, m.written_by, m.prompt_kind, \
              m.at, m.on_active_path, m.input_tokens, m.output_tokens, m.cost_nusd, \
              (m.written_by = 'human') AS hp, \
              COALESCE(lag(m.written_by = 'human') OVER (PARTITION BY m.session_pk \
-               ORDER BY m.order_input_id, m.seq, m.record_position, m.id), 0) AS prev_hp, \
+               ORDER BY m.session_order, m.id), 0) AS prev_hp, \
              (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \
                WHERE cb.message_pk = m.pk) AS tc, \
              (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \

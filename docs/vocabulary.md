@@ -110,6 +110,10 @@ generated page of the thing they belong to, or on the area page that owns them.
   (content, time, model, usage, stop reason, parent, production).
 - **completion**: whether a reading's message is `finished`, `unknown` or
   `in_progress`.
+- **order time** and **session order**: the latest source time of a message
+  and the messages before it in one input's reading; a message's place in its
+  session, from its readings' order times, inputs and positions
+  ([sessions.md](sessions.md#messages)).
 - **availability**: whether an attachment's bytes are `present`, `unfetched`,
   `failed` or `unavailable_at_source`.
 

@@ -95,7 +95,7 @@ impl Reader<'_> {
                 "SELECT m.pk FROM message m
                   WHERE m.session_pk = ?1 AND m.written_by = 'model' AND m.duplicate_of IS NULL
                     AND EXISTS (SELECT 1 FROM block b WHERE b.message_pk = m.pk AND b.kind = 'text')
-                  ORDER BY m.order_input_id DESC, m.seq DESC, m.record_position DESC, m.id DESC
+                  ORDER BY m.session_order DESC, m.id DESC
                   LIMIT 1",
             )?
             .query_row([pk], |r| r.get(0))
@@ -131,7 +131,7 @@ impl Reader<'_> {
             .prepare_cached(
                 "SELECT m.written_by, m.prompt_kind FROM message m
                   WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
-                  ORDER BY m.order_input_id DESC, m.seq DESC, m.record_position DESC, m.id DESC
+                  ORDER BY m.session_order DESC, m.id DESC
                   LIMIT 1",
             )?
             .query_row([pk], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -201,7 +201,7 @@ impl Reader<'_> {
                JOIN text t ON t.id = b.text_id
               WHERE s.id = ?1 AND m.written_by = 'human'
                 AND coalesce(m.prompt_kind, 'prose') = 'prose'
-              ORDER BY m.order_input_id, m.seq, m.record_position, m.id, b.idx",
+              ORDER BY m.session_order, m.id, b.idx",
         )?;
         let rows = stmt.query_map([session], |r| {
             Ok((
@@ -241,7 +241,7 @@ impl Reader<'_> {
         }
         let conn = self.conn()?;
         let selected = conn.prepare_cached(
-            "SELECT m.pk,m.id,m.at,m.written_by FROM session s JOIN message m INDEXED BY message_session ON m.session_pk=s.pk WHERE s.id=?1 AND m.duplicate_of IS NULL AND COALESCE(m.on_active_path,1)=1 AND (m.written_by='human' OR (m.role='user' AND m.written_by='unknown')) AND COALESCE(m.prompt_kind,'prose')='prose' ORDER BY m.order_input_id DESC,m.seq DESC,m.record_position DESC,m.id DESC LIMIT 1"
+            "SELECT m.pk,m.id,m.at,m.written_by FROM session s JOIN message m INDEXED BY message_session ON m.session_pk=s.pk WHERE s.id=?1 AND m.duplicate_of IS NULL AND COALESCE(m.on_active_path,1)=1 AND (m.written_by='human' OR (m.role='user' AND m.written_by='unknown')) AND COALESCE(m.prompt_kind,'prose')='prose' ORDER BY m.session_order DESC,m.id DESC LIMIT 1"
         )?.query_row([session], |row| Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?,row.optional_time_ms(2)?,row.get::<_,String>(3)?))).optional()?;
         let Some((pk, message_id, at, written_by)) = selected else {
             return Ok(None);
@@ -270,9 +270,9 @@ impl Reader<'_> {
                         json_extract(s.live_facts, '$.todo'),
                         json_extract(s.live_facts, '$.hook_waiting_on.value'),
                         (SELECT m.written_by FROM message m WHERE m.session_pk = s.pk AND m.duplicate_of IS NULL
-                          ORDER BY m.order_input_id DESC, m.seq DESC, m.record_position DESC, m.id DESC LIMIT 1),
+                          ORDER BY m.session_order DESC, m.id DESC LIMIT 1),
                         (SELECT m.prompt_kind FROM message m WHERE m.session_pk = s.pk AND m.duplicate_of IS NULL
-                          ORDER BY m.order_input_id DESC, m.seq DESC, m.record_position DESC, m.id DESC LIMIT 1),
+                          ORDER BY m.session_order DESC, m.id DESC LIMIT 1),
                         coalesce((SELECT c.result_block_pk IS NULL FROM tool_call c
                                    WHERE c.session_pk = s.pk ORDER BY c.pk DESC LIMIT 1), 0)
                    FROM session s WHERE s.id = ?1",

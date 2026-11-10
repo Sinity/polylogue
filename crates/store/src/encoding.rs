@@ -563,6 +563,28 @@ pub(crate) fn restore_text(block: &mut Block, text: String) {
     }
 }
 
+/// A message's place in its session (docs/sessions.md, messages), written so
+/// that comparing the text compares (order time, input ID, sequence, record
+/// position): `0` for an unknown order time or `1` and the time, then the
+/// input ID ended by U+0001 (below every character an ID holds, so a shorter
+/// ID sorts before a longer one it begins), then the sequence and the record
+/// position. Each number is sixteen lowercase hexadecimal digits of its value
+/// with the sign bit flipped. Text, not bytes, because query pages carry their
+/// sort keys as text.
+pub(crate) fn session_order(
+    order_time: Option<i64>,
+    input: &str,
+    seq: i64,
+    position: i64,
+) -> String {
+    let sortable = |n: i64| format!("{:016x}", (n as u64) ^ (1 << 63));
+    let time = match order_time {
+        None => "0".to_owned(),
+        Some(ms) => format!("1{}", sortable(ms)),
+    };
+    format!("{time}{input}\u{1}{}{}", sortable(seq), sortable(position))
+}
+
 /// Lowercase hexadecimal.
 pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()

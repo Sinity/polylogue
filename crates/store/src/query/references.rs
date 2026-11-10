@@ -26,7 +26,7 @@ pub(crate) fn membership(
             let first = crate::parser_context::canonical_message_sql(first, bind);
             let last = crate::parser_context::canonical_message_sql(last, bind);
             Some(format!(
-                "SELECT m.pk,m.session_pk FROM message m JOIN message f ON f.id={first} JOIN message l ON l.id={last} WHERE m.session_pk=f.session_pk AND f.session_pk=l.session_pk AND (m.order_input_id,m.seq,m.record_position,m.id)>=(f.order_input_id,f.seq,f.record_position,f.id) AND (m.order_input_id,m.seq,m.record_position,m.id)<=(l.order_input_id,l.seq,l.record_position,l.id)"
+                "SELECT m.pk,m.session_pk FROM message m JOIN message f ON f.id={first} JOIN message l ON l.id={last} WHERE m.session_pk=f.session_pk AND f.session_pk=l.session_pk AND (m.session_order,m.id)>=(f.session_order,f.id) AND (m.session_order,m.id)<=(l.session_order,l.id)"
             ))
         }
         _ => None,

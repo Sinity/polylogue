@@ -188,7 +188,7 @@ fn units_from(
                 "SELECT {MESSAGE_COLUMNS}
                  FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
                  WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
-                 ORDER BY m.order_input_id, m.seq, m.record_position, m.id"
+                 ORDER BY m.session_order, m.id"
             ))?
             .query_map([session_pk], message_row)?
             .collect::<rusqlite::Result<_>>()?,
@@ -197,9 +197,9 @@ fn units_from(
                 "SELECT {MESSAGE_COLUMNS}
                  FROM message a, message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
                  WHERE a.pk = ?2 AND m.session_pk = ?1 AND m.duplicate_of IS NULL
-                   AND (m.order_input_id, m.seq, m.record_position, m.id)
-                       >= (a.order_input_id, a.seq, a.record_position, a.id)
-                 ORDER BY m.order_input_id, m.seq, m.record_position, m.id"
+                   AND (m.session_order, m.id)
+                       >= (a.session_order, a.id)
+                 ORDER BY m.session_order, m.id"
             ))?
             .query_map(params![session_pk, anchor.pk], message_row)?
             .collect::<rusqlite::Result<_>>()?,
@@ -471,27 +471,27 @@ fn start(conn: &Connection, session_pk: i64, change: &SessionChange) -> Result<S
     // A change at `seq` (a unit there changes, or a unit goes before it).
     let lower = |limit: &mut Option<i64>, seq: i64| keep(limit, seq - 1);
     let mut shown = conn.prepare_cached(
-        "SELECT order_input_id, seq, record_position, id FROM message
+        "SELECT session_order, id FROM message
          WHERE pk = ?1 AND session_pk = ?2 AND duplicate_of IS NULL",
     )?;
     let mut later = conn.prepare_cached(
         "SELECT pk FROM message WHERE session_pk = ?1 AND duplicate_of IS NULL
-           AND (order_input_id, seq, record_position, id) > (?2, ?3, ?4, ?5)
-         ORDER BY order_input_id, seq, record_position, id",
+           AND (session_order, id) > (?2, ?3)
+         ORDER BY session_order, id",
     )?;
     for &pk in &change.messages {
         if let Some(seq) = header(conn, session_pk, "message_pk", pk)? {
             lower(&mut limit, seq);
         }
-        let order: Option<(String, i64, i64, String)> = shown
+        let order: Option<(String, String)> = shown
             .query_row(params![pk, session_pk], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                Ok((row.get(0)?, row.get(1)?))
             })
             .optional()?;
         let Some(order) = order else { continue };
         // Its entries go before the first unchanged message after it.
         let mut place = end;
-        let mut rows = later.query(params![session_pk, order.0, order.1, order.2, order.3])?;
+        let mut rows = later.query(params![session_pk, order.0, order.1])?;
         while let Some(row) = rows.next()? {
             let next: i64 = row.get(0)?;
             if change.messages.contains(&next) {

@@ -74,10 +74,9 @@ CREATE TABLE message (
   pk                INTEGER PRIMARY KEY,
   id                TEXT NOT NULL,          -- unique: message_id
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
-  order_input_pk    INTEGER NOT NULL,       -- source of the ordering record; index-local input_ref key
-  order_input_id    TEXT NOT NULL,          -- stable input identity in the order key, independent of insertion order
-  seq               INTEGER NOT NULL,       -- byte offset of the first record in that input
-  record_position   INTEGER NOT NULL DEFAULT 0, -- its place among the messages that record holds
+  session_order     TEXT NOT NULL,          -- the message's place in its session (docs/sessions.md, messages):
+                                            --   order time, input ID, position in that input, written so the
+                                            --   text sorts in that order (encoding::session_order); ties by id
   role              TEXT NOT NULL,          -- user | assistant | system | tool (sources/ maps each provider's role)
   written_by        TEXT NOT NULL,          -- human | model | harness | unknown
   prompt_kind       TEXT,                   -- written_by human: prose | command
@@ -118,7 +117,7 @@ CREATE TABLE message (
 -- A first build drops the three unique indexes on natural keys and builds
 -- them once at its end; meanwhile the writer finds rows by key in memory.
 CREATE UNIQUE INDEX message_id ON message(id);
-CREATE INDEX message_session ON message(session_pk, order_input_id, seq, record_position, id);   -- reading in order; [last:N]
+CREATE INDEX message_session ON message(session_pk, session_order, id);   -- reading in order; [last:N]
 CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
 CREATE INDEX message_parent  ON message(session_pk, parent_id) WHERE duplicate_of IS NULL;   -- branch points
@@ -144,11 +143,14 @@ CREATE TABLE message_source (
   route             TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
   seq               INTEGER NOT NULL DEFAULT 0,
   record_position   INTEGER NOT NULL DEFAULT 0,
+  order_time        INTEGER,                -- the latest source time (ms) of this reading and the readings
+                                            --   before it in its chain and session; NULL before any time
   completion        TEXT NOT NULL CHECK (completion IN ('finished','unknown','in_progress')),
   version_hash      BLOB NOT NULL REFERENCES message_version(version_hash), -- BLAKE3 of the version's canonical JSON: the last tie-break
   PRIMARY KEY (message_pk, input_pk, chain)
 ) STRICT;
 CREATE INDEX message_source_input ON message_source(input_pk, chain, source_start);   -- foreign-key check; the next record's start
+CREATE INDEX message_source_order ON message_source(input_pk, chain, session_pk, seq, record_position);   -- the order time before a step
 
 -- The newest message time in each chain of an export that lists every
 -- conversation of its account, by session origin. A session of that origin
@@ -317,7 +319,7 @@ CREATE TABLE event (
   id                TEXT NOT NULL,          -- unique: event_id. Computed by the parser from the raw record; an
                                             --   event that names no session is keyed by its input record instead
   session_pk        INTEGER REFERENCES session(pk),  -- NULL for an event about its input, not a session
-  seq               INTEGER NOT NULL,       -- display position (shares numbering with message.seq); not a key
+  seq               INTEGER NOT NULL,       -- display position (an anchored event takes its message's main reading's seq); not a key
   after_message_id  TEXT,
   seq_from_message  INTEGER NOT NULL DEFAULT 0,
   after_message_pk  INTEGER REFERENCES message(pk),  -- the message it follows; export `after_message`

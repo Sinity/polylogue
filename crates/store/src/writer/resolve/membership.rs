@@ -20,7 +20,8 @@ pub(crate) struct MessageChoice {
     /// The shown message is still being produced: its main reading is in
     /// progress and no other reading supplies a stop reason.
     pub in_progress: bool,
-    pub order: (i64, (i64, i64)),
+    /// The message's place in its session (`encoding::session_order`).
+    pub order: String,
     /// Each field group taken from another input chain than the main route.
     pub routes: Vec<(FieldGroup, i64, i64)>,
     pub changed: bool,
@@ -48,6 +49,8 @@ pub(crate) struct Choices {
     pub documents: BTreeMap<i64, Option<DocumentChoice>>,
     pub sessions: BTreeMap<i64, Session>,
     pub message_mains: Vec<bool>,
+    /// Each message row's order time, for the rows the step keeps.
+    pub message_order_times: Vec<Option<i64>>,
     pub keep_messages: Vec<bool>,
     pub keep_documents: Vec<bool>,
     pub events: BTreeMap<i64, Option<EventChoice>>,
@@ -170,9 +173,25 @@ struct MessageMember {
     completion: Completion,
     seq: i64,
     position: i64,
+    /// The latest source time of this reading and the readings before it in
+    /// its chain and session.
+    order_time: Option<i64>,
     hash: Vec<u8>,
     /// The message is named by its content, not by the source.
     content: bool,
+}
+
+/// A chain's last message reading in a session: its place and order time.
+type LastReading = ((i64, i64), Option<i64>);
+
+/// A message reading a step kept: its session, its place in the chain, its
+/// row in the step, its message and its own source time.
+struct StepReading {
+    session: i64,
+    place: (i64, i64),
+    row: usize,
+    pk: i64,
+    at: Option<Timestamp>,
 }
 
 #[derive(Clone)]
@@ -328,7 +347,7 @@ fn load_message(
         None => None,
     };
     let mut statement = index.prepare_cached(
-        "SELECT s.input_pk,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.completion,s.route,s.seq,s.record_position,s.version_hash,s.id_kind,p.layout,i.id
+        "SELECT s.input_pk,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.completion,s.route,s.seq,s.record_position,s.version_hash,s.id_kind,p.layout,i.id,s.order_time
          FROM message_source s JOIN input_ref i ON i.pk=s.input_pk
          LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE message_pk=?1",
     )?;
@@ -347,6 +366,7 @@ fn load_message(
                     route: named(r.get(7)?)?,
                     seq: r.get(8)?,
                     position: r.get(9)?,
+                    order_time: r.get(14)?,
                     hash: r.get(10)?,
                     content: r.get::<_, String>(11)? == IdKind::Content.as_str(),
                 },
@@ -447,6 +467,9 @@ pub(in crate::writer) struct Projection<'a> {
     message_layouts: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     document_values: BTreeMap<Vec<u8>, (polylogue_model::Document, PreparedDocument)>,
     session_facts: BTreeMap<(i64, i64, i64), Session>,
+    /// The last message reading of each (input, chain, session) read in
+    /// this snapshot.
+    last_readings: BTreeMap<(i64, i64, i64), LastReading>,
     reset_inputs: BTreeSet<(i64, i64)>,
     values: Option<&'a dyn ValueSource>,
 }
@@ -471,6 +494,7 @@ impl<'a> Projection<'a> {
             message_layouts: BTreeMap::new(),
             document_values: BTreeMap::new(),
             session_facts: BTreeMap::new(),
+            last_readings: BTreeMap::new(),
             reset_inputs: BTreeSet::new(),
             values,
         };
@@ -531,6 +555,8 @@ impl<'a> Projection<'a> {
             self.links.reset(input, chain);
             self.session_facts
                 .retain(|(_, i, c), _| *i != input || *c != chain);
+            self.last_readings
+                .retain(|(i, c, _), _| *i != input || *c != chain);
         }
         self.sessions(input, chain, step, &mut choices)?;
         self.message_readings(input_key, input, chain, step, &mut choices)?;
@@ -631,6 +657,7 @@ impl<'a> Projection<'a> {
         choices: &mut Choices,
     ) -> Result<()> {
         let mut positions = BTreeMap::<u64, i64>::new();
+        let mut read = Vec::new();
         for (i, (row, prepared)) in step
             .output
             .messages
@@ -655,6 +682,7 @@ impl<'a> Projection<'a> {
                 }
             });
             choices.keep_messages.push(keep);
+            choices.message_order_times.push(None);
             // A non-selected source value still belongs to the archive. Keyed
             // parser continuation can cite it without changing shown membership.
             let incoming_layout = crate::versions::message_layout(&prepared.projection)?;
@@ -759,12 +787,113 @@ impl<'a> Projection<'a> {
                     completion: Completion::of(&row.message, route),
                     seq,
                     position,
+                    order_time: None,
                     hash: prepared.hash.to_vec(),
                     content: row.id_kind == IdKind::Content,
                 },
             );
+            read.push(StepReading {
+                session,
+                place: (seq, position),
+                row: i,
+                pk,
+                at: row.message.at,
+            });
+        }
+        self.order_times(
+            input,
+            chain,
+            step.repeats_whole_conversations,
+            read,
+            choices,
+        )
+    }
+
+    /// Gives each message this step read its order time: the latest source
+    /// time of it and the readings before it in the chain and session. A step
+    /// that restates whole conversations starts afresh; any other continues
+    /// from the reading before its first, stored or read earlier in this
+    /// snapshot, so an append never rescans the chain.
+    fn order_times(
+        &mut self,
+        input: i64,
+        chain: i64,
+        restates: bool,
+        mut read: Vec<StepReading>,
+        choices: &mut Choices,
+    ) -> Result<()> {
+        read.sort_by_key(|r| (r.session, r.place));
+        let mut running = None;
+        let mut current = None;
+        for StepReading {
+            session,
+            place,
+            row,
+            pk,
+            at,
+        } in read
+        {
+            if current != Some(session) {
+                current = Some(session);
+                running = if restates {
+                    None
+                } else {
+                    self.order_time_before(input, chain, session, place)?
+                };
+            }
+            running = running.max(at.map(Timestamp::unix_ms));
+            let last = self
+                .last_readings
+                .entry((input, chain, session))
+                .or_insert((place, running));
+            if last.0 <= place {
+                *last = (place, running);
+            }
+            choices.message_order_times[row] = running;
+            if let Some(member) = self.messages.members.get_mut(&pk).and_then(|members| {
+                members
+                    .iter_mut()
+                    .find(|m| m.input == input && m.chain == chain)
+            }) {
+                member.order_time = running;
+            }
         }
         Ok(())
+    }
+
+    /// The order time of the chain's last reading in `session` before
+    /// `place`: read earlier in this snapshot, or stored.
+    fn order_time_before(
+        &self,
+        input: i64,
+        chain: i64,
+        session: i64,
+        place: (i64, i64),
+    ) -> Result<Option<i64>> {
+        let held = self
+            .last_readings
+            .get(&(input, chain, session))
+            .filter(|(last, _)| *last < place)
+            .copied();
+        let stored = if self.reset_inputs.contains(&(input, chain)) {
+            None
+        } else {
+            self.index
+                .prepare_cached(
+                    "SELECT seq,record_position,order_time FROM message_source
+                     WHERE input_pk=?1 AND chain=?2 AND session_pk=?3 AND (seq,record_position)<(?4,?5)
+                     ORDER BY seq DESC,record_position DESC LIMIT 1",
+                )?
+                .query_row(params![input, chain, session, place.0, place.1], |r| {
+                    Ok(((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?), r.get(2)?))
+                })
+                .optional()?
+        };
+        Ok(held
+            .into_iter()
+            .chain(stored)
+            .max_by_key(|(place, _)| *place)
+            .and_then(|(_, time)| time))
     }
 
     fn document_readings(
@@ -1165,15 +1294,28 @@ impl<'a> Projection<'a> {
                     in_progress: main.completion == Completion::InProgress
                         && !routes.iter().any(|(group, ..)| *group == FieldGroup::Stop),
                     order: {
-                        // Until messages order by source time, every message
-                        // of a session orders by the reading whose input ID
-                        // sorts first, so messages one route holds and
-                        // messages several hold share one ordering input.
+                        // The earliest place among the readings that know an
+                        // order time, so the message stays before what follows
+                        // it in each input; a reading that knows none never
+                        // pulls it to the session's start.
                         let order = current
                             .iter()
-                            .min_by_key(|m| (&m.input_id, m.seq, m.position))
+                            .min_by_key(|m| {
+                                (
+                                    m.order_time.is_none(),
+                                    m.order_time,
+                                    &m.input_id,
+                                    m.seq,
+                                    m.position,
+                                )
+                            })
                             .expect("a composed message has readings");
-                        (order.input, (order.seq, order.position))
+                        crate::encoding::session_order(
+                            order.order_time,
+                            &order.input_id,
+                            order.seq,
+                            order.position,
+                        )
                     },
                     routes: routes
                         .into_iter()

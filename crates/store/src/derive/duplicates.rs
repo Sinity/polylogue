@@ -98,7 +98,7 @@ fn repeated(tx: &Transaction<'_>, session_pk: i64) -> Result<HashMap<i64, String
          JOIN input_ref r ON r.pk = s.input_pk
          WHERE m.session_pk = ?1
          GROUP BY m.pk
-         ORDER BY m.order_input_id, m.seq, m.record_position, m.id",
+         ORDER BY m.session_order, m.id",
     )?;
     let rows = statement
         .query_map(params![session_pk, CAPTURE], |r| {

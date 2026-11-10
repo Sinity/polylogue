@@ -28,9 +28,12 @@ impl RowWriter<'_, '_> {
             None => after
                 .map(|pk| {
                     self.tx
-                        .query_row("SELECT seq FROM message WHERE pk=?1", [pk], |row| {
-                            row.get(0)
-                        })
+                        .query_row(
+                            "SELECT coalesce(s.seq,0) FROM message m LEFT JOIN message_source s
+                             ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain WHERE m.pk=?1",
+                            [pk],
+                            |row| row.get(0),
+                        )
                 })
                 .transpose()?
                 .unwrap_or(0),

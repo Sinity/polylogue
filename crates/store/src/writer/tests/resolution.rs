@@ -682,7 +682,7 @@ fn imported_message_order_is_independent_of_local_byte_ranges() {
     input.parse[0].output.message_order.extend([(0, 1), (1, 0)]);
     write_test_rows(&tx, &input, &input.parse[0], 1, 1, None).unwrap();
     let rows = tx
-        .prepare("SELECT id,seq,source_start FROM message ORDER BY seq")
+        .prepare("SELECT m.id,s.seq,m.source_start FROM message m JOIN message_source s ON s.message_pk=m.pk ORDER BY s.seq")
         .unwrap()
         .query_map([], |r| {
             Ok((

@@ -13,9 +13,9 @@ pub(crate) struct ChangeSummary {
     changed: RefCell<Changed>,
 }
 
-/// A message's place in session order (`message_session`): its ordering
-/// input, offset, place among its record's messages, and ID.
-pub(crate) type OrderKey = (String, i64, i64, String);
+/// A message's place in session order (`message_session`): its
+/// `session_order` and ID.
+pub(crate) type OrderKey = (String, String);
 
 /// A message as it was before the transaction changed it.
 struct Before {
@@ -73,14 +73,14 @@ impl ChangeSummary {
         }
         let before = conn
             .prepare_cached(
-                "SELECT session_pk, parent_id, order_input_id, seq, record_position, id
+                "SELECT session_pk, parent_id, session_order, id
                  FROM message WHERE pk = ?1",
             )?
             .query_row([pk], |row| {
                 Ok(Before {
                     session: row.get(0)?,
                     parent: row.get(1)?,
-                    key: (row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?),
+                    key: (row.get(2)?, row.get(3)?),
                 })
             })
             .optional()?;
@@ -146,7 +146,7 @@ impl ChangeSummary {
     ) -> Result<Vec<OrderKey>> {
         let changed = self.changed.borrow();
         let mut now = conn.prepare_cached(
-            "SELECT order_input_id, seq, record_position, id FROM message
+            "SELECT session_order, id FROM message
              WHERE pk = ?1 AND session_pk = ?2",
         )?;
         let mut places = Vec::new();
@@ -157,9 +157,7 @@ impl ChangeSummary {
                 places.push(before.key.clone());
             }
             if let Some(key) = now
-                .query_row([*pk, session_pk], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-                })
+                .query_row([*pk, session_pk], |row| Ok((row.get(0)?, row.get(1)?)))
                 .optional()?
             {
                 places.push(key);
