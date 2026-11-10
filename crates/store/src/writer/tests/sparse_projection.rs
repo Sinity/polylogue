@@ -294,12 +294,12 @@ fn sparse_streamed_confirmed_readings_preserve_every_known_block() {
             release: InFlight::default(),
         };
         reading
-            .visit(|step| {
+            .visit(*chain, |step, resolution| {
                 rows::write_confirmed_rows(
                     &tx,
                     &input,
                     step,
-                    *chain,
+                    resolution,
                     1,
                     None,
                     None,

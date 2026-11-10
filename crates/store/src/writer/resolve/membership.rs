@@ -520,7 +520,7 @@ impl<'a> Projection<'a> {
         input_key: &InputKey,
         chain: i64,
         step: &mut ParseStep,
-    ) -> Result<()> {
+    ) -> Result<Choices> {
         let input = self.keys.get(Kind::Input, input_key.id.as_bytes())?.pk;
         let mut choices = Choices::default();
         if step.reset {
@@ -544,7 +544,6 @@ impl<'a> Projection<'a> {
         self.choose_documents(&mut choices)?;
         self.choose_events(&mut choices)?;
         self.choose_links(&mut choices)?;
-        step.prepared.choices = Some(choices);
         if self.values.is_some() {
             self.message_values.clear();
             self.document_values.clear();
@@ -565,7 +564,7 @@ impl<'a> Projection<'a> {
                 }
             }
         }
-        Ok(())
+        Ok(choices)
     }
 
     /// The facts this chain states about each session, merged with what it
@@ -1332,14 +1331,20 @@ pub(super) fn resolve(
     batches: &mut [&mut Batch],
     chains: &[i64],
     keys: &ResolvedKeys,
-) -> Result<()> {
+) -> Result<Vec<Vec<Choices>>> {
     let mut projection = Projection::new(resolver, index, keys, None)?;
+    let mut choices = Vec::with_capacity(batches.len());
     for (batch, &chain) in batches.iter_mut().zip(chains) {
-        for step in &mut batch.parse {
-            projection.step(&batch.input, chain, step)?;
-        }
+        let input = &batch.input;
+        choices.push(
+            batch
+                .parse
+                .iter_mut()
+                .map(|step| projection.step(input, chain, step))
+                .collect::<Result<Vec<_>>>()?,
+        );
     }
-    Ok(())
+    Ok(choices)
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

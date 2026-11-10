@@ -66,8 +66,8 @@ pub(crate) fn apply_confirmed_readings(
                 params![input.id,*chain,version],
             )?;
         }
-        reading.visit(|step| {
-            rows::write_confirmed_rows(tx, &batch, step, *chain, counter, None, None, changes)?;
+        reading.visit(*chain, |step, resolution| {
+            rows::write_confirmed_rows(tx, &batch, step, resolution, counter, None, None, changes)?;
             Ok(())
         })?;
         rows::prune_sessions(tx, &input.id, *chain, counter)?;

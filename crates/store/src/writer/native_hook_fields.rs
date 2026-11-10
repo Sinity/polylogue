@@ -57,6 +57,7 @@ pub(super) struct Source<'a> {
 pub(super) fn write(
     conn: &rusqlite::Connection,
     source: Source<'_>,
+    keys: &super::resolve::ResolvedKeys,
     step: &super::ParseStep,
     index: usize,
 ) -> Result<()> {
@@ -64,7 +65,6 @@ pub(super) fn write(
     use rusqlite::params;
     let row = &step.output.messages[index];
     let prepared = &step.prepared.messages[index];
-    let keys = step.prepared.keys.as_deref().ok_or_else(invalid)?;
     let pk = keys
         .get(
             super::resolve::Kind::Message,

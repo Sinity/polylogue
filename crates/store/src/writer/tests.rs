@@ -33,7 +33,7 @@ fn write_test_rows(
         tx,
         &batch,
         &batch.parse[0],
-        chain,
+        batch.parse[0].resolution.as_ref().unwrap(),
         counter,
         first,
         Some(&fixture_receipt()),

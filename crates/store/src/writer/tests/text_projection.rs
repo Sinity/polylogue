@@ -36,7 +36,7 @@ fn current_blocks_reuse_stored_text_identities() {
             &tx,
             &b,
             &b.parse[0],
-            1,
+            b.parse[0].resolution.as_ref().unwrap(),
             1,
             None,
             Some(&fixture_receipt()),

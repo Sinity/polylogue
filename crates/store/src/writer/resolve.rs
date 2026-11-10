@@ -56,6 +56,16 @@ pub(crate) struct RowKey {
     pub existing: bool,
 }
 
+/// What the resolver decided for one parse step: the row identities of the
+/// steps resolved together, the input chain they were resolved for, and the
+/// versions chosen for this step's rows.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Resolution {
+    pub(in crate::writer) keys: Arc<ResolvedKeys>,
+    pub(in crate::writer) chain: i64,
+    pub(in crate::writer) choices: membership::Choices,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ResolvedKeys {
     pub(super) rows: BTreeMap<Key, RowKey>,
@@ -554,13 +564,16 @@ impl Resolver {
                 let row = self.resolve_key(&snapshot, &key)?;
                 resolved.rows.insert(key, row);
             }
-            membership::resolve(self, &snapshot, batches, &chains, &resolved)?;
+            let choices = membership::resolve(self, &snapshot, batches, &chains, &resolved)?;
             let resolved = Arc::new(resolved);
             let lease = Arc::new(lease);
-            for (batch, chain) in batches.iter_mut().zip(chains) {
-                for step in &mut batch.parse {
-                    step.prepared.keys = Some(Arc::clone(&resolved));
-                    step.prepared.chain = Some(chain);
+            for ((batch, chain), choices) in batches.iter_mut().zip(chains).zip(choices) {
+                for (step, choices) in batch.parse.iter_mut().zip(choices) {
+                    step.resolution = Some(Resolution {
+                        keys: Arc::clone(&resolved),
+                        chain,
+                        choices,
+                    });
                 }
                 let old = std::mem::take(&mut batch.release);
                 let lease = Arc::clone(&lease);
@@ -683,11 +696,14 @@ pub(super) fn prepare_index(
         let row = resolver.resolve_key(index, &key)?;
         resolved.rows.insert(key, row);
     }
-    membership::resolve(&resolver, index, &mut [batch], &chains, &resolved)?;
+    let choices = membership::resolve(&resolver, index, &mut [batch], &chains, &resolved)?;
     let keys = Arc::new(resolved);
-    for step in &mut batch.parse {
-        step.prepared.keys = Some(Arc::clone(&keys));
-        step.prepared.chain = Some(chain);
+    for (step, choices) in batch.parse.iter_mut().zip(choices.into_iter().flatten()) {
+        step.resolution = Some(Resolution {
+            keys: Arc::clone(&keys),
+            chain,
+            choices,
+        });
     }
     Ok(())
 }
