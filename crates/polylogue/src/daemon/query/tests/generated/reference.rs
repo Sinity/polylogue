@@ -223,6 +223,7 @@ pub enum Leaf {
     WordsAtLeast(usize),
     Word(&'static str),
     Abandoned,
+    PathUnknown,
     SessionOrigin(&'static str),
 
     Tool(&'static str),
@@ -281,6 +282,7 @@ impl Leaf {
             Leaf::WordsAtLeast(n) => format!("words >= {n}"),
             Leaf::Word(w) => (*w).to_owned(),
             Leaf::Abandoned => "active:false".into(),
+            Leaf::PathUnknown => "active:unknown".into(),
             Leaf::Tool(t) => format!("tool:{t}"),
             Leaf::Action(a) => format!("action:{a}"),
             Leaf::Outcome(o) => format!("outcome:{o}"),
@@ -308,6 +310,7 @@ impl Leaf {
             Leaf::ExitZero | Leaf::ExitNonzero => Leaf::ExitUnknown,
             Leaf::Command(_) => Leaf::CommandUnknown,
             Leaf::CallAtBefore(_) => Leaf::CallAtUnknown,
+            Leaf::Abandoned => Leaf::PathUnknown,
             _ => return None,
         })
     }
@@ -455,8 +458,9 @@ impl Leaf {
                         .as_deref()
                         .is_some_and(|t| t.split_whitespace().any(|x| x == *w)),
             ),
-            // An unknown path is read as on the path.
-            Leaf::Abandoned => Truth::of(m().path == Some(false)),
+            // An unknown path is neither on nor off the path.
+            Leaf::Abandoned => m().path.map_or(Truth::Unknown, |on| Truth::of(!on)),
+            Leaf::PathUnknown => Truth::of(m().path.is_none()),
             Leaf::Tool(t) => Truth::of(c().tool.0 == *t),
             Leaf::Action(a) => Truth::of(c().tool.1 == *a),
             Leaf::Outcome(o) => {
@@ -487,7 +491,9 @@ impl Leaf {
 fn source(rows: &Rows, unit: Unit, cond: Option<&Cond>) -> Vec<Row> {
     let top = cond.map(Cond::top_level).unwrap_or_default();
     let names_kind = top.iter().any(|l| matches!(l, Leaf::Subagent(_)));
-    let names_active = top.iter().any(|l| matches!(l, Leaf::Abandoned));
+    let names_active = top
+        .iter()
+        .any(|l| matches!(l, Leaf::Abandoned | Leaf::PathUnknown));
     let sessions = rows.sessions.iter().enumerate();
     match unit {
         Unit::Sessions => {
