@@ -448,8 +448,8 @@ pub static FIELDS: &[Field] = &[
     v(
         Sessions,
         "source",
-        &["present", "missing"],
-        "whether a transcript was stored",
+        &["present", "missing", "gone"],
+        "whether a transcript was stored, and whether a newer export of its account still holds it",
     ),
     sv(
         Sessions,

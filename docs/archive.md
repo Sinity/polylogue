@@ -18,7 +18,7 @@ What Polylogue stores and how it reads it: stored inputs and their chains, why n
 Polylogue keeps every input and every reading of it; the deletion stance is stated in [architecture.md](architecture.md#deletion).
 - **Re-parse is not deletion.** It replaces a chain's parsed rows with a new reading of the same stored bytes: `retract(chain)`, then apply, in one transaction.
 - **Stored text is kept as written.** Polylogue stores and serves text like a text editor does, with no secret detection or masking. If a secret in history matters, the user (or an agent asked to) edits it out of the source file; both revisions of that file stay in the archive.
-- A conversation that disappears upstream (absent from a complete newer export, deleted in Drive) is marked `source: gone` and keeps its rows.
+- A conversation that disappears upstream (absent from a complete newer export, deleted in Drive) is marked `source: gone` and keeps its rows. A complete export is one that lists every conversation of its account (ChatGPT, claude.ai and Grok exports): one input, or every input of its import. It is newer than a conversation when it holds a message later than the conversation's last activity, so the mark depends on the exports' contents, never on the order they were imported.
 
 ## Versioned rows
 

@@ -1328,6 +1328,7 @@ mod morrow_examples;
 mod references;
 mod sequences;
 mod unknowns;
+mod upstream;
 
 #[test]
 fn failed_saved_result_storage_is_not_an_empty_catalog() {
