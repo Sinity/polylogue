@@ -601,6 +601,39 @@ CREATE TRIGGER document_added AFTER INSERT ON document BEGIN UPDATE row_count SE
 CREATE TRIGGER document_removed AFTER DELETE ON document BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'document'; END;
 CREATE TRIGGER tool_call_added AFTER INSERT ON tool_call BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'tool_call'; END;
 CREATE TRIGGER tool_call_removed AFTER DELETE ON tool_call BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'tool_call'; END;
+INSERT INTO row_count(name, n) VALUES ('search_pending', 0);
+CREATE TRIGGER search_pending_added AFTER INSERT ON search_pending BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'search_pending'; END;
+CREATE TRIGGER search_pending_removed AFTER DELETE ON search_pending BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'search_pending'; END;
+-- Input chains by parse status, kept the same way.
+CREATE TABLE parse_status_count (
+  status            TEXT PRIMARY KEY,
+  n                 INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+CREATE TRIGGER parse_state_added AFTER INSERT ON parse_state BEGIN
+  INSERT INTO parse_status_count(status, n) VALUES (NEW.status, 1) ON CONFLICT(status) DO UPDATE SET n = n + 1;
+END;
+CREATE TRIGGER parse_state_removed AFTER DELETE ON parse_state BEGIN
+  UPDATE parse_status_count SET n = n - 1 WHERE status = OLD.status;
+END;
+CREATE TRIGGER parse_state_changed AFTER UPDATE OF status ON parse_state WHEN OLD.status IS NOT NEW.status BEGIN
+  UPDATE parse_status_count SET n = n - 1 WHERE status = OLD.status;
+  INSERT INTO parse_status_count(status, n) VALUES (NEW.status, 1) ON CONFLICT(status) DO UPDATE SET n = n + 1;
+END;
+-- Records parsers did not read, summed by what they were, kept the same way.
+CREATE TABLE unused_count (
+  what              TEXT PRIMARY KEY,
+  n                 INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+CREATE TRIGGER unused_added AFTER INSERT ON unused BEGIN
+  INSERT INTO unused_count(what, n) VALUES (NEW.what, NEW.count) ON CONFLICT(what) DO UPDATE SET n = n + excluded.n;
+END;
+CREATE TRIGGER unused_removed AFTER DELETE ON unused BEGIN
+  UPDATE unused_count SET n = n - OLD.count WHERE what = OLD.what;
+END;
+CREATE TRIGGER unused_changed AFTER UPDATE OF what, count ON unused BEGIN
+  UPDATE unused_count SET n = n - OLD.count WHERE what = OLD.what;
+  INSERT INTO unused_count(what, n) VALUES (NEW.what, NEW.count) ON CONFLICT(what) DO UPDATE SET n = n + excluded.n;
+END;
 
 -- Packed readings are shared across input chains. Text stays interned separately.
 -- A rowid table: a version body averages about 1.7 KB, and a WITHOUT ROWID

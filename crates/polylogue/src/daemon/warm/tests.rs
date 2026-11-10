@@ -14,91 +14,40 @@ fn recent_keeps_the_most_recently_used() {
 }
 
 #[test]
-fn count_failures_are_visible_and_a_success_clears_them() {
-    let daemon = crate::test_daemon::start("count worker failure");
+fn caught_up_failures_are_visible_and_a_success_clears_them() {
+    let daemon = crate::test_daemon::start("caught-up failure");
     let warm = Warm::default();
-    warm.refresh_counts(&daemon.daemon.reads);
-    assert!(warm.count_error().is_none());
-    let before = warm.archive_counts.lock().unwrap().clone().unwrap();
+    warm.refresh_caught_up(&daemon.daemon.reads);
+    assert!(warm.caught_up_error().is_none());
     let closed = polylogue_store::ReadPool::open(&daemon.daemon.archive).unwrap();
     closed.close();
-    warm.refresh_counts(&closed);
-    assert!(warm.count_error().is_some());
-    assert_eq!(
-        warm.archive_counts.lock().unwrap().as_ref().unwrap().status,
-        before.status
-    );
-    warm.archive_counts.lock().unwrap().as_mut().unwrap().took = Duration::ZERO;
-    warm.recount_wanted.store(false, Ordering::Release);
-    let cached = warm.counts("later position").unwrap();
-    assert_eq!(cached.position, before.position);
-    assert!(warm.count_error().is_some());
-    assert!(warm.recount_wanted.load(Ordering::Acquire));
-    warm.refresh_counts(&daemon.daemon.reads);
-    assert!(warm.count_error().is_none());
+    warm.refresh_caught_up(&closed);
+    assert!(warm.caught_up_error().is_some());
+    warm.refresh_caught_up(&daemon.daemon.reads);
+    assert!(warm.caught_up_error().is_none());
 }
 
 #[test]
-fn status_answers_from_the_published_count_after_any_earlier_quick_count() {
-    // A rebuild starts from an empty archive, so its first count is quick;
-    // the archive then grows while it writes. `status` must not count again
-    // inside its own request on the strength of that earlier quick count.
-    let daemon = crate::test_daemon::start("status published count");
+fn a_read_at_a_newer_position_has_the_worker_check_at_it() {
+    let daemon = crate::test_daemon::start("caught-up at a newer position");
     let warm = Warm::default();
-    warm.refresh_counts(&daemon.daemon.reads);
-    let before = {
-        let mut held = warm.archive_counts.lock().unwrap();
-        let counted = held.as_mut().unwrap();
-        counted.took = Duration::ZERO;
-        counted.position.clone()
-    };
-    warm.recount_wanted.store(false, Ordering::Release);
-    let answered = warm.counts("a newer position").unwrap();
-    assert_eq!(
-        answered.position, before,
-        "status counted inside its request"
-    );
-    assert!(warm.recount_wanted.load(Ordering::Acquire));
-    assert_eq!(
-        warm.archive_counts
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .position,
-        before
-    );
-}
-
-#[test]
-fn a_commit_is_counted_however_long_the_last_count_took() {
-    let daemon = crate::test_daemon::start("commit counted");
-    let warm = Warm::default();
-    warm.refresh_counts(&daemon.daemon.reads);
-    warm.recount_wanted.store(false, Ordering::Release);
-    let before = {
-        let mut held = warm.archive_counts.lock().unwrap();
-        let counted = held.as_mut().unwrap();
-        // A count this slow must not hold back the next one.
-        counted.took = Duration::from_secs(3600);
-        counted.position.clone()
-    };
-    let commits = daemon.daemon.writes.as_ref().unwrap().completion_commits();
+    warm.refresh_caught_up(&daemon.daemon.reads);
+    warm.recheck_wanted.store(false, Ordering::Release);
+    let before = warm.caught_up.lock().unwrap().clone().unwrap().0;
+    daemon.set("browser.actions", "on");
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let position = reader.change_position().unwrap().to_string();
+    assert_ne!(position, before);
+    // The read answers with what was last found and asks for a newer answer.
+    warm.caught_up_for_read(&reader, &position).unwrap();
+    assert!(warm.recheck_wanted.load(Ordering::Acquire));
+    drop(reader);
     std::thread::scope(|scope| {
-        let worker = scope.spawn(|| warm.count_worker(&daemon.daemon.reads, Some(commits)));
-        daemon.set("browser.actions", "on");
-        while warm
-            .archive_counts
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .position
-            == before
-        {
+        let worker = scope.spawn(|| warm.caught_up_worker(&daemon.daemon.reads, None));
+        while warm.caught_up.lock().unwrap().as_ref().unwrap().0 != position {
             std::thread::sleep(Duration::from_millis(10));
         }
-        warm.stop_counting();
+        warm.stop_checking();
         worker.join().unwrap();
     });
 }

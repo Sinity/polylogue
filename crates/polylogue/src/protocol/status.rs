@@ -17,9 +17,11 @@ pub struct Answer {
     pub archive: Option<PathBuf>,
     pub pid: u32,
     pub uptime_seconds: u64,
+    /// The archive totals; none when they could not be read (`totals_error`).
     pub store: Option<polylogue_store::Status>,
-    pub count_error: Option<String>,
-    pub counted: Counted,
+    pub totals_error: Option<String>,
+    /// Why the last check of whether the index caught up failed.
+    pub caught_up_error: Option<String>,
     #[serde(flatten)]
     pub loop_status: polylogue_engine::LoopStatus,
     pub signals: Option<Signals>,
@@ -30,25 +32,6 @@ pub struct Answer {
     pub currency: polylogue_model::currency::IndexCurrency,
     #[cfg(feature = "sinex")]
     pub primary: Option<Primary>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub enum Counted {
-    Counting {
-        state: Counting,
-    },
-    Measured {
-        position: String,
-        current: bool,
-        seconds_ago: f64,
-        seconds_to_count: f64,
-    },
-}
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Counting {
-    Counting,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

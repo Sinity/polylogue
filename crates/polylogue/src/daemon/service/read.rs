@@ -296,8 +296,8 @@ fn prepared<T>(
             let selection = reader.prepare_selection(&reading.target, &compile)?;
             let positions = reader.change_position()?;
             // A stream (a bundle) states a consistent snapshot, so it asks
-            // at its own position, counted once per position; a page reports
-            // what the count worker last found, without a scan.
+            // at its own position, checked once per position; a page reports
+            // what the caught-up worker last found, without a scan.
             let caught_up = if reading.budget.is_none() {
                 d.warm.caught_up(reader, &positions.to_string())?
             } else {

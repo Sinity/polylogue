@@ -6,14 +6,10 @@
 //! - **Query vectors**: the provider's vector for each recent `similar:` text,
 //!   so a repeated or paged query neither pays nor waits for the provider
 //!   again, and ranks by the same values.
-//! - **Archive counts** for `status`: counted by a worker of their own when
-//!   the daemon starts and after the writer commits, while `status` answers
-//!   from memory (no counts until the first count ends), so it stays fast
-//!   during a long pass. Counts that take under 50 ms are simply taken again
-//!   inside the request. One count runs at a time: commits made while it
-//!   runs are counted once it ends, so the counts reach the writer's last
-//!   commit one count after it, and `status` says which read position its
-//!   counts are from.
+//! - **Whether the index has caught up**, for reads: found by a worker of
+//!   its own when the daemon starts, after the writer commits and when a
+//!   read at a newer position asks, one at a time, so a read reports the
+//!   last answer instead of walking every chain.
 //!
 //! Entries are bound to their read position or embeddings snapshot revision.
 //! SQL reads and quantization do not hold the vector cache mutex.
@@ -24,7 +20,7 @@ use polylogue_store::vectors::{Loaded, Similarity};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Recent `similar:` texts whose query vectors are kept.
 const QUERY_VECTORS: usize = 256;
@@ -71,15 +67,6 @@ struct Counts {
     query_vectors_reused: AtomicU64,
 }
 
-/// The archive counts `status` shows, and what they were read at.
-#[derive(Clone)]
-pub struct Counted {
-    pub position: String,
-    pub at: Instant,
-    pub took: Duration,
-    pub status: polylogue_store::Status,
-}
-
 #[derive(Default)]
 struct VectorCache {
     loaded: Option<Arc<Loaded>>,
@@ -88,15 +75,14 @@ struct VectorCache {
 
 pub struct Warm {
     vectors: Mutex<VectorCache>,
-    archive_counts: Mutex<Option<Counted>>,
     /// Whether the index had caught up, with the change position it was read at.
     caught_up: Mutex<Option<(String, bool)>>,
-    count_error: Mutex<Option<String>>,
-    /// Wakes the count worker: the writer committed, or a request saw
-    /// counts older than its read.
-    recount: std::sync::Condvar,
-    recount_wanted: std::sync::atomic::AtomicBool,
-    counting_stopped: std::sync::atomic::AtomicBool,
+    caught_up_error: Mutex<Option<String>>,
+    /// Wakes the caught-up worker: the writer committed, or a read saw an
+    /// answer older than its position.
+    recheck: std::sync::Condvar,
+    recheck_wanted: std::sync::atomic::AtomicBool,
+    checking_stopped: std::sync::atomic::AtomicBool,
     query_vectors: Mutex<Recent<Arc<Vec<f32>>>>,
     counts: Counts,
     /// Session item indexes read by recent reads.
@@ -107,13 +93,12 @@ impl Default for Warm {
     fn default() -> Self {
         Self {
             vectors: Mutex::new(VectorCache::default()),
-            archive_counts: Mutex::new(None),
             caught_up: Mutex::new(None),
-            count_error: Mutex::new(None),
-            recount: std::sync::Condvar::new(),
-            // The first count starts with the daemon.
-            recount_wanted: std::sync::atomic::AtomicBool::new(true),
-            counting_stopped: std::sync::atomic::AtomicBool::new(false),
+            caught_up_error: Mutex::new(None),
+            recheck: std::sync::Condvar::new(),
+            // The first check starts with the daemon.
+            recheck_wanted: std::sync::atomic::AtomicBool::new(true),
+            checking_stopped: std::sync::atomic::AtomicBool::new(false),
             query_vectors: Mutex::new(Recent::new(QUERY_VECTORS)),
             counts: Counts::default(),
             items: super::items::ItemCache::default(),
@@ -238,24 +223,9 @@ impl Warm {
             .map_err(|e| e.to_string())
     }
 
-    /// The archive counts for `status`: the worker's last published count.
-    /// When it is older than `position`, the worker is asked to count again
-    /// and `status` answers with the older count and its position. `status`
-    /// never counts itself: a count takes time proportional to the archive,
-    /// and an earlier quick count says nothing about an archive that has
-    /// since grown. `None` until the first count ends. After a failure, the
-    /// worker retries while previous counts stay available.
-    pub fn counts(&self, position: &str) -> Option<Counted> {
-        let held = self.archive_counts.lock().ok()?.clone();
-        if held.as_ref().is_none_or(|c| c.position != position) {
-            self.request_count();
-        }
-        held
-    }
-
     /// Whether the index has caught up at `position`. The answer is computed
-    /// once per change position, by the count worker or by the first read at
-    /// a new position; later pages and reads at that position reuse it.
+    /// once per change position, by the caught-up worker or by the first read
+    /// at a new position; later pages and reads at that position reuse it.
     pub fn caught_up(&self, reader: &Reader<'_>, position: &str) -> polylogue_store::Result<bool> {
         if let Some((known, caught_up)) = self
             .caught_up
@@ -276,10 +246,10 @@ impl Warm {
         Ok(caught_up)
     }
 
-    /// Whether the index had caught up, as the count worker last found it.
-    /// A read never scans for this: when the position moved since, the
-    /// worker is asked to count again and the read reports the last answer.
-    /// Before the first count it is computed once.
+    /// Whether the index had caught up, as the caught-up worker last found
+    /// it. A read never scans for this: when the position moved since, the
+    /// worker is asked to check again and the read reports the last answer.
+    /// Before the first check it is computed once.
     pub fn caught_up_for_read(
         &self,
         reader: &Reader<'_>,
@@ -293,7 +263,7 @@ impl Warm {
         match known {
             Some((at, caught_up)) => {
                 if at != position {
-                    self.request_count();
+                    self.request_check();
                 }
                 Ok(caught_up)
             }
@@ -301,18 +271,19 @@ impl Warm {
         }
     }
 
-    fn request_count(&self) {
-        self.recount_wanted.store(true, Ordering::Release);
+    fn request_check(&self) {
+        self.recheck_wanted.store(true, Ordering::Release);
         // Under the worker's lock, so the wake cannot fall between its check
         // and its wait.
-        let _guard = self.archive_counts.lock();
-        self.recount.notify_one();
+        let _guard = self.caught_up.lock();
+        self.recheck.notify_one();
     }
 
-    /// The count worker: counts whenever the writer committed (`commits`)
-    /// or a `status` asked for newer counts, one count at a time, until
-    /// [`Warm::stop_counting`].
-    pub fn count_worker(
+    /// The caught-up worker: finds whether the index has caught up when the
+    /// daemon starts, whenever the writer committed (`commits`) and whenever
+    /// a read asked for a newer answer, one at a time, until
+    /// [`Warm::stop_checking`].
+    pub fn caught_up_worker(
         &self,
         reads: &polylogue_store::ReadPool,
         commits: Option<polylogue_store::completion::CommitSubscription>,
@@ -323,30 +294,30 @@ impl Warm {
         std::thread::scope(|scope| {
             if let Some(commits) = commits {
                 scope.spawn(move || {
-                    while commits.recv().is_ok() && !self.counting_stopped() {
-                        self.request_count();
+                    while commits.recv().is_ok() && !self.checking_stopped() {
+                        self.request_check();
                     }
                 });
             }
             loop {
                 {
-                    let Ok(held) = self.archive_counts.lock() else {
+                    let Ok(held) = self.caught_up.lock() else {
                         break;
                     };
-                    let Ok(held) = self.recount.wait_while(held, |_| {
-                        !self.counting_stopped() && !self.recount_wanted.load(Ordering::Acquire)
+                    let Ok(held) = self.recheck.wait_while(held, |_| {
+                        !self.checking_stopped() && !self.recheck_wanted.load(Ordering::Acquire)
                     }) else {
                         break;
                     };
                     drop(held);
                 }
-                if self.counting_stopped() {
+                if self.checking_stopped() {
                     break;
                 }
-                self.recount_wanted.store(false, Ordering::Release);
-                self.refresh_counts(reads);
+                self.recheck_wanted.store(false, Ordering::Release);
+                self.refresh_caught_up(reads);
             }
-            self.counting_stopped.store(true, Ordering::Release);
+            self.checking_stopped.store(true, Ordering::Release);
             if let Some(wake) = wake {
                 // The relay sees the stop on its next wake.
                 let _ = wake.try_send(());
@@ -354,56 +325,33 @@ impl Warm {
         });
     }
 
-    /// Ends [`Warm::count_worker`].
-    pub fn stop_counting(&self) {
-        self.counting_stopped.store(true, Ordering::Release);
-        let _guard = self.archive_counts.lock();
-        self.recount.notify_all();
+    /// Ends [`Warm::caught_up_worker`].
+    pub fn stop_checking(&self) {
+        self.checking_stopped.store(true, Ordering::Release);
+        let _guard = self.caught_up.lock();
+        self.recheck.notify_all();
     }
 
-    fn counting_stopped(&self) -> bool {
-        self.counting_stopped.load(Ordering::Acquire)
+    fn checking_stopped(&self) -> bool {
+        self.checking_stopped.load(Ordering::Acquire)
     }
 
-    fn refresh_counts(&self, reads: &polylogue_store::ReadPool) {
+    fn refresh_caught_up(&self, reads: &polylogue_store::ReadPool) {
         let result = (|| {
-            let reader = reads.reader().map_err(|error| error.to_string())?;
-            let position = reader
-                .change_position()
-                .map_err(|error| error.to_string())?;
-            let position = position.to_string();
-            self.caught_up(&reader, &position)
-                .map_err(|error| error.to_string())?;
-            count(&reader, &position)
+            let reader = reads.reader()?;
+            let position = reader.change_position()?.to_string();
+            self.caught_up(&reader, &position).map(drop)
         })();
-        self.record_count(result);
+        *self
+            .caught_up_error
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            result.err().map(|error| error.to_string());
     }
 
-    fn record_count(&self, result: Result<Counted, String>) -> Option<Counted> {
-        match result {
-            Ok(counted) => {
-                *self
-                    .archive_counts
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner()) = Some(counted.clone());
-                *self
-                    .count_error
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner()) = None;
-                Some(counted)
-            }
-            Err(error) => {
-                *self
-                    .count_error
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner()) = Some(error);
-                None
-            }
-        }
-    }
-
-    pub fn count_error(&self) -> Option<String> {
-        self.count_error
+    /// Why the last check of whether the index caught up failed.
+    pub fn caught_up_error(&self) -> Option<String> {
+        self.caught_up_error
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone()
@@ -417,13 +365,10 @@ impl Warm {
         if let Ok(mut q) = self.query_vectors.lock() {
             q.clear();
         }
-        if let Ok(mut c) = self.archive_counts.lock() {
-            *c = None;
-        }
         if let Ok(mut c) = self.caught_up.lock() {
             *c = None;
         }
-        self.recount.notify_all();
+        self.recheck.notify_all();
     }
 
     /// What `status` shows.
@@ -441,17 +386,6 @@ impl Warm {
             query_vectors_reused: self.counts.query_vectors_reused.load(Ordering::Relaxed),
         }
     }
-}
-
-fn count(reader: &Reader<'_>, position: &str) -> Result<Counted, String> {
-    let started = Instant::now();
-    let status = reader.status().map_err(|e| e.to_string())?;
-    Ok(Counted {
-        position: position.to_owned(),
-        at: Instant::now(),
-        took: started.elapsed(),
-        status,
-    })
 }
 
 #[cfg(test)]

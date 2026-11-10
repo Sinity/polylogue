@@ -1,6 +1,5 @@
 //! One typed status constructor over current archive and runtime observations.
 use super::{Daemon, error, now_ms, store_error};
-use crate::protocol::status::{Counted, Counting};
 use serde_json::Value;
 
 /// Status over an index that is not current is a degraded answer.
@@ -8,11 +7,12 @@ pub(super) fn answer(
     d: &Daemon,
     reader: &polylogue_store::Reader<'_>,
 ) -> command_surface::Answer<Value> {
-    let position = match reader.change_position() {
-        Ok(position) => position.to_string(),
-        Err(error) => return store_error(&error),
+    // Totals are counters the writer keeps with the rows they count: reading
+    // them costs the same at any archive size.
+    let (store, totals_error) = match reader.status() {
+        Ok(store) => (Some(store), None),
+        Err(error) => (None, Some(error.to_string())),
     };
-    let counted = d.warm.counts(&position);
     let loop_status = d
         .status
         .lock()
@@ -55,19 +55,9 @@ pub(super) fn answer(
         archive: Some(d.archive.root.clone()),
         pid: std::process::id(),
         uptime_seconds: d.started.elapsed().as_secs(),
-        store: counted.as_ref().map(|counted| counted.status.clone()),
-        count_error: d.warm.count_error(),
-        counted: counted.as_ref().map_or(
-            Counted::Counting {
-                state: Counting::Counting,
-            },
-            |counted| Counted::Measured {
-                position: counted.position.clone(),
-                current: counted.position == position,
-                seconds_ago: counted.at.elapsed().as_secs_f64(),
-                seconds_to_count: counted.took.as_secs_f64(),
-            },
-        ),
+        store,
+        totals_error,
+        caught_up_error: d.warm.caught_up_error(),
         loop_status,
         signals,
         notices,
