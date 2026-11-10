@@ -233,8 +233,9 @@ fn ordinary_open_releases_encoded_preparations_after_process_death_in_both_modes
     }
 }
 
+#[cfg(feature = "faults")]
 #[test]
-fn a_late_encoding_refusal_publishes_no_group_and_reopen_can_retry_original_bytes() {
+fn a_failed_group_append_publishes_no_group_and_reopen_can_retry_original_bytes() {
     let directory = tempfile::tempdir().unwrap();
     let bodies = [
         b"first synthetic source".as_slice(),
@@ -256,8 +257,8 @@ fn a_late_encoding_refusal_publishes_no_group_and_reopen_can_retry_original_byte
                 files: vec![prepared],
             });
         }
-        let late = group[1].files[0].body().unwrap().path.unwrap();
-        std::fs::write(late, b"synthetic damaged encoding").unwrap();
+        // The group fails once both members are appended, before their sync.
+        crate::fault::arm("segment.after_append", "", crate::fault::Action::Fail, 0, 1);
         let result = writer
             .sender()
             .unwrap()
@@ -275,6 +276,7 @@ fn a_late_encoding_refusal_publishes_no_group_and_reopen_can_retry_original_byte
             ));
         }
     }
+    crate::fault::clear();
     let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
     let mut group = Vec::new();
@@ -306,4 +308,48 @@ fn a_late_encoding_refusal_publishes_no_group_and_reopen_can_retry_original_byte
         std::io::Read::read_to_end(&mut reader, &mut restored).unwrap();
         assert_eq!(restored, body);
     }
+}
+
+#[test]
+fn writer_never_decodes_staged_input() {
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    let body = b"synthetic staged source".as_slice();
+    let prepared = archive.prepare_bytes(body).unwrap();
+    let mut item = batch(&prepared.hash().to_string(), prepared.len());
+    item.new_blob = Some(NewBlob {
+        hash: prepared.hash(),
+        size: prepared.len(),
+    });
+    // The staged file's name goes before the writer runs: the writer appends
+    // through the encoder's handle and never opens or reads the file again.
+    std::fs::remove_file(prepared.body().unwrap().path.unwrap()).unwrap();
+    let results = writer
+        .sender()
+        .unwrap()
+        .store_group(
+            vec![crate::staging::PreparedBatch {
+                batch: item,
+                files: vec![prepared],
+            }],
+            Arc::new(archive.blobs().unwrap()),
+        )
+        .unwrap();
+    assert!(
+        results.iter().all(Result::is_ok),
+        "{:?}",
+        results[0].as_ref().err()
+    );
+    let mut restored = Vec::new();
+    std::io::Read::read_to_end(
+        &mut archive
+            .blobs()
+            .unwrap()
+            .read(&hashed_blobs::Hash::of(body))
+            .unwrap(),
+        &mut restored,
+    )
+    .unwrap();
+    assert_eq!(restored, body);
 }

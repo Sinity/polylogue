@@ -123,7 +123,10 @@ local state is `index.db`, the embeddings store and the producer spool
 Writes reach disk in one order:
 
 1. Bytes are appended to a segment and synced, once per write group, on a
-   dedicated thread overlapped with the next group.
+   dedicated thread overlapped with the next group. Bytes are compressed and
+   hashed once, off the writer, into a file in the archive's private staging
+   directory; the writer appends that encoding through the handle its encoder
+   wrote it with, without reading or decoding it again.
 2. The extents and the rows that cite them commit in one transaction.
 3. `index.db` saves the archive and request-log positions it has applied, in
    the same transaction as the rows it applied.
