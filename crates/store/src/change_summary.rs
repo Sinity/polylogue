@@ -13,11 +13,23 @@ pub(crate) struct ChangeSummary {
     changed: RefCell<Changed>,
 }
 
+/// A message's place in session order (`message_session`): its ordering
+/// input, offset, place among its record's messages, and ID.
+pub(crate) type OrderKey = (String, i64, i64, String);
+
+/// A message as it was before the transaction changed it.
+struct Before {
+    session: i64,
+    parent: Option<String>,
+    key: OrderKey,
+}
+
 #[derive(Default)]
 struct Changed {
     /// Messages whose row, blocks, place or visibility changed, with the
-    /// session and parent each had before the change (none for a new one).
-    messages: BTreeMap<i64, Option<(i64, Option<String>)>>,
+    /// session, parent and place each had before the change (none for a
+    /// new one).
+    messages: BTreeMap<i64, Option<Before>>,
     /// Events whose row changed, with the session each had before.
     events: BTreeMap<i64, Option<i64>>,
     /// Sessions whose links as a child changed, by session ID.
@@ -60,8 +72,17 @@ impl ChangeSummary {
             return Ok(());
         }
         let before = conn
-            .prepare_cached("SELECT session_pk, parent_id FROM message WHERE pk = ?1")?
-            .query_row([pk], |row| Ok((row.get(0)?, row.get(1)?)))
+            .prepare_cached(
+                "SELECT session_pk, parent_id, order_input_id, seq, record_position, id
+                 FROM message WHERE pk = ?1",
+            )?
+            .query_row([pk], |row| {
+                Ok(Before {
+                    session: row.get(0)?,
+                    parent: row.get(1)?,
+                    key: (row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?),
+                })
+            })
             .optional()?;
         self.changed.borrow_mut().messages.insert(pk, before);
         Ok(())
@@ -101,6 +122,52 @@ impl ChangeSummary {
         Ok(())
     }
 
+    /// The changed messages that were in `session_pk` before the
+    /// transaction: every message a derivation changed, since derivations
+    /// change messages without moving them.
+    pub(crate) fn messages_before(&self, session_pk: i64) -> BTreeSet<i64> {
+        self.changed
+            .borrow()
+            .messages
+            .iter()
+            .filter(|(_, before)| before.as_ref().is_some_and(|b| b.session == session_pk))
+            .map(|(pk, _)| *pk)
+            .collect()
+    }
+
+    /// The places in `session_pk`'s order that changed messages of it held
+    /// before the transaction or hold now; `messages` are the session's
+    /// changed messages ([`SessionChange::messages`]).
+    pub(crate) fn places(
+        &self,
+        conn: &Connection,
+        session_pk: i64,
+        messages: &BTreeSet<i64>,
+    ) -> Result<Vec<OrderKey>> {
+        let changed = self.changed.borrow();
+        let mut now = conn.prepare_cached(
+            "SELECT order_input_id, seq, record_position, id FROM message
+             WHERE pk = ?1 AND session_pk = ?2",
+        )?;
+        let mut places = Vec::new();
+        for pk in messages {
+            if let Some(Some(before)) = changed.messages.get(pk)
+                && before.session == session_pk
+            {
+                places.push(before.key.clone());
+            }
+            if let Some(key) = now
+                .query_row([*pk, session_pk], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .optional()?
+            {
+                places.push(key);
+            }
+        }
+        Ok(places)
+    }
+
     /// Records a session whose rows changed in a way not described here.
     pub(crate) fn whole_session(&self, pk: i64) {
         self.changed.borrow_mut().whole.insert(pk);
@@ -117,6 +184,7 @@ impl ChangeSummary {
             let after: Option<(i64, Option<String>)> = now
                 .query_row([pk], |row| Ok((row.get(0)?, row.get(1)?)))
                 .optional()?;
+            let before = before.as_ref().map(|b| (b.session, b.parent.clone()));
             for (session, parent) in before.iter().chain(after.iter()) {
                 let change = out.entry(*session).or_default();
                 change.messages.insert(pk);

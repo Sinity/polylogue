@@ -508,7 +508,9 @@ CREATE TABLE session_span (
   prompted INTEGER NOT NULL,
   ends_with TEXT NOT NULL,
   ends_with_message TEXT,
-  last_stop_reason TEXT
+  last_stop_reason TEXT,
+  prefix TEXT                               -- JSON: the calculation's state at the last settled message,
+                                            --   from which the next derivation resumes; NULL: from the start
 ) STRICT;
 CREATE INDEX session_span_wall ON session_span(wall_ms);
 CREATE INDEX session_span_clustered ON session_span(clustered_ms);

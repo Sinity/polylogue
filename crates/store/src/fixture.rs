@@ -108,6 +108,16 @@ impl Fixture {
     }
 
     /// Queues search work without committing it, for reader and index tests.
+    /// Rows changed outside the writer, which describes its changes row by
+    /// row: the session's next derivation reads it from the start.
+    fn forget_settled(&self, session_pk: i64) -> Result<()> {
+        self.index.execute(
+            "UPDATE session_span SET prefix=NULL WHERE session_pk=?1",
+            [session_pk],
+        )?;
+        Ok(())
+    }
+
     pub fn queue_search_text(&self, body: &str) -> Result<i64> {
         let tx = self.index.unchecked_transaction()?;
         let id = crate::text_rows::intern(&tx, body, 1, None, None, None)?;
@@ -202,6 +212,10 @@ impl Fixture {
         )?;
         self.index.execute(
             "UPDATE session SET changed=changed+1, last_activity_at=(SELECT max(at) FROM message WHERE session_pk=session.pk) WHERE pk=(SELECT session_pk FROM message WHERE pk=?1)",
+            [message_pk],
+        )?;
+        self.index.execute(
+            "UPDATE session_span SET prefix=NULL WHERE session_pk=(SELECT session_pk FROM message WHERE pk=?1)",
             [message_pk],
         )?;
         crate::items::refresh_stale(&self.index)?;
@@ -323,6 +337,7 @@ impl Fixture {
             "UPDATE session SET changed = changed + 1 WHERE pk = ?1",
             [session_pk],
         )?;
+        self.forget_settled(session_pk)?;
         let mut idx = 0;
         if let Some(t) = m.thinking {
             let id = self.text(t, 1)?;
@@ -412,6 +427,7 @@ impl Fixture {
             "UPDATE session SET changed=changed+1 WHERE pk=?1",
             [session_pk],
         )?;
+        self.forget_settled(session_pk)?;
         crate::items::refresh_stale(&self.index)?;
         Ok(pk)
     }
@@ -570,6 +586,7 @@ impl Fixture {
             "UPDATE session SET changed=changed+1 WHERE pk=?1",
             [session_pk],
         )?;
+        self.forget_settled(session_pk)?;
         crate::items::refresh_stale(&self.index)?;
         Ok(())
     }
@@ -624,6 +641,10 @@ impl Fixture {
         self.index.execute(
             "UPDATE session SET changed = changed + 1
              WHERE pk = (SELECT session_pk FROM message WHERE pk = ?1)",
+            [message_pk],
+        )?;
+        self.index.execute(
+            "UPDATE session_span SET prefix=NULL WHERE session_pk=(SELECT session_pk FROM message WHERE pk=?1)",
             [message_pk],
         )?;
         crate::items::refresh_stale(&self.index)?;

@@ -81,11 +81,12 @@ pub(super) fn run(
 /// Each repeated message of the session, with the message it repeats.
 fn repeated(tx: &Transaction<'_>, session_pk: i64) -> Result<HashMap<i64, String>> {
     let mut wanted = HashMap::new();
+    // Through the inputs parsed into the session, not its messages: a
+    // session without a capture input costs one look at its few inputs.
     let has_capture: bool = tx
         .prepare_cached(
-            "SELECT EXISTS (SELECT 1 FROM message m JOIN message_source s ON s.message_pk = m.pk
-                            JOIN input_ref r ON r.pk = s.input_pk
-                            WHERE m.session_pk = ?1 AND r.format = ?2)",
+            "SELECT EXISTS (SELECT 1 FROM parsed p JOIN input_ref r ON r.pk = p.input_pk
+                            WHERE p.session_pk = ?1 AND r.format = ?2)",
         )?
         .query_row(params![session_pk, CAPTURE], |r| r.get(0))?;
     if !has_capture {
