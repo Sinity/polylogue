@@ -1001,7 +1001,7 @@ fn status_totals_equal_a_recount_across_imports_reparses_and_retractions() {
         for step in &mut b.parse {
             step.prepare();
         }
-        let bytes = if b.input.arrival_rank == 2 {
+        let bytes = if b.input.route.is_imported() {
             EXPORT_RECORD.as_slice()
         } else {
             SOURCE_RECORD.as_slice()
@@ -1013,7 +1013,7 @@ fn status_totals_equal_a_recount_across_imports_reparses_and_retractions() {
     // A live append adds to its chain's counts.
     let mut append = batch(
         "a-main-file",
-        0,
+        Route::Live,
         100,
         vec![row(
             110,
