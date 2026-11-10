@@ -419,16 +419,44 @@ pub enum LoopMsg {
 /// already handed to workers commit, work not yet started is left for the
 /// next start, and [`Engine::run`] returns. A loop waiting between passes
 /// also needs [`LoopMsg::Stop`] to wake.
-#[derive(Debug, Clone, Default)]
-pub struct StopRequest(Arc<std::sync::atomic::AtomicBool>);
+#[derive(Clone, Default)]
+pub struct StopRequest(Arc<StopState>);
+
+#[derive(Default)]
+struct StopState {
+    requested: std::sync::atomic::AtomicBool,
+    /// Parse pools whose submitters wait for room; a request wakes them.
+    pools: Mutex<Vec<std::sync::Weak<pool::Shared>>>,
+}
 
 impl StopRequest {
     pub fn request(&self) {
-        self.0.store(true, std::sync::atomic::Ordering::Release);
+        self.0
+            .requested
+            .store(true, std::sync::atomic::Ordering::Release);
+        let pools = self
+            .0
+            .pools
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for pool in pools.iter().filter_map(std::sync::Weak::upgrade) {
+            pool.wake_for_stop();
+        }
     }
 
     pub fn requested(&self) -> bool {
-        self.0.load(std::sync::atomic::Ordering::Acquire)
+        self.0.requested.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Wakes `pool`'s submitters when the request is made.
+    fn wake(&self, pool: &Arc<pool::Shared>) {
+        let mut pools = self
+            .0
+            .pools
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        pools.retain(|pool| pool.strong_count() > 0);
+        pools.push(Arc::downgrade(pool));
     }
 }
 

@@ -35,6 +35,10 @@ mod armed {
             .push((point.to_owned(), subject.to_owned(), action, skip, times));
     }
 
+    /// Disarms every point and resets the hold. A thread released from a
+    /// hold that has not woken yet would wait again, so a test clears only
+    /// after the held thread has gone past its point (joined, or its work
+    /// observed).
     pub fn clear() {
         POINTS
             .lock()

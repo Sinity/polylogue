@@ -1567,8 +1567,13 @@ impl Engine {
                     }
                     job.acquisition = Some(context);
                 }
-                pass.bytes_read += job.end - job.start;
-                pool.submit(job);
+                let bytes = job.end - job.start;
+                if !pool.submit(job) {
+                    // Stopped while waiting for room; the loop's next turn
+                    // takes back what is queued.
+                    break;
+                }
+                pass.bytes_read += bytes;
                 outstanding += 1;
                 running.insert(plan.path.clone(), plan);
             }
