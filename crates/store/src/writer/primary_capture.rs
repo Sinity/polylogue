@@ -1071,8 +1071,7 @@ impl Inner {
                         .unwrap_or(start + overlap)
                         .min(start + overlap);
                     let chain = crate::blobs::StoredChain::load_range(
-                        &self.index,
-                        "source_",
+                        &crate::blobs::ChainSource::of(&self.location),
                         &rows.input,
                         current.chain,
                         cursor,

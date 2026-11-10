@@ -1259,6 +1259,10 @@ impl Reader<'_> {
         crate::staging::require_range(self.conn()?, "source_", input, chain, range)
     }
 
+    fn chain_source(&self) -> crate::blobs::ChainSource {
+        crate::blobs::ChainSource::of(&self.pool.archive)
+    }
+
     /// The stored bytes of an input's revision chain, for parsing them
     /// again without the file.
     pub fn stored_chain(
@@ -1268,7 +1272,7 @@ impl Reader<'_> {
         length: u64,
     ) -> Result<crate::blobs::StoredChain> {
         self.check_bytes_present(input, chain, 0..length)?;
-        crate::blobs::StoredChain::load(self.conn()?, "source_", input, chain, length)
+        crate::blobs::StoredChain::load(&self.chain_source(), input, chain, length)
     }
 
     /// Reads only the extents a range covers, with their integrity checks.
@@ -1281,7 +1285,7 @@ impl Reader<'_> {
         store: &crate::blobs::Blobs,
     ) -> Result<Vec<u8>> {
         self.check_bytes_present(input, chain, start..end)?;
-        crate::blobs::StoredChain::load_range(self.conn()?, "source_", input, chain, start, end)?
+        crate::blobs::StoredChain::load_range(&self.chain_source(), input, chain, start, end)?
             .read_range(store, start, end)
     }
 

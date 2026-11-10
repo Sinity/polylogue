@@ -1,7 +1,9 @@
-//! A stored chain: an immutable, disposable copy of one chain's extent list.
+//! A stored chain: one chain's bytes, read through its extent list as it was
+//! when the chain was loaded.
 use super::{BlobHash, Result};
 use crate::StoreError;
 use rusqlite::Connection;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 mod extents;
@@ -17,21 +19,39 @@ pub struct StoredChain {
     single: Option<BlobHash>,
 }
 
+/// Where chains' extents are stored: archive.db (`extent`, `blob`) or, in
+/// primary mode, the index's copy of Sinex's records (`source_extent`,
+/// `source_blob`).
+#[derive(Debug, Clone)]
+pub struct ChainSource {
+    pub path: PathBuf,
+    pub tables: &'static str,
+}
+
+impl ChainSource {
+    pub fn of(archive: &crate::Archive) -> Self {
+        if archive.is_primary() {
+            Self {
+                path: archive.index_db(),
+                tables: "source_",
+            }
+        } else {
+            Self {
+                path: archive.archive_db(),
+                tables: "",
+            }
+        }
+    }
+}
+
 impl StoredChain {
-    /// Capture extents and inline compressed bytes under the caller's existing view.
-    pub fn load(
-        archive: &Connection,
-        schema: &str,
-        input: &str,
-        chain: i64,
-        length: u64,
-    ) -> Result<Self> {
-        Self::load_range(archive, schema, input, chain, 0, length)
+    /// The chain's first `length` bytes, read from `source` as it is now.
+    pub fn load(source: &ChainSource, input: &str, chain: i64, length: u64) -> Result<Self> {
+        Self::load_range(source, input, chain, 0, length)
     }
 
     pub(crate) fn load_range(
-        archive: &Connection,
-        schema: &str,
+        source: &ChainSource,
         input: &str,
         chain: i64,
         start: u64,
@@ -40,7 +60,7 @@ impl StoredChain {
         if start > length || length > i64::MAX as u64 {
             return Err(StoreError::Invalid("invalid stored range".into()));
         }
-        let (extents, single) = ExtentList::capture(archive, schema, input, chain, start, length)?;
+        let (extents, single) = ExtentList::capture(source, input, chain, start, length)?;
         Ok(Self {
             length,
             extents: Some(Arc::new(extents)),
