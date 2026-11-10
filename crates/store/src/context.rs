@@ -58,8 +58,11 @@ pub struct Prompt {
     pub text: String,
 }
 
-/// What a session did, as the derive step keeps it for briefs: the outcome
-/// a brief reports, rather than its title.
+/// How many changed files a brief names; the rest are counted.
+const RECENT_FILES: usize = 4;
+
+/// What a session did, for briefs: the outcome a brief reports, rather than
+/// its title. Composed when read, from the session's rows.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SessionSummary {
     /// The text of its last model message that has text.
@@ -78,33 +81,69 @@ pub struct SessionSummary {
 }
 
 impl Reader<'_> {
-    /// What the session with row `pk` did, as the derive step last stored
-    /// it; `None` before the derive step has summarized it.
+    /// What the session with row `pk` did; `None` for no such session.
     pub fn session_summary(&self, pk: i64) -> Result<Option<SessionSummary>> {
         let conn = self.conn()?;
-        let row = conn
-            .prepare_cached(
-                "SELECT last_answer_pk, files_changed, recent_files_json, commits_json,
-                        pull_requests_json, unanswered_prompt, unfinished_tool_call
-                   FROM session_brief WHERE session_pk = ?1",
-            )?
-            .query_row([pk], |r| {
-                Ok((
-                    r.get::<_, Option<i64>>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, String>(4)?,
-                    r.get::<_, bool>(5)?,
-                    r.get::<_, bool>(6)?,
-                ))
-            })
-            .optional()?;
-        let Some((answer, files, recent, commits, pull_requests, unanswered, unfinished)) = row
-        else {
+        let exists: bool = conn
+            .prepare_cached("SELECT EXISTS(SELECT 1 FROM session WHERE pk = ?1)")?
+            .query_row([pk], |r| r.get(0))?;
+        if !exists {
             return Ok(None);
-        };
-        let last_answer = match answer {
+        }
+        let last_answer: Option<i64> = conn
+            .prepare_cached(
+                "SELECT m.pk FROM message m
+                  WHERE m.session_pk = ?1 AND m.written_by = 'model' AND m.duplicate_of IS NULL
+                    AND EXISTS (SELECT 1 FROM block b WHERE b.message_pk = m.pk AND b.kind = 'text')
+                  ORDER BY m.order_input_id DESC, m.seq DESC, m.record_position DESC, m.id DESC
+                  LIMIT 1",
+            )?
+            .query_row([pk], |r| r.get(0))
+            .optional()?;
+        let files: Vec<String> = conn
+            .prepare_cached(
+                "SELECT path FROM tool_call
+                  WHERE session_pk = ?1 AND action IN ('file_write', 'file_edit')
+                    AND outcome = 'ok' AND path IS NOT NULL
+                  GROUP BY path ORDER BY max(at) DESC, path",
+            )?
+            .query_map([pk], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let commits: Vec<String> = conn
+            .prepare_cached(
+                "SELECT commit_hash FROM commit_link WHERE session_pk = ?1 ORDER BY commit_hash",
+            )?
+            .query_map([pk], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let pull_requests: Vec<String> = conn
+            .prepare_cached(
+                "SELECT repo, number FROM pr_link WHERE session_pk = ?1 ORDER BY repo, number",
+            )?
+            .query_map([pk], |r| {
+                Ok(format!(
+                    "{}#{}",
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let (last_by, last_kind): (Option<String>, Option<String>) = conn
+            .prepare_cached(
+                "SELECT m.written_by, m.prompt_kind FROM message m
+                  WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
+                  ORDER BY m.order_input_id DESC, m.seq DESC, m.record_position DESC, m.id DESC
+                  LIMIT 1",
+            )?
+            .query_row([pk], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?
+            .unwrap_or_default();
+        let unfinished_tool_call: bool = conn
+            .prepare_cached(
+                "SELECT coalesce((SELECT c.result_block_pk IS NULL FROM tool_call c
+                                   WHERE c.session_pk = ?1 ORDER BY c.pk DESC LIMIT 1), 0)",
+            )?
+            .query_row([pk], |r| r.get(0))?;
+        let last_answer = match last_answer {
             Some(message) => {
                 let mut parts = Vec::new();
                 let mut stmt = conn.prepare_cached(
@@ -121,12 +160,13 @@ impl Reader<'_> {
         };
         Ok(Some(SessionSummary {
             last_answer,
-            files_changed: u64::try_from(files).unwrap_or(0),
-            recent_files: serde_json::from_str(&recent)?,
-            commits: serde_json::from_str(&commits)?,
-            pull_requests: serde_json::from_str(&pull_requests)?,
-            unanswered_prompt: unanswered,
-            unfinished_tool_call: unfinished,
+            files_changed: files.len() as u64,
+            recent_files: files.into_iter().take(RECENT_FILES).collect(),
+            commits,
+            pull_requests,
+            unanswered_prompt: last_by.as_deref() == Some("human")
+                && last_kind.as_deref() != Some("command"),
+            unfinished_tool_call,
         }))
     }
 

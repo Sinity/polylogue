@@ -50,7 +50,7 @@ fn dump(w: &TestArchive) -> BTreeMap<String, Vec<String>> {
         "admitted",
         "commit_seq",
         "changed",
-        "from_changed",
+        "derived_changed",
         "indexed_changed",
     ];
     tables

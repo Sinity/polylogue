@@ -333,7 +333,6 @@ impl Inner {
             return Err(error);
         }
         self.commits.committed();
-        self.derive_due = true;
         if let Some(synced) = synced {
             self.report.segment_syncs += synced.metrics.syncs;
             self.report.segment_bytes_written += synced.metrics.appended_bytes;

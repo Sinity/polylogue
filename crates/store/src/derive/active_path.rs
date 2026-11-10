@@ -7,17 +7,17 @@
 //! choose each input's latest marker; known event time and content identity
 //! resolve different inputs without depending on row insertion order.
 
-use super::{Derivation, Version};
+use super::{Class, Derivation, Version};
 use crate::Result;
 use rusqlite::Transaction;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "active_path",
+    class: Class::Session,
     products: &[],
     version: Version::Rules(5),
     after: &[],
     run: |tx, pk, inputs| run(tx, pk, inputs.changes),
-    finish: None,
 };
 
 pub(super) fn run(

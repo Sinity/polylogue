@@ -1,21 +1,30 @@
-//! A shell call's normalized command, and the outcome reason a call without
-//! a result earns once its session moved on. The call's action comes from
-//! its origin's parser.
+//! A shell call's normalized command (a row value the writer writes with the
+//! call), and the outcome reason a call without a result earns once its
+//! session moved on. The call's action comes from its origin's parser.
 
-use super::{Derivation, Version};
+use super::{Class, Derivation, Version};
 use crate::Result;
 use rusqlite::{Transaction, params};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "tool_calls",
+    class: Class::Session,
     products: &[],
     version: Version::Rules(3),
-    after: &[],
-    run: |tx, pk, _| run(tx, pk),
-    finish: None,
+    after: &["command_norm"],
+    run: |tx, pk, _| passed_without_result(tx, pk),
 };
 
-fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
+pub(super) const COMMAND_NORM: Derivation = Derivation {
+    name: "command_norm",
+    class: Class::Row,
+    products: &[],
+    version: Version::Rules(1),
+    after: &[],
+    run: |tx, pk, _| normalize(tx, pk),
+};
+
+fn normalize(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     let calls: Vec<(i64, Option<String>)> = tx
         .prepare_cached(
             "SELECT pk, command FROM tool_call WHERE session_pk = ?1 AND action = 'shell'",
@@ -31,7 +40,7 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
             .and_then(polylogue_model::command::normalize);
         set.execute(params![pk, norm])?;
     }
-    passed_without_result(tx, session_pk)
+    Ok(())
 }
 
 /// A call still without a result once a later model response exists in its

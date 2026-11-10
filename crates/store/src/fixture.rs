@@ -494,9 +494,6 @@ impl Fixture {
                 pks.push(pk);
             }
         }
-        for &pk in &pks {
-            crate::derive::brief::run(&tx, pk)?;
-        }
         tx.commit()?;
         crate::text_rows::index_pending(&self.index, || ())?;
         Ok(pks)
@@ -609,6 +606,20 @@ impl Fixture {
                 n(usage.cache_write_1h),
                 usage.service_tier,
                 usage.speed,
+            ],
+        )?;
+        // The message's cost is a row value, written with its usage by the
+        // function the writer uses.
+        let model: Option<String> = self.index.query_row(
+            "SELECT model FROM message WHERE pk = ?1",
+            [message_pk],
+            |r| r.get(0),
+        )?;
+        self.index.execute(
+            "UPDATE message SET cost_nusd = ?2 WHERE pk = ?1",
+            params![
+                message_pk,
+                polylogue_model::Catalog::builtin().cost_nusd(model.as_deref(), usage)
             ],
         )?;
         self.index.execute(

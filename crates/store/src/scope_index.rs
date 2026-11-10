@@ -225,7 +225,7 @@ impl Reader<'_> {
             }
             Some(since) => {
                 let after = since.index;
-                for changed in ["changed", "live_changed"] {
+                for changed in ["changed", "live_changed", "derived_changed"] {
                     let mut statement = conn.prepare_cached(&format!(
                         "SELECT {columns} FROM session WHERE {changed} > ?1"
                     ))?;

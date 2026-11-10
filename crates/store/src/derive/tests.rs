@@ -215,7 +215,7 @@ fn versioned_rules(version: i64) -> [super::Derivation; 4] {
                     Ok(())
                 }
             },
-            finish: None,
+            class: super::Class::Session,
         },
         Derivation {
             products: &[],
@@ -229,7 +229,7 @@ fn versioned_rules(version: i64) -> [super::Derivation; 4] {
                 )?;
                 Ok(())
             },
-            finish: None,
+            class: super::Class::Session,
         },
         Derivation {
             products: &[],
@@ -243,7 +243,7 @@ fn versioned_rules(version: i64) -> [super::Derivation; 4] {
                 )?;
                 Ok(())
             },
-            finish: None,
+            class: super::Class::Session,
         },
         super::cost::DERIVATION,
     ]
@@ -285,20 +285,11 @@ fn upstream_rule_change_invalidates_unchanged_dependents_only() {
             .unwrap(),
         "after"
     );
+    // Deriving changes no session's own rows (docs/measures.md, convergence).
     let changed: i64 = index
         .query_row("SELECT changed FROM session", [], |r| r.get(0))
         .unwrap();
-    assert!(changed > 1);
-    assert_eq!(
-        index
-            .query_row(
-                "SELECT count(*) FROM derive_state WHERE from_changed<>?1",
-                [changed],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-        0
-    );
+    assert_eq!(changed, 1);
     assert_eq!(
         super::run_all(&mut index, &catalog, &versioned_rules(2), None).unwrap(),
         0
@@ -332,7 +323,7 @@ fn dependency_identity_includes_transitive_rules_and_ignores_list_order() {
         version: super::Version::Rules(1),
         after: &["upstream", "dependent"],
         run: |_, _, _| Ok(()),
-        finish: None,
+        class: super::Class::Session,
     });
     let original = super::versions(&first, &catalog).unwrap();
     first[4].after = &["dependent", "upstream"];
@@ -413,7 +404,7 @@ fn a_failed_derivation_rolls_back_values_counters_and_markers() {
             )?;
             Ok(())
         },
-        finish: None,
+        class: super::Class::Session,
     };
     let catalog = synthetic_catalog("same");
     assert_eq!(
@@ -456,8 +447,34 @@ fn a_failed_derivation_rolls_back_values_counters_and_markers() {
             .unwrap(),
         before
     );
-    assert_eq!(index.query_row("SELECT count(*) FROM session WHERE derived_title='before' AND changed=CAST(?1 AS INTEGER)", [&before], |r|r.get::<_,i64>(0)).unwrap(), 2);
-    assert_eq!(index.query_row("SELECT count(*) FROM derive_state WHERE version='1' AND from_changed=CAST(?1 AS INTEGER)", [&before], |r|r.get::<_,i64>(0)).unwrap(), 2);
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT count(*) FROM session WHERE derived_title='before' AND changed=1",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT count(*) FROM derive_state WHERE version='1'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        2
+    );
+    // Both sessions are still due for the new version.
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM derive_due", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
     rule.run = |tx, pk, _| {
         tx.execute("UPDATE session SET derived_title='after' WHERE pk=?1", [pk])?;
         Ok(())
@@ -605,4 +622,141 @@ fn fork_with_parents_shows_inherited_count() {
     // own message.
     let keys = reader.message_keys_with_parents(&child).unwrap();
     assert_eq!(keys.len(), 2, "{keys:?}");
+}
+
+/// SQLite steps of a derive pass after one of `sessions` derived sessions
+/// changed.
+fn derive_steps(sessions: i64) -> usize {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let mut index = rusqlite::Connection::open_in_memory().unwrap();
+    crate::schema::create_index(&index).unwrap();
+    index
+        .execute(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+             INSERT INTO session(id, origin, native_id, kind, changed)
+             SELECT 'test:s' || i, 'test', 's' || i, 'main', 1 FROM n",
+            [sessions],
+        )
+        .unwrap();
+    let catalog = synthetic_catalog("same");
+    let rules = versioned_rules(1);
+    super::run_all(&mut index, &catalog, &rules, None).unwrap();
+    index
+        .execute("UPDATE session SET changed = 2 WHERE pk = 1", [])
+        .unwrap();
+    let steps = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&steps);
+    index
+        .progress_handler(
+            1,
+            Some(move || {
+                counted.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )
+        .unwrap();
+    // The three session derivations; cost is a row value written with its row.
+    assert_eq!(
+        super::run_all(&mut index, &catalog, &rules, None).unwrap(),
+        3
+    );
+    index.progress_handler(0, None::<fn() -> bool>).unwrap();
+    steps.load(Ordering::Relaxed)
+}
+
+#[test]
+fn derive_discovery_steps_independent_of_session_count() {
+    assert_eq!(derive_steps(10), derive_steps(2_000));
+}
+
+#[test]
+fn noop_derive_leaves_session_changed() {
+    let mut w = WriterArchive::new();
+    w.write("a", prose("a", 1, 1_000, "a first prompt"));
+    let state = |w: &WriterArchive| {
+        (
+            w.rows("SELECT id, changed FROM session ORDER BY id"),
+            w.rows("SELECT value FROM meta WHERE key = 'write_counter'"),
+        )
+    };
+    let before = state(&w);
+    assert_eq!(w.writer.derive().unwrap(), 0);
+    assert_eq!(state(&w), before);
+    // A derive that has work moves no session's `changed` either: the later
+    // session keeps the counter of the write that stored its rows.
+    w.write("b", prose("b", 1, 2_000, "another prompt"));
+    let (sessions, counter) = state(&w);
+    assert_eq!(sessions[0], before.0[0]);
+    let counter: i64 = counter[0]["value"].as_str().unwrap().parse().unwrap();
+    assert!(sessions[1]["changed"].as_i64().unwrap() < counter);
+}
+
+#[test]
+fn user_write_served_between_derive_commits() {
+    let w = WriterArchive::new();
+    let sessions = 2_000;
+    let output = polylogue_model::Output {
+        sessions: (0..sessions)
+            .map(|n| Session::new(sid(&format!("s{n}")), SessionKind::Main))
+            .collect(),
+        messages: (0..sessions)
+            .map(|n| polylogue_model::MessageRow {
+                page_text: false,
+                id_kind: polylogue_model::IdKind::Native,
+                offset: n,
+                end: n + 1,
+                message: prose(&format!("s{n}"), 1, 1_000, "a prompt").remove(0),
+            })
+            .collect(),
+        ..polylogue_model::Output::default()
+    };
+    let mut w = w;
+    w.write_output("input-many", "claude-code", "/p/many", output, sessions);
+    // As after their rows changed: every session is due again.
+    let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    index
+        .execute(
+            "INSERT INTO derive_due(session_pk, rows_changed) SELECT pk, 1 FROM session WHERE true
+             ON CONFLICT(session_pk) DO UPDATE SET rows_changed = 1",
+            [],
+        )
+        .unwrap();
+    let due = || -> i64 {
+        index
+            .query_row("SELECT count(*) FROM derive_due", [], |r| r.get(0))
+            .unwrap()
+    };
+    let sender = w.writer.sender().unwrap();
+    let object = polylogue_query::plan::prepare(
+        "sessions where title:between",
+        &polylogue_query::Bindings::default(),
+        |_| Ok(()),
+    )
+    .unwrap()
+    .query_object()
+    .unwrap();
+    let barrier = sender.pause_user_dispatch_for_test(
+        &object.id.to_string(),
+        crate::writer::DispatchPhase::BeforeAdmission,
+    );
+    std::thread::scope(|scope| {
+        let deriving = scope.spawn(|| sender.derive().unwrap());
+        // The user write is queued once the derive has committed its first
+        // transaction.
+        while due() == i64::try_from(sessions).unwrap() {
+            std::thread::yield_now();
+        }
+        let writing = scope.spawn(|| sender.query_object(object.clone()).unwrap());
+        barrier.wait().unwrap();
+        let remaining = due();
+        assert!(
+            remaining > 0 && remaining < i64::try_from(sessions).unwrap(),
+            "{remaining}"
+        );
+        barrier.release();
+        writing.join().unwrap();
+        assert!(deriving.join().unwrap() > 0);
+    });
+    assert_eq!(due(), 0);
 }

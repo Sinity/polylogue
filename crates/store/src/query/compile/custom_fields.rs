@@ -294,7 +294,7 @@ pub(crate) fn changes_after(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<St
     c.change_generations.push(cursor.generation);
     Ok(format!(
         "(({r}.kind = 'assertion' AND {r}.seq > {archive}) OR ({r}.kind = 'removed' AND {r}.seq > {index}) \
-         OR ({r}.kind = 'session' AND ({r}.changed > {index} OR {r}.live_changed > {index})))",
+         OR ({r}.kind = 'session' AND ({r}.changed > {index} OR {r}.live_changed > {index} OR {r}.derived_changed > {index})))",
         r = x.row(),
         index = cursor.index,
         archive = cursor.archive,

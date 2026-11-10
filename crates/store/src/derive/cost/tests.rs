@@ -47,17 +47,15 @@ fn costs(index: &Connection) -> Vec<(String, Option<i64>)> {
         .unwrap()
 }
 
-fn states(index: &Connection, session: Option<i64>) -> Vec<(String, i64, String, i64)> {
+fn states(index: &Connection, session: Option<i64>) -> Vec<(String, i64, String)> {
     index
         .prepare(
-            "SELECT name, session_pk, version, from_changed FROM derive_state
+            "SELECT name, session_pk, version FROM derive_state
                    WHERE (?1 IS NULL OR session_pk = ?1) AND name <> 'cost'
                    ORDER BY name, session_pk",
         )
         .unwrap()
-        .query_map([session], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })
+        .query_map([session], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap()
@@ -110,18 +108,7 @@ fn catalog_changes_reprice_cost_without_resetting_other_derivations() {
                 ("test:zero".into(), Some(0))
             ]
         );
-        let after = states(&index, None);
-        assert_eq!(
-            after
-                .iter()
-                .map(|(name, pk, version, _)| (name, pk, version))
-                .collect::<Vec<_>>(),
-            before
-                .iter()
-                .map(|(name, pk, version, _)| (name, pk, version))
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(index.query_row("SELECT count(*) FROM derive_state d JOIN session s ON s.pk=d.session_pk WHERE d.from_changed<>s.changed", [], |r|r.get::<_,i64>(0)).unwrap(), 0);
+        assert_eq!(states(&index, None), before);
         assert_eq!(
             super::super::run_with_catalog(&mut index, &catalog).unwrap(),
             0
@@ -139,15 +126,17 @@ fn catalog_changes_reprice_cost_without_resetting_other_derivations() {
     );
 }
 
+/// Cost is a row value: the writer writes it with its message, and the
+/// derive step prices rows again only when the catalog changes. Here the
+/// fixture writes the usage, and a new catalog prices it.
 #[test]
 fn changed_usage_derives_only_its_session_and_preserves_cache_and_tier_fields() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
-    let (changed, pk) = message(&mut f, "test:changed", Some("meter"), &Usage::default());
+    let (_, pk) = message(&mut f, "test:changed", Some("meter"), &Usage::default());
     let (unrelated, _) = message(&mut f, "test:unrelated", None, &Usage::default());
     let mut index = open_write(&f.archive.index_db(), cache::SETUP).unwrap();
-    let catalog = catalog("first", 2);
-    super::super::run_with_catalog(&mut index, &catalog).unwrap();
+    super::super::run_with_catalog(&mut index, &catalog("first", 2)).unwrap();
     let before = states(&index, Some(unrelated));
     f.usage(
         pk,
@@ -164,9 +153,15 @@ fn changed_usage_derives_only_its_session_and_preserves_cache_and_tier_fields() 
         None,
     )
     .unwrap();
+    // The changed session: its session values and its cost; the unrelated
+    // one: its cost alone.
+    let session_values = super::super::ALL
+        .iter()
+        .filter(|d| d.class == super::super::Class::Session)
+        .count() as u64;
     assert_eq!(
-        super::super::run_with_catalog(&mut index, &catalog).unwrap(),
-        super::super::ALL.len() as u64
+        super::super::run_with_catalog(&mut index, &catalog("second", 2)).unwrap(),
+        session_values + 2
     );
     assert_eq!(
         costs(&index),
@@ -176,16 +171,6 @@ fn changed_usage_derives_only_its_session_and_preserves_cache_and_tier_fields() 
         ]
     );
     assert_eq!(states(&index, Some(unrelated)), before);
-    let changed_value: i64 = index
-        .query_row("SELECT changed FROM session WHERE pk=?1", [changed], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    assert!(
-        states(&index, Some(changed))
-            .iter()
-            .all(|(_, _, _, from_changed)| *from_changed == changed_value)
-    );
     assert_eq!(
         index
             .query_row(

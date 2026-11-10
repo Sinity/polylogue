@@ -51,8 +51,9 @@ CREATE TABLE session (
   compaction_count INTEGER,
   tool_call_count INTEGER,
   error_count INTEGER,
-  changed           INTEGER NOT NULL,       -- write counter of the last change to its rows or derived values
-                                            --   or derived products (not its live columns)
+  changed           INTEGER NOT NULL,       -- write counter of the last change to its own rows
+                                            --   (not its derived values or live columns)
+  derived_changed   INTEGER,                -- write counter of the derive transaction that last derived it
   live_reparse      INTEGER NOT NULL DEFAULT 0,
   live_changed      INTEGER,                -- write counter value of the last change to its live columns
   -- Live facts: the fold of the session's live evidence (hook, process and
@@ -454,17 +455,32 @@ CREATE TABLE session_record (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX session_record_input ON session_record(input_pk);   -- foreign-key check
 
--- Which derivation (derive.rs) made a session's derived rows, at which
--- version and from which state of the session; a session is derived again
--- when either moves.
+-- Which derivation (derive.rs) made a session's derived rows, and at which
+-- version; a derivation whose version moved derives the session again.
 CREATE TABLE derive_state (
   name              TEXT NOT NULL,
   session_pk        INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
   version           TEXT NOT NULL,
-  from_changed      INTEGER NOT NULL,
   PRIMARY KEY (name, session_pk)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX derive_state_session ON derive_state(session_pk);
+-- Sessions whose derived rows are behind, marked by their causes in the
+-- transaction that caused them: the derive step finds its work here, never
+-- by scanning sessions. `rows_changed` 1: the session's rows changed, so
+-- every derivation runs; 0: only derivations whose version moved.
+CREATE TABLE derive_due (
+  session_pk        INTEGER PRIMARY KEY REFERENCES session(pk) ON DELETE CASCADE,
+  rows_changed      INTEGER NOT NULL
+) STRICT;
+CREATE TRIGGER session_derive_due AFTER INSERT ON session BEGIN
+  INSERT INTO derive_due(session_pk, rows_changed) VALUES (NEW.pk, 1)
+    ON CONFLICT(session_pk) DO UPDATE SET rows_changed = 1;
+END;
+CREATE TRIGGER session_rows_derive_due AFTER UPDATE OF changed ON session
+WHEN NEW.changed IS NOT OLD.changed BEGIN
+  INSERT INTO derive_due(session_pk, rows_changed) VALUES (NEW.pk, 1)
+    ON CONFLICT(session_pk) DO UPDATE SET rows_changed = 1;
+END;
 
 -- Clocks and interval calculations over one session's parsed rows.
 CREATE TABLE session_span (

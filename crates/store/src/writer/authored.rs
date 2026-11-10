@@ -78,7 +78,6 @@ impl Inner {
         crate::write_lock::commit(tx)?;
         self.commits.committed();
         self.project_variant_text()?;
-        self.derive_due = true;
         Ok(outcome)
     }
 }

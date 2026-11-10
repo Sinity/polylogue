@@ -44,8 +44,6 @@ impl Inner {
             };
             if changed {
                 self.commits.committed();
-                self.derive_due = false;
-                self.derived_version = None;
                 self.report.transactions += 1;
             }
             return Ok(0);
@@ -59,7 +57,6 @@ impl Inner {
                 self.stream_followed(Some(error.to_string()));
             }
             self.commits.committed();
-            self.derive_due = true;
             self.search.wake();
             self.report.transactions += 1;
         }
