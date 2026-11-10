@@ -767,7 +767,7 @@ impl RowWriter<'_, '_> {
                  cache_write_5m_tokens = ?27, cache_write_1h_tokens = ?28, speed = ?29,
                  record_position = ?30, at_time = ?33,
                  order_input_id = (SELECT id FROM input_ref WHERE pk = ?3)
-             WHERE pk = ?1 AND (?32 IS NULL OR pk=?32)"
+             WHERE pk = ?1 AND pk = ?32"
         } else {
             "INSERT INTO message(pk, id, session_pk, order_input_pk, seq, role, written_by,
                  prompt_kind, model, at, parent_id, input_pk, source_chain, source_start,
@@ -821,11 +821,15 @@ impl RowWriter<'_, '_> {
             // The cost derivation's value, written with the row so a first
             // build's derive does not rewrite every priced message.
             polylogue_model::Catalog::builtin().cost_nusd(m.model.as_deref(), u),
-            Some(
-                self.keys
-                    .get(resolve::Kind::Message, m.id.to_string().as_bytes())?
-                    .pk
-            ),
+            // An update names its row; an insert takes the reserved key.
+            match pk {
+                Some(pk) => pk,
+                None => {
+                    self.keys
+                        .get(resolve::Kind::Message, m.id.to_string().as_bytes())?
+                        .pk
+                }
+            },
             v.time,
         ])?;
         let pk = pk.unwrap_or_else(|| self.tx.last_insert_rowid());

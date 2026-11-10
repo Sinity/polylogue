@@ -21,9 +21,11 @@ fn overlapping_workers_read_after_the_preceding_commit() {
             &SOURCE_RECORD,
         )
         .unwrap();
+    // Both readings are live, so completion, not route precedence, decides
+    // (docs/sessions.md): the later worker's reading must be seen.
     let mut second = batch(
         "second-route",
-        Route::Export,
+        Route::Live,
         0,
         vec![row(
             1,
@@ -702,7 +704,7 @@ fn overlapping_confirmed_readings() -> Vec<(InputKey, i64, u64, ChainReading)> {
         (
             "source-b",
             7,
-            Route::Export,
+            Route::Live,
             "complete",
             Some("end_turn"),
             "/second",

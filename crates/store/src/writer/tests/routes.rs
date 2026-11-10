@@ -24,17 +24,40 @@ fn timed(mut message: Message, ms: i64) -> Message {
     message
 }
 
-fn reading(input: &str, route: Route, message: Message, page_text: bool) -> Batch {
+/// Each input's bytes: an imported input is named by them.
+fn bytes(input: &str) -> Vec<u8> {
+    input.bytes().cycle().take(100).collect()
+}
+
+fn input_id(input: &str, route: Route) -> String {
+    if route.is_imported() {
+        polylogue_model::BlobHash::of(&bytes(input)).to_string()
+    } else {
+        input.to_owned()
+    }
+}
+
+struct Reading {
+    batch: Batch,
+    bytes: Vec<u8>,
+}
+
+fn reading(input: &str, route: Route, message: Message, page_text: bool) -> Reading {
     let mut row = row(0, message);
     row.page_text = page_text;
-    batch(input, route, 0, vec![row], &["s"])
+    let mut batch = batch(input, route, 0, vec![row], &["s"]);
+    batch.input.id = input_id(input, route);
+    Reading {
+        batch,
+        bytes: bytes(input),
+    }
 }
 
 /// Stores the readings in the given order, each through the writer.
-fn store(readings: &[Batch], order: &[usize]) -> TestArchive {
+fn store(readings: &[Reading], order: &[usize]) -> TestArchive {
     let w = test_archive();
     for &n in order {
-        w.store_reading(readings[n].clone(), Some(&SOURCE_RECORD))
+        w.store_reading(readings[n].batch.clone(), Some(&readings[n].bytes))
             .unwrap();
         let report = w.writer.flush().unwrap();
         assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -99,9 +122,9 @@ fn routes_merge_by_field() {
             (
                 "capture".into(),
                 vec![
-                    ("model".into(), "export".into()),
-                    ("time".into(), "export".into()),
-                    ("usage".into(), "export".into()),
+                    ("model".into(), input_id("export", Route::Export)),
+                    ("time".into(), input_id("export", Route::Export)),
+                    ("usage".into(), input_id("export", Route::Export)),
                 ]
             ),
             "order {order:?}"
@@ -146,7 +169,10 @@ fn page_capture_never_overrides_a_field() {
         assert_eq!(shown(&w), expected, "order {order:?}");
         assert_eq!(
             routes(&w),
-            ("export".into(), vec![("model".into(), "page".into())]),
+            (
+                input_id("export", Route::Export),
+                vec![("model".into(), "page".into())]
+            ),
             "order {order:?}"
         );
     }
@@ -186,7 +212,7 @@ fn composed_rows(w: &TestArchive) -> Vec<String> {
 }
 
 #[derive(Debug, Clone)]
-struct Reading {
+struct Generated {
     route: Route,
     page_text: bool,
     text: u8,
@@ -196,7 +222,7 @@ struct Reading {
     stop: bool,
 }
 
-fn generated() -> impl Strategy<Value = Reading> {
+fn generated() -> impl Strategy<Value = Generated> {
     (
         prop::sample::select(vec![
             Route::Live,
@@ -212,7 +238,7 @@ fn generated() -> impl Strategy<Value = Reading> {
         any::<bool>(),
     )
         .prop_map(
-            |(route, page_text, text, at, model, output, stop)| Reading {
+            |(route, page_text, text, at, model, output, stop)| Generated {
                 route,
                 page_text,
                 text,

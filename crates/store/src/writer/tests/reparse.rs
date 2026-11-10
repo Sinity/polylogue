@@ -425,7 +425,7 @@ fn newest_chain_is_selected_before_comparing_inputs() {
             ),
             batch(
                 "b",
-                Route::Capture,
+                Route::Live,
                 0,
                 vec![row(
                     1,
