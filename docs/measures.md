@@ -315,7 +315,7 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 
 ## Sessions, work and comparison
 
-**Commit and pull-request links.** From `git commit` output, commit trailers, Codex git records, `gh pr` output and pull-request link records; session-keyed, behind the `commit:` and `pr:` filters. Evidence: precision and recall of commit hashes against `git log` for one month of sessions.
+**Commit and pull-request links.** From `git commit` output, commit trailers, Codex git records, `gh pr` output and pull-request link records; session-keyed, behind the `commit:` and `pr:` filters. A commit several calls report keeps the earliest call in session order as its evidence, and a pull request's URL is its canonical `https://github.com/<owner>/<repo>/pull/<number>`, so neither depends on the order the calls arrived in. Evidence: precision and recall of commit hashes against `git log` for one month of sessions.
 
 **Landed work.** For each linked commit, whether it is reachable from the repository's default branch at the time of reading, and each pull request's state from a captured forge record; per session and repository, commits landed and not yet landed. Read-time, cached per commit hash with the default-branch head it was checked against. Polylogue reads the repository itself.
 
