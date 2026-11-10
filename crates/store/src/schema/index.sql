@@ -457,6 +457,20 @@ CREATE TABLE session_record (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX session_record_input ON session_record(input_pk);   -- foreign-key check
 
+-- The IDs copies of a session are named by when they carry no native ID
+-- (Session.aliases), as each input chain's reading states them: an AI Studio
+-- prompt read from Drive names the content key of its Takeout copies. A copy
+-- whose name one session records is read as that session; a chain still
+-- holding a session so named is read again (docs/capture.md).
+CREATE TABLE session_alias (
+  alias             TEXT NOT NULL,          -- the copy's session ID
+  session_pk        INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain             INTEGER NOT NULL,
+  PRIMARY KEY (alias, session_pk, input_pk, chain)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX session_alias_input ON session_alias(input_pk, chain);   -- retraction
+
 -- Which derivation (derive.rs) made a session's derived rows, and at which
 -- version; a derivation whose version moved derives the session again.
 CREATE TABLE derive_state (

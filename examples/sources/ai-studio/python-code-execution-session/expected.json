@@ -142,7 +142,10 @@
       {
         "id": "ai-studio:code_execution_session",
         "kind": "main",
-        "started_quality": "unknown"
+        "started_quality": "unknown",
+        "aliases": [
+          "ai-studio:content-f9c3a5dd2e69810f3fef8cf642721706"
+        ]
       },
       {
         "id": "ai-studio:code_execution_session",

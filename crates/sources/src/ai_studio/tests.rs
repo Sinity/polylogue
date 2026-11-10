@@ -16,6 +16,7 @@ fn parse(drive_id: &str, bytes: &[u8]) -> crate::parse::Step {
     let parser = AiStudio {
         drive_id: Some(drive_id.into()),
         native: String::new(),
+        content_key: String::new(),
         title: Some("Electrons".into()),
         state: PromptState::default(),
     };
@@ -500,4 +501,22 @@ fn the_drive_collector_names_a_prompt_by_its_file_id() {
     );
     assert_eq!(step.output.sessions[0].id.to_string(), "ai-studio:1AbC");
     assert!(step.output.sessions[0].title.is_none());
+}
+
+#[test]
+fn a_drive_prompt_records_the_name_its_takeout_copy_has() {
+    let bytes = prompt(vec![
+        json!({"role": "user", "text": "about rivers", "createTime": "2026-01-01T00:00:00Z"}),
+    ]);
+    let drive = parse_at(
+        "/h/.local/share/polylogue/drive/ai-studio/1AbC.json",
+        &bytes,
+    );
+    let copy = parse_at("/h/Takeout/Drive/Google AI Studio/Rivers", &bytes);
+    assert_eq!(drive.output.sessions[0].id.to_string(), "ai-studio:1AbC");
+    assert_eq!(
+        drive.output.sessions[0].aliases,
+        [copy.output.sessions[0].id.clone()]
+    );
+    assert!(copy.output.sessions[0].aliases.is_empty());
 }

@@ -58,6 +58,12 @@ pub(crate) struct Choices {
     /// Older-chain rows of content-identified messages that the input's
     /// latest chain, read to its end, no longer holds: (message, input, chain).
     pub dropped_message_sources: Vec<(i64, i64, i64)>,
+    /// Copies' sessions this step joins to the session their name is an
+    /// alias of: (copy session, session, copy session ID).
+    pub absorbed_sessions: Vec<(i64, i64, String)>,
+    /// A copy's message whose readings move to its message in the session:
+    /// (copy message, message).
+    pub moved_messages: Vec<(i64, i64)>,
     pub event_values: Vec<PackedValue>,
     pub event_ids: Vec<String>,
     pub event_sources: Vec<(i64, EventChoice)>,
@@ -471,6 +477,8 @@ pub(in crate::writer) struct Projection<'a> {
     /// this snapshot.
     last_readings: BTreeMap<(i64, i64, i64), LastReading>,
     reset_inputs: BTreeSet<(i64, i64)>,
+    /// Copies already joined to their session in this snapshot.
+    absorbed: BTreeSet<String>,
     values: Option<&'a dyn ValueSource>,
 }
 impl<'a> Projection<'a> {
@@ -496,6 +504,7 @@ impl<'a> Projection<'a> {
             session_facts: BTreeMap::new(),
             last_readings: BTreeMap::new(),
             reset_inputs: BTreeSet::new(),
+            absorbed: BTreeSet::new(),
             values,
         };
         for (key, row) in &keys.rows {
@@ -559,6 +568,7 @@ impl<'a> Projection<'a> {
                 .retain(|(i, c, _), _| *i != input || *c != chain);
         }
         self.sessions(input, chain, step, &mut choices)?;
+        self.absorb(step, &mut choices)?;
         self.message_readings(input_key, input, chain, step, &mut choices)?;
         self.document_readings(input_key, input, chain, step, &mut choices)?;
         if matches!(step.progress, polylogue_model::batch::StepProgress::AtEnd) {
@@ -591,6 +601,59 @@ impl<'a> Projection<'a> {
             }
         }
         Ok(choices)
+    }
+
+    /// A session this step states that names a stored copy's session by an
+    /// alias takes the copy's message readings, each into its message with
+    /// the ID it has in the session (docs/capture.md, AI Studio through
+    /// Drive). The readings stay as stored; only the rows they belong to move.
+    fn absorb(&mut self, step: &ParseStep, choices: &mut Choices) -> Result<()> {
+        for absorbed in self.keys.identities.absorbed() {
+            if self.absorbed.contains(&absorbed.copy)
+                || !step
+                    .output
+                    .sessions
+                    .iter()
+                    .any(|s| s.id.to_string() == absorbed.session)
+            {
+                continue;
+            }
+            self.absorbed.insert(absorbed.copy.clone());
+            let from = self
+                .keys
+                .stored(&Key::new(Kind::Session, absorbed.copy.as_bytes()))?
+                .pk;
+            let to = self
+                .keys
+                .stored(&Key::new(Kind::Session, absorbed.session.as_bytes()))?
+                .pk;
+            choices
+                .absorbed_sessions
+                .push((from, to, absorbed.copy.clone()));
+            for (old, new) in &absorbed.messages {
+                let source = self
+                    .keys
+                    .stored(&Key::new(Kind::Message, old.as_bytes()))?
+                    .pk;
+                let target = self
+                    .keys
+                    .stored(&Key::new(Kind::Message, new.as_bytes()))?
+                    .pk;
+                let moved = std::mem::take(self.messages.members.entry(source).or_default());
+                self.messages.touched.insert(source);
+                self.messages.members.entry(target).or_default();
+                for mut member in moved {
+                    if member.session == from {
+                        member.session = to;
+                    }
+                    self.messages.put(target, member);
+                }
+                if source != target {
+                    choices.moved_messages.push((source, target));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The facts this chain states about each session, merged with what it

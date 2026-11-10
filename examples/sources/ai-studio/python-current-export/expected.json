@@ -481,7 +481,10 @@
       {
         "id": "ai-studio:current_export",
         "kind": "main",
-        "started_quality": "unknown"
+        "started_quality": "unknown",
+        "aliases": [
+          "ai-studio:content-01ec1606b3eed5611270fcda4577e2c2"
+        ]
       },
       {
         "id": "ai-studio:current_export",

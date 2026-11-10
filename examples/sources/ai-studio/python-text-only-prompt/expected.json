@@ -129,7 +129,10 @@
       {
         "id": "ai-studio:text_only_prompt",
         "kind": "main",
-        "started_quality": "unknown"
+        "started_quality": "unknown",
+        "aliases": [
+          "ai-studio:content-f912a8776e6619e34c2608e87be269f6"
+        ]
       },
       {
         "id": "ai-studio:text_only_prompt",

@@ -102,6 +102,9 @@ generated page of the thing they belong to, or on the area page that owns them.
   exact it is. Unknown times stay unknown.
 - **paste**: a pasted range of a prompt.
 - **sidecar**: a file read into its session, never as a session of its own.
+- **session alias**: the ID a copy of a session carries when the copy has no
+  native ID (an AI Studio Takeout's content name), recorded by the route that
+  knows the session's own ID; the index shows the copy as that session.
 - **route**: one way a conversation reached the archive: `live`, `capture`,
   `recorded`, `export`, `copy` or `page_text`. **Route precedence** says, per
   field group, whose value is shown; the reading that supplies the content is

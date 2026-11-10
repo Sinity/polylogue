@@ -195,18 +195,21 @@ fn prepare_readings(
         .collect();
     loop {
         let index = crate::archive::open_read(&resolver.location().index_db())?;
-        let (keys, _) = gather(resolver, readings, &index, source, &pending)?;
+        let (keys, _, _) = gather(resolver, readings, &index, source, &pending)?;
         drop(index);
         let lease = resolver.lease(keys.clone());
         let index = crate::archive::open_read(&resolver.location().index_db())?;
         let snapshot = index.unchecked_transaction()?;
-        let (fresh, history) = gather(resolver, readings, &snapshot, source, &pending)?;
+        let (fresh, history, recorded) = gather(resolver, readings, &snapshot, source, &pending)?;
         if keys != fresh {
             drop(snapshot);
             drop(lease);
             continue;
         }
-        let mut resolved = resolve::ResolvedKeys::default();
+        let mut resolved = resolve::ResolvedKeys {
+            identities: crate::session_alias::Identities::load(&snapshot, &recorded)?,
+            ..resolve::ResolvedKeys::default()
+        };
         for key in keys {
             let row = resolver.resolve_key(&snapshot, &key)?;
             resolved.rows.insert(key, row);
@@ -264,8 +267,13 @@ fn gather<'a>(
     index: &Connection,
     source: ReadingLookup<'a>,
     pending: &HashMap<BlobHash, u64>,
-) -> Result<(BTreeSet<resolve::Key>, History<'a>)> {
+) -> Result<(
+    BTreeSet<resolve::Key>,
+    History<'a>,
+    Vec<polylogue_model::Session>,
+)> {
     let mut keys = BTreeSet::new();
+    let mut recorded = Vec::new();
     let mut history = History::new(source);
     for reading in readings {
         let path = history.add_path(&reading.reading.path);
@@ -280,6 +288,13 @@ fn gather<'a>(
             }
             attachments::normalize_known(&mut step, &history.available)?;
             let location = Location { path, offset };
+            recorded.extend(
+                step.output
+                    .sessions
+                    .iter()
+                    .filter(|s| !s.aliases.is_empty())
+                    .cloned(),
+            );
             for prepared in &step.prepared.messages {
                 history
                     .messages
@@ -309,7 +324,7 @@ fn gather<'a>(
             keys.extend(step_keys);
         }
     }
-    Ok((keys, history))
+    Ok((keys, history, recorded))
 }
 
 /// Writes one step record; a resolved reading's records carry the versions

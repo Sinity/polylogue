@@ -393,3 +393,80 @@ fn replacement_during_export_prefix_comparison_refuses_the_generation() {
         "the old descriptor cannot certify its replacement path"
     );
 }
+
+/// A prompt read from Drive and its Takeout copy are one session, named by
+/// the Drive file ID, whichever arrives first and after a rebuild: the Drive
+/// reading records the content key the copy is named by.
+#[test]
+fn drive_and_takeout_copy_give_one_session() {
+    let bytes = serde_json::to_vec(&json!({
+        "chunkedPrompt":{"chunks":[
+            {"role":"user","text":"About rivers","createTime":"2026-03-01T10:00:00Z"},
+            {"role":"model","text":"Rivers flow to the sea.","finishReason":"STOP"}
+        ]},
+        "runSettings":{"model":"models/gemini-example"}
+    }))
+    .unwrap();
+    let mut shown = Vec::new();
+    for drive_first in [true, false] {
+        let w = ClaudeHome::new();
+        let spool = w.config(8).spool_dir("ai-studio");
+        fs::create_dir_all(&spool).unwrap();
+        let takeout = w.dir.path().join("Takeout");
+        let copy = takeout.join("Drive/Google AI Studio/Rivers");
+        fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        fs::write(&copy, &bytes).unwrap();
+        let (mut e, lock) = engine(&w, 8);
+        let drive = |e: &mut Engine| {
+            fs::write(spool.join("drive-id.json"), &bytes).unwrap();
+            let pass = e.run_pass().unwrap();
+            assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+        };
+        if drive_first {
+            drive(&mut e);
+        }
+        let report = e.import(std::slice::from_ref(&takeout)).unwrap();
+        assert!(report.refused.is_empty(), "{report:?}");
+        assert!(report.pass.errors.is_empty(), "{report:?}");
+        if !drive_first {
+            drive(&mut e);
+        }
+        drop(e);
+        drop(lock);
+        for rebuild in [false, true] {
+            if rebuild {
+                polylogue_testkit::delete_index(&w.root);
+                let (mut e, lock) = engine(&w, 8);
+                let pass = e.run_pass().unwrap();
+                assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+                drop(e);
+                drop(lock);
+            }
+            assert_eq!(
+                w.count("SELECT COUNT(*) AS n FROM session WHERE origin='ai-studio'"),
+                1,
+                "drive first {drive_first}, rebuild {rebuild}"
+            );
+            let messages = w
+                .reads()
+                .reader()
+                .unwrap()
+                .messages(
+                    &polylogue_model::SessionId::parse("ai-studio:drive-id").unwrap(),
+                    false,
+                )
+                .unwrap();
+            assert_eq!(
+                messages.iter().map(|m| m.text()).collect::<Vec<_>>(),
+                ["About rivers", "Rivers flow to the sea."]
+            );
+            assert_eq!(
+                w.count("SELECT COUNT(DISTINCT input_pk) AS n FROM message_source"),
+                2,
+                "both copies are readings of the one session"
+            );
+            shown.push(serde_json::to_value(&messages).unwrap());
+        }
+    }
+    assert!(shown.windows(2).all(|pair| pair[0] == pair[1]));
+}

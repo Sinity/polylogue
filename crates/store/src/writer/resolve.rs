@@ -69,14 +69,57 @@ pub(crate) struct Resolution {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ResolvedKeys {
     pub(super) rows: BTreeMap<Key, RowKey>,
+    /// Copies of a session named by an alias resolve to that session.
+    pub(crate) identities: crate::session_alias::Identities,
 }
 impl ResolvedKeys {
+    /// The row a natural key resolves to; a copy's session or message key
+    /// resolves to the session's row.
     pub(crate) fn get(&self, kind: Kind, bytes: &[u8]) -> Result<RowKey> {
-        self.rows
-            .get(&Key::new(kind, bytes))
-            .copied()
-            .ok_or_else(|| StoreError::Invalid(format!("unresolved {} key", kind.table())))
+        let key = canonical(&self.identities, Key::new(kind, bytes))?;
+        self.stored(&key)
     }
+    /// The row of exactly this key.
+    pub(super) fn stored(&self, key: &Key) -> Result<RowKey> {
+        self.rows
+            .get(key)
+            .copied()
+            .ok_or_else(|| StoreError::Invalid(format!("unresolved {} key", key.kind.table())))
+    }
+}
+
+/// The key a copy's session, message or link key resolves to.
+pub(super) fn canonical(identities: &crate::session_alias::Identities, key: Key) -> Result<Key> {
+    let text = || std::str::from_utf8(&key.bytes).map_err(|e| StoreError::Invalid(e.to_string()));
+    Ok(match key.kind {
+        Kind::Session => {
+            let id = text()?;
+            let resolved = identities.session(id);
+            if resolved == id {
+                key
+            } else {
+                Key::new(Kind::Session, resolved)
+            }
+        }
+        Kind::Message => match identities.message(text()?) {
+            std::borrow::Cow::Borrowed(_) => key,
+            std::borrow::Cow::Owned(id) => Key::new(Kind::Message, id),
+        },
+        Kind::Link => {
+            let (parent, child, kind, how): (String, String, String, String) =
+                serde_json::from_slice(&key.bytes)?;
+            Key::new(
+                Kind::Link,
+                serde_json::to_vec(&(
+                    identities.session(&parent),
+                    identities.session(&child),
+                    kind,
+                    how,
+                ))?,
+            )
+        }
+        _ => key,
+    })
 }
 
 struct Active {
@@ -282,6 +325,22 @@ impl Resolver {
     }
 }
 
+/// The session identities resolving `batches` uses: stored aliases, and the
+/// copies their sessions newly name.
+pub(super) fn identities(
+    index: &Connection,
+    batches: &[&mut Batch],
+) -> Result<crate::session_alias::Identities> {
+    let recorded: Vec<_> = batches
+        .iter()
+        .flat_map(|b| &b.parse)
+        .flat_map(|p| &p.output.sessions)
+        .filter(|s| !s.aliases.is_empty())
+        .cloned()
+        .collect();
+    crate::session_alias::Identities::load(index, &recorded)
+}
+
 /// Sessions these batches only name, as the session of an event: their row
 /// is created on first sight (a stub) or found, and nothing these batches
 /// write depends on the rest of it, so they need no lease. Session facts,
@@ -366,10 +425,11 @@ impl Resolver {
         index: &Connection,
         archive: &Connection,
     ) -> Result<(BTreeSet<Key>, Vec<i64>)> {
+        let identities = identities(index, batches)?;
         let mut keys = BTreeSet::new();
         let mut chains = Vec::new();
         let mut latest = BTreeMap::<String, Option<(i64, i64)>>::new();
-        for b in batches {
+        for b in batches.iter_mut() {
             keys.insert(Key::new(Kind::Input, b.input.id.as_bytes()));
             let prior = if matches!(b.change, Change::Reparse { .. } | Change::Observed { .. }) {
                 None
@@ -432,7 +492,9 @@ impl Resolver {
                 for s in &p.output.sessions {
                     keys.insert(Key::new(Kind::Session, s.id.to_string().into_bytes()));
                     let mut stmt=index.prepare("SELECT m.id FROM message m JOIN message_source v ON v.message_pk=m.pk JOIN session s ON s.pk=v.session_pk JOIN input_ref i ON i.pk=v.input_pk WHERE s.id=?1 AND i.id=?2 AND v.chain=?3")?;
-                    let mut rows = stmt.query(params![s.id.to_string(), b.input.id, chain])?;
+                    let id = s.id.to_string();
+                    let mut rows =
+                        stmt.query(params![identities.session(&id), b.input.id, chain])?;
                     while let Some(row) = rows.next()? {
                         keys.insert(Key::new(
                             Kind::Message,
@@ -483,6 +545,20 @@ impl Resolver {
                         update.session.to_string().into_bytes(),
                     ));
                 }
+            }
+        }
+        let mut keys = keys
+            .into_iter()
+            .map(|key| canonical(&identities, key))
+            .collect::<Result<BTreeSet<_>>>()?;
+        // A copy these batches join to its session: its rows and the rows
+        // its messages move to.
+        for absorbed in identities.absorbed() {
+            keys.insert(Key::new(Kind::Session, absorbed.copy.as_bytes()));
+            keys.insert(Key::new(Kind::Session, absorbed.session.as_bytes()));
+            for (old, new) in &absorbed.messages {
+                keys.insert(Key::new(Kind::Message, old.as_bytes()));
+                keys.insert(Key::new(Kind::Message, new.as_bytes()));
             }
         }
         let event_keys: Vec<_> = keys
@@ -559,7 +635,10 @@ impl Resolver {
             for batch in batches.iter_mut() {
                 attachments::normalize(batch, archive, &pending)?;
             }
-            let mut resolved = ResolvedKeys::default();
+            let mut resolved = ResolvedKeys {
+                identities: identities(&snapshot, batches)?,
+                ..ResolvedKeys::default()
+            };
             for key in keys {
                 let row = self.resolve_key(&snapshot, &key)?;
                 resolved.rows.insert(key, row);
@@ -691,7 +770,10 @@ pub(super) fn prepare_index(
     let change = std::mem::replace(&mut batch.change, Change::Reparse { chain });
     let (keys, chains) = resolver.gather(&mut [batch], index, index)?;
     batch.change = change;
-    let mut resolved = ResolvedKeys::default();
+    let mut resolved = ResolvedKeys {
+        identities: identities(index, &[&mut *batch])?,
+        ..ResolvedKeys::default()
+    };
     for key in keys {
         let row = resolver.resolve_key(index, &key)?;
         resolved.rows.insert(key, row);

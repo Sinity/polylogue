@@ -1,7 +1,7 @@
 {
   "ai-studio": [
-    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::ai_studio::VERSION=2,crate::chatgpt::VERSION=1,crate::export::VERSION=2",
-    "3924b581f90d308d59fdf05eb38e4de000001143fac6081267e5725c064942d0"
+    "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::ai_studio::VERSION=3,crate::chatgpt::VERSION=1,crate::export::VERSION=2",
+    "5cc1d8795cc234f2c565c3dd344e45dce90bf0a1daba7cb05b0672e992e29680"
   ],
   "aider": [
     "parse=2,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::export::VERSION=2,crate::aider::VERSION=2",

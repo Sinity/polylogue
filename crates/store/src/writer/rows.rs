@@ -320,6 +320,21 @@ fn apply_rows(
         crate::repo_lookup::upsert_lookup(tx, l, input_pk, chain)?;
     }
     {
+        for (from, to, _) in &choices.absorbed_sessions {
+            rows.absorb_session(*from, *to)?;
+        }
+        for (source, target) in &choices.moved_messages {
+            // The session's own reading of the message may come in a later
+            // step; the copy's readings make its row now.
+            if !tx
+                .prepare_cached("SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1)")?
+                .query_row([target], |r| r.get::<_, bool>(0))?
+            {
+                written += u64::from(rows.refresh_message(*target)?);
+            }
+            tx.prepare_cached("UPDATE message_source SET message_pk=?2 WHERE message_pk=?1")?
+                .execute(params![source, target])?;
+        }
         for (message_pk, source_input, source_chain) in &choices.dropped_message_sources {
             tx.prepare_cached(
                 "DELETE FROM message_source WHERE message_pk=?1 AND input_pk=?2 AND chain=?3",
@@ -337,6 +352,9 @@ fn apply_rows(
         }
         for pk in choices.links.keys() {
             rows.refresh_link(*pk)?;
+        }
+        for (from, _, copy) in &choices.absorbed_sessions {
+            crate::session_row::remove(tx, *from, copy, counter)?;
         }
     }
     // Every session these records touched is derived again.
@@ -535,6 +553,81 @@ pub(super) fn name<T: serde::Serialize>(v: &T) -> String {
 
 impl RowWriter<'_, '_> {
     /// The message with natural ID `id`.
+    /// Moves what a copy's session holds to the session its name is an alias
+    /// of (docs/capture.md, AI Studio through Drive): each reading's
+    /// statements and events, and links naming it. Its messages move with
+    /// their readings (`Choices::moved_messages`).
+    fn absorb_session(&self, from: i64, to: i64) -> Result<()> {
+        for table in [
+            "session_record",
+            "parsed",
+            "message_source",
+            "event",
+            "event_source",
+        ] {
+            self.tx
+                .prepare_cached(&format!(
+                    "UPDATE {table} SET session_pk=?2 WHERE session_pk=?1"
+                ))?
+                .execute(params![from, to])?;
+        }
+        let (copy, session): (String, String) = self.tx.query_row(
+            "SELECT (SELECT id FROM session WHERE pk=?1),(SELECT id FROM session WHERE pk=?2)",
+            params![from, to],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        // A link naming the copy names the session; where the session already
+        // has that link, the copy's link sources join it.
+        let links = self
+            .tx
+            .prepare_cached(
+                "SELECT pk,parent_id,child_id,kind,how FROM link WHERE parent_id=?1 OR child_id=?1",
+            )?
+            .query_map([&copy], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (pk, parent, child, kind, how) in links {
+            let name = |id: String| if id == copy { session.clone() } else { id };
+            let (parent, child) = (name(parent), name(child));
+            self.changes.link(self.tx, pk)?;
+            let existing: Option<i64> = self
+                .tx
+                .query_row(
+                    "SELECT pk FROM link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how=?4",
+                    params![parent, child, kind, how],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            match existing {
+                Some(existing) => {
+                    self.tx.execute(
+                        "UPDATE link_source SET link_pk=?2 WHERE link_pk=?1",
+                        params![pk, existing],
+                    )?;
+                    self.tx.execute("DELETE FROM link WHERE pk=?1", [pk])?;
+                }
+                None => {
+                    self.tx.execute(
+                        "UPDATE link SET parent_id=?2,child_id=?3,child_pk=(SELECT pk FROM session WHERE id=?3) WHERE pk=?1",
+                        params![pk, parent, child],
+                    )?;
+                }
+            }
+        }
+        self.changes.whole_session(to);
+        self.tx
+            .prepare_cached("UPDATE session SET changed=?2 WHERE pk=?1")?
+            .execute(params![to, self.counter])?;
+        Ok(())
+    }
+
     fn message_pk(&self, id: &str) -> Result<Option<i64>> {
         let pk = self.keys.get(resolve::Kind::Message, id.as_bytes())?.pk;
         Ok(self
@@ -584,6 +677,18 @@ impl RowWriter<'_, '_> {
                  ON CONFLICT(session_pk, input_pk, chain) DO UPDATE SET facts = excluded.facts, admitted=coalesce(max(session_record.admitted,excluded.admitted),session_record.admitted,excluded.admitted)",
             )?
             .execute(params![pk, self.input_pk, self.chain, serde_json::to_string(&merged)?, admitted])?;
+        self.tx
+            .prepare_cached(
+                "DELETE FROM session_alias WHERE session_pk=?1 AND input_pk=?2 AND chain=?3",
+            )?
+            .execute(params![pk, self.input_pk, self.chain])?;
+        for alias in &merged.aliases {
+            self.tx
+                .prepare_cached(
+                    "INSERT INTO session_alias(alias,session_pk,input_pk,chain) VALUES (?1,?2,?3,?4)",
+                )?
+                .execute(params![alias.to_string(), pk, self.input_pk, self.chain])?;
+        }
         let main = merged.kind == polylogue_model::SessionKind::Main;
         self.tx.execute("UPDATE message_source SET main=?4 WHERE session_pk=?1 AND input_pk=?2 AND chain=?3 AND main<>?4",params![pk,self.input_pk,self.chain,main])?;
         self.tx
@@ -652,7 +757,7 @@ impl RowWriter<'_, '_> {
                 );
                 let pk = self.insert_message(m, session_pk, &v, &order)?;
                 if let Some(first) = self.first_build {
-                    first.add_message(&id, pk);
+                    first.add_message(&self.keys.identities.shown_message(&id), pk);
                 }
                 pk
             }
@@ -749,7 +854,16 @@ impl RowWriter<'_, '_> {
             .ok_or_else(|| StoreError::Invalid("a changed version has no prepared body".into()))?;
         self.tx.execute("UPDATE session SET changed=?2 WHERE pk IN (SELECT session_pk FROM message WHERE pk=?1) OR pk=?3",params![pk,self.counter,session_pk])?;
         self.clear_blocks(pk)?;
-        self.update_message(pk, m, session_pk, &v, order)?;
+        // A copy's message joining its session may have no row of its own yet.
+        if self
+            .tx
+            .prepare_cached("SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1)")?
+            .query_row([pk], |r| r.get::<_, bool>(0))?
+        {
+            self.update_message(pk, m, session_pk, &v, order)?;
+        } else {
+            self.insert_message(m, session_pk, &v, order)?;
+        }
         self.insert_blocks(pk, session_pk, m, prepared)?;
         self.tx
             .prepare_cached("DELETE FROM message_route WHERE message_pk=?1")?
@@ -797,6 +911,18 @@ impl RowWriter<'_, '_> {
         order: &str,
     ) -> Result<i64> {
         let written_by = polylogue_model::WrittenBy::of(m.role, m.prompt_kind).as_str();
+        // A copy's message is written with its ID in the session.
+        let id = self
+            .keys
+            .identities
+            .shown_message(&m.id.to_string())
+            .into_owned();
+        let parent = m.parent.as_ref().map(|p| {
+            self.keys
+                .identities
+                .shown_message(&p.to_string())
+                .into_owned()
+        });
         let words: i64 = m
             .blocks
             .iter()
@@ -845,7 +971,7 @@ impl RowWriter<'_, '_> {
         };
         let first: rusqlite::types::Value = match pk {
             Some(pk) => pk.into(),
-            None => m.id.to_string().into(),
+            None => id.clone().into(),
         };
         self.tx.prepare_cached(sql)?.execute(params![
             first,
@@ -856,7 +982,7 @@ impl RowWriter<'_, '_> {
             m.prompt_kind.map(|k| name(&k)),
             m.model,
             ms(m.at),
-            m.parent.as_ref().map(ToString::to_string),
+            parent,
             v.input_pk,
             v.chain,
             v.start,
@@ -886,9 +1012,7 @@ impl RowWriter<'_, '_> {
             match pk {
                 Some(pk) => pk,
                 None => {
-                    self.keys
-                        .get(resolve::Kind::Message, m.id.to_string().as_bytes())?
-                        .pk
+                    self.keys.get(resolve::Kind::Message, id.as_bytes())?.pk
                 }
             },
             v.time,

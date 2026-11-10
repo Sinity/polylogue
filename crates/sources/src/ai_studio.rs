@@ -12,7 +12,7 @@
 //! text; joined, they equal the chunk's `text`.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
@@ -73,6 +73,7 @@ pub fn open(path: &Path) -> Option<Parse> {
         AiStudio {
             drive_id: Some(name),
             native: String::new(),
+            content_key: String::new(),
             title: None,
             state: PromptState::default(),
         }
@@ -80,6 +81,7 @@ pub fn open(path: &Path) -> Option<Parse> {
         AiStudio {
             drive_id: None,
             native: String::new(),
+            content_key: String::new(),
             title: Some(name),
             state: PromptState::default(),
         }
@@ -101,7 +103,10 @@ fn name_of(path: &Path) -> Option<String> {
 /// Takeout carries no file ID and names the file by the prompt's title,
 /// which two prompts can share and a rename changes, so its prompt is named
 /// by its content: the first chunk (which holds its creation time), or the
-/// whole document when it has no chunks.
+/// whole document when it has no chunks. A Drive revision records the
+/// content key its copies would have as an alias of its session; the index
+/// shows such a copy as that session (docs/capture.md, AI Studio through
+/// Drive).
 fn content_key(first_chunk: Option<&Json>, metadata: &Json) -> String {
     let hash = match first_chunk {
         Some(chunk) => canonical_json::canonical_hash("polylogue-ai-studio-first-chunk", chunk),
@@ -116,6 +121,9 @@ pub struct AiStudio {
     drive_id: Option<String>,
     /// The session's native ID, set when the document is scanned.
     native: String,
+    /// The content key of this reading: a copy's own name, and an alias of
+    /// a Drive prompt's session.
+    content_key: String,
     /// The file name, used as the title when the document names none.
     title: Option<String>,
     state: PromptState,
@@ -283,9 +291,10 @@ impl ExportParser for AiStudio {
                 }
                 item.push(range, Vec::new(), None, raw.get().as_bytes())
             })?;
+        self.content_key = content_key(first_chunk.as_ref(), &metadata);
         self.native = match &self.drive_id {
             Some(id) => id.clone(),
-            None => content_key(first_chunk.as_ref(), &metadata),
+            None => self.content_key.clone(),
         };
         self.state.chunks = stats.elements;
         self.state.metadata = Some(metadata);
@@ -369,6 +378,10 @@ impl ExportParser for AiStudio {
                     let mut session = Session::new(sid.clone(), SessionKind::Main);
                     if let Some(title) = &self.title {
                         session.offer_title(title, TitleSource::FileName);
+                    }
+                    if self.drive_id.is_some() {
+                        session.aliases =
+                            session_id(ORIGIN, &self.content_key).into_iter().collect();
                     }
                     sink.out.sessions.push(session);
                     sink.out.events.push({
