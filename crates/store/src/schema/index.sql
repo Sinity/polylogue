@@ -120,6 +120,7 @@ CREATE UNIQUE INDEX message_id ON message(id);
 CREATE INDEX message_session ON message(session_pk, order_input_id, seq, record_position, id);   -- reading in order; [last:N]
 CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
+CREATE INDEX message_parent  ON message(session_pk, parent_id) WHERE duplicate_of IS NULL;   -- branch points
 
 -- Every stored version that contributed to a message: one row per input chain
 -- whose records hold a version of it. The shown message is composed field group
@@ -333,6 +334,7 @@ CREATE INDEX event_session ON event(session_pk, seq);
 CREATE INDEX event_input   ON event(input_pk, source_chain, source_start);
 CREATE INDEX event_after   ON event(after_message_pk) WHERE after_message_pk IS NOT NULL;
 CREATE INDEX event_after_id ON event(after_message_id) WHERE after_message_id IS NOT NULL;
+CREATE INDEX event_unanchored ON event(session_pk, at) WHERE after_message_pk IS NULL;   -- events placed by time
 CREATE INDEX event_kind    ON event(kind, at);
 
 
@@ -724,21 +726,6 @@ CREATE TABLE document_version_blob (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX message_version_blob_hash ON message_version_blob(blob_hash);
 CREATE INDEX document_version_blob_hash ON document_version_blob(blob_hash);
-
--- Reference changes wait for the round's cleanup, including after a restart.
-CREATE TABLE changed_version (
-  kind TEXT NOT NULL,
-  version_hash BLOB NOT NULL,
-  PRIMARY KEY(kind,version_hash)
-) STRICT, WITHOUT ROWID;
-CREATE TABLE changed_value (
-  kind TEXT NOT NULL,
-  value_pk INTEGER NOT NULL,
-  PRIMARY KEY(kind,value_pk)
-) STRICT, WITHOUT ROWID;
-CREATE TABLE changed_text (
-  text_id INTEGER PRIMARY KEY
-) STRICT;
 
 CREATE INDEX message_source_session ON message_source(session_pk);
 CREATE INDEX event_source_session ON event_source(session_pk);

@@ -30,19 +30,13 @@ impl VersionKind {
         matches!(self, Self::Message | Self::Document)
     }
 
-    pub(crate) fn retract(self, conn: &Connection, input: i64, chain: i64) -> Result<Vec<i64>> {
+    pub(crate) fn retract(self, conn: &Connection, input: i64, chain: i64) -> Result<()> {
         let name = self.name();
-        let touched = conn
-            .prepare_cached(&format!(
-                "SELECT {name}_pk FROM {name}_source WHERE input_pk=?1 AND chain=?2"
-            ))?
-            .query_map(params![input, chain], |row| row.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
         conn.prepare_cached(&format!(
             "DELETE FROM {name}_source WHERE input_pk=?1 AND chain=?2"
         ))?
         .execute(params![input, chain])?;
-        Ok(touched)
+        Ok(())
     }
 }
 
@@ -171,10 +165,11 @@ pub(crate) fn store_message(
         text_rows,
         replace,
     )?;
-    conn.execute(
-        "INSERT OR IGNORE INTO changed_version(kind,version_hash) VALUES ('message',?1)",
-        [prepared.hash.as_slice()],
-    )?;
+    // A stored version no source row chose is deleted before the commit.
+    conn.prepare_cached(
+        "INSERT OR IGNORE INTO temp.unreferenced_version(kind,version_hash) VALUES ('message',?1)",
+    )?
+    .execute([prepared.hash.as_slice()])?;
     let layout = message_layout(&prepared.projection)?;
     conn.execute(
         "INSERT INTO message_projection(version_hash,layout,admitted) VALUES (?1,?2,?3)
@@ -292,53 +287,152 @@ pub(crate) fn message_projection(
     Ok(projection)
 }
 
-/// Recheck only readings whose source references changed, using their hash indexes.
-pub(crate) fn remove_readings(conn: &Connection) -> Result<()> {
-    for kind in VersionKind::ALL {
-        let name = kind.name();
-        let (table, key, changed) = if kind.content() {
-            (format!("{name}_version"), "version_hash", "changed_version")
-        } else {
-            (format!("{name}_value"), "value_pk", "changed_value")
+/// Records, for the connection's current transaction, every version body,
+/// value and text whose reference a statement removed, so
+/// [`remove_unreferenced`] can delete those left without any before the
+/// transaction commits. Temporary: the candidates belong to one connection's
+/// transaction and roll back with it, and nothing is kept between
+/// transactions or across a restart.
+const UNREFERENCED: &str = "
+CREATE TEMP TABLE IF NOT EXISTS unreferenced_version(
+  kind TEXT NOT NULL, version_hash BLOB NOT NULL, PRIMARY KEY(kind,version_hash)) WITHOUT ROWID;
+CREATE TEMP TABLE IF NOT EXISTS unreferenced_value(
+  kind TEXT NOT NULL, value_pk INTEGER NOT NULL, PRIMARY KEY(kind,value_pk)) WITHOUT ROWID;
+CREATE TEMP TABLE IF NOT EXISTS unreferenced_text(text_id INTEGER PRIMARY KEY);
+";
+
+/// One trigger per reference column. An UPSERT's conflict policy can override
+/// a trigger's own, so each insert selects only absent keys.
+fn reference_triggers() -> String {
+    let mut sql = String::from(UNREFERENCED);
+    let mut trigger = |name: &str, table: &str, column: &str, target: &str, kind: Option<&str>| {
+        let (columns, key) = match kind {
+            Some(kind) => (
+                format!("'{kind}',OLD.{column}"),
+                format!("kind='{kind}' AND {}=OLD.{column}", target_key(target)),
+            ),
+            None => (format!("OLD.{column}"), format!("text_id=OLD.{column}")),
         };
-        let stored_key = if kind.content() { "version_hash" } else { "pk" };
-        // Context retains exact earlier message bodies after the visible source
-        // advances. Keep their cleanup markers until that context is released.
-        let unreferenced = if matches!(kind, VersionKind::Message) {
-            " AND version_hash NOT IN (SELECT version_hash FROM parser_context WHERE version_hash IS NOT NULL)"
-        } else {
-            ""
-        };
-        conn.execute(&format!("DELETE FROM {table} WHERE {stored_key} IN (SELECT {key} FROM {changed} WHERE kind=?1)
-            AND NOT EXISTS(SELECT 1 FROM {name}_source s WHERE s.{key}={table}.{stored_key}){unreferenced}"), [name])?;
-        conn.execute(
-            &format!("DELETE FROM {changed} WHERE kind=?1{unreferenced}"),
-            [name],
-        )?;
+        let insert = format!(
+            "INSERT INTO {target} SELECT {columns} WHERE OLD.{column} IS NOT NULL
+               AND NOT EXISTS(SELECT 1 FROM {target} WHERE {key});"
+        );
+        sql.push_str(&format!(
+            "CREATE TEMP TRIGGER IF NOT EXISTS {name}_removed AFTER DELETE ON {table}
+             BEGIN {insert} END;
+             CREATE TEMP TRIGGER IF NOT EXISTS {name}_changed AFTER UPDATE OF {column} ON {table}
+             WHEN OLD.{column} IS NOT NEW.{column} BEGIN {insert} END;\n"
+        ));
+    };
+    for (name, kind) in [("message", "message"), ("document", "document")] {
+        trigger(
+            &format!("{name}_source"),
+            &format!("{name}_source"),
+            "version_hash",
+            "unreferenced_version",
+            Some(kind),
+        );
     }
+    // Context a parser keeps holds an earlier message body after the shown
+    // source moved on; releasing the context makes the body a candidate.
+    trigger(
+        "parser_context",
+        "parser_context",
+        "version_hash",
+        "unreferenced_version",
+        Some("message"),
+    );
+    for name in ["event", "link"] {
+        trigger(
+            &format!("{name}_source"),
+            &format!("{name}_source"),
+            "value_pk",
+            "unreferenced_value",
+            Some(name),
+        );
+    }
+    for table in [
+        "block",
+        "document_block",
+        "message_version_text",
+        "document_version_text",
+    ] {
+        trigger(table, table, "text_id", "unreferenced_text", None);
+    }
+    sql
+}
+
+fn target_key(target: &str) -> &'static str {
+    if target == "unreferenced_value" {
+        "value_pk"
+    } else {
+        "version_hash"
+    }
+}
+
+/// Installs the reference triggers on a connection that writes the index.
+pub(crate) fn track_unreferenced(conn: &Connection) -> Result<()> {
+    conn.execute_batch(&reference_triggers())?;
     Ok(())
 }
 
-pub(crate) fn remove_unused(conn: &Connection, bulk: bool) -> Result<()> {
-    remove_readings(conn)?;
-    let mut statement = conn.prepare(
-        "SELECT t.id,t.indexed FROM changed_text u JOIN text t ON t.id=u.text_id
-         WHERE NOT EXISTS(SELECT 1 FROM block b WHERE b.text_id=t.id)
-         AND NOT EXISTS(SELECT 1 FROM document_block b WHERE b.text_id=t.id)
-         AND NOT EXISTS(SELECT 1 FROM message_version_text v WHERE v.text_id=t.id)
-         AND NOT EXISTS(SELECT 1 FROM document_version_text v WHERE v.text_id=t.id)",
-    )?;
-    let texts = statement
+/// Deletes the version bodies, values and texts whose last reference this
+/// transaction removed; each row-writing transaction calls it before it
+/// commits. Texts go last: deleting a version removes its text references.
+/// In a first build, the search tables are built from the remaining texts
+/// when it ends, so a removed text has no search entry to remove.
+pub(crate) fn remove_unreferenced(conn: &Connection, bulk: bool) -> Result<()> {
+    for kind in VersionKind::ALL {
+        let name = kind.name();
+        let (table, stored_key, key, candidates) = if kind.content() {
+            (
+                format!("{name}_version"),
+                "version_hash",
+                "version_hash",
+                "unreferenced_version",
+            )
+        } else {
+            (
+                format!("{name}_value"),
+                "pk",
+                "value_pk",
+                "unreferenced_value",
+            )
+        };
+        let context = if matches!(kind, VersionKind::Message) {
+            " AND NOT EXISTS(SELECT 1 FROM parser_context c WHERE c.version_hash=t.version_hash)"
+        } else {
+            ""
+        };
+        conn.prepare_cached(&format!(
+            "DELETE FROM {table} AS t WHERE {stored_key} IN (SELECT {key} FROM temp.{candidates} WHERE kind=?1)
+             AND NOT EXISTS(SELECT 1 FROM {name}_source s WHERE s.{key}=t.{stored_key}){context}"
+        ))?
+        .execute([name])?;
+    }
+    conn.prepare_cached("DELETE FROM temp.unreferenced_version")?
+        .execute([])?;
+    conn.prepare_cached("DELETE FROM temp.unreferenced_value")?
+        .execute([])?;
+    let texts = conn
+        .prepare_cached(
+            "SELECT t.id,t.indexed FROM temp.unreferenced_text u JOIN text t ON t.id=u.text_id
+             WHERE NOT EXISTS(SELECT 1 FROM block b WHERE b.text_id=t.id)
+             AND NOT EXISTS(SELECT 1 FROM document_block b WHERE b.text_id=t.id)
+             AND NOT EXISTS(SELECT 1 FROM message_version_text v WHERE v.text_id=t.id)
+             AND NOT EXISTS(SELECT 1 FROM document_version_text v WHERE v.text_id=t.id)",
+        )?
         .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    drop(statement);
     for (id, indexed) in texts {
         if bulk {
-            conn.execute("DELETE FROM text WHERE id=?1", [id])?;
+            conn.prepare_cached("DELETE FROM text WHERE id=?1")?
+                .execute([id])?;
         } else {
             crate::text_rows::remove(conn, id, indexed)?;
         }
     }
-    conn.execute("DELETE FROM changed_text", [])?;
+    conn.prepare_cached("DELETE FROM temp.unreferenced_text")?
+        .execute([])?;
     Ok(())
 }

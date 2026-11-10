@@ -3,6 +3,7 @@ use super::*;
 
 impl RowWriter<'_, '_> {
     pub(super) fn refresh_event(&self, pk: i64) -> Result<()> {
+        self.changes.event(self.tx, pk)?;
         self.tx.prepare_cached("UPDATE session SET changed=?2 WHERE pk=(SELECT session_pk FROM event WHERE pk=?1) AND changed IS NOT ?2")?.execute(params![pk,self.counter])?;
         let choice = self
             .choices
@@ -38,6 +39,7 @@ impl RowWriter<'_, '_> {
         Ok(())
     }
     pub(super) fn refresh_link(&self, pk: i64) -> Result<()> {
+        self.changes.link(self.tx, pk)?;
         self.mark_link_sessions(pk)?;
         let choice = self
             .choices
@@ -70,6 +72,7 @@ impl RowWriter<'_, '_> {
             .get(resolve::Kind::Session, link.child.to_string().as_bytes())?
             .pk;
         let (kind, how) = link.kind.columns();
+        self.changes.link_child(&link.child.to_string());
         self.tx.prepare_cached("INSERT OR IGNORE INTO link(pk,parent_id,child_id,child_pk,kind,how,evidence,input_pk,source_chain) VALUES (?1,?2,?3,(SELECT pk FROM session WHERE pk=?4),?5,?6,?7,?8,?9)")?.execute(params![pk,link.parent.to_string(),link.child.to_string(),child,kind,how,link.evidence,self.input_pk,self.chain])?;
         let value = &self.choices.link_values[index];
         self.tx

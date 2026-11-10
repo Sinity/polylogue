@@ -45,9 +45,16 @@ struct Derivation {
     pub after: &'static [&'static str],
     /// Recomputes the session's rows: replaces whatever an earlier run
     /// made, from the session's current rows.
-    pub run: fn(&Transaction<'_>, i64, &Catalog) -> Result<()>,
+    pub run: fn(&Transaction<'_>, i64, &Inputs<'_>) -> Result<()>,
     /// Removes shared rows left without any session, even in an empty archive.
     pub finish: Option<fn(&Transaction<'_>) -> Result<()>>,
+}
+
+/// What a derivation reads besides the session's rows, and where it records
+/// the shown rows it changes.
+pub(crate) struct Inputs<'a> {
+    pub catalog: &'a Catalog,
+    pub changes: &'a crate::change_summary::ChangeSummary,
 }
 
 /// Rule versions stay readable; catalog-derived rows also name the complete
@@ -134,10 +141,15 @@ fn run_all(
         // transaction fails to upgrade while the search thread writes.
         let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = crate::archive::bump_counter(&tx)?;
+        let changes = crate::change_summary::ChangeSummary::start(&tx)?;
+        let inputs = Inputs {
+            catalog,
+            changes: &changes,
+        };
         for &pk in sessions {
-            done += derive_session(&tx, pk, derivations, &versions, catalog, counter)?;
+            done += derive_session(&tx, pk, derivations, &versions, &inputs, counter)?;
         }
-        crate::items::refresh_changed(&tx, counter)?;
+        crate::items::refresh(&tx, &changes)?;
         tx.commit()?;
         if let Some(events) = commits {
             events.committed();
@@ -150,8 +162,7 @@ fn run_all(
     }
     let changed = tx.total_changes() != before;
     if changed {
-        let counter = crate::archive::bump_counter(&tx)?;
-        crate::items::refresh_changed(&tx, counter)?;
+        crate::archive::bump_counter(&tx)?;
     }
     tx.commit()?;
     if changed && let Some(events) = commits {
@@ -201,7 +212,7 @@ fn derive_session(
     pk: i64,
     derivations: &[Derivation],
     versions: &[String],
-    catalog: &Catalog,
+    inputs: &Inputs<'_>,
     counter: i64,
 ) -> Result<u64> {
     let Some(changed) = tx
@@ -227,7 +238,7 @@ fn derive_session(
         return Ok(0);
     }
     for &i in &stale {
-        (derivations[i].run)(tx, pk, catalog)?;
+        (derivations[i].run)(tx, pk, inputs)?;
     }
     tx.prepare_cached(
         "UPDATE derive_state SET from_changed = ?3 WHERE session_pk = ?1 AND from_changed = ?2",

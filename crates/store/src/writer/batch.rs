@@ -256,6 +256,9 @@ pub struct WriteReport {
     pub segment_bytes_written: u64,
     pub blobs_appended: u64,
     pub blobs_deduplicated: u64,
+    /// Session item units read to bring item indexes up to date: what the
+    /// committed changes reached, not the length of their sessions.
+    pub item_units_read: u64,
     /// Batches the writer could not store, with the reason. The rest of
     /// their transaction was retried one batch at a time.
     pub errors: Vec<String>,

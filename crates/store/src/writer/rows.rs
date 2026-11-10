@@ -2,6 +2,7 @@
 //! sources, blocks, tool calls, events, links and parse positions.
 
 use super::*;
+use crate::change_summary::ChangeSummary;
 use crate::first_build::FirstBuild;
 use crate::versions::VersionKind;
 use polylogue_model::{Completion, Route};
@@ -12,6 +13,7 @@ mod retract;
 pub(super) use retract::prune_sessions;
 
 /// Writes a parse step's rows; returns the number of message rows written.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn write_rows(
     tx: &Transaction<'_>,
     b: &Batch,
@@ -20,6 +22,7 @@ pub(super) fn write_rows(
     counter: i64,
     first_build: Option<&FirstBuild>,
     receipt: Option<&crate::wire_shapes::ReadingReceipt>,
+    changes: &ChangeSummary,
 ) -> Result<u64> {
     apply_rows(
         tx,
@@ -32,12 +35,14 @@ pub(super) fn write_rows(
             confirmed: false,
             replacement: false,
             receipt,
+            changes,
         },
     )
 }
 
 /// Only the complete standalone replacement owner uses this entry point for
 /// its first ordinary chunk. Later chunks use the ordinary continuation path.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn write_replacement_rows(
     tx: &Transaction<'_>,
     b: &Batch,
@@ -46,6 +51,7 @@ pub(super) fn write_replacement_rows(
     counter: i64,
     first_build: Option<&FirstBuild>,
     receipt: Option<&crate::wire_shapes::ReadingReceipt>,
+    changes: &ChangeSummary,
 ) -> Result<u64> {
     apply_rows(
         tx,
@@ -58,12 +64,14 @@ pub(super) fn write_replacement_rows(
             confirmed: false,
             replacement: true,
             receipt,
+            changes,
         },
     )
 }
 
 /// Apply confirmed canonical facts to the derived cache; source byte admission
 /// was already proved by the producer and lifecycle may hide earlier facts.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn write_confirmed_rows(
     tx: &Transaction<'_>,
     b: &Batch,
@@ -72,6 +80,7 @@ pub(super) fn write_confirmed_rows(
     counter: i64,
     first_build: Option<&FirstBuild>,
     receipt: Option<&crate::wire_shapes::ReadingReceipt>,
+    changes: &ChangeSummary,
 ) -> Result<u64> {
     apply_rows(
         tx,
@@ -84,6 +93,7 @@ pub(super) fn write_confirmed_rows(
             confirmed: true,
             replacement: false,
             receipt,
+            changes,
         },
     )
 }
@@ -95,6 +105,7 @@ struct ReadingWrite<'a> {
     confirmed: bool,
     replacement: bool,
     receipt: Option<&'a crate::wire_shapes::ReadingReceipt>,
+    changes: &'a ChangeSummary,
 }
 
 fn apply_rows(
@@ -110,6 +121,7 @@ fn apply_rows(
         confirmed,
         replacement,
         receipt,
+        changes,
     } = context;
     p.counts.check()?;
     p.prepared.validate(&p.output)?;
@@ -163,6 +175,7 @@ fn apply_rows(
         first_build,
         keys,
         choices,
+        changes,
     };
     if p.reset {
         rows.retract()?;
@@ -425,6 +438,19 @@ fn apply_rows(
     Ok(written)
 }
 
+/// Ends a transaction that applied rows: brings the session item index up
+/// to date from what the transaction changed and deletes the version bodies,
+/// values and texts it left without references. Returns the item units read.
+pub(crate) fn finish(
+    tx: &Transaction<'_>,
+    changes: &ChangeSummary,
+    first_build: bool,
+) -> Result<u64> {
+    let read = crate::items::refresh(tx, changes)?;
+    crate::versions::remove_unreferenced(tx, first_build)?;
+    Ok(read)
+}
+
 fn validate_range(batch: &Batch, step: &ParseStep) -> Result<()> {
     if step.start > step.parsed_upto
         || step.parsed_upto > batch.length
@@ -483,6 +509,7 @@ pub(super) struct RowWriter<'a, 't> {
     first_build: Option<&'a FirstBuild>,
     keys: &'a resolve::ResolvedKeys,
     choices: &'a resolve::membership::Choices,
+    changes: &'a ChangeSummary,
 }
 
 /// The main route's reading of a shown message.
@@ -612,6 +639,10 @@ impl RowWriter<'_, '_> {
         let pk = match pk {
             Some(pk) => pk,
             None => {
+                self.changes.message(
+                    self.tx,
+                    self.keys.get(resolve::Kind::Message, id.as_bytes())?.pk,
+                )?;
                 let pk = self.insert_message(m, session_pk, &v, (self.input_pk, position))?;
                 if let Some(first) = self.first_build {
                     first.add_message(&id, pk);
@@ -641,6 +672,7 @@ impl RowWriter<'_, '_> {
     }
 
     fn refresh_message(&self, pk: i64) -> Result<bool> {
+        self.changes.message(self.tx, pk)?;
         let choice = self
             .choices
             .messages
@@ -867,11 +899,16 @@ impl RowWriter<'_, '_> {
                 "UPDATE event SET after_message_pk=?2,
              seq=CASE WHEN seq_from_message=1 THEN ?3 ELSE seq END
              WHERE after_message_id=?1 AND (after_message_pk IS NOT ?2
-                OR (seq_from_message=1 AND seq IS NOT ?3)) RETURNING session_pk",
+                OR (seq_from_message=1 AND seq IS NOT ?3)) RETURNING pk, session_pk",
             )?
-            .query_map(params![id, pk, seq], |r| r.get::<_, Option<i64>>(0))?
+            .query_map(params![id, pk, seq], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        for session in sessions.into_iter().flatten() {
+        for (event, session) in sessions {
+            // Only its place moved; its session is the one it had.
+            self.changes.event(self.tx, event)?;
+            let Some(session) = session else { continue };
             self.tx
                 .prepare_cached("UPDATE session SET changed=?2 WHERE pk=?1 AND changed IS NOT ?2")?
                 .execute(params![session, self.counter])?;
@@ -1175,6 +1212,7 @@ impl RowWriter<'_, '_> {
     fn write_event(&self, index: usize) -> Result<()> {
         let id = &self.choices.event_ids[index];
         let (pk, source) = &self.choices.event_sources[index];
+        self.changes.event(self.tx, *pk)?;
         self.tx.prepare_cached("INSERT OR IGNORE INTO event(pk,id,session_pk,seq,kind,at,input_pk,source_chain,source_start,source_end,fields,data)
             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)")?
             .execute(params![pk,id,source.session,source.seq.unwrap_or(0),source.kind,source.at,self.input_pk,self.chain,source.start,source.end,source.fields,source.body])?;

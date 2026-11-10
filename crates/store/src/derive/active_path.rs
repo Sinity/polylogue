@@ -16,12 +16,16 @@ pub(super) const DERIVATION: Derivation = Derivation {
     products: &[],
     version: Version::Rules(5),
     after: &[],
-    run: |tx, pk, _| run(tx, pk),
+    run: |tx, pk, inputs| run(tx, pk, inputs.changes),
     finish: None,
 };
 
-pub(super) fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
-    tx.prepare_cached(
+pub(super) fn run(
+    tx: &Transaction<'_>,
+    session_pk: i64,
+    changes: &crate::change_summary::ChangeSummary,
+) -> Result<()> {
+    let moved = tx.prepare_cached(
         "WITH RECURSIVE
            observations AS (
              SELECT m.id, e.kind, e.at, e.id AS event_id, r.id AS input_id,
@@ -47,8 +51,14 @@ pub(super) fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
                              THEN (id IN (SELECT id FROM path)) END
              FROM message WHERE session_pk = ?1)
          UPDATE message SET on_active_path = marked.v FROM marked
-         WHERE message.pk = marked.pk AND message.on_active_path IS NOT marked.v",
+         WHERE message.pk = marked.pk AND message.on_active_path IS NOT marked.v
+         RETURNING message.pk",
     )?
-    .execute([session_pk])?;
+    .query_map([session_pk], |row| row.get(0))?
+    .collect::<rusqlite::Result<Vec<i64>>>()?;
+    // The session and parent stay as they were; only the place changed.
+    for pk in moved {
+        changes.message(tx, pk)?;
+    }
     Ok(())
 }

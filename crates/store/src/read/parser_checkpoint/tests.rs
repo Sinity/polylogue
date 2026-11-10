@@ -437,14 +437,37 @@ fn keyed_context_reuses_a_retained_message_version_without_changing_source_selec
     assert_eq!(row.message.text(), "later source copy");
     assert_eq!((row.offset, row.end), (1, 2));
     drop(overlay);
-    // Retraction of the context releases the body that has no visible source.
+    // Reading the chain again without the context releases the body that has
+    // no visible source, in that reading's own transaction.
+    let mut again = crate::fixture::writer::step(
+        "context-copy",
+        "claude-code",
+        "/synthetic/copy.jsonl",
+        polylogue_model::Output {
+            sessions: vec![polylogue_model::Session::new(
+                first.session.clone(),
+                polylogue_model::SessionKind::Main,
+            )],
+            messages: vec![polylogue_model::MessageRow {
+                id_kind: polylogue_model::IdKind::Native,
+                offset: 0,
+                end: 1,
+                page_text: false,
+                message: first.clone(),
+            }],
+            ..Default::default()
+        },
+        0,
+        2,
+    );
+    again.change = Change::Reparse {
+        chain: stored.chain,
+    };
+    again.observation = None;
+    writer.send(again).unwrap();
+    let report = writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{report:?}");
     let index = rusqlite::Connection::open(archive.index_db()).unwrap();
-    index
-        .execute_batch(
-            "BEGIN; DELETE FROM parser_context; DELETE FROM parser_context_state; COMMIT;",
-        )
-        .unwrap();
-    writer.derive().unwrap();
     let hash = later.content_hash().unwrap();
     assert!(
         !index

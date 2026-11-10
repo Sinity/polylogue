@@ -7,18 +7,18 @@ impl RowWriter<'_, '_> {
             "CREATE TEMP TABLE IF NOT EXISTS reparse_session(input_pk INTEGER,chain INTEGER,pk INTEGER,PRIMARY KEY(input_pk,chain,pk)) WITHOUT ROWID",
         )?;
         self.tx.execute("INSERT OR IGNORE INTO temp.reparse_session SELECT input_pk,chain,session_pk FROM parsed WHERE input_pk=?1 AND chain=?2",params![self.input_pk,self.chain])?;
-        crate::fragment::retract(self.tx, self.input_pk, self.chain)?;
-        let mut touched = Vec::new();
-        for kind in VersionKind::ALL {
-            touched.push((kind, kind.retract(self.tx, self.input_pk, self.chain)?));
+        // A retracted reading can change any of its sessions' rows.
+        let sessions = self
+            .tx
+            .prepare_cached("SELECT session_pk FROM parsed WHERE input_pk=?1 AND chain=?2")?
+            .query_map(params![self.input_pk, self.chain], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?;
+        for session in sessions {
+            self.changes.whole_session(session);
         }
-        if self.first_build.is_none() {
-            let count: usize = touched.iter().map(|(_, rows)| rows.len()).sum();
-            self.tx.execute(
-                "INSERT INTO meta(key,value) VALUES ('reparse_deletions',?1)
-                ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+?1 AS TEXT)",
-                [(count as i64).to_string()],
-            )?;
+        crate::fragment::retract(self.tx, self.input_pk, self.chain)?;
+        for kind in VersionKind::ALL {
+            kind.retract(self.tx, self.input_pk, self.chain)?;
         }
         self.tx.execute("UPDATE session SET changed=?3,live_reparse=1 WHERE pk IN (SELECT session_pk FROM parsed WHERE input_pk=?1 AND chain=?2)", params![self.input_pk,self.chain,self.counter])?;
         for table in [

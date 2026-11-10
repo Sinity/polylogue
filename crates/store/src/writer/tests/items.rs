@@ -244,6 +244,86 @@ fn an_event_naming_no_message_keeps_later_messages_appends() {
     assert_matches_rows(&w, "s");
 }
 
+fn hook_event(at: i64, range: (u64, u64)) -> polylogue_model::Event {
+    polylogue_model::Event {
+        session: Some(sid("s")),
+        kind: "hook_run".into(),
+        at: Timestamp::from_unix_ms(at),
+        at_quality: polylogue_model::TimeQuality::Captured,
+        at_precision: None,
+        at_until: None,
+        after: None,
+        range: Some(range),
+        data: serde_json::json!({"hook": "synthetic"}),
+    }
+}
+
+#[test]
+fn long_session_append_visits_only_suffix() {
+    let w = test_archive();
+    // 300 timed messages, with hook lines between them, in one reading.
+    let rows = (0..300u64)
+        .map(|n| {
+            let mut m = message(&format!("m{n}"), Role::Assistant, "earlier work");
+            m.at = Timestamp::from_unix_ms(1_000 + n as i64 * 10);
+            // One 100-byte chunk holds them all, several to a record.
+            row(n / 3, m)
+        })
+        .collect();
+    let mut opening = batch("i1", Route::Live, 0, rows, &["s"]);
+    for n in 0..300u64 {
+        opening.parse[0]
+            .output
+            .events
+            .push(hook_event(1_005 + n as i64 * 10, (n / 3, n / 3 + 1)));
+    }
+    w.store_reading(opening, Some(&SOURCE_RECORD)).unwrap();
+    w.writer.flush().unwrap();
+    let before = stored(&w, "s");
+    // A live append: one message and the hook line after it.
+    let mut appended = message("next", Role::User, "one more question");
+    appended.at = Timestamp::from_unix_ms(5_000);
+    let mut append = batch("i1", Route::Live, 100, vec![row(110, appended)], &["s"]);
+    append.parse[0]
+        .output
+        .events
+        .push(hook_event(5_005, (115, 116)));
+    w.store_reading(append, Some(&SOURCE_RECORD)).unwrap();
+    let report = w.writer.flush().unwrap();
+    // The last earlier message and its hook line, then the two new units.
+    assert_eq!(report.item_units_read, 4, "{report:?}");
+    let after = stored(&w, "s");
+    assert_eq!(after.rewrite_version, before.rewrite_version);
+    assert_eq!(after.append_seq, before.append_seq + 1);
+    assert_eq!(after.entries[..before.entries.len()], before.entries[..]);
+    assert_matches_rows(&w, "s");
+}
+
+#[test]
+fn a_late_hook_line_is_placed_by_its_time_from_the_suffix() {
+    let w = test_archive();
+    let rows = (0..20u64)
+        .map(|n| {
+            let mut m = message(&format!("m{n}"), Role::Assistant, "work");
+            m.at = Timestamp::from_unix_ms(1_000 + n as i64 * 10);
+            row(n * 5, m)
+        })
+        .collect();
+    w.store_reading(
+        batch("i1", Route::Live, 0, rows, &["s"]),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    w.writer.flush().unwrap();
+    // A hook line from another input, timed between the 15th and 16th messages.
+    let mut late = batch("i2", Route::Live, 0, Vec::new(), &["s"]);
+    late.parse[0].output.events.push(hook_event(1_155, (1, 2)));
+    w.store_reading(late, Some(&SOURCE_RECORD)).unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.item_units_read < 10, "{report:?}");
+    assert_matches_rows(&w, "s");
+}
+
 #[test]
 fn lineage_walks_links_transitively_and_skips_references() {
     let dir = tempfile::tempdir().unwrap();
@@ -315,6 +395,17 @@ fn indexing_errors_abort_the_changed_rows_transaction() {
                 params![counter, before.session_pk],
             )
             .unwrap();
+            let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
+            let messages: Vec<i64> = tx
+                .prepare("SELECT pk FROM message WHERE session_pk = ?1")
+                .unwrap()
+                .query_map([before.session_pk], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            for pk in messages {
+                changes.message(&tx, pk).unwrap();
+            }
             tx.execute("UPDATE message SET on_active_path = 0", [])
                 .unwrap();
             if invalid_json {
@@ -325,7 +416,7 @@ fn indexing_errors_abort_the_changed_rows_transaction() {
                 tx.execute("UPDATE block SET idx = -1, ordinal = NULL", [])
                     .unwrap();
             }
-            let error = crate::items::refresh_changed(&tx, counter)
+            let error = crate::items::refresh(&tx, &changes)
                 .expect_err("a transaction cannot commit rows whose item index did not refresh");
             if invalid_json {
                 assert!(

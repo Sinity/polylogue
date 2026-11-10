@@ -6,6 +6,7 @@ pub(crate) fn apply_confirmed_readings(
     tx: &Transaction<'_>,
     readings: &mut [(InputKey, i64, u64, ChainReading)],
     counter: i64,
+    changes: &crate::change_summary::ChangeSummary,
 ) -> Result<()> {
     for (input, chain, length, reading) in readings {
         let batch = Batch {
@@ -66,7 +67,7 @@ pub(crate) fn apply_confirmed_readings(
             )?;
         }
         reading.visit(|step| {
-            rows::write_confirmed_rows(tx, &batch, step, *chain, counter, None, None)?;
+            rows::write_confirmed_rows(tx, &batch, step, *chain, counter, None, None, changes)?;
             Ok(())
         })?;
         rows::prune_sessions(tx, &input.id, *chain, counter)?;

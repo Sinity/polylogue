@@ -37,6 +37,7 @@ fn write_test_rows(
         counter,
         first,
         Some(&fixture_receipt()),
+        &crate::change_summary::ChangeSummary::start(tx).unwrap(),
     )
 }
 
