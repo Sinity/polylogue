@@ -335,3 +335,51 @@ fn links_fold_after_append_equals_full_recompute() {
     seen.dedup();
     assert_eq!(seen.len(), 7, "{seen:?}");
 }
+
+#[test]
+fn links_derived_by_the_earlier_rules_are_derived_again() {
+    let mut w = WriterArchive::new();
+    w.write(
+        "s",
+        bash(
+            "s",
+            1,
+            1_000,
+            "gh pr create --fill",
+            true,
+            "https://github.com/Sinity/polylogue/pull/6300/files\n",
+        ),
+    );
+    // An index the earlier rules derived: the raw URL token, at their version.
+    let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    let version: String = conn
+        .query_row(
+            "SELECT version FROM derive_state WHERE name='links'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    // `["<rules>",{dependencies}]`, at the rules #6808 shipped.
+    let earlier = format!("[\"2\",{}", &version[version.find(',').unwrap() + 1..]);
+    conn.execute(
+        "UPDATE pr_link SET url='https://github.com/Sinity/polylogue/pull/6300/files'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE derive_state SET version=?1 WHERE name='links'",
+        [&earlier],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE meta SET value=json_set(value,'$.links',?1) WHERE key='derived_versions'",
+        [&earlier],
+    )
+    .unwrap();
+    drop(conn);
+    w.writer.derive().unwrap();
+    assert_eq!(
+        w.rows("SELECT url FROM pr_link"),
+        vec![json!({"url": "https://github.com/Sinity/polylogue/pull/6300"})]
+    );
+}

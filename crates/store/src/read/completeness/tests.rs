@@ -492,3 +492,30 @@ fn caught_up_read_steps_independent_of_chain_count() {
     };
     assert_eq!(steps(2), steps(40));
 }
+
+#[test]
+fn unreadable_chain_counts_are_stored_value_errors() {
+    for (state, n) in [("lost", 1), ("current", -1)] {
+        let mut stored = WriterArchive::new();
+        stored.write("s", prose("s", 1, 1, "text"));
+        let index = Connection::open(stored.archive.index_db()).unwrap();
+        index
+            .execute(
+                "INSERT INTO chain_progress_count(origin, reading_version, state, n)
+                 VALUES ('claude-code', 'other=1', ?1, ?2)",
+                rusqlite::params![state, n],
+            )
+            .unwrap();
+        let pool = ReadPool::open(&stored.archive).unwrap();
+        let error = pool
+            .reader()
+            .unwrap()
+            .completeness(&[expected("claude-code", "synthetic=1")])
+            .unwrap_err();
+        assert!(
+            matches!(error, crate::StoreError::StoredValue { .. }),
+            "{state} {n}: {error:?}"
+        );
+        assert_eq!(error.code(), "store", "{state} {n}");
+    }
+}
