@@ -104,7 +104,8 @@ fn span_and_lanes_match_a_hand_computed_session() {
     assert_eq!(
         (RULE_VERSION, serde_json::to_value(&span).unwrap()),
         (
-            1,
+            // 2: the human lane is unknown without a provider turn end.
+            2,
             serde_json::json!({
                 "first_at":0,"last_at":4500000,"time_source":"messages","wall_ms":4500000,"clustered_ms":3720000,"tool_sum_ms":3434000,"tool_union_ms":1704000,"tool_overlap_ms":1730000,
                 "tool_untimed":0,"tool_no_result":0,"tool_same_timestamp":0,"tool_reversed":0,"timed_messages":18,"untimed_messages":0,"unordered_gaps":0,"first_failure_at":2262000,"prompts_to_failure":1,"prompted":true,"ends_with":"model_text","ends_with_message":"m17","last_stop_reason":"end_turn"
@@ -409,4 +410,41 @@ fn last_recorded_item_and_stop_reason_do_not_claim_task_outcomes() {
     let mut command = m("command", Some(0), "human", "text", false);
     command.prompt = Some("command".into());
     assert_eq!(command.ends_with(), "human_command");
+}
+
+#[test]
+fn waiting_human_is_unknown_without_a_provider_turn_end() {
+    let prompt = |id, at| m(id, Some(at), "human", "text", false);
+    let answer = |id, at, end| m(id, Some(at), "model", "text", end);
+    // A provider that marks turn ends: the human lane is measured.
+    let (_, lanes) = calculate(
+        &[
+            prompt("p1", 0),
+            answer("a1", MINUTE, true),
+            prompt("p2", 3 * MINUTE),
+        ],
+        &[],
+        Some(0),
+        Some(3 * MINUTE),
+        "messages",
+        CLUSTER_GAP_MS,
+    );
+    assert_eq!(lane(&lanes, "human"), 2 * MINUTE);
+    // One that reports none: the same gap is unattributed and the human
+    // lane has no value, rather than 0.
+    let (_, lanes) = calculate(
+        &[
+            prompt("p1", 0),
+            answer("a1", MINUTE, false),
+            prompt("p2", 3 * MINUTE),
+        ],
+        &[],
+        Some(0),
+        Some(3 * MINUTE),
+        "messages",
+        CLUSTER_GAP_MS,
+    );
+    assert!(lanes.iter().all(|l| l.lane != "human"), "{lanes:?}");
+    assert_eq!(lane(&lanes, "unattributed"), 2 * MINUTE);
+    assert_eq!(lane(&lanes, "model"), MINUTE);
 }
