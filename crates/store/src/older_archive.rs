@@ -497,6 +497,30 @@ impl OlderArchive {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Groups of two or more inputs with an observation of the same file:
+    /// the same machine, device and inode. The older format recorded a file
+    /// reached through two paths (a linked directory) as one input per path.
+    /// Each group's IDs are in order; a device and inode can also be reused
+    /// by a later file, so callers compare the inputs' bytes before treating
+    /// them as one.
+    pub fn same_file_groups(&self) -> Result<Vec<Vec<String>>> {
+        let mut statement = self.archive.prepare(
+            "SELECT group_concat(input, char(31)) FROM (
+               SELECT DISTINCT machine, device, inode, input FROM observation
+               WHERE device IS NOT NULL AND inode IS NOT NULL
+               ORDER BY machine, device, inode, input)
+             GROUP BY machine, device, inode HAVING COUNT(*) > 1",
+        )?;
+        let rows = statement.query_map([], |r| r.get::<_, String>(0))?;
+        let mut groups = Vec::new();
+        for row in rows {
+            let mut ids: Vec<String> = row?.split('\u{1f}').map(str::to_owned).collect();
+            ids.sort();
+            groups.push(ids);
+        }
+        Ok(groups)
+    }
+
     /// Whether the older archive holds an input with this ID.
     pub fn has_input(&self, id: &str) -> Result<bool> {
         Ok(self
