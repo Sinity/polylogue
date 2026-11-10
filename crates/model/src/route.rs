@@ -83,7 +83,7 @@ impl Route {
 pub enum FieldGroup {
     /// Role, prompt kind, blocks and the provider fields indexed by block.
     /// The route that supplies them is the message's main route: its
-    /// position orders the message and its version is the stored reading.
+    /// version is the stored reading.
     Content,
     /// The provider time and its evidence.
     Time,

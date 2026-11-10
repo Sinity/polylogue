@@ -1165,7 +1165,17 @@ impl<'a> Projection<'a> {
                     session: main.session,
                     in_progress: main.completion == Completion::InProgress
                         && !routes.iter().any(|(group, ..)| *group == FieldGroup::Stop),
-                    order: (main.input, (main.seq, main.position)),
+                    order: {
+                        // Until messages order by source time, every message
+                        // of a session orders by the reading whose input ID
+                        // sorts first, so messages one route holds and
+                        // messages several hold share one ordering input.
+                        let order = current
+                            .iter()
+                            .min_by_key(|m| (&m.input_id, m.seq, m.position))
+                            .expect("a composed message has readings");
+                        (order.input, (order.seq, order.position))
+                    },
                     routes: routes
                         .into_iter()
                         .map(|(group, input, chain, _)| (group, input, chain))
