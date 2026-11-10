@@ -97,6 +97,7 @@ const WRITE_COUNTER_VALUES: &[(&str, &str)] = &[
     ("*", "admitted"),
     ("*", "commit_seq"),
     ("session", "changed"),
+    ("session", "derived_changed"),
     ("session_item_state", "indexed_changed"),
 ];
 /// Values that follow the order of writes rather than what was written: a
