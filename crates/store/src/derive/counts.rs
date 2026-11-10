@@ -14,6 +14,7 @@ pub(super) const DERIVATION: Derivation = Derivation {
     products: &[polylogue_model::derived::SESSION_COUNTS],
     version: Version::Rules(1),
     after: &["duplicates", "active_path", "tool_calls"],
+    dirtied_by: &[],
     run: |tx, pk, _| run(tx, pk),
 };
 

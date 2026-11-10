@@ -32,6 +32,7 @@ pub(super) const DERIVATION: Derivation = Derivation {
     products: &[],
     version: Version::Rules(6),
     after: &[],
+    dirtied_by: &[],
     run: |tx, pk, _| run(tx, pk),
 };
 

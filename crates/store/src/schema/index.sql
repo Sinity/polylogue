@@ -467,10 +467,13 @@ CREATE INDEX derive_state_session ON derive_state(session_pk);
 -- Sessions whose derived rows are behind, marked by their causes in the
 -- transaction that caused them: the derive step finds its work here, never
 -- by scanning sessions. `rows_changed` 1: the session's rows changed, so
--- every derivation runs; 0: only derivations whose version moved.
+-- every derivation runs; `repo_lookup` 1: a repository lookup at or above
+-- its working directory changed, so the derivations it dirties run (the
+-- repository); both 0: only derivations whose version moved.
 CREATE TABLE derive_due (
   session_pk        INTEGER PRIMARY KEY REFERENCES session(pk) ON DELETE CASCADE,
-  rows_changed      INTEGER NOT NULL
+  rows_changed      INTEGER NOT NULL,
+  repo_lookup       INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE TRIGGER session_derive_due AFTER INSERT ON session BEGIN
   INSERT INTO derive_due(session_pk, rows_changed) VALUES (NEW.pk, 1)

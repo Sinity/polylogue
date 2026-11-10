@@ -17,6 +17,7 @@ pub(crate) const DERIVATION: super::Derivation = super::Derivation {
     version: super::Version::Rules(2),
     // Reads tool calls' commands and outcomes.
     after: &["tool_calls"],
+    dirtied_by: &[],
     run: |tx, session_pk, _| derive_session(tx, session_pk),
 };
 
