@@ -120,9 +120,9 @@ fn calendar_sql_daily_series_and_pooled_reads_agree_at_fractional_dst_boundaries
         assert_eq!(
             series.days,
             vec![
-                ("2026-03-06".into(), 1.0),
-                ("2026-03-07".into(), 2.0),
-                ("2026-03-08".into(), 1.0)
+                ("2026-03-06".into(), 1),
+                ("2026-03-07".into(), 2),
+                ("2026-03-08".into(), 1)
             ]
         );
         let rhythm = crate::measure::daily::rhythm(

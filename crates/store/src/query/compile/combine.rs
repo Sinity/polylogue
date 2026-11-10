@@ -179,10 +179,6 @@ impl<'a> Compiler<'a> {
                 position: span.start,
             });
         }
-        let expr = match kind {
-            ColKind::Money => format!("({expr}) / 1e9"),
-            _ => expr,
-        };
         let key = column_sql(program.column_slot(&program.columns[0].name));
         Ok(format!(
             "CASE WHEN ({expr}) IS NULL THEN NULL ELSE ({expr}) IN (SELECT {key} FROM ({}) WHERE {key} IS NOT NULL) END",

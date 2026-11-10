@@ -1,6 +1,6 @@
 use super::{Selection, drift, quota, survival, tool_calls, usage};
 use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
-use polylogue_model::{QuotaLimit, QuotaReading, QuotaWindow, Usage};
+use polylogue_model::{QuotaLimit, QuotaReading, QuotaWindow, Usage, money::Amount};
 use serde_json::json;
 use std::borrow::Cow;
 
@@ -201,20 +201,17 @@ fn unpriced_models_stay_unknown_and_credits_stay_apart() {
         ..Selection::default()
     };
     let u = usage(&r, &only(unpriced)).unwrap();
-    assert_eq!(
-        u.api_cost.known_usd, None,
-        "unpriced must be unknown, not 0"
-    );
+    assert_eq!(u.api_cost.known, None, "unpriced must be unknown, not 0");
     assert_eq!(u.api_cost.unpriced_messages, 1);
     assert_eq!(u.unpriced_models, vec![("gpt-9-imaginary".to_owned(), 1)]);
 
     let m = usage(&r, &only(mixed)).unwrap();
     assert!(m.api_cost.partial());
-    assert_eq!(m.api_cost.known_usd, Some(15.0));
+    assert_eq!(m.api_cost.known, Some(Amount(15_000_000_000)));
     assert_eq!(m.api_cost.unpriced_messages, 1);
 
     let all = usage(&r, &Selection::default()).unwrap();
-    assert_eq!(all.api_cost.known_usd, Some(30.0));
+    assert_eq!(all.api_cost.known, Some(Amount(30_000_000_000)));
     assert_eq!(all.api_cost.unpriced_messages, 2);
 
     // Credits are reported in their own place, never as dollars.
@@ -223,7 +220,7 @@ fn unpriced_models_stay_unknown_and_credits_stay_apart() {
     assert_eq!(codex.credits.as_ref().unwrap().balance, "38816.6156015000");
     assert_eq!(codex.plan.as_deref(), Some("pro"));
     let window = &codex.windows[0];
-    assert_eq!(window.usage.as_ref().unwrap().api_cost.known_usd, None);
+    assert_eq!(window.usage.as_ref().unwrap().api_cost.known, None);
 }
 
 /// Hiding a session never changes a usage figure; the figures say
@@ -474,7 +471,7 @@ fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
             .tokens
     );
     // Priced under the current catalog, at both grains.
-    assert!(c.with_parents.api_cost.known_usd.unwrap() > c.own.api_cost.known_usd.unwrap());
+    assert!(c.with_parents.api_cost.known.unwrap() > c.own.api_cost.known.unwrap());
 }
 
 fn shell(f: &mut Fixture, s: i64, m: i64, cmd: &str, outcome: &str, at: i64) {

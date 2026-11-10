@@ -156,6 +156,11 @@ impl Compiler<'_> {
                     Arithmetic::Divide => format!("(1.0 * ({left})) / NULLIF(({right}), 0)"),
                     _ => format!("({left}) {} ({right})", operator.symbol()),
                 };
+                // Money stays integer nano-USD: a scaled amount rounds once,
+                // and a sum past the i64 range is refused, not widened to a float.
+                if kind == ColKind::Money {
+                    return Ok((format!("pl_money({sql})"), kind));
+                }
                 Ok((format!("pl_finite({sql})"), kind))
             }
             Expression::Function { name, arguments } if name == "glob" => {

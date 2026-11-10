@@ -25,7 +25,7 @@ pub const VIEWS: &[(&str, &str)] = &[
             (SELECT b.text_id FROM main.block b WHERE b.message_pk = m.pk AND b.kind = 'text' ORDER BY b.idx) bt \
             JOIN main.text t ON t.id = bt.text_id) AS text, \
          m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_write_tokens, \
-         m.cost_nusd / 1e9 AS cost_usd, m.duplicate_of, m.on_active_path \
+         m.cost_nusd, m.duplicate_of, m.on_active_path \
          FROM main.message m JOIN main.session s ON s.pk = m.session_pk",
     ),
     (

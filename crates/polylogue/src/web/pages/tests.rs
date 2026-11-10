@@ -6,8 +6,8 @@ fn partial_cost_and_unknown_denominators_match_cli_accounting() {
     let report = json!({
         "messages": null, "sessions": 2,
         "tokens": {"input": {"tokens": 40, "unknown_messages": 1, "response_total_unknown": true}},
-        "api_cost": {"known_usd": 1.25, "priced_messages": 1, "unpriced_messages": 1, "response_total_unknown": true},
-        "reported_cost": {"known_usd": null, "unpriced_messages": 2},
+        "api_cost": {"known": {"nusd": 1_250_000_000_i64, "usd": 1.25}, "priced_messages": 1, "unpriced_messages": 1, "response_total_unknown": true},
+        "reported_cost": {"known": null, "unpriced_messages": 2},
         "by_model": [], "price_catalog": "synthetic"
     });
     let page = cost("repo:<script>", &report);

@@ -458,7 +458,13 @@ pub fn costs_by_day(
     let first = params.len();
     params.push(SqlValue::Int(until));
     let last = params.len();
-    reader.with_clock(clock, || reader.query(&format!("WITH activity AS ({source}) SELECT pl_day(at) AS date,count(*) AS records,sum(cost_nusd)/1e9 AS known_usd,sum(cost_nusd IS NULL) AS unpriced_records FROM activity WHERE at >= ?{first} AND at < ?{last} GROUP BY date ORDER BY date"),&params))
+    let mut days = reader.with_clock(clock, || reader.query(&format!("WITH activity AS ({source}) SELECT pl_day(at) AS date,count(*) AS records,sum(cost_nusd) AS known,sum(cost_nusd IS NULL) AS unpriced_records FROM activity WHERE at >= ?{first} AND at < ?{last} GROUP BY date ORDER BY date"),&params))?;
+    // The day's known cost, like every other amount, as nano-USD and exact dollars.
+    for day in &mut days {
+        let known = day["known"].as_i64().map(polylogue_model::money::Amount);
+        day["known"] = serde_json::to_value(known)?;
+    }
+    Ok(days)
 }
 
 /// Known responses with unrepresentable source times in the selected sessions,

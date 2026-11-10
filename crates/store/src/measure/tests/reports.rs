@@ -111,7 +111,7 @@ fn independent_usage_is_measured_once_without_fabricating_response_or_missing_us
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(daily.days.iter().map(|d| d.1).sum::<f64>(), 12.0);
+    assert_eq!(daily.days.iter().map(|d| d.1).sum::<i64>(), 12);
     assert_eq!(daily.days.len(), 1);
     assert_eq!(daily.covers, "recorded_known_values");
     assert_eq!(daily.timed_by, "source_record_time");
@@ -130,8 +130,8 @@ fn independent_usage_is_measured_once_without_fabricating_response_or_missing_us
     )
     .unwrap();
     assert_eq!(
-        costs.days.iter().map(|d| d.1).sum::<f64>(),
-        report.recorded_usage.known_api_cost_usd.unwrap()
+        costs.days.iter().map(|d| d.1).sum::<i64>(),
+        report.recorded_usage.known_api_cost.unwrap().nusd()
     );
     assert!(costs.incomplete);
     assert!(costs.changes.is_empty());
@@ -184,7 +184,7 @@ fn delayed_rate_only_snapshots_preserve_state_without_provider_time_or_window_sp
     assert_eq!(w.burn_percent_per_hour, None);
     assert_eq!(w.exhausted_at, None);
     assert_eq!(w.tokens_per_hour, None);
-    assert_eq!(w.api_usd_per_hour, None);
+    assert_eq!(w.api_cost_per_hour, None);
     assert_eq!(w.usage, None);
     assert_eq!(tool.recorded_usage.known_usage.input, Some(10));
 }
@@ -349,7 +349,7 @@ fn ordinary_complete_request_usage_keeps_its_daily_values_and_baseline() {
     )
     .unwrap();
     assert_eq!(daily.days.len(), 8);
-    assert!(daily.days.iter().all(|d| d.1 == 12.0));
+    assert!(daily.days.iter().all(|d| d.1 == 12));
     assert!(!daily.incomplete);
     assert!(!daily.response_completeness_unknown);
     assert!(!daily.unknown_spend_time);

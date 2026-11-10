@@ -26,6 +26,18 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
             _ => return Err(invalid("arithmetic requires numbers")),
         })
     })?;
+    // SQLite's floating sum can return NULL for opposing infinities reached
+    // from finite inputs. The count of known inputs tells that failure apart
+    // from a total that is unknown because it has no known inputs.
+    conn.create_scalar_function("pl_finite_aggregate", 2, FLAGS, |ctx| {
+        Ok(match ctx.get_raw(0) {
+            ValueRef::Null if ctx.get::<i64>(1)? == 0 => Value::Null,
+            ValueRef::Null => return Err(invalid("numeric aggregate overflow")),
+            ValueRef::Integer(value) => Value::Integer(value),
+            ValueRef::Real(value) => Value::Real(finite(value)?),
+            _ => return Err(invalid("numeric aggregate requires numbers")),
+        })
+    })?;
     conn.create_scalar_function("pl_abs", 1, FLAGS, |ctx| {
         Ok(match ctx.get_raw(0) {
             ValueRef::Null => Value::Null,
@@ -73,6 +85,45 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
                 || path
                     .strip_prefix(root)
                     .is_some_and(|rest| rest.starts_with('/'))
+        }))
+    })?;
+    // Money is integer nano-USD. An amount scaled by a fractional number
+    // rounds half away from zero; one outside the i64 range is refused.
+    conn.create_scalar_function("pl_money", 1, FLAGS, |ctx| {
+        Ok(match ctx.get_raw(0) {
+            ValueRef::Null => Value::Null,
+            ValueRef::Integer(value) => Value::Integer(value),
+            ValueRef::Real(value) => {
+                let rounded = finite(value)?.round();
+                // i64::MIN and 2^63 are exact floats; the range is [-2^63, 2^63).
+                let limit = -(i64::MIN as f64);
+                if !(-limit..limit).contains(&rounded) {
+                    return Err(invalid("an amount is outside the nano-USD range"));
+                }
+                Value::Integer(rounded as i64)
+            }
+            _ => return Err(invalid("arithmetic requires numbers")),
+        })
+    })?;
+    // A kept money value is stored as exact
+    // dollars (JSON text) and read back without passing through a float.
+    conn.create_scalar_function("pl_kept_money", 1, FLAGS, |ctx| {
+        let text: Option<String> = ctx.get(0)?;
+        match text.as_deref() {
+            None | Some("null") => Ok(None),
+            Some(text) => polylogue_model::money::nusd_from_usd(text)
+                .map(Some)
+                .ok_or_else(|| invalid("a kept amount must be decimal dollars within range")),
+        }
+    })?;
+    // An integer average: `numerator / denominator` rounded half away from
+    // zero, unknown for an unknown operand or no rows.
+    conn.create_scalar_function("pl_rounded_quotient", 2, FLAGS, |ctx| {
+        let numerator: Option<i64> = ctx.get(0)?;
+        let denominator: Option<i64> = ctx.get(1)?;
+        Ok(numerator.zip(denominator).and_then(|(n, d)| {
+            polylogue_model::money::rounded_quotient(i128::from(n), i128::from(d))
+                .and_then(|q| i64::try_from(q).ok())
         }))
     })?;
     conn.create_scalar_function("pl_kept_time", 1, FLAGS, |ctx| {
@@ -289,9 +340,12 @@ impl Aggregate<Bins, String> for Histogram {
                     .ok_or_else(|| invalid("histogram time is out of range"))?
                     .to_string(),
             ),
-            "number" | "duration" | "duration_seconds" | "money" => {
+            "money" => serde_json::Value::Number(polylogue_model::money::usd_number(
+                ctx.get::<i64>(0)
+                    .map_err(|_| invalid("histogram money must be integer nano-USD"))?,
+            )),
+            "number" | "duration" | "duration_seconds" => {
                 let scale = match kind.as_str() {
-                    "money" => 1e9,
                     "duration_seconds" => 1000.,
                     _ => 1.,
                 };

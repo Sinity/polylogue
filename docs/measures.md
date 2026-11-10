@@ -210,7 +210,7 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 ### The price catalog
 
 - One catalog ships with Polylogue: the providers' list prices, maintained by hand with a source note per row, as `prices.toml`. The user may override rows in `$XDG_CONFIG_HOME/polylogue/prices.toml`; an override replaces the shipped row with the same model and effective date.
-- A row has `name` (normalized model), `effective` (applies at or after), `input`, `cached_input`, `cache_write`, `cache_write_1h`, `output` (USD per million tokens); optional long-context rates above a prompt size; optional modes and tiers; an optional per-search price; and `source` (URL and the date it was read).
+- A row has `name` (normalized model), `effective` (applies at or after), `input`, `cached_input`, `cache_write`, `cache_write_1h`, `output` (USD per million tokens, held exactly as integer pico-USD per token, so `0.01875` is 18 750; a rate finer than that is refused); optional long-context rates above a prompt size; optional modes and tiers; an optional per-search price; and `source` (URL and the date it was read).
 - **Model names are normalized per origin,** beside its parser (prefixes, aliases, date suffixes). The catalog matches exact names; a versionless alias (`opus`) stays unpriced, never guessed.
 - **The version is the content hash** of the effective shipped table plus overrides; a different hash reprices through the derive path with no re-parse. A human label is shown beside it, never used as the key.
 - No row on or before the response time, a tier or mode without a rate, or a cache lane with tokens but no rate leaves the cost unknown; zero tokens need no rate. Cache writes with no reported lifetime use the 5-minute rate and are counted as `assumed_cache_lifetime`.
@@ -230,7 +230,7 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
   | `estimated` | computed from incomplete or counted data, with what it assumed |
 
 - A separate type per kind makes adding across kinds a type error.
-- **Integer nano-USD** in storage and every sum; JSON carries `usd` with the exact value and `nusd`; rounding happens once, after summing, in text and HTML.
+- **Integer nano-USD** in storage, every sum and every price computation: a response's cost is its lanes' tokens times their pico-USD rates and tier multipliers in 128-bit integers, rounded once to the nano-USD. Decimal dollars in input (query literals, provider-reported amounts) convert exactly. JSON carries an amount as `{nusd, usd}`, `usd` being the exact decimal dollars; a daily series of cost counts nano-USD (`unit: nusd`). Rounding for people happens once, after summing, in text and HTML: whole cents from one cent up, three significant digits below a cent, so a known small cost never reads as `$0.00`.
 - **Completeness travels with the value:** `{nusd, complete, priced, unpriced}`, one of `complete`, `partial` (a lower bound) or `unknown` (null). Query fields `cost`, `cost_complete`, `unpriced_responses`; `agg sum:cost` reports `partial_cost` and `unknown_cost`.
 - A provider-reported zero is a measured zero. Each response of a multi-model session is priced under its own model. A session view shows API-equivalent and provider-reported side by side, with their difference labelled "not in transcript".
 

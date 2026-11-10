@@ -337,6 +337,17 @@ pub fn shape_value(
                 *v = Value::Bool(n != 0);
             }
         }
+        // Integer nano-USD leaves as exact decimal dollars.
+        ColKind::Money => {
+            if let Some(nusd) = v.as_i64() {
+                *v = Value::Number(polylogue_model::money::usd_number(nusd));
+            } else if !v.is_null() {
+                return Err(SelectionError::Invalid {
+                    kind: "store",
+                    message: "a money value must be integer nano-USD".into(),
+                });
+            }
+        }
         _ => {}
     }
     Ok(())

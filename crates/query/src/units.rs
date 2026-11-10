@@ -554,7 +554,7 @@ pub static UNITS: &[UnitSpec] = &[
             },
             ColumnSpec {
                 name: "slash_command",
-                kind: Number,
+                kind: Bool,
             },
             ColumnSpec {
                 name: "answer",
@@ -570,7 +570,7 @@ pub static UNITS: &[UnitSpec] = &[
             },
             ColumnSpec {
                 name: "latency",
-                kind: Number,
+                kind: Duration,
             },
             ColumnSpec {
                 name: "tool_calls",
@@ -590,11 +590,11 @@ pub static UNITS: &[UnitSpec] = &[
             },
             ColumnSpec {
                 name: "cost",
-                kind: Number,
+                kind: Money,
             },
             ColumnSpec {
                 name: "abandoned",
-                kind: Number,
+                kind: Bool,
             },
         ],
         relations: &[Relation {

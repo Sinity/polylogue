@@ -117,7 +117,7 @@ pub fn rfc3339(value: &Json) -> Option<SourceTime> {
 pub fn epoch_seconds(value: &Json) -> Option<SourceTime> {
     let number = value.as_number()?;
     let text = number.to_string();
-    let nanos = scaled_decimal(&text, 9)?;
+    let nanos = query_language::number::Decimal::parse(&text)?.exact_scaled_i128(9)?;
     let precision = if number.as_i64().is_some() {
         Precision::Second
     } else {
@@ -145,38 +145,6 @@ pub fn epoch_nanos(value: &Json) -> Option<SourceTime> {
         Timestamp::from_unix_ns(text.parse().ok()?)?,
         Precision::Instant,
     ))
-}
-
-fn scaled_decimal(text: &str, places: i64) -> Option<i128> {
-    let (negative, text) = text
-        .strip_prefix('-')
-        .map_or((false, text), |text| (true, text));
-    let (mantissa, exponent) = text
-        .split_once(['e', 'E'])
-        .map_or(Some((text, 0i64)), |(mantissa, exponent)| {
-            Some((mantissa, exponent.parse().ok()?))
-        })?;
-    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-    let mut digits = format!("{whole}{fraction}");
-    let mut scale = places
-        .checked_add(exponent)?
-        .checked_sub(i64::try_from(fraction.len()).ok()?)?;
-    while scale < 0 && digits.ends_with('0') {
-        digits.pop();
-        scale += 1;
-    }
-    if scale < 0 {
-        return None;
-    }
-    let magnitude = digits
-        .parse::<i128>()
-        .ok()?
-        .checked_mul(10i128.checked_pow(scale.try_into().ok()?)?)?;
-    if negative {
-        magnitude.checked_neg()
-    } else {
-        Some(magnitude)
-    }
 }
 
 #[cfg(test)]

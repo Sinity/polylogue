@@ -678,11 +678,11 @@ fn native_aggregates_keep_child_rows_and_unknown_values() {
     }
     assert_eq!(
         rows(&fixture, "sessions | agg count(), sum(cost) as total"),
-        [json!({"count":1, "total":2.0, "unknown_cost":0, "partial_cost":1})]
+        [json!({"count":1, "total":2, "unknown_cost":0, "partial_cost":1})]
     );
     assert_eq!(
         rows(&fixture, "messages | agg count(), sum(cost) as total"),
-        [json!({"count":2, "total":2.0, "unknown_cost":1})]
+        [json!({"count":2, "total":2, "unknown_cost":1})]
     );
     assert_eq!(
         rows(

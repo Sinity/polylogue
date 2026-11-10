@@ -868,7 +868,6 @@ impl<'a> Compiler<'a> {
 
     pub(super) fn display_value(expr: &str, kind: ColKind) -> String {
         match kind {
-            ColKind::Money => format!("({expr}) / 1e9"),
             ColKind::DurationSeconds => format!("({expr}) / 1000.0"),
             _ => expr.to_owned(),
         }

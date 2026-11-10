@@ -16,7 +16,7 @@ fn each_view_keeps_its_columns() {
         ),
         (
             "v1_messages",
-            "id session role written_by model at text input_tokens output_tokens cache_read_tokens cache_write_tokens cost_usd duplicate_of on_active_path",
+            "id session role written_by model at text input_tokens output_tokens cache_read_tokens cache_write_tokens cost_nusd duplicate_of on_active_path",
         ),
         (
             "v1_tool_calls",

@@ -162,7 +162,7 @@ fn sum_over_no_rows_is_zero() {
         "sessions where repo:north | agg sum(input_tokens) as total, sum(cost) as spent",
     )[0];
     assert_eq!(answer["total"], 0, "{answer}");
-    assert_eq!(answer["spent"], 0.0, "{answer}");
+    assert_eq!(answer["spent"], 0, "{answer}");
     assert_eq!(answer["unknown_input_tokens"], 0, "{answer}");
 }
 
@@ -283,7 +283,7 @@ fn absolute_expressions_preserve_money_and_duration_dimensions() {
             &fixture,
             "sessions where id = claude-code:a | fields abs(input_tokens - output_tokens) as tokens, abs(cost - 2usd) as money, abs(started - last_active) as elapsed"
         ),
-        [json!({"tokens":3, "money":1.0, "elapsed":2000})]
+        [json!({"tokens":3, "money":1, "elapsed":2000})]
     );
 }
 
@@ -328,4 +328,24 @@ fn text_cast_refuses_a_native_json_object_at_the_reader_boundary() {
         error.to_string().contains("text takes a string value"),
         "{error}"
     );
+}
+
+#[test]
+fn money_answers_are_exact_decimal_dollars() {
+    let (_dir, fixture) = fixture();
+    let answer = &rows(
+        &fixture,
+        "sessions | agg avg(cost) as mean, sum(cost / 3) as thirds, sum(cost) as spent",
+    )[0];
+    // 1, 3 and 5 USD: the mean is exact, and a third of each amount rounds
+    // once per row in nano-USD (0.333333333 + 1 + 1.666666667).
+    assert_eq!(answer["mean"].to_string(), "3", "{answer}");
+    assert_eq!(answer["thirds"].to_string(), "3", "{answer}");
+    assert_eq!(answer["spent"].to_string(), "9", "{answer}");
+    let one = rows(
+        &fixture,
+        "sessions where cost = 3.000000000usd | fields id, cost / 7 as seventh",
+    );
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0]["seventh"].to_string(), "0.428571429");
 }

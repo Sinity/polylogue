@@ -1205,8 +1205,9 @@ pub(super) fn outcome_columns(o: &ToolOutcome) -> (&'static str, Option<String>,
     (o.stored().as_str(), reason, exit)
 }
 
-/// A provider's reported amount is an observed fact, separate from catalog pricing.
+/// A provider's reported amount is an observed fact, separate from catalog
+/// pricing. The number keeps its exact spelling (`arbitrary_precision`), so
+/// it converts to nano-USD without passing through a float.
 fn reported_nusd(usd: Option<&serde_json::Number>) -> Option<i64> {
-    let usd = usd?.as_f64()?;
-    usd.is_finite().then(|| (usd * 1e9).round() as i64)
+    polylogue_model::money::nusd_from_usd(&usd?.to_string())
 }
