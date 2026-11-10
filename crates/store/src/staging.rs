@@ -159,3 +159,6 @@ pub(crate) fn require_range(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
