@@ -616,9 +616,7 @@ impl<'a> Compiler<'a> {
         let mut o = vec![format!("{time} IS NULL"), format!("{time}{desc}")];
         if spec.session_order {
             // Rows at the same time keep session order.
-            o.push(format!("{}.order_input_id", a.m));
-            o.push(format!("{}.seq", a.m));
-            o.push(format!("{}.record_position", a.m));
+            o.push(format!("{}.session_order", a.m));
         }
         o.extend(
             spec.identity

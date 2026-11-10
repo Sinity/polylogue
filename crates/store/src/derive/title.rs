@@ -30,7 +30,7 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
             "SELECT b.pk FROM message m JOIN block b ON b.message_pk=m.pk
              WHERE m.session_pk=?1 AND m.duplicate_of IS NULL AND m.written_by='human'
                AND COALESCE(m.prompt_kind, 'prose')='prose' AND b.kind='text'
-             ORDER BY m.order_input_id, m.seq, m.record_position, m.id, b.idx LIMIT 1",
+             ORDER BY m.session_order, m.id, b.idx LIMIT 1",
         )?
         .query_row([session_pk], |r| r.get(0))
         .optional()?;

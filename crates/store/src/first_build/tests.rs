@@ -86,8 +86,8 @@ fn texts_and_messages_are_found_by_their_keys() {
         None
     );
     conn.execute(
-        "INSERT INTO message(id, session_pk, order_input_pk, order_input_id, seq, role, written_by, input_pk)
-         VALUES ('claude-code:m', 1, 1, 'input', 0, 'user', 'human', 1)",
+        "INSERT INTO message(id, session_pk, session_order, role, written_by, input_pk)
+         VALUES ('claude-code:m', 1, x'00', 'user', 'human', 1)",
         [],
     )
     .unwrap();
@@ -106,7 +106,7 @@ fn loading_committed_rows_restores_every_key_map() {
     let hash = *blake3::hash(b"kept text").as_bytes();
     conn.execute("INSERT INTO text(hash,body) VALUES (?1,X'00')", [&hash[..]])
         .unwrap();
-    conn.execute("INSERT INTO message(id,session_pk,order_input_pk,order_input_id,seq,role,written_by,input_pk) VALUES ('claude-code:message',1,1,'input',0,'user','human',1)", []).unwrap();
+    conn.execute("INSERT INTO message(id,session_pk,session_order,role,written_by,input_pk) VALUES ('claude-code:message',1,x'00','user','human',1)", []).unwrap();
     let keys = FirstBuild::load(&conn).unwrap();
     assert!(
         keys.message(&conn, "claude-code:message")

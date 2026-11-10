@@ -312,10 +312,10 @@ impl<'a> ReferenceText<'a> {
             first: first.clone(),
             last: last.clone(),
         };
-        type Position = (i64, String, i64, i64, String, bool);
+        type Position = (i64, Vec<u8>, String, bool);
         let conn = self.original;
         let position = |id: &polylogue_model::MessageId| -> Result<Option<Position>> {
-            Ok(conn.query_row("SELECT session_pk,order_input_id,seq,record_position,id,duplicate_of IS NOT NULL FROM message WHERE id=?1",[id.to_string()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).optional()?)
+            Ok(conn.query_row("SELECT session_pk,session_order,id,duplicate_of IS NOT NULL FROM message WHERE id=?1",[id.to_string()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?)
         };
         let (Some(first), Some(last)) = (position(first)?, position(last)?) else {
             return Ok(false);
@@ -325,30 +325,26 @@ impl<'a> ReferenceText<'a> {
                 "a message range must stay within one physical session".into(),
             ));
         }
-        if first.5 || last.5 {
+        if first.3 || last.3 {
             return Err(StoreError::ReferenceUnavailable {
-                reference: format!("message:{}..{}", first.4, last.4),
+                reference: format!("message:{}..{}", first.2, last.2),
                 reason: "range endpoints are outside the physical source selection".into(),
             });
         }
-        if (&first.1, first.2, first.3, &first.4) > (&last.1, last.2, last.3, &last.4) {
+        if (&first.1, &first.2) > (&last.1, &last.2) {
             return Err(StoreError::Invalid(
                 "message range ends before it starts".into(),
             ));
         }
-        const RANGE: &str = "m.session_pk=?1 AND m.duplicate_of IS NULL AND (m.order_input_id,m.seq,m.record_position,m.id)>=(?2,?3,?4,?5) AND (m.order_input_id,m.seq,m.record_position,m.id)<=(?6,?7,?8,?9)";
+        const RANGE: &str = "m.session_pk=?1 AND m.duplicate_of IS NULL AND (m.session_order,m.id)>=(?2,?3) AND (m.session_order,m.id)<=(?4,?5)";
         let mut messages =
             conn.prepare_cached(&format!("SELECT m.pk FROM message m WHERE {RANGE}"))?;
-        let mut rows = messages.query(params![
-            first.0, first.1, first.2, first.3, first.4, last.1, last.2, last.3, last.4
-        ])?;
+        let mut rows = messages.query(params![first.0, first.1, first.2, last.1, last.2])?;
         while let Some(row) = rows.next()? {
             self.require_complete_message(row.get(0)?, &reference)?;
         }
-        let mut statement = conn.prepare_cached(&format!("SELECT b.pk FROM message m JOIN block b ON b.message_pk=m.pk WHERE {RANGE} AND b.kind IN ('text','thinking','tool_result') ORDER BY m.order_input_id,m.seq,m.record_position,m.id,b.idx"))?;
-        let mut rows = statement.query(params![
-            first.0, first.1, first.2, first.3, first.4, last.1, last.2, last.3, last.4
-        ])?;
+        let mut statement = conn.prepare_cached(&format!("SELECT b.pk FROM message m JOIN block b ON b.message_pk=m.pk WHERE {RANGE} AND b.kind IN ('text','thinking','tool_result') ORDER BY m.session_order,m.id,b.idx"))?;
+        let mut rows = statement.query(params![first.0, first.1, first.2, last.1, last.2])?;
         let mut text = Text {
             visit,
             offsets: TextBodyOffsets::default(),

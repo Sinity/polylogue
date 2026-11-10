@@ -10,8 +10,10 @@ pub(super) enum RecordOrder {
 }
 
 pub(super) fn canonical_rows(session: &str) -> String {
-    format!("SELECT pk,row_number() OVER (ORDER BY order_input_id,seq,record_position,id)-1 AS record_order
-        FROM message WHERE session_pk={session} AND duplicate_of IS NULL")
+    format!(
+        "SELECT pk,row_number() OVER (ORDER BY session_order,id)-1 AS record_order
+        FROM message WHERE session_pk={session} AND duplicate_of IS NULL"
+    )
 }
 
 pub(super) fn checked(value: i64) -> Result<u64> {
@@ -39,7 +41,7 @@ impl Reader<'_> {
         self.conn()?
             .prepare_cached(
                 "SELECT (SELECT count(*) FROM message o WHERE o.session_pk=m.session_pk AND o.duplicate_of IS NULL
-                   AND (o.order_input_id,o.seq,o.record_position,o.id)<(m.order_input_id,m.seq,m.record_position,m.id))
+                   AND (o.session_order,o.id)<(m.session_order,m.id))
                  FROM message m WHERE m.id=?1 AND m.duplicate_of IS NULL",
             )?
             .query_row([id.to_string()], |row| row.get::<_, i64>(0))
@@ -76,7 +78,7 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let mut statement = conn.prepare_cached(&format!(
             "SELECT m.id FROM message m WHERE m.pk IN ({members}) AND m.duplicate_of IS NULL
-             ORDER BY m.order_input_id,m.seq,m.record_position,m.id LIMIT -1 OFFSET {from}"
+             ORDER BY m.session_order,m.id LIMIT -1 OFFSET {from}"
         ))?;
         let mut rows = statement.query(rusqlite::params_from_iter(&params))?;
         while let Some(row) = rows.next()? {

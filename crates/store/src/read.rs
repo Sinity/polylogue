@@ -986,16 +986,16 @@ impl Reader<'_> {
         const SOURCE: &str = "FROM message m LEFT JOIN message_source shown ON shown.message_pk=m.pk AND shown.input_pk=m.input_pk AND shown.chain=m.source_chain
             LEFT JOIN message_projection projection ON projection.version_hash=shown.version_hash
             LEFT JOIN input_ref source_input ON source_input.pk=shown.input_pk";
-        const ORDER: &str = "ORDER BY m.order_input_id, m.seq, m.record_position, m.id";
-        let start: Option<(String, i64, i64, String)> = match from {
+        const ORDER: &str = "ORDER BY m.session_order, m.id";
+        let start: Option<(Vec<u8>, String)> = match from {
             Some(pk) => self
                 .conn()?
                 .prepare_cached(
-                    "SELECT order_input_id, seq, record_position, id FROM message
+                    "SELECT session_order, id FROM message
                      WHERE pk = ?1 AND session_pk = ?2",
                 )?
                 .query_row(rusqlite::params![pk, session_pk], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                    Ok((r.get(0)?, r.get(1)?))
                 })
                 .optional()?,
             None => None,
@@ -1023,21 +1023,13 @@ impl Reader<'_> {
             Some(_) => self.conn()?.prepare_cached(&format!(
                 "{prefix}SELECT {COLUMNS},{ordinal} AS record_order {SOURCE}{join}
                  WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
-                   AND (m.order_input_id, m.seq, m.record_position) >= (?2, ?3, ?4)
-                   AND NOT ((m.order_input_id, m.seq, m.record_position) = (?2, ?3, ?4)
-                            AND m.id < ?5)
+                   AND (m.session_order, m.id) >= (?2, ?3)
                  {ORDER}"
             ))?,
         };
         let parameters: Vec<rusqlite::types::Value> = match start {
             None => vec![session_pk.into()],
-            Some((input, seq, position, id)) => vec![
-                session_pk.into(),
-                input.into(),
-                seq.into(),
-                position.into(),
-                id.into(),
-            ],
+            Some((order, id)) => vec![session_pk.into(), order.into(), id.into()],
         };
         let rows = stmt.query_map(rusqlite::params_from_iter(parameters), |r| {
             Ok((

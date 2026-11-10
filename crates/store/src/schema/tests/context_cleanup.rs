@@ -15,8 +15,8 @@ fn repeated_source_upserts_keep_context_bodies_until_the_context_goes() {
         conn.execute_batch(
                 "INSERT INTO input_ref(pk,id,format) VALUES(1,'context-input','claude-code');
                  INSERT INTO session(pk,id,origin,native_id,kind,changed) VALUES(1,'claude-code:context','claude-code','context','main',1);
-                 INSERT INTO message(pk,id,session_pk,order_input_pk,order_input_id,seq,role,written_by,input_pk)
-                    VALUES(1,'claude-code:response',1,1,'context-input',0,'assistant','model',1);
+                 INSERT INTO message(pk,id,session_pk,session_order,role,written_by,input_pk)
+                    VALUES(1,'claude-code:response',1,x'00','assistant','model',1);
                  INSERT INTO message_version VALUES(x'01',x'616263'),(x'02',x'646566');
                  INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,version_hash,route,completion)
                     VALUES(1,1,17,0,4,'native',1,x'01','live','finished');

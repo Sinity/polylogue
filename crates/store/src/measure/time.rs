@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) const RULE_VERSION: i64 = 2;
+pub(crate) const RULE_VERSION: i64 = 3;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Span {
@@ -119,22 +119,17 @@ fn rows(conn: &Connection, pk: i64, after: Option<&OrderKey>) -> Result<Rows> {
     let own = session_sql::own_messages("m", Some("=?1"));
     let mut params: Vec<rusqlite::types::Value> = vec![pk.into()];
     let tail = match after {
-        Some((input, seq, position, id)) => {
-            params.extend([
-                input.clone().into(),
-                (*seq).into(),
-                (*position).into(),
-                id.clone().into(),
-            ]);
-            " AND (m.order_input_id,m.seq,m.record_position,m.id)>(?2,?3,?4,?5)"
+        Some((order, id)) => {
+            params.extend([order.clone().into(), id.clone().into()]);
+            " AND (m.session_order,m.id)>(?2,?3)"
         }
         None => "",
     };
     let mut statement=conn.prepare_cached(&format!("SELECT m.id,m.at,m.written_by,m.prompt_kind,m.stop_reason,
         (SELECT b.kind FROM block b WHERE b.message_pk=m.pk ORDER BY b.idx DESC LIMIT 1),
         EXISTS(SELECT 1 FROM tool_call t WHERE t.call_block_pk=(SELECT b.pk FROM block b WHERE b.message_pk=m.pk ORDER BY b.idx DESC LIMIT 1) AND t.result_block_pk IS NULL),
-        m.order_input_id,m.seq,m.record_position
-        FROM message m WHERE {own}{tail} ORDER BY m.order_input_id,m.seq,m.record_position,m.id"))?;
+        m.session_order
+        FROM message m WHERE {own}{tail} ORDER BY m.session_order,m.id"))?;
     let mut messages = Vec::new();
     let mut keys = Vec::new();
     let mut found = statement.query(rusqlite::params_from_iter(params.iter()))?;
@@ -148,7 +143,7 @@ fn rows(conn: &Connection, pk: i64, after: Option<&OrderKey>) -> Result<Rows> {
             last_block: r.get(5)?,
             open_call: r.get(6)?,
         };
-        keys.push((r.get(7)?, r.get(8)?, r.get(9)?, message.id.clone()));
+        keys.push((r.get(7)?, message.id.clone()));
         messages.push(message);
     }
     drop(found);
@@ -160,11 +155,11 @@ fn rows(conn: &Connection, pk: i64, after: Option<&OrderKey>) -> Result<Rows> {
     // From the messages: a tail reads only the calls of the messages in it.
     let mut statement=conn.prepare_cached(&format!("SELECT CASE WHEN t.action='shell' THEN coalesce(t.command_norm,t.tool) ELSE coalesce(t.action,t.tool) END,
         coalesce(t.at,m.at),CASE WHEN rm.duplicate_of IS NULL AND coalesce(rm.on_active_path,1)=1 THEN rm.at END,t.result_block_pk IS NOT NULL,t.outcome='error',m.id,
-        rm.order_input_id,rm.seq,rm.record_position,rm.id
+        rm.session_order,rm.id
         FROM message m CROSS JOIN block b ON b.message_pk=m.pk CROSS JOIN tool_call t ON t.call_block_pk=b.pk
         LEFT JOIN block rb ON rb.pk=t.result_block_pk LEFT JOIN message rm ON rm.pk=rb.message_pk
         WHERE {own}{tail} AND {}
-        ORDER BY m.order_input_id,m.seq,m.record_position,m.id,b.idx,t.call_id,t.command_norm,t.tool",session_sql::counts_as_action("t")))?;
+        ORDER BY m.session_order,m.id,b.idx,t.call_id,t.command_norm,t.tool",session_sql::counts_as_action("t")))?;
     let mut tools = Vec::new();
     let mut result_keys = Vec::new();
     let mut found = statement.query(rusqlite::params_from_iter(params.iter()))?;
@@ -179,9 +174,9 @@ fn rows(conn: &Connection, pk: i64, after: Option<&OrderKey>) -> Result<Rows> {
             paired: r.get(3)?,
             failed: r.get(4)?,
         });
-        let result: Option<String> = r.get(9)?;
+        let result: Option<String> = r.get(7)?;
         result_keys.push(match result {
-            Some(id) => Some((r.get(6)?, r.get(7)?, r.get(8)?, id)),
+            Some(id) => Some((r.get(6)?, id)),
             None => None,
         });
     }
@@ -568,16 +563,16 @@ fn resumable(
     {
         return Ok(None);
     }
-    let (input, seq, position, id) = end;
+    let (order, id) = end;
     let answered_later: bool = tx
         .prepare_cached(
             "SELECT EXISTS(SELECT 1 FROM message m CROSS JOIN block b ON b.message_pk=m.pk
                CROSS JOIN tool_call t ON t.result_block_pk=b.pk
                JOIN block cb ON cb.pk=t.call_block_pk JOIN message cm ON cm.pk=cb.message_pk
-             WHERE m.session_pk=?1 AND (m.order_input_id,m.seq,m.record_position,m.id)>(?2,?3,?4,?5)
-               AND (cm.order_input_id,cm.seq,cm.record_position,cm.id)<=(?2,?3,?4,?5))",
+             WHERE m.session_pk=?1 AND (m.session_order,m.id)>(?2,?3)
+               AND (cm.session_order,cm.id)<=(?2,?3))",
         )?
-        .query_row(params![pk, input, seq, position, id], |r| r.get(0))?;
+        .query_row(params![pk, order, id], |r| r.get(0))?;
     Ok((!answered_later).then_some(prefix))
 }
 

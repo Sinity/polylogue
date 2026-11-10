@@ -101,14 +101,18 @@ impl MessageSelection<'_, '_> {
         let conn = self.reader.conn()?;
         let key=match id {
             Some(id)=>self.message_key(id)?,
-            None=>conn.query_row("SELECT pk FROM message WHERE session_pk=?1 AND duplicate_of IS NULL ORDER BY order_input_id DESC,seq DESC,record_position DESC,id DESC LIMIT 1",[pk],|r|r.get::<_,i64>(0)).optional()?,
+            None=>conn.query_row("SELECT pk FROM message WHERE session_pk=?1 AND duplicate_of IS NULL ORDER BY session_order DESC,id DESC LIMIT 1",[pk],|r|r.get::<_,i64>(0)).optional()?,
         };
         let Some(key) = key else {
             return Ok(None);
         };
-        let count=conn.query_row("SELECT count(*) FROM message m JOIN message anchor ON anchor.pk=?2
+        let count = conn.query_row(
+            "SELECT count(*) FROM message m JOIN message anchor ON anchor.pk=?2
             WHERE m.session_pk=?1 AND m.duplicate_of IS NULL
-            AND (m.order_input_id,m.seq,m.record_position,m.id) < (anchor.order_input_id,anchor.seq,anchor.record_position,anchor.id)",params![pk,key],|r|r.get::<_,i64>(0))?;
+            AND (m.session_order,m.id) < (anchor.session_order,anchor.id)",
+            params![pk, key],
+            |r| r.get::<_, i64>(0),
+        )?;
         Ok(Some(VisitStart {
             message: message_count(count)?,
             key: Some(key),
@@ -134,7 +138,7 @@ impl MessageSelection<'_, '_> {
             "SELECT m.pk,m.id FROM message m WHERE m.session_pk=?1 AND m.duplicate_of IS NULL
             AND (?2=0 OR (pl_is_prompt(m.role,m.prompt_kind)))
             AND EXISTS(SELECT 1 FROM block b WHERE b.message_pk=m.pk AND b.kind IN ({kinds}))
-            ORDER BY m.order_input_id DESC,m.seq DESC,m.record_position DESC,m.id DESC"
+            ORDER BY m.session_order DESC,m.id DESC"
         );
         let conn = self.reader.conn()?;
         let mut statement = conn.prepare_cached(&sql)?;
@@ -187,23 +191,34 @@ impl MessageSelection<'_, '_> {
             .map(|kind| format!("'{}'", kind.as_str()))
             .collect::<Vec<_>>()
             .join(",");
-        let sql=format!("SELECT m.pk FROM message m WHERE m.session_pk=?1 AND m.duplicate_of IS NULL
-            AND (m.order_input_id,m.seq,m.record_position,m.id)<(SELECT order_input_id,seq,record_position,id FROM message WHERE pk=?2)
+        let sql = format!(
+            "SELECT m.pk FROM message m WHERE m.session_pk=?1 AND m.duplicate_of IS NULL
+            AND (m.session_order,m.id)<(SELECT session_order,id FROM message WHERE pk=?2)
             AND (?3=0 OR (pl_is_prompt(m.role,m.prompt_kind)))
             AND EXISTS(SELECT 1 FROM block WHERE message_pk=m.pk AND kind IN ({kinds}))
-            ORDER BY m.order_input_id DESC,m.seq DESC,m.record_position DESC,m.id DESC LIMIT 1");
+            ORDER BY m.session_order DESC,m.id DESC LIMIT 1"
+        );
         let previous = conn
             .query_row(&sql, params![session, key, prompts], |row| {
                 row.get::<_, i64>(0)
             })
             .optional()?;
-        previous.map(|previous| {
-            let stepped: i64 = conn.query_row("SELECT count(*) FROM message m
+        previous
+            .map(|previous| {
+                let stepped: i64 = conn.query_row(
+                    "SELECT count(*) FROM message m
                 WHERE m.session_pk=?1 AND m.duplicate_of IS NULL
-                AND (m.order_input_id,m.seq,m.record_position,m.id)>=(SELECT order_input_id,seq,record_position,id FROM message WHERE pk=?2)
-                AND (m.order_input_id,m.seq,m.record_position,m.id)<(SELECT order_input_id,seq,record_position,id FROM message WHERE pk=?3)", params![session,previous,key], |row| row.get(0))?;
-            Ok(VisitStart { message: from.message.saturating_sub(message_count(stepped)?), key: Some(previous) })
-        }).transpose()
+                AND (m.session_order,m.id)>=(SELECT session_order,id FROM message WHERE pk=?2)
+                AND (m.session_order,m.id)<(SELECT session_order,id FROM message WHERE pk=?3)",
+                    params![session, previous, key],
+                    |row| row.get(0),
+                )?;
+                Ok(VisitStart {
+                    message: from.message.saturating_sub(message_count(stepped)?),
+                    key: Some(previous),
+                })
+            })
+            .transpose()
     }
 
     fn visible_key(

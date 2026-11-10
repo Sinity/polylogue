@@ -563,6 +563,33 @@ pub(crate) fn restore_text(block: &mut Block, text: String) {
     }
 }
 
+/// A message's place in its session (docs/sessions.md, messages), encoded so
+/// that comparing the bytes compares (order time, input ID, sequence,
+/// record position): an unknown order time sorts first, integers are stored
+/// big-endian with the sign bit flipped, and the input ID ends with a zero
+/// byte so a shorter ID sorts before a longer one it begins.
+pub(crate) fn session_order(
+    order_time: Option<i64>,
+    input: &str,
+    seq: i64,
+    position: i64,
+) -> Vec<u8> {
+    let sortable = |n: i64| ((n as u64) ^ (1 << 63)).to_be_bytes();
+    let mut key = Vec::with_capacity(1 + 8 + input.len() + 1 + 16);
+    match order_time {
+        None => key.push(0),
+        Some(ms) => {
+            key.push(1);
+            key.extend_from_slice(&sortable(ms));
+        }
+    }
+    key.extend_from_slice(input.as_bytes());
+    key.push(0);
+    key.extend_from_slice(&sortable(seq));
+    key.extend_from_slice(&sortable(position));
+    key
+}
+
 /// Lowercase hexadecimal.
 pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()

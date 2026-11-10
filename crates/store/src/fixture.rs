@@ -222,13 +222,22 @@ impl Fixture {
         Ok(())
     }
 
-    /// The actual source-order coordinate installed for a fixture message.
+    /// The sequence a fixture message's stored session order holds: the
+    /// eight bytes before its record position.
     pub fn message_order(&self, message_pk: i64) -> Result<i64> {
-        Ok(self
-            .index
-            .query_row("SELECT seq FROM message WHERE pk=?1", [message_pk], |row| {
-                row.get(0)
-            })?)
+        let order: Vec<u8> = self.index.query_row(
+            "SELECT session_order FROM message WHERE pk=?1",
+            [message_pk],
+            |row| row.get(0),
+        )?;
+        let seq = order
+            .len()
+            .checked_sub(16)
+            .and_then(|start| order[start..start + 8].try_into().ok())
+            .ok_or_else(|| {
+                crate::StoreError::Invalid("a session order without a sequence".into())
+            })?;
+        Ok((u64::from_be_bytes(seq) ^ (1 << 63)) as i64)
     }
 
     /// Sets a session's live facts and git identity: the facts are the fold
@@ -311,14 +320,14 @@ impl Fixture {
         self.seq = m.seq.unwrap_or(self.seq + 1);
         let words = m.text.map_or(0, |t| t.split_whitespace().count() as i64);
         self.index.execute(
-            "INSERT INTO message(id, session_pk, order_input_pk, seq, role, written_by, prompt_kind,
-                 model, at, input_pk, cost_nusd, on_active_path, words, order_input_id, at_time)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?3, ?10, ?11, ?12, (SELECT id FROM input_ref WHERE pk = ?3), ?13)",
+            "INSERT INTO message(id, session_pk, input_pk, session_order, role, written_by, prompt_kind,
+                 model, at, cost_nusd, on_active_path, words, at_time)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 m.id,
                 session_pk,
                 self.input_pk,
-                self.seq,
+                crate::encoding::session_order(None, "fixture", self.seq, 0),
                 m.role,
                 m.written_by,
                 m.prompt_kind,
@@ -453,9 +462,9 @@ impl Fixture {
                  VALUES (?1, 'test', ?2, 'main', ?3, ?4, ?5, ?6, 1, ?7)",
             )?;
             let mut message = tx.prepare(
-                "INSERT INTO message(id, session_pk, order_input_pk, order_input_id, seq, role,
-                     written_by, prompt_kind, at, input_pk, on_active_path, words)
-                 VALUES (?1, ?2, ?3, 'fixture', ?4, ?5, ?6, ?7, ?8, ?3, 1, 3)",
+                "INSERT INTO message(id, session_pk, input_pk, session_order, role,
+                     written_by, prompt_kind, at, on_active_path, words)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 3)",
             )?;
             let mut block = tx.prepare(
                 "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body)
@@ -487,7 +496,7 @@ impl Fixture {
                         format!("many-{n}-{m}"),
                         pk,
                         self.input_pk,
-                        self.seq,
+                        crate::encoding::session_order(None, "fixture", self.seq, 0),
                         if model { "assistant" } else { "user" },
                         if model { "model" } else { "human" },
                         (!model).then_some("prose"),
