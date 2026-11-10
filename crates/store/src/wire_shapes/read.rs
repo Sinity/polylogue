@@ -77,12 +77,15 @@ SELECT r.format,s.reading_version,s.record_kind,s.path,json_extract(s.shape,'$.t
  MAX(json_extract(s.shape,'$.dynamic_map')),
  json_group_array(DISTINCT json(json_extract(s.shape,'$.known_kinds'))),
  pl_wire_sum(s.shape,'unknown_kind_count'),pl_wire_sum(s.shape,'unknown_table_count'),
- pl_wire_first(s.shape,'first'),pl_wire_last(s.shape,'last'),pl_wire_last(s.shape,'complete_presence'),
+ pl_wire_first(first_receipt.receipt),pl_wire_last(last_receipt.receipt),pl_wire_last(complete_receipt.receipt),
  MAX(CASE WHEN json_extract(r.state,'$.last.sequence')=l.receipt AND EXISTS(
    SELECT 1 FROM json_each(s.shape,'$.types') t WHERE CAST(json_extract(t.value,'$.count') AS REAL)>0)
    THEN 1 ELSE 0 END),pl_wire_sum(s.shape,'unused_count')
 FROM wire_shape s JOIN readings r ON r.input_pk=s.input_pk AND r.chain=s.chain AND r.reading_version=s.reading_version
 JOIN latest l ON l.format=r.format AND l.reading_version=r.reading_version
+LEFT JOIN wire_receipt first_receipt ON first_receipt.input_pk=s.input_pk AND first_receipt.chain=s.chain AND first_receipt.reading_version=s.reading_version AND first_receipt.number=json_extract(s.shape,'$.first')
+LEFT JOIN wire_receipt last_receipt ON last_receipt.input_pk=s.input_pk AND last_receipt.chain=s.chain AND last_receipt.reading_version=s.reading_version AND last_receipt.number=json_extract(s.shape,'$.last')
+LEFT JOIN wire_receipt complete_receipt ON complete_receipt.input_pk=s.input_pk AND complete_receipt.chain=s.chain AND complete_receipt.reading_version=s.reading_version AND complete_receipt.number=json_extract(s.shape,'$.complete_presence')
 GROUP BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.shape,'$.table')
 ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.shape,'$.table')"#
     );
@@ -130,9 +133,11 @@ ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.shape,'$
     let sql = format!(
         r#"{READINGS}
 SELECT r.format,s.reading_version,s.record_kind,s.path,json_extract(s.shape,'$.table'),t.key,
- pl_wire_sum(t.value,'count'),pl_wire_first(t.value,'first'),pl_wire_last(t.value,'last')
+ pl_wire_sum(t.value,'count'),pl_wire_first(first_receipt.receipt),pl_wire_last(last_receipt.receipt)
 FROM wire_shape s JOIN readings r ON r.input_pk=s.input_pk AND r.chain=s.chain AND r.reading_version=s.reading_version,
  json_each(s.shape,'$.types') t
+LEFT JOIN wire_receipt first_receipt ON first_receipt.input_pk=s.input_pk AND first_receipt.chain=s.chain AND first_receipt.reading_version=s.reading_version AND first_receipt.number=json_extract(t.value,'$.first')
+LEFT JOIN wire_receipt last_receipt ON last_receipt.input_pk=s.input_pk AND last_receipt.chain=s.chain AND last_receipt.reading_version=s.reading_version AND last_receipt.number=json_extract(t.value,'$.last')
 GROUP BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.shape,'$.table'),t.key
 ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.shape,'$.table'),t.key"#
     );
@@ -321,7 +326,15 @@ fn declarations(row: &rusqlite::Row<'_>, at: usize) -> Result<Vec<String>> {
 fn error(error: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
     rusqlite::Error::UserFunctionError(Box::new(error))
 }
+/// The named member of a JSON object (two arguments), or a whole JSON value
+/// that may be NULL (one argument).
 fn field(ctx: &Context<'_>) -> rusqlite::Result<Value> {
+    if ctx.len() == 1 {
+        let Some(json) = ctx.get::<Option<String>>(0)? else {
+            return Ok(Value::Null);
+        };
+        return serde_json::from_str(&json).map_err(error);
+    }
     let json: String = ctx.get(0)?;
     let key: String = ctx.get(1)?;
     let value: Value = serde_json::from_str(&json).map_err(error)?;
@@ -399,8 +412,20 @@ impl Aggregate<Option<Receipt>, Option<String>> for ReceiptOrder {
 }
 fn register(conn: &Connection) -> Result<()> {
     conn.create_aggregate_function("pl_wire_sum", 2, FLAGS, Sum)?;
-    conn.create_aggregate_function("pl_wire_first", 2, FLAGS, ReceiptOrder { first: true })?;
-    conn.create_aggregate_function("pl_wire_last", 2, FLAGS, ReceiptOrder { first: false })?;
+    for arguments in [1, 2] {
+        conn.create_aggregate_function(
+            "pl_wire_first",
+            arguments,
+            FLAGS,
+            ReceiptOrder { first: true },
+        )?;
+        conn.create_aggregate_function(
+            "pl_wire_last",
+            arguments,
+            FLAGS,
+            ReceiptOrder { first: false },
+        )?;
+    }
     conn.create_scalar_function("pl_wire_status", 2, FLAGS, |ctx| {
         let json: String = ctx.get(0)?;
         let reading: Reading = serde_json::from_str(&json).map_err(error)?;

@@ -51,12 +51,15 @@ pub(crate) fn apply_confirmed_readings(
             Ok(())
         })?;
         for version in exports.keys() {
-            // Both tables are derived from the retained callback sequence.
-            // Remove its dependent shapes before rebuilding the reading parent.
-            tx.execute(
-                "DELETE FROM wire_shape WHERE input_pk=(SELECT pk FROM input_ref WHERE id=?1) AND chain=?2 AND reading_version=?3",
-                params![input.id,*chain,version],
-            )?;
+            // The tables are derived from the retained callback sequence.
+            // Remove its dependent shapes and receipts before rebuilding the
+            // reading parent.
+            for table in ["wire_shape", "wire_receipt"] {
+                tx.execute(
+                    &format!("DELETE FROM {table} WHERE input_pk=(SELECT pk FROM input_ref WHERE id=?1) AND chain=?2 AND reading_version=?3"),
+                    params![input.id,*chain,version],
+                )?;
+            }
             tx.execute(
                 "DELETE FROM wire_reading WHERE input_pk=(SELECT pk FROM input_ref WHERE id=?1) AND chain=?2 AND reading_version=?3",
                 params![input.id,*chain,version],

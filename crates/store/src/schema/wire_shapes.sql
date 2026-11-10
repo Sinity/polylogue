@@ -9,6 +9,17 @@ CREATE TABLE wire_reading (
   PRIMARY KEY (input_pk, chain, reading_version)
 ) STRICT, WITHOUT ROWID;
 CREATE UNIQUE INDEX wire_reading_current ON wire_reading(input_pk,chain) WHERE active=1;
+-- The receipts a reading's shapes cite, each stored once and cited by number.
+CREATE TABLE wire_receipt (
+  input_pk INTEGER NOT NULL,
+  chain INTEGER NOT NULL,
+  reading_version TEXT NOT NULL,
+  number INTEGER NOT NULL CHECK (number > 0),
+  receipt TEXT NOT NULL CHECK (json_valid(receipt)),
+  PRIMARY KEY (input_pk,chain,reading_version,number),
+  FOREIGN KEY (input_pk,chain,reading_version)
+    REFERENCES wire_reading(input_pk,chain,reading_version)
+) STRICT, WITHOUT ROWID;
 CREATE TABLE wire_shape (
   input_pk INTEGER NOT NULL,
   chain INTEGER NOT NULL,

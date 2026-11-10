@@ -579,10 +579,13 @@ CREATE TRIGGER tool_call_added AFTER INSERT ON tool_call BEGIN UPDATE row_count 
 CREATE TRIGGER tool_call_removed AFTER DELETE ON tool_call BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'tool_call'; END;
 
 -- Packed readings are shared across input chains. Text stays interned separately.
+-- A rowid table: a version body averages about 1.7 KB, and a WITHOUT ROWID
+-- row over about 1 KB spills to an overflow page, which left 40% of this
+-- table's pages unused; a rowid row stays on its leaf page up to about 4 KB.
 CREATE TABLE message_version (
-  version_hash BLOB PRIMARY KEY,
+  version_hash BLOB NOT NULL UNIQUE,
   body BLOB NOT NULL
-) STRICT, WITHOUT ROWID;
+) STRICT;
 CREATE TABLE message_projection (
   version_hash BLOB PRIMARY KEY REFERENCES message_version(version_hash) ON DELETE CASCADE,
   layout BLOB NOT NULL, -- original u64 block count and aligned original ordinals
@@ -595,10 +598,11 @@ CREATE TABLE message_version_text (
   PRIMARY KEY(version_hash, idx)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX message_version_text_id ON message_version_text(text_id);
+-- A rowid table, as message_version is.
 CREATE TABLE document_version (
-  version_hash BLOB PRIMARY KEY,
+  version_hash BLOB NOT NULL UNIQUE,
   body BLOB NOT NULL
-) STRICT, WITHOUT ROWID;
+) STRICT;
 CREATE TABLE document_version_text (
   version_hash BLOB NOT NULL REFERENCES document_version(version_hash) ON DELETE CASCADE,
   idx INTEGER NOT NULL,
