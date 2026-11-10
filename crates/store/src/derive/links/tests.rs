@@ -212,3 +212,98 @@ fn compound_artifact_commands_keep_text_and_packed_result_provenance() {
         );
     }
 }
+
+/// The session links as stored, and as deriving every session again gives.
+fn stored_and_derived(w: &WriterArchive) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let links = |conn: &rusqlite::Connection| -> Vec<serde_json::Value> {
+        let mut rows = Vec::new();
+        for sql in [
+            "SELECT json_array(session_pk, commit_hash, evidence_block_pk, evidence) FROM commit_link ORDER BY 1",
+            "SELECT json_array(session_pk, repo, number, url, evidence) FROM pr_link ORDER BY 1",
+        ] {
+            let mut statement = conn.prepare(sql).unwrap();
+            for row in statement.query_map([], |r| r.get::<_, String>(0)).unwrap() {
+                rows.push(serde_json::from_str(&row.unwrap()).unwrap());
+            }
+        }
+        rows
+    };
+    let mut conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    let stored = links(&conn);
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    let sessions: Vec<i64> = tx
+        .prepare("SELECT pk FROM session")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    for pk in sessions {
+        super::derive_session(&tx, pk).unwrap();
+    }
+    let derived = links(&tx);
+    tx.rollback().unwrap();
+    (stored, derived)
+}
+
+#[test]
+fn links_fold_after_append_equals_full_recompute() {
+    let mut w = WriterArchive::new();
+    let mut seen = Vec::new();
+    let mut check = |w: &WriterArchive, stage: &str| {
+        let (stored, derived) = stored_and_derived(w);
+        assert_eq!(stored, derived, "{stage}");
+        seen.push(stored);
+    };
+    w.write("s", prose("s", 1, 1_000, "commit the fix"));
+    check(&w, "new session");
+    w.write(
+        "s",
+        bash(
+            "s",
+            2,
+            2_000,
+            "git commit -m 'store: fix'",
+            true,
+            "[lane-x 1a2b3c4] store: fix\n 1 file changed",
+        ),
+    );
+    check(&w, "call and result appended together");
+    // A late result: the call is written first, its output later.
+    let mut pr = bash(
+        "s",
+        3,
+        3_000,
+        "gh pr create --fill",
+        true,
+        "https://github.com/Sinity/polylogue/pull/6300\n",
+    );
+    let result = pr.pop().unwrap();
+    w.write("s", pr);
+    check(&w, "call without result");
+    w.write("s", vec![result]);
+    check(&w, "late result");
+    // A rewrite: a snapshot states the commit's output again, differently.
+    w.write_snapshot(
+        "s",
+        bash(
+            "s",
+            2,
+            2_000,
+            "git commit -m 'store: fix'",
+            true,
+            "[lane-x 5e6f7a8] store: fix\n 1 file changed",
+        ),
+    );
+    check(&w, "rewritten output");
+    // Another session's commit leaves this session's links alone.
+    w.write(
+        "t",
+        bash("t", 1, 4_000, "git commit -m x", true, "[main 9b8c7d6] x"),
+    );
+    check(&w, "another session");
+    seen.dedup();
+    assert!(seen.len() >= 4, "{seen:?}");
+}
