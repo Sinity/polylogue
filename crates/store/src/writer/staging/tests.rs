@@ -216,7 +216,7 @@ fn ordinary_open_releases_encoded_preparations_after_process_death_in_both_modes
             {
                 let _ = child.kill();
                 let _ = child.wait();
-                panic!("preparation child did not reach custody boundary");
+                panic!("preparation child did not signal that its bytes were prepared");
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
