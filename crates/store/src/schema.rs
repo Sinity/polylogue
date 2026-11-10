@@ -149,8 +149,28 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         create_index_in(&tx, primary)?;
     } else {
         // Read indexes are added before the shape check, so an index missing
-        // only those is completed rather than refused.
-        tx.execute_batch(READ_INDEXES)?;
+        // only those is completed rather than refused. A first build still in
+        // progress leaves out the ones it defers: it builds each once from a
+        // sorted scan when it ends, and building one here would read the
+        // whole table at every restart.
+        let deferring = building(&tx)?;
+        let statements = READ_INDEXES
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for statement in statements.split(';').map(str::trim) {
+            // `CREATE INDEX IF NOT EXISTS <name> ON ...`
+            let name = statement.split_whitespace().nth(5);
+            if !statement.is_empty()
+                && !(deferring
+                    && name.is_some_and(|name| {
+                        crate::writer::deferred_index_names().any(|deferred| deferred == name)
+                    }))
+            {
+                tx.execute_batch(statement)?;
+            }
+        }
         if primary {
             tx.execute_batch(include_str!("primary/projection/read_indexes.sql"))?;
         }
