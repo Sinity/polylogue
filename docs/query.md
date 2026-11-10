@@ -227,7 +227,7 @@ A run or kept result is **pre-registered** when a `saved_query` assertion naming
 - A read past its deadline ends `timeout`, never `ok` with a partial page. The answer names the running stage and rows scanned, a narrower query, and the same query with the deadline lifted.
 - A read stops within 100 ms when its deadline passes or its caller cancels or disconnects (MCP cancellation, a closed HTTP connection or socket, Ctrl-C); no abandoned read keeps running in the daemon.
 - A read's deadline covers the whole read, from waiting for a read connection and opening it through the last statement. A deadline that passes before any statement runs ends the read the same way, past its deadline.
-- Background work never blocks an interactive read; one read connection is reserved for latency-bound requests (hook briefs, `status`, completion).
+- Background work never blocks an interactive read; one executor place and one read connection are reserved for latency-bound requests (hook briefs, `status`, completion) ([operations.md](operations.md#idle-and-steady-state-work)).
 
 ## Answers
 

@@ -25,6 +25,8 @@ pub struct Daemon {
     pub(crate) config: Arc<crate::config::Config>,
     pub archive: Archive,
     pub reads: ReadPool,
+    /// Runs every request's work within bounded slots.
+    pub(crate) executor: super::executor::Executor,
     pub(crate) completion_path: std::path::PathBuf,
     pub(crate) callers: crate::protocol::caller::hooks::Registry,
     operations: std::sync::OnceLock<std::sync::Weak<command_surface::OperationTable>>,
@@ -708,12 +710,15 @@ fn repeated_request(
 /// Refuses new requests once the daemon is stopping.
 pub(super) fn accepting(d: &Daemon) -> Result<(), Failure> {
     if d.stopping.load(Ordering::Acquire) {
-        return Err(Failure::new(
-            "shutting_down",
-            "the daemon has stopped accepting requests",
-        ));
+        return Err(shutting_down());
     }
     Ok(())
+}
+
+/// The refusal of a request that arrives, or was queued, while the daemon
+/// stops.
+pub(crate) fn shutting_down() -> Failure {
+    Failure::new("shutting_down", "the daemon has stopped accepting requests")
 }
 
 /// Resolve bulk targets through the same pinned selection and acknowledged
@@ -993,6 +998,9 @@ impl Runtime {
 
     pub fn shutdown(&mut self) -> std::io::Result<()> {
         self.stop_accepting();
+        // Transports have stopped; queued requests are refused and running
+        // ones end (the closed reader pool ends any still waiting for a read).
+        self.daemon.executor.stop();
         let mut failure = None;
         if let Some(completion) = self.completion.as_mut()
             && let Err(error) = completion.shutdown()
@@ -1209,12 +1217,11 @@ pub fn start(
     let per_reader = settings
         .reader_memory_per_connection()
         .map_err(|e| to_io(&e))?;
-    let reads = ReadPool::with_budget(
-        &archive,
-        settings.workers,
-        per_reader * settings.workers as u64,
-    )
-    .map_err(|e| to_io(&e))?;
+    // One reader per ordinary executor place and one for the background
+    // slot; the pool keeps one more for interactive answers.
+    let readers = settings.workers + 1;
+    let reads = ReadPool::with_budget(&archive, readers, per_reader * (readers as u64 + 1))
+        .map_err(|e| to_io(&e))?;
     let (tx, rx) = channel();
     // The loop's first pass starts as soon as it runs.
     let status = Arc::new(Mutex::new(LoopStatus {
@@ -1228,6 +1235,7 @@ pub fn start(
         operations: std::sync::OnceLock::new(),
         archive,
         reads,
+        executor: super::executor::Executor::new(settings.workers),
         completion_path,
         callers: crate::protocol::caller::hooks::Registry::new(
             settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),

@@ -90,9 +90,19 @@ pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
 /// `messages` more messages, so the daemon's first pass reads them all as
 /// one first build, as it reads an existing home.
 pub(crate) fn start_with_sources(text: &str, seed: &dyn Fn(&Path), messages: u64) -> TestDaemon {
+    start_with_sources_and_workers(text, seed, messages, 2)
+}
+
+/// [`start_with_sources`] with `workers` loop and request workers.
+pub(crate) fn start_with_sources_and_workers(
+    text: &str,
+    seed: &dyn Fn(&Path),
+    messages: u64,
+    workers: usize,
+) -> TestDaemon {
     start_with_clock_and_workers(
         text,
-        2,
+        workers,
         polylogue_model::WallClock::new(jiff::Timestamp::now),
         None,
         (seed, messages),
@@ -256,6 +266,15 @@ impl TestDaemon {
 
     pub fn operations(&self) -> &Arc<command_surface::OperationTable> {
         &self.runtime.operations
+    }
+
+    /// How often the socket's listener thread has woken.
+    pub(crate) fn server_wakeups(&self) -> u64 {
+        self.server.wakeups()
+    }
+
+    pub(crate) fn stop_server(&mut self) -> std::io::Result<()> {
+        self.server.shutdown()
     }
 
     pub(crate) fn watch_reads(&self) -> std::sync::mpsc::Receiver<ReadObservation> {

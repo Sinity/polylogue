@@ -19,7 +19,6 @@ use std::{
     io::{self, BufRead, BufReader, Read},
     path::Path,
     sync::{Arc, Condvar, Mutex},
-    time::Duration,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -85,9 +84,17 @@ pub struct Inference {
 /// at each streaming read and before opening a SQL reader; waiting holds no
 /// reader and no chain read transaction.
 #[derive(Default)]
-pub(super) struct Admission {
+pub(super) struct Admission(Arc<Shared>);
+#[derive(Default)]
+pub(super) struct Shared {
     state: Mutex<Activity>,
     changed: Condvar,
+}
+impl std::ops::Deref for Admission {
+    type Target = Shared;
+    fn deref(&self) -> &Shared {
+        &self.0
+    }
 }
 #[derive(Default)]
 struct Activity {
@@ -121,41 +128,51 @@ impl Admission {
             .foreground += 1;
         Foreground(self)
     }
+    /// Waits on this thread until `ready` holds, then runs `claim` under the
+    /// same lock. A cancellation wakes the wait and the request's deadline
+    /// bounds it; activity changes notify it. Nothing polls.
     fn wait(
         &self,
-        predicate: impl Fn(&Activity) -> bool,
+        ready: impl Fn(&Activity) -> bool,
         before_waiting: impl FnOnce(),
+        claim: impl FnOnce(&mut Activity),
     ) -> Result<(), StoreError> {
+        let limit = ReadLimit::current();
+        let _wake = limit.as_ref().map(|limit| {
+            let shared = Arc::clone(&self.0);
+            limit.cancellation.on_cancel(move || {
+                let _held = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+                shared.changed.notify_all();
+            })
+        });
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let mut before_waiting = Some(before_waiting);
-        while !predicate(&state) {
+        while !ready(&state) {
             if let Some(release) = before_waiting.take() {
                 release();
             }
             check()?;
-            // A disconnect/deadline does not notify this condvar. The timed
-            // wait bounds cancellation latency while activity changes notify it.
-            state = self
-                .changed
-                .wait_timeout(state, Duration::from_millis(20))
-                .unwrap_or_else(|e| e.into_inner())
-                .0;
+            state = match limit.as_ref().and_then(ReadLimit::remaining) {
+                Some(left) => {
+                    self.changed
+                        .wait_timeout(state, left)
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0
+                }
+                None => self.changed.wait(state).unwrap_or_else(|e| e.into_inner()),
+            };
         }
-        check()
+        check()?;
+        claim(&mut state);
+        Ok(())
     }
     pub(super) fn background(&self) -> Result<BackgroundLease<'_>, StoreError> {
         // Test and claim under the same lock: two waiters cannot both enter.
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        while state.background || state.foreground > 0 {
-            check()?;
-            state = self
-                .changed
-                .wait_timeout(state, Duration::from_millis(20))
-                .unwrap_or_else(|e| e.into_inner())
-                .0;
-        }
-        check()?;
-        state.background = true;
+        self.wait(
+            |s| !s.background && s.foreground == 0,
+            || (),
+            |s| s.background = true,
+        )?;
         Ok(BackgroundLease(self))
     }
     pub(super) fn idle(&self) -> Result<(), StoreError> {
@@ -164,7 +181,7 @@ impl Admission {
     /// Waits like [`Admission::idle`]; when it has to wait, `release` runs
     /// first, so a streaming read gives up its read transaction for the wait.
     pub(super) fn idle_releasing(&self, release: impl FnOnce()) -> Result<(), StoreError> {
-        self.wait(|s| s.foreground == 0, release)
+        self.wait(|s| s.foreground == 0, release, |_| ())
     }
 }
 fn check() -> Result<(), StoreError> {

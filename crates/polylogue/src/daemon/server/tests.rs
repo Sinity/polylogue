@@ -157,7 +157,7 @@ fn listener_quiescence_is_observable_before_joining_clients() {
     .unwrap();
     let quiescing = server.take_quiescing().unwrap();
     runtime.stop_accepting();
-    server.stop.as_ref().unwrap().send(()).unwrap();
+    server.request_stop();
     quiescing.blocking_recv().unwrap();
     server.shutdown().unwrap();
     assert!(matches!(
@@ -339,10 +339,11 @@ fn a_scope_reset_during_json_serialization_publishes_only_the_safe_failure() {
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     let answer = command_surface::Answer::ok(ResetWhileSerializing(&daemon.daemon.archive));
-    write_scoped_json(
+    send_answer(
         &mut output,
         &answer,
         &crate::protocol::ReadScopes::single(Some(scope)),
+        None,
     )
     .unwrap();
     let mut line = String::new();
@@ -416,28 +417,256 @@ fn a_daemon_run_until_idle_exits_with_its_summary_and_reads_sources_only_when_as
     assert_eq!(inputs(), 1);
 }
 
-#[test]
-fn data_activation_is_scope_fenced_even_before_a_reader_binds_the_limit() {
-    let daemon = crate::test_daemon::start("native stream activation fence");
-    let scope = daemon.daemon.reads.scope_token().unwrap();
-    let limit = polylogue_store::read::limit::ReadLimit::without_deadline(Default::default());
-    assert!(limit.check().is_ok());
-    daemon.daemon.archive.advance_generation_for_test().unwrap();
-    let mut bytes = Vec::new();
-    let mut writer = super::GuardedWriter::new(&mut bytes, limit, scope);
-    assert!(std::io::Write::write_all(&mut writer, b"stale complete event").is_err());
-    let failure = writer
-        .failure()
-        .expect("typed scope failure")
-        .answer::<serde_json::Value>();
-    let command_surface::Answer {
-        outcome: command_surface::Outcome::Error(error),
-        ..
-    } = failure
-    else {
-        panic!("scope changed failure");
+/// A daemon holding `claude-code:large`, a session of many messages far
+/// larger than a socket buffer and the stream buffer's memory share
+/// together, so a client that stops reading stalls the stream's sends.
+fn daemon_with_a_large_session(workers: usize) -> crate::test_daemon::TestDaemon {
+    let seed = |home: &std::path::Path| {
+        let text = "the quick brown fox jumps over the lazy dog ".repeat(100);
+        let lines: String = (0..2_000)
+            .map(|n| polylogue_testkit::claude_user(&format!("large-{n}"), "large", &text))
+            .collect();
+        std::fs::write(home.join(".claude/projects/-p/large.jsonl"), lines).unwrap();
     };
-    assert_eq!(error.code.as_deref(), Some("scope_changed"));
-    drop(writer);
-    assert!(bytes.is_empty());
+    crate::test_daemon::start_with_sources_and_workers("small session", &seed, 2_000, workers)
+}
+
+fn request_line(operation: &str, arguments: serde_json::Value, id: &str) -> String {
+    request_line_with(operation, arguments, id, command_surface::Deadline::None)
+}
+
+fn request_line_with(
+    operation: &str,
+    arguments: serde_json::Value,
+    id: &str,
+    deadline: command_surface::Deadline,
+) -> String {
+    let request = command_surface::Request {
+        operation: operation.into(),
+        arguments,
+        request_id: id.into(),
+        deadline,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
+    };
+    format!("{}\n", serde_json::to_string(&request).unwrap())
+}
+
+/// A client that asks for the whole session as a stream and then reads
+/// nothing; returns once the daemon has begun sending.
+fn stalled_stream(daemon: &Daemon) -> UnixStream {
+    let mut stream = UnixStream::connect(daemon.archive.socket()).unwrap();
+    stream
+        .write_all(
+            request_line(
+                "read",
+                serde_json::json!({"target": "claude-code:large", "delivery": "stream"}),
+                "stalled-stream",
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    // Blocks until the first bytes arrive, without taking them.
+    let mut first = [0u8; 1];
+    rustix::net::recv(&stream, &mut first, rustix::net::RecvFlags::PEEK).unwrap();
+    stream
+}
+
+fn answer_of(stream: &mut UnixStream, line: &str) -> command_surface::Answer<serde_json::Value> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream.write_all(line.as_bytes()).unwrap();
+    let mut response = String::new();
+    BufReader::new(stream).read_line(&mut response).unwrap();
+    serde_json::from_str(&response).unwrap()
+}
+
+/// Reads the rest of a stream and returns its last event's name.
+fn last_event(stream: UnixStream) -> String {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let mut last = String::new();
+    for line in BufReader::new(stream).lines() {
+        let line = line.unwrap();
+        if let Some(name) = line.strip_prefix("event: ") {
+            last = name.to_owned();
+            if name == "complete" || name == "error" {
+                break;
+            }
+        }
+    }
+    last
+}
+
+fn eventually(what: &str, done: impl Fn() -> bool) {
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while !done() {
+        assert!(std::time::Instant::now() < until, "{what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// `(busy, frames left)` after a truncating checkpoint of `database`.
+fn truncate_wal(database: &std::path::Path) -> (i64, i64) {
+    let connection = rusqlite::Connection::open(database).unwrap();
+    connection
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap()
+}
+
+#[test]
+fn stalled_client_releases_reader_and_wal_stops_growing() {
+    let daemon = daemon_with_a_large_session(1);
+    let d = &daemon.daemon;
+    let stalled = stalled_stream(d);
+    eventually("the stalled stream's reader is released", || {
+        d.reads.checked_out() == 0
+    });
+    // A write lands in both write-ahead logs while the client still has not
+    // read; no reader pins an older snapshot, so both truncate to nothing.
+    let mut writer = UnixStream::connect(d.archive.socket()).unwrap();
+    crate::test_answers::ok(answer_of(
+        &mut writer,
+        &request_line(
+            "setting",
+            serde_json::json!({"key": "browser.actions", "value": "on"}),
+            "write-during-stall",
+        ),
+    ));
+    for database in [d.archive.index_db(), d.archive.archive_db()] {
+        assert_eq!(truncate_wal(&database), (0, 0), "{}", database.display());
+        assert_eq!(
+            std::fs::metadata(database.with_extension("db-wal"))
+                .map(|wal| wal.len())
+                .unwrap_or(0),
+            0
+        );
+    }
+    // The bytes held for the stalled client all arrive once it reads.
+    assert_eq!(last_event(stalled), "complete");
+}
+
+#[test]
+fn sixteen_clients_with_one_stalled_stream() {
+    let daemon = daemon_with_a_large_session(1);
+    let d = &daemon.daemon;
+    let stalled = stalled_stream(d);
+    let answers: Vec<_> = std::thread::scope(|scope| {
+        let clients: Vec<_> = (0..15)
+            .map(|n| {
+                scope.spawn(move || {
+                    let mut stream = UnixStream::connect(d.archive.socket()).unwrap();
+                    answer_of(
+                        &mut stream,
+                        &request_line(
+                            "sql",
+                            serde_json::json!({"statement": format!("SELECT {n} AS n")}),
+                            &format!("client-{n}"),
+                        ),
+                    )
+                })
+            })
+            .collect();
+        clients.into_iter().map(|c| c.join().unwrap()).collect()
+    });
+    for (n, answer) in answers.into_iter().enumerate() {
+        let value = crate::test_answers::ok(answer);
+        assert_eq!(value[0]["n"], n, "{value}");
+    }
+    assert_eq!(last_event(stalled), "complete");
+}
+
+#[test]
+fn status_keeps_budget_during_import() {
+    let daemon = crate::test_daemon::start_with_workers("status during import", 1);
+    let d = &daemon.daemon;
+    // Every ordinary reader is taken: one here, one by a read that runs
+    // until it is cancelled, which also holds the only ordinary place.
+    let _held = d.reads.reader().unwrap();
+    let reads = daemon.watch_reads();
+    let mut long_read = UnixStream::connect(d.archive.socket()).unwrap();
+    long_read
+        .write_all(
+            request_line(
+                "sql",
+                serde_json::json!({"statement": "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}),
+                "long-read",
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    let limit = reads.recv_timeout(Duration::from_secs(10)).unwrap();
+    crate::test_daemon::TestDaemon::wait_for_sql(&limit);
+    // An import runs in the background place meanwhile.
+    let export = daemon.home.join("import/session.jsonl");
+    std::fs::create_dir_all(export.parent().unwrap()).unwrap();
+    std::fs::write(
+        &export,
+        (0..2_000)
+            .map(|n| {
+                polylogue_testkit::claude_user(&format!("u{n}"), "imported", "an imported line")
+            })
+            .collect::<String>(),
+    )
+    .unwrap();
+    let mut import = UnixStream::connect(d.archive.socket()).unwrap();
+    import
+        .write_all(
+            request_line(
+                "import",
+                serde_json::json!({"paths": [export]}),
+                "background-import",
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    let mut status = UnixStream::connect(d.archive.socket()).unwrap();
+    // The status class's own deadline: a status queued behind the long read
+    // would answer with a timeout.
+    let line = request_line_with(
+        "status",
+        serde_json::json!({}),
+        "status-during-import",
+        command_surface::Deadline::Default,
+    );
+    let answer = answer_of(&mut status, &line);
+    crate::test_answers::ok(answer);
+    assert!(
+        !limit.cancellation.is_cancelled() && limit.check().is_ok(),
+        "the long read was still running when status answered"
+    );
+}
+
+#[test]
+fn accept_wakes_on_connection_and_on_stop_only() {
+    let mut daemon = crate::test_daemon::start("accept wakeups");
+    let before = daemon.server_wakeups();
+    let mut client = UnixStream::connect(daemon.daemon.archive.socket()).unwrap();
+    crate::test_answers::ok(answer_of(
+        &mut client,
+        &request_line(PING, serde_json::json!({}), "ping"),
+    ));
+    // Requests on an open connection never wake the listener.
+    crate::test_answers::ok(answer_of(
+        &mut client,
+        &request_line(PING, serde_json::json!({}), "ping-again"),
+    ));
+    assert_eq!(daemon.server_wakeups(), before + 1);
+    drop(client);
+    daemon.stop_server().unwrap();
+    assert_eq!(daemon.server_wakeups(), before + 2);
+}
+
+#[test]
+fn idle_listener_makes_no_wakeups() {
+    let daemon = crate::test_daemon::start("idle listener");
+    let before = daemon.server_wakeups();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(daemon.server_wakeups(), before);
 }

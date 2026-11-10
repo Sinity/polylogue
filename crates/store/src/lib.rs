@@ -86,7 +86,7 @@ pub use context::{DeliveryRow, OpenItems, Prompt, SessionSummary};
 pub use read::{
     BehindChain, CapturedSession, CompletenessDimension, CompletenessReason, ImportedAs,
     KnownInput, ReadCompleteness, ReadPool, Reader, ReadingContract, SqlValue, Status,
-    StoppedChains,
+    StoppedChains, reserved_reads,
     scope::{ReadScopeToken, ScopeInvalidation},
 };
 pub use scope_index::{

@@ -13,10 +13,43 @@ thread_local! {
 #[derive(Clone, Debug, Default)]
 pub struct ReadCancellation(Arc<CancellationState>);
 
-#[derive(Debug, Default)]
+type Wake = dyn Fn() + Send + Sync;
+
+#[derive(Default)]
 struct CancellationState {
     cancelled: AtomicBool,
     parent: Option<ReadCancellation>,
+    /// Waiters to wake when this cancellation or an ancestor is cancelled.
+    wakers: Mutex<Vec<(u64, Arc<Wake>)>>,
+}
+
+impl std::fmt::Debug for CancellationState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CancellationState")
+            .field("cancelled", &self.cancelled)
+            .field("parent", &self.parent)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Keeps a waker registered on a cancellation and its ancestors; dropping
+/// it removes the waker.
+pub struct CancellationWake {
+    registered: Vec<(ReadCancellation, u64)>,
+}
+
+impl Drop for CancellationWake {
+    fn drop(&mut self) {
+        for (cancellation, id) in &self.registered {
+            cancellation
+                .0
+                .wakers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|(registered, _)| registered != id);
+        }
+    }
 }
 
 impl ReadCancellation {
@@ -24,16 +57,50 @@ impl ReadCancellation {
         Self(Arc::new(CancellationState {
             cancelled: AtomicBool::new(false),
             parent: Some(self.clone()),
+            wakers: Mutex::default(),
         }))
     }
 
     pub fn cancel(&self) {
         self.0.cancelled.store(true, Ordering::Release);
+        let wakers: Vec<_> = self
+            .0
+            .wakers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(_, wake)| Arc::clone(wake))
+            .collect();
+        for wake in wakers {
+            wake();
+        }
     }
 
     pub fn is_cancelled(&self) -> bool {
         self.0.cancelled.load(Ordering::Acquire)
             || self.0.parent.as_ref().is_some_and(Self::is_cancelled)
+    }
+
+    /// Calls `wake` when this cancellation or an ancestor is cancelled, for
+    /// as long as the returned guard lives, so a blocked waiter needs no
+    /// timer to notice.
+    pub fn on_cancel(&self, wake: impl Fn() + Send + Sync + 'static) -> CancellationWake {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let wake: Arc<Wake> = Arc::new(wake);
+        let mut registered = Vec::new();
+        let mut current = Some(self.clone());
+        while let Some(cancellation) = current {
+            cancellation
+                .0
+                .wakers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((id, Arc::clone(&wake)));
+            current = cancellation.0.parent.clone();
+            registered.push((cancellation, id));
+        }
+        CancellationWake { registered }
     }
 }
 

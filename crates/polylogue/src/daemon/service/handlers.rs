@@ -232,6 +232,7 @@ pub(crate) struct Complete;
 impl Handler for Complete {
     type Arguments = protocol::complete::Arguments;
     type Answer = protocol::complete::Answer;
+    const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Interactive;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
         let text = arguments.text;
         let position = match arguments.position.map(usize::try_from).transpose() {
@@ -271,6 +272,7 @@ pub(crate) struct Status;
 impl Handler for Status {
     type Arguments = protocol::status::Arguments;
     type Answer = protocol::status::Answer;
+    const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Interactive;
     fn run(_: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
         Ok(match call.reader() {
             Ok(reader) => status::answer(call.daemon, &reader),
@@ -430,7 +432,7 @@ pub(crate) struct SchemaInfer;
 impl Handler for SchemaInfer {
     type Arguments = protocol::schema::Infer;
     type Answer = super::super::schema::Inference;
-    const IDLE: bool = true;
+    const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Background;
     fn default_deadline(_: &Self::Arguments) -> bool {
         false
     }
@@ -483,7 +485,7 @@ pub(crate) struct Verify;
 impl Handler for Verify {
     type Arguments = protocol::verify::Arguments;
     type Answer = protocol::verify::Answer;
-    const IDLE: bool = true;
+    const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Background;
     fn default_deadline(_: &Self::Arguments) -> bool {
         false
     }
@@ -536,6 +538,7 @@ pub(crate) struct Import;
 impl Handler for Import {
     type Arguments = protocol::import::Arguments;
     type Answer = protocol::import::Answer;
+    const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Background;
     fn read_phase(_: &Self::Arguments, _: &Command, _: &Caller) -> bool {
         false
     }
@@ -1135,6 +1138,7 @@ pub(crate) struct Brief;
 impl Handler for Brief {
     type Arguments = protocol::context::Brief;
     type Answer = protocol::context::Answer;
+    const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Interactive;
     const BUDGETED: bool = true;
     const RECORDS_DELIVERY: bool = true;
     const READS_FIRST: bool = true;

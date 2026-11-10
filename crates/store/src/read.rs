@@ -14,7 +14,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::unix::fs::MetadataExt;
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::ThreadId;
 
 pub mod limit;
@@ -90,14 +90,37 @@ impl MessageEvidence {
 }
 
 /// Read-only connections to one archive, reused across requests.
+/// `max_readers` connections serve every read; one more is kept for reads
+/// that run inside [`reserved_reads`], so status and completion answers
+/// never wait behind a full pool.
 pub struct ReadPool {
     archive: Archive,
-    state: Mutex<PoolState>,
-    available: Condvar,
+    state: Arc<Mutex<PoolState>>,
+    available: Arc<Condvar>,
     max_readers: usize,
     cache_kib: i64,
+    /// Wakes waiting checkouts when the access scope changes.
+    _scope_wake: scope::ScopeInvalidation,
     #[cfg(test)]
     changed: Condvar,
+}
+
+thread_local! {
+    static RESERVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `work` with access to the pool's reserved connection, for the
+/// interactive answers that must keep their budget while bulk reads hold
+/// every ordinary connection.
+pub fn reserved_reads<T>(work: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            RESERVED.with(|reserved| reserved.set(self.0));
+        }
+    }
+    let _restore = Restore(RESERVED.with(|reserved| reserved.replace(true)));
+    work()
 }
 
 #[derive(Default)]
@@ -106,6 +129,8 @@ struct PoolState {
     closed: bool,
     /// Includes idle, checked-out and still-opening connections.
     live: usize,
+    /// Checked-out and still-opening connections.
+    in_use: usize,
     owners: HashMap<ThreadId, usize>,
     #[cfg(test)]
     waiters: usize,
@@ -213,12 +238,15 @@ impl ReadPool {
     }
 
     /// `memory_bytes` is the combined SQLite page-cache target of all pool
-    /// reader slots, including index, attached archive and optional embeddings. Mmap is disabled
+    /// reader slots, the reserved one included, including index, attached archive and optional embeddings. Mmap is disabled
     /// so mapped pages cannot multiply outside that allocation.
     /// This is not a process RSS limit: result values and SQLite work space vary.
     pub fn with_budget(archive: &Archive, max_readers: usize, memory_bytes: u64) -> Result<Self> {
+        // The reserved connection shares the budget.
         let divisor = u64::try_from(max_readers)
             .ok()
+            .and_then(|n| n.checked_add(1))
+            .filter(|_| max_readers > 0)
             .and_then(|n| n.checked_mul(3 * 1024))
             .filter(|n| *n != 0)
             .ok_or_else(|| {
@@ -232,12 +260,22 @@ impl ReadPool {
                     "read pool budget needs at least 1 KiB per database per connection".into(),
                 )
             })?;
+        let state = Arc::new(Mutex::new(PoolState::default()));
+        let available = Arc::new(Condvar::new());
+        let scope_wake = {
+            let (state, available) = (Arc::clone(&state), Arc::clone(&available));
+            archive.read_scope.register(move || {
+                wake_all(&state, &available);
+                Ok(())
+            })?
+        };
         Ok(Self {
             archive: archive.clone(),
-            state: Mutex::new(PoolState::default()),
-            available: Condvar::new(),
+            state,
+            available,
             max_readers,
             cache_kib,
+            _scope_wake: scope_wake,
             #[cfg(test)]
             changed: Condvar::new(),
         })
@@ -318,6 +356,15 @@ impl ReadPool {
             limit.bind_scope(scope.clone())?;
         }
         let owner = std::thread::current().id();
+        let capacity = self.max_readers + usize::from(RESERVED.with(std::cell::Cell::get));
+        // A cancelled request wakes its waiting checkout; the deadline bounds
+        // the wait. Nothing polls.
+        let _cancel_wake = limit.as_ref().map(|limit| {
+            let (state, available) = (Arc::clone(&self.state), Arc::clone(&self.available));
+            limit
+                .cancellation
+                .on_cancel(move || wake_all(&state, &available))
+        });
         let idle = {
             let mut state = self.state.lock().map_err(|_| pool_poisoned())?;
             loop {
@@ -328,14 +375,16 @@ impl ReadPool {
                 if state.closed {
                     return Err(StoreError::ReadPoolClosed);
                 }
-                if let Some(conn) = state.idle.pop() {
+                if state.in_use < capacity {
+                    state.in_use += 1;
                     *state.owners.entry(owner).or_default() += 1;
-                    break Some(conn);
-                }
-                if state.live < self.max_readers {
-                    state.live += 1;
-                    *state.owners.entry(owner).or_default() += 1;
-                    break None;
+                    match state.idle.pop() {
+                        Some(conn) => break Some(conn),
+                        None => {
+                            state.live += 1;
+                            break None;
+                        }
+                    }
                 }
                 if state.owners.contains_key(&owner) {
                     return Err(StoreError::ReadPoolNested);
@@ -345,11 +394,15 @@ impl ReadPool {
                     state.waiters += 1;
                     self.changed.notify_all();
                 }
-                state = self
-                    .available
-                    .wait_timeout(state, std::time::Duration::from_millis(5))
-                    .map_err(|_| pool_poisoned())?
-                    .0;
+                state = match limit.as_ref().and_then(limit::ReadLimit::remaining) {
+                    Some(left) => {
+                        self.available
+                            .wait_timeout(state, left)
+                            .map_err(|_| pool_poisoned())?
+                            .0
+                    }
+                    None => self.available.wait(state).map_err(|_| pool_poisoned())?,
+                };
                 #[cfg(test)]
                 {
                     state.waiters -= 1;
@@ -421,6 +474,14 @@ impl ReadPool {
     }
 }
 
+fn wake_all(state: &Mutex<PoolState>, available: &Condvar) {
+    // Taking the lock orders the wake after a waiter's last check.
+    let _held = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    available.notify_all();
+}
+
 fn pool_poisoned() -> StoreError {
     StoreError::Invalid("read pool lock poisoned".into())
 }
@@ -450,6 +511,7 @@ impl Drop for Reader<'_> {
                 state.owners.remove(&self.owner);
             }
         }
+        state.in_use -= 1;
         match conn {
             Some(conn) if !state.closed => state.idle.push((
                 conn,
@@ -458,7 +520,8 @@ impl Drop for Reader<'_> {
             )),
             _ => state.live -= 1,
         }
-        self.pool.available.notify_one();
+        // A freed slot may suit only a reserved waiter, so every waiter looks.
+        self.pool.available.notify_all();
     }
 }
 

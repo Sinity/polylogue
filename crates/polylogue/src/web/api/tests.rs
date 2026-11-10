@@ -30,9 +30,10 @@ fn stream_failure_before_first_event_uses_the_shared_http_status() {
         .block_on(async {
             let response = stream(
                 &web(&daemon),
+                crate::daemon::executor::Class::Ordinary,
                 super::super::request_limit(),
                 crate::client::request("changes", serde_json::json!({}), "http-stream".into()),
-                failed,
+                Box::new(failed),
             )
             .await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -83,6 +84,7 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
         .block_on(async {
             let response = stream(
                 &web(&daemon),
+                crate::daemon::executor::Class::Ordinary,
                 super::super::request_limit(),
                 command_surface::Request {
                     operation: "changes".into(),
@@ -94,7 +96,7 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
                     fresh: false,
                     format: Default::default(),
                 },
-                failed,
+                Box::new(failed),
             )
             .await;
             assert_eq!(response.status(), StatusCode::OK);
@@ -116,7 +118,7 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
 }
 
 #[test]
-fn stream_headers_arrive_while_the_bounded_producer_is_waiting_for_the_reader() {
+fn stream_headers_arrive_before_the_body_of_a_large_stream_is_read() {
     fn large(
         _: &Daemon,
         _: &crate::operation::Invocation,
@@ -125,7 +127,7 @@ fn stream_headers_arrive_while_the_bounded_producer_is_waiting_for_the_reader() 
     ) -> Result<(), crate::daemon::Failure> {
         let result = (|| {
             crate::protocol::stream::event(output, "begin", &serde_json::json!({}))?;
-            // Exceeds the transport buffer. Preparation cannot finish until the body is consumed.
+            // Exceeds a transport buffer; the stream buffer holds it unread.
             crate::protocol::stream::event(output, "record", &"x".repeat(128 * 1024))?;
             crate::protocol::stream::event(output, "complete", &serde_json::json!({}))
         })();
@@ -141,9 +143,10 @@ fn stream_headers_arrive_while_the_bounded_producer_is_waiting_for_the_reader() 
                 std::time::Duration::from_secs(5),
                 stream(
                     &web(&daemon),
+                    crate::daemon::executor::Class::Ordinary,
                     super::super::request_limit(),
                     crate::client::request("changes", serde_json::json!({}), "http-stream".into()),
-                    large,
+                    Box::new(large),
                 ),
             )
             .await
@@ -302,9 +305,10 @@ fn native_scope_reset_terminates_a_begun_http_stream_without_final_completion() 
         .block_on(async {
             let response = stream(
                 &web(&daemon),
+                crate::daemon::executor::Class::Ordinary,
                 super::super::request_limit(),
                 crate::client::request("changes", serde_json::json!({}), "http-stream".into()),
-                reset_after_begin,
+                Box::new(reset_after_begin),
             )
             .await;
             assert_eq!(response.status(), StatusCode::OK);

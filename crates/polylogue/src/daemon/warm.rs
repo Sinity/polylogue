@@ -16,7 +16,6 @@ use polylogue_store::vectors::{Loaded, Similarity};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 /// Recent `similar:` texts whose query vectors are kept.
 const QUERY_VECTORS: usize = 256;
@@ -88,20 +87,10 @@ impl Default for Warm {
     }
 }
 
-fn read_lock<'a, T>(
-    lock: &'a Mutex<T>,
-    reader: &Reader<'_>,
-) -> Result<std::sync::MutexGuard<'a, T>, String> {
-    loop {
-        reader.check().map_err(|error| error.to_string())?;
-        match lock.try_lock() {
-            Ok(held) => return Ok(held),
-            Err(std::sync::TryLockError::Poisoned(_)) => return Err("read cache poisoned".into()),
-            Err(std::sync::TryLockError::WouldBlock) => {
-                std::thread::sleep(Duration::from_millis(5))
-            }
-        }
-    }
+/// The cache lock guards only pointer swaps, never SQL or quantization, so
+/// a plain lock is held for microseconds.
+fn cache_lock<T>(lock: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, String> {
+    lock.lock().map_err(|_| "read cache poisoned".to_owned())
 }
 
 impl Warm {
@@ -132,7 +121,7 @@ impl Warm {
         load: impl FnOnce() -> Result<Loaded, String>,
     ) -> Result<Arc<Loaded>, String> {
         let invalidation = {
-            let held = read_lock(&self.vectors, reader)?;
+            let held = cache_lock(&self.vectors)?;
             if let Some(loaded) = &held.loaded
                 && loaded.key == key
                 && loaded.revision == revision
@@ -146,7 +135,7 @@ impl Warm {
         let loaded = Arc::new(load()?);
         self.counts.vector_loads.fetch_add(1, Ordering::Relaxed);
         reader.check().map_err(|e| e.to_string())?;
-        let mut held = read_lock(&self.vectors, reader)?;
+        let mut held = cache_lock(&self.vectors)?;
         if Arc::ptr_eq(&invalidation, &held.invalidation) {
             if let Some(current) = &held.loaded
                 && current.key == key

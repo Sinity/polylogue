@@ -133,8 +133,8 @@ fn start_on(
                 _ = stopped => Ok(()),
             }
         })
-        // Runtime drop aborts async network tasks and waits for every
-        // spawn_blocking application request before this owner can join.
+        // Runtime drop aborts async network tasks; request work runs on the
+        // daemon's executor, which the daemon's shutdown drains.
     })?);
     Ok(server)
 }
@@ -295,7 +295,7 @@ async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> Htt
     web_shell::assets::secure(response)
 }
 
-/// Runs one operation on a blocking thread, as the socket would.
+/// Runs one operation on the executor, as the socket would.
 pub async fn ask(
     web: &Arc<Web>,
     operation: &'static str,
@@ -306,12 +306,16 @@ pub async fn ask(
         surface: crate::commands::Surface::Http,
         cwd: None,
     };
-    let read_only = crate::commands::command(operation)
+    let policy = crate::commands::command(operation)
         .and_then(|row| {
             row.registration()
                 .map(|registration| registration.admit(&arguments, row, &caller))
         })
-        .is_some_and(|policy| policy.is_ok_and(|policy| policy.read_only));
+        .and_then(Result::ok);
+    let read_only = policy.is_some_and(|policy| policy.read_only);
+    let class = policy.map_or(crate::daemon::executor::Class::Ordinary, |policy| {
+        policy.class
+    });
     let scope = if read_only {
         match web.daemon.reads.scope_token() {
             Ok(scope) => Some(scope),
@@ -329,23 +333,27 @@ pub async fn ask(
         &Default::default(),
         None,
     );
-    let answer = tokio::task::spawn_blocking(move || {
-        let invocation = d.invocation(&authorship).with_parent(parent);
-        crate::daemon::handler::local(
-            operation,
-            arguments,
-            &crate::daemon::handler::Local {
-                daemon: &d,
-                invocation: &invocation,
-                caller: &caller,
-                limit: &limit,
-                request_id: &polylogue_store::user_writes::new_request_id(),
-                cursor: cursor.as_deref(),
-            },
-        )
-    })
-    .await
-    .unwrap_or_else(|error| crate::daemon::service::error("internal", error));
+    let deadline = limit.deadline();
+    let executor = Arc::clone(&web.daemon);
+    let answer = executor
+        .executor
+        .run(class, deadline, move || {
+            let invocation = d.invocation(&authorship).with_parent(parent);
+            crate::daemon::handler::local(
+                operation,
+                arguments,
+                &crate::daemon::handler::Local {
+                    daemon: &d,
+                    invocation: &invocation,
+                    caller: &caller,
+                    limit: &limit,
+                    request_id: &polylogue_store::user_writes::new_request_id(),
+                    cursor: cursor.as_deref(),
+                },
+            )
+        })
+        .await
+        .unwrap_or_else(|| crate::daemon::service::shutting_down().answer());
     cancel.0.take();
     let publication = crate::protocol::ReadScopes::single(scope);
     let answer = crate::protocol::scope_answer(answer, &publication);
