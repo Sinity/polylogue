@@ -1,4 +1,7 @@
-//! Counts over the same shown path the query language reads.
+//! Counts over the same shown path the query language reads. The schema's
+//! triggers keep them with every change to the rows they count
+//! (`schema/index.sql`, before `row_count`); [`compute`] is the same
+//! definition over the stored rows, run when the version moves.
 use super::{Class, Derivation, Version};
 use crate::Result;
 use crate::session_sql::{counts_as_action, own_messages};
@@ -7,7 +10,7 @@ use serde::Serialize;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "counts",
-    class: Class::Session,
+    class: Class::Fold,
     products: &[polylogue_model::derived::SESSION_COUNTS],
     version: Version::Rules(1),
     after: &["duplicates", "active_path", "tool_calls"],

@@ -66,7 +66,7 @@ Analyses are computed when their data arrives, and at read only when that cannot
 
 Derived data converges through one path, with no separate stage and no backfill, refresh, rebuild or recompute command.
 
-- Row values are written with their rows, by the same function the derivation uses, and recomputed only when their derivation's version moves. Session products are recomputed for exactly the sessions whose rows or derivation version changed.
+- Row values are written with their rows, by the same function the derivation uses, and recomputed only when their derivation's version moves. Fold values (the session counts) are kept by schema triggers in the transaction of every change to the rows they fold, the derive step's changes to duplicates and the active path included, so an append adds its own rows' share and nothing reads the session again; they are recomputed only when their version moves. Session products are recomputed for exactly the sessions whose rows or derivation version changed.
 - **Marks:** `derive_due(session, rows_changed)` names the sessions behind, set in the transaction that changed their rows (a trigger on `session.changed`); a derivation whose version moved since the last pass marks every session for that derivation alone. `derive_state(name, session, version)` records the version each derivation last derived a session at. The derive step finds its work through the marks, never by scanning sessions, and never moves `session.changed`, which says when the session's own rows changed; a session it derives reaches the change feed through `session.derived_changed`.
 - **Cross-session causes** delete the affected marks in their own transaction: a link change marks the logical-session root of the child's subtree and the session cost of its ancestors; a repository lookup marks the working-directories product of sessions under its path.
 - **Recompute:** the derive consumer takes behind sessions, newest first, a bounded number per transaction, and commits each session's rows with its new mark; user writes waiting for the writer are served between those transactions. A crash leaves marks behind, which the ordinary open path treats as pending work.
@@ -84,7 +84,7 @@ struct Derivation {
     name: &'static str,
     version: Version,                  // Rules(n) | Content(hash of a shipped table)
     after: &'static [&'static str],
-    class: Class,                      // Row (a value of one row) | Session
+    class: Class,                      // Row (a value of one row) | Fold (kept with each change) | Session
     run: fn(&Transaction<'_>, i64, &Inputs) -> Result<()>,
     dirtied_by: &'static [Cause],      // SessionChanged implicit; LinkChanged{Descendants|Ancestors}; RepoLookupChanged
     construct: Construct,

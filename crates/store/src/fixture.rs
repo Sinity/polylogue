@@ -422,8 +422,8 @@ impl Fixture {
     /// last active `last - (sessions - 1 - n)` minutes ago, so the highest
     /// numbers are the newest. Each has `messages` messages alternating a
     /// person's prompt and a model answer; the newest `answered` end on a
-    /// model answer with text. Counts and brief summaries are stored as the
-    /// derive step leaves them. Returns the session row keys in order.
+    /// model answer with text. The schema's triggers keep the counts; brief
+    /// summaries are stored as the derive step leaves them. Returns the session row keys in order.
     pub fn many_sessions(&mut self, spec: ManySessions<'_>) -> Result<Vec<i64>> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.index,
@@ -433,8 +433,8 @@ impl Fixture {
         {
             let mut session = tx.prepare(
                 "INSERT INTO session(id, origin, native_id, kind, cwd, cwd_json, started_at,
-                     last_activity_at, message_count, changed, started_time)
-                 VALUES (?1, 'test', ?2, 'main', ?3, ?4, ?5, ?6, ?7, 1, ?8)",
+                     last_activity_at, changed, started_time)
+                 VALUES (?1, 'test', ?2, 'main', ?3, ?4, ?5, ?6, 1, ?7)",
             )?;
             let mut message = tx.prepare(
                 "INSERT INTO message(id, session_pk, order_input_pk, order_input_id, seq, role,
@@ -459,7 +459,6 @@ impl Fixture {
                     serde_json::json!([cwd]).to_string(),
                     started,
                     last,
-                    spec.messages as i64,
                     fixture_time(Some(started))?,
                 ])?;
                 let pk = tx.last_insert_rowid();
