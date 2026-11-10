@@ -129,11 +129,8 @@ fn callback_prefix_retries_are_read_only_and_completion_waits_for_every_prior_ca
             source: ExportDeliverySource::Complete { item_count: 1, .. }
         }
     ));
-    let shape: String = conn
-        .query_row("SELECT shape FROM wire_shape", [], |row| row.get(0))
-        .unwrap();
-    let shape: StoredShape = serde_json::from_str(&shape).unwrap();
-    assert_eq!(shape.types["string"].count, 1);
+    let shape = stored_rows(&conn);
+    assert_eq!(shape.1, vec![("string".to_owned(), 1, 1, 1)]);
     let done = state(&conn);
     apply_step(&mut conn, 2, &complete).unwrap();
     assert_eq!(state(&conn), done);
@@ -161,12 +158,7 @@ fn callback_prefix_retries_are_read_only_and_completion_waits_for_every_prior_ca
     );
     assert!(apply_step(&mut conn, 2, &after_complete).is_err());
     assert_eq!(state(&conn), done);
-    assert_eq!(
-        conn.query_row("SELECT shape FROM wire_shape", [], |row| row
-            .get::<_, String>(0))
-            .unwrap(),
-        serde_json::to_string(&shape).unwrap()
-    );
+    assert_eq!(stored_rows(&conn), shape);
     item.delivery = None;
     assert!(apply_step(&mut conn, 2, &item).is_err());
 }
@@ -305,9 +297,42 @@ fn header_line_failures_preserve_counts_and_allow_valid_items_and_complete() {
         apply_step(&mut conn, 2, step).unwrap();
     }
     assert_eq!(state(&conn), saved);
-    let body: String = conn
-        .query_row("SELECT shape FROM wire_shape", [], |row| row.get(0))
+    let count: i64 = conn
+        .query_row(
+            "SELECT count FROM wire_type WHERE json_type='string'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
-    let shape: StoredShape = serde_json::from_str(&body).unwrap();
-    assert_eq!(shape.types["string"].count, 1);
+    assert_eq!(count, 1);
+}
+
+/// The stored shape rows: (path, unknown kinds, unknown tables, unused,
+/// first, last) and (type, count, first, last).
+#[allow(clippy::type_complexity)]
+fn stored_rows(
+    conn: &Connection,
+) -> (
+    Vec<(String, i64, i64, i64, i64, i64)>,
+    Vec<(String, i64, i64, i64)>,
+) {
+    let shapes = conn
+        .prepare("SELECT path,unknown_kinds,unknown_tables,unused,first,last FROM wire_shape ORDER BY path")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let types = conn
+        .prepare("SELECT json_type,count,first,last FROM wire_type ORDER BY path,json_type")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    (shapes, types)
 }

@@ -217,6 +217,15 @@ struct Reading {
     refused_export: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     export_refusals: Option<ExportRefusals>,
+    /// The latest receipt at which this reading, since its last reset,
+    /// covered its whole source: a path counted now and first seen before it
+    /// was present in a complete reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    completed: Option<Receipt>,
+    /// The latest completion before the last reset: a path the reset left
+    /// uncounted and last seen before it was present in a complete reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    completed_before_reset: Option<Receipt>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 struct ExportRefusals {
@@ -224,159 +233,40 @@ struct ExportRefusals {
     first: Receipt,
     last: Receipt,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-struct Shape {
-    types: BTreeMap<String, TypeObservation>,
-    expected: Vec<String>,
-    dynamic_map: bool,
-    known_kinds: Vec<String>,
-    unknown_kind_count: u64,
-    table: Option<String>,
-    unknown_table_count: u64,
-    unused_count: u64,
-    first: Receipt,
-    last: Receipt,
-    complete_presence: Option<Receipt>,
-}
-/// A shape as `wire_shape` stores it: each receipt by its number in
-/// `wire_receipt`. A shape names up to seven receipts, nearly always the same
-/// few of its chain; stored whole, they were three quarters of each row.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct StoredShape {
-    types: BTreeMap<String, StoredType>,
-    expected: Vec<String>,
-    dynamic_map: bool,
-    known_kinds: Vec<String>,
-    unknown_kind_count: u64,
-    table: Option<String>,
-    unknown_table_count: u64,
-    unused_count: u64,
-    first: u64,
-    last: u64,
-    complete_presence: Option<u64>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct StoredType {
-    count: u64,
-    first: u64,
-    last: u64,
-}
-
-/// The receipts of one reading (input, chain, reading version), numbered from
-/// 1 in the order they were first cited.
-struct Receipts {
-    input_pk: i64,
-    chain: i64,
-    version: String,
-    by_number: Vec<Receipt>,
-    numbers: std::collections::HashMap<String, u64>,
-}
-impl Receipts {
-    fn load(conn: &Connection, input_pk: i64, chain: i64, version: &str) -> Result<Self> {
-        let mut receipts = Self {
-            input_pk,
-            chain,
-            version: version.to_owned(),
-            by_number: Vec::new(),
-            numbers: std::collections::HashMap::new(),
-        };
-        let mut statement = conn.prepare_cached(
-            "SELECT number,receipt FROM wire_receipt WHERE input_pk=?1 AND chain=?2 AND reading_version=?3 ORDER BY number",
-        )?;
-        let mut rows = statement.query(params![input_pk, chain, version])?;
-        while let Some(row) = rows.next()? {
-            let number: i64 = row.get(0)?;
-            let json: String = row.get(1)?;
-            if usize::try_from(number).ok() != Some(receipts.by_number.len() + 1) {
-                return invalid("wire receipt numbers are not consecutive");
-            }
-            receipts.by_number.push(serde_json::from_str(&json)?);
-            receipts.numbers.insert(json, number as u64);
-        }
-        Ok(receipts)
+/// The number of a receipt among its reading's receipts, numbered from 1 in
+/// the order they were first cited.
+fn receipt_number(
+    tx: &Connection,
+    source: Source<'_>,
+    version: &str,
+    receipt: &Receipt,
+) -> Result<i64> {
+    let json = serde_json::to_string(receipt)?;
+    let key = params![source.input_pk, source.chain, version, json];
+    if let Some(number) = tx
+        .prepare_cached("SELECT number FROM wire_receipt WHERE input_pk=?1 AND chain=?2 AND reading_version=?3 AND receipt=?4")?
+        .query_row(key, |row| row.get(0))
+        .optional()?
+    {
+        return Ok(number);
     }
-    fn number(&mut self, tx: &Connection, receipt: &Receipt) -> Result<u64> {
-        let json = serde_json::to_string(receipt)?;
-        if let Some(number) = self.numbers.get(&json) {
-            return Ok(*number);
-        }
-        let number = self.by_number.len() as u64 + 1;
-        tx.prepare_cached("INSERT INTO wire_receipt(input_pk,chain,reading_version,number,receipt) VALUES (?1,?2,?3,?4,?5)")?
-            .execute(params![self.input_pk, self.chain, self.version, number as i64, json])?;
-        self.by_number.push(receipt.clone());
-        self.numbers.insert(json, number);
-        Ok(number)
-    }
-    fn receipt(&self, number: u64) -> Result<Receipt> {
-        usize::try_from(number)
-            .ok()
-            .and_then(|n| n.checked_sub(1))
-            .and_then(|n| self.by_number.get(n))
-            .cloned()
-            .ok_or_else(|| StoreError::Invalid("wire shape cites an unknown receipt".into()))
-    }
-    fn store(&mut self, tx: &Connection, shape: &Shape) -> Result<StoredShape> {
-        let mut types = BTreeMap::new();
-        for (kind, observed) in &shape.types {
-            types.insert(
-                kind.clone(),
-                StoredType {
-                    count: observed.count,
-                    first: self.number(tx, &observed.first)?,
-                    last: self.number(tx, &observed.last)?,
-                },
-            );
-        }
-        Ok(StoredShape {
-            types,
-            expected: shape.expected.clone(),
-            dynamic_map: shape.dynamic_map,
-            known_kinds: shape.known_kinds.clone(),
-            unknown_kind_count: shape.unknown_kind_count,
-            table: shape.table.clone(),
-            unknown_table_count: shape.unknown_table_count,
-            unused_count: shape.unused_count,
-            first: self.number(tx, &shape.first)?,
-            last: self.number(tx, &shape.last)?,
-            complete_presence: shape
-                .complete_presence
-                .as_ref()
-                .map(|receipt| self.number(tx, receipt))
-                .transpose()?,
-        })
-    }
-    fn restore(&self, stored: StoredShape) -> Result<Shape> {
-        let mut types = BTreeMap::new();
-        for (kind, observed) in stored.types {
-            types.insert(
-                kind,
-                TypeObservation {
-                    count: observed.count,
-                    first: self.receipt(observed.first)?,
-                    last: self.receipt(observed.last)?,
-                },
-            );
-        }
-        Ok(Shape {
-            types,
-            expected: stored.expected,
-            dynamic_map: stored.dynamic_map,
-            known_kinds: stored.known_kinds,
-            unknown_kind_count: stored.unknown_kind_count,
-            table: stored.table,
-            unknown_table_count: stored.unknown_table_count,
-            unused_count: stored.unused_count,
-            first: self.receipt(stored.first)?,
-            last: self.receipt(stored.last)?,
-            complete_presence: stored
-                .complete_presence
-                .map(|number| self.receipt(number))
-                .transpose()?,
-        })
-    }
+    Ok(tx
+        .prepare_cached("INSERT INTO wire_receipt(input_pk,chain,reading_version,number,receipt) SELECT ?1,?2,?3,coalesce(max(number),0)+1,?4 FROM wire_receipt WHERE input_pk=?1 AND chain=?2 AND reading_version=?3 RETURNING number")?
+        .query_row(key, |row| row.get(0))?)
 }
 
 impl Reading {
+    /// Records that the reading now covers its whole source.
+    fn complete(&mut self, source: Source<'_>, receipt: &Receipt) {
+        self.completed = Some(
+            if matches!(receipt.footprint, ReadingFootprint::Bytes { .. }) {
+                Receipt::from(source)
+            } else {
+                receipt.clone()
+            },
+        );
+    }
+
     fn status(&self) -> CoverageStatus {
         match &self.progress {
             StepProgress::NoParserYet { .. } => CoverageStatus::NoParserYet,
@@ -514,10 +404,10 @@ fn apply_inner(
                 }
                 old.length = source.length;
                 old.last = receipt.clone();
-                tx.prepare_cached("UPDATE wire_reading SET state=?4 WHERE input_pk=?1 AND chain=?2 AND reading_version=?3")?.execute(params![source.input_pk,source.chain,step.reading_version,serde_json::to_string(&old)?])?;
                 if old.status() == CoverageStatus::Complete {
-                    complete(tx, source, &step.reading_version, &receipt)?;
+                    old.complete(source, &receipt);
                 }
+                tx.prepare_cached("UPDATE wire_reading SET state=?4 WHERE input_pk=?1 AND chain=?2 AND reading_version=?3")?.execute(params![source.input_pk,source.chain,step.reading_version,serde_json::to_string(&old)?])?;
             }
         }
         return Ok(());
@@ -570,6 +460,19 @@ fn apply_inner(
         last_hash: hash,
         refused_export: export_refusal,
         export_refusals,
+        completed: previous
+            .as_ref()
+            .filter(|_| !reset)
+            .and_then(|old| old.completed.clone()),
+        completed_before_reset: previous.as_ref().and_then(|old| {
+            if reset {
+                old.completed
+                    .clone()
+                    .or_else(|| old.completed_before_reset.clone())
+            } else {
+                old.completed_before_reset.clone()
+            }
+        }),
         export_cursor: if export_refusal {
             None
         } else {
@@ -589,111 +492,121 @@ fn apply_inner(
     if previous.is_none() && step.start != 0 && !step.reset && !export_delivery {
         reading.progress = reading.progress.clone().with_end(false);
     }
+    if reading.status() == CoverageStatus::Complete {
+        reading.complete(source, &receipt);
+    }
     tx.prepare_cached(
         "UPDATE wire_reading SET active=0 WHERE input_pk=?1 AND chain=?2 AND active=1",
     )?
     .execute(params![source.input_pk, source.chain])?;
     tx.prepare_cached("INSERT INTO wire_reading(input_pk,chain,reading_version,format,active,state) VALUES (?1,?2,?3,?4,1,?5) ON CONFLICT(input_pk,chain,reading_version) DO UPDATE SET format=excluded.format,active=1,state=excluded.state")?.execute(params![source.input_pk,source.chain,step.reading_version,source.format,serde_json::to_string(&reading)?])?;
-    let mut receipts = Receipts::load(tx, source.input_pk, source.chain, &step.reading_version)?;
+    let reading_key = params![source.input_pk, source.chain, step.reading_version];
     if reset {
-        let old = stored_shapes(tx, &receipts, &step.reading_version)?;
-        for (kind, path, mut shape) in old {
-            for observation in shape.types.values_mut() {
-                observation.count = 0;
-            }
-            shape.unknown_kind_count = 0;
-            shape.unknown_table_count = 0;
-            shape.unused_count = 0;
-            save(tx, &mut receipts, &kind, &path, &shape)?;
-        }
+        // A reset replaces the counts; where each path was first and last
+        // seen stays.
+        tx.prepare_cached("UPDATE wire_shape SET unknown_kinds=0,unknown_tables=0,unused=0 WHERE input_pk=?1 AND chain=?2 AND reading_version=?3")?
+            .execute(reading_key)?;
+        tx.prepare_cached(
+            "UPDATE wire_type SET count=0 WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",
+        )?
+        .execute(reading_key)?;
     }
+    if step.counts.wire_shapes.is_empty() {
+        return Ok(());
+    }
+    let number = receipt_number(tx, source, &step.reading_version, &receipt)?;
     for observation in step.counts.wire_shapes.values() {
         validate(observation)?;
-        let previous:Option<String>=tx.prepare_cached("SELECT shape FROM wire_shape WHERE input_pk=?1 AND chain=?2 AND reading_version=?3 AND record_kind=?4 AND path=?5 AND table_key=?6")?.query_row(params![source.input_pk,source.chain,step.reading_version,observation.record_kind,observation.path,serde_json::to_string(&observation.table)?],|row|row.get(0)).optional()?;
-        let mut shape = previous
-            .map(|json| receipts.restore(serde_json::from_str::<StoredShape>(&json)?))
-            .transpose()?
-            .unwrap_or_else(|| Shape {
-                types: BTreeMap::new(),
-                expected: observation.expected.clone(),
-                dynamic_map: observation.dynamic_map,
-                known_kinds: observation.known_kinds.clone(),
-                unknown_kind_count: 0,
-                table: observation.table.clone(),
-                unknown_table_count: 0,
-                unused_count: 0,
-                first: receipt.clone(),
-                last: receipt.clone(),
-                complete_presence: None,
-            });
-        if shape.expected != observation.expected
-            || shape.dynamic_map != observation.dynamic_map
-            || shape.known_kinds != observation.known_kinds
-            || shape.table != observation.table
-        {
-            return invalid("wire declarations changed without a reading version change");
-        }
-        shape.last = receipt.clone();
-        shape.unknown_kind_count = add(shape.unknown_kind_count, observation.unknown_kind_count)?;
-        shape.unknown_table_count =
-            add(shape.unknown_table_count, observation.unknown_table_count)?;
-        shape.unused_count = add(shape.unused_count, observation.unused_count)?;
-        for (kind, count) in &observation.types {
-            if *count == 0 {
+        let table_key = serde_json::to_string(&observation.table)?;
+        declare(
+            tx,
+            source.format,
+            &step.reading_version,
+            observation,
+            &table_key,
+        )?;
+        tx.prepare_cached("INSERT INTO wire_shape(input_pk,chain,reading_version,record_kind,path,table_key,unknown_kinds,unknown_tables,unused,first,last) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10) ON CONFLICT(input_pk,chain,reading_version,record_kind,path,table_key) DO UPDATE SET unknown_kinds=unknown_kinds+excluded.unknown_kinds,unknown_tables=unknown_tables+excluded.unknown_tables,unused=unused+excluded.unused,last=excluded.last")?
+            .execute(params![
+                source.input_pk,
+                source.chain,
+                step.reading_version,
+                observation.record_kind,
+                observation.path,
+                table_key,
+                stored_count(observation.unknown_kind_count)?,
+                stored_count(observation.unknown_table_count)?,
+                stored_count(observation.unused_count)?,
+                number,
+            ])?;
+        for (kind, &count) in &observation.types {
+            if count == 0 {
                 continue;
             }
-            let entry = shape
-                .types
-                .entry(kind.clone())
-                .or_insert_with(|| TypeObservation {
-                    count: 0,
-                    first: receipt.clone(),
-                    last: receipt.clone(),
-                });
-            entry.count = add(entry.count, *count)?;
-            entry.last = receipt.clone();
+            tx.prepare_cached("INSERT INTO wire_type(input_pk,chain,reading_version,record_kind,path,table_key,json_type,count,first,last) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9) ON CONFLICT(input_pk,chain,reading_version,record_kind,path,table_key,json_type) DO UPDATE SET count=count+excluded.count,last=excluded.last")?
+                .execute(params![
+                    source.input_pk,
+                    source.chain,
+                    step.reading_version,
+                    observation.record_kind,
+                    observation.path,
+                    table_key,
+                    kind,
+                    stored_count(count)?,
+                    number,
+                ])?;
         }
-        if reading.status() == CoverageStatus::Complete
-            && shape.types.values().any(|kind| kind.count > 0)
-        {
-            shape.complete_presence = Some(receipt.clone());
-        }
-        save(
-            tx,
-            &mut receipts,
-            &observation.record_kind,
-            &observation.path,
-            &shape,
-        )?;
-    }
-    if reading.status() == CoverageStatus::Complete {
-        complete(tx, source, &step.reading_version, &receipt)?;
     }
     Ok(())
 }
-fn complete(
-    tx: &Transaction<'_>,
-    source: Source<'_>,
+
+/// Records what a reading version declares about a path, once per format;
+/// the same version declaring otherwise is refused.
+fn declare(
+    tx: &Connection,
+    format: &str,
     version: &str,
-    receipt: &Receipt,
+    observation: &WireShape,
+    table_key: &str,
 ) -> Result<()> {
-    let whole;
-    let receipt = if matches!(receipt.footprint, ReadingFootprint::Bytes { .. }) {
-        whole = Receipt::from(source);
-        &whole
-    } else {
-        receipt
-    };
-    let mut receipts = Receipts::load(tx, source.input_pk, source.chain, version)?;
-    for (kind, path, mut shape) in stored_shapes(tx, &receipts, version)? {
-        if shape.types.values().any(|kind| kind.count > 0)
-            && shape.complete_presence.as_ref() != Some(receipt)
+    let expected = serde_json::to_string(&observation.expected)?;
+    let known_kinds = serde_json::to_string(&observation.known_kinds)?;
+    let stored: Option<(String, bool, String)> = tx
+        .prepare_cached("SELECT expected,dynamic_map,known_kinds FROM wire_declaration WHERE format=?1 AND reading_version=?2 AND record_kind=?3 AND path=?4 AND table_key=?5")?
+        .query_row(
+            params![format, version, observation.record_kind, observation.path, table_key],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    match stored {
+        Some((stored_expected, stored_dynamic_map, stored_known_kinds))
+            if stored_expected == expected
+                && stored_dynamic_map == observation.dynamic_map
+                && stored_known_kinds == known_kinds =>
         {
-            shape.complete_presence = Some(receipt.clone());
-            save(tx, &mut receipts, &kind, &path, &shape)?;
+            Ok(())
+        }
+        Some(_) => invalid("wire declarations changed without a reading version change"),
+        None => {
+            tx.prepare_cached("INSERT INTO wire_declaration(format,reading_version,record_kind,path,table_key,expected,dynamic_map,known_kinds) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")?
+                .execute(params![
+                    format,
+                    version,
+                    observation.record_kind,
+                    observation.path,
+                    table_key,
+                    expected,
+                    observation.dynamic_map,
+                    known_kinds,
+                ])?;
+            Ok(())
         }
     }
-    Ok(())
+}
+
+/// A count as SQLite stores it; sums that leave the range are refused there.
+fn stored_count(count: u64) -> Result<i64> {
+    i64::try_from(count)
+        .map_err(|_| StoreError::Invalid("wire count exceeds its representation".into()))
 }
 fn add(left: u64, right: u64) -> Result<u64> {
     left.checked_add(right)
@@ -725,36 +638,6 @@ fn validate(shape: &WireShape) -> Result<()> {
     }
     Ok(())
 }
-fn stored_shapes(
-    conn: &Connection,
-    receipts: &Receipts,
-    version: &str,
-) -> Result<Vec<(String, String, Shape)>> {
-    let mut statement=conn.prepare_cached("SELECT record_kind,path,shape FROM wire_shape WHERE input_pk=?1 AND chain=?2 AND reading_version=?3 ORDER BY record_kind,path,table_key")?;
-    let mut rows = statement.query(params![receipts.input_pk, receipts.chain, version])?;
-    let mut out = Vec::new();
-    while let Some(row) = rows.next()? {
-        let json: String = row.get(2)?;
-        out.push((
-            row.get(0)?,
-            row.get(1)?,
-            receipts.restore(serde_json::from_str(&json)?)?,
-        ));
-    }
-    Ok(out)
-}
-fn save(
-    tx: &Transaction<'_>,
-    receipts: &mut Receipts,
-    kind: &str,
-    path: &str,
-    shape: &Shape,
-) -> Result<()> {
-    let stored = receipts.store(tx, shape)?;
-    tx.prepare_cached("INSERT INTO wire_shape(input_pk,chain,reading_version,record_kind,path,shape,table_key) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(input_pk,chain,reading_version,record_kind,path,table_key) DO UPDATE SET shape=excluded.shape")?.execute(params![receipts.input_pk,receipts.chain,receipts.version,kind,path,serde_json::to_string(&stored)?,serde_json::to_string(&shape.table)?])?;
-    Ok(())
-}
-
 mod read;
 pub use read::read;
 

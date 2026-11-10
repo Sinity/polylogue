@@ -122,7 +122,7 @@ fn callback(position: i64, id: &str, step: &crate::ParseStep) -> Vec<Confirmed> 
 }
 
 fn shapes(index: &Connection, id: &str, version: &str) -> Vec<String> {
-    index.prepare("SELECT shape FROM wire_shape w JOIN input_ref i ON i.pk=w.input_pk WHERE i.id=?1 AND w.chain=1 AND w.reading_version=?2 ORDER BY record_kind,path,table_key").unwrap()
+    index.prepare("SELECT json_object('types',(SELECT json_group_object(t.json_type,json_object('count',t.count,'first',t.first,'last',t.last)) FROM wire_type t WHERE t.input_pk=w.input_pk AND t.chain=w.chain AND t.reading_version=w.reading_version AND t.record_kind=w.record_kind AND t.path=w.path AND t.table_key=w.table_key),'first',w.first,'last',w.last,'unknown_kinds',w.unknown_kinds,'unknown_tables',w.unknown_tables,'unused',w.unused) FROM wire_shape w JOIN input_ref i ON i.pk=w.input_pk WHERE i.id=?1 AND w.chain=1 AND w.reading_version=?2 ORDER BY record_kind,path,table_key").unwrap()
         .query_map(params![id,version],|row| row.get(0)).unwrap()
         .collect::<rusqlite::Result<Vec<_>>>().unwrap()
 }
@@ -308,7 +308,14 @@ fn export_completion_rebuilds_shapes_with_foreign_keys_and_original_receipts() {
     assert_eq!(current["types"], old["types"]);
     assert_eq!(current["first"], old["first"]);
     assert_eq!(current["last"], old["last"]);
-    assert!(!current["complete_presence"].is_null());
+    let completed_at: Option<String> = index
+        .query_row(
+            "SELECT json_extract(w.state,'$.completed') FROM wire_reading w JOIN input_ref i ON i.pk=w.input_pk WHERE i.id='target' AND w.reading_version='v2'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(completed_at.is_some());
     let status:String=index.query_row("SELECT p.status FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id='target' AND p.chain=1",[],|row| row.get(0)).unwrap();
     assert_eq!(status, "done");
     // Redelivery keeps the original fact positions and identities, while its

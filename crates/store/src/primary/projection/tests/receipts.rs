@@ -351,13 +351,15 @@ fn sealed_export_callbacks_rebuild_from_confirmed_facts_without_recounting_or_re
     let retained: String = index
         .query_row("SELECT state FROM wire_reading", [], |row| row.get(0))
         .unwrap();
-    let shape: String = index
-        .query_row("SELECT shape FROM wire_shape", [], |row| row.get(0))
+    let count: i64 = index
+        .query_row(
+            "SELECT count FROM wire_type WHERE json_type='string'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&shape).unwrap()["types"]["string"]["count"],
-        1
-    );
+    assert_eq!(count, 1);
+    let shape = stored_shape(&index);
     let admission: i64 = index.query_row("SELECT p.admitted FROM message_projection p JOIN message_source s ON s.version_hash=p.version_hash JOIN message m ON m.pk=s.message_pk WHERE m.id=?1", [message.id.to_string()], |row| row.get(0)).unwrap();
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&retained).unwrap()["export_cursor"]["last_ordinal"],
@@ -380,13 +382,7 @@ fn sealed_export_callbacks_rebuild_from_confirmed_facts_without_recounting_or_re
         retained
     );
     assert_eq!(index.query_row("SELECT p.admitted FROM message_projection p JOIN message_source s ON s.version_hash=p.version_hash JOIN message m ON m.pk=s.message_pk WHERE m.id=?1", [message.id.to_string()], |row| row.get::<_, i64>(0)).unwrap(), admission);
-    assert_eq!(
-        index
-            .query_row("SELECT shape FROM wire_shape", [], |row| row
-                .get::<_, String>(0))
-            .unwrap(),
-        shape
-    );
+    assert_eq!(stored_shape(&index), shape);
     drop(index);
     let rebuilt_root = directory.path().join("rebuilt");
     let (rebuilt_archive, _rebuilt_lock) =
@@ -410,13 +406,7 @@ fn sealed_export_callbacks_rebuild_from_confirmed_facts_without_recounting_or_re
             .unwrap(),
         1
     );
-    assert_eq!(
-        rebuilt
-            .query_row("SELECT shape FROM wire_shape", [], |row| row
-                .get::<_, String>(0))
-            .unwrap(),
-        shape
-    );
+    assert_eq!(stored_shape(&rebuilt), shape);
     let mut unbound = crate::ParseStep::new(Default::default(), Default::default(), 0..0, false);
     unbound.reading_version = "crate::export::VERSION=2".into();
     unbound
@@ -448,4 +438,15 @@ fn sealed_export_callbacks_rebuild_from_confirmed_facts_without_recounting_or_re
             .unwrap(),
         retained
     );
+}
+
+/// Every stored shape and type row, in order.
+fn stored_shape(conn: &rusqlite::Connection) -> String {
+    conn.query_row(
+        "SELECT (SELECT json_group_array(json_array(record_kind,path,table_key,unknown_kinds,unknown_tables,unused,first,last)) FROM (SELECT * FROM wire_shape ORDER BY record_kind,path,table_key))
+          ||(SELECT json_group_array(json_array(record_kind,path,table_key,json_type,count,first,last)) FROM (SELECT * FROM wire_type ORDER BY record_kind,path,table_key,json_type))",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap()
 }

@@ -70,24 +70,34 @@ pub fn read(conn: &Connection, scope: Scope<'_>) -> Result<Report> {
             .entry(status_of(&status))
             .or_default() += integer(row, 3)?;
     }
+    // A path is present in a complete reading when it is counted and was
+    // first seen before the reading's latest completion, or, when a reset
+    // left it uncounted, was last seen before the completion preceding that
+    // reset.
     let sql = format!(
         r#"{READINGS}
-SELECT r.format,s.reading_version,s.record_kind,s.path,json_extract(s.shape,'$.table'),COUNT(*),
- json_group_array(DISTINCT json(json_extract(s.shape,'$.expected'))),
- MAX(json_extract(s.shape,'$.dynamic_map')),
- json_group_array(DISTINCT json(json_extract(s.shape,'$.known_kinds'))),
- pl_wire_sum(s.shape,'unknown_kind_count'),pl_wire_sum(s.shape,'unknown_table_count'),
- pl_wire_first(first_receipt.receipt),pl_wire_last(last_receipt.receipt),pl_wire_last(complete_receipt.receipt),
+SELECT r.format,s.reading_version,s.record_kind,s.path,json_extract(s.table_key,'$'),COUNT(*),
+ MIN(d.expected),MAX(d.dynamic_map),MIN(d.known_kinds),
+ SUM(s.unknown_kinds),SUM(s.unknown_tables),
+ pl_wire_first(first_receipt.receipt),pl_wire_last(last_receipt.receipt),
+ pl_wire_last(CASE WHEN EXISTS(SELECT 1 FROM wire_type t WHERE t.input_pk=s.input_pk AND t.chain=s.chain
+     AND t.reading_version=s.reading_version AND t.record_kind=s.record_kind AND t.path=s.path
+     AND t.table_key=s.table_key AND t.count>0)
+   THEN CASE WHEN json_extract(first_receipt.receipt,'$.sequence')<=json_extract(r.state,'$.completed.sequence')
+     THEN json_extract(r.state,'$.completed') END
+   ELSE CASE WHEN json_extract(last_receipt.receipt,'$.sequence')<=json_extract(r.state,'$.completed_before_reset.sequence')
+     THEN json_extract(r.state,'$.completed_before_reset') END END),
  MAX(CASE WHEN json_extract(r.state,'$.last.sequence')=l.receipt AND EXISTS(
-   SELECT 1 FROM json_each(s.shape,'$.types') t WHERE CAST(json_extract(t.value,'$.count') AS REAL)>0)
-   THEN 1 ELSE 0 END),pl_wire_sum(s.shape,'unused_count')
+   SELECT 1 FROM wire_type t WHERE t.input_pk=s.input_pk AND t.chain=s.chain AND t.reading_version=s.reading_version
+     AND t.record_kind=s.record_kind AND t.path=s.path AND t.table_key=s.table_key AND t.count>0)
+   THEN 1 ELSE 0 END),SUM(s.unused)
 FROM wire_shape s JOIN readings r ON r.input_pk=s.input_pk AND r.chain=s.chain AND r.reading_version=s.reading_version
 JOIN latest l ON l.format=r.format AND l.reading_version=r.reading_version
-LEFT JOIN wire_receipt first_receipt ON first_receipt.input_pk=s.input_pk AND first_receipt.chain=s.chain AND first_receipt.reading_version=s.reading_version AND first_receipt.number=json_extract(s.shape,'$.first')
-LEFT JOIN wire_receipt last_receipt ON last_receipt.input_pk=s.input_pk AND last_receipt.chain=s.chain AND last_receipt.reading_version=s.reading_version AND last_receipt.number=json_extract(s.shape,'$.last')
-LEFT JOIN wire_receipt complete_receipt ON complete_receipt.input_pk=s.input_pk AND complete_receipt.chain=s.chain AND complete_receipt.reading_version=s.reading_version AND complete_receipt.number=json_extract(s.shape,'$.complete_presence')
-GROUP BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.shape,'$.table')
-ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.shape,'$.table')"#
+JOIN wire_declaration d ON d.format=r.format AND d.reading_version=s.reading_version AND d.record_kind=s.record_kind AND d.path=s.path AND d.table_key=s.table_key
+JOIN wire_receipt first_receipt ON first_receipt.input_pk=s.input_pk AND first_receipt.chain=s.chain AND first_receipt.reading_version=s.reading_version AND first_receipt.number=s.first
+JOIN wire_receipt last_receipt ON last_receipt.input_pk=s.input_pk AND last_receipt.chain=s.chain AND last_receipt.reading_version=s.reading_version AND last_receipt.number=s.last
+GROUP BY r.format,s.reading_version,s.record_kind,s.path,s.table_key
+ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.table_key,'$')"#
     );
     let mut statement = conn.prepare_cached(&sql)?;
     let mut rows = statement.query(params![scope.format, scope.reading_version, scope.history])?;
@@ -119,27 +129,26 @@ ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.shape,'$
             expected: declarations(row, 6)?,
             dynamic_map: row.get(7)?,
             known_kinds: declarations(row, 8)?,
-            unknown_kind_count: decimal(row, 9)?,
-            unknown_table_count: decimal(row, 10)?,
+            unknown_kind_count: integer(row, 9)?,
+            unknown_table_count: integer(row, 10)?,
             first: receipt(row, 11)?
                 .ok_or_else(|| StoreError::Invalid("wire shape has no first receipt".into()))?,
             last: receipt(row, 12)?
                 .ok_or_else(|| StoreError::Invalid("wire shape has no last receipt".into()))?,
             complete_presence: receipt(row, 13)?,
             present_in_latest: row.get(14)?,
-            unused_count: decimal(row, 15)?,
+            unused_count: integer(row, 15)?,
         });
     }
     let sql = format!(
         r#"{READINGS}
-SELECT r.format,s.reading_version,s.record_kind,s.path,json_extract(s.shape,'$.table'),t.key,
- pl_wire_sum(t.value,'count'),pl_wire_first(first_receipt.receipt),pl_wire_last(last_receipt.receipt)
-FROM wire_shape s JOIN readings r ON r.input_pk=s.input_pk AND r.chain=s.chain AND r.reading_version=s.reading_version,
- json_each(s.shape,'$.types') t
-LEFT JOIN wire_receipt first_receipt ON first_receipt.input_pk=s.input_pk AND first_receipt.chain=s.chain AND first_receipt.reading_version=s.reading_version AND first_receipt.number=json_extract(t.value,'$.first')
-LEFT JOIN wire_receipt last_receipt ON last_receipt.input_pk=s.input_pk AND last_receipt.chain=s.chain AND last_receipt.reading_version=s.reading_version AND last_receipt.number=json_extract(t.value,'$.last')
-GROUP BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.shape,'$.table'),t.key
-ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.shape,'$.table'),t.key"#
+SELECT r.format,t.reading_version,t.record_kind,t.path,json_extract(t.table_key,'$'),t.json_type,
+ SUM(t.count),pl_wire_first(first_receipt.receipt),pl_wire_last(last_receipt.receipt)
+FROM wire_type t JOIN readings r ON r.input_pk=t.input_pk AND r.chain=t.chain AND r.reading_version=t.reading_version
+JOIN wire_receipt first_receipt ON first_receipt.input_pk=t.input_pk AND first_receipt.chain=t.chain AND first_receipt.reading_version=t.reading_version AND first_receipt.number=t.first
+JOIN wire_receipt last_receipt ON last_receipt.input_pk=t.input_pk AND last_receipt.chain=t.chain AND last_receipt.reading_version=t.reading_version AND last_receipt.number=t.last
+GROUP BY r.format,t.reading_version,t.record_kind,t.path,t.table_key,t.json_type
+ORDER BY r.format,t.reading_version,t.record_kind,t.path,json_extract(t.table_key,'$'),t.json_type"#
     );
     let mut statement = conn.prepare_cached(&sql)?;
     let mut rows = statement.query(params![scope.format, scope.reading_version, scope.history])?;
@@ -155,7 +164,7 @@ ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.shape,'$
         report.shapes[index].types.insert(
             row.get(5)?,
             TypeObservation {
-                count: decimal(row, 6)?,
+                count: integer(row, 6)?,
                 first: receipt(row, 7)?
                     .ok_or_else(|| StoreError::Invalid("wire type has no first receipt".into()))?,
                 last: receipt(row, 8)?
@@ -315,13 +324,7 @@ fn receipt(row: &rusqlite::Row<'_>, at: usize) -> Result<Option<Receipt>> {
         .map_err(StoreError::from)
 }
 fn declarations(row: &rusqlite::Row<'_>, at: usize) -> Result<Vec<String>> {
-    let values: Vec<Vec<String>> = serde_json::from_str(&row.get::<_, String>(at)?)?;
-    Ok(values
-        .into_iter()
-        .flatten()
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect())
+    Ok(serde_json::from_str(&row.get::<_, String>(at)?)?)
 }
 fn error(error: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
     rusqlite::Error::UserFunctionError(Box::new(error))

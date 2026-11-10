@@ -33,7 +33,7 @@ pub(crate) fn newest_identical(conn: &Connection, input: &str, chain: i64) -> Re
 
 /// The index tables that hold one chain's reading, keyed by `input_pk` and
 /// `chain`. Copying a reading copies each table's rows of the other chain.
-const READING_TABLES: [&str; 17] = [
+const READING_TABLES: [&str; 18] = [
     "parse_state",
     "parsed",
     "session_record",
@@ -49,6 +49,7 @@ const READING_TABLES: [&str; 17] = [
     "wire_reading",
     "wire_receipt",
     "wire_shape",
+    "wire_type",
     "attachment_binding",
     "export_reading",
 ];
