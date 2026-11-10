@@ -16,6 +16,13 @@ impl<S: super::super::PlainBlobs> ChainReader<S> {
         }
     }
 }
+impl<S> ChainReader<S> {
+    /// Ends the chain's read transaction before a wait; see
+    /// [`StoredChain::release`].
+    pub fn release(&self) {
+        self.chain.release();
+    }
+}
 impl<S: super::super::PlainBlobs> Read for ChainReader<S> {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
         self.cursor
@@ -41,7 +48,23 @@ impl Cursor {
             left: 0,
         }
     }
+    /// Reads the next bytes. The chain's read transaction ends when the
+    /// range is read to its end or a read fails.
     pub fn read(
+        &mut self,
+        out: &mut [u8],
+        extents: Option<&ExtentList>,
+        store: &impl super::super::PlainBlobs,
+    ) -> Result<usize> {
+        let read = self.read_open(out, extents, store);
+        if (read.is_err() || self.position == self.end)
+            && let Some(extents) = extents
+        {
+            extents.release();
+        }
+        read
+    }
+    fn read_open(
         &mut self,
         out: &mut [u8],
         extents: Option<&ExtentList>,

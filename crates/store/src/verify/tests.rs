@@ -80,7 +80,7 @@ impl Stored {
             &pool,
             &Arc::new(self.archive.blobs().unwrap()),
             manifest,
-            &mut || Ok(()),
+            &mut |_: &dyn Fn()| Ok(()),
         )
         .unwrap()
     }
@@ -368,7 +368,7 @@ fn verification_stops_when_its_pace_refuses() {
         &pool,
         &Arc::new(stored.archive.blobs().unwrap()),
         None,
-        &mut || {
+        &mut |_: &dyn Fn()| {
             calls += 1;
             if calls > 3 {
                 Err(StoreError::ReadCancelled)

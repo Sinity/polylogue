@@ -646,3 +646,53 @@ fn an_append_derives_the_span_from_the_messages_after_the_settled_one() {
     assert_eq!(derive(&tx, pk, &changes, true).unwrap(), 201);
     assert_eq!(stored, stored_and_computed(&tx, "s").0);
 }
+
+#[test]
+fn a_stored_prefix_changes_shape_only_with_a_new_rule_version() {
+    // A stored prefix is read back by the version that wrote it; a prefix of
+    // another shape would not decode. Bumping RULE_VERSION derives every
+    // session from its start, so a change here needs a new version.
+    let prefix = Prefix {
+        end: Some((("s".into(), 1, 2, "m".into()), 3)),
+        script: true,
+        first: Some(4),
+        last: Some(5),
+        timed: 6,
+        untimed: 7,
+        unordered_gaps: 8,
+        previous: Some((Some(9), "model".into())),
+        tools: 10,
+        intervals: 11,
+        tool_untimed: 12,
+        tool_no_result: 13,
+        tool_same_timestamp: 14,
+        tool_reversed: 15,
+        tool_sum_ms: 16,
+        tool_union_ms: 17,
+        clustered_ms: 18,
+        prompts: 19,
+        failure: Some((20, 21)),
+        stop_reported: true,
+        last_model_stop: Some(Some("end_turn".into())),
+        ends: Some(("model_text".into(), "m".into())),
+        lanes: vec![Lane {
+            lane: "tool".into(),
+            key: "bash".into(),
+            ms: 22,
+        }],
+    };
+    assert_eq!(
+        (RULE_VERSION, serde_json::to_value(&prefix).unwrap()),
+        (
+            2,
+            json!({
+                "end":[["s",1,2,"m"],3],"script":true,"first":4,"last":5,"timed":6,"untimed":7,
+                "unordered_gaps":8,"previous":[9,"model"],"tools":10,"intervals":11,"tool_untimed":12,
+                "tool_no_result":13,"tool_same_timestamp":14,"tool_reversed":15,"tool_sum_ms":16,
+                "tool_union_ms":17,"clustered_ms":18,"prompts":19,"failure":[20,21],"stop_reported":true,
+                "last_model_stop":"end_turn","ends":["model_text","m"],
+                "lanes":[{"lane":"tool","key":"bash","ms":22}]
+            })
+        )
+    );
+}
