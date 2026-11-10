@@ -392,19 +392,14 @@ impl Engine {
                 observation: Some(observation),
                 continues: false,
                 length,
-                new_blob: bytes.as_ref().filter(|_| !body_only).map(|bytes| {
-                    polylogue_store::NewBlob {
-                        hash: bytes.hash(),
-                        size: bytes.len(),
-                    }
-                }),
+                new_blob: bytes
+                    .as_ref()
+                    .filter(|_| !body_only)
+                    .map(|bytes| polylogue_store::NewBlob::whole(bytes.hash(), bytes.len())),
                 blobs: bytes
                     .as_ref()
                     .filter(|_| body_only)
-                    .map(|bytes| polylogue_store::NewBlob {
-                        hash: bytes.hash(),
-                        size: bytes.len(),
-                    })
+                    .map(|bytes| polylogue_store::NewBlob::whole(bytes.hash(), bytes.len()))
                     .into_iter()
                     .collect(),
                 parse: Vec::new(),

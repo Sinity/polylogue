@@ -299,7 +299,7 @@ impl polylogue_store::primary::Sinex for Sinex {
     fn capture_body(
         &self,
         identity: &str,
-    ) -> polylogue_store::Result<polylogue_store::primary::PreparedBody> {
+    ) -> polylogue_store::Result<Vec<polylogue_store::primary::PreparedBody>> {
         Ok(self.capture_body(identity)?)
     }
     fn prepare_input(

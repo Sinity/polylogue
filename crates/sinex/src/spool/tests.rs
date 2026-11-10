@@ -6,7 +6,7 @@ trait CaptureFixture {
 }
 impl CaptureFixture for Spool {
     fn prepare_capture(&self, frame: Ingress, bytes: &[u8], capture: &Capture) -> Result<Prepared> {
-        self.prepare_encoded_capture(frame, crate::tests::body(&self.root, bytes), capture)
+        self.prepare_encoded_capture(frame, vec![crate::tests::body(&self.root, bytes)], capture)
     }
 }
 
@@ -239,6 +239,7 @@ fn material_with(identity: &str, blob: String, length: u64) -> Ingress {
             },
             blob,
             length,
+            chunks: Vec::new(),
             parser: "fixture".into(),
             parser_version: 1,
             part_index: 0,
@@ -462,8 +463,8 @@ fn material_bodies_are_verified_including_empty_files_and_fifo_rejection() {
         spool
             .body("empty")
             .unwrap()
-            .seek(std::io::SeekFrom::End(0))
-            .unwrap(),
+            .read_to_end(&mut Vec::new())
+            .unwrap() as u64,
         0
     );
     assert!(
@@ -513,15 +514,15 @@ fn pending_metadata_stays_small_with_large_immutable_frames_and_streamed_bodies(
             < 4096
     );
     let physical = spool.counts().unwrap().2;
-    let (body_path, descriptor) = spool.encoded_body("large-body").unwrap();
+    let (body_path, descriptor) = spool.encoded_body("large-body").unwrap().remove(0);
     assert_eq!(body_path.metadata().unwrap().len(), descriptor.stored_len);
     assert!(physical > descriptor.stored_len && physical < (28 << 20));
     assert_eq!(
         spool
             .body("large-body")
             .unwrap()
-            .seek(std::io::SeekFrom::End(0))
-            .unwrap(),
+            .read_to_end(&mut Vec::new())
+            .unwrap() as u64,
         length as u64
     );
 }
@@ -655,8 +656,8 @@ fn process_death_at_durability_boundaries_exposes_only_complete_operations() {
                     spool
                         .body("raw")
                         .unwrap()
-                        .seek(std::io::SeekFrom::End(0))
-                        .unwrap(),
+                        .read_to_end(&mut Vec::new())
+                        .unwrap() as u64,
                     12
                 );
             }
@@ -853,7 +854,7 @@ fn parsed_capture(bytes: &[u8], text: &str) -> Capture {
     let parsed = vec![polylogue_store::primary::CapturedReading::from_step(&step, None).unwrap()];
     Capture::Input(serde_json::from_value(serde_json::json!({
         "input":{"origin":"codex","path":"/fixture/session.jsonl","host":"fixture-host"},
-        "rows":{"input":"input-x","format":"codex","revision":{"number":1,"produced":"file","chain":1,"length":bytes.len()},"extent":{"chain":1,"offset":0,"length":bytes.len(),"blob_offset":0,"blob":polylogue_model::BlobHash::of(bytes)}},
+        "rows":{"input":"input-x","format":"codex","revision":{"number":1,"produced":"file","chain":1,"length":bytes.len()},"extents":[{"chain":1,"offset":0,"length":bytes.len(),"blob_offset":0,"blob":polylogue_model::BlobHash::of(bytes)}]},
         "index":0,"previous":null,"hash":polylogue_model::BlobHash::of(bytes),"length":bytes.len(),"group":null,"route":"capture","parsed":parsed
     })).unwrap())
 }
@@ -985,16 +986,16 @@ fn encoded_capture_adoption_retains_exact_codec_bytes_across_retry_and_restart()
     let expected = encoded.descriptor();
     let spool = Spool::open(directory.path(), "host").unwrap();
     spool
-        .prepare_encoded_capture(frame.clone(), prepared_body(encoded, None), &capture)
+        .prepare_encoded_capture(frame.clone(), vec![prepared_body(encoded, None)], &capture)
         .unwrap();
-    let (path, actual) = spool.encoded_body("encoded").unwrap();
+    let (path, actual) = spool.encoded_body("encoded").unwrap().remove(0);
     assert_eq!(actual, expected);
     assert_eq!(
         hashed_blobs::Hash::of(&fs::read(&path).unwrap()),
         expected.encoded_hash
     );
     assert_eq!(
-        spool.prepared_body("encoded").unwrap().descriptor(),
+        spool.prepared_body("encoded").unwrap()[0].descriptor(),
         expected
     );
     let retry = Preparation::new(source.path())
@@ -1007,13 +1008,13 @@ fn encoded_capture_adoption_retains_exact_codec_bytes_across_retry_and_restart()
         "fixture distinguishes recompression"
     );
     spool
-        .prepare_encoded_capture(frame, prepared_body(retry, None), &capture)
+        .prepare_encoded_capture(frame, vec![prepared_body(retry, None)], &capture)
         .unwrap();
-    assert_eq!(spool.encoded_body("encoded").unwrap().1, expected);
+    assert_eq!(spool.encoded_body("encoded").unwrap().remove(0).1, expected);
     assert_eq!(spool.capture("encoded").unwrap(), capture);
     drop(spool);
     let spool = Spool::open(directory.path(), "host").unwrap();
-    assert_eq!(spool.encoded_body("encoded").unwrap().1, expected);
+    assert_eq!(spool.encoded_body("encoded").unwrap().remove(0).1, expected);
     let mut decoded = Vec::new();
     spool
         .body("encoded")
@@ -1079,7 +1080,7 @@ fn prepared_path_links_only_the_pinned_inode_and_survives_original_path_drop() {
             prepared_body(encoded, Some(source.path().into())),
         )
         .unwrap();
-    let (path, _) = spool.encoded_body("linked").unwrap();
+    let (path, _) = spool.encoded_body("linked").unwrap().remove(0);
     assert_eq!(fs::metadata(path).unwrap().ino(), inode);
     drop(source);
     let mut decoded = Vec::new();
@@ -1112,7 +1113,7 @@ fn changed_or_symlinked_prepared_path_falls_back_to_the_verified_pinned_file() {
                 prepared_body(encoded, Some(path)),
             )
             .unwrap();
-        let (path, _) = spool.encoded_body(identity).unwrap();
+        let (path, _) = spool.encoded_body(identity).unwrap().remove(0);
         assert_ne!(
             fs::metadata(path).unwrap().ino(),
             fs::metadata(&wrong).unwrap().ino()
@@ -1544,12 +1545,15 @@ fn source_five_pending_custody_keeps_opaque_context_and_original_material_bytes(
         .prepare_capture(frame.clone(), bytes.as_slice(), &capture)
         .unwrap();
     let raw_frame = fs::read(spool.operation("old-context").unwrap().join("frame.zst")).unwrap();
-    let descriptor = spool.encoded_body("old-context").unwrap().1;
+    let descriptor = spool.encoded_body("old-context").unwrap().remove(0).1;
     drop(spool);
     let spool = Spool::open(directory.path(), "host").unwrap();
     assert_eq!(spool.capture("old-context").unwrap(), capture);
     assert_eq!(spool.decode_frame("old-context").unwrap(), frame);
-    assert_eq!(spool.encoded_body("old-context").unwrap().1, descriptor);
+    assert_eq!(
+        spool.encoded_body("old-context").unwrap().remove(0).1,
+        descriptor
+    );
     assert_eq!(
         fs::read(spool.operation("old-context").unwrap().join("frame.zst")).unwrap(),
         raw_frame

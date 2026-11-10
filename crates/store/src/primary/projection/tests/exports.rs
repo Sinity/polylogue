@@ -27,13 +27,13 @@ fn source(id: &str) -> Product {
                 chain: 1,
                 length: 2,
             }),
-            extent: Some(crate::input_rows::Extent {
+            extents: vec![crate::input_rows::Extent {
                 chain: 1,
                 offset: 0,
                 length: 2,
                 blob: hash,
                 blob_offset: 0,
-            }),
+            }],
         }),
         material: Some(Material {
             id: format!("material-{id}"),

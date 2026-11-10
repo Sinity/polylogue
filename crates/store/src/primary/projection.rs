@@ -232,8 +232,8 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
     match product {
         Product::Input { rows, .. } => (
             Some(rows.input.clone()),
-            rows.extent
-                .as_ref()
+            rows.extents
+                .first()
                 .map(|e| e.chain)
                 .or_else(|| rows.revision.as_ref().map(|r| r.chain)),
             reference,
@@ -393,22 +393,6 @@ fn material(product: &Product) -> Option<&Material> {
         _ => None,
     }
 }
-fn descriptor(material: &Material) -> Result<hashed_blobs::Extent> {
-    let [bytes] = material.extents.as_slice() else {
-        return Err(StoreError::Invalid(
-            "a primary material needs one committed blob extent".into(),
-        ));
-    };
-    let extent = hashed_blobs::Extent::decode(bytes)?;
-    if extent.hash.0 != material.hash.0 || extent.decoded_len != material.length || extent.len == 0
-    {
-        return Err(StoreError::Invalid(
-            "a primary material differs from its committed extent".into(),
-        ));
-    }
-    Ok(extent)
-}
-
 pub(crate) fn material_at(
     index: &Connection,
     input: &str,
@@ -610,7 +594,10 @@ fn plan(index: &Connection) -> Result<Plan> {
                 out.inputs.insert(rows.input.clone());
             }
             if let Some(material) = material(&product) {
-                descriptor(material)?;
+                for descriptor in material.descriptors()? {
+                    out.materials
+                        .insert(polylogue_model::BlobHash(descriptor.hash.0));
+                }
                 out.materials.insert(material.hash);
                 let live: bool = index.query_row(
                     "SELECT state='live' FROM primary_next WHERE event=?1",
@@ -782,30 +769,21 @@ fn store_material(tx: &Connection, event: &str, product: &Product) -> Result<()>
     let Some(material) = material(product) else {
         return Ok(());
     };
-    let extent = descriptor(material)?;
+    let descriptors = material.descriptors()?;
     let (input, chain, offset, source_length, blob_offset) = match product {
         Product::Input { rows, .. } => {
-            let source = rows.extent.as_ref().ok_or_else(|| {
+            let first = rows.extents.first().ok_or_else(|| {
                 StoreError::Invalid("material input facts have no source extent".into())
             })?;
-            if source.blob != material.hash
-                || source.length < 0
-                || source.offset < 0
-                || source.blob_offset < 0
-                || (source.blob_offset as u64)
-                    .checked_add(source.length as u64)
-                    .is_none_or(|end| end > material.length)
-            {
-                return Err(StoreError::Invalid(
-                    "input extent differs from its material".into(),
-                ));
-            }
+            let blob_offset = i64::try_from(material.offset_of(&rows.extents)?).map_err(|_| {
+                StoreError::Invalid("material offset exceeds the source catalog range".into())
+            })?;
             (
                 Some(rows.input.as_str()),
-                Some(source.chain),
-                Some(source.offset),
-                Some(source.length),
-                source.blob_offset,
+                Some(first.chain),
+                Some(first.offset),
+                Some(rows.extents.iter().map(|extent| extent.length).sum::<i64>()),
+                blob_offset,
             )
         }
         _ => (None, None, None, None, 0),
@@ -813,11 +791,20 @@ fn store_material(tx: &Connection, event: &str, product: &Product) -> Result<()>
     let length = i64::try_from(material.length).map_err(|_| {
         StoreError::Invalid("material length exceeds the source catalog range".into())
     })?;
-    let stored = i64::try_from(extent.len).map_err(|_| {
-        StoreError::Invalid("extent length exceeds the source catalog range".into())
-    })?;
     tx.execute("INSERT OR REPLACE INTO source_material(id,event,input,chain,offset,length,hash,source_length,blob_offset) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![material.id,event,input,chain,offset,length,&material.hash.0[..],source_length,blob_offset])?;
-    tx.execute("INSERT INTO source_blob(hash,size,stored_size,storage) VALUES (?1,?2,?3,?4) ON CONFLICT(hash) DO UPDATE SET storage=excluded.storage,stored_size=excluded.stored_size",params![&material.hash.0[..],length,stored,extent.encode()])?;
+    // Source extents cite the blobs that hold the bytes: the material's own,
+    // or its chunks'.
+    for descriptor in descriptors {
+        let (Ok(size), Ok(stored)) = (
+            i64::try_from(descriptor.decoded_len),
+            i64::try_from(descriptor.len),
+        ) else {
+            return Err(StoreError::Invalid(
+                "extent length exceeds the source catalog range".into(),
+            ));
+        };
+        tx.execute("INSERT INTO source_blob(hash,size,stored_size,storage) VALUES (?1,?2,?3,?4) ON CONFLICT(hash) DO UPDATE SET storage=excluded.storage,stored_size=excluded.stored_size",params![&descriptor.hash.0[..],size,stored,descriptor.encode()])?;
+    }
     Ok(())
 }
 

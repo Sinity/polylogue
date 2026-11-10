@@ -61,10 +61,7 @@ impl Inner {
                     .into(),
             ));
         }
-        batch.new_blob = Some(NewBlob {
-            hash: file.hash(),
-            size: file.len(),
-        });
+        batch.new_blob = Some(NewBlob::whole(file.hash(), file.len()));
         let store = std::sync::Arc::new(self.location.blobs()?);
         self.store_group(
             vec![PreparedBatch {
@@ -394,7 +391,15 @@ impl Inner {
             &b.input.id,
             b.observation.as_ref().and_then(|o| o.import.as_ref()),
         )?;
-        for new_blob in b.new_blob.iter().chain(&b.blobs) {
+        let parts = || b.new_blob.iter().chain(&b.blobs).flat_map(NewBlob::parts);
+        if b.new_blob.as_ref().is_some_and(|new_blob| {
+            new_blob.parts().map(|part| part.size).sum::<u64>() != new_blob.size
+        }) {
+            return Err(StoreError::Invalid(
+                "the chunks of new bytes do not add up to their length".into(),
+            ));
+        }
+        for new_blob in parts() {
             if !item
                 .files
                 .iter()
@@ -411,11 +416,7 @@ impl Inner {
                     "a private file belongs to another archive".into(),
                 ));
             }
-            if !b
-                .new_blob
-                .iter()
-                .chain(&b.blobs)
-                .any(|new_blob| new_blob.hash == file.hash() && new_blob.size == file.len())
+            if !parts().any(|new_blob| new_blob.hash == file.hash() && new_blob.size == file.len())
             {
                 return Err(StoreError::Invalid(
                     "a private file belongs to no new_blob of its batch".into(),

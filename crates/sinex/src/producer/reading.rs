@@ -98,6 +98,7 @@ impl Sinex {
                         },
                         blob: hash.to_string(),
                         length,
+                        chunks: Vec::new(),
                         parser: "polylogue-reading".into(),
                         parser_version: 3,
                         part_index: 0,

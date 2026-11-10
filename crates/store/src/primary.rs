@@ -86,8 +86,9 @@ pub trait Sinex: Send + Sync {
         &self,
         query: &RawAcquisitionQuery,
     ) -> Result<Option<RawAcquisitionCursor>>;
-    /// Pins the original encoded body for exact range comparison without network I/O.
-    fn capture_body(&self, identity: &str) -> Result<PreparedBody>;
+    /// Pins the original encoded body for exact range comparison without
+    /// network I/O: its one encoding, or its chunks' in order.
+    fn capture_body(&self, identity: &str) -> Result<Vec<PreparedBody>>;
     fn pending_captures(&self) -> Result<Vec<PendingCapture>>;
     /// Loads complete private facts for one ready capture, never the whole queue.
     fn capture(&self, identity: &str) -> Result<Capture>;

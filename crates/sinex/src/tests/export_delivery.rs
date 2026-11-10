@@ -235,7 +235,7 @@ fn streamed_replacement_and_capture_sidecars_recover_original_callback_bodies() 
     .unwrap();
     let mut captured = capture(b"source bytes", vec![reading.clone()]);
     captured.rows.revision.as_mut().unwrap().chain = 2;
-    captured.rows.extent.as_mut().unwrap().chain = 2;
+    captured.rows.extents[0].chain = 2;
     sinex
         .prepare_input(&captured, body(root.path(), b"source bytes"))
         .unwrap();

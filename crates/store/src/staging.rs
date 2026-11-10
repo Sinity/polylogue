@@ -64,12 +64,44 @@ impl crate::Archive {
     pub fn prepare_blob(&self, bytes: &[u8]) -> Result<(crate::NewBlob, Option<PreparedBytes>)> {
         let prepared = self.prepare_bytes(bytes)?;
         Ok((
-            crate::NewBlob {
-                hash: prepared.hash(),
-                size: prepared.len(),
-            },
+            crate::NewBlob::whole(prepared.hash(), prepared.len()),
             Some(prepared),
         ))
+    }
+
+    /// Prepare bytes an input's source rewrites whole as content-defined
+    /// chunks (the shared chunker's default sizes), so a revision that changes
+    /// one place stores only the chunks around it: the segment writer skips
+    /// chunks the archive holds, and Sinex skips chunks it holds. Every chunk
+    /// is prepared, held or not, so the bytes never depend on a chunk that is
+    /// removed before they are stored. Bytes that are one chunk are one blob.
+    pub fn prepare_chunked(
+        &self,
+        reader: impl std::io::Read,
+    ) -> Result<(crate::NewBlob, Vec<PreparedBytes>)> {
+        let chunker = hashed_blobs::Chunker::plain(hashed_blobs::ChunkSizes::default());
+        let mut whole = blake3::Hasher::new();
+        let mut size = 0u64;
+        let mut chunks = Vec::new();
+        let mut files: Vec<PreparedBytes> = Vec::new();
+        for chunk in chunker.chunks(reader) {
+            let chunk = chunk?;
+            whole.update(&chunk);
+            size += chunk.len() as u64;
+            let hash = BlobHash::of(&chunk);
+            if !files.iter().any(|file| file.hash() == hash) {
+                files.push(self.prepare_bytes(chunk.as_slice())?);
+            }
+            chunks.push(crate::Chunk {
+                hash,
+                size: chunk.len() as u64,
+            });
+        }
+        let hash = BlobHash(*whole.finalize().as_bytes());
+        if chunks.len() == 1 {
+            chunks.clear();
+        }
+        Ok((crate::NewBlob { hash, size, chunks }, files))
     }
 
     pub fn prepare_decoded(&self, bytes: &[u8]) -> Result<(crate::NewBlob, Option<PreparedBytes>)> {

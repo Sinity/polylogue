@@ -30,12 +30,79 @@ pub struct Reading {
 }
 
 /// Authoritative material descriptors supplied by Sinex, never hash lookups.
+/// `extents` is the material's one committed blob, or the committed blobs of
+/// its content-defined chunks in order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Material {
     pub id: String,
     pub hash: BlobHash,
     pub length: u64,
     pub extents: Vec<Vec<u8>>,
+}
+
+impl Material {
+    /// The committed blobs that hold the material's bytes, in order. Sinex
+    /// records a chunk list only after the chunks read back as the material,
+    /// so several descriptors need only add up to its length.
+    pub fn descriptors(&self) -> crate::Result<Vec<hashed_blobs::Extent>> {
+        let descriptors = self
+            .extents
+            .iter()
+            .map(|bytes| hashed_blobs::Extent::decode(bytes))
+            .collect::<hashed_blobs::Result<Vec<_>>>()?;
+        let named = match descriptors.as_slice() {
+            [] => false,
+            [one] => one.hash.0 == self.hash.0 && one.decoded_len == self.length,
+            several => several.iter().map(|d| d.decoded_len).sum::<u64>() == self.length,
+        };
+        if !named || descriptors.iter().any(|descriptor| descriptor.len == 0) {
+            return Err(crate::StoreError::Invalid(
+                "a material differs from its committed blobs".into(),
+            ));
+        }
+        Ok(descriptors)
+    }
+
+    /// Where the bytes of one input step's `extents` begin in this material.
+    /// The extents name its blobs in order: a captured step covers the whole
+    /// material, and a step trimmed to the confirmed prefix keeps its end, so
+    /// they are the material's last blobs, the first possibly entered part
+    /// way.
+    pub fn offset_of(&self, extents: &[crate::input_rows::Extent]) -> crate::Result<u64> {
+        let invalid =
+            || crate::StoreError::Invalid("input extents differ from their material".into());
+        let descriptors = self.descriptors()?;
+        let first = descriptors
+            .len()
+            .checked_sub(extents.len())
+            .filter(|_| !extents.is_empty())
+            .ok_or_else(invalid)?;
+        let last = extents.len() - 1;
+        for (index, (extent, blob)) in extents.iter().zip(&descriptors[first..]).enumerate() {
+            let (Ok(offset), Ok(length)) = (
+                u64::try_from(extent.blob_offset),
+                u64::try_from(extent.length),
+            ) else {
+                return Err(invalid());
+            };
+            let end = offset.checked_add(length).ok_or_else(invalid)?;
+            if extent.blob.0 != blob.hash.0
+                || extent.offset < 0
+                || end > blob.decoded_len
+                || index > 0 && offset != 0
+                || index < last && end != blob.decoded_len
+                || index > 0
+                    && extents[index - 1].offset + extents[index - 1].length != extent.offset
+            {
+                return Err(invalid());
+            }
+        }
+        Ok(descriptors[..first]
+            .iter()
+            .map(|blob| blob.decoded_len)
+            .sum::<u64>()
+            + extents[0].blob_offset as u64)
+    }
 }
 
 /// Complete parser and authored facts; rebuilding the cache requires no parsing.

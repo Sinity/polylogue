@@ -9,10 +9,7 @@ fn stats(source: &Imported) -> hashed_blobs::VerificationStats {
 
 fn commit_blob(engine: &crate::Engine, bytes: impl std::io::Read) -> polylogue_model::BlobHash {
     let file = engine.archive.prepare_bytes(bytes).unwrap();
-    let blob = polylogue_store::NewBlob {
-        hash: file.hash(),
-        size: file.len(),
-    };
+    let blob = polylogue_store::NewBlob::whole(file.hash(), file.len());
     engine.writer.store_blob(blob, Some(file)).unwrap()
 }
 

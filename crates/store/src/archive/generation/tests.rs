@@ -174,7 +174,7 @@ fn the_transport_fixture_uses_the_native_transition_and_keeps_source_rows() {
         input: "retained-source".into(),
         format: "synthetic".into(),
         revision: None,
-        extent: None,
+        extents: Vec::new(),
         observation: None,
     }
     .insert(&source, 1)

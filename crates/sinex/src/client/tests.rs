@@ -371,7 +371,7 @@ fn an_unreadable_event_is_refused_at_its_position_but_a_lost_connection_stops_th
         }
     );
     for (kind, unreadable_input) in [
-        ("polylogue.input_observation@4", true),
+        ("polylogue.input_observation@5", true),
         ("polylogue.session@5", false),
         ("polylogue.session@999", true),
         ("", true),

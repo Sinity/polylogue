@@ -246,10 +246,10 @@ impl Engine {
                 .as_mut()
                 .expect("import observation")
                 .container = captured.container;
-            batch.new_blob = Some(polylogue_store::NewBlob {
-                hash: captured.prepared.hash(),
-                size: captured.prepared.len(),
-            });
+            batch.new_blob = Some(polylogue_store::NewBlob::whole(
+                captured.prepared.hash(),
+                captured.prepared.len(),
+            ));
             metadata.push((at, origin, facts, batch.input.clone()));
             group.push(polylogue_store::staging::PreparedBatch {
                 batch,

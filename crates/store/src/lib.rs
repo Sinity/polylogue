@@ -81,7 +81,7 @@ mod write_lock;
 pub mod writer;
 
 pub use archive::{Archive, ArchiveLock};
-pub use blobs::{Change, FileFacts, NewBlob};
+pub use blobs::{Change, Chunk, FileFacts, NewBlob};
 pub use context::{DeliveryRow, OpenItems, Prompt, SessionSummary};
 pub use read::{
     BehindChain, CapturedSession, CompletenessDimension, CompletenessReason, ImportedAs,

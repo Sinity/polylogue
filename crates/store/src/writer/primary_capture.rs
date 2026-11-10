@@ -62,19 +62,61 @@ fn source_name(
 }
 
 fn material_reader(archive: &Archive, material: &Material) -> Result<hashed_blobs::BlobReader> {
-    let [bytes] = material.extents.as_slice() else {
-        return Err(StoreError::Invalid(
-            "a captured material needs one physical extent".into(),
-        ));
-    };
-    let extent = hashed_blobs::Extent::decode(bytes)?;
-    if extent.hash.0 != material.hash.0 || extent.decoded_len != material.length || extent.len == 0
-    {
-        return Err(StoreError::Invalid(
-            "captured material descriptor differs from its bytes".into(),
-        ));
+    Ok(hashed_blobs::Reader::new(archive.byte_root()?).open(&material.descriptors()?, None)?)
+}
+
+/// Where a ready capture's bytes sit: chain bytes `start..end` of `input` are
+/// `material` from `at` on.
+struct Placed {
+    input: String,
+    chain: i64,
+    start: u64,
+    end: u64,
+    material: Material,
+    at: u64,
+}
+
+impl Placed {
+    fn of(
+        input: &str,
+        extents: &[crate::input_rows::Extent],
+        material: &Material,
+    ) -> Result<Option<Self>> {
+        let Some(first) = extents.first() else {
+            return Ok(None);
+        };
+        // The material checks the extents' offsets and lengths.
+        let at = material.offset_of(extents)?;
+        let start = first.offset as u64;
+        let length = extents
+            .iter()
+            .map(|extent| extent.length as u64)
+            .sum::<u64>();
+        Ok(Some(Self {
+            input: input.to_owned(),
+            chain: first.chain,
+            start,
+            end: start
+                .checked_add(length)
+                .ok_or_else(|| StoreError::Invalid("capture endpoint overflow".into()))?,
+            material: material.clone(),
+            at,
+        }))
     }
-    Ok(hashed_blobs::Reader::new(archive.byte_root()?).open(&[extent], None)?)
+}
+
+/// The acquired body of a batch: the whole bytes' identity and the private
+/// encodings that hold them, in order (one, or one per chunk).
+struct AcquiredBody<'a> {
+    hash: BlobHash,
+    length: u64,
+    files: Vec<&'a crate::staging::PreparedBytes>,
+}
+
+impl AcquiredBody<'_> {
+    fn bodies(&self) -> Result<Vec<crate::primary::PreparedBody>> {
+        self.files.iter().map(|file| file.body()).collect()
+    }
 }
 
 // The acquired body keeps its own coordinates after logical extents are trimmed.
@@ -104,23 +146,45 @@ fn captured_location(
 
 // The acquired body may be retained without creating a logical source extent.
 // A receipt identifies the physical preparation, never a whole-chain blob guess.
-fn acquired_body(item: &PreparedBatch) -> Result<Option<&crate::staging::PreparedBytes>> {
+fn acquired_body(item: &PreparedBatch) -> Result<Option<AcquiredBody<'_>>> {
     let batch = &item.batch;
     let expected = if let Some(receipt) = &batch.acquisition {
-        Some((receipt.hash, receipt.range.length()?))
+        let length = receipt.range.length()?;
+        let parts = if receipt.chunks.is_empty() {
+            vec![crate::Chunk {
+                hash: receipt.hash,
+                size: length,
+            }]
+        } else {
+            receipt.chunks.clone()
+        };
+        Some((receipt.hash, length, parts))
     } else {
-        batch.new_blob.as_ref().map(|blob| (blob.hash, blob.size))
+        batch
+            .new_blob
+            .as_ref()
+            .map(|blob| (blob.hash, blob.size, blob.parts().collect()))
     };
     expected
-        .map(|(hash, length)| {
-            item.files
+        .map(|(hash, length, parts)| {
+            let files = parts
                 .iter()
-                .find(|file| file.hash() == hash && file.len() == length)
-                .ok_or_else(|| {
-                    StoreError::Invalid(
-                        "acquired provider body has no matching private encoding".into(),
-                    )
+                .map(|part| {
+                    item.files
+                        .iter()
+                        .find(|file| file.hash() == part.hash && file.len() == part.size)
+                        .ok_or_else(|| {
+                            StoreError::Invalid(
+                                "acquired provider body has no matching private encoding".into(),
+                            )
+                        })
                 })
+                .collect::<Result<_>>()?;
+            Ok(AcquiredBody {
+                hash,
+                length,
+                files,
+            })
         })
         .transpose()
 }
@@ -131,7 +195,14 @@ fn validate(item: &PreparedBatch, archive: &Archive) -> Result<()> {
     if batch.input.id.is_empty() || i64::try_from(batch.length).is_err() {
         return Err(StoreError::Invalid("invalid primary capture input".into()));
     }
-    for blob in batch.new_blob.iter().chain(&batch.blobs) {
+    let parts = || {
+        batch
+            .new_blob
+            .iter()
+            .chain(&batch.blobs)
+            .flat_map(crate::NewBlob::parts)
+    };
+    for blob in parts() {
         if !item.files.iter().any(|file| {
             file.owner == archive.root && file.hash() == blob.hash && file.len() == blob.size
         }) {
@@ -142,11 +213,7 @@ fn validate(item: &PreparedBatch, archive: &Archive) -> Result<()> {
     }
     for file in &item.files {
         if file.owner != archive.root
-            || !batch
-                .new_blob
-                .iter()
-                .chain(&batch.blobs)
-                .any(|blob| blob.hash == file.hash() && blob.size == file.len())
+            || !parts().any(|blob| blob.hash == file.hash() && blob.size == file.len())
         {
             return Err(StoreError::Invalid(
                 "primary capture carries unrelated prepared bytes".into(),
@@ -262,10 +329,7 @@ impl Inner {
                     let result = (|| {
                         for file in item.files {
                             self.primary_blob(
-                                crate::NewBlob {
-                                    hash: file.hash(),
-                                    size: file.len(),
-                                },
+                                crate::NewBlob::whole(file.hash(), file.len()),
                                 Some(file),
                             )?;
                         }
@@ -496,16 +560,8 @@ impl Inner {
                 let chain = chain
                     .or_else(|| previous.as_ref().map(|r| r.chain))
                     .unwrap_or(1);
-                if let Some(blob) = &batch.new_blob
-                    && blob.size > 0
-                {
-                    rows.extent = Some(crate::input_rows::Extent {
-                        chain,
-                        offset: (batch.length - blob.size) as i64,
-                        length: blob.size as i64,
-                        blob: blob.hash,
-                        blob_offset: 0,
-                    });
+                if let Some(blob) = &batch.new_blob {
+                    rows.extents = bytes::extents(blob, chain, batch.length - blob.size);
                 }
                 if let Some(revision) = &rows.revision {
                     revisions.insert(batch.input.id.clone(), revision.clone());
@@ -516,7 +572,8 @@ impl Inner {
                 let metadata_bytes = serde_json::to_vec(&rows)?;
                 let raw_body = acquired_body(item)?;
                 let (hash, length) = raw_body
-                    .map(|body| (body.hash(), body.len()))
+                    .as_ref()
+                    .map(|body| (body.hash, body.length))
                     .unwrap_or_else(|| {
                         (BlobHash::of(&metadata_bytes), metadata_bytes.len() as u64)
                     });
@@ -538,8 +595,8 @@ impl Inner {
                         .as_ref()
                         .map(|receipt| receipt.range)
                         .or_else(|| {
-                            raw_body.map(|body| crate::primary::RawRange {
-                                start: batch.length - body.len(),
+                            raw_body.as_ref().map(|body| crate::primary::RawRange {
+                                start: batch.length - body.length,
                                 end: batch.length,
                             })
                         }),
@@ -575,12 +632,14 @@ impl Inner {
                         count: group.len() as u64,
                     }),
                 };
-                let body = if let Some(body) = raw_body {
-                    body.body()?
+                let body = if let Some(body) = &raw_body {
+                    body.bodies()?
                 } else {
-                    self.location
-                        .prepare_bytes(metadata_bytes.as_slice())?
-                        .body()?
+                    vec![
+                        self.location
+                            .prepare_bytes(metadata_bytes.as_slice())?
+                            .body()?,
+                    ]
                 };
                 // The SDK assigns the original frozen occurrence to all members at
                 // one publication boundary. No per-member durable acceptance exists.
@@ -614,7 +673,7 @@ impl Inner {
             };
             let chain = if let Some(observation) = &rows.observation {
                 self.index.query_row("SELECT coalesce(o.chain,r.chain) FROM source_observation o LEFT JOIN source_revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1",[&observation.id],|row|row.get::<_,Option<i64>>(0)).optional()?.map(|chain|chain.unwrap_or(1))
-            } else if let Some(extent) = &rows.extent {
+            } else if let Some(extent) = rows.extents.first() {
                 self.index.query_row("SELECT e.chain FROM source_extent e JOIN source_revision r ON r.input=e.input AND r.chain=e.chain WHERE e.input=?1 AND e.blob=?2 AND e.offset-e.blob_offset=?3 AND r.length>=?4 ORDER BY r.number DESC LIMIT 1",params![input,&extent.blob.0[..],extent.offset-extent.blob_offset,length as i64],|row|row.get(0)).optional()?
             } else {
                 None
@@ -688,8 +747,8 @@ impl Inner {
                 if captured.rows.input == input
                     && captured
                         .rows
-                        .extent
-                        .as_ref()
+                        .extents
+                        .first()
                         .is_some_and(|extent| extent.chain == chain) =>
             {
                 Some((captured, pending.material.as_ref()))
@@ -772,7 +831,7 @@ impl Inner {
         }
         let mut writes = Vec::new();
         let mut ready_revisions = BTreeMap::<String, Revision>::new();
-        let mut ready_extents = Vec::<(String, crate::input_rows::Extent, Material)>::new();
+        let mut ready_extents = Vec::<Placed>::new();
         for member in &members {
             let captured = sinex.capture(&member.identity)?;
             match &captured {
@@ -819,7 +878,7 @@ impl Inner {
                     let chain = if let Some(chain) = rows.observation.as_ref().and_then(|o| o.chain)
                     {
                         chain
-                    } else if let Some(extent) = &rows.extent {
+                    } else if let Some(extent) = rows.extents.first() {
                         extent.chain
                     } else if let Some(revision) = &rows.revision {
                         revision.chain
@@ -856,15 +915,17 @@ impl Inner {
                     if let Some(revision) = &rows.revision {
                         ready_revisions.insert(rows.input.clone(), revision.clone());
                     }
-                    if let (Some(extent), Some(material)) = (&rows.extent, &member.material) {
-                        ready_extents.push((rows.input.clone(), extent.clone(), material.clone()));
+                    if let Some(material) = &member.material
+                        && let Some(placed) = Placed::of(&rows.input, &rows.extents, material)?
+                    {
+                        ready_extents.push(placed);
                     }
-                    let material = if rows.extent.is_some() {
-                        member.material.clone()
-                    } else {
+                    let material = if rows.extents.is_empty() {
                         None
+                    } else {
+                        member.material.clone()
                     };
-                    if rows.extent.is_none()
+                    if rows.extents.is_empty()
                         && let Some(material) = &member.material
                     {
                         writes.push(ProductWrite {
@@ -908,19 +969,16 @@ impl Inner {
                                 match captured_location(input, member.material.as_ref(), start)? {
                                     Some(location) => Some(location),
                                     None => {
-                                        match ready_extents.iter().rev().find(|(id, extent, _)| {
-                                            id == &key.id
-                                                && extent.chain == chain
-                                                && start >= extent.offset as u64
-                                                && start <= (extent.offset + extent.length) as u64
+                                        match ready_extents.iter().rev().find(|placed| {
+                                            placed.input == key.id
+                                                && placed.chain == chain
+                                                && start >= placed.start
+                                                && start <= placed.end
                                         }) {
-                                            Some((_, extent, material)) => {
-                                                Some(crate::primary::SourceLocation {
-                                                    material: material.id.clone(),
-                                                    anchor: start - extent.offset as u64
-                                                        + extent.blob_offset as u64,
-                                                })
-                                            }
+                                            Some(placed) => Some(crate::primary::SourceLocation {
+                                                material: placed.material.id.clone(),
+                                                anchor: start - placed.start + placed.at,
+                                            }),
                                             None => crate::primary::projection::material_at(
                                                 &self.index,
                                                 &key.id,
@@ -960,7 +1018,7 @@ impl Inner {
         input: &CapturedInput,
         material: Option<&Material>,
         ready_revisions: &BTreeMap<String, Revision>,
-        ready_extents: &[(String, crate::input_rows::Extent, Material)],
+        ready_extents: &[Placed],
     ) -> Result<Option<InputRows>> {
         let source = input
             .basis
@@ -1002,37 +1060,24 @@ impl Inner {
             return Ok(None);
         }
         let mut rows = input.rows.clone();
-        let Some(original) = &input.rows.extent else {
+        if input.rows.extents.is_empty() {
             return Ok(Some(rows));
-        };
+        }
         let material = material
             .ok_or_else(|| StoreError::Invalid("ready source extent has no material".into()))?;
-        if material.hash != original.blob
-            || original.length < 0
-            || original.blob_offset < 0
-            || (original.blob_offset as u64)
-                .checked_add(original.length as u64)
-                .is_none_or(|end| end > material.length)
-        {
-            return Err(StoreError::Invalid(
-                "source extent differs from ready capture material".into(),
-            ));
-        }
+        let original = Placed::of(&rows.input, &input.rows.extents, material)?
+            .expect("source extents are present");
         let current = match ready_revisions.get(&rows.input) {
             Some(revision) => Some(revision.clone()),
             None => latest(&self.index, &rows.input)?,
         };
         let Some(current) = current else {
-            if original.offset != 0 {
+            if original.start != 0 {
                 return Ok(None);
             }
             return Ok(Some(rows));
         };
-        let start = u64::try_from(original.offset)
-            .map_err(|_| StoreError::Invalid("negative capture offset".into()))?;
-        let end = start
-            .checked_add(original.length as u64)
-            .ok_or_else(|| StoreError::Invalid("capture endpoint overflow".into()))?;
+        let (start, end) = (original.start, original.end);
         let stored = u64::try_from(current.length)
             .map_err(|_| StoreError::Invalid("negative confirmed source length".into()))?;
         if start > stored {
@@ -1040,48 +1085,45 @@ impl Inner {
         }
         let overlap = stored.min(end) - start;
         let mut captured = material_reader(&self.location, material)?;
-        captured.seek(SeekFrom::Start(original.blob_offset as u64))?;
+        captured.seek(SeekFrom::Start(original.at))?;
         let mut cursor = start;
         let mut equal = true;
         while cursor < start + overlap {
-            let pending = ready_extents.iter().rev().find(|(id, extent, _)| {
-                id == &rows.input
-                    && extent.chain == current.chain
-                    && cursor >= extent.offset as u64
-                    && cursor < (extent.offset + extent.length) as u64
+            let pending = ready_extents.iter().rev().find(|placed| {
+                placed.input == rows.input
+                    && placed.chain == current.chain
+                    && cursor >= placed.start
+                    && cursor < placed.end
             });
-            let (mut prefix, end): (Box<dyn Read>, u64) =
-                if let Some((_, extent, material)) = pending {
-                    let end = (start + overlap).min((extent.offset + extent.length) as u64);
-                    let mut reader = material_reader(&self.location, material)?;
-                    reader.seek(SeekFrom::Start(
-                        cursor - extent.offset as u64 + extent.blob_offset as u64,
-                    ))?;
-                    (Box::new(reader), end)
-                } else {
-                    let end = ready_extents
-                        .iter()
-                        .filter(|(id, extent, _)| {
-                            id == &rows.input
-                                && extent.chain == current.chain
-                                && extent.offset as u64 > cursor
-                        })
-                        .map(|(_, extent, _)| extent.offset as u64)
-                        .min()
-                        .unwrap_or(start + overlap)
-                        .min(start + overlap);
-                    let chain = crate::blobs::StoredChain::load_range(
-                        &crate::blobs::ChainSource::of(&self.location),
-                        &rows.input,
-                        current.chain,
-                        cursor,
-                        end,
-                    )?;
-                    (
-                        Box::new(chain.reader(Arc::new(self.location.blob_reader()?))),
-                        end,
-                    )
-                };
+            let (mut prefix, end): (Box<dyn Read>, u64) = if let Some(placed) = pending {
+                let end = (start + overlap).min(placed.end);
+                let mut reader = material_reader(&self.location, &placed.material)?;
+                reader.seek(SeekFrom::Start(cursor - placed.start + placed.at))?;
+                (Box::new(reader), end)
+            } else {
+                let end = ready_extents
+                    .iter()
+                    .filter(|placed| {
+                        placed.input == rows.input
+                            && placed.chain == current.chain
+                            && placed.start > cursor
+                    })
+                    .map(|placed| placed.start)
+                    .min()
+                    .unwrap_or(start + overlap)
+                    .min(start + overlap);
+                let chain = crate::blobs::StoredChain::load_range(
+                    &crate::blobs::ChainSource::of(&self.location),
+                    &rows.input,
+                    current.chain,
+                    cursor,
+                    end,
+                )?;
+                (
+                    Box::new(chain.reader(Arc::new(self.location.blob_reader()?))),
+                    end,
+                )
+            };
             let mut left = [0; 65536];
             let mut right = [0; 65536];
             while cursor < end {
@@ -1113,7 +1155,7 @@ impl Inner {
                 revision.chain = number;
                 revision.produced = "rewritten".into();
             }
-            if let Some(extent) = &mut rows.extent {
+            for extent in &mut rows.extents {
                 extent.chain = number;
             }
             if let Some(observation) = &mut rows.observation {
@@ -1123,7 +1165,7 @@ impl Inner {
         }
         if end <= stored {
             rows.revision = None;
-            rows.extent = None;
+            rows.extents.clear();
             if let Some(observation) = &mut rows.observation {
                 let exact=self.index.query_row("SELECT number FROM source_revision WHERE input=?1 AND chain=?2 AND length=?3 ORDER BY number DESC LIMIT 1",params![rows.input,current.chain,end as i64],|row|row.get(0)).optional()?;
                 observation.revision = exact.or_else(|| (end == stored).then_some(current.number));
@@ -1154,11 +1196,10 @@ impl Inner {
                 chain: current.chain,
                 length: end as i64,
             });
-            let extent = rows.extent.as_mut().expect("source extent");
-            extent.chain = current.chain;
-            extent.offset = stored as i64;
-            extent.length = (end - stored) as i64;
-            extent.blob_offset += overlap as i64;
+            crate::input_rows::drop_front(&mut rows.extents, overlap);
+            for extent in &mut rows.extents {
+                extent.chain = current.chain;
+            }
             if let Some(observation) = &mut rows.observation {
                 observation.revision = Some(number);
                 observation.length = Some(end as i64);

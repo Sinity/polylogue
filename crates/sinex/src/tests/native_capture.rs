@@ -52,13 +52,14 @@ fn retained(sdk: &Sinex, generation: &SourceGeneration) -> (Vec<u8>, usize) {
     for (identity, input) in headers {
         let range = input.raw_range.unwrap();
         assert_eq!(range.start, result.len() as u64);
-        let body = sdk.capture_body(&identity).unwrap();
         let mut bytes = Vec::new();
-        body.descriptor
-            .open(body.file, None, Default::default())
-            .unwrap()
-            .read_to_end(&mut bytes)
-            .unwrap();
+        for body in sdk.capture_body(&identity).unwrap() {
+            body.descriptor
+                .open(body.file, None, Default::default())
+                .unwrap()
+                .read_to_end(&mut bytes)
+                .unwrap();
+        }
         assert_eq!(bytes.len() as u64, range.length().unwrap());
         assert_eq!(polylogue_model::BlobHash::of(&bytes), input.hash);
         result.extend(bytes);
@@ -413,7 +414,7 @@ fn offline_empty_native_file_has_an_actual_body_and_eof_with_no_confirmed_source
     let Capture::Input(input) = &raw.captured else {
         panic!("input capture expected");
     };
-    assert!(input.rows.extent.is_none());
+    assert!(input.rows.extents.is_empty());
     assert_eq!(input.rows.revision.as_ref().unwrap().length, 0);
     assert_eq!(input.rows.observation.as_ref().unwrap().length, Some(0));
     let group = input.group.as_ref().unwrap().identity.clone();
@@ -578,7 +579,7 @@ fn acquired_file(
                 container: None,
             }),
             continues: false,
-            new_blob: Some(polylogue_store::NewBlob { hash, size }),
+            new_blob: Some(polylogue_store::NewBlob::whole(hash, size)),
             blobs: Vec::new(),
             length: size,
             parse: Vec::new(),
@@ -593,6 +594,7 @@ fn acquired_file(
                 generation,
                 raw_total: (!imported).then_some(size),
                 raw_predecessor: None,
+                chunks: Vec::new(),
             }),
             basis: Some(basis),
             required_disposition: None,
@@ -826,7 +828,7 @@ fn a_deferred_database_read_error_preserves_another_files_confirmation_wait() {
         let rows = serde_json::from_value(serde_json::json!({
             "input":input, "format":"codex-database",
             "revision":{"number":1,"produced":"first","chain":1,"length":bytes.len()},
-            "extent":{"chain":1,"offset":0,"length":bytes.len(),"blob":hash,"blob_offset":0},
+            "extents":[{"chain":1,"offset":0,"length":bytes.len(),"blob":hash,"blob_offset":0}],
             "observation":{
                 "id":"confirmed-database-observation", "machine":"test-machine", "host":"test",
                 "path":db.to_string_lossy(), "path_bytes":db.as_os_str().as_encoded_bytes(),
@@ -1167,7 +1169,7 @@ fn a_gone_observation_waits_on_the_confirmed_input_through_the_capture_route() {
     assert_eq!(input.rows.input, "retained-raw-input");
     assert_eq!(input.rows.observation.as_ref().unwrap().class, "deleted");
     assert!(input.rows.revision.is_none());
-    assert!(input.rows.extent.is_none());
+    assert!(input.rows.extents.is_empty());
     assert!(input.raw_range.is_none());
     let reads = ReadPool::open(&archive).unwrap();
     let known = reads

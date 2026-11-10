@@ -20,6 +20,8 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **revision**: one distinct content of an input.
 - **chain**: revisions of an input where each one appends to the one before.
 - **extent**: a range of a blob placed at an offset in a chain.
+- **chunk**: one content-defined piece of a document its source saves whole,
+  stored as a blob of its own so a revision stores only the chunks it changes.
 - **observation**: one time the collector found something at a path; a file
   that disappears is an observation, never a deletion.
 - **export** and **member**: a provider's data export, stored whole, and one

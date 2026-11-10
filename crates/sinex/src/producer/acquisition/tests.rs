@@ -40,7 +40,7 @@ pub(super) fn acquire(
             end: bytes.len() as u64,
         });
         input.basis = Some(basis.clone());
-        emit(input, body(root, bytes))
+        emit(input, vec![body(root, bytes)])
     })?;
     match receipt {
         CaptureReceipt::Accepted { write } => Ok(write),
@@ -99,7 +99,7 @@ fn receiver_downgrade_retains_new_bodies_and_exact_frozen_retries_keep_first_dis
             .prepare_input_group(plan, &mut |emit| {
                 let mut input = capture(bytes, vec![]);
                 input.basis = Some(plan.bases[0].clone());
-                emit(input, body(root.path(), bytes))
+                emit(input, vec![body(root.path(), bytes)])
             })
             .unwrap()
     };
@@ -120,7 +120,10 @@ fn receiver_downgrade_retains_new_bodies_and_exact_frozen_retries_keep_first_dis
     let page = sinex
         .pending_group_headers(&custody.identity, None, 1)
         .unwrap();
-    let retained = sinex.capture_body(&page.headers[0].identity).unwrap();
+    let retained = sinex
+        .capture_body(&page.headers[0].identity)
+        .unwrap()
+        .remove(0);
     let encoded = hashed_blobs::Prepared::from_encoded(
         retained.file,
         retained.descriptor,
@@ -239,7 +242,7 @@ fn atomic_source_cas_preserves_a_b_a_retry_restart_and_byte_identity() {
         third.identity
     );
     assert_eq!(sinex.pending_captures().unwrap().len(), 3);
-    let body = sinex.capture_body(&head.identity).unwrap();
+    let body = sinex.capture_body(&head.identity).unwrap().remove(0);
     let prepared = hashed_blobs::Prepared::from_encoded(
         body.file,
         body.descriptor,
@@ -275,7 +278,7 @@ fn failed_group_is_not_visible_and_immutable_imports_keep_content_identity() {
             .prepare_input_group(&plan, &mut |emit| {
                 let mut input = capture(b"first", Vec::new());
                 input.basis = Some(basis(&selector, None));
-                emit(input, body(root.path(), b"first"))?;
+                emit(input, vec![body(root.path(), b"first")])?;
                 Err(polylogue_store::StoreError::Invalid(
                     "second member unavailable".into(),
                 ))
@@ -358,10 +361,10 @@ fn older_control_capture_is_explicit_when_newer_raw_has_no_parser_state() {
             },
             &mut |emit| {
                 let mut input = capture(b"{}", vec![reading.clone()]);
-                input.rows.extent = None;
+                input.rows.extents.clear();
                 input.raw_range = None;
                 input.basis = Some(control_basis.clone());
-                emit(input, body(root.path(), b"{}"))
+                emit(input, vec![body(root.path(), b"{}")])
             },
         )
         .unwrap();
@@ -420,7 +423,7 @@ fn private_staging_releases_custody_lock_and_rechecks_moved_source_before_public
         );
         let mut input = capture(b"A", vec![]);
         input.basis = Some(original_basis.clone());
-        emit(input, body(root.path(), b"A"))?;
+        emit(input, vec![body(root.path(), b"A")])?;
         acquire(
             &sinex,
             root.path(),
@@ -441,7 +444,10 @@ fn private_staging_releases_custody_lock_and_rechecks_moved_source_before_public
         Some(CaptureDisposition::UnresolvedBasisConflict)
     );
     assert_eq!(retained.headers.len(), 1);
-    let raw = sinex.capture_body(&retained.headers[0].identity).unwrap();
+    let raw = sinex
+        .capture_body(&retained.headers[0].identity)
+        .unwrap()
+        .remove(0);
     let prepared = hashed_blobs::Prepared::from_encoded(
         raw.file,
         raw.descriptor,
@@ -495,7 +501,7 @@ fn acquisition_pages_preserve_original_siblings_and_relative_orders_after_restar
                 let mut input = capture(bytes, vec![]);
                 input.index = u32::try_from(ordinal).unwrap();
                 input.basis = Some(source_basis.clone());
-                emit(input, body(root.path(), bytes))?;
+                emit(input, vec![body(root.path(), bytes)])?;
             }
             sinex.prepare_blob(
                 BlobHash::of(b"independent"),
@@ -578,7 +584,7 @@ fn exact_retry_retains_first_capture_coordinates_after_cache_coordinates_change(
             let mut input = capture(b"A", vec![]);
             input.basis = Some(source_basis.clone());
             first_header = Some(input.clone());
-            emit(input, body(root.path(), b"A"))
+            emit(input, vec![body(root.path(), b"A")])
         })
         .unwrap();
     let first = accepted(first);
@@ -586,7 +592,7 @@ fn exact_retry_retains_first_capture_coordinates_after_cache_coordinates_change(
         .prepare_input_group(&plan, &mut |emit| {
             let mut input = first_header.clone().unwrap();
             input.rows.input = "different-tentative-coordinate".into();
-            emit(input, body(root.path(), b"A"))
+            emit(input, vec![body(root.path(), b"A")])
         })
         .unwrap();
     let retained = sinex
@@ -618,9 +624,9 @@ fn unresolved_retry_is_stable_after_head_movement_and_keeps_provider_bytes_witho
                 let mut input = capture(bytes, vec![]);
                 input.basis = Some(frozen_basis.clone());
                 if no_extent {
-                    input.rows.extent = None;
+                    input.rows.extents.clear();
                 }
-                emit(input, body(root.path(), bytes))
+                emit(input, vec![body(root.path(), bytes)])
             })
             .unwrap()
     };
@@ -641,7 +647,7 @@ fn unresolved_retry_is_stable_after_head_movement_and_keeps_provider_bytes_witho
         panic!("input header expected")
     };
     assert!(header.raw_range.is_some());
-    assert!(header.rows.extent.is_none());
+    assert!(header.rows.extents.is_empty());
     {
         let queue = sinex.queue().unwrap();
         assert!(queue.get(&raw_id).unwrap().unwrap().unresolved);
@@ -703,7 +709,7 @@ fn unresolved_retry_is_stable_after_head_movement_and_keeps_provider_bytes_witho
         retained.disposition,
         Some(CaptureDisposition::UnresolvedBasisConflict)
     );
-    let body = sinex.capture_body(&raw_id).unwrap();
+    let body = sinex.capture_body(&raw_id).unwrap().remove(0);
     let prepared = hashed_blobs::Prepared::from_encoded(
         body.file,
         body.descriptor,

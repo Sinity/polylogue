@@ -125,7 +125,7 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
         Product::Input { rows, .. } => json!([
             rows.input,
             rows.revision,
-            rows.extent,
+            rows.extents,
             rows.observation.as_ref().map(|observation| &observation.id)
         ]),
         Product::Blob(material) => json!(material.hash),
@@ -439,7 +439,9 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                             "session" | "document" | "event" | "link" | "background"
                             | "repository" => 5,
                             "parse_progress" => 6,
-                            "input" => 4,
+                            // An input step's bytes moved to a list of extents,
+                            // one per chunk of bytes stored as chunks.
+                            "input" => 5,
                             "fragment" => 3,
                             "query_run" => 4,
                             "restored_history" | "restored_assertion" | "attachment_binding"

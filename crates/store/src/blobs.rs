@@ -114,11 +114,45 @@ pub fn classify(last: Option<FileFacts>, now: Option<FileFacts>) -> Change {
 }
 
 /// The identity of prepared bytes. The writer commits their segment extent
-/// together with every archive row that cites them.
+/// together with every archive row that cites them. Bytes an input's source
+/// rewrites whole are prepared as content-defined chunks: `chunks` names
+/// them in order, each stored as a blob of its own, while `hash` and `size`
+/// name the whole bytes. `chunks` is empty when the bytes are one blob.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewBlob {
     pub hash: BlobHash,
     pub size: u64,
+    pub chunks: Vec<Chunk>,
+}
+
+/// One content-defined chunk of prepared bytes.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct Chunk {
+    pub hash: BlobHash,
+    pub size: u64,
+}
+
+impl NewBlob {
+    /// Bytes stored as one blob.
+    pub fn whole(hash: BlobHash, size: u64) -> Self {
+        Self {
+            hash,
+            size,
+            chunks: Vec::new(),
+        }
+    }
+
+    /// The blobs that hold the bytes, in order: the chunks, or the bytes
+    /// themselves when they are one blob.
+    pub fn parts(&self) -> impl Iterator<Item = Chunk> + '_ {
+        let whole = self.chunks.is_empty().then_some(Chunk {
+            hash: self.hash,
+            size: self.size,
+        });
+        whole.into_iter().chain(self.chunks.iter().copied())
+    }
 }
 
 /// Read a committed blob with the shared frame checks.

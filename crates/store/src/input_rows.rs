@@ -1,5 +1,5 @@
 //! The register rows one stored step of an input writes: its revision, the
-//! extent its new bytes fill and the observation that found them. The writer
+//! extents its new bytes fill and the observation that found them. The writer
 //! builds one [`InputRows`] per step and inserts it; in primary mode Sinex
 //! keeps it with the bytes it describes (or alone, when the step found no new
 //! bytes), and a rebuild from Sinex inserts the same rows again.
@@ -20,9 +20,11 @@ pub struct InputRows {
     /// same read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<Revision>,
-    /// Where the step's new bytes sit in the revision chain.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extent: Option<Extent>,
+    /// Where the step's new bytes sit in the revision chain, in order and
+    /// contiguous: one extent, or one per content-defined chunk of bytes
+    /// stored as chunks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extents: Vec<Extent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observation: Option<ObservationRow>,
 }
@@ -43,6 +45,23 @@ pub struct Extent {
     pub blob: BlobHash,
     /// Offset into the original captured material after an exact prefix overlap.
     pub blob_offset: i64,
+}
+
+/// Drops the first `length` bytes of contiguous `extents`: the extents they
+/// cover go, and the one they end in starts later in its blob.
+pub(crate) fn drop_front(extents: &mut Vec<Extent>, mut length: u64) {
+    extents.retain_mut(|extent| {
+        let size = extent.length as u64;
+        if length >= size && size > 0 {
+            length -= size;
+            return false;
+        }
+        extent.offset += length as i64;
+        extent.blob_offset += length as i64;
+        extent.length -= length as i64;
+        length = 0;
+        true
+    });
 }
 
 /// One look at a path that found something.
@@ -107,7 +126,7 @@ impl InputRows {
                 self.input, r.number, r.produced, r.chain, r.length, seq
             ])?;
         }
-        if let Some(e) = &self.extent {
+        for e in &self.extents {
             tx.prepare_cached(
                 &source.sql("INSERT INTO @source.extent(input, chain, offset, length, blob, blob_offset, commit_seq, acquisition)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -220,28 +239,50 @@ impl InputRows {
         {
             return Err(invalid());
         }
-        if let Some(extent) = &self.extent {
+        if self.extents.is_empty() && self.observation.is_none() {
+            return Err(invalid());
+        }
+        // Each extent lies inside one blob of the acquired body, at its
+        // place: the body itself, or the chunk the body was stored as there.
+        let whole = [crate::Chunk {
+            hash: receipt.hash,
+            size: length,
+        }];
+        let blobs = if receipt.chunks.is_empty() {
+            &whole[..]
+        } else {
+            &receipt.chunks[..]
+        };
+        if blobs.iter().map(|chunk| chunk.size).sum::<u64>() != length {
+            return Err(invalid());
+        }
+        let mut next = None;
+        for extent in &self.extents {
             let start = u64::try_from(extent.offset).map_err(|_| invalid())?;
             let size = u64::try_from(extent.length).map_err(|_| invalid())?;
             let offset = u64::try_from(extent.blob_offset).map_err(|_| invalid())?;
-            if extent.blob != receipt.hash
-                || start < receipt.range.start
-                || start
-                    .checked_add(size)
-                    .is_none_or(|end| end > receipt.range.end)
-                || offset != start - receipt.range.start
-                || offset.checked_add(size).is_none_or(|end| end > length)
-            {
+            let at = start.checked_sub(receipt.range.start).ok_or_else(invalid)?;
+            let end = at.checked_add(size).ok_or_else(invalid)?;
+            let mut blob_start = 0u64;
+            let placed = blobs.iter().any(|blob| {
+                let here = blob_start;
+                blob_start += blob.size;
+                blob.hash == extent.blob && here <= at && end <= blob_start && offset == at - here
+            });
+            if !placed || next.is_some_and(|next| next != start) {
                 return Err(invalid());
             }
-        } else if self.observation.is_none() {
-            return Err(invalid());
+            next = Some(start + size);
         }
         Ok(())
     }
 
     fn observation_details(&self, observation: &ObservationRow) -> Result<Option<String>> {
-        let Some(receipt) = self.acquisition.as_ref().filter(|_| self.extent.is_none()) else {
+        let Some(receipt) = self
+            .acquisition
+            .as_ref()
+            .filter(|_| self.extents.is_empty())
+        else {
             return Ok(observation.details_json.clone());
         };
         let mut details = observation

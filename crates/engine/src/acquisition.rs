@@ -27,6 +27,7 @@ impl AcquisitionContext {
             generation: None,
             raw_total: None,
             raw_predecessor: None,
+            chunks: Vec::new(),
         }
     }
     pub(crate) fn finish_file(

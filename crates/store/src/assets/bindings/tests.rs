@@ -131,6 +131,7 @@ impl Fixture {
             generation: None,
             raw_total: None,
             raw_predecessor: None,
+            chunks: Vec::new(),
         });
         self.capture(batch, bytes);
     }

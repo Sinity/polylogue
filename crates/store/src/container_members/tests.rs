@@ -42,10 +42,7 @@ fn stage(
             }),
         }),
         continues: false,
-        new_blob: Some(NewBlob {
-            hash: prepared.hash(),
-            size: prepared.len(),
-        }),
+        new_blob: Some(NewBlob::whole(prepared.hash(), prepared.len())),
         blobs: vec![],
         length: prepared.len(),
         parse: vec![],

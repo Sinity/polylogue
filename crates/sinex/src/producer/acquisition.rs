@@ -118,9 +118,20 @@ impl Sinex {
                         "acquisition emitted more members than declared".into(),
                     ));
                 }
-                if body.descriptor.hash.0 != input.hash.0
-                    || body.descriptor.decoded_len != input.length
-                {
+                let named = match body.as_slice() {
+                    [one] => {
+                        one.descriptor.hash.0 == input.hash.0
+                            && one.descriptor.decoded_len == input.length
+                    }
+                    several => {
+                        several
+                            .iter()
+                            .map(|part| part.descriptor.decoded_len)
+                            .sum::<u64>()
+                            == input.length
+                    }
+                };
+                if !named {
                     return Err(polylogue_store::StoreError::Invalid(
                         "acquired body differs from its declared identity".into(),
                     ));
@@ -201,7 +212,8 @@ impl Sinex {
                     ),
                 )?;
                 let captured = Capture::Input(Box::new(input));
-                let frame = self.capture_frame(&captured, &member)?;
+                let chunks = super::chunks_of(body.iter().map(|part| part.descriptor.clone()));
+                let frame = self.capture_frame(&captured, &member, chunks)?;
                 staging.prepare_encoded_capture(frame, body, &captured)?;
                 Ok(())
             })?;
@@ -317,19 +329,23 @@ impl Sinex {
                     }
                     input = original;
                 }
-                let (path, descriptor) = staging.encoded_body(&entry.identity)?;
-                let file = std::fs::File::open(&path)?;
+                let parts = staging
+                    .encoded_body(&entry.identity)?
+                    .into_iter()
+                    .map(|(path, descriptor)| {
+                        Ok(PreparedBody {
+                            file: std::fs::File::open(&path)?,
+                            descriptor,
+                            path: Some(path),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
                 let captured = Capture::Input(input);
-                let frame = self.capture_frame(&captured, &member)?;
-                retained.queue().prepare_encoded_capture(
-                    frame,
-                    PreparedBody {
-                        file,
-                        descriptor,
-                        path: Some(path),
-                    },
-                    &captured,
-                )?;
+                let chunks = super::chunks_of(parts.iter().map(|part| part.descriptor.clone()));
+                let frame = self.capture_frame(&captured, &member, chunks)?;
+                retained
+                    .queue()
+                    .prepare_encoded_capture(frame, parts, &captured)?;
             }
         }
         retained.finish()?;
@@ -427,14 +443,17 @@ impl Sinex {
         Ok(result)
     }
 
-    pub(crate) fn capture_body(&self, identity: &str) -> Result<PreparedBody> {
+    pub(crate) fn capture_body(&self, identity: &str) -> Result<Vec<PreparedBody>> {
         let queue = self.queue()?;
-        let prepared = queue.prepared_body(identity)?;
-        Ok(PreparedBody {
-            descriptor: prepared.descriptor(),
-            file: prepared.into_file(),
-            path: None,
-        })
+        Ok(queue
+            .prepared_body(identity)?
+            .into_iter()
+            .map(|prepared| PreparedBody {
+                descriptor: prepared.descriptor(),
+                file: prepared.into_file(),
+                path: None,
+            })
+            .collect())
     }
 }
 

@@ -23,10 +23,10 @@ fn source(id: &str, bytes: &[u8]) -> PreparedBatch {
                 container: None,
             }),
             continues: false,
-            new_blob: Some(crate::NewBlob {
-                hash: BlobHash::of(bytes),
-                size: bytes.len() as u64,
-            }),
+            new_blob: Some(crate::NewBlob::whole(
+                BlobHash::of(bytes),
+                bytes.len() as u64,
+            )),
             blobs: Vec::new(),
             length: bytes.len() as u64,
             parse: Vec::new(),
@@ -112,6 +112,9 @@ impl crate::primary::Sinex for OfflineProducer {
                 ordinal: 0,
                 count: 1,
             });
+            let [body] = <[_; 1]>::try_from(body).map_err(|_| {
+                StoreError::Invalid("synthetic offline adapter keeps one body".into())
+            })?;
             self.prepare_input(&input, body)?;
             count += 1;
             Ok(())
@@ -138,15 +141,15 @@ impl crate::primary::Sinex for OfflineProducer {
             },
         })
     }
-    fn capture_body(&self, _: &str) -> Result<crate::primary::PreparedBody> {
+    fn capture_body(&self, _: &str) -> Result<Vec<crate::primary::PreparedBody>> {
         let path = self.root.join("source");
-        Ok(crate::primary::PreparedBody {
+        Ok(vec![crate::primary::PreparedBody {
             file: std::fs::File::open(&path)?,
             descriptor: hashed_blobs::EncodedBlob::decode(&std::fs::read(
                 self.root.join("descriptor"),
             )?)?,
             path: Some(path),
-        })
+        }])
     }
     fn pending_source(
         &self,
@@ -971,7 +974,7 @@ fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
                                 input: "offline".into(),
                                 format: "codex".into(),
                                 revision: None,
-                                extent: None,
+                                extents: Vec::new(),
                                 observation: Some(observation),
                             }),
                             material: None,
@@ -1005,7 +1008,7 @@ fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
                                 input: "alias-target".into(),
                                 format: "codex".into(),
                                 revision: None,
-                                extent: None,
+                                extents: Vec::new(),
                                 observation: Some(observation),
                             }),
                             material: None,
@@ -1055,7 +1058,9 @@ fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
         assert_eq!(original.basis.as_ref(), Some(&sampled));
         assert_eq!(original.hash, BlobHash::of(bytes));
         assert_eq!(original.basis.unwrap().resolved, sampled.resolved);
-        let body = producer.capture_body("offline-capture").unwrap();
+        let [body] = <[_; 1]>::try_from(producer.capture_body("offline-capture").unwrap())
+            .ok()
+            .unwrap();
         let prepared = hashed_blobs::Prepared::from_encoded(
             body.file,
             body.descriptor,
@@ -1088,7 +1093,7 @@ fn captured_body_anchors_survive_duplicate_and_trimmed_logical_extents() {
             input: "source".into(),
             format: "codex".into(),
             revision: None,
-            extent: None,
+            extents: Vec::new(),
             observation: None,
         },
         index: 0,
@@ -1120,17 +1125,17 @@ fn captured_body_anchors_survive_duplicate_and_trimmed_logical_extents() {
         length: 8,
         extents: vec![descriptor.encode()],
     };
-    for extent in [
-        None,
-        Some(crate::input_rows::Extent {
+    for extents in [
+        Vec::new(),
+        vec![crate::input_rows::Extent {
             chain: 1,
             offset: 14,
             length: 4,
             blob: hash,
             blob_offset: 4,
-        }),
+        }],
     ] {
-        captured.rows.extent = extent;
+        captured.rows.extents = extents;
         for (offset, anchor) in [(10, 0), (12, 2), (18, 8)] {
             let location = captured_location(&captured, Some(&material), offset)
                 .unwrap()
@@ -1225,13 +1230,13 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
                                 chain: 1,
                                 length: 4,
                             }),
-                            extent: Some(crate::input_rows::Extent {
+                            extents: vec![crate::input_rows::Extent {
                                 chain: 1,
                                 offset: 0,
                                 length: 4,
                                 blob: hash,
                                 blob_offset: 0,
-                            }),
+                            }],
                             observation: Some(observation),
                         }),
                         material: Some(Material {

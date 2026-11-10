@@ -53,7 +53,7 @@ impl Sinex for PendingProducer {
     ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
         Ok(None)
     }
-    fn capture_body(&self, _: &str) -> Result<PreparedBody> {
+    fn capture_body(&self, _: &str) -> Result<Vec<PreparedBody>> {
         Self::unavailable()
     }
     fn pending_captures(&self) -> Result<Vec<PendingCapture>> {

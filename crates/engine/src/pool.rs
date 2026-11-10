@@ -536,12 +536,26 @@ pub(crate) fn run(
     };
     out.tail = read::tail_of(&bytes);
     let mut files = Vec::new();
+    // A document its source saves whole is stored as content-defined chunks,
+    // so a revision that changes one place stores only the chunks around it.
+    let rewritten_whole = job.store_from == Some(0)
+        && !job.continues
+        && matches!(job.change, Change::First | Change::Rewritten)
+        && !job.input.route.is_imported()
+        && crate::plan::whole(job.origin, &job.path);
     let new_blob = match job.store_from {
         Some(from) => match time(Stage::Store, || {
-            archive.prepare_blob(&bytes[(from - job.start) as usize..])
+            let new = &bytes[(from - job.start) as usize..];
+            if rewritten_whole {
+                archive.prepare_chunked(new)
+            } else {
+                archive
+                    .prepare_blob(new)
+                    .map(|(blob, file)| (blob, file.into_iter().collect()))
+            }
         }) {
-            Ok((p, file)) => {
-                files.extend(file);
+            Ok((p, prepared)) => {
+                files.extend(prepared);
                 out.stored = p.size;
                 Some(p)
             }
@@ -560,7 +574,7 @@ pub(crate) fn run(
                 start: job.store_from.expect("new body has a source interval"),
                 end: job.store_from.expect("new body has a source interval") + blob.size,
             };
-            match &file_snapshot {
+            let mut receipt = match &file_snapshot {
                 Some(observed) => context.finish_file(
                     range,
                     blob.hash,
@@ -573,7 +587,9 @@ pub(crate) fn run(
                     },
                 ),
                 None => context.finish(range, blob.hash),
-            }
+            };
+            receipt.chunks = blob.chunks.clone();
+            receipt
         });
     out.raw_acquisition = acquisition.clone();
     let context_overlay = if let Some(context) = job.parser_context.take() {

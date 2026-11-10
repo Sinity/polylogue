@@ -146,7 +146,7 @@ impl crate::primary::Sinex for Producer {
     ) -> Result<crate::primary::PendingSource> {
         Ok(Default::default())
     }
-    fn capture_body(&self, _: &str) -> Result<crate::primary::PreparedBody> {
+    fn capture_body(&self, _: &str) -> Result<Vec<crate::primary::PreparedBody>> {
         Self::unavailable()
     }
     fn prepare_input(
@@ -582,7 +582,7 @@ fn a_failed_later_position_reports_earlier_commits_without_inventing_progress() 
                 input: id.into(),
                 format: "synthetic".into(),
                 revision: None,
-                extent: None,
+                extents: Vec::new(),
                 observation: None,
             }),
             material: None,

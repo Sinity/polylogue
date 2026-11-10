@@ -99,13 +99,13 @@ fn source(input: &str, message: &Message, ordinal: usize, position: i64) -> Vec<
                         chain: 1,
                         length: 2,
                     }),
-                    extent: Some(crate::input_rows::Extent {
+                    extents: vec![crate::input_rows::Extent {
                         chain: 1,
                         offset: 0,
                         length: 2,
                         blob: hash,
                         blob_offset: 0,
-                    }),
+                    }],
                     observation: None,
                 }),
                 material: Some(Material {

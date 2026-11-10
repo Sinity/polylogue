@@ -60,7 +60,24 @@ impl Sinex {
             }
         }
     }
+}
 
+/// The chunks a body's encodings name, when there are several.
+pub(crate) fn chunks_of(
+    parts: impl ExactSizeIterator<Item = hashed_blobs::EncodedBlob>,
+) -> Vec<sinex_protocol::MaterialChunk> {
+    if parts.len() < 2 {
+        return Vec::new();
+    }
+    parts
+        .map(|descriptor| sinex_protocol::MaterialChunk {
+            blob: descriptor.hash.to_string(),
+            length: descriptor.decoded_len,
+        })
+        .collect()
+}
+
+impl Sinex {
     fn prepared_capture(&self, captured: Capture, body: PreparedBody) -> Result<PreparedWrite> {
         let (expected_hash, expected_length) = match &captured {
             Capture::Input(input) => (input.hash, input.length),
@@ -105,15 +122,22 @@ impl Sinex {
         }
         let identity = format!("{desired}{}", uuid::Uuid::now_v7());
         let queue = self.queue()?;
-        let frame = self.capture_frame(&captured, &identity)?;
-        queue.prepare_encoded_capture(frame, body, &captured)?;
+        let frame = self.capture_frame(&captured, &identity, Vec::new())?;
+        queue.prepare_encoded_capture(frame, vec![body], &captured)?;
         Ok(PreparedWrite {
             identity,
             pending: true,
         })
     }
 
-    fn capture_frame(&self, captured: &Capture, identity: &str) -> Result<Ingress> {
+    /// `chunks` names the body's content-defined chunks when it is stored as
+    /// chunks.
+    fn capture_frame(
+        &self,
+        captured: &Capture,
+        identity: &str,
+        chunks: Vec<sinex_protocol::MaterialChunk>,
+    ) -> Result<Ingress> {
         let (input, hash, length, parser, part_index, previous_part) = match captured {
             Capture::Input(input) => (
                 InputRef {
@@ -150,7 +174,7 @@ impl Sinex {
         };
         let header = crate::spool::capture_header(captured);
         let observation = matches!(captured,Capture::Input(input) if input.raw_range.is_none());
-        if matches!(captured, Capture::Input(input) if input.raw_range.is_none() && input.rows.extent.is_some())
+        if matches!(captured, Capture::Input(input) if input.raw_range.is_none() && !input.rows.extents.is_empty())
         {
             return Err(Error::Invalid(
                 "provider acquisition has no original raw range".into(),
@@ -164,6 +188,7 @@ impl Sinex {
                 input,
                 blob: format!("blake3:{hash}"),
                 length,
+                chunks,
                 parser: if observation {
                     "polylogue-observation".into()
                 } else {
@@ -455,6 +480,7 @@ impl Sinex {
                         },
                         blob: format!("blake3:{}", blake3::hash(&body).to_hex()),
                         length: body.len() as u64,
+                        chunks: Vec::new(),
                         parser: if writes.iter().any(|write| {
                             matches!(
                                 write.product,
@@ -730,6 +756,7 @@ impl Sinex {
                     },
                     blob: format!("blake3:{}", blake3::hash(&bytes).to_hex()),
                     length: bytes.len() as u64,
+                    chunks: Vec::new(),
                     parser: "polylogue-request".into(),
                     parser_version: 3,
                     part_index: 0,
@@ -834,7 +861,7 @@ impl Sinex {
     ) -> polylogue_store::Result<()> {
         Ok(self.visit_prepared(|_, entry| {
             if let Some(Capture::Blob { hash, length }) = entry.capture().cloned() {
-                visit(&polylogue_store::NewBlob { hash, size: length })
+                visit(&polylogue_store::NewBlob::whole(hash, length))
                     .map_err(|error| Error::Invalid(error.to_string()))?;
             }
             Ok(())

@@ -73,6 +73,7 @@ fn capture(
         generation: None,
         raw_total: None,
         raw_predecessor: None,
+        chunks: Vec::new(),
     });
     let mut raw = batch.clone();
     raw.parse.clear();
