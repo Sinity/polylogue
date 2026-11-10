@@ -82,7 +82,7 @@ A new reading version reconstructs missing historical context from retained byte
 Providers change their formats without notice. Drift is found by field accounting during ordinary parsing, not by inferring and committing schemas.
 
 - **The walk.** The one full-depth walk per record that parsing already does accounts for every leaf. Origin declarations carry the expected type on each path a parser reads, explicit dynamic-key maps, and the known values of `type` fields.
-- **The wire-shape table.** A derived table `wire_shape` records, per format, record kind, path and type, when it was first and last seen and how often.
+- **The wire-shape table.** A derived table `wire_shape` records, per format, record kind, path and type, when it was first and last seen and how often. Each reading's rows cite the source receipts (where and when a shape was first and last seen) by number, and `wire_receipt` holds each receipt once per reading.
 - **The `drift` query unit** shows new paths, type changes and fields that stopped appearing, per origin and reading version, newest first; status shows the same counts ([capture.md](capture.md#capture-status)). A database table no parser knows appears there too.
 - **One shipped notice**, `format-drift`, is passive: it reaches the session-start brief of agents working in Polylogue's own repository ([operations.md](operations.md#notices)).
 - **Acting on a drift notice:** compare the example input with an older one, write a golden for the new format, declare the field, and raise the reading version.

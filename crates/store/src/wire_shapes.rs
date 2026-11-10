@@ -238,6 +238,144 @@ struct Shape {
     last: Receipt,
     complete_presence: Option<Receipt>,
 }
+/// A shape as `wire_shape` stores it: each receipt by its number in
+/// `wire_receipt`. A shape names up to seven receipts, nearly always the same
+/// few of its chain; stored whole, they were three quarters of each row.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct StoredShape {
+    types: BTreeMap<String, StoredType>,
+    expected: Vec<String>,
+    dynamic_map: bool,
+    known_kinds: Vec<String>,
+    unknown_kind_count: u64,
+    table: Option<String>,
+    unknown_table_count: u64,
+    unused_count: u64,
+    first: u64,
+    last: u64,
+    complete_presence: Option<u64>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct StoredType {
+    count: u64,
+    first: u64,
+    last: u64,
+}
+
+/// The receipts of one reading (input, chain, reading version), numbered from
+/// 1 in the order they were first cited.
+struct Receipts {
+    input_pk: i64,
+    chain: i64,
+    version: String,
+    by_number: Vec<Receipt>,
+    numbers: std::collections::HashMap<String, u64>,
+}
+impl Receipts {
+    fn load(conn: &Connection, input_pk: i64, chain: i64, version: &str) -> Result<Self> {
+        let mut receipts = Self {
+            input_pk,
+            chain,
+            version: version.to_owned(),
+            by_number: Vec::new(),
+            numbers: std::collections::HashMap::new(),
+        };
+        let mut statement = conn.prepare_cached(
+            "SELECT number,receipt FROM wire_receipt WHERE input_pk=?1 AND chain=?2 AND reading_version=?3 ORDER BY number",
+        )?;
+        let mut rows = statement.query(params![input_pk, chain, version])?;
+        while let Some(row) = rows.next()? {
+            let number: i64 = row.get(0)?;
+            let json: String = row.get(1)?;
+            if usize::try_from(number).ok() != Some(receipts.by_number.len() + 1) {
+                return invalid("wire receipt numbers are not consecutive");
+            }
+            receipts.by_number.push(serde_json::from_str(&json)?);
+            receipts.numbers.insert(json, number as u64);
+        }
+        Ok(receipts)
+    }
+    fn number(&mut self, tx: &Connection, receipt: &Receipt) -> Result<u64> {
+        let json = serde_json::to_string(receipt)?;
+        if let Some(number) = self.numbers.get(&json) {
+            return Ok(*number);
+        }
+        let number = self.by_number.len() as u64 + 1;
+        tx.prepare_cached("INSERT INTO wire_receipt(input_pk,chain,reading_version,number,receipt) VALUES (?1,?2,?3,?4,?5)")?
+            .execute(params![self.input_pk, self.chain, self.version, number as i64, json])?;
+        self.by_number.push(receipt.clone());
+        self.numbers.insert(json, number);
+        Ok(number)
+    }
+    fn receipt(&self, number: u64) -> Result<Receipt> {
+        usize::try_from(number)
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|n| self.by_number.get(n))
+            .cloned()
+            .ok_or_else(|| StoreError::Invalid("wire shape cites an unknown receipt".into()))
+    }
+    fn store(&mut self, tx: &Connection, shape: &Shape) -> Result<StoredShape> {
+        let mut types = BTreeMap::new();
+        for (kind, observed) in &shape.types {
+            types.insert(
+                kind.clone(),
+                StoredType {
+                    count: observed.count,
+                    first: self.number(tx, &observed.first)?,
+                    last: self.number(tx, &observed.last)?,
+                },
+            );
+        }
+        Ok(StoredShape {
+            types,
+            expected: shape.expected.clone(),
+            dynamic_map: shape.dynamic_map,
+            known_kinds: shape.known_kinds.clone(),
+            unknown_kind_count: shape.unknown_kind_count,
+            table: shape.table.clone(),
+            unknown_table_count: shape.unknown_table_count,
+            unused_count: shape.unused_count,
+            first: self.number(tx, &shape.first)?,
+            last: self.number(tx, &shape.last)?,
+            complete_presence: shape
+                .complete_presence
+                .as_ref()
+                .map(|receipt| self.number(tx, receipt))
+                .transpose()?,
+        })
+    }
+    fn restore(&self, stored: StoredShape) -> Result<Shape> {
+        let mut types = BTreeMap::new();
+        for (kind, observed) in stored.types {
+            types.insert(
+                kind,
+                TypeObservation {
+                    count: observed.count,
+                    first: self.receipt(observed.first)?,
+                    last: self.receipt(observed.last)?,
+                },
+            );
+        }
+        Ok(Shape {
+            types,
+            expected: stored.expected,
+            dynamic_map: stored.dynamic_map,
+            known_kinds: stored.known_kinds,
+            unknown_kind_count: stored.unknown_kind_count,
+            table: stored.table,
+            unknown_table_count: stored.unknown_table_count,
+            unused_count: stored.unused_count,
+            first: self.receipt(stored.first)?,
+            last: self.receipt(stored.last)?,
+            complete_presence: stored
+                .complete_presence
+                .map(|number| self.receipt(number))
+                .transpose()?,
+        })
+    }
+}
+
 impl Reading {
     fn status(&self) -> CoverageStatus {
         match &self.progress {
@@ -456,8 +594,9 @@ fn apply_inner(
     )?
     .execute(params![source.input_pk, source.chain])?;
     tx.prepare_cached("INSERT INTO wire_reading(input_pk,chain,reading_version,format,active,state) VALUES (?1,?2,?3,?4,1,?5) ON CONFLICT(input_pk,chain,reading_version) DO UPDATE SET format=excluded.format,active=1,state=excluded.state")?.execute(params![source.input_pk,source.chain,step.reading_version,source.format,serde_json::to_string(&reading)?])?;
+    let mut receipts = Receipts::load(tx, source.input_pk, source.chain, &step.reading_version)?;
     if reset {
-        let old = stored_shapes(tx, source.input_pk, source.chain, &step.reading_version)?;
+        let old = stored_shapes(tx, &receipts, &step.reading_version)?;
         for (kind, path, mut shape) in old {
             for observation in shape.types.values_mut() {
                 observation.count = 0;
@@ -465,14 +604,14 @@ fn apply_inner(
             shape.unknown_kind_count = 0;
             shape.unknown_table_count = 0;
             shape.unused_count = 0;
-            save(tx, source, &step.reading_version, &kind, &path, &shape)?;
+            save(tx, &mut receipts, &kind, &path, &shape)?;
         }
     }
     for observation in step.counts.wire_shapes.values() {
         validate(observation)?;
         let previous:Option<String>=tx.prepare_cached("SELECT shape FROM wire_shape WHERE input_pk=?1 AND chain=?2 AND reading_version=?3 AND record_kind=?4 AND path=?5 AND table_key=?6")?.query_row(params![source.input_pk,source.chain,step.reading_version,observation.record_kind,observation.path,serde_json::to_string(&observation.table)?],|row|row.get(0)).optional()?;
         let mut shape = previous
-            .map(|json| serde_json::from_str::<Shape>(&json))
+            .map(|json| receipts.restore(serde_json::from_str::<StoredShape>(&json)?))
             .transpose()?
             .unwrap_or_else(|| Shape {
                 types: BTreeMap::new(),
@@ -521,8 +660,7 @@ fn apply_inner(
         }
         save(
             tx,
-            source,
-            &step.reading_version,
+            &mut receipts,
             &observation.record_kind,
             &observation.path,
             &shape,
@@ -546,12 +684,13 @@ fn complete(
     } else {
         receipt
     };
-    for (kind, path, mut shape) in stored_shapes(tx, source.input_pk, source.chain, version)? {
+    let mut receipts = Receipts::load(tx, source.input_pk, source.chain, version)?;
+    for (kind, path, mut shape) in stored_shapes(tx, &receipts, version)? {
         if shape.types.values().any(|kind| kind.count > 0)
             && shape.complete_presence.as_ref() != Some(receipt)
         {
             shape.complete_presence = Some(receipt.clone());
-            save(tx, source, version, &kind, &path, &shape)?;
+            save(tx, &mut receipts, &kind, &path, &shape)?;
         }
     }
     Ok(())
@@ -588,28 +727,31 @@ fn validate(shape: &WireShape) -> Result<()> {
 }
 fn stored_shapes(
     conn: &Connection,
-    input: i64,
-    chain: i64,
+    receipts: &Receipts,
     version: &str,
 ) -> Result<Vec<(String, String, Shape)>> {
     let mut statement=conn.prepare_cached("SELECT record_kind,path,shape FROM wire_shape WHERE input_pk=?1 AND chain=?2 AND reading_version=?3 ORDER BY record_kind,path,table_key")?;
-    let mut rows = statement.query(params![input, chain, version])?;
+    let mut rows = statement.query(params![receipts.input_pk, receipts.chain, version])?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
         let json: String = row.get(2)?;
-        out.push((row.get(0)?, row.get(1)?, serde_json::from_str(&json)?));
+        out.push((
+            row.get(0)?,
+            row.get(1)?,
+            receipts.restore(serde_json::from_str(&json)?)?,
+        ));
     }
     Ok(out)
 }
 fn save(
     tx: &Transaction<'_>,
-    source: Source<'_>,
-    version: &str,
+    receipts: &mut Receipts,
     kind: &str,
     path: &str,
     shape: &Shape,
 ) -> Result<()> {
-    tx.prepare_cached("INSERT INTO wire_shape(input_pk,chain,reading_version,record_kind,path,shape,table_key) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(input_pk,chain,reading_version,record_kind,path,table_key) DO UPDATE SET shape=excluded.shape")?.execute(params![source.input_pk,source.chain,version,kind,path,serde_json::to_string(shape)?,serde_json::to_string(&shape.table)?])?;
+    let stored = receipts.store(tx, shape)?;
+    tx.prepare_cached("INSERT INTO wire_shape(input_pk,chain,reading_version,record_kind,path,shape,table_key) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(input_pk,chain,reading_version,record_kind,path,table_key) DO UPDATE SET shape=excluded.shape")?.execute(params![receipts.input_pk,receipts.chain,receipts.version,kind,path,serde_json::to_string(&stored)?,serde_json::to_string(&shape.table)?])?;
     Ok(())
 }
 

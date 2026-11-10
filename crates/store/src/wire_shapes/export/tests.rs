@@ -132,7 +132,7 @@ fn callback_prefix_retries_are_read_only_and_completion_waits_for_every_prior_ca
     let shape: String = conn
         .query_row("SELECT shape FROM wire_shape", [], |row| row.get(0))
         .unwrap();
-    let shape: Shape = serde_json::from_str(&shape).unwrap();
+    let shape: StoredShape = serde_json::from_str(&shape).unwrap();
     assert_eq!(shape.types["string"].count, 1);
     let done = state(&conn);
     apply_step(&mut conn, 2, &complete).unwrap();
@@ -308,6 +308,6 @@ fn header_line_failures_preserve_counts_and_allow_valid_items_and_complete() {
     let body: String = conn
         .query_row("SELECT shape FROM wire_shape", [], |row| row.get(0))
         .unwrap();
-    let shape: Shape = serde_json::from_str(&body).unwrap();
+    let shape: StoredShape = serde_json::from_str(&body).unwrap();
     assert_eq!(shape.types["string"].count, 1);
 }

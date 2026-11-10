@@ -33,7 +33,7 @@ pub(crate) fn newest_identical(conn: &Connection, input: &str, chain: i64) -> Re
 
 /// The index tables that hold one chain's reading, keyed by `input_pk` and
 /// `chain`. Copying a reading copies each table's rows of the other chain.
-const READING_TABLES: [&str; 15] = [
+const READING_TABLES: [&str; 16] = [
     "parse_state",
     "parsed",
     "session_record",
@@ -47,6 +47,7 @@ const READING_TABLES: [&str; 15] = [
     "parser_context",
     "parser_context_state",
     "wire_reading",
+    "wire_receipt",
     "wire_shape",
     "attachment_binding",
 ];
@@ -169,9 +170,9 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
     for (table, column, key) in [
         ("wire_reading", "state", "reading_version"),
         (
-            "wire_shape",
-            "shape",
-            "record_kind || char(0) || path || char(0) || table_key || char(0) || reading_version",
+            "wire_receipt",
+            "receipt",
+            "reading_version || char(0) || number",
         ),
     ] {
         let rows: Vec<(String, String)> = tx

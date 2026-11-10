@@ -919,3 +919,67 @@ fn wire_coverage_diagnostics_survive_parser_activity_without_completion_promotio
         }
     }
 }
+/// A reading's shapes cite its receipts by number, each receipt stored once
+/// (docs/archive.md, format drift): two ranges of one chain over five paths
+/// store the two ranges' receipts and the whole chain's, and a read gives
+/// every shape its exact receipts back.
+#[test]
+fn a_readings_receipts_are_stored_once_and_read_back_whole() {
+    let mut conn = database();
+    let paths = ["/a", "/b", "/c", "/d"];
+    let shapes = || {
+        std::iter::once(root())
+            .chain(paths.iter().map(|path| shape(path, "string", &["string"])))
+            .collect::<Vec<_>>()
+    };
+    store(
+        &mut conn,
+        source(1, 1, 20, 1),
+        &step("v1", 0..10, false, shapes()),
+    );
+    store(
+        &mut conn,
+        source(1, 1, 20, 2),
+        &step("v1", 10..20, true, shapes()),
+    );
+    let receipts: Vec<String> = conn
+        .prepare("SELECT receipt FROM wire_receipt ORDER BY number")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let receipts: Vec<Receipt> = receipts
+        .iter()
+        .map(|json| serde_json::from_str(json).unwrap())
+        .collect();
+    let range = |receipt: i64, start: u64, end: u64| Receipt {
+        footprint: ReadingFootprint::Bytes { start, end },
+        ..Receipt::from(source(1, 1, 20, receipt))
+    };
+    assert_eq!(
+        receipts,
+        [
+            range(1, 0, 10),
+            range(2, 10, 20),
+            Receipt::from(source(1, 1, 20, 2))
+        ]
+    );
+    let stored: i64 = conn
+        .query_row("SELECT count(*) FROM wire_shape", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(stored, 5);
+    let report = read(&conn, Scope::current(Some("fixture"))).unwrap();
+    for path in paths {
+        let shape = at(&report, path);
+        assert_eq!(shape.first, range(1, 0, 10));
+        assert_eq!(shape.last, range(2, 10, 20));
+        assert_eq!(
+            shape.complete_presence,
+            Some(Receipt::from(source(1, 1, 20, 2)))
+        );
+        assert_eq!(shape.types["string"].count, 2);
+        assert_eq!(shape.types["string"].first, range(1, 0, 10));
+        assert_eq!(shape.types["string"].last, range(2, 10, 20));
+    }
+}
