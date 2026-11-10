@@ -485,3 +485,30 @@ fn usage_equals_sum_across_surfaces() {
     assert_eq!(summed["rows"][0]["sum_cost"], 1.33, "{summed}");
     assert_eq!((field, compared), (usage, usage));
 }
+
+#[test]
+fn measured_population_same_with_and_without_conditions() {
+    let mut archive = morrow();
+    archive.fx.derive().unwrap();
+    let conditioned = "sessions where origin:claude-code | measure usage";
+    let before = q(&archive, conditioned);
+    archive
+        .fx
+        .note(
+            "hidden",
+            None,
+            None,
+            "session:claude-code:7f3a2c10-0002-4000-8000-000000000002",
+        )
+        .unwrap();
+    // Hiding is a display preference: the measured population stays, with
+    // or without conditions, and says how many hidden sessions it includes.
+    let after = q(&archive, conditioned);
+    let everything = q(&archive, "sessions | measure usage");
+    assert_eq!(before["data"]["hidden_sessions"], 0);
+    assert_eq!(after["data"]["hidden_sessions"], 1);
+    assert_eq!(everything["data"]["hidden_sessions"], 1);
+    for field in ["known_response_messages", "api_cost", "tokens"] {
+        assert_eq!(after["data"][field], before["data"][field], "{field}");
+    }
+}

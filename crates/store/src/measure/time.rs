@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) const RULE_VERSION: i64 = 1;
+pub(crate) const RULE_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Span {
@@ -269,9 +269,19 @@ fn calculate(
         clustered.extend(tool_intervals.iter().map(|(a, b, _)| (*a, *b)));
         span.clustered_ms = Some(union_ms(clustered));
     }
-    let lanes = first
+    let mut lanes = first
         .zip(last)
         .map_or_else(Vec::new, |(a, b)| split(a, b, &tool_intervals, &waiting));
+    // Waiting for the human starts where a model message ends its turn. A
+    // session none of whose model messages states a stop reason comes from
+    // a provider that reports no turn end: its human lane is unknown, not 0,
+    // and that time stays unattributed.
+    if !messages
+        .iter()
+        .any(|m| m.author == "model" && m.stop.is_some())
+    {
+        lanes.retain(|l| l.lane != "human");
+    }
     (span, lanes)
 }
 

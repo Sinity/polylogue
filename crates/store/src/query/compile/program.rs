@@ -10,6 +10,10 @@ impl<'a> Compiler<'a> {
         preset: Option<MatchRel>,
     ) -> Result<Program, QueryError> {
         self.transforms_start = q.transforms.first().map_or(usize::MAX, |s| s.span.start);
+        self.measuring = q.transforms.iter().any(|s| {
+            matches!(&s.kind, TransformKind::Extension { name, .. }
+                if name == polylogue_query::catalog::MEASURE)
+        });
         let (mut scope, wheres, mut top) = match &q.source {
             Source::Unit {
                 unit, condition, ..
@@ -566,6 +570,7 @@ impl<'a> Compiler<'a> {
             .filter(|d| !(d.unless_reference && row_reference))
             .filter(|d| !(d.unless_reference && session_reference && d.unless.contains(&"hidden")))
             .filter(|d| !d.unless.iter().any(|f| named.contains(*f)))
+            .filter(|d| !(self.measuring && d.unless.contains(&"hidden")))
             .map(|d| {
                 (
                     d.describe(),

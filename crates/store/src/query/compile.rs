@@ -493,6 +493,9 @@ pub(crate) struct Compiler<'a> {
     near_unavailable: bool,
     /// Conditions at or after this position belong to a stage.
     transforms_start: usize,
+    /// The query ends in `| measure`: a display preference such as hiding
+    /// never changes a measured population.
+    measuring: bool,
     /// Top-level `since:`/`until:` bounds on the sessions, for measures.
     session_window: (Option<i64>, Option<i64>),
 }
@@ -538,6 +541,7 @@ impl<'a> Compiler<'a> {
             source_near_allowed: true,
             near_unavailable: false,
             transforms_start: usize::MAX,
+            measuring: false,
             session_window: (None, None),
         }
     }
