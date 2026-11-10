@@ -227,19 +227,20 @@ pub(crate) fn install_triggers(index: &Connection, source: bool) -> Result<()> {
 /// Temporary triggers on the standalone writer's `archive.db` connection
 /// that record the chains whose revisions a transaction changed, and the
 /// inputs an imported observation names; a rolled-back transaction records
-/// nothing.
+/// nothing. The inserts use `ON CONFLICT DO NOTHING`: an `OR IGNORE` in a
+/// trigger gives way to the conflict policy of the statement that fired it.
 pub(crate) fn record_source_changes(archive: &Connection) -> Result<()> {
     archive.execute_batch(
         "CREATE TEMP TABLE IF NOT EXISTS chain_progress_chains (input TEXT NOT NULL, chain INTEGER NOT NULL,
              PRIMARY KEY (input, chain)) WITHOUT ROWID;
          CREATE TEMP TABLE IF NOT EXISTS chain_progress_inputs (input TEXT PRIMARY KEY) WITHOUT ROWID;
          CREATE TEMP TRIGGER IF NOT EXISTS chain_progress_revision_added AFTER INSERT ON main.revision
-         BEGIN INSERT OR IGNORE INTO chain_progress_chains VALUES (NEW.input, NEW.chain); END;
+         BEGIN INSERT INTO chain_progress_chains VALUES (NEW.input, NEW.chain) ON CONFLICT DO NOTHING; END;
          CREATE TEMP TRIGGER IF NOT EXISTS chain_progress_revision_grown AFTER UPDATE OF length ON main.revision
-         BEGIN INSERT OR IGNORE INTO chain_progress_chains VALUES (NEW.input, NEW.chain); END;
+         BEGIN INSERT INTO chain_progress_chains VALUES (NEW.input, NEW.chain) ON CONFLICT DO NOTHING; END;
          CREATE TEMP TRIGGER IF NOT EXISTS chain_progress_import_added AFTER INSERT ON main.observation
          WHEN NEW.class = 'imported'
-         BEGIN INSERT OR IGNORE INTO chain_progress_inputs VALUES (NEW.input); END;",
+         BEGIN INSERT INTO chain_progress_inputs VALUES (NEW.input) ON CONFLICT DO NOTHING; END;",
     )?;
     Ok(())
 }
@@ -307,7 +308,7 @@ pub(crate) fn forget(archive: &Connection, changes: &SourceChanges) -> Result<()
 /// state) and state, for [`crate::read::completeness`].
 pub(crate) fn counts(conn: &Connection) -> Result<Vec<(String, String, State, u64)>> {
     let mut statement = conn.prepare_cached(
-        "SELECT origin, reading_version, state, n FROM main.chain_progress_count WHERE n > 0",
+        "SELECT origin, reading_version, state, n FROM main.chain_progress_count",
     )?;
     let mut rows = statement.query([])?;
     let mut counts = Vec::new();

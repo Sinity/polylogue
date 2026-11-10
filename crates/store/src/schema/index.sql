@@ -640,7 +640,9 @@ END;
 -- How far each stored revision chain is parsed, one row per chain of the
 -- source, kept by the writer in the transaction of the change
 -- (crates/store/src/chain_progress.rs), and counted below so that whether
--- the index has caught up is read without walking the chains.
+-- the index has caught up is read without walking the chains. A group
+-- without chains has no count row, so equal chains give equal rows however
+-- they were reached.
 CREATE TABLE chain_progress (
   input             TEXT NOT NULL,          -- archive.db input.id
   chain             INTEGER NOT NULL,
@@ -662,9 +664,11 @@ CREATE TRIGGER chain_progress_added AFTER INSERT ON chain_progress BEGIN
 END;
 CREATE TRIGGER chain_progress_removed AFTER DELETE ON chain_progress BEGIN
   UPDATE chain_progress_count SET n = n - 1 WHERE origin = OLD.origin AND reading_version = OLD.reading_version AND state = OLD.state;
+  DELETE FROM chain_progress_count WHERE origin = OLD.origin AND reading_version = OLD.reading_version AND state = OLD.state AND n = 0;
 END;
 CREATE TRIGGER chain_progress_changed AFTER UPDATE OF origin, reading_version, state ON chain_progress BEGIN
   UPDATE chain_progress_count SET n = n - 1 WHERE origin = OLD.origin AND reading_version = OLD.reading_version AND state = OLD.state;
+  DELETE FROM chain_progress_count WHERE origin = OLD.origin AND reading_version = OLD.reading_version AND state = OLD.state AND n = 0;
   INSERT INTO chain_progress_count(origin, reading_version, state, n) VALUES (NEW.origin, NEW.reading_version, NEW.state, 1)
     ON CONFLICT(origin, reading_version, state) DO UPDATE SET n = n + 1;
 END;
