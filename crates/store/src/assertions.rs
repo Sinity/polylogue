@@ -2,6 +2,7 @@
 //! resolves selectors before this layer receives immutable records; every
 //! record written here updates `revision_state` for exactly the roots it can
 //! affect, in the same transaction.
+use crate::encoding::Columns;
 use crate::{Result, StoreError, source::Source};
 use authored::{Currency, CurrencyError, Holders, Links, Revision, Target, UniqueSlot};
 use polylogue_model::{
@@ -30,35 +31,25 @@ const COLUMNS: &str = "id,root,kind,key,value,author,via,machine,created_at,vali
 fn invalid(message: &str) -> StoreError {
     StoreError::Invalid(message.into())
 }
-fn time(millis: i64) -> Result<Timestamp> {
-    Timestamp::from_unix_ms(millis).ok_or_else(|| invalid("assertion time is out of range"))
-}
 fn record(row: &rusqlite::Row<'_>) -> Result<Assertion> {
-    let kind: String = row.get(2)?;
-    let author: String = row.get(5)?;
-    let via: String = row.get(6)?;
     let value: Option<String> = row.get(4)?;
     Ok(Assertion {
         fact: AssertionFact {
             id: row.get(0)?,
             root: row.get(1)?,
-            kind: AssertionKind::from_name(&kind)
-                .ok_or_else(|| invalid("unknown assertion kind"))?,
+            kind: row.name::<AssertionKind>(2)?,
             key: row.get(3)?,
             value: value
                 .map(|value| serde_json::from_str(&value))
                 .transpose()?,
-            author: Author::parse(&author).map_err(|_| invalid("unknown assertion author"))?,
-            via: Channel::from_name(&via).ok_or_else(|| invalid("unknown assertion channel"))?,
+            author: row.id::<Author>(5)?,
+            via: row.name::<Channel>(6)?,
             machine: row.get(7)?,
-            created_at: time(row.get(8)?)?,
-            valid_until: row.get::<_, Option<i64>>(9)?.map(time).transpose()?,
+            created_at: row.time_ms(8)?,
+            valid_until: row.optional_time_ms(9)?,
             links: Vec::new(),
         },
-        commit_seq: row
-            .get::<_, i64>(10)?
-            .try_into()
-            .map_err(|_| invalid("negative assertion counter"))?,
+        commit_seq: row.get(10)?,
     })
 }
 fn links(conn: &Connection, id: &str) -> Result<Vec<AssertionLink>> {
@@ -69,22 +60,14 @@ fn links(conn: &Connection, id: &str) -> Result<Vec<AssertionLink>> {
     let mut rows = statement.query([id])?;
     let mut result = Vec::new();
     while let Some(row) = rows.next()? {
-        let role: String = row.get(0)?;
         let reference: String = row.get(1)?;
-        let hash: Option<Vec<u8>> = row.get(2)?;
         let quote: Option<String> = row.get(3)?;
         result.push(AssertionLink {
-            role: LinkRole::from_name(&role)
-                .ok_or_else(|| invalid("unknown assertion link role"))?,
-            reference: Reference::parse(&reference)
-                .map_err(|_| invalid("invalid stored assertion reference"))?,
-            seen_hash: hash
-                .map(|hash| {
-                    hash.try_into()
-                        .map(BlobHash)
-                        .map_err(|_| invalid("assertion hash must contain 32 bytes"))
-                })
-                .transpose()?,
+            role: row.name::<LinkRole>(0)?,
+            reference: Reference::parse(&reference).map_err(|error| {
+                StoreError::stored(1, format!("reference {reference:?}: {error}"))
+            })?,
+            seen_hash: row.optional_hash(2)?.map(BlobHash),
             quote: quote
                 .map(|quote| serde_json::from_str::<Quote>(&quote))
                 .transpose()?,
@@ -494,7 +477,7 @@ impl Links for StoredLinks<'_> {
         while let Some(row) = rows.next()? {
             let text: String = row.get(0)?;
             if let Reference::Assertion(revision) = Reference::parse(&text)
-                .map_err(|_| invalid("invalid stored withdrawal reference"))?
+                .map_err(|error| StoreError::stored(0, format!("reference {text:?}: {error}")))?
             {
                 targets.push(target(&revision));
             }

@@ -314,3 +314,5 @@ fn boundary_suppliedness_and_unassociated_usage_survive_row_codecs() {
         reading
     );
 }
+
+mod columns;

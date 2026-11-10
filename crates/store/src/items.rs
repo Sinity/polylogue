@@ -8,7 +8,7 @@
 //! the difference is only new units at the end, `append_seq` moves; when an
 //! indexed unit changed, moved or disappeared, or the links that compose the
 //! session changed, `rewrite_version` moves and outstanding cursors go stale.
-use crate::encoding::{NamedColumns, restore_text, unpack_block, unpack_text};
+use crate::encoding::{Columns, restore_text, unpack_block, unpack_text};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
     Message, MessageId, PromptKind, Role, SessionId, Usage,
@@ -36,7 +36,6 @@ pub struct ItemVersions {
 enum Unit {
     Message {
         pk: i64,
-        id: String,
         version: Vec<u8>,
         place: MessagePlace,
     },
@@ -155,7 +154,6 @@ fn units(conn: &Connection, session_pk: i64) -> Result<Vec<Unit>> {
         let next_at = next_times[index];
         out.push(Unit::Message {
             pk: row.pk,
-            id: row.id.clone(),
             version: row.version.clone(),
             place: MessagePlace {
                 // Unknown and on the path read the same; only off the path
@@ -190,8 +188,8 @@ fn units(conn: &Connection, session_pk: i64) -> Result<Vec<Unit>> {
 
 fn unit_entries(conn: &Connection, unit: &Unit) -> Result<Vec<IndexEntry>> {
     match unit {
-        Unit::Message { pk, id, place, .. } => {
-            let (message, ordinals) = message_body(conn, *pk, id)?;
+        Unit::Message { pk, place, .. } => {
+            let (message, ordinals) = message_body(conn, *pk)?;
             Ok(message_entries(&message, &ordinals, *place))
         }
         Unit::Event {
@@ -224,22 +222,21 @@ fn unit_entries(conn: &Connection, unit: &Unit) -> Result<Vec<IndexEntry>> {
 
 /// A message's row and its blocks with their original ordinals: the fields
 /// the index estimates from. Structured tool data is not read.
-fn message_body(conn: &Connection, pk: i64, id: &str) -> Result<(Message, Vec<u64>)> {
-    let invalid = |what: &str| StoreError::Invalid(format!("message {id}: {what}"));
-    let id = MessageId::parse(id).map_err(|_| invalid("its ID does not parse"))?;
-    let (session, role, prompt_kind, model, at, tokens) = conn
+fn message_body(conn: &Connection, pk: i64) -> Result<(Message, Vec<u64>)> {
+    let (id, session, role, prompt_kind, model, at, tokens) = conn
         .prepare_cached(
             "SELECT s.id, m.role, m.prompt_kind, m.model, m.at,
-                    m.input_tokens, m.cache_read_tokens, m.cache_write_tokens
+                    m.input_tokens, m.cache_read_tokens, m.cache_write_tokens, m.id
              FROM message m JOIN session s ON s.pk = m.session_pk WHERE m.pk = ?1",
         )?
         .query_row([pk], |row| {
             Ok((
-                row.get::<_, String>(0)?,
+                row.id::<MessageId>(8)?,
+                row.id::<SessionId>(0)?,
                 row.name::<Role>(1)?,
                 row.optional_name::<PromptKind>(2)?,
                 row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<i64>>(4)?,
+                row.optional_time_ms(4)?,
                 [
                     row.get::<_, Option<u64>>(5)?,
                     row.get::<_, Option<u64>>(6)?,
@@ -261,18 +258,14 @@ fn message_body(conn: &Connection, pk: i64, id: &str) -> Result<(Message, Vec<u6
             restore_text(&mut block, unpack_text(&text)?);
         }
         blocks.push(block);
-        ordinals.push(
-            u64::try_from(row.get::<_, i64>(2)?)
-                .map_err(|_| invalid("a block has a negative position"))?,
-        );
+        ordinals.push(row.get::<_, u64>(2)?);
     }
     let message = Message {
         id,
-        session: SessionId::parse(&session)
-            .map_err(|_| invalid("its session ID does not parse"))?,
+        session,
         parent: None,
         role,
-        at: crate::read::ts(at),
+        at,
         at_quality: polylogue_model::TimeQuality::Unknown,
         at_precision: None,
         at_until: None,
@@ -356,7 +349,10 @@ pub(crate) fn refresh_stale(conn: &Connection) -> Result<()> {
             Ok(()) => conn.execute_batch("RELEASE fixture_items")?,
             Err(error) => {
                 conn.execute_batch("ROLLBACK TO fixture_items; RELEASE fixture_items")?;
-                if !matches!(error, StoreError::Invalid(_) | StoreError::Json(_)) {
+                if !matches!(
+                    error,
+                    StoreError::Invalid(_) | StoreError::StoredValue { .. } | StoreError::Json(_)
+                ) {
                     return Err(error);
                 }
             }

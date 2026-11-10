@@ -1,4 +1,5 @@
 use super::{Selection, hidden_sessions};
+use crate::encoding::Columns;
 use crate::{Reader, Result};
 use polylogue_model::money::Amount;
 use serde::Serialize;
@@ -238,16 +239,13 @@ pub(super) fn per_session(reader: &Reader<'_>, selection: &Selection) -> Result<
         "SELECT DISTINCT s.pk, s.id FROM (SELECT session_pk,at FROM message UNION ALL SELECT session_pk,at FROM event) m JOIN session s ON s.pk = m.session_pk
          WHERE {cond} ORDER BY s.started_at, s.id"
     ))?;
-    let sessions: Vec<(i64, String)> = stmt
+    let sessions: Vec<(i64, polylogue_model::SessionId)> = stmt
         .query_map(rusqlite::params_from_iter(params.iter()), |r| {
-            Ok((r.get(0)?, r.get(1)?))
+            Ok((r.get(0)?, r.id(1)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
     let mut out = Vec::with_capacity(sessions.len());
-    for (pk, id) in sessions {
-        let Ok(sid) = polylogue_model::SessionId::parse(&id) else {
-            continue;
-        };
+    for (pk, sid) in sessions {
         let mut own = totals(reader, &format!("m.session_pk = {pk}"))?;
         let own_scope = Selection {
             sessions: Some(vec![pk]),
@@ -271,7 +269,7 @@ pub(super) fn per_session(reader: &Reader<'_>, selection: &Selection) -> Result<
             mark_unknown(&mut with_parents.tokens, &mut with_parents.api_cost, true);
         }
         out.push(SessionUsage {
-            session: id,
+            session: sid.to_string(),
             own,
             with_parents,
         });

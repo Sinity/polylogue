@@ -110,10 +110,7 @@ impl FirstBuild {
             let mut values = statement.query([])?;
             while let Some(row) = values.next()? {
                 let hash = if table == "text" {
-                    let value: Vec<u8> = row.get(0)?;
-                    text_key(value.as_slice().try_into().map_err(|_| {
-                        crate::StoreError::Invalid("text hash is not 32 bytes".into())
-                    })?)
+                    text_key(&crate::encoding::Columns::hash(row, 0)?)
                 } else {
                     let value: String = row.get(0)?;
                     hash_of(value.as_bytes())

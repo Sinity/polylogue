@@ -54,32 +54,93 @@ pub(crate) fn time_bytes(
     Ok(serde_json::to_vec(&(at, evidence))?)
 }
 
-/// A stored name the model does not have.
+/// A stored value the model cannot read back.
 #[derive(Debug, thiserror::Error)]
-#[error("unknown stored name {0:?}")]
-struct UnknownName(String);
+enum Unreadable {
+    #[error("unknown stored name {0:?}")]
+    Name(String),
+    #[error("stored identity {0:?} does not parse: {1}")]
+    Identity(String, String),
+    #[error("a stored hash has {0} bytes, not 32")]
+    Hash(usize),
+    #[error("stored time {0} ms is out of range")]
+    Time(i64),
+}
 
-/// Decoding of columns that hold a model enum's stored name. A name the enum
-/// does not have is a column error naming the column, never a default.
-pub(crate) trait NamedColumns {
+fn unreadable(column: usize, kind: rusqlite::types::Type, error: Unreadable) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(column, kind, Box::new(error))
+}
+
+/// An identity the archive stores as its text form: an ID or an author.
+pub(crate) trait StoredId: Sized {
+    fn parse_stored(text: &str) -> std::result::Result<Self, String>;
+}
+
+macro_rules! stored_id {
+    ($($ty:ty),+) => {$(
+        impl StoredId for $ty {
+            fn parse_stored(text: &str) -> std::result::Result<Self, String> {
+                <$ty>::parse(text).map_err(|error| error.to_string())
+            }
+        }
+    )+};
+}
+
+stored_id!(
+    polylogue_model::SessionId,
+    MessageId,
+    DocumentId,
+    polylogue_model::RunId,
+    polylogue_model::Author
+);
+
+/// Typed decoding of index columns. A stored value the model cannot read back
+/// is a column error naming the column, never a default, a skipped row or a
+/// silently missing value. Unsigned counts need none of this: rusqlite's
+/// `fallible_uint` refuses a negative stored count and an unsigned value above
+/// `i64::MAX` on write.
+pub(crate) trait Columns {
     fn name<T: polylogue_model::StoredName>(&self, column: usize) -> rusqlite::Result<T>;
     fn optional_name<T: polylogue_model::StoredName>(
         &self,
         column: usize,
     ) -> rusqlite::Result<Option<T>>;
+    fn id<T: StoredId>(&self, column: usize) -> rusqlite::Result<T>;
+    fn optional_id<T: StoredId>(&self, column: usize) -> rusqlite::Result<Option<T>>;
+    fn hash(&self, column: usize) -> rusqlite::Result<[u8; 32]>;
+    fn optional_hash(&self, column: usize) -> rusqlite::Result<Option<[u8; 32]>>;
+    fn time_ms(&self, column: usize) -> rusqlite::Result<Timestamp>;
+    fn optional_time_ms(&self, column: usize) -> rusqlite::Result<Option<Timestamp>>;
 }
 
 fn decode_name<T: polylogue_model::StoredName>(column: usize, name: String) -> rusqlite::Result<T> {
-    T::from_name(&name).ok_or_else(|| {
-        rusqlite::Error::FromSqlConversionFailure(
+    T::from_name(&name)
+        .ok_or_else(|| unreadable(column, rusqlite::types::Type::Text, Unreadable::Name(name)))
+}
+
+fn decode_id<T: StoredId>(column: usize, text: String) -> rusqlite::Result<T> {
+    T::parse_stored(&text).map_err(|error| {
+        unreadable(
             column,
             rusqlite::types::Type::Text,
-            Box::new(UnknownName(name)),
+            Unreadable::Identity(text, error),
         )
     })
 }
 
-impl NamedColumns for rusqlite::Row<'_> {
+fn decode_hash(column: usize, bytes: Vec<u8>) -> rusqlite::Result<[u8; 32]> {
+    let len = bytes.len();
+    bytes
+        .try_into()
+        .map_err(|_| unreadable(column, rusqlite::types::Type::Blob, Unreadable::Hash(len)))
+}
+
+fn decode_time(column: usize, ms: i64) -> rusqlite::Result<Timestamp> {
+    Timestamp::from_unix_ms(ms)
+        .ok_or_else(|| unreadable(column, rusqlite::types::Type::Integer, Unreadable::Time(ms)))
+}
+
+impl Columns for rusqlite::Row<'_> {
     fn name<T: polylogue_model::StoredName>(&self, column: usize) -> rusqlite::Result<T> {
         decode_name(column, self.get(column)?)
     }
@@ -89,6 +150,30 @@ impl NamedColumns for rusqlite::Row<'_> {
     ) -> rusqlite::Result<Option<T>> {
         self.get::<_, Option<String>>(column)?
             .map(|name| decode_name(column, name))
+            .transpose()
+    }
+    fn id<T: StoredId>(&self, column: usize) -> rusqlite::Result<T> {
+        decode_id(column, self.get(column)?)
+    }
+    fn optional_id<T: StoredId>(&self, column: usize) -> rusqlite::Result<Option<T>> {
+        self.get::<_, Option<String>>(column)?
+            .map(|text| decode_id(column, text))
+            .transpose()
+    }
+    fn hash(&self, column: usize) -> rusqlite::Result<[u8; 32]> {
+        decode_hash(column, self.get(column)?)
+    }
+    fn optional_hash(&self, column: usize) -> rusqlite::Result<Option<[u8; 32]>> {
+        self.get::<_, Option<Vec<u8>>>(column)?
+            .map(|bytes| decode_hash(column, bytes))
+            .transpose()
+    }
+    fn time_ms(&self, column: usize) -> rusqlite::Result<Timestamp> {
+        decode_time(column, self.get(column)?)
+    }
+    fn optional_time_ms(&self, column: usize) -> rusqlite::Result<Option<Timestamp>> {
+        self.get::<_, Option<i64>>(column)?
+            .map(|ms| decode_time(column, ms))
             .transpose()
     }
 }

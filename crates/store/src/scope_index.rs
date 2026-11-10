@@ -11,7 +11,7 @@
 //! generation is read in full again. Nothing here looks at the clock: live
 //! states are computed for the `now` a caller passes.
 
-use crate::read::ts;
+use crate::encoding::Columns;
 use crate::{Reader, Result};
 use polylogue_model::{ChangePosition, SessionId, SessionKind, Timestamp};
 use serde::Serialize;
@@ -146,15 +146,24 @@ fn columns() -> String {
 fn scope_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ScopeRow> {
     let pk: i64 = r.get(0)?;
     let id: String = r.get(1)?;
+    let session_id: SessionId = r.id(1)?;
     let kind: String = r.get(2)?;
     let stub: bool = r.get(3)?;
-    let parsed = SessionId::parse(&id).ok();
-    let held = match parsed {
-        Some(session_id) if kind == "main" && !stub => {
+    let held = match kind.as_str() {
+        "main" if !stub => {
             let cwd: Option<String> = r.get(7)?;
             let mut directories: Vec<String> = r
                 .get::<_, Option<String>>(8)?
-                .and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
+                .map(|json| {
+                    serde_json::from_str::<Vec<String>>(&json).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            8,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })
+                })
+                .transpose()?
                 .unwrap_or_default();
             if let Some(cwd) = &cwd {
                 directories.push(cwd.clone());
@@ -167,11 +176,9 @@ fn scope_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ScopeRow> {
                     id: session_id,
                     kind: SessionKind::Main,
                     title: r.get(4)?,
-                    started: ts(r.get(5)?),
-                    last_activity: ts(r.get(6)?),
-                    messages: r
-                        .get::<_, Option<i64>>(10)?
-                        .and_then(|n| u64::try_from(n).ok()),
+                    started: r.optional_time_ms(5)?,
+                    last_activity: r.optional_time_ms(6)?,
+                    messages: r.get(10)?,
                     cwd,
                 },
                 directories,

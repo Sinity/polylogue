@@ -2,35 +2,24 @@ use super::*;
 
 const COLUMNS: &str = "id,root,base,source,source_hash,kind,from_lang,to_lang,author,via,method,machine,created_at,commit_seq";
 
-fn hash(value: Vec<u8>) -> Result<BlobHash> {
-    Ok(BlobHash(value.try_into().map_err(|_| {
-        StoreError::Invalid("variant hash must contain 32 bytes".into())
-    })?))
-}
 fn variant(row: &rusqlite::Row<'_>) -> Result<Variant> {
-    let kind: String = row.get(5)?;
-    let author: String = row.get(8)?;
+    use crate::encoding::Columns;
     Ok(Variant {
         id: row.get(0)?,
         root: row.get(1)?,
         base: row.get(2)?,
         source: row.get(3)?,
-        source_hash: hash(row.get(4)?)?,
-        kind: VariantKind::from_name(&kind)
-            .ok_or_else(|| StoreError::Invalid("unknown variant kind".into()))?,
+        source_hash: BlobHash(row.hash(4)?),
+        kind: row.name::<VariantKind>(5)?,
         from_lang: row.get(6)?,
         to_lang: row.get(7)?,
-        author: Author::parse(&author)
-            .map_err(|_| StoreError::Invalid("unknown variant author".into()))?,
+        author: row.id::<Author>(8)?,
         via: row.get(9)?,
         method: row.get(10)?,
         machine: row.get(11)?,
         created_at: Timestamp::parse_rfc3339(&row.get::<_, String>(12)?)
-            .ok_or_else(|| StoreError::Invalid("variant time is out of range".into()))?,
-        commit_seq: row
-            .get::<_, i64>(13)?
-            .try_into()
-            .map_err(|_| StoreError::Invalid("negative variant counter".into()))?,
+            .ok_or_else(|| StoreError::stored(12, "variant time is not an RFC 3339 time"))?,
+        commit_seq: row.get(13)?,
     })
 }
 pub(crate) fn get(conn: &Connection, id: &str) -> Result<Option<Variant>> {
@@ -62,17 +51,13 @@ pub(super) fn visit(
     Ok(())
 }
 fn part(row: &rusqlite::Row<'_>) -> Result<VariantPart> {
-    let relation: String = row.get(4)?;
+    use crate::encoding::Columns;
     Ok(VariantPart {
         variant: row.get(0)?,
-        n: row
-            .get::<_, i64>(1)?
-            .try_into()
-            .map_err(|_| StoreError::Invalid("negative variant part number".into()))?,
+        n: row.get(1)?,
         of: row.get(2)?,
-        of_hash: hash(row.get(3)?)?,
-        relation: VariantRelation::from_name(&relation)
-            .ok_or_else(|| StoreError::Invalid("unknown variant relation".into()))?,
+        of_hash: BlobHash(row.hash(3)?),
+        relation: row.name::<VariantRelation>(4)?,
         body: crate::encoding::unpack_text(&row.get::<_, Vec<u8>>(5)?)?,
     })
 }

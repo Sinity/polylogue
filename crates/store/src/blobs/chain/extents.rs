@@ -1,4 +1,5 @@
 use super::*;
+use crate::encoding::Columns;
 use rusqlite::{OptionalExtension, params};
 use std::sync::Mutex;
 
@@ -37,15 +38,11 @@ impl ExtentList {
         let mut previous_end = None;
         let mut single = None;
         while let Some(row) = rows.next()? {
-            let offset = number(row.get(0)?)?;
-            let len = number(row.get(1)?)?;
-            let hash: Vec<u8> = row.get(2)?;
-            let hash = BlobHash(
-                hash.try_into()
-                    .map_err(|_| invalid("blob hash is not 32 bytes"))?,
-            );
-            let blob_offset = number(row.get(3)?)?;
-            let size = number(row.get(4)?)?;
+            let offset: u64 = row.get(0)?;
+            let len: u64 = row.get(1)?;
+            let hash = BlobHash(row.hash(2)?);
+            let blob_offset: u64 = row.get(3)?;
+            let size: u64 = row.get(4)?;
             if len == 0
                 || offset.checked_add(len).is_none()
                 || blob_offset.checked_add(len).is_none_or(|end| end > size)
@@ -93,19 +90,8 @@ impl ExtentList {
 
     pub fn extent(conn: &Connection, at: u64) -> Result<Extent> {
         let row = conn.prepare_cached("SELECT offset,length,hash,blob_offset,size FROM extent WHERE offset<=?1 ORDER BY offset DESC LIMIT 1")?
-            .query_row([at as i64], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,Vec<u8>>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).optional()?;
-        let (offset, length, hash, blob_offset, size) =
-            row.ok_or_else(|| invalid("stored extent missing"))?;
-        let extent = Extent {
-            offset: number(offset)?,
-            length: number(length)?,
-            hash: BlobHash(
-                hash.try_into()
-                    .map_err(|_| invalid("blob hash is not 32 bytes"))?,
-            ),
-            blob_offset: number(blob_offset)?,
-            size: number(size)?,
-        };
+            .query_row([at as i64], |r| Ok(Extent{offset:r.get(0)?,length:r.get(1)?,hash:BlobHash(r.hash(2)?),blob_offset:r.get(3)?,size:r.get(4)?})).optional()?;
+        let extent = row.ok_or_else(|| invalid("stored extent missing"))?;
         if extent
             .offset
             .checked_add(extent.length)
@@ -115,9 +101,6 @@ impl ExtentList {
         }
         Ok(extent)
     }
-}
-fn number(n: i64) -> Result<u64> {
-    u64::try_from(n).map_err(|_| invalid("negative stored extent metadata"))
 }
 fn invalid(message: &str) -> StoreError {
     StoreError::Invalid(message.into())

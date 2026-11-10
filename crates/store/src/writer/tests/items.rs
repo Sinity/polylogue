@@ -327,13 +327,20 @@ fn indexing_errors_abort_the_changed_rows_transaction() {
             }
             let error = crate::items::refresh_changed(&tx, counter)
                 .expect_err("a transaction cannot commit rows whose item index did not refresh");
-            assert!(
-                matches!(
-                    error,
-                    crate::StoreError::Invalid(_) | crate::StoreError::Json(_)
-                ),
-                "{error}"
-            );
+            if invalid_json {
+                assert!(
+                    matches!(
+                        error,
+                        crate::StoreError::Invalid(_) | crate::StoreError::Json(_)
+                    ),
+                    "{error}"
+                );
+            } else {
+                assert!(
+                    matches!(error, crate::StoreError::StoredValue { column: 2, .. }),
+                    "{error}"
+                );
+            }
             // Dropping the same transaction production callers own rolls all
             // changed rows back together with any attempted index updates.
         }

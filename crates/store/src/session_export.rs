@@ -4,6 +4,7 @@
 //! into a fresh archive gives the same sessions and IDs.
 
 use crate::Result;
+use crate::encoding::Columns;
 use crate::read::Reader;
 use polylogue_model::export::SessionExport;
 use polylogue_model::{Event, Link, LinkKind, MessageId, SessionId};
@@ -126,27 +127,23 @@ impl Reader<'_> {
         let rows = stmt.query_map(rusqlite::params![id.to_string(), ordinal], |r| {
             Ok((
                 (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, Option<String>>(4)?,
+                r.id::<SessionId>(2)?,
+                r.id::<SessionId>(3)?,
+                r.optional_id::<MessageId>(4)?,
                 r.get::<_, Option<String>>(5)?,
                 r.get::<_, String>(6)?,
             ))
         })?;
         for row in rows {
             let ((kind, how), parent, child, at, call_id, evidence) = row?;
-            let (Some(kind), Ok(parent), Ok(child)) = (
-                LinkKind::from_columns(&kind, &how),
-                SessionId::parse(&parent),
-                SessionId::parse(&child),
-            ) else {
-                continue;
-            };
+            let kind = LinkKind::from_columns(&kind, &how).ok_or_else(|| {
+                crate::StoreError::stored(0, format!("unknown link kind {kind}/{how}"))
+            })?;
             let link = Link {
                 kind,
                 parent,
                 child,
-                at: at.and_then(|a| MessageId::parse(&a).ok()),
+                at,
                 call_id,
                 evidence,
             };
@@ -157,3 +154,6 @@ impl Reader<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

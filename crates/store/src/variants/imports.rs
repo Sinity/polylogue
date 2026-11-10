@@ -93,16 +93,14 @@ pub(super) fn history(conn: &Connection, reference: &Reference) -> Result<Option
     let mut rows = statement.query([reference.to_string()])?;
     let mut history = ImportHistory::default();
     while let Some(row) = rows.next()? {
-        let actor: String = row.get(4)?;
         let at: String = row.get(5)?;
         let claim = ImportAttribution {
             input: row.get(1)?,
             chain: row.get(2)?,
             machine: row.get(3)?,
-            actor: Author::parse(&actor)
-                .map_err(|_| StoreError::Invalid("variant import actor is unknown".into()))?,
+            actor: crate::encoding::Columns::id(row, 4)?,
             at: Timestamp::parse_rfc3339(&at)
-                .ok_or_else(|| StoreError::Invalid("variant import time is out of range".into()))?,
+                .ok_or_else(|| StoreError::stored(5, "import time is not an RFC 3339 time"))?,
         };
         if row.get::<_, bool>(0)? {
             history.observed.push(claim);
@@ -119,18 +117,16 @@ pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
     while let Some(row) = rows.next()? {
         let reference: String = row.get(0)?;
         let variant: String = row.get(1)?;
-        let actor: String = row.get(6)?;
         let at: String = row.get(7)?;
-        let reference =
-            Reference::parse(&reference).map_err(|error| StoreError::Invalid(error.to_string()))?;
+        let reference = Reference::parse(&reference)
+            .map_err(|error| StoreError::stored(0, error.to_string()))?;
         let claim = ImportAttribution {
             input: row.get(3)?,
             chain: row.get(4)?,
             machine: row.get(5)?,
-            actor: Author::parse(&actor)
-                .map_err(|_| StoreError::Invalid("variant import actor is unknown".into()))?,
+            actor: crate::encoding::Columns::id(row, 6)?,
             at: Timestamp::parse_rfc3339(&at)
-                .ok_or_else(|| StoreError::Invalid("variant import time is out of range".into()))?,
+                .ok_or_else(|| StoreError::stored(7, "import time is not an RFC 3339 time"))?,
         };
         insert(to, &reference, &variant, &claim, row.get(2)?, 0)?;
     }

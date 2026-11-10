@@ -176,6 +176,10 @@ pub enum StoreError {
     Sinex(String),
     #[error("{0}")]
     Invalid(String),
+    /// A value in the archive that this build cannot read back: corrupt or
+    /// foreign stored data, never the caller's request.
+    #[error("stored column {column} is unreadable: {reason}")]
+    StoredValue { column: usize, reason: String },
     #[error(transparent)]
     Query(#[from] polylogue_query::QueryError),
     #[error("{reference} is unavailable: {reason}")]
@@ -186,6 +190,15 @@ pub enum StoreError {
 }
 
 impl StoreError {
+    /// A stored value at `column` of the row being decoded that this build
+    /// cannot read back.
+    pub(crate) fn stored(column: usize, reason: impl Into<String>) -> Self {
+        Self::StoredValue {
+            column,
+            reason: reason.into(),
+        }
+    }
+
     /// The product failure code for this error. Every surface classifies a
     /// store error through this one mapping.
     pub fn code(&self) -> &'static str {
@@ -224,7 +237,19 @@ impl From<rusqlite::Error> for StoreError {
         {
             return stopped;
         }
-        Self::Sqlite(error)
+        // A row value that does not decode is a fault in the stored data,
+        // whichever reader met it.
+        match error {
+            rusqlite::Error::FromSqlConversionFailure(column, _, why) => Self::StoredValue {
+                column,
+                reason: why.to_string(),
+            },
+            rusqlite::Error::IntegralValueOutOfRange(column, value) => Self::StoredValue {
+                column,
+                reason: format!("{value} is out of range"),
+            },
+            error => Self::Sqlite(error),
+        }
     }
 }
 
