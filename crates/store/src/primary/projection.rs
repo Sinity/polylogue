@@ -1052,7 +1052,8 @@ pub(crate) fn apply(
         queries(&tx, &plan)?;
         coverage(&tx, &plan)?;
         refusals(&tx, next)?;
-        crate::writer::apply_confirmed_readings(&tx, &mut plan.readings, counter)?;
+        let changes = crate::change_summary::ChangeSummary::start(&tx)?;
+        crate::writer::apply_confirmed_readings(&tx, &mut plan.readings, counter, &changes)?;
         bindings(&tx, &plan)?;
         // Variants are authored records, so only a request can change them.
         if plan.requests != StateChange::Unchanged {
@@ -1068,7 +1069,15 @@ pub(crate) fn apply(
         tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
         tx.execute("DELETE FROM primary_pending WHERE position<=?1", [next])?;
         tx.execute("DELETE FROM primary_complete WHERE position<=?1", [next])?;
-        crate::items::refresh_changed(&tx, counter)?;
+        // Confirmed facts also change sessions outside the row application.
+        let touched = tx
+            .prepare("SELECT pk FROM session WHERE changed = ?1")?
+            .query_map([counter], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?;
+        for session in touched {
+            changes.whole_session(session);
+        }
+        crate::writer::finish_rows(&tx, &changes, false)?;
         crate::fault::check("primary.before_commit", "")?;
         tx.commit()?;
         drop(plan);

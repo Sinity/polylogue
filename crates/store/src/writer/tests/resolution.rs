@@ -505,8 +505,17 @@ fn confirmed_readings_resolve_and_apply_without_a_local_source_database() {
     readings[0]
         .3
         .visit(|step| {
-            rows::write_confirmed_rows(&tx, &input, step, 41, 1, None, Some(&fixture_receipt()))
-                .map(|_| ())
+            rows::write_confirmed_rows(
+                &tx,
+                &input,
+                step,
+                41,
+                1,
+                None,
+                Some(&fixture_receipt()),
+                &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
+            )
+            .map(|_| ())
         })
         .unwrap();
     tx.commit().unwrap();
@@ -751,7 +760,17 @@ fn apply_confirmed_readings(
             release: InFlight::default(),
         };
         reading.visit(|step| {
-            write_rows(&tx, &batch, step, *chain, 1, None, Some(&fixture_receipt())).map(|_| ())
+            write_rows(
+                &tx,
+                &batch,
+                step,
+                *chain,
+                1,
+                None,
+                Some(&fixture_receipt()),
+                &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
+            )
+            .map(|_| ())
         })?;
     }
     tx.commit()?;
@@ -1097,7 +1116,8 @@ fn confirmed_projection_applies_live_facts_after_an_archived_byte_prefix() {
             1,
             1,
             None,
-            Some(&fixture_receipt())
+            Some(&fixture_receipt()),
+            &crate::change_summary::ChangeSummary::start(&tx).unwrap()
         )
         .is_err()
     );
@@ -1114,6 +1134,7 @@ fn confirmed_projection_applies_live_facts_after_an_archived_byte_prefix() {
         1,
         None,
         Some(&fixture_receipt()),
+        &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -1330,6 +1351,7 @@ fn retained_event_admission_precedes_raw_receipts_and_survives_missing_source_ma
         999,
         None,
         Some(&control),
+        &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
     )
     .unwrap();
     let id: String = tx
@@ -1470,8 +1492,17 @@ fn canonical_fold_receipts_survive_raw_mapping_absence_and_cache_rebuild() {
     let apply = |conn: &mut rusqlite::Connection, batch: &mut Batch| {
         let tx = conn.transaction().unwrap();
         resolve::prepare_index(&tx, batch, 1, false).unwrap();
-        rows::write_confirmed_rows(&tx, batch, &batch.parse[0], 1, 2000, None, Some(&control))
-            .unwrap();
+        rows::write_confirmed_rows(
+            &tx,
+            batch,
+            &batch.parse[0],
+            1,
+            2000,
+            None,
+            Some(&control),
+            &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
+        )
+        .unwrap();
         tx.commit().unwrap();
     };
     apply(&mut conn, &mut confirmed);

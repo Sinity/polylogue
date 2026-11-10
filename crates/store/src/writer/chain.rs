@@ -602,6 +602,7 @@ impl Inner {
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = bump_counter(&tx)?;
+        let changes = crate::change_summary::ChangeSummary::start(&tx)?;
         let mut batch = Batch {
             required_disposition: None,
             input,
@@ -652,6 +653,7 @@ impl Inner {
                 counter,
                 self.first_build.as_deref(),
                 Some(&receipt),
+                &changes,
             )?;
         }
         if first {
@@ -660,7 +662,7 @@ impl Inner {
             ));
         }
         rows::prune_sessions(&tx, &batch.input.id, chain, counter)?;
-        crate::items::refresh_changed(&tx, counter)?;
+        self.report.item_units_read += rows::finish(&tx, &changes, self.first_build.is_some())?;
         batch.parse.clear();
         crate::fault::check("write.index_commit", "")?;
         crate::fault::check("reparse.commit", &batch.input.id)?;

@@ -45,6 +45,7 @@ mod saved;
 mod scoped;
 mod source_snapshot;
 pub(crate) use confirmed::apply_confirmed_readings;
+pub(crate) use rows::finish as finish_rows;
 mod native_hook_fields;
 mod older_archive;
 pub use older_archive::{GroupOutcome, OlderGroup, Restored};
@@ -1630,19 +1631,6 @@ impl Inner {
         if self.first_build.is_none() {
             crate::text_rows::index_pending(&self.index, || ())?;
         }
-        crate::versions::remove_unused(&self.index, self.first_build.is_some())?;
-        // A full search batch's deletions get one merge at the end of a round.
-        let deleted:i64=self.index.query_row("SELECT coalesce((SELECT CAST(value AS INTEGER) FROM meta WHERE key='reparse_deletions'),0)",[],|r|r.get(0))?;
-        if self.first_build.is_none() && deleted >= 2_000 {
-            for table in ["text_fts", "output_fts", "tool_call_trigram"] {
-                self.index.execute(
-                    &format!("INSERT INTO {table}({table}) VALUES ('optimize')"),
-                    [],
-                )?;
-            }
-            self.index
-                .execute("DELETE FROM meta WHERE key='reparse_deletions'", [])?;
-        }
         let derived = crate::timing::time(crate::timing::Stage::Derive, || {
             crate::derive::run(&mut self.index, Some(&self.commits))
         })?;
@@ -1948,6 +1936,7 @@ impl Inner {
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = bump_counter(&itx)?;
+        let changes = crate::change_summary::ChangeSummary::start(&itx)?;
         let mut stats = (0u64, 0u64);
         for (b, chain) in indexed.iter().zip(chains) {
             if let Some(chain) = chain {
@@ -1966,6 +1955,7 @@ impl Inner {
                         counter,
                         self.first_build.as_deref(),
                         Some(&receipt),
+                        &changes,
                     )?;
                 }
                 if b.parse.iter().any(|p| p.progress.reached_end()) {
@@ -1974,7 +1964,7 @@ impl Inner {
             }
             stats.0 += 1;
         }
-        crate::items::refresh_changed(&itx, counter)?;
+        self.report.item_units_read += rows::finish(&itx, &changes, self.first_build.is_some())?;
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
         self.commits.committed();

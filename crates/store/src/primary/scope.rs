@@ -79,17 +79,12 @@ fn clear(
     index.flush_prepared_statement_cache();
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.pragma_update(None, "defer_foreign_keys", true)?;
-    let temporary: Vec<(String,String)> = tx.prepare("SELECT name,type FROM temp.sqlite_schema WHERE type IN ('view','table') AND name NOT LIKE 'sqlite_%' ORDER BY type DESC")?.query_map([], |row| Ok((row.get(0)?,row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    let temporary: Vec<(String,String)> = tx.prepare("SELECT name,type FROM temp.sqlite_schema WHERE type IN ('view','trigger','table') AND name NOT LIKE 'sqlite_%' ORDER BY type DESC")?.query_map([], |row| Ok((row.get(0)?,row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
     for (name, kind) in temporary {
         tx.execute_batch(&format!("DROP {kind} {}", quoted(&name)))?;
     }
     let tables: Vec<String> = tx.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('meta','row_count','source_row_count') ORDER BY name")?.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
     for name in &tables {
-        tx.execute(&format!("DELETE FROM {}", quoted(name)), [])?;
-    }
-    // Deletion triggers queue derived garbage. The whole cache is being reset,
-    // so clear their queues after their producers, retaining the table seeds.
-    for name in tables.iter().filter(|name| name.starts_with("changed_")) {
         tx.execute(&format!("DELETE FROM {}", quoted(name)), [])?;
     }
     let fts: Vec<String> = tx.prepare("SELECT name FROM main.sqlite_schema WHERE type='table' AND lower(sql) LIKE '%using fts5(%'")?.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;

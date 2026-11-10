@@ -1001,7 +1001,7 @@ fn status_totals_equal_a_recount_across_imports_reparses_and_retractions() {
         for step in &mut b.parse {
             step.prepare();
         }
-        let bytes = if b.input.arrival_rank == 2 {
+        let bytes = if b.input.route.is_imported() {
             EXPORT_RECORD.as_slice()
         } else {
             SOURCE_RECORD.as_slice()
@@ -1013,7 +1013,7 @@ fn status_totals_equal_a_recount_across_imports_reparses_and_retractions() {
     // A live append adds to its chain's counts.
     let mut append = batch(
         "a-main-file",
-        0,
+        Route::Live,
         100,
         vec![row(
             110,
@@ -1042,4 +1042,79 @@ fn status_totals_equal_a_recount_across_imports_reparses_and_retractions() {
     }
     w.writer.derive().unwrap();
     assert_totals_equal_a_recount(&w);
+}
+
+/// Version bodies, values and texts that no row refers to.
+fn unreferenced(w: &TestArchive) -> Json {
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let r = pool.reader().unwrap();
+    json!(
+        r.query(
+            "SELECT
+           (SELECT count(*) FROM message_version v
+            WHERE NOT EXISTS(SELECT 1 FROM message_source s WHERE s.version_hash = v.version_hash)
+              AND NOT EXISTS(SELECT 1 FROM parser_context c WHERE c.version_hash = v.version_hash))
+             AS message_versions,
+           (SELECT count(*) FROM document_version v
+            WHERE NOT EXISTS(SELECT 1 FROM document_source s WHERE s.version_hash = v.version_hash))
+             AS document_versions,
+           (SELECT count(*) FROM event_value v
+            WHERE NOT EXISTS(SELECT 1 FROM event_source s WHERE s.value_pk = v.pk)) AS event_values,
+           (SELECT count(*) FROM link_value v
+            WHERE NOT EXISTS(SELECT 1 FROM link_source s WHERE s.value_pk = v.pk)) AS link_values,
+           (SELECT count(*) FROM text t
+            WHERE NOT EXISTS(SELECT 1 FROM block b WHERE b.text_id = t.id)
+              AND NOT EXISTS(SELECT 1 FROM document_block b WHERE b.text_id = t.id)
+              AND NOT EXISTS(SELECT 1 FROM message_version_text v WHERE v.text_id = t.id)
+              AND NOT EXISTS(SELECT 1 FROM document_version_text v WHERE v.text_id = t.id))
+             AS texts",
+            &[]
+        )
+        .unwrap()
+    )
+}
+
+#[test]
+fn no_unreferenced_versions_after_each_operation() {
+    let none = json!([{"message_versions":0,"document_versions":0,"event_values":0,"link_values":0,"texts":0}]);
+    let w = test_archive();
+    // Each commit, with no derive between them, leaves nothing unreferenced:
+    // the first readings, readings that replace another input's shown
+    // version, and replacements of whole chains that drop messages, events,
+    // documents and links.
+    for mut b in fixture(false) {
+        for step in &mut b.parse {
+            step.prepare();
+        }
+        let bytes = if b.input.route.is_imported() {
+            EXPORT_RECORD.as_slice()
+        } else {
+            SOURCE_RECORD.as_slice()
+        };
+        w.store_reading(b, Some(bytes)).unwrap();
+        let report = w.writer.flush().unwrap();
+        assert!(report.errors.is_empty(), "{report:?}");
+        assert_eq!(unreferenced(&w), none);
+    }
+    for mut b in fixture(true) {
+        let mut reading = ChainReading::new().unwrap();
+        reading.push(&mut b.parse[0]).unwrap();
+        w.writer
+            .sender()
+            .unwrap()
+            .replace_chain(b.input, 1, b.length, reading)
+            .unwrap();
+        assert_eq!(unreferenced(&w), none);
+    }
+    // The replaced readings had bodies the new ones do not share.
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let r = pool.reader().unwrap();
+    assert_eq!(
+        r.query(
+            "SELECT count(*) AS n FROM message WHERE id IN ('claude-code:dropped','claude-code:before-name')",
+            &[]
+        )
+        .unwrap()[0]["n"],
+        0
+    );
 }

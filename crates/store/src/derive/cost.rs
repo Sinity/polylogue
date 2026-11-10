@@ -10,7 +10,7 @@ pub(super) const DERIVATION: Derivation = Derivation {
     products: &[],
     version: Version::Catalog(1),
     after: &[],
-    run,
+    run: |tx, pk, inputs| run(tx, pk, inputs.catalog),
     finish: None,
 };
 

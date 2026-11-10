@@ -25,7 +25,7 @@ pub(super) const DERIVATION: Derivation = Derivation {
     products: &[],
     version: Version::Rules(1),
     after: &[],
-    run: |tx, pk, _| run(tx, pk),
+    run: |tx, pk, inputs| run(tx, pk, inputs.changes),
     finish: None,
 };
 
@@ -48,12 +48,38 @@ struct Turn {
     replies: Vec<(i64, String, String)>,
 }
 
-pub(super) fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
-    tx.prepare_cached(
-        "UPDATE message SET duplicate_of = NULL, duplicate_reason = NULL
-         WHERE session_pk = ?1 AND duplicate_of IS NOT NULL",
-    )?
-    .execute([session_pk])?;
+/// Marks the session's repeated turns; only marks that change are written.
+pub(super) fn run(
+    tx: &Transaction<'_>,
+    session_pk: i64,
+    changes: &crate::change_summary::ChangeSummary,
+) -> Result<()> {
+    let marked: HashMap<i64, String> = tx
+        .prepare_cached(
+            "SELECT pk, duplicate_of FROM message WHERE session_pk = ?1 AND duplicate_of IS NOT NULL",
+        )?
+        .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let wanted = repeated(tx, session_pk)?;
+    let mut mark = tx.prepare_cached(
+        "UPDATE message SET duplicate_of = ?2, duplicate_reason = ?3 WHERE pk = ?1",
+    )?;
+    for (pk, _) in marked.iter().filter(|(pk, _)| !wanted.contains_key(pk)) {
+        changes.message(tx, *pk)?;
+        mark.execute(params![pk, None::<String>, None::<String>])?;
+    }
+    for (pk, of) in &wanted {
+        if marked.get(pk) != Some(of) {
+            changes.message(tx, *pk)?;
+            mark.execute(params![pk, of, REASON])?;
+        }
+    }
+    Ok(())
+}
+
+/// Each repeated message of the session, with the message it repeats.
+fn repeated(tx: &Transaction<'_>, session_pk: i64) -> Result<HashMap<i64, String>> {
+    let mut wanted = HashMap::new();
     let has_capture: bool = tx
         .prepare_cached(
             "SELECT EXISTS (SELECT 1 FROM message m JOIN message_source s ON s.message_pk = m.pk
@@ -62,7 +88,7 @@ pub(super) fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
         )?
         .query_row(params![session_pk, CAPTURE], |r| r.get(0))?;
     if !has_capture {
-        return Ok(());
+        return Ok(wanted);
     }
     let mut statement = tx.prepare_cached(
         "SELECT m.pk, m.id, m.role, count(*), sum(r.format = ?2)
@@ -111,9 +137,6 @@ pub(super) fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
             turns[turn].replies.push((pk, id, role));
         }
     }
-    let mut mark = tx.prepare_cached(
-        "UPDATE message SET duplicate_of = ?2, duplicate_reason = ?3 WHERE pk = ?1",
-    )?;
     for (c, e) in paired(&captured, &exported) {
         let (c, e) = (&captured[c], &exported[e]);
         let same_shape = c.replies.len() == e.replies.len()
@@ -121,12 +144,12 @@ pub(super) fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
         if !same_shape {
             continue;
         }
-        mark.execute(params![c.prompt.0, e.prompt.1, REASON])?;
+        wanted.insert(c.prompt.0, e.prompt.1.clone());
         for (a, b) in c.replies.iter().zip(&e.replies) {
-            mark.execute(params![a.0, b.1, REASON])?;
+            wanted.insert(a.0, b.1.clone());
         }
     }
-    Ok(())
+    Ok(wanted)
 }
 
 /// The prompt's text blocks, whitespace runs read as one space.

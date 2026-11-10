@@ -14,6 +14,7 @@ pub mod assets;
 pub mod backfill_jobs;
 pub mod blobs;
 pub mod calendar;
+mod change_summary;
 pub mod chat_actions;
 pub mod completion;
 mod container_members;

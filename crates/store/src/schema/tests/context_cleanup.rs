@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn repeated_source_upserts_keep_context_bodies_and_their_cleanup_markers() {
+fn repeated_source_upserts_keep_context_bodies_until_the_context_goes() {
     for primary in [false, true] {
         let conn = Connection::open_in_memory().unwrap();
         conn.pragma_update(None, "foreign_keys", true).unwrap();
@@ -11,6 +11,7 @@ fn repeated_source_upserts_keep_context_bodies_and_their_cleanup_markers() {
             ensure_index
         };
         ensure(&conn).unwrap();
+        crate::versions::track_unreferenced(&conn).unwrap();
         conn.execute_batch(
                 "INSERT INTO input_ref(pk,id,format) VALUES(1,'context-input','claude-code');
                  INSERT INTO session(pk,id,origin,native_id,kind,changed) VALUES(1,'claude-code:context','claude-code','context','main',1);
@@ -19,7 +20,6 @@ fn repeated_source_upserts_keep_context_bodies_and_their_cleanup_markers() {
                  INSERT INTO message_version VALUES(x'01',x'616263'),(x'02',x'646566');
                  INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,version_hash,route,completion)
                     VALUES(1,1,17,0,4,'native',1,x'01','live','finished');
-                 INSERT INTO changed_version VALUES('message',x'01');
                  INSERT INTO parser_context_state VALUES(1,17,'reading=1',4);
                  INSERT INTO parser_context VALUES(1,17,'reading=1',4,'retained-key',x'636f6e74657874',x'01');
                  INSERT INTO parse_state(input_pk,chain,status,parsed_upto,reading_version,checkpoint)
@@ -30,7 +30,7 @@ fn repeated_source_upserts_keep_context_bodies_and_their_cleanup_markers() {
         assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
         assert_eq!(snapshot(&conn), retained);
         // This is the same source-key UPSERT used for an assembled response.
-        // Revisiting an old version must reuse its pending cleanup marker.
+        // Moving off a version the context keeps leaves its body.
         for hash in [vec![2u8], vec![1], vec![2]] {
             conn.execute(
                     "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,version_hash,route,completion)
@@ -39,37 +39,14 @@ fn repeated_source_upserts_keep_context_bodies_and_their_cleanup_markers() {
                     [hash],
                 ).unwrap();
         }
+        crate::versions::remove_unreferenced(&conn, false).unwrap();
         assert_eq!(snapshot(&conn), retained);
-        assert_eq!(
-            conn.query_row("SELECT count(*) FROM changed_version", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
-            2
-        );
-        crate::versions::remove_readings(&conn).unwrap();
-        assert_eq!(snapshot(&conn), retained);
-        assert_eq!(
-            conn.query_row("SELECT count(*) FROM changed_version", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
+        assert_eq!(versions(&conn), ["01", "02"]);
+        // Releasing the context leaves the earlier body without references.
         conn.execute_batch("DELETE FROM parser_context; DELETE FROM parser_context_state;")
             .unwrap();
-        crate::versions::remove_readings(&conn).unwrap();
-        assert_eq!(
-            conn.query_row("SELECT hex(version_hash) FROM message_version", [], |r| {
-                r.get::<_, String>(0)
-            })
-            .unwrap(),
-            "02"
-        );
-        assert_eq!(
-            conn.query_row("SELECT count(*) FROM changed_version", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
+        crate::versions::remove_unreferenced(&conn, false).unwrap();
+        assert_eq!(versions(&conn), ["02"]);
         assert_eq!(
             conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
                 r.get::<_, i64>(0)
@@ -79,6 +56,15 @@ fn repeated_source_upserts_keep_context_bodies_and_their_cleanup_markers() {
         );
         ensure(&conn).unwrap();
     }
+}
+
+fn versions(conn: &Connection) -> Vec<String> {
+    conn.prepare("SELECT hex(version_hash) FROM message_version ORDER BY version_hash")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
 }
 
 #[derive(Debug, PartialEq, Eq)]

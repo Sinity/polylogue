@@ -295,7 +295,17 @@ fn sparse_streamed_confirmed_readings_preserve_every_known_block() {
         };
         reading
             .visit(|step| {
-                rows::write_confirmed_rows(&tx, &input, step, *chain, 1, None, None).map(drop)
+                rows::write_confirmed_rows(
+                    &tx,
+                    &input,
+                    step,
+                    *chain,
+                    1,
+                    None,
+                    None,
+                    &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
+                )
+                .map(drop)
             })
             .unwrap();
     }
