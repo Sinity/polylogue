@@ -108,9 +108,10 @@ impl SessionRow {
         self.own().flat_map(|m| m.calls.iter())
     }
 
-    /// The sum of the known costs of own messages; unknown when none is known.
+    /// The sum of the known costs of the session's responses, on and off the
+    /// active path (docs/measures.md, populations); unknown when none is known.
     pub fn cost(&self) -> Option<i64> {
-        let known: Vec<i64> = self.own().filter_map(|m| m.cost).collect();
+        let known: Vec<i64> = self.messages.iter().filter_map(|m| m.cost).collect();
         (!known.is_empty()).then(|| known.iter().sum())
     }
 }

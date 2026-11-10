@@ -85,6 +85,35 @@ pub(crate) const RESPONSE_ROWS: &str = "m.role = 'assistant' AND m.written_by = 
  AND coalesce(json_extract(m.attrs_json, '$.production.response_boundary_unknown'), 0) = 0
  AND m.session_pk NOT IN (SELECT e.session_pk FROM event e WHERE e.kind='response_boundaries_unknown' AND e.session_pk IS NOT NULL)";
 
+/// The `own` population (docs/measures.md, populations): each recorded
+/// response once, its shown version, on and off the active path. Every
+/// cost and token figure sums over it.
+pub(crate) const OWN_RESPONSES: &str = "m.duplicate_of IS NULL AND m.role = 'assistant' AND m.written_by = 'model'
+ AND coalesce(json_extract(m.attrs_json, '$.production.response_boundary_unknown'), 0) = 0
+ AND m.session_pk NOT IN (SELECT e.session_pk FROM event e WHERE e.kind='response_boundaries_unknown' AND e.session_pk IS NOT NULL)";
+
+/// The sum of `column` over the own responses of the sessions `sessions`.
+pub(crate) fn own_responses_sum(sessions: &str, column: &str) -> String {
+    format!(
+        "(SELECT sum(m.{column}) FROM message m WHERE m.session_pk IN ({sessions}) AND {OWN_RESPONSES})"
+    )
+}
+
+/// Whether an own response of the sessions `sessions` has no price: the
+/// session cost is then a lower bound.
+pub(crate) fn unpriced_in(sessions: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM message m WHERE m.session_pk IN ({sessions}) AND {OWN_RESPONSES} AND m.cost_nusd IS NULL)"
+    )
+}
+
+/// The one session cost: the known cost of the own responses of the
+/// sessions `sessions` (an SQL set of session keys); none when no response
+/// is priced. The field, `agg`, `compare` and `usage` all read it.
+pub(crate) fn cost_of(sessions: &str) -> String {
+    own_responses_sum(sessions, "cost_nusd")
+}
+
 const TOKEN_SUMS: &str = "
     count(*), count(DISTINCT m.session_pk),
     coalesce(sum(m.input_tokens), 0), sum(m.input_tokens IS NULL),
@@ -145,13 +174,13 @@ pub(super) fn report(reader: &Reader<'_>, selection: &Selection) -> Result<Usage
     let (cond, params) = selection.condition();
     let conn = reader.conn()?;
     let mut total = conn.query_row(
-        &format!("SELECT {TOKEN_SUMS} FROM message m WHERE {RESPONSE_ROWS} AND {cond}"),
+        &format!("SELECT {TOKEN_SUMS} FROM message m WHERE {OWN_RESPONSES} AND {cond}"),
         rusqlite::params_from_iter(params.iter()),
         |r| row(r, 0),
     )?;
     let mut by_model = vec![];
     let mut stmt = conn.prepare(&format!(
-        "SELECT m.model, {TOKEN_SUMS} FROM message m WHERE {RESPONSE_ROWS} AND {cond}
+        "SELECT m.model, {TOKEN_SUMS} FROM message m WHERE {OWN_RESPONSES} AND {cond}
          GROUP BY m.model ORDER BY sum(m.cost_nusd) DESC NULLS LAST, count(*) DESC"
     ))?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
@@ -281,7 +310,7 @@ pub(super) fn per_session(reader: &Reader<'_>, selection: &Selection) -> Result<
 /// condition holds only integer keys the store read itself.
 fn totals(reader: &Reader<'_>, cond: &str) -> Result<Totals> {
     let mut x = reader.conn()?.query_row(
-        &format!("SELECT {TOKEN_SUMS} FROM message m WHERE {RESPONSE_ROWS} AND {cond}"),
+        &format!("SELECT {TOKEN_SUMS} FROM message m WHERE {OWN_RESPONSES} AND {cond}"),
         [],
         |r| row(r, 0),
     )?;

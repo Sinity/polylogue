@@ -668,11 +668,10 @@ pub fn sql(unit: Unit, name: &str, a: &Aliases, now: i64) -> Option<String> {
 }
 
 /// The sum of a column over session `s`'s own messages.
+/// A session's token lane over its own responses, the population every
+/// usage figure sums.
 fn own_sum(s: &str, col: &str) -> String {
-    format!(
-        "(SELECT sum(x.{col}) FROM message x WHERE {})",
-        own_messages("x", Some(&format!("= {s}.pk")))
-    )
+    crate::measure::own_responses_sum(&format!("{s}.pk"), col)
 }
 
 fn sessions_hidden(a: &Aliases) -> String {
@@ -750,14 +749,11 @@ fn sessions_cache_write_tokens(a: &Aliases) -> String {
 }
 
 fn sessions_cost(a: &Aliases) -> String {
-    own_sum(&a.s, "cost_nusd")
+    crate::measure::cost_of(&format!("{}.pk", a.s))
 }
 
 fn sessions_tree_cost(a: &Aliases) -> String {
-    format!(
-        "(SELECT sum(x.cost_nusd) FROM message x WHERE {})",
-        own_messages("x", Some(&format!("IN ({})", subtree(&a.s))))
-    )
+    crate::measure::cost_of(&subtree(&a.s))
 }
 
 fn sessions_live(a: &Aliases, now: i64) -> String {
