@@ -1702,3 +1702,72 @@ fn link_evidence_merges_across_sources_independently_of_the_source_winner() {
         }
     }
 }
+
+/// Files that only name a session, as Claude Code's side files do (an event
+/// on the session their path names), share its row without waiting for one
+/// another's commit: the session's facts are each input's own, kept under
+/// that input's lease. Two such inputs queue while the index is locked, and
+/// after it commits there is one session with both events.
+#[test]
+fn inputs_that_only_name_a_session_share_it_without_waiting_for_a_commit() {
+    let w = test_archive();
+    let readings = ["first-side", "second-side"]
+        .into_iter()
+        .map(|input| {
+            let mut b = batch(input, 0, 0, vec![], &[]);
+            b.parse[0].output.events.push(polylogue_model::Event {
+                at_quality: polylogue_model::TimeQuality::Unknown,
+                at_precision: None,
+                at_until: None,
+                session: Some(sid("named")),
+                kind: "tool_result_file".into(),
+                at: None,
+                after: None,
+                range: Some((0, 100)),
+                data: serde_json::json!({ "file": input }),
+            });
+            w.commit_source(b, &SOURCE_RECORD).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let mut lock = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    let blocked = lock
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let start = Arc::new(Barrier::new(3));
+    let (sent, queued) = channel();
+    let mut threads = Vec::new();
+    for reading in readings {
+        let sender = w.writer.sender().unwrap();
+        let start = Arc::clone(&start);
+        let sent = sent.clone();
+        threads.push(std::thread::spawn(move || {
+            start.wait();
+            sent.send(sender.send(reading)).unwrap();
+        }));
+    }
+    start.wait();
+    for _ in 0..2 {
+        queued
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("a worker waited for another input's commit")
+            .unwrap();
+    }
+    blocked.commit().unwrap();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{report:?}");
+    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
+    let count = |sql: &str| index.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!(
+        count("SELECT count(*) FROM session WHERE id='claude-code:named'"),
+        1
+    );
+    assert_eq!(
+        count(
+            "SELECT count(*) FROM event e JOIN session s ON s.pk=e.session_pk WHERE s.id='claude-code:named'"
+        ),
+        2
+    );
+}

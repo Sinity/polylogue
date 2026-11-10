@@ -332,8 +332,15 @@ const READ_ONLY_INDEXES: &[&str] = &[
 /// ([`crate::first_build`]), and builds them first when it ends.
 const KEY_INDEXES: &[&str] = &["message_id", "event_id", "text_hash"];
 
-/// Batches waiting for the writer before senders block.
-const QUEUE: usize = 4;
+/// Groups waiting for the writer before senders block. A batch's bytes stay
+/// counted against the parse pool's limit until its transaction commits
+/// ([`InFlight`]), so that limit bounds their memory, not this depth. The
+/// writer commits every group waiting at the start of its turn together,
+/// up to [`ROWS_PER_TRANSACTION`] and [`BYTES_PER_TRANSACTION`]; with four
+/// waiting at most, a pass over many small files committed some twenty
+/// files per transaction, each transaction rewriting a page of every index
+/// it touched.
+const QUEUE: usize = 256;
 
 /// Input bytes a transaction covers before committing. A batch's bytes
 /// stay counted against the parse pool's limit until its transaction
@@ -456,12 +463,6 @@ impl Writer {
             sinex,
             stream_error: None,
         };
-        // Senders block once a few batches wait. The writer is the slowest
-        // stage of a first build, and a parsed batch holds its rows and
-        // packed bodies; a deep queue let finished batches pile up past
-        // the parse pool's bytes-in-flight limit (8.4 GB on the real
-        // corpus). With a short queue the pool keeps a job's bytes counted
-        // until its batch is queued, so memory stays bounded by that limit.
         let (tx, rx) = sync_channel::<Msg>(QUEUE);
         let (users, users_rx) = sync_channel::<UserMsg>(USER_QUEUE);
         let handle = std::thread::Builder::new()
