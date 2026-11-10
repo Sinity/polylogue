@@ -78,8 +78,8 @@ pub struct Window {
     pub usage: Option<UsageReport>,
     /// Tokens of every kind per hour since the window's first response.
     pub tokens_per_hour: Option<f64>,
-    /// API-equivalent USD per hour, over priced responses.
-    pub api_usd_per_hour: Option<f64>,
+    /// API-equivalent money per hour, over priced responses.
+    pub api_cost_per_hour: Option<polylogue_model::money::Amount>,
     /// Tokens at reset if the burn so far continues.
     pub projected_tokens: Option<u64>,
 }
@@ -398,8 +398,19 @@ fn build(
     let tokens_per_hour = (!unknown_time && usage.messages.is_some())
         .then(|| per_hour(tokens as f64))
         .flatten();
-    let api_usd_per_hour = (!unknown_time && usage.messages.is_some())
-        .then(|| usage.api_cost.known_usd.and_then(per_hour))
+    // Integer nano-USD over whole milliseconds, rounded once.
+    let elapsed_ms = first.map(|f| now.min(end) - f).filter(|&ms| ms > 0);
+    let api_cost_per_hour = (!unknown_time && usage.messages.is_some())
+        .then(|| {
+            let (known, ms) = (usage.api_cost.known?, elapsed_ms?);
+            let per_hour = polylogue_model::money::rounded_quotient(
+                i128::from(known.nusd()).checked_mul(i128::from(HOUR))?,
+                i128::from(ms),
+            )?;
+            i64::try_from(per_hour)
+                .ok()
+                .map(polylogue_model::money::Amount)
+        })
         .flatten();
     let projected_tokens =
         tokens_per_hour.map(|r| tokens + (r * (end - now).max(0) as f64 / HOUR as f64) as u64);
@@ -419,7 +430,7 @@ fn build(
         status: last.and_then(|o| o.status.clone()),
         usage: (!unknown_time).then_some(usage),
         tokens_per_hour,
-        api_usd_per_hour,
+        api_cost_per_hour,
         projected_tokens,
     })
 }

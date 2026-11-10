@@ -87,7 +87,6 @@ impl Relation {
             let sql = format!("{alias}.{}", column_sql(self.program.column_slot(name)));
             return Ok((
                 match column.kind {
-                    ColKind::Money => format!("({sql}) * 1e9"),
                     ColKind::DurationSeconds => format!("({sql}) * 1000.0"),
                     ColKind::Time if self.program.time_text_columns.contains(name) => {
                         format!("pl_kept_time({sql})")

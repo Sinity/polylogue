@@ -1,6 +1,7 @@
 //! Plain-text views of `measure` answers. Unknown prints as `unknown`,
 //! never as 0; partial money says how many responses it could not price.
 
+use polylogue_model::money::usd_display;
 use serde_json::Value;
 
 /// Any measurement as indented JSON, for those without a text view.
@@ -33,20 +34,25 @@ fn tokens(n: u64) -> String {
     }
 }
 
+/// A known amount (`{"nusd": …, "usd": …}`) for a person.
+fn amount(value: &Value) -> Option<String> {
+    value["nusd"].as_i64().map(usd_display)
+}
+
 fn money(m: &Value) -> String {
     let unpriced = m["unpriced_messages"].as_u64().unwrap_or(0);
     let unknown = m["response_total_unknown"].as_bool() == Some(true);
     if unknown {
-        return match m["known_usd"].as_f64() {
-            Some(usd) => format!("${usd:.2} known + unknown response usage"),
+        return match amount(&m["known"]) {
+            Some(usd) => format!("{usd} known + unknown response usage"),
             None => "unknown (response grouping unknown)".into(),
         };
     }
-    match m["known_usd"].as_f64() {
+    match amount(&m["known"]) {
         None if unpriced > 0 => format!("unknown ({unpriced} unpriced)"),
         None => "unknown".into(),
-        Some(usd) if unpriced > 0 => format!("${usd:.2} + {unpriced} unpriced"),
-        Some(usd) => format!("${usd:.2}"),
+        Some(usd) if unpriced > 0 => format!("{usd} + {unpriced} unpriced"),
+        Some(usd) => usd,
     }
 }
 
@@ -130,9 +136,9 @@ fn recorded_usage(reading: &Value, indent: &str) -> String {
         count(&known["output"]),
         count(&known["reasoning"])
     );
-    if let Some(usd) = reading["known_api_cost_usd"].as_f64() {
+    if let Some(usd) = amount(&reading["known_api_cost"]) {
         text.push_str(&format!(
-            "{indent}recorded known API-equivalent ${usd:.2} ({} unpriced observations)\n",
+            "{indent}recorded known API-equivalent {usd} ({} unpriced observations)\n",
             reading["unpriced_observations"]
         ));
     }
@@ -203,8 +209,8 @@ fn quota_text(o: &Value) -> String {
                     tokens(r as u64),
                     tokens(w["projected_tokens"].as_u64().unwrap_or(0))
                 ));
-                if let Some(usd) = w["api_usd_per_hour"].as_f64() {
-                    out.push_str(&format!(" · ${usd:.2}/h API-equivalent"));
+                if let Some(usd) = amount(&w["api_cost_per_hour"]) {
+                    out.push_str(&format!(" · {usd}/h API-equivalent"));
                 }
                 out.push('\n');
             }
@@ -385,21 +391,18 @@ fn outlook_text(data: &Value) -> String {
     out
 }
 
+/// An exact amount: every nano-USD digit, for projections that state their own figures.
 fn nano_money(value: &Value) -> String {
-    match value.as_i64() {
-        None => "unknown".into(),
-        Some(n) => {
-            let fraction = format!("{:09}", n.unsigned_abs() % 1_000_000_000);
-            let fraction = fraction.trim_end_matches('0');
-            format!(
-                "{}${}{}{}",
-                if n < 0 { "-" } else { "" },
-                n.unsigned_abs() / 1_000_000_000,
-                if fraction.is_empty() { "" } else { "." },
-                fraction
-            )
-        }
-    }
+    value.as_i64().map_or_else(
+        || "unknown".into(),
+        |n| {
+            let text = polylogue_model::money::usd_text(n);
+            match text.strip_prefix('-') {
+                Some(positive) => format!("-${positive}"),
+                None => format!("${text}"),
+            }
+        },
+    )
 }
 
 #[cfg(test)]

@@ -200,3 +200,30 @@ fn kept_time_and_native_identity_require_actual_captured_scalar_evidence() {
         );
     }
 }
+
+#[test]
+fn money_stays_integer_nano_usd_and_kept_dollars_read_back_exactly() {
+    let conn = Connection::open_in_memory().unwrap();
+    register(&conn).unwrap();
+    let one = |sql: &str| conn.query_row(sql, [], |row| row.get::<_, Option<i64>>(0));
+    assert_eq!(one("SELECT pl_money(7)").unwrap(), Some(7));
+    assert_eq!(one("SELECT pl_money(2.5)").unwrap(), Some(3));
+    assert_eq!(one("SELECT pl_money(-2.5)").unwrap(), Some(-3));
+    assert_eq!(one("SELECT pl_money(NULL)").unwrap(), None);
+    assert!(one("SELECT pl_money(9223372036854775807 + 1)").is_err());
+    assert_eq!(
+        one("SELECT pl_kept_money('12345678.123456789')").unwrap(),
+        Some(12_345_678_123_456_789)
+    );
+    assert_eq!(
+        one("SELECT pl_kept_money('0.30000000000000004')").unwrap(),
+        Some(300_000_000)
+    );
+    assert_eq!(one("SELECT pl_kept_money('null')").unwrap(), None);
+    assert_eq!(one("SELECT pl_kept_money(NULL)").unwrap(), None);
+    assert!(one("SELECT pl_kept_money('1e300')").is_err());
+    assert_eq!(one("SELECT pl_rounded_quotient(5, 2)").unwrap(), Some(3));
+    assert_eq!(one("SELECT pl_rounded_quotient(-5, 2)").unwrap(), Some(-3));
+    assert_eq!(one("SELECT pl_rounded_quotient(5, 0)").unwrap(), None);
+    assert_eq!(one("SELECT pl_rounded_quotient(NULL, 2)").unwrap(), None);
+}

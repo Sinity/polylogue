@@ -220,6 +220,9 @@ impl Compiler<'_> {
             ));
             let value = if matches!(column.kind, ColKind::Ids | ColKind::Json) {
                 format!("j.value -> {path}")
+            } else if column.kind == ColKind::Money {
+                // Kept as exact dollars; read back as nano-USD from its text.
+                format!("pl_kept_money(j.value -> {path})")
             } else {
                 format!("json_extract(j.value, {path})")
             };

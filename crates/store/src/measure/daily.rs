@@ -29,7 +29,10 @@ pub struct Series {
     pub unknown_spend_time: bool,
     /// Validated measured observations lacking a source record time.
     pub unplaced_observations: u64,
-    pub days: Vec<(String, f64)>,
+    /// What each day's integer value counts: `nusd` (API-equivalent cost in
+    /// nano-USD), `tokens` or `count`.
+    pub unit: &'static str,
+    pub days: Vec<(String, i64)>,
     /// Mean of the 7 days before each day; `None` for the first week.
     pub baseline_7d: Vec<Option<f64>>,
     pub changes: Vec<Change>,
@@ -82,7 +85,7 @@ const DAILY: [(&str, &str, &str); 5] = [
          +coalesce(m.output_tokens,0)+coalesce(m.reasoning_tokens,0)",
         "message m",
     ),
-    ("api_cost", "coalesce(m.cost_nusd, 0) / 1e9", "message m"),
+    ("api_cost", "coalesce(m.cost_nusd, 0)", "message m"),
     ("sessions", "0", "message m"),
     (
         "prompts",
@@ -150,7 +153,14 @@ pub fn daily(
         let (condition, values) = untimed.condition();
         incomplete |= reader.conn()?.query_row(&format!("SELECT EXISTS(SELECT 1 FROM message m WHERE {known_rows} AND m.at IS NULL AND {condition})"),rusqlite::params_from_iter(values.iter()),|r|r.get::<_,bool>(0))?;
     }
-    let mut by_day: BTreeMap<jiff::civil::Date, f64> = BTreeMap::new();
+    let mut by_day: BTreeMap<jiff::civil::Date, i64> = BTreeMap::new();
+    let mut add = |date: jiff::civil::Date, value: i64| -> Result<()> {
+        let sum = by_day.entry(date).or_default();
+        *sum = sum
+            .checked_add(value)
+            .ok_or_else(|| crate::StoreError::Invalid(format!("daily {metric} sum exceeds i64")))?;
+        Ok(())
+    };
     let mut sessions: BTreeMap<jiff::civil::Date, std::collections::HashSet<i64>> = BTreeMap::new();
     let mut stmt = reader.conn()?.prepare(&format!(
         "SELECT m.at, {expr}, m.session_pk, ({missing}) FROM {from} WHERE m.at IS NOT NULL AND {known_rows} AND {cond}"
@@ -158,7 +168,7 @@ pub fn daily(
     let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
         Ok((
             r.get::<_, i64>(0)?,
-            r.get::<_, f64>(1)?,
+            r.get::<_, i64>(1)?,
             r.get::<_, i64>(2)?,
             r.get::<_, bool>(3)?,
         ))
@@ -167,7 +177,7 @@ pub fn daily(
         let (at, v, session, missing) = row?;
         incomplete |= missing;
         let d = crate::calendar::date(day, at)?;
-        *by_day.entry(d).or_default() += v;
+        add(d, v)?;
         if metric == "sessions" {
             sessions.entry(d).or_default().insert(session);
         }
@@ -179,7 +189,7 @@ pub fn daily(
                 return Ok(());
             };
             let value = if metric == "api_cost" {
-                cost.map(|cost| cost as f64 / 1e9)
+                cost
             } else {
                 let u = &observation.usage;
                 let mut sum = None::<u64>;
@@ -197,10 +207,15 @@ pub fn daily(
                         crate::StoreError::Invalid("daily recorded token sum exceeds u64".into())
                     })?);
                 }
-                sum.map(|n| n as f64)
+                sum.map(|n| {
+                    i64::try_from(n).map_err(|_| {
+                        crate::StoreError::Invalid("daily recorded token sum exceeds i64".into())
+                    })
+                })
+                .transpose()?
             };
             if let Some(value) = value {
-                *by_day.entry(crate::calendar::date(day, at)?).or_default() += value;
+                add(crate::calendar::date(day, at)?, value)?;
             } else {
                 incomplete = true;
             }
@@ -215,7 +230,7 @@ pub fn daily(
     }
     if metric == "sessions" {
         for (d, s) in &sessions {
-            by_day.insert(*d, s.len() as f64);
+            by_day.insert(*d, s.len() as i64);
         }
     }
     let mut days = vec![];
@@ -224,13 +239,13 @@ pub fn daily(
     {
         let mut d = first;
         while d <= last {
-            days.push((d.to_string(), by_day.get(&d).copied().unwrap_or(0.0)));
+            days.push((d.to_string(), by_day.get(&d).copied().unwrap_or(0)));
             d = d
                 .tomorrow()
                 .map_err(|e| crate::StoreError::Invalid(e.to_string()))?;
         }
     }
-    let xs: Vec<f64> = days.iter().map(|d| d.1).collect();
+    let xs: Vec<f64> = days.iter().map(|d| d.1 as f64).collect();
     let baseline_7d = (0..xs.len())
         .map(|i| (!incomplete && i >= 7).then(|| xs[i - 7..i].iter().sum::<f64>() / 7.0))
         .collect();
@@ -264,6 +279,11 @@ pub fn daily(
         response_completeness_unknown: response_unknown,
         unknown_spend_time,
         unplaced_observations,
+        unit: match metric {
+            "api_cost" => "nusd",
+            "tokens" => "tokens",
+            _ => "count",
+        },
         days,
         baseline_7d,
         changes,

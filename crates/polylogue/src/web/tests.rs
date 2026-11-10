@@ -778,12 +778,15 @@ fn priced_native_usage_and_drilldown_keep_the_selected_session_population() {
         assert_eq!(usage["sessions"], 1);
         assert_eq!(usage["messages"], 1);
         assert_eq!(usage["tokens"]["input"]["tokens"], 1_000_000);
-        assert_eq!(usage["api_cost"]["known_usd"], 15.0);
+        assert_eq!(usage["api_cost"]["known"]["nusd"], 15_000_000_000_i64);
         assert_eq!(usage["api_cost"]["priced_messages"], 1);
         assert_eq!(usage["api_cost"]["unpriced_messages"], 0);
         assert_eq!(usage["by_model"][0]["model"], "claude-opus-4-1");
         assert_eq!(usage["by_model"][0]["messages"], 1);
-        assert_eq!(usage["by_model"][0]["api_cost"]["known_usd"], 15.0);
+        assert_eq!(
+            usage["by_model"][0]["api_cost"]["known"]["nusd"],
+            15_000_000_000_i64
+        );
         assert!(page.contains("API-equivalent $15.00"), "{page}");
         assert!(page.contains("1 known response records"), "{page}");
         assert!(

@@ -33,6 +33,7 @@ pub mod native;
 pub mod parser_context;
 pub use injection::{HookContextEmission, HookFieldClaim};
 mod message;
+pub mod money;
 pub mod price;
 pub mod query_objects;
 mod quota;
@@ -78,7 +79,7 @@ pub use time::{
     Precision, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp, local_minute, rfc3339_in,
 };
 pub mod text;
-pub use price::{Catalog, LongContext, Price};
+pub use price::{Catalog, LongContext, Multiplier, Price, Rate};
 pub use quota::{QuotaLimit, QuotaReading, QuotaWindow};
 pub use usage::Usage;
 

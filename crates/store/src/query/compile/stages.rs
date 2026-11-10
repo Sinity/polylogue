@@ -206,14 +206,32 @@ impl<'a> Compiler<'a> {
             // stays unknown and the unknown count says so.
             AggregateFunction::Sum => (
                 value(
-                    format!("CASE WHEN count(*) = 0 THEN 0 ELSE sum({expr}) END"),
+                    format!(
+                        "CASE WHEN count(*) = 0 THEN 0 ELSE pl_finite_aggregate(sum({expr}), count({expr})) END"
+                    ),
                     kind,
                 ),
                 kind,
             ),
-            AggregateFunction::Avg => (value(format!("avg({expr})"), kind), kind),
+            // An average amount is integer nano-USD, rounded once.
+            AggregateFunction::Avg if kind == ColKind::Money => (
+                format!("pl_rounded_quotient(sum({expr}), count({expr}))"),
+                kind,
+            ),
+            AggregateFunction::Avg => (
+                value(
+                    format!("pl_finite_aggregate(avg({expr}), count({expr}))"),
+                    kind,
+                ),
+                kind,
+            ),
             AggregateFunction::Min => (value(format!("min({expr})"), kind), kind),
             AggregateFunction::Max => (value(format!("max({expr})"), kind), kind),
+            // The percentile aggregate ranks floats; an amount comes back as
+            // integer nano-USD.
+            AggregateFunction::Percentile(p) if kind == ColKind::Money => {
+                (format!("pl_money(pl_percentile({expr}, {p}))"), kind)
+            }
             AggregateFunction::Percentile(p) => {
                 (value(format!("pl_percentile({expr}, {p})"), kind), kind)
             }
@@ -299,11 +317,7 @@ impl<'a> Compiler<'a> {
             } else {
                 self.expr(f, &sc, child.span.start)?
             };
-            let e = match kind {
-                ColKind::Money => format!("({expr}) / 1e9"),
-                _ => expr,
-            };
-            select.push(format!("{e} AS {}", flat(f)));
+            select.push(format!("{expr} AS {}", flat(f)));
             columns.push(Column {
                 name: flat(f),
                 kind,

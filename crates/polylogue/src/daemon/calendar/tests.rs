@@ -66,8 +66,8 @@ fn period_totals_models_days_and_paged_responses_are_one_population() {
     assert_eq!(result["days"].as_array().unwrap().len(), 1);
     assert_eq!(result["days"][0]["records"], 2);
     assert_eq!(
-        result["usage"]["data"]["api_cost"]["known_usd"],
-        result["days"][0]["known_usd"]
+        result["usage"]["data"]["api_cost"]["known"],
+        result["days"][0]["known"]
     );
     assert_eq!(result["responses"]["rows"][0]["id"], "codex:b");
     let next = result["responses"]["next"].as_str().unwrap();

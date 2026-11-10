@@ -1,5 +1,6 @@
 use super::{Selection, hidden_sessions};
 use crate::{Reader, Result};
+use polylogue_model::money::Amount;
 use serde::Serialize;
 
 /// One kind of token: the sum over the messages that reported it, and how
@@ -24,12 +25,12 @@ pub struct TokensByKind {
     pub reasoning: TokenCount,
 }
 
-/// Money in USD: the known part, and how many messages it could not price.
+/// Money: the known part, and how many messages it could not price.
 /// A total with unpriced messages is partial and never ranked as complete.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Money {
     /// `None` when nothing in selection is priced.
-    pub known_usd: Option<f64>,
+    pub known: Option<Amount>,
     pub priced_messages: u64,
     pub unpriced_messages: u64,
     pub response_total_unknown: bool,
@@ -115,11 +116,11 @@ fn row(r: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Row> {
     let money = |i: usize| -> rusqlite::Result<Money> {
         let priced = u(i + 1)?;
         Ok(Money {
-            known_usd: (priced > 0)
+            known: (priced > 0)
                 .then(|| r.get::<_, Option<i64>>(at + i))
                 .transpose()?
                 .flatten()
-                .map(|n| n as f64 / 1e9),
+                .map(Amount),
             priced_messages: priced,
             unpriced_messages: u(i + 2)?,
             response_total_unknown: false,
@@ -305,7 +306,7 @@ pub struct RecordedUsage {
     pub measured_completion_observations: u64,
     pub unconfirmed_observations: u64,
     pub known_usage: polylogue_model::Usage,
-    pub known_api_cost_usd: Option<f64>,
+    pub known_api_cost: Option<Amount>,
     pub unpriced_observations: u64,
     /// Observations whose provider spend/measurement time is absent.
     pub untimed_observations: u64,
@@ -388,7 +389,12 @@ pub(super) fn recorded_with(
             let cost =
                 polylogue_model::Catalog::builtin().cost_nusd(value.model.as_deref(), &value.usage);
             if let Some(cost) = cost {
-                *out.known_api_cost_usd.get_or_insert(0.0) += cost as f64 / 1e9;
+                let sum = out.known_api_cost.map_or(0, Amount::nusd);
+                out.known_api_cost = Some(Amount(sum.checked_add(cost).ok_or_else(|| {
+                    crate::StoreError::Invalid(
+                        "recorded API-equivalent cost exceeds i64 nano-USD".into(),
+                    )
+                })?));
             } else {
                 out.unpriced_observations += 1;
             }
