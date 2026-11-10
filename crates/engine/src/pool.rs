@@ -130,6 +130,8 @@ struct Shared {
     wake: Vec<Condvar>,
     room: Condvar,
     limit: u64,
+    /// Once requested, workers start no further job.
+    stop: crate::StopRequest,
 }
 
 pub struct Pool {
@@ -146,6 +148,7 @@ impl Pool {
         blobs: Arc<polylogue_store::blobs::Blobs>,
         archive: polylogue_store::Archive,
         done: Sender<Done>,
+        stop: crate::StopRequest,
     ) -> Self {
         let workers = workers.max(1);
         let shared = Arc::new(Shared {
@@ -159,6 +162,7 @@ impl Pool {
             wake: (0..workers).map(|_| Condvar::new()).collect(),
             room: Condvar::new(),
             limit: bytes_in_flight.max(1),
+            stop,
         });
         let (acknowledge, pending) = channel();
         let acknowledged = done.clone();
@@ -210,6 +214,19 @@ impl Pool {
         if let Some(worker) = q.idle.pop() {
             self.shared.wake[worker].notify_one();
         }
+    }
+
+    /// Takes back the jobs no worker has started and returns how many: they
+    /// never report. Jobs being parsed finish and commit as usual.
+    pub fn cancel_queued(&self) -> usize {
+        let mut guard = self.shared.queue.lock().expect("pool lock");
+        let q = &mut *guard;
+        let jobs: Vec<Job> = q.live.drain(..).chain(q.bulk.drain(..)).collect();
+        q.in_flight -= jobs.iter().map(Job::bytes).sum::<u64>();
+        drop(guard);
+        self.shared.room.notify_all();
+        polylogue_store::timing::queue(polylogue_store::timing::Queue::Parse, -(jobs.len() as i64));
+        jobs.len()
     }
 }
 
@@ -269,7 +286,10 @@ fn work(
             let mut q = shared.queue.lock().expect("pool lock");
             let mut woken = false;
             loop {
-                if let Some(j) = q.live.pop_front().or_else(|| q.bulk.pop_front()) {
+                // After a stop request the queue is left for `cancel_queued`.
+                if !shared.stop.requested()
+                    && let Some(j) = q.live.pop_front().or_else(|| q.bulk.pop_front())
+                {
                     polylogue_store::timing::queue(polylogue_store::timing::Queue::Parse, -1);
                     break Some(j);
                 }

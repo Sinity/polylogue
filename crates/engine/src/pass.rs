@@ -1379,6 +1379,9 @@ impl Engine {
         let mut ordinary = Vec::new();
         let mut replacements = Vec::new();
         for mut plan in plans {
+            if self.stop.requested() {
+                break;
+            }
             self.prepare_raw_plan(&mut plan)?;
             if plan.raw.is_some() && plan.finished() {
                 self.record_raw_status(&plan, None, pass)?;
@@ -1444,6 +1447,9 @@ impl Engine {
         }
         self.execute_pool(ordinary, pass)?;
         self.replace_readings(replacements, pass)?;
+        if self.stop.requested() {
+            return Err(EngineError::Stopped);
+        }
         Ok(())
     }
 
@@ -1459,6 +1465,7 @@ impl Engine {
             Arc::clone(&self.blobs),
             self.archive.clone(),
             done_tx,
+            self.stop.clone(),
         );
         // Plans wait here and enter the pool a few at a time, so live inputs
         // that arrive meanwhile can go ahead of what is still waiting.
@@ -1475,8 +1482,15 @@ impl Engine {
         let mut checked = Instant::now();
         let room = self.config.workers.max(1) * IN_POOL_PER_WORKER;
         let every = self.config.live_every;
+        let mut stopping = false;
         loop {
-            if checked.elapsed() >= every {
+            if !stopping && self.stop.requested() {
+                // What workers are parsing commits; nothing else starts.
+                stopping = true;
+                waiting.clear();
+                outstanding -= pool.cancel_queued();
+            }
+            if !stopping && checked.elapsed() >= every {
                 checked = Instant::now();
                 let live = {
                     // A continuation owns its path while queued, too. Finish
@@ -1497,7 +1511,8 @@ impl Engine {
                     Err(e) => pass.errors.push(format!("live inputs: {e}")),
                 }
             }
-            while outstanding < room
+            while !stopping
+                && outstanding < room
                 && let Some(mut plan) = waiting.pop_front()
             {
                 if plan.finished() {
@@ -1794,10 +1809,20 @@ impl Engine {
         let mut changed = std::collections::BTreeSet::new();
         let mut watch_errors = Vec::new();
         loop {
+            if self.stop.requested() {
+                return Ok(self.stopped(summary));
+            }
             discover |= self.take_watched(&mut changed, &mut watch_errors);
             busy(true);
             let pending;
             let mut finished = match self.one_pass(discover, &changed) {
+                Err(EngineError::Stopped) => {
+                    // Writes the pass queued before stopping are committed.
+                    if let Err(error) = self.flush_writes() {
+                        summary.work.errors.push(error.to_string());
+                    }
+                    return Ok(self.stopped(summary));
+                }
                 Ok((pass, seen)) => {
                     pending = pass.capture_pending;
                     if pending {

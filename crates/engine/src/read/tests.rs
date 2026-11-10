@@ -227,6 +227,7 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
         Arc::clone(&engine.blobs),
         engine.archive.clone(),
         done,
+        Default::default(),
     );
     // Match the scheduler's read-ahead: retained plans are not advanced while
     // their completed jobs release the byte budget and later inputs enter.
@@ -272,6 +273,7 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
         Arc::clone(&engine.blobs),
         engine.archive.clone(),
         done,
+        Default::default(),
     );
     for plan in &mut plans {
         pool.submit(plan.next_job(&polylogue_testkit::stopped_attempt()));

@@ -436,6 +436,8 @@ mod saved;
 mod deliveries;
 mod outcomes;
 
+mod stopping;
+
 #[test]
 fn an_invalidated_read_phase_does_not_enter_the_authored_writer() {
     let daemon = crate::test_daemon::start("native write admission scope");

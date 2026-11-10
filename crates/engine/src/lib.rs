@@ -90,6 +90,9 @@ pub enum EngineError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Watch(#[from] notify::Error),
+    /// The loop was asked to stop while a pass ran ([`StopRequest`]).
+    #[error("the loop was asked to stop")]
+    Stopped,
 }
 
 #[derive(Debug, Clone)]
@@ -412,8 +415,26 @@ pub enum LoopMsg {
     Stop,
 }
 
+/// Asks a running loop to end its pass at the next batch boundary: parses
+/// already handed to workers commit, work not yet started is left for the
+/// next start, and [`Engine::run`] returns. A loop waiting between passes
+/// also needs [`LoopMsg::Stop`] to wake.
+#[derive(Debug, Clone, Default)]
+pub struct StopRequest(Arc<std::sync::atomic::AtomicBool>);
+
+impl StopRequest {
+    pub fn request(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn requested(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 pub struct Engine {
     collectors: collectors::Collectors,
+    stop: StopRequest,
     pub config: Config,
     pub archive: Archive,
     writer: Writer,
@@ -450,6 +471,11 @@ impl Engine {
     /// through the same writer as the loop's batches.
     pub fn writer(&self) -> Result<polylogue_store::WriterSender, EngineError> {
         Ok(self.writer.sender()?)
+    }
+
+    /// The handle that stops this engine's loop in the middle of a pass.
+    pub fn stop_request(&self) -> StopRequest {
+        self.stop.clone()
     }
 
     /// Starts the writer on an archive the caller has locked.
@@ -506,6 +532,7 @@ impl Engine {
             lookups: repo_lookup::Cache::default(),
             lookups_at: None,
             collectors: collectors::Collectors::default(),
+            stop: StopRequest::default(),
         })
     }
 
