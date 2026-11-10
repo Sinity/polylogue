@@ -1163,7 +1163,7 @@ pub(super) fn page(
     let snapshot = ReadPageSnapshot {
         query: target.clone(),
         ran_at: operation.ran_at,
-        caught_up: d.warm.caught_up_for_read(reader, &positions.to_string())?,
+        caught_up: super::caught_up(reader)?,
         read_at: positions,
         currency: d.currency(reader)?,
     };
@@ -2108,7 +2108,7 @@ pub(super) fn links_page(
     let snapshot = ReadPageSnapshot {
         query: target.clone(),
         ran_at: operation.ran_at,
-        caught_up: d.warm.caught_up_for_read(reader, &positions.to_string())?,
+        caught_up: super::caught_up(reader)?,
         read_at: positions,
         currency: d.currency(reader)?,
     };

@@ -772,6 +772,41 @@ CREATE TRIGGER parse_state_changed AFTER UPDATE OF status ON parse_state WHEN OL
   UPDATE parse_status_count SET n = n - 1 WHERE status = OLD.status;
   INSERT INTO parse_status_count(status, n) VALUES (NEW.status, 1) ON CONFLICT(status) DO UPDATE SET n = n + 1;
 END;
+-- How far each stored revision chain is parsed, one row per chain of the
+-- source, kept by the writer in the transaction of the change
+-- (crates/store/src/chain_progress.rs), and counted below so that whether
+-- the index has caught up is read without walking the chains. A group
+-- without chains has no count row, so equal chains give equal rows however
+-- they were reached.
+CREATE TABLE chain_progress (
+  input             TEXT NOT NULL,          -- archive.db input.id
+  chain             INTEGER NOT NULL,
+  origin            TEXT NOT NULL,          -- the format the chain is read as
+  reading_version   TEXT NOT NULL,          -- of its parse state; '' without one
+  state             TEXT NOT NULL CHECK(state IN ('no_checkpoint','current','no_parser','partial','behind')),
+  PRIMARY KEY (input, chain)
+) STRICT, WITHOUT ROWID;
+CREATE TABLE chain_progress_count (
+  origin            TEXT NOT NULL,
+  reading_version   TEXT NOT NULL,
+  state             TEXT NOT NULL,
+  n                 INTEGER NOT NULL,
+  PRIMARY KEY (origin, reading_version, state)
+) STRICT, WITHOUT ROWID;
+CREATE TRIGGER chain_progress_added AFTER INSERT ON chain_progress BEGIN
+  INSERT INTO chain_progress_count(origin, reading_version, state, n) VALUES (NEW.origin, NEW.reading_version, NEW.state, 1)
+    ON CONFLICT(origin, reading_version, state) DO UPDATE SET n = n + 1;
+END;
+CREATE TRIGGER chain_progress_removed AFTER DELETE ON chain_progress BEGIN
+  UPDATE chain_progress_count SET n = n - 1 WHERE origin = OLD.origin AND reading_version = OLD.reading_version AND state = OLD.state;
+  DELETE FROM chain_progress_count WHERE origin = OLD.origin AND reading_version = OLD.reading_version AND state = OLD.state AND n = 0;
+END;
+CREATE TRIGGER chain_progress_changed AFTER UPDATE OF origin, reading_version, state ON chain_progress BEGIN
+  UPDATE chain_progress_count SET n = n - 1 WHERE origin = OLD.origin AND reading_version = OLD.reading_version AND state = OLD.state;
+  DELETE FROM chain_progress_count WHERE origin = OLD.origin AND reading_version = OLD.reading_version AND state = OLD.state AND n = 0;
+  INSERT INTO chain_progress_count(origin, reading_version, state, n) VALUES (NEW.origin, NEW.reading_version, NEW.state, 1)
+    ON CONFLICT(origin, reading_version, state) DO UPDATE SET n = n + 1;
+END;
 -- Records parsers did not read, summed by what they were, kept the same way.
 CREATE TABLE unused_count (
   what              TEXT PRIMARY KEY,

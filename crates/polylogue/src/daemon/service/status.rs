@@ -57,7 +57,6 @@ pub(super) fn answer(
         uptime_seconds: d.started.elapsed().as_secs(),
         store,
         totals_error,
-        caught_up_error: d.warm.caught_up_error(),
         loop_status,
         signals,
         notices,

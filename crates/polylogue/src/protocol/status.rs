@@ -20,8 +20,6 @@ pub struct Answer {
     /// The archive totals; none when they could not be read (`totals_error`).
     pub store: Option<polylogue_store::Status>,
     pub totals_error: Option<String>,
-    /// Why the last check of whether the index caught up failed.
-    pub caught_up_error: Option<String>,
     #[serde(flatten)]
     pub loop_status: polylogue_engine::LoopStatus,
     pub signals: Option<Signals>,

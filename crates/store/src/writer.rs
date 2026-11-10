@@ -440,8 +440,11 @@ impl Writer {
         let archive_conn = if archive.is_primary() {
             crate::archive::open_read(&archive.index_db())?
         } else {
-            crate::archive::open_archive_writer(archive)?
+            let conn = crate::archive::open_archive_writer(archive)?;
+            crate::chain_progress::record_source_changes(&conn)?;
+            conn
         };
+        crate::chain_progress::open(&index, !archive.is_primary())?;
         let first_build = building
             .then(|| crate::first_build::FirstBuild::load(&index).map(Arc::new))
             .transpose()?;
@@ -753,6 +756,14 @@ impl Writer {
 
 impl Drop for Writer {
     fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+impl Writer {
+    /// Ends the writer thread after what it was sent; later calls fail with
+    /// [`StoreError::WriterGone`].
+    pub fn stop(&mut self) {
         if let Some(mut follower) = self.follower.take() {
             follower.stop();
         }
@@ -1509,6 +1520,9 @@ impl Inner {
             for (source, version, reply) in snapshots.drain(..) {
                 let _ = reply.send(self.source_snapshot(source, &version));
             }
+            if let Err(error) = self.refresh_chain_progress() {
+                self.report.errors.push(format!("chain progress: {error}"));
+            }
             for (reply, _) in flushes.drain(..) {
                 let _ = reply.send(std::mem::take(&mut self.report));
             }
@@ -1519,6 +1533,39 @@ impl Inner {
             }
         }
         let _ = self.finish_build();
+        let closed = self.refresh_chain_progress().and_then(|()| {
+            if self.sinex.is_none() {
+                crate::chain_progress::close(&self.index)?;
+            }
+            Ok(())
+        });
+        if let Err(error) = closed {
+            eprintln!("polylogue: writer: chain progress: {error}");
+        }
+    }
+
+    /// Recomputes, in an index transaction of their own, the chain progress
+    /// of inputs whose source rows a standalone archive transaction changed
+    /// with no index transaction after it (bytes stored without parsed rows,
+    /// a restored older archive, a write whose index transaction failed).
+    fn refresh_chain_progress(&mut self) -> Result<()> {
+        if self.sinex.is_some() {
+            return Ok(());
+        }
+        let source_changed = crate::chain_progress::recorded(&self.archive)?;
+        if source_changed.is_empty() {
+            return Ok(());
+        }
+        let tx = self
+            .index
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        bump_counter(&tx)?;
+        crate::chain_progress::refresh(&tx, &source_changed)?;
+        tx.commit()?;
+        crate::chain_progress::forget(&self.archive, &source_changed)?;
+        self.commits.committed();
+        self.report.transactions += 1;
+        Ok(())
     }
 
     /// Between transactions, starts over a write-ahead log grown past its
@@ -1961,8 +2008,11 @@ impl Inner {
             stats.0 += 1;
         }
         self.report.item_units_read += rows::finish(&itx, &changes, self.first_build.is_some())?;
+        let source_changed = crate::chain_progress::recorded(&self.archive)?;
+        crate::chain_progress::refresh(&itx, &source_changed)?;
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
+        crate::chain_progress::forget(&self.archive, &source_changed)?;
         self.commits.committed();
         self.search.wake();
         self.report.batches += stats.0;

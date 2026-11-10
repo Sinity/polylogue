@@ -803,6 +803,8 @@ pub fn older_reading(archive: &Archive, origin: &str) -> Result<(u64, u64)> {
         "ATTACH DATABASE ?1 AS a",
         [archive.archive_db().to_string_lossy().as_ref()],
     )?;
+    crate::source::views(&conn)?;
+    crate::chain_progress::install_triggers(&conn, false)?;
     let size=conn.query_row("SELECT count(*),coalesce(sum((SELECT max(length) FROM a.revision r WHERE r.input=i.id AND r.chain=p.chain)),0)
         FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format=?1",[origin],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?;
     conn.execute("UPDATE parse_state SET reading_version='older reading' WHERE input_pk IN (SELECT pk FROM input_ref WHERE format=?1)",[origin])?;

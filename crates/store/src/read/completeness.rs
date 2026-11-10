@@ -1,8 +1,9 @@
-//! Completeness is proven from the same source and index snapshot as the read.
+//! Completeness is read from the index snapshot of the read: the chain
+//! counts the writer keeps, the derivation marks, search's pending entries
+//! and, in primary mode, the applied stream position.
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::ops::ControlFlow;
 
 /// Supplied by the owning native-origin registry, never inferred from a stored cursor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,7 +92,6 @@ impl Reader<'_> {
         let token = self.scope_token();
         let conn = self.conn()?;
         let mut declared = BTreeMap::new();
-        let mut versions = Vec::new();
         for contract in contracts {
             if contract.origin().is_empty()
                 || declared.insert(contract.origin(), contract).is_some()
@@ -100,65 +100,53 @@ impl Reader<'_> {
                     "reading contracts need unique nonempty origins".into(),
                 ));
             }
-            if let ReadingContract::Expected { origin, version } = contract {
-                if version.is_empty() {
-                    return Err(StoreError::Invalid(
-                        "an expected reading needs its declared version".into(),
-                    ));
-                }
-                versions.push((origin.clone(), version.clone()));
+            if let ReadingContract::Expected { version, .. } = contract
+                && version.is_empty()
+            {
+                return Err(StoreError::Invalid(
+                    "an expected reading needs its declared version".into(),
+                ));
             }
         }
         let mut missing = BTreeSet::new();
         let mut unknown = false;
         let mut kept_chains = 0_u64;
         let mut raw_only_chains = 0_u64;
-        self.visit_chain_states(
-            &versions,
-            true,
-            super::behind_index::StoppedChains::Settled,
-            &mut |state| {
-                match declared.get(state.origin.as_str()).copied() {
-                    None => {
-                        unknown = true;
-                        missing.insert(CompletenessReason::MissingDeclaration);
+        // Chains counted by origin, reading version and state, which the
+        // writer keeps with each change (`crate::chain_progress`).
+        for (origin, reading_version, state, n) in crate::chain_progress::counts(conn)? {
+            use crate::chain_progress::State;
+            match declared.get(origin.as_str()).copied() {
+                None => {
+                    unknown = true;
+                    missing.insert(CompletenessReason::MissingDeclaration);
+                }
+                Some(ReadingContract::Kept { .. }) => kept_chains += n,
+                Some(ReadingContract::RawOnly { .. }) => {
+                    raw_only_chains += n;
+                    missing.insert(CompletenessReason::KnownRawOnly);
+                }
+                Some(ReadingContract::Expected { version, .. }) => match state {
+                    State::NoCheckpoint => {
+                        missing.insert(CompletenessReason::MissingCheckpoint);
                     }
-                    Some(ReadingContract::Kept { .. }) => {
-                        kept_chains += 1;
+                    _ if &reading_version != version => {
+                        missing.insert(CompletenessReason::ReadingVersionChanged);
                     }
-                    Some(ReadingContract::RawOnly { .. }) => {
-                        raw_only_chains += 1;
+                    State::Current => {}
+                    State::NoParser => {
+                        raw_only_chains += n;
                         missing.insert(CompletenessReason::KnownRawOnly);
                     }
-                    Some(ReadingContract::Expected { version, .. }) => {
-                        let progress = &state.plan.progress;
-                        if !progress.parsed {
-                            missing.insert(CompletenessReason::MissingCheckpoint);
-                        } else if state.version.as_ref() != Some(version) {
-                            missing.insert(CompletenessReason::ReadingVersionChanged);
-                        } else {
-                            use polylogue_model::batch::ParseProgress;
-                            match &state.progress {
-                                Some(ParseProgress::NoParserYet) => {
-                                    raw_only_chains += 1;
-                                    missing.insert(CompletenessReason::KnownRawOnly);
-                                }
-                                Some(ParseProgress::Partial) => {
-                                    missing.insert(CompletenessReason::MissingSourcePrefix);
-                                }
-                                Some(ParseProgress::Waiting { .. }) if progress.waiting => {}
-                                Some(ParseProgress::Done)
-                                    if progress.parsed_upto >= progress.length => {}
-                                _ => {
-                                    missing.insert(CompletenessReason::ParserBehind);
-                                }
-                            }
-                        }
+                    State::Partial => {
+                        missing.insert(CompletenessReason::MissingSourcePrefix);
                     }
-                }
-                Ok(ControlFlow::Continue(()))
-            },
-        )?;
+                    State::Behind => {
+                        missing.insert(CompletenessReason::ParserBehind);
+                    }
+                },
+            }
+        }
         let parsing = if missing.is_empty() {
             CompletenessDimension::Complete
         } else if unknown {

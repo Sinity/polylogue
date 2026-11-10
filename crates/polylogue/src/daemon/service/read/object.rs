@@ -110,7 +110,7 @@ fn execute<T>(
         || {
             reader.check()?;
             scope.check()?;
-            let caught_up = d.warm.caught_up(reader, &positions.to_string())?;
+            let caught_up = super::caught_up(reader)?;
             let run_reference = format!("run:{id}");
             let snapshot = ReadSnapshot {
                 query: run_reference.clone(),
