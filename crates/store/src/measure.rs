@@ -24,7 +24,7 @@ pub mod survival;
 pub mod time;
 pub mod tool_calls;
 mod usage;
-pub(crate) use usage::RESPONSE_ROWS;
+pub(crate) use usage::{RESPONSE_ROWS, cost_of, own_responses_sum, unpriced_in};
 
 pub use usage::{
     ModelUsage, Money, RecordedUsage, SessionUsage, TokenCount, TokensByKind, Totals, UsageReport,

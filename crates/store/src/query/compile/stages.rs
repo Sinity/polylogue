@@ -127,12 +127,7 @@ impl<'a> Compiler<'a> {
                 && matches!(f.function, AggregateFunction::Sum | AggregateFunction::Avg)
             {
                 let s = &scope.a.s;
-                let unpriced = |sessions: &str| {
-                    format!(
-                        "EXISTS (SELECT 1 FROM message xp WHERE {} AND xp.role = 'assistant' AND xp.cost_nusd IS NULL)",
-                        fields::own_messages("xp", Some(&format!("IN ({sessions})")))
-                    )
-                };
+                let unpriced = |sessions: &str| crate::measure::unpriced_in(sessions);
                 let partial = match field {
                     "cost" => Some(unpriced(&format!("SELECT {s}.pk"))),
                     "tree_cost" => {

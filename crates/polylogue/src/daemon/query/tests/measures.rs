@@ -423,3 +423,65 @@ fn usage_window_excludes_responses_outside() {
             > after["data"]["known_response_messages"].as_u64().unwrap()
     );
 }
+
+#[test]
+fn usage_equals_sum_across_surfaces() {
+    let mut archive = morrow();
+    let s1 = session_pk(&archive, "%0001-4000%");
+    // A priced response on an abandoned branch is still one of the
+    // session's own responses; a priced copy shown elsewhere is not.
+    let branch = scoped(
+        "claude-code:7f3a2c10-0001-4000-8000-000000000001",
+        "m1branch",
+    );
+    let copy = scoped("claude-code:7f3a2c10-0001-4000-8000-000000000001", "m1copy");
+    for (id, active, cost) in [
+        (&branch, Some(false), 70_000_000),
+        (&copy, None, 30_000_000),
+    ] {
+        archive
+            .fx
+            .message(
+                s1,
+                MessageFacts {
+                    cost_nusd: Some(cost),
+                    on_active_path: active,
+                    ..msg(id, "assistant", "model", "another answer", at(1, 13))
+                },
+            )
+            .unwrap();
+    }
+    polylogue_store::archive::open_write(
+        &archive.fx.archive.index_db(),
+        polylogue_store::archive::cache::SETUP,
+    )
+    .unwrap()
+    .execute(
+        "UPDATE message SET duplicate_of = ?2, duplicate_reason = 'synthetic copy' WHERE id = ?1",
+        [copy.as_str(), branch.as_str()],
+    )
+    .unwrap();
+    // Measures write money as `{"nusd": N, "usd": D}`, `compare` as
+    // nano-dollars and query columns as dollars; all compared in nano-dollars.
+    // One day's sessions, #1 alone, which spawned no subagent: usage adds
+    // spawned sessions' responses to the sessions that spawned them.
+    let day = "sessions where since:2026-10-01 until:2026-10-01";
+    let measured = q(&archive, &format!("{day} | measure usage"));
+    let usage = measured["data"]["api_cost"]["known"]["nusd"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("{measured}"));
+    let summed = q(&archive, &format!("{day} | agg sum(cost)"));
+    let field = summed["rows"][0]["sum_cost"]
+        .as_f64()
+        .map(|usd| (usd * 1e9).round() as i64)
+        .unwrap_or_else(|| panic!("{summed}"));
+    let compared: i64 =
+        q(&archive, &format!("{day} | measure compare:cost_nusd"))["data"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s["values"]["cost_nusd"].as_i64())
+            .sum();
+    assert_eq!(summed["rows"][0]["sum_cost"], 1.33, "{summed}");
+    assert_eq!((field, compared), (usage, usage));
+}

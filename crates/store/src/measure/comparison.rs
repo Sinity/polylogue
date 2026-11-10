@@ -248,10 +248,7 @@ fn stored_count(s: &str, column: &str) -> String {
 }
 
 fn cost_sql() -> String {
-    format!(
-        "(SELECT CASE WHEN count(*)=count(m.cost_nusd) AND NOT EXISTS(SELECT 1 FROM event e WHERE e.session_pk=s.pk AND e.kind='response_boundaries_unknown') AND NOT EXISTS(SELECT 1 FROM message x WHERE x.session_pk=s.pk AND x.duplicate_of IS NULL AND json_extract(x.attrs_json,'$.production.response_boundary_unknown')=1) THEN sum(m.cost_nusd) END FROM message m WHERE m.session_pk=s.pk AND m.duplicate_of IS NULL AND {})",
-        super::usage::RESPONSE_ROWS
-    )
+    super::usage::cost_of("s.pk")
 }
 
 /// Full-selection differences and unknown counts are grouped in SQL, never paged.
