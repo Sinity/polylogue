@@ -85,9 +85,13 @@ enum Cause {
 
 /// What a derivation reads besides the session's rows, and where it records
 /// the shown rows it changes.
+#[derive(Clone, Copy)]
 pub(crate) struct Inputs<'a> {
     pub catalog: &'a Catalog,
     pub changes: &'a crate::change_summary::ChangeSummary,
+    /// The derivation's version moved, or it never ran on the session:
+    /// nothing it stored for the session may be resumed from.
+    pub from_start: bool,
 }
 
 /// Rule versions stay readable; catalog-derived rows also name the complete
@@ -292,6 +296,7 @@ impl<'a> Pass<'a> {
         let inputs = Inputs {
             catalog: self.catalog,
             changes: &changes,
+            from_start: false,
         };
         let mut done = 0;
         for (pk, due) in due {
@@ -353,7 +358,11 @@ impl<'a> Pass<'a> {
              ON CONFLICT(name, session_pk) DO UPDATE SET version = excluded.version",
         )?;
         for &i in &stale {
-            (self.derivations[i].run)(tx, pk, inputs)?;
+            let inputs = Inputs {
+                from_start: stored.get(self.derivations[i].name) != Some(&self.versions[i]),
+                ..*inputs
+            };
+            (self.derivations[i].run)(tx, pk, &inputs)?;
             mark.execute(params![self.derivations[i].name, pk, self.versions[i]])?;
         }
         Ok(stale.len() as u64)

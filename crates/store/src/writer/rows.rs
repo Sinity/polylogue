@@ -394,6 +394,12 @@ fn apply_rows(
             ms(u.result_at),
             u.reported_duration_ms.and_then(|ms| i64::try_from(ms).ok())
         ])?;
+        // The call's outcome changed outside its messages.
+        tx.prepare_cached(
+            "UPDATE session_span SET prefix = NULL
+             WHERE session_pk = (SELECT pk FROM session WHERE id = ?1)",
+        )?
+        .execute([u.session.to_string()])?;
     }
     for pk in sessions.values() {
         tx.prepare_cached(
@@ -447,9 +453,11 @@ pub(crate) fn finish(
     first_build: bool,
 ) -> Result<u64> {
     let read = crate::items::refresh(tx, changes)?;
-    // A first build derives every session's links once, when it ends.
+    // A first build derives every session once, when it ends.
     if !first_build {
-        crate::derive::links::fold(tx, changes)?;
+        let sessions = changes.sessions(tx)?;
+        crate::derive::links::fold(tx, &sessions)?;
+        crate::measure::time::forget_settled(tx, changes, &sessions)?;
     }
     crate::versions::remove_unreferenced(tx, first_build)?;
     Ok(read)

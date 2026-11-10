@@ -200,6 +200,26 @@ impl WriterArchive {
         messages: Vec<Message>,
         snapshot_from: Option<u64>,
     ) {
+        self.write_rows(input, s, messages, snapshot_from, true);
+        self.writer.derive().expect("derive");
+    }
+
+    /// As [`WriterArchive::write`], leaving the session behind: the derive
+    /// step is the caller's.
+    pub fn write_underived(&mut self, session: &str, messages: Vec<Message>) {
+        let s = Session::new(sid(session), SessionKind::Main);
+        let input = format!("input-{}", s.id.native().as_str());
+        self.write_rows(&input, s, messages, None, false);
+    }
+
+    fn write_rows(
+        &mut self,
+        input: &str,
+        s: Session,
+        messages: Vec<Message>,
+        snapshot_from: Option<u64>,
+        derive: bool,
+    ) {
         let path = format!("/p/{}", s.id.native().as_str());
         let start = self.positions.get(input).copied().unwrap_or(0);
         let rows: Vec<MessageRow> = messages
@@ -221,8 +241,15 @@ impl WriterArchive {
             repo_lookups: std::mem::take(&mut self.lookups),
             ..Output::default()
         };
-        self.write_output_mode(input, "claude-code", &path, output, records, snapshot_from);
-        self.writer.derive().expect("derive");
+        self.write_output_mode(
+            input,
+            "claude-code",
+            &path,
+            output,
+            records,
+            snapshot_from,
+            derive,
+        );
     }
 
     /// The last written input's next byte offset.
@@ -241,9 +268,10 @@ impl WriterArchive {
         output: Output,
         records: u64,
     ) {
-        self.write_output_mode(input, format, path, output, records, None);
+        self.write_output_mode(input, format, path, output, records, None, true);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn write_output_mode(
         &mut self,
         input: &str,
@@ -252,6 +280,7 @@ impl WriterArchive {
         output: Output,
         records: u64,
         snapshot_from: Option<u64>,
+        derive: bool,
     ) {
         let start = self.positions.get(input).copied().unwrap_or(0);
         let mut bytes = vec![b'r'; usize::try_from(records).expect("synthetic record count")];
@@ -277,7 +306,12 @@ impl WriterArchive {
         };
         batch.observation = None;
         self.writer.send(batch).expect("send the reading");
-        let report = self.writer.flush().expect("flush");
+        let report = if derive {
+            self.writer.flush()
+        } else {
+            self.writer.flush_rows()
+        }
+        .expect("flush");
         assert!(report.errors.is_empty(), "{report:?}");
         self.offset = stored.length;
         self.positions.insert(input.into(), stored.length);

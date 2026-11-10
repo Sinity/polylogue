@@ -96,15 +96,15 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     add_links(tx, session_pk, calls)
 }
 
-/// Brings the links of every session `changes` names up to date in the
-/// transaction that changed it: a session with a rewritten message is
+/// Brings the links of every session the transaction changed (`sessions`)
+/// up to date in that transaction: a session with a rewritten message is
 /// derived again; otherwise the finished calls whose call or result block
 /// is in one of its new messages add their links.
 pub(crate) fn fold(
     tx: &Transaction<'_>,
-    changes: &crate::change_summary::ChangeSummary,
+    sessions: &std::collections::BTreeMap<i64, crate::change_summary::SessionChange>,
 ) -> Result<()> {
-    for (session_pk, change) in changes.sessions(tx)? {
+    for (&session_pk, change) in sessions {
         let exists: bool = tx
             .prepare_cached("SELECT EXISTS(SELECT 1 FROM session WHERE pk = ?1)")?
             .query_row([session_pk], |r| r.get(0))?;
