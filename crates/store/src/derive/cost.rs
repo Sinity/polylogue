@@ -1,17 +1,17 @@
 //! API-equivalent message cost from recorded usage and the compiled price catalog.
 
-use super::{Derivation, Version};
+use super::{Class, Derivation, Version};
 use crate::Result;
 use polylogue_model::{Catalog, Usage};
 use rusqlite::{Transaction, params};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "cost",
+    class: Class::Row,
     products: &[],
     version: Version::Catalog(1),
     after: &[],
     run: |tx, pk, inputs| run(tx, pk, inputs.catalog),
-    finish: None,
 };
 
 fn run(tx: &Transaction<'_>, session_pk: i64, catalog: &Catalog) -> Result<()> {

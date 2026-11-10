@@ -935,11 +935,12 @@ pub static UNITS: &[UnitSpec] = &[
         name: "changes",
         from: Expr::Template(
             "(SELECT 'session' AS kind, cs.id AS ref, cs.pk AS session_pk, \
-               MAX(cs.changed, COALESCE(cs.live_changed, 0)) AS seq, cs.changed AS changed, \
-               cs.live_changed AS live_changed, NULL AS assertion_kind FROM session cs \
-             UNION ALL SELECT 'removed', rs.session_id, NULL, rs.changed, rs.changed, NULL, NULL \
+               MAX(cs.changed, COALESCE(cs.live_changed, 0), COALESCE(cs.derived_changed, 0)) AS seq, \
+               cs.changed AS changed, cs.live_changed AS live_changed, cs.derived_changed AS derived_changed, \
+               NULL AS assertion_kind FROM session cs \
+             UNION ALL SELECT 'removed', rs.session_id, NULL, rs.changed, rs.changed, NULL, NULL, NULL \
                FROM removed_session rs \
-             UNION ALL SELECT 'assertion', cn.id, NULL, cn.commit_seq, NULL, NULL, cn.kind FROM source_assertion cn \
+             UNION ALL SELECT 'assertion', cn.id, NULL, cn.commit_seq, NULL, NULL, NULL, cn.kind FROM source_assertion cn \
 ) {r}",
         ),
         key: "({r}.kind || ':' || {r}.ref)",

@@ -1,5 +1,5 @@
 //! Counts over the same shown path the query language reads.
-use super::{Derivation, Version};
+use super::{Class, Derivation, Version};
 use crate::Result;
 use crate::session_sql::{counts_as_action, own_messages};
 use rusqlite::{Connection, Transaction, params};
@@ -7,11 +7,11 @@ use serde::Serialize;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "counts",
+    class: Class::Session,
     products: &[polylogue_model::derived::SESSION_COUNTS],
     version: Version::Rules(1),
     after: &["duplicates", "active_path", "tool_calls"],
     run: |tx, pk, _| run(tx, pk),
-    finish: None,
 };
 
 #[derive(Debug, Serialize)]

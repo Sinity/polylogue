@@ -20,7 +20,7 @@
 //! Remaining ties between inputs with equal times go to the greater
 //! content, so the result is the same in every arrival order.
 
-use super::{Derivation, Version};
+use super::{Class, Derivation, Version};
 use crate::Result;
 use polylogue_model::Session;
 use rusqlite::Transaction;
@@ -28,11 +28,11 @@ use std::cmp::Ordering;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "session",
+    class: Class::Session,
     products: &[],
     version: Version::Rules(6),
     after: &[],
     run: |tx, pk, _| run(tx, pk),
-    finish: None,
 };
 
 struct Input {

@@ -11,13 +11,13 @@ use rusqlite::{Transaction, params};
 
 pub(crate) const DERIVATION: super::Derivation = super::Derivation {
     name: "links",
+    class: super::Class::Session,
     // Bumped when the rules change; every session is derived again.
     products: &[],
     version: super::Version::Rules(2),
     // Reads tool calls' commands and outcomes.
     after: &["tool_calls"],
     run: |tx, session_pk, _| derive_session(tx, session_pk),
-    finish: None,
 };
 
 /// The stored output of a call. Only commands that make a commit or pull

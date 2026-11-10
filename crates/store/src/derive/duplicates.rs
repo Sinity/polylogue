@@ -13,7 +13,7 @@
 //! turn whose shape differs stays shown from both inputs. The result
 //! depends only on the stored rows, never on which input arrived first.
 
-use super::{Derivation, Version};
+use super::{Class, Derivation, Version};
 use crate::Result;
 use crate::encoding::{restore_text, unpack_block, unpack_text};
 use polylogue_model::Block;
@@ -22,11 +22,11 @@ use std::collections::HashMap;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "duplicates",
+    class: Class::Session,
     products: &[],
     version: Version::Rules(1),
     after: &[],
     run: |tx, pk, inputs| run(tx, pk, inputs.changes),
-    finish: None,
 };
 
 /// The format of browser captures (`input_ref.format`).

@@ -1,8 +1,9 @@
 //! One read of a session produces its clocks, tool unions and time lanes.
-use super::{Derivation, Version};
+use super::{Class, Derivation, Version};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "session_span",
+    class: Class::Session,
     products: &[
         polylogue_model::derived::SESSION_SPAN,
         polylogue_model::derived::SESSION_TIME,
@@ -14,5 +15,4 @@ pub(super) const DERIVATION: Derivation = Derivation {
             crate::measure::time::compute(tx, pk, polylogue_model::derived::CLUSTER_GAP_MS)?;
         crate::measure::time::write(tx, pk, &span, &lanes)
     },
-    finish: None,
 };

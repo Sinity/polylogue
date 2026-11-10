@@ -66,10 +66,10 @@ Analyses are computed when their data arrives, and at read only when that cannot
 
 Derived data converges through one path, with no separate stage and no backfill, refresh, rebuild or recompute command.
 
-- Row values are written with their rows. Session products are recomputed for exactly the sessions whose rows or derivation version changed.
-- **Marks:** `derive_state(name, session, version, from_changed)`. A session is behind for a derivation when its mark is missing, its version differs, or the session changed after the mark.
+- Row values are written with their rows, by the same function the derivation uses, and recomputed only when their derivation's version moves. Session products are recomputed for exactly the sessions whose rows or derivation version changed.
+- **Marks:** `derive_due(session, rows_changed)` names the sessions behind, set in the transaction that changed their rows (a trigger on `session.changed`); a derivation whose version moved since the last pass marks every session for that derivation alone. `derive_state(name, session, version)` records the version each derivation last derived a session at. The derive step finds its work through the marks, never by scanning sessions, and never moves `session.changed`, which says when the session's own rows changed; a session it derives reaches the change feed through `session.derived_changed`.
 - **Cross-session causes** delete the affected marks in their own transaction: a link change marks the logical-session root of the child's subtree and the session cost of its ancestors; a repository lookup marks the working-directories product of sessions under its path.
-- **Recompute:** the derive consumer takes behind sessions, live ones first, then newest first; it computes in parallel from a read snapshot, and the writer commits each session's rows with its new mark. A crash leaves marks behind, which the ordinary open path treats as pending work.
+- **Recompute:** the derive consumer takes behind sessions, newest first, a bounded number per transaction, and commits each session's rows with its new mark; user writes waiting for the writer are served between those transactions. A crash leaves marks behind, which the ordinary open path treats as pending work.
 - **Reads of behind sessions:** an aggregate counts behind sessions as `pending` and never shows their old values as current; a read of one session computes its products on the spot with the same function, so a single-session answer is never stale.
 - **Versions:** rule edits bump `Rules(n)`; shipped tables (prices, command classes) are versioned by content hash, so a forgotten bump cannot ship. Changing a derivation's version re-derives exactly that derivation; there is no index-wide version. A golden-output test per derivation fails when output changes without a version change.
 - **Re-parse:** `ON DELETE CASCADE` from parsed rows removes their products; a retracted chain changes its session, which marks every derivation behind.
@@ -84,8 +84,8 @@ struct Derivation {
     name: &'static str,
     version: Version,                  // Rules(n) | Content(hash of a shipped table)
     after: &'static [&'static str],
+    class: Class,                      // Row (a value of one row) | Session
     run: fn(&Transaction<'_>, i64, &Inputs) -> Result<()>,
-    finish: Option<fn(&Transaction<'_>) -> Result<()>>,
     dirtied_by: &'static [Cause],      // SessionChanged implicit; LinkChanged{Descendants|Ancestors}; RepoLookupChanged
     construct: Construct,
 }

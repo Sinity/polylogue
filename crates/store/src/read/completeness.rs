@@ -166,13 +166,9 @@ impl Reader<'_> {
         } else {
             CompletenessDimension::Incomplete(missing.into_iter().collect())
         };
-        // These are the same version declarations used by the stored derivations
-        // and pl_derived_current, rather than the query vocabulary fingerprint.
-        let names: Vec<String> = crate::derive::current_versions()?.into_keys().collect();
-        let derive_behind: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM session s CROSS JOIN json_each(?1) rule WHERE s.stub=0 AND NOT EXISTS(SELECT 1 FROM derive_state d WHERE d.session_pk=s.pk AND d.name=rule.value AND d.from_changed=s.changed AND pl_derived_current(d.name,d.version)))",
-            [serde_json::to_string(&names)?], |row| row.get(0),
-        )?;
+        // The marks the derive step works from, and the versions it last
+        // derived at; read in constant time.
+        let derive_behind = !crate::derive::caught_up(conn)?;
         let derivation = if derive_behind {
             CompletenessDimension::Incomplete(vec![CompletenessReason::DerivationBehind])
         } else {

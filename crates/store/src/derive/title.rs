@@ -6,17 +6,17 @@
 //! Kept apart from the recorded title, which always wins when present and
 //! is never replaced by this display fallback in exports.
 
-use super::{Derivation, Version};
+use super::{Class, Derivation, Version};
 use crate::Result;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "title",
+    class: Class::Session,
     products: &[],
     version: Version::Rules(5),
     after: &["duplicates", "session"],
     run: |tx, pk, _| run(tx, pk),
-    finish: None,
 };
 
 /// Characters kept of the prompt's first line.

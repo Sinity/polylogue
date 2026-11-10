@@ -64,7 +64,6 @@ impl Inner {
         crate::assertions::apply(&tx, std::slice::from_ref(&restoration.fact), counter)?;
         crate::write_lock::commit(tx)?;
         self.commits.committed();
-        self.derive_due = true;
         Ok(outcome)
     }
 }

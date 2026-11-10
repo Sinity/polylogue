@@ -447,6 +447,8 @@ impl Writer {
         let commits = crate::completion::CommitEvents::default();
         #[cfg(any(test, feature = "fixture"))]
         let dispatch = dispatch::Barriers::default();
+        let (tx, rx) = sync_channel::<Msg>(QUEUE);
+        let (users, users_rx) = sync_channel::<UserMsg>(USER_QUEUE);
         let mut inner = Inner {
             #[cfg(any(test, feature = "fixture"))]
             dispatch: dispatch.clone(),
@@ -458,18 +460,16 @@ impl Writer {
             report: WriteReport::default(),
             first_build,
             deferred_indexes,
-            derive_due: true,
-            derived_version: None,
+            users: users_rx,
             search: Search::start(archive.index_db(), !building)?,
             location: archive.clone(),
             sinex,
             stream_error: None,
         };
-        let (tx, rx) = sync_channel::<Msg>(QUEUE);
-        let (users, users_rx) = sync_channel::<UserMsg>(USER_QUEUE);
+
         let handle = std::thread::Builder::new()
             .name("polylogue-writer".into())
-            .spawn(move || inner.run(&rx, &users_rx))?;
+            .spawn(move || inner.run(&rx))?;
         let queue = WriterQueue::new(
             tx,
             users,
@@ -1134,12 +1134,8 @@ struct Inner {
     first_build: Option<Arc<crate::first_build::FirstBuild>>,
     /// Secondary indexes dropped for a first build, recreated when it ends.
     deferred_indexes: Vec<String>,
-    /// This writer wrote index rows since the last derive, or none has run
-    /// yet (a rule version may have changed).
-    derive_due: bool,
-    /// `data_version` of the index when the last derive ended: it moves when
-    /// another connection commits.
-    derived_version: Option<i64>,
+    /// User requests, served between the writer's transactions.
+    users: Receiver<UserMsg>,
     /// The search thread ([`search_thread`]): woken after each commit, and
     /// allowed to write once the index is out of a first build.
     search: Search,
@@ -1152,8 +1148,8 @@ struct Inner {
 
 impl Inner {
     /// Writes every waiting user request, each answered once committed.
-    fn serve_users(&mut self, users: &Receiver<UserMsg>) {
-        while let Ok(message) = users.try_recv() {
+    fn serve_users(&mut self) {
+        while let Ok(message) = self.users.try_recv() {
             match message {
                 UserMsg::Request(request, scope, preparation, parent, reply) => {
                     let result = self
@@ -1206,13 +1202,9 @@ impl Inner {
     fn stream_followed(&mut self, error: Option<String>) {
         let result = match error {
             Some(error) => Err(StoreError::Sinex(error)),
-            None => self.complete_ready_captures().and_then(|()| {
-                if self.derive_due {
-                    self.derive().map(drop)
-                } else {
-                    Ok(())
-                }
-            }),
+            None => self
+                .complete_ready_captures()
+                .and_then(|()| self.derive().map(drop)),
         };
         match result {
             Ok(()) => self.stream_error = None,
@@ -1229,7 +1221,7 @@ impl Inner {
         }
     }
 
-    fn run(&mut self, rx: &Receiver<Msg>, users: &Receiver<UserMsg>) {
+    fn run(&mut self, rx: &Receiver<Msg>) {
         let _worker = crate::timing::worker();
         let mut flushes = Vec::new();
         let mut derives = Vec::new();
@@ -1258,7 +1250,7 @@ impl Inner {
                 Err(_) => break,
             };
             let _busy = crate::timing::writer_started();
-            self.serve_users(users);
+            self.serve_users();
             let turn = Arc::clone(&self.search.turn);
             let _turn = turn
                 .lock()
@@ -1408,7 +1400,7 @@ impl Inner {
                     self.replace_chain(input, chain, length, reading)
                 }));
                 crate::timing::reading_commit_queue(-1);
-                self.serve_users(users);
+                self.serve_users();
             }
             for (blob, reply) in blobs.drain(..) {
                 let (new_blob, file) = *blob;
@@ -1423,7 +1415,7 @@ impl Inner {
             for (group, reply) in older_groups.drain(..) {
                 let _ = reply.send(self.restore_older(*group));
             }
-            self.serve_users(users);
+            self.serve_users();
 
             if !derives.is_empty() {
                 // A first build's indexes exist before anything is derived
@@ -1450,7 +1442,6 @@ impl Inner {
                 if result.is_ok() && self.index.total_changes() != before {
                     self.commits.committed();
                 }
-                self.derive_due |= result.is_ok();
                 let _ = reply.send(result);
             }
             for (fact, reply) in coverage.drain(..) {
@@ -1615,27 +1606,24 @@ impl Inner {
         Ok(())
     }
 
-    /// Derives from the rows written since the last derive. With nothing
-    /// written since, by this writer or another connection, nothing is
-    /// stale, so the scan for stale sessions, which reads every session for
-    /// every derivation, is skipped.
+    /// Derives the sessions marked due, one bounded transaction at a time,
+    /// serving the user requests waiting between them, so a long derive
+    /// never holds a user write for longer than one of its transactions.
     fn derive(&mut self) -> Result<u64> {
         self.project_variant_text()?;
-        // Changes only when another connection commits.
-        let version = |index: &Connection| -> Result<i64> {
-            Ok(index.pragma_query_value(None, "data_version", |r| r.get(0))?)
-        };
-        if !self.derive_due && self.derived_version == Some(version(&self.index)?) {
-            return Ok(0);
-        }
         if self.first_build.is_none() {
             crate::text_rows::index_pending(&self.index, || ())?;
         }
-        let derived = crate::timing::time(crate::timing::Stage::Derive, || {
-            crate::derive::run(&mut self.index, Some(&self.commits))
-        })?;
-        self.derive_due = false;
-        self.derived_version = Some(version(&self.index)?);
+        let pass = crate::derive::Pass::builtin(&mut self.index)?;
+        let mut derived = 0;
+        loop {
+            let next = crate::timing::time(crate::timing::Stage::Derive, || {
+                pass.next(&mut self.index, Some(&self.commits))
+            })?;
+            let Some(n) = next else { break };
+            derived += n;
+            self.serve_users();
+        }
         Ok(derived)
     }
 
@@ -1968,7 +1956,6 @@ impl Inner {
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
         self.commits.committed();
-        self.derive_due = true;
         self.search.wake();
         self.report.batches += stats.0;
         self.report.messages += stats.1;

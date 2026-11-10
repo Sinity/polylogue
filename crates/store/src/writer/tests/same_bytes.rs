@@ -46,13 +46,7 @@ fn dump(w: &TestArchive) -> BTreeMap<String, Vec<String>> {
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    let counters = [
-        "admitted",
-        "commit_seq",
-        "changed",
-        "from_changed",
-        "indexed_changed",
-    ];
+    let counters = ["admitted", "commit_seq", "changed", "indexed_changed"];
     tables
         .into_iter()
         .map(|table| {
