@@ -36,7 +36,6 @@ pub struct ItemVersions {
 enum Unit {
     Message {
         pk: i64,
-        id: String,
         version: Vec<u8>,
         place: MessagePlace,
     },
@@ -155,7 +154,6 @@ fn units(conn: &Connection, session_pk: i64) -> Result<Vec<Unit>> {
         let next_at = next_times[index];
         out.push(Unit::Message {
             pk: row.pk,
-            id: row.id.clone(),
             version: row.version.clone(),
             place: MessagePlace {
                 // Unknown and on the path read the same; only off the path
@@ -190,8 +188,8 @@ fn units(conn: &Connection, session_pk: i64) -> Result<Vec<Unit>> {
 
 fn unit_entries(conn: &Connection, unit: &Unit) -> Result<Vec<IndexEntry>> {
     match unit {
-        Unit::Message { pk, id, place, .. } => {
-            let (message, ordinals) = message_body(conn, *pk, id)?;
+        Unit::Message { pk, place, .. } => {
+            let (message, ordinals) = message_body(conn, *pk)?;
             Ok(message_entries(&message, &ordinals, *place))
         }
         Unit::Event {
@@ -224,17 +222,16 @@ fn unit_entries(conn: &Connection, unit: &Unit) -> Result<Vec<IndexEntry>> {
 
 /// A message's row and its blocks with their original ordinals: the fields
 /// the index estimates from. Structured tool data is not read.
-fn message_body(conn: &Connection, pk: i64, id: &str) -> Result<(Message, Vec<u64>)> {
-    let invalid = |what: &str| StoreError::Invalid(format!("message {id}: {what}"));
-    let id = MessageId::parse(id).map_err(|_| invalid("its ID does not parse"))?;
-    let (session, role, prompt_kind, model, at, tokens) = conn
+fn message_body(conn: &Connection, pk: i64) -> Result<(Message, Vec<u64>)> {
+    let (id, session, role, prompt_kind, model, at, tokens) = conn
         .prepare_cached(
             "SELECT s.id, m.role, m.prompt_kind, m.model, m.at,
-                    m.input_tokens, m.cache_read_tokens, m.cache_write_tokens
+                    m.input_tokens, m.cache_read_tokens, m.cache_write_tokens, m.id
              FROM message m JOIN session s ON s.pk = m.session_pk WHERE m.pk = ?1",
         )?
         .query_row([pk], |row| {
             Ok((
+                row.id::<MessageId>(8)?,
                 row.id::<SessionId>(0)?,
                 row.name::<Role>(1)?,
                 row.optional_name::<PromptKind>(2)?,
@@ -352,7 +349,10 @@ pub(crate) fn refresh_stale(conn: &Connection) -> Result<()> {
             Ok(()) => conn.execute_batch("RELEASE fixture_items")?,
             Err(error) => {
                 conn.execute_batch("ROLLBACK TO fixture_items; RELEASE fixture_items")?;
-                if !matches!(error, StoreError::Invalid(_) | StoreError::Json(_)) {
+                if !matches!(
+                    error,
+                    StoreError::Invalid(_) | StoreError::StoredValue { .. } | StoreError::Json(_)
+                ) {
                     return Err(error);
                 }
             }

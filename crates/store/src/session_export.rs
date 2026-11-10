@@ -137,7 +137,7 @@ impl Reader<'_> {
         for row in rows {
             let ((kind, how), parent, child, at, call_id, evidence) = row?;
             let kind = LinkKind::from_columns(&kind, &how).ok_or_else(|| {
-                crate::StoreError::Invalid(format!("a stored link has unknown kind {kind}/{how}"))
+                crate::StoreError::stored(0, format!("unknown link kind {kind}/{how}"))
             })?;
             let link = Link {
                 kind,
@@ -154,3 +154,6 @@ impl Reader<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -190,6 +190,15 @@ pub enum StoreError {
 }
 
 impl StoreError {
+    /// A stored value at `column` of the row being decoded that this build
+    /// cannot read back.
+    pub(crate) fn stored(column: usize, reason: impl Into<String>) -> Self {
+        Self::StoredValue {
+            column,
+            reason: reason.into(),
+        }
+    }
+
     /// The product failure code for this error. Every surface classifies a
     /// store error through this one mapping.
     pub fn code(&self) -> &'static str {

@@ -18,7 +18,7 @@ fn variant(row: &rusqlite::Row<'_>) -> Result<Variant> {
         method: row.get(10)?,
         machine: row.get(11)?,
         created_at: Timestamp::parse_rfc3339(&row.get::<_, String>(12)?)
-            .ok_or_else(|| StoreError::Invalid("variant time is out of range".into()))?,
+            .ok_or_else(|| StoreError::stored(12, "variant time is not an RFC 3339 time"))?,
         commit_seq: row.get(13)?,
     })
 }

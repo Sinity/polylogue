@@ -64,8 +64,9 @@ fn links(conn: &Connection, id: &str) -> Result<Vec<AssertionLink>> {
         let quote: Option<String> = row.get(3)?;
         result.push(AssertionLink {
             role: row.name::<LinkRole>(0)?,
-            reference: Reference::parse(&reference)
-                .map_err(|_| invalid("invalid stored assertion reference"))?,
+            reference: Reference::parse(&reference).map_err(|error| {
+                StoreError::stored(1, format!("reference {reference:?}: {error}"))
+            })?,
             seen_hash: row.optional_hash(2)?.map(BlobHash),
             quote: quote
                 .map(|quote| serde_json::from_str::<Quote>(&quote))
@@ -476,7 +477,7 @@ impl Links for StoredLinks<'_> {
         while let Some(row) = rows.next()? {
             let text: String = row.get(0)?;
             if let Reference::Assertion(revision) = Reference::parse(&text)
-                .map_err(|_| invalid("invalid stored withdrawal reference"))?
+                .map_err(|error| StoreError::stored(0, format!("reference {text:?}: {error}")))?
             {
                 targets.push(target(&revision));
             }

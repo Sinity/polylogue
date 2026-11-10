@@ -26,13 +26,9 @@ impl Reader<'_> {
         let id = crate::parser_context::canonical_message(self.conn()?, id)?;
         let value = self.conn()?.query_row(
             "SELECT s.id FROM message m JOIN session s ON s.pk=m.session_pk WHERE m.id=?1 AND m.duplicate_of IS NULL",
-            [id.to_string()], |row| row.get::<_,String>(0),
+            [id.to_string()], |row| crate::encoding::Columns::id::<SessionId>(row, 0),
         ).optional()?;
-        value
-            .map(|value| {
-                SessionId::parse(&value).map_err(|error| StoreError::Invalid(error.to_string()))
-            })
-            .transpose()
+        Ok(value)
     }
 
     /// The export snapshot ordinal in this message's entire canonical own

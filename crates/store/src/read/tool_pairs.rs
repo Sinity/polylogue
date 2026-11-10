@@ -25,18 +25,19 @@ impl BlockFact {
         let ordinal: String = row.get(offset + 2)?;
         Ok(Self {
             pk: row.get(offset)?,
-            index: usize::try_from(row.get::<_, i64>(offset + 1)?)
-                .map_err(|_| invalid("negative block position"))?,
-            ordinal: ordinal
-                .parse()
-                .map_err(|_| invalid("invalid original block ordinal"))?,
+            index: row.get(offset + 1)?,
+            ordinal: ordinal.parse().map_err(|_| {
+                StoreError::stored(
+                    offset + 2,
+                    format!("block ordinal {ordinal:?} is not a number"),
+                )
+            })?,
             message: crate::encoding::Columns::id(row, offset + 3)?,
             session: crate::encoding::Columns::id(row, offset + 4)?,
             call_id: row.get(offset + 5)?,
             version: row.get(offset + 6)?,
             layout: row.get(offset + 7)?,
-            blocks: usize::try_from(row.get::<_, i64>(offset + 8)?)
-                .map_err(|_| invalid("negative block count"))?,
+            blocks: row.get(offset + 8)?,
         })
     }
     fn projection(&self) -> Result<Option<MessageProjection>> {
