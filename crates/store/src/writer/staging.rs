@@ -261,18 +261,24 @@ impl Inner {
             crate::blobs::load_extent(&self.archive, "", hash)
                 .map_err(|error| hashed_blobs::Error::Io(std::io::Error::other(error)))
         });
-        match appended {
-            Ok(pending) => group.pending = Some(pending),
-            Err(error) => {
+        let failure = match appended {
+            Ok(pending) => {
+                group.pending = Some(pending);
+                crate::fault::check("segment.after_append", group.subject()).err()
+            }
+            Err(error) => Some(error.into()),
+        };
+        match failure {
+            None => Ok(()),
+            Some(error) => {
+                // The group left appended commits or fails on its own sync
+                // result while its segment writer still exists; reopening the
+                // writer afterwards truncates only this group's append.
+                self.finish_appended();
                 self.segment.take();
-                return Err(error.into());
+                Err(error)
             }
         }
-        if let Err(error) = crate::fault::check("segment.after_append", group.subject()) {
-            self.segment.take();
-            return Err(error);
-        }
-        Ok(())
     }
 
     /// Waits for the group's sync, commits its extents with the revisions

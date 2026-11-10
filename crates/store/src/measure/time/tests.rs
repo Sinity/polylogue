@@ -632,7 +632,12 @@ fn an_append_derives_the_span_from_the_messages_after_the_settled_one() {
     w.write("s", messages);
     w.write_underived("s", prose("s", 100, 5_000, "one more"));
     let mut conn = index(&w);
-    let tx = conn.transaction().unwrap();
+    // The fixture's writer stays alive and may still commit to the index
+    // (search entries, a log checkpoint); taking the write lock first keeps
+    // this transaction's snapshot current until its own writes.
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
     let pk: i64 = tx
         .query_row("SELECT pk FROM session WHERE id='claude-code:s'", [], |r| {
             r.get(0)

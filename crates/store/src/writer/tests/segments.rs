@@ -309,3 +309,38 @@ fn a_failed_group_commit_appends_the_next_group_again() {
     drop(writer);
     assert!(archive.blobs().unwrap().scan().unwrap().is_empty());
 }
+
+#[cfg(feature = "faults")]
+#[test]
+fn a_failed_append_lets_the_group_left_appended_commit_first() {
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    crate::fault::arm(
+        "segment.after_append",
+        "third",
+        crate::fault::Action::Fail,
+        0,
+        1,
+    );
+    let [second, third] = queue_two_groups(&archive, &writer);
+    let second = second.recv().unwrap();
+    assert_eq!(second[0].as_ref().unwrap().input, "second");
+    let third = third.recv().unwrap();
+    assert!(third[0].is_err());
+    append(&archive, &writer, "fourth", b"fourth immutable source\n").unwrap();
+    let conn = crate::archive::open_read(&archive.archive_db()).unwrap();
+    assert!(blob_row(&conn, SECOND));
+    assert!(!blob_row(&conn, THIRD));
+    assert!(blob_row(&conn, b"fourth immutable source\n"));
+    let end: i64 = conn
+        .query_row("SELECT committed_end FROM segment", [], |row| row.get(0))
+        .unwrap();
+    let blobs = archive.blobs().unwrap();
+    let extent = blobs
+        .extent(&hashed_blobs::Hash::of(b"fourth immutable source\n"))
+        .unwrap();
+    assert_eq!(extent.offset + extent.len, end as u64);
+    drop(writer);
+    assert!(archive.blobs().unwrap().scan().unwrap().is_empty());
+}
