@@ -6,6 +6,19 @@ use std::sync::Arc;
 
 #[cfg(feature = "faults")]
 fn append(archive: &Archive, writer: &Writer, input: &str, bytes: &[u8]) -> Result<StoredInput> {
+    writer
+        .sender()?
+        .store_group(
+            file_group(archive, input, bytes)?,
+            Arc::new(archive.blobs()?),
+        )?
+        .into_iter()
+        .next()
+        .expect("one batch")
+}
+
+#[cfg(feature = "faults")]
+fn file_group(archive: &Archive, input: &str, bytes: &[u8]) -> Result<Vec<PreparedBatch>> {
     let (new_blob, file) = archive.prepare_blob(bytes)?;
     let batch = Batch {
         required_disposition: None,
@@ -34,19 +47,58 @@ fn append(archive: &Archive, writer: &Writer, input: &str, bytes: &[u8]) -> Resu
         basis: None,
         release: Default::default(),
     };
-    writer
-        .sender()?
-        .store_group(
-            vec![PreparedBatch {
-                batch,
-                files: file.into_iter().collect(),
-            }],
-            Arc::new(archive.blobs()?),
-        )?
-        .into_iter()
-        .next()
-        .expect("one batch")
+    Ok(vec![PreparedBatch {
+        batch,
+        files: file.into_iter().collect(),
+    }])
 }
+
+/// Queues "second" and, while its append is held, "third", so the writer
+/// appends third before second's sync is waited for.
+#[cfg(feature = "faults")]
+fn queue_two_groups(
+    archive: &Archive,
+    writer: &Writer,
+) -> [std::sync::mpsc::Receiver<Vec<Result<StoredInput>>>; 2] {
+    let sender = writer.sender().unwrap();
+    let store = Arc::new(archive.blobs().unwrap());
+    crate::fault::arm(
+        "segment.after_append",
+        "second",
+        crate::fault::Action::Hold,
+        0,
+        1,
+    );
+    let second = sender
+        .enqueue_group(
+            file_group(archive, "second", SECOND).unwrap(),
+            Arc::clone(&store),
+        )
+        .unwrap();
+    while !crate::fault::held() {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let third = sender
+        .enqueue_group(file_group(archive, "third", THIRD).unwrap(), store)
+        .unwrap();
+    crate::fault::release();
+    [second, third]
+}
+
+#[cfg(feature = "faults")]
+fn blob_row(conn: &rusqlite::Connection, bytes: &[u8]) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM blob WHERE hash=?1)",
+        [hashed_blobs::Hash::of(bytes).0.as_slice()],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+#[cfg(feature = "faults")]
+const SECOND: &[u8] = b"second immutable source\n";
+#[cfg(feature = "faults")]
+const THIRD: &[u8] = b"third immutable source\n";
 
 #[test]
 fn group_commits_one_sync_and_one_extent_for_equal_bytes() {
@@ -110,20 +162,25 @@ fn segment_crash_child() {
         return;
     };
     let point = std::env::var("POLYLOGUE_SEGMENT_CRASH_POINT").unwrap();
+    let subject = std::env::var("POLYLOGUE_SEGMENT_CRASH_SUBJECT").unwrap();
     let (archive, _lock) = Archive::open_or_create(std::path::Path::new(&root)).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    crate::fault::arm(&point, "", crate::fault::Action::StopProcess, 0, 1);
-    append(&archive, &writer, "second", b"second immutable source\n").unwrap();
+    crate::fault::arm(&point, &subject, crate::fault::Action::StopProcess, 0, 1);
+    for results in queue_two_groups(&archive, &writer) {
+        let _ = results.recv();
+    }
     panic!("the configured durability boundary was not reached");
 }
 
 #[cfg(feature = "faults")]
 #[test]
 fn crash_leaves_only_a_tail_at_each_product_commit_boundary() {
-    for point in [
-        "segment.after_append",
-        "segment.after_sync",
-        "segment.after_commit",
+    // The writer appends "third" before it waits for "second"'s sync, so
+    // up to the commit of second both groups are uncommitted tails.
+    for (point, subject, committed) in [
+        ("segment.after_append", "third", 1),
+        ("segment.after_sync", "second", 1),
+        ("segment.after_commit", "second", 2),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let first = b"first immutable source\n";
@@ -145,6 +202,7 @@ fn crash_leaves_only_a_tail_at_each_product_commit_boundary() {
             ])
             .env("POLYLOGUE_SEGMENT_CRASH_ROOT", directory.path())
             .env("POLYLOGUE_SEGMENT_CRASH_POINT", point)
+            .env("POLYLOGUE_SEGMENT_CRASH_SUBJECT", subject)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -178,16 +236,17 @@ fn crash_leaves_only_a_tail_at_each_product_commit_boundary() {
                 .len(),
             end as u64
         );
-        let expected = 1 + i64::from(point == "segment.after_commit");
         assert_eq!(
             conn.query_row("SELECT count(*) FROM blob", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            expected
+            committed,
+            "{point} {subject}"
         );
+        assert!(!blob_row(&conn, THIRD));
         append(
             &archive,
             &writer,
-            "third",
+            "fourth",
             b"next append after ordinary open\n",
         )
         .unwrap();
@@ -212,4 +271,41 @@ fn wait_stopped(pid: libc::pid_t) -> i32 {
             "waitpid: {error}"
         );
     }
+}
+
+#[cfg(feature = "faults")]
+#[test]
+fn a_failed_group_commit_appends_the_next_group_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    crate::fault::arm(
+        "segment.after_sync",
+        "second",
+        crate::fault::Action::Fail,
+        0,
+        1,
+    );
+    let [second, third] = queue_two_groups(&archive, &writer);
+    let second = second.recv().unwrap();
+    assert!(second[0].is_err());
+    let third = third.recv().unwrap();
+    assert_eq!(third[0].as_ref().unwrap().input, "third");
+    let blobs = archive.blobs().unwrap();
+    let conn = crate::archive::open_read(&archive.archive_db()).unwrap();
+    assert!(!blob_row(&conn, SECOND));
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(
+        &mut blobs.read(&hashed_blobs::Hash::of(THIRD)).unwrap(),
+        &mut bytes,
+    )
+    .unwrap();
+    assert_eq!(bytes, THIRD);
+    let end: i64 = conn
+        .query_row("SELECT committed_end FROM segment", [], |row| row.get(0))
+        .unwrap();
+    let extent = blobs.extent(&hashed_blobs::Hash::of(THIRD)).unwrap();
+    assert_eq!(extent.offset + extent.len, end as u64);
+    drop(writer);
+    assert!(archive.blobs().unwrap().scan().unwrap().is_empty());
 }

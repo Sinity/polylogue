@@ -12,6 +12,42 @@ pub(super) type WaitingGroup = (
     SyncSender<Vec<Result<StoredInput>>>,
 );
 
+/// Where a stored group's results are answered: each caller's share, in order.
+pub(super) type Replies = Vec<(usize, SyncSender<Vec<Result<StoredInput>>>)>;
+
+/// A group whose files are appended and whose sync may still be running.
+/// It keeps its files until it commits.
+pub(super) struct AppendedGroup {
+    items: Vec<PreparedBatch>,
+    files: Vec<PreparedBytes>,
+    pending: Option<hashed_blobs::PendingGroup>,
+}
+
+impl AppendedGroup {
+    fn subject(&self) -> &str {
+        subject(&self.items)
+    }
+}
+
+enum Appending {
+    Appended(AppendedGroup),
+    Answered(Vec<Result<StoredInput>>),
+}
+
+/// The fault-point subject of a group: its first input.
+fn subject(items: &[PreparedBatch]) -> &str {
+    items
+        .first()
+        .map_or("", |item| item.batch.input.id.as_str())
+}
+
+fn answer(replies: Replies, results: Vec<Result<StoredInput>>) {
+    let mut results = results.into_iter();
+    for (count, reply) in replies {
+        let _ = reply.send(results.by_ref().take(count).collect());
+    }
+}
+
 // A package or one consistent database read is one logical acquisition.
 // A physical pool flush may contain several independent file samples.
 pub(super) fn atomic_acquisition(items: &[PreparedBatch]) -> bool {
@@ -78,115 +114,195 @@ impl Inner {
     }
 
     /// Stores the groups that were waiting together, so their files and
-    /// rows share syncs and commits ([`Self::store_group`]), and answers
-    /// each. Logical package and database groups retain the caller's boundary.
-    /// In primary mode each caller's group also stays whole before its file
-    /// samples receive their separate acquisition dispositions.
+    /// rows share syncs and commits, and answers each. Logical package and
+    /// database groups retain the caller's boundary. In primary mode each
+    /// caller's group also stays whole before its file samples receive their
+    /// separate acquisition dispositions.
+    ///
+    /// Each group's bytes are appended before the previous group's sync is
+    /// waited for, so the next append overlaps that sync. The last group stays
+    /// appended ([`Inner::appended`]) until the writer's next turn appends
+    /// after it, or the writer has nothing else to do; it is answered only
+    /// after it commits.
     pub(super) fn store_groups(&mut self, groups: Vec<WaitingGroup>) {
         let (alone, together): (Vec<WaitingGroup>, Vec<WaitingGroup>) = groups
             .into_iter()
             .partition(|(items, _, _)| self.sinex.is_some() || atomic_acquisition(items));
-        for (items, store, reply) in alone {
-            let _ = reply.send(self.store_group(items, store));
+        let mut units: Vec<(Vec<PreparedBatch>, Replies)> = alone
+            .into_iter()
+            .map(|(items, _, reply)| {
+                let count = items.len();
+                (items, vec![(count, reply)])
+            })
+            .collect();
+        if !together.is_empty() {
+            let mut items = Vec::new();
+            let mut replies = Vec::new();
+            for (group, _, reply) in together {
+                replies.push((group.len(), reply));
+                items.extend(group);
+            }
+            units.push((items, replies));
         }
-        let Some(store) = together.first().map(|(_, store, _)| Arc::clone(store)) else {
-            return;
-        };
-        let mut items = Vec::new();
-        let mut replies = Vec::new();
-        for (group, _, reply) in together {
-            replies.push((group.len(), reply));
-            items.extend(group);
-        }
-        let mut results = self.store_group(items, store).into_iter();
-        for (count, reply) in replies {
-            let _ = reply.send(results.by_ref().take(count).collect());
+        for (items, replies) in units {
+            let next = self.append_group(items);
+            self.finish_appended();
+            match next {
+                Appending::Answered(results) => {
+                    answer(replies, results);
+                    self.refresh_after_group();
+                }
+                Appending::Appended(mut group) => {
+                    if group.pending.is_some() && self.segment.is_none() {
+                        // The previous group's failure dropped the segment
+                        // writer, and reopening it truncates this group's
+                        // append; append its retained files again.
+                        group.pending = None;
+                        if let Err(error) = self.append_files(&mut group) {
+                            answer(replies, errors(&group.items, error));
+                            self.refresh_after_group();
+                            continue;
+                        }
+                    }
+                    self.appended = Some((group, replies));
+                }
+            }
         }
     }
 
-    /// Stores a group of batches whose new blobs include private files, then
-    /// writes their parsed rows. The bytes commit together. Parsed rows of
-    /// independent inputs that are refused together are written again batch
-    /// by batch, so one bad batch costs only itself; one logical acquisition
-    /// ([`atomic_acquisition`]) succeeds or fails as a whole.
+    /// Commits, writes the rows of and answers the group left appended by
+    /// [`Self::store_groups`].
+    pub(super) fn finish_appended(&mut self) {
+        if let Some((group, replies)) = self.appended.take() {
+            let results = self.commit_group(group);
+            answer(replies, results);
+            self.refresh_after_group();
+        }
+    }
+
+    /// Stores one group of batches whose new blobs include private files,
+    /// then writes their parsed rows, before returning ([`Self::append_group`],
+    /// [`Self::commit_group`]). A group left appended commits first.
     pub(super) fn store_group(
         &mut self,
         group: Vec<PreparedBatch>,
-        store: std::sync::Arc<crate::blobs::Blobs>,
+        _store: std::sync::Arc<crate::blobs::Blobs>,
     ) -> Vec<Result<StoredInput>> {
-        let results = self.store_group_rows(group, store);
-        // The index counts the stored chains before the answer, also when
-        // no parsed rows followed them; a failure is retried after the turn.
-        if let Err(error) = self.refresh_chain_progress() {
-            self.report.errors.push(format!("chain progress: {error}"));
-        }
+        self.finish_appended();
+        let results = match self.append_group(group) {
+            Appending::Answered(results) => results,
+            Appending::Appended(group) => self.commit_group(group),
+        };
+        self.refresh_after_group();
         results
     }
 
-    fn store_group_rows(
-        &mut self,
-        mut group: Vec<PreparedBatch>,
-        _store: std::sync::Arc<crate::blobs::Blobs>,
-    ) -> Vec<Result<StoredInput>> {
+    /// The index counts the stored chains before the answer, also when no
+    /// parsed rows followed them; a failure is retried after the turn.
+    fn refresh_after_group(&mut self) {
+        if let Err(error) = self.refresh_chain_progress() {
+            self.report.errors.push(format!("chain progress: {error}"));
+        }
+    }
+
+    /// Checks a group and appends its files to the segment without waiting
+    /// for their sync. A group that needs no append is answered here.
+    fn append_group(&mut self, mut group: Vec<PreparedBatch>) -> Appending {
         if group.is_empty() {
-            return Vec::new();
+            return Appending::Answered(Vec::new());
         }
         if self.sinex.is_some() {
-            return self.primary_store_group(group);
+            return Appending::Answered(self.primary_store_group(group));
         }
-        let independent = !atomic_acquisition(&group);
         for item in &group {
             if let Err(error) = self.check_staged(item) {
-                return errors(&group, error);
+                return Appending::Answered(errors(&group, error));
             }
         }
         match self.repeated_imports(&group) {
-            Ok(Some(stored)) => return stored.into_iter().map(Ok).collect(),
+            Ok(Some(stored)) => return Appending::Answered(stored.into_iter().map(Ok).collect()),
             Ok(None) => {}
-            Err(error) => return errors(&group, error),
+            Err(error) => return Appending::Answered(errors(&group, error)),
         }
         let files = group
             .iter_mut()
             .flat_map(|item| item.files.drain(..))
             .collect::<Vec<_>>();
-        let synced = if !files.is_empty() {
-            if self.segment.is_none() {
-                match crate::blobs::open_writer(&self.archive, &self.location.root) {
-                    Ok(writer) => self.segment = Some(writer),
-                    Err(error) => return errors(&group, error),
-                }
-            }
-            let writer = self.segment.as_mut().expect("opened segment writer");
-            let prepared = files.into_iter().map(PreparedBytes::into_prepared);
-            let appended = writer.append_group(prepared, |hash| {
-                crate::blobs::load_extent(&self.archive, "", hash)
-                    .map_err(|error| hashed_blobs::Error::Io(std::io::Error::other(error)))
-            });
-            let pending = match appended {
-                Ok(pending) => pending,
-                Err(error) => {
-                    self.segment.take();
-                    return errors(&group, error.into());
-                }
-            };
-            if let Err(error) = crate::fault::check("segment.after_append", "") {
+        let mut appended = AppendedGroup {
+            items: group,
+            files,
+            pending: None,
+        };
+        if appended.files.is_empty() {
+            return Appending::Appended(appended);
+        }
+        match self.append_files(&mut appended) {
+            Ok(()) => Appending::Appended(appended),
+            Err(error) => Appending::Answered(errors(&appended.items, error)),
+        }
+    }
+
+    /// Appends the group's files; it keeps them, so a group whose append
+    /// a failed earlier group truncated can be appended again.
+    fn append_files(&mut self, group: &mut AppendedGroup) -> Result<()> {
+        if self.segment.is_none() {
+            self.segment = Some(crate::blobs::open_writer(
+                &self.archive,
+                &self.location.root,
+            )?);
+        }
+        let writer = self.segment.as_mut().expect("opened segment writer");
+        let prepared = group
+            .files
+            .iter()
+            .cloned()
+            .map(PreparedBytes::into_prepared);
+        let appended = writer.append_group(prepared, |hash| {
+            crate::blobs::load_extent(&self.archive, "", hash)
+                .map_err(|error| hashed_blobs::Error::Io(std::io::Error::other(error)))
+        });
+        match appended {
+            Ok(pending) => group.pending = Some(pending),
+            Err(error) => {
                 self.segment.take();
-                return errors(&group, error);
+                return Err(error.into());
             }
-            let synced = match pending.wait() {
-                Ok(synced) => synced,
-                Err(error) => {
+        }
+        if let Err(error) = crate::fault::check("segment.after_append", group.subject()) {
+            self.segment.take();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Waits for the group's sync, commits its extents with the revisions
+    /// and observations that cite them, then writes its parsed rows. Parsed
+    /// rows of independent inputs that are refused together are written
+    /// again batch by batch, so one bad batch costs only itself; one logical
+    /// acquisition ([`atomic_acquisition`]) succeeds or fails as a whole.
+    fn commit_group(&mut self, group: AppendedGroup) -> Vec<Result<StoredInput>> {
+        let AppendedGroup {
+            items: mut group,
+            files: _,
+            pending,
+        } = group;
+        let independent = !atomic_acquisition(&group);
+        let synced = match pending {
+            Some(pending) => {
+                let synced = match pending.wait() {
+                    Ok(synced) => synced,
+                    Err(error) => {
+                        self.segment.take();
+                        return errors(&group, error.into());
+                    }
+                };
+                if let Err(error) = crate::fault::check("segment.after_sync", subject(&group)) {
                     self.segment.take();
-                    return errors(&group, error.into());
+                    return errors(&group, error);
                 }
-            };
-            if let Err(error) = crate::fault::check("segment.after_sync", "") {
-                self.segment.take();
-                return errors(&group, error);
+                Some(synced)
             }
-            Some(synced)
-        } else {
-            None
+            None => None,
         };
         let stored = match self.write_rows_first(&mut group, synced.as_ref()) {
             Ok(stored) => stored,
@@ -198,7 +314,7 @@ impl Inner {
             }
         };
         if let Some(synced) = synced {
-            if let Err(error) = crate::fault::check("segment.after_commit", "") {
+            if let Err(error) = crate::fault::check("segment.after_commit", subject(&group)) {
                 self.segment.take();
                 return errors(&group, error);
             }
