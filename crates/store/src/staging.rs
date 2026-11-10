@@ -1,5 +1,6 @@
 //! Input bytes use one encoded preparation in both modes. The standalone
-//! writer appends it to its segment; the primary producer adopts its custody.
+//! writer appends it to its segment; the primary producer sends the stored
+//! encoding.
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
 use rusqlite::{Connection, OptionalExtension};
@@ -44,14 +45,15 @@ impl PreparedBytes {
             path: Some(self.temporary.to_path_buf()),
         })
     }
+    /// The encoding to append, reopened from its staged name: prepared files
+    /// stay closed until their append, so a group of any size holds no
+    /// descriptor per member. Its preparation computed the descriptor, so
+    /// only the length is checked here; the append checks the encoded digest
+    /// while it copies, and refuses a changed file.
     pub(crate) fn into_prepared(self) -> hashed_blobs::Result<hashed_blobs::Prepared> {
-        // Reopening private custody verifies both encoded and plain identities
-        // before append. No decoded bytes are written and no encoding repeats.
-        hashed_blobs::Prepared::from_encoded(
+        hashed_blobs::Prepared::from_own_encoding(
             std::fs::File::open(self.temporary.as_ref()).map_err(hashed_blobs::Error::Io)?,
             self.descriptor,
-            None,
-            hashed_blobs::ReadLimits::default(),
         )
     }
 }
