@@ -2,6 +2,7 @@
 use super::*;
 use polylogue_query::{Bindings, SavedQuery, SavedQueryBody};
 use rusqlite::Connection;
+use std::collections::BTreeSet;
 
 /// Semantic objects prepared by the owner's one ordered preflight. This is
 /// neither canonical nor queued custody; final acceptance never supplies it.
@@ -54,19 +55,76 @@ pub(crate) fn prepare_query_plan_on(
         }
         .into());
     }
-    let definitions = crate::assertions::saved_query_snapshot(authored)?;
+    let bindings = named_definitions(
+        original,
+        authored,
+        text,
+        &native.origins,
+        pending,
+        provisional,
+    )?;
+    Ok(polylogue_query::plan::prepare(
+        text,
+        &bindings,
+        |condition| resolve_reference(condition, self_session),
+    )?)
+}
+
+/// The ids written as `result:<id>` in `text`, read from its characters.
+fn spelled_kept_results(text: &str) -> impl Iterator<Item = &str> {
+    text.match_indices("result:").filter_map(|(at, prefix)| {
+        let rest = &text[at + prefix.len()..];
+        let end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
+            .unwrap_or(rest.len());
+        let id = &rest[..end];
+        (!id.is_empty()).then_some(id)
+    })
+}
+
+/// The definitions a query names, and only those: its saved names with
+/// their frozen closures, the retained questions it names by hash or by
+/// prefix, and the kept results it or those definitions read. Other saved
+/// queries and kept bodies are never read, so an unrelated query costs the
+/// same however many of them are stored.
+pub(crate) fn named_definitions(
+    original: &Connection,
+    authored: &Connection,
+    text: &str,
+    origins: &[String],
+    pending: Option<&dyn crate::primary::Sinex>,
+    provisional: Option<&ProvisionalQueries>,
+) -> Result<Bindings, SelectionError> {
     let mut bindings = Bindings {
-        origins: native.origins.clone(),
-        saved: saved_queries_from(
-            original,
-            authored,
-            pending,
-            provisional,
-            definitions.definitions,
-        )?,
-        kept: kept_results(authored, crate::source::Source::reading(authored)?)?,
+        origins: origins.to_vec(),
+        ..Default::default()
     };
-    let parsed = polylogue_query::parse::with_catalog(text, &bindings.catalog())?;
+    // Names are read from the syntax before any definition is loaded. Some
+    // syntax (a join's `match.` fields) is checked against a kept result's
+    // columns, so text that does not parse alone is read again with the kept
+    // results it spells out. Text that still does not parse names nothing
+    // more; preparing it reports why.
+    let parsed = match polylogue_query::parse::with_catalog(text, &bindings.catalog()) {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            bindings.kept = kept_results_named(
+                authored,
+                crate::source::Source::reading(authored)?,
+                spelled_kept_results(text),
+            )?;
+            match polylogue_query::parse::with_catalog(text, &bindings.catalog()) {
+                Ok(parsed) => parsed,
+                Err(_) => return Ok(bindings),
+            }
+        }
+    };
+    let names: BTreeSet<String> = polylogue_query::plan::referenced_saved_names(&parsed)
+        .into_iter()
+        .collect();
+    let definitions =
+        crate::assertions::saved_query_snapshot(authored, names.iter().map(String::as_str))?
+            .definitions;
+    bindings.saved = saved_queries_from(original, authored, pending, provisional, definitions)?;
     // `query:<prefix>`: a unique prefix of 12 or more hex characters names the
     // retained question it starts. Saved names are never all hex, so a prefix
     // cannot shadow one.
@@ -121,28 +179,24 @@ pub(crate) fn prepare_query_plan_on(
             bindings.saved.entry(id).or_insert(nodes);
         }
     }
-    Ok(polylogue_query::plan::prepare(
-        text,
-        &bindings,
-        |condition| resolve_reference(condition, self_session),
-    )?)
-}
-
-/// Graph-selected assertions and retained objects are one definition authority
-/// for both ordinary readers and native accepting transactions.
-pub(crate) fn saved_queries_on(
-    original: &Connection,
-    conn: &Connection,
-    pending: Option<&dyn crate::primary::Sinex>,
-    provisional: Option<&ProvisionalQueries>,
-) -> Result<BTreeMap<String, Vec<SavedQuery>>, SelectionError> {
-    saved_queries_from(
-        original,
-        conn,
-        pending,
-        provisional,
-        crate::assertions::saved_queries(conn)?,
-    )
+    let mut kept: BTreeSet<String> = polylogue_query::plan::referenced_kept_results(&parsed)
+        .into_iter()
+        .collect();
+    for definition in bindings.saved.values().flatten() {
+        if let SavedQueryBody::Frozen { syntax, .. } = &definition.body {
+            match polylogue_query::parse::with_catalog(syntax, &bindings.catalog()) {
+                Ok(saved) => kept.extend(polylogue_query::plan::referenced_kept_results(&saved)),
+                // Text whose syntax needs a kept result's columns names them.
+                Err(_) => kept.extend(spelled_kept_results(syntax).map(str::to_owned)),
+            }
+        }
+    }
+    bindings.kept = kept_results_named(
+        authored,
+        crate::source::Source::reading(authored)?,
+        kept.iter().map(String::as_str),
+    )?;
+    Ok(bindings)
 }
 
 pub(super) fn saved_queries_for_family(

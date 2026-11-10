@@ -229,8 +229,9 @@ impl<'a> Compiler<'a> {
             AggregateFunction::Max => (value(format!("max({expr})"), kind), kind),
             // The percentile aggregate ranks floats; an amount comes back as
             // integer nano-USD.
+            // Amounts rank as integers, so every nano-USD stays exact.
             AggregateFunction::Percentile(p) if kind == ColKind::Money => {
-                (format!("pl_money(pl_percentile({expr}, {p}))"), kind)
+                (format!("pl_integer_percentile({expr}, {p})"), kind)
             }
             AggregateFunction::Percentile(p) => {
                 (value(format!("pl_percentile({expr}, {p})"), kind), kind)

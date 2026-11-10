@@ -117,7 +117,8 @@ pub enum Value {
     EmbeddingProvider(EmbeddingProvider),
     Text(String),
     Endpoint(String),
-    NonnegativeNumber(#[serde(deserialize_with = "buffered_value")] f64),
+    /// A price in USD per million tokens, held exactly (see [`crate::Rate`]).
+    NonnegativeNumber(#[serde(deserialize_with = "buffered_value")] crate::Rate),
     Plan(Plan),
 }
 // Tagged authored values pass through serde's buffered content. Normalize
@@ -160,7 +161,7 @@ impl Value {
             Self::InterruptBudget(value) => value.to_string(),
             Self::EmbeddingProvider(value) => value.as_str().into(),
             Self::Text(value) | Self::Endpoint(value) => value.clone(),
-            Self::NonnegativeNumber(value) => value.to_string(),
+            Self::NonnegativeNumber(value) => serde_json::Number::from(*value).to_string(),
             Self::Plan(value) => serde_json::to_string(value)?,
         })
     }
@@ -335,13 +336,9 @@ pub fn parse(key: &str, text: &str, owner: Owner) -> Result<Value, Error> {
             Value::Endpoint(text.to_string())
         }
         Kind::NonnegativeNumber => {
-            let value: f64 = text
-                .parse()
-                .map_err(|_| invalid("a finite nonnegative number"))?;
-            if !value.is_finite() || value < 0.0 {
-                return Err(invalid("a finite nonnegative number"));
-            }
-            Value::NonnegativeNumber(value)
+            let refused = || invalid("a nonnegative decimal with at most six decimals");
+            let number: serde_json::Number = text.trim().parse().map_err(|_| refused())?;
+            Value::NonnegativeNumber(crate::Rate::try_from(number).map_err(|_| refused())?)
         }
         Kind::Plan => {
             let value: Plan =

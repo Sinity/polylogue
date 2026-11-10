@@ -146,6 +146,7 @@ pub fn register(conn: &Connection) -> rusqlite::Result<()> {
         Ok(i64::from_le_bytes(bytes))
     })?;
     conn.create_aggregate_function("pl_percentile", 2, FLAGS, Percentile)?;
+    conn.create_aggregate_function("pl_integer_percentile", 2, FLAGS, IntegerPercentile)?;
     conn.create_scalar_function("pl_similarity", 1, FunctionFlags::SQLITE_UTF8, |ctx| {
         let Some(hash) = ctx.get::<Option<Vec<u8>>>(0)? else {
             return Ok(None);
@@ -208,6 +209,40 @@ impl rusqlite::functions::Aggregate<(Vec<f64>, f64), Option<f64>> for Percentile
             return Ok(None);
         }
         values.sort_by(f64::total_cmp);
+        let rank = ((p / 100.0) * values.len() as f64).ceil() as usize;
+        Ok(Some(values[rank.clamp(1, values.len()) - 1]))
+    }
+}
+
+/// `pl_integer_percentile(x, p)`: [`Percentile`] over integer values compared
+/// as integers (money in nano-USD), so values above 2^53 keep every digit.
+struct IntegerPercentile;
+
+impl rusqlite::functions::Aggregate<(Vec<i64>, f64), Option<i64>> for IntegerPercentile {
+    fn init(&self, _: &mut Context<'_>) -> rusqlite::Result<(Vec<i64>, f64)> {
+        Ok((vec![], 50.0))
+    }
+
+    fn step(&self, ctx: &mut Context<'_>, acc: &mut (Vec<i64>, f64)) -> rusqlite::Result<()> {
+        if let Some(x) = ctx.get::<Option<i64>>(0)? {
+            acc.0.push(x);
+        }
+        acc.1 = ctx.get::<f64>(1)?.clamp(0.0, 100.0);
+        Ok(())
+    }
+
+    fn finalize(
+        &self,
+        _: &mut Context<'_>,
+        acc: Option<(Vec<i64>, f64)>,
+    ) -> rusqlite::Result<Option<i64>> {
+        let Some((mut values, p)) = acc else {
+            return Ok(None);
+        };
+        if values.is_empty() {
+            return Ok(None);
+        }
+        values.sort_unstable();
         let rank = ((p / 100.0) * values.len() as f64).ceil() as usize;
         Ok(Some(values[rank.clamp(1, values.len()) - 1]))
     }

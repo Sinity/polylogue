@@ -18,7 +18,7 @@ use serde_json::Value;
 
 mod execution;
 mod prepare;
-pub(crate) use prepare::{ProvisionalQueries, prepare_query_plan_on, saved_queries_on};
+pub(crate) use prepare::{ProvisionalQueries, prepare_query_plan_on};
 
 mod keyed;
 use std::{collections::BTreeMap, ops::ControlFlow, sync::Arc};
@@ -223,7 +223,7 @@ impl Reader<'_> {
     ) -> Result<PreparedSelection<'read>, SelectionError> {
         self.with_clock(&options.clock, || {
             let plan = self.prepare_query_plan(text, options)?;
-            let program = crate::query::lower(&plan, options)?;
+            let program = self.lower_plan(&plan, options)?;
             self.validate_selection(&program)?;
             self.finish_selection(plan, program, None, options)
         })
@@ -249,8 +249,9 @@ impl Reader<'_> {
         let scope = self.scope_token();
         scope.check()?;
         let mut options = options.clone();
-        options.saved = self.selection_saved_queries()?;
-        options.kept = self.selection_kept_results()?;
+        let named = self.selection_definitions(target, &options.origins)?;
+        options.saved = named.saved;
+        options.kept = named.kept;
         let direct = match Reference::parse(target)
             .ok()
             .filter(|reference| reference_unit(reference).is_some())
@@ -319,7 +320,7 @@ impl Reader<'_> {
                 object,
             )?;
             let plan = polylogue_query::plan::replay(object, expected_catalog)?;
-            let program = crate::query::lower(&plan, options)?;
+            let program = self.lower_plan(&plan, options)?;
             self.validate_selection(&program)?;
             self.finish_selection(plan, program, None, options)
         })
@@ -801,35 +802,53 @@ impl Reader<'_> {
         Ok(values)
     }
 
-    pub fn selection_saved_queries(
+    /// The saved queries and kept results `text` names, read from this
+    /// pinned snapshot, and nothing else (see [`prepare::named_definitions`]).
+    pub fn selection_definitions(
         &self,
-    ) -> Result<BTreeMap<String, Vec<polylogue_query::SavedQuery>>, SelectionError> {
+        text: &str,
+        origins: &[String],
+    ) -> Result<polylogue_query::Bindings, SelectionError> {
         let conn = self.conn()?;
-        let values = saved_queries_on(conn, conn, None, None);
+        let values = prepare::named_definitions(conn, conn, text, origins, None, None);
         self.conn()?;
         values
     }
 
-    pub fn selection_kept_results(
-        &self,
-    ) -> Result<BTreeMap<String, polylogue_query::Kept>, SelectionError> {
+    /// Lower a plan against the kept results it reads as this snapshot holds
+    /// them: lowering checks each against the plan's bound columns.
+    pub fn lower_plan(&self, plan: &Plan, options: &Options) -> Result<Program, SelectionError> {
         let conn = self.conn()?;
-        let values = kept_results(conn, crate::source::Source::Cache)?;
+        let mut options = options.clone();
+        options.kept = kept_results_named(
+            conn,
+            crate::source::Source::Cache,
+            plan.bindings().kept.keys().map(String::as_str),
+        )?;
         self.conn()?;
-        Ok(values)
+        Ok(crate::query::lower(plan, &options)?)
     }
 }
-/// One canonical kept-column decoder serves pinned readers and writer admission.
-pub(crate) fn kept_results(
+/// The kept results with these ids, through the one kept-column decoder that
+/// pinned readers and writer admission share; an id with no stored result is
+/// absent from the map.
+pub(crate) fn kept_results_named<'a>(
     conn: &rusqlite::Connection,
     source: crate::source::Source,
+    ids: impl IntoIterator<Item = &'a str>,
 ) -> crate::Result<BTreeMap<String, polylogue_query::Kept>> {
-    let sql = source.sql(&kept_sql("SELECT id,rows_json FROM @source.kept_result"));
+    let ids: Vec<&str> = ids.into_iter().collect();
+    if ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let sql = source.sql(&kept_sql(
+        "SELECT id,rows_json FROM @source.kept_result WHERE id IN (SELECT value FROM json_each(?1))",
+    ));
     let mut statement = conn.prepare_cached(&sql)?;
-    decode_kept(statement.query([])?)
+    decode_kept(statement.query([serde_json::to_string(&ids)?])?)
 }
 
-/// Refuses a kept body that [`kept_results`] cannot decode, so a stored kept
+/// Refuses a kept body that [`kept_results_named`] cannot decode, so a stored kept
 /// result can always be read back by every later preparation.
 pub(crate) fn check_kept_body(
     conn: &rusqlite::Connection,

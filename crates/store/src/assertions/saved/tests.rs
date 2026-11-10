@@ -44,8 +44,15 @@ fn saved_loader_preserves_declared_hash_denominator_and_cross_name_family_confli
     // Restore facts out of graph order; a local receipt never chooses a head.
     super::super::apply(&conn, &[right, first, left], 7).unwrap();
     conn.execute_batch("BEGIN").unwrap();
-    let saved = saved_queries(&conn).unwrap();
+    let saved = saved_query_snapshot(&conn, ["original", "renamed-left", "renamed-right"])
+        .unwrap()
+        .definitions;
     assert!(!saved.contains_key("original"));
+    // Only the names asked for are loaded, through whichever revision named them.
+    let one = saved_query_snapshot(&conn, ["renamed-left"])
+        .unwrap()
+        .definitions;
+    assert_eq!(one.keys().collect::<Vec<_>>(), ["renamed-left"]);
     for (name, id, hash) in [("renamed-left", "left", 2), ("renamed-right", "right", 3)] {
         let [definition] = saved[name].as_slice() else {
             panic!("one definition under each name")

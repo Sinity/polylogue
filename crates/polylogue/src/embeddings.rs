@@ -111,7 +111,7 @@ pub struct Provider {
     pub kind: ProviderKind,
     pub endpoint: String,
     pub model: String,
-    pub price_per_mtok: Option<f64>,
+    pub price_per_mtok: Option<polylogue_model::Rate>,
     credentials: Credentials,
 }
 
@@ -168,7 +168,7 @@ impl Provider {
             .map_err(|error| error.to_string())?
         {
             Some(Value::NonnegativeNumber(value)) => Some(*value),
-            None if kind == ProviderKind::Local => Some(0.0),
+            None if kind == ProviderKind::Local => Some(polylogue_model::Rate::ZERO),
             None => None,
             _ => return Err("invalid typed embed.price_per_mtok".into()),
         };
@@ -396,7 +396,7 @@ pub struct Preview {
     /// About four characters per token; the provider counts exactly.
     pub tokens_estimate: u64,
     /// `None`: the price is unknown (set `embed.price_per_mtok`).
-    pub cost_usd_estimate: Option<f64>,
+    pub cost_estimate: Option<polylogue_model::money::Amount>,
     pub already_embedded: u64,
 }
 
@@ -524,10 +524,21 @@ pub fn preview(
         Ok(true)
     })?;
     p.tokens_estimate = p.characters.div_ceil(4);
-    p.cost_usd_estimate = provider
+    p.cost_estimate = provider
         .price_per_mtok
-        .map(|price| price * p.tokens_estimate as f64 / 1_000_000.0);
+        .and_then(|price| purchase_estimate(p.tokens_estimate, price));
     Ok(p)
+}
+
+/// The price of `tokens` at `price`: tokens times pico-USD per token, rounded
+/// once to nano-USD.
+fn purchase_estimate(
+    tokens: u64,
+    price: polylogue_model::Rate,
+) -> Option<polylogue_model::money::Amount> {
+    let pico = i128::from(tokens).checked_mul(price.pico_usd_per_token())?;
+    let nusd = polylogue_model::money::rounded_quotient(pico, 1_000)?;
+    i64::try_from(nusd).ok().map(polylogue_model::money::Amount)
 }
 
 pub fn build(

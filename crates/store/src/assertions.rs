@@ -18,7 +18,7 @@ mod saved;
 pub(crate) mod sql;
 pub(crate) use saved::{
     CurrentSavedDefinition, SavedInput, SavedPreparation, SavedResolver, saved_definition,
-    saved_family, saved_queries, saved_query_snapshot,
+    saved_family, saved_query_snapshot,
 };
 mod read;
 pub(crate) mod settings;

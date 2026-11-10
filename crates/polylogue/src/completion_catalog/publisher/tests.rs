@@ -387,8 +387,9 @@ fn late_kept_custody_refreshes_a_saved_inline_dependency_without_a_child_record(
         kept: donor_reads
             .reader()
             .unwrap()
-            .selection_kept_results()
-            .unwrap(),
+            .selection_definitions("result:late-kept", &[])
+            .unwrap()
+            .kept,
         ..Default::default()
     };
     let child = polylogue_query::plan::prepare("result:late-kept", &bindings, |_| Ok(())).unwrap();
