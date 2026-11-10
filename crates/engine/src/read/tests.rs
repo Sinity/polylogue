@@ -232,7 +232,7 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
     // Match the scheduler's read-ahead: retained plans are not advanced while
     // their completed jobs release the byte budget and later inputs enter.
     for plan in &mut plans {
-        pool.submit(plan.next_job(&polylogue_testkit::stopped_attempt()));
+        assert!(pool.submit(plan.next_job(&polylogue_testkit::stopped_attempt())));
     }
     drop(pool);
     engine.writer.flush().unwrap();
@@ -276,7 +276,7 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
         Default::default(),
     );
     for plan in &mut plans {
-        pool.submit(plan.next_job(&polylogue_testkit::stopped_attempt()));
+        assert!(pool.submit(plan.next_job(&polylogue_testkit::stopped_attempt())));
     }
     drop(pool);
     engine.writer.flush().unwrap();
@@ -303,6 +303,121 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
         retained <= budget,
         "consumed chunks retained {retained} bytes outside the {budget}-byte pool budget"
     );
+}
+
+/// The pass can submit a job that does not fit (a continuation enlarged for
+/// a long record) while the queue holds the budget. After a stop, workers
+/// take no queued job, so that room never comes back: the submit must
+/// return on the stop, and the parse already started still commits.
+#[test]
+fn a_submit_waiting_for_room_returns_when_a_stop_is_requested() {
+    use crate::plan::Plan;
+    use crate::pool::{Bytes, Pool};
+    use polylogue_store::fault::{self, Action};
+    use polylogue_store::{Change, InputKey};
+    use std::sync::{Arc, Mutex, mpsc::channel};
+    use std::time::Duration;
+
+    const CHUNK: usize = 64 << 10;
+    let home = polylogue_testkit::ClaudeHome::new();
+    let mut paths = Vec::new();
+    // The third job reads twice the span, as a continuation enlarged for a
+    // long record does, so it and the queued job together exceed the budget
+    // even after the started parse gives its bytes back.
+    let spans = [CHUNK, CHUNK, 2 * CHUNK];
+    for (i, span) in spans.iter().enumerate() {
+        let session = format!("room-{i}");
+        let body = "x".repeat(*span);
+        let records = polylogue_testkit::claude_user(&format!("first-{i}"), &session, &body)
+            + &polylogue_testkit::claude_user(&format!("last-{i}"), &session, "last");
+        let path = home.file(&format!("room-{i}.jsonl"));
+        std::fs::write(&path, records).unwrap();
+        paths.push(path);
+    }
+    {
+        let (mut seed, _lock) = crate::import::tests::engine(&home, CHUNK as u64);
+        let pass = seed.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    }
+    for path in &paths {
+        std::fs::remove_file(path).unwrap();
+    }
+    polylogue_testkit::delete_index(&home.root);
+    let (engine, _lock) = crate::import::tests::engine(&home, CHUNK as u64);
+    let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
+    let mut jobs = Vec::new();
+    for (path, span) in paths.iter().zip(spans) {
+        let input = engine.location_id(path);
+        let reader = engine.reads.reader().unwrap();
+        let progress = reader.input_progress(&input).unwrap().unwrap();
+        let stored = reader
+            .stored_chain(&input, progress.chain, progress.length)
+            .unwrap();
+        let mut plan = Plan::stored(
+            path.clone(),
+            origin,
+            InputKey {
+                id: input,
+                format: "claude-code".into(),
+                arrival_rank: 0,
+            },
+            Change::Reparse {
+                chain: progress.chain,
+            },
+            None,
+            progress.length,
+            0,
+            Bytes::Import(Arc::new(Mutex::new(Imported::from_chain(
+                stored,
+                Arc::clone(&engine.blobs),
+            )))),
+            span as u64,
+            false,
+        );
+        jobs.push(plan.next_job(&polylogue_testkit::stopped_attempt()));
+    }
+    let [started, queued, waiting] = <[_; 3]>::try_from(jobs).ok().unwrap();
+    let (done, received) = channel();
+    let stop = crate::StopRequest::default();
+    let pool = Arc::new(Pool::start(
+        1,
+        2 * CHUNK as u64,
+        engine.writer.sender().unwrap(),
+        Arc::clone(&engine.blobs),
+        engine.archive.clone(),
+        done,
+        stop.clone(),
+    ));
+    fault::clear();
+    fault::arm("parse", "room-0", Action::Hold, 0, 1);
+    assert!(pool.submit(started));
+    while !fault::held() {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // With the worker held, this job stays queued and the budget is full.
+    assert!(pool.submit(queued));
+    let (submitted, answer) = channel();
+    let submitter = Arc::clone(&pool);
+    let submitter = std::thread::spawn(move || {
+        let _ = submitted.send(submitter.submit(waiting));
+    });
+    stop.request();
+    fault::release();
+    let queued = answer
+        .recv_timeout(Duration::from_secs(5))
+        .expect("a submit waiting for room returns once a stop is requested");
+    submitter.join().unwrap();
+    assert!(!queued, "a job submitted after the stop is not queued");
+    assert_eq!(pool.cancel_queued(), 1, "the queued job is taken back");
+    drop(Arc::into_inner(pool).expect("the submitter has ended"));
+    // Only now has the held worker certainly passed its point.
+    fault::clear();
+    engine.writer.flush().unwrap();
+    let completed: Vec<_> = received.into_iter().collect();
+    assert_eq!(completed.len(), 1, "only the started parse reports");
+    assert!(completed[0].error.is_none(), "{:?}", completed[0].error);
+    assert_eq!(completed[0].path, paths[0]);
+    assert!(completed[0].chain.is_some(), "the started parse commits");
 }
 
 #[test]

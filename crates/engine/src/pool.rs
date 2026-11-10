@@ -124,7 +124,7 @@ struct Queue {
 /// keeps what its last job freed for its next one; handing consecutive jobs
 /// to one worker reuses that memory, where waking the longest-idle worker
 /// would leave a job's worth of freed memory with every worker in turn.
-struct Shared {
+pub(crate) struct Shared {
     queue: Mutex<Queue>,
     /// One per worker, so a job wakes the chosen one.
     wake: Vec<Condvar>,
@@ -164,6 +164,7 @@ impl Pool {
             limit: bytes_in_flight.max(1),
             stop,
         });
+        shared.stop.wake(&shared);
         let (acknowledge, pending) = channel();
         let acknowledged = done.clone();
         let acknowledgments = std::thread::Builder::new()
@@ -199,10 +200,20 @@ impl Pool {
     }
 
     /// Queues a job. Blocks while the bytes already in flight are at the
-    /// limit; a job larger than the limit runs alone.
-    pub fn submit(&self, job: Job) {
+    /// limit; a job larger than the limit runs alone. Once a stop is
+    /// requested the job is not queued and this returns false: queued bytes
+    /// come back only through [`Self::cancel_queued`], so waiting for them
+    /// would never end.
+    #[must_use]
+    pub fn submit(&self, job: Job) -> bool {
         let mut q = self.shared.queue.lock().expect("pool lock");
-        while q.in_flight > 0 && q.in_flight + job.bytes() > self.shared.limit {
+        loop {
+            if self.shared.stop.requested() {
+                return false;
+            }
+            if q.in_flight == 0 || q.in_flight + job.bytes() <= self.shared.limit {
+                break;
+            }
             q = self.shared.room.wait(q).expect("pool lock");
         }
         polylogue_store::timing::queue(polylogue_store::timing::Queue::Parse, 1);
@@ -214,6 +225,7 @@ impl Pool {
         if let Some(worker) = q.idle.pop() {
             self.shared.wake[worker].notify_one();
         }
+        true
     }
 
     /// Takes back the jobs no worker has started and returns how many: they
@@ -255,6 +267,16 @@ const GROUP_BYTES: u64 = 64 << 20;
 struct Group {
     waiting: Vec<(Option<PreparedBatch>, Done, u64)>,
     bytes: u64,
+}
+
+impl Shared {
+    /// Wakes submitters waiting for room so they see a stop request. Taking
+    /// the queue lock first means a submitter that checked the request
+    /// before it was made is already waiting.
+    pub(crate) fn wake_for_stop(&self) {
+        drop(self.queue.lock());
+        self.room.notify_all();
+    }
 }
 
 /// Gives `bytes` back to the in-flight budget and wakes waiting submitters.
