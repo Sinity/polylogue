@@ -76,3 +76,14 @@ fn readable_stored_values_decode_and_null_stays_absent() {
         Timestamp::from_unix_ms(1_700_000_000_000).unwrap()
     );
 }
+
+/// An unreadable stored value is the archive's fault, not a bad request.
+#[test]
+fn an_unreadable_stored_value_is_a_store_failure_not_a_bad_request() {
+    let error = crate::StoreError::from(read(&one("-1"), |row| row.get::<_, u64>(0)).unwrap_err());
+    assert!(
+        matches!(error, crate::StoreError::StoredValue { column: 0, .. }),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), "store");
+}

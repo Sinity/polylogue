@@ -4,7 +4,6 @@ const COLUMNS: &str = "id,root,base,source,source_hash,kind,from_lang,to_lang,au
 
 fn variant(row: &rusqlite::Row<'_>) -> Result<Variant> {
     use crate::encoding::Columns;
-    let author: String = row.get(8)?;
     Ok(Variant {
         id: row.get(0)?,
         root: row.get(1)?,
@@ -14,8 +13,7 @@ fn variant(row: &rusqlite::Row<'_>) -> Result<Variant> {
         kind: row.name::<VariantKind>(5)?,
         from_lang: row.get(6)?,
         to_lang: row.get(7)?,
-        author: Author::parse(&author)
-            .map_err(|_| StoreError::Invalid("unknown variant author".into()))?,
+        author: row.id::<Author>(8)?,
         via: row.get(9)?,
         method: row.get(10)?,
         machine: row.get(11)?,

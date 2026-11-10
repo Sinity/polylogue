@@ -220,7 +220,7 @@ fn unsupported_assertion_metadata_returns_an_error_instead_of_invented_facts() {
                 created.id.clone(),
                 created.id.clone()
             )),
-            Err(StoreError::Invalid(_))
+            Err(StoreError::StoredValue { .. })
         ));
     }
 }

@@ -176,6 +176,10 @@ pub enum StoreError {
     Sinex(String),
     #[error("{0}")]
     Invalid(String),
+    /// A value in the archive that this build cannot read back: corrupt or
+    /// foreign stored data, never the caller's request.
+    #[error("stored column {column} is unreadable: {reason}")]
+    StoredValue { column: usize, reason: String },
     #[error(transparent)]
     Query(#[from] polylogue_query::QueryError),
     #[error("{reference} is unavailable: {reason}")]
@@ -224,15 +228,17 @@ impl From<rusqlite::Error> for StoreError {
         {
             return stopped;
         }
-        // A stored value the model cannot read back is invalid stored data,
-        // whichever reader met it; the column error says which column and why.
+        // A row value that does not decode is a fault in the stored data,
+        // whichever reader met it.
         match error {
-            rusqlite::Error::FromSqlConversionFailure(column, _, why) => {
-                Self::Invalid(format!("stored column {column}: {why}"))
-            }
-            rusqlite::Error::IntegralValueOutOfRange(column, value) => {
-                Self::Invalid(format!("stored column {column}: {value} is out of range"))
-            }
+            rusqlite::Error::FromSqlConversionFailure(column, _, why) => Self::StoredValue {
+                column,
+                reason: why.to_string(),
+            },
+            rusqlite::Error::IntegralValueOutOfRange(column, value) => Self::StoredValue {
+                column,
+                reason: format!("{value} is out of range"),
+            },
             error => Self::Sqlite(error),
         }
     }

@@ -32,7 +32,6 @@ fn invalid(message: &str) -> StoreError {
     StoreError::Invalid(message.into())
 }
 fn record(row: &rusqlite::Row<'_>) -> Result<Assertion> {
-    let author: String = row.get(5)?;
     let value: Option<String> = row.get(4)?;
     Ok(Assertion {
         fact: AssertionFact {
@@ -43,7 +42,7 @@ fn record(row: &rusqlite::Row<'_>) -> Result<Assertion> {
             value: value
                 .map(|value| serde_json::from_str(&value))
                 .transpose()?,
-            author: Author::parse(&author).map_err(|_| invalid("unknown assertion author"))?,
+            author: row.id::<Author>(5)?,
             via: row.name::<Channel>(6)?,
             machine: row.get(7)?,
             created_at: row.time_ms(8)?,

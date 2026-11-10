@@ -60,7 +60,7 @@ enum Unreadable {
     #[error("unknown stored name {0:?}")]
     Name(String),
     #[error("stored identity {0:?} does not parse: {1}")]
-    Identity(String, polylogue_model::IdError),
+    Identity(String, String),
     #[error("a stored hash has {0} bytes, not 32")]
     Hash(usize),
     #[error("stored time {0} ms is out of range")]
@@ -71,16 +71,16 @@ fn unreadable(column: usize, kind: rusqlite::types::Type, error: Unreadable) -> 
     rusqlite::Error::FromSqlConversionFailure(column, kind, Box::new(error))
 }
 
-/// An identity the index stores as its text form.
+/// An identity the archive stores as its text form: an ID or an author.
 pub(crate) trait StoredId: Sized {
-    fn parse_stored(text: &str) -> std::result::Result<Self, polylogue_model::IdError>;
+    fn parse_stored(text: &str) -> std::result::Result<Self, String>;
 }
 
 macro_rules! stored_id {
     ($($ty:ty),+) => {$(
         impl StoredId for $ty {
-            fn parse_stored(text: &str) -> std::result::Result<Self, polylogue_model::IdError> {
-                <$ty>::parse(text)
+            fn parse_stored(text: &str) -> std::result::Result<Self, String> {
+                <$ty>::parse(text).map_err(|error| error.to_string())
             }
         }
     )+};
@@ -90,7 +90,8 @@ stored_id!(
     polylogue_model::SessionId,
     MessageId,
     DocumentId,
-    polylogue_model::RunId
+    polylogue_model::RunId,
+    polylogue_model::Author
 );
 
 /// Typed decoding of index columns. A stored value the model cannot read back
