@@ -170,36 +170,55 @@ impl Vectors {
         Ok(rejected)
     }
 
-    /// Stores every purchased vector, keyed by its content.
+    /// Stores every purchased vector, keyed by its content. A vector is
+    /// written once: the same values again are already stored, and different
+    /// values for the same text, key and chunk are refused, since the stored
+    /// one was paid for. Nothing of a refused call is stored.
     pub fn put(&mut self, key: &str, vectors: &[Vector]) -> Result<()> {
-        Self::insert(&mut self.conn, key, vectors)
-    }
-
-    fn insert(conn: &mut Connection, key: &str, vectors: &[Vector]) -> Result<()> {
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut stored = false;
         {
-            let mut stmt = tx.prepare_cached(
+            let mut find = tx.prepare_cached(
+                "SELECT vector FROM embedded WHERE text_hash = ?1 AND model = ?2 AND chunk = ?3",
+            )?;
+            let mut insert = tx.prepare_cached(
                 "INSERT INTO embedded(text_hash, model, chunk, dims, vector, embedded_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(text_hash, model, chunk) DO UPDATE SET
-                     dims = excluded.dims, vector = excluded.vector,
-                     embedded_at = excluded.embedded_at",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
             let now = now_ms();
             for v in vectors {
                 let bytes: Vec<u8> = v.values.iter().flat_map(|f| f.to_le_bytes()).collect();
-                stmt.execute(params![
-                    v.text_hash,
-                    key,
-                    v.chunk,
-                    v.values.len() as i64,
-                    bytes,
-                    now
-                ])?;
+                let known: Option<Vec<u8>> = find
+                    .query_row(params![v.text_hash, key, v.chunk], |r| r.get(0))
+                    .optional()?;
+                match known {
+                    Some(known) if known == bytes => {}
+                    Some(_) => {
+                        return Err(StoreError::Conflict(format!(
+                            "the embeddings store holds a different vector for chunk {} of this text under {key}",
+                            v.chunk
+                        )));
+                    }
+                    None => {
+                        insert.execute(params![
+                            v.text_hash,
+                            key,
+                            v.chunk,
+                            v.values.len() as i64,
+                            bytes,
+                            now
+                        ])?;
+                        stored = true;
+                    }
+                }
             }
         }
         tx.commit()?;
-        wrote();
+        if stored {
+            wrote();
+        }
         Ok(())
     }
 

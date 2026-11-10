@@ -110,7 +110,7 @@ that needs the archive with no daemon running fails with "daemon down"
 | segment log | the bytes of every input revision, as content-addressed blobs in append-only segment files of seekable zstd frames | nothing: it is the source |
 | `archive.db` | what cannot be recomputed: inputs, revisions, chains, extents, observations; the request log (every query run and kept result); assertions, Pages and variants; settings; delivery records | nothing |
 | `index.db` | everything parsed and derived: sessions, messages, blocks, tool calls, attachments, links, derived columns and tables, the search indexes; the positions in `archive.db` and the request log it has applied | the segment log and `archive.db` |
-| embeddings store | message vectors for semantic ranking | the model that made them (vectors bought from a paid provider are kept as data) |
+| embeddings store | message vectors for semantic ranking, each written once: a different vector for the same text, key and chunk is refused, never replaced | the model that made them (vectors bought from a paid provider are kept as data) |
 
 The segment container, blob hashing and member access are the common
 [`hashed-blobs`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/hashed-blobs/README.md)

@@ -938,7 +938,7 @@ pub(super) fn vectors_for(
         )
         .unwrap();
     let mut vectors: Vec<polylogue_store::vectors::Vector> = vec![];
-    for (n, row) in texts.iter().enumerate() {
+    for row in &texts {
         if !has_vector(row["session"].as_str().unwrap_or_default()) {
             continue;
         }
@@ -950,7 +950,9 @@ pub(super) fn vectors_for(
         if vectors.iter().any(|v| v.text_hash == text_hash) {
             continue;
         }
-        let angle = n as f32;
+        // A text's vector depends on the text alone, so storing it again for
+        // another selection stores the same vector.
+        let angle = f32::from(u16::from_le_bytes([text_hash[0], text_hash[1]])) / 64.0;
         vectors.push(polylogue_store::vectors::Vector {
             text_hash,
             chunk: 0,

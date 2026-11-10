@@ -255,7 +255,7 @@ fn purchased_vectors_are_kept_when_their_text_has_no_current_index_row() {
 fn loaded_vectors_keep_their_database_snapshot_revision_after_a_concurrent_write() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
-    texts(&archive, &[&[1]]);
+    texts(&archive, &[&[1], &[2]]);
     let pool = crate::ReadPool::open(&archive).unwrap();
     let writer_reader = pool.reader().unwrap();
     let key = "synthetic/model/2/document/unit";
@@ -273,11 +273,12 @@ fn loaded_vectors_keep_their_database_snapshot_revision_after_a_concurrent_write
     let old_reader = pool.reader().unwrap();
     let old = old_reader.vectors().unwrap();
     let revision = old.revision(key).unwrap();
+    // A concurrent write: another text's vector.
     writer
         .put(
             key,
             &[Vector {
-                text_hash: vec![1],
+                text_hash: vec![2],
                 chunk: 0,
                 values: vec![0., 1.],
             }],
@@ -285,11 +286,13 @@ fn loaded_vectors_keep_their_database_snapshot_revision_after_a_concurrent_write
         .unwrap();
     let old_load = Arc::new(old.load(key).unwrap());
     assert_eq!(old_load.revision, revision);
-    assert_eq!(old_load.similarity(&[1., 0.]).unwrap().of(&[1]), Some(1.));
+    assert_eq!(old_load.vectors(), 1);
+    assert_eq!(old_load.similarity(&[1., 0.]).unwrap().of(&[2]), None);
     let new_reader = pool.reader().unwrap();
     let new_load = Arc::new(new_reader.vectors().unwrap().load(key).unwrap());
     assert!(new_load.revision > revision);
-    assert_eq!(new_load.similarity(&[1., 0.]).unwrap().of(&[1]), Some(0.));
+    assert_eq!(new_load.vectors(), 2);
+    assert_eq!(new_load.similarity(&[1., 0.]).unwrap().of(&[2]), Some(0.));
 }
 
 #[test]
@@ -363,4 +366,40 @@ fn embeddings_writer_uses_full_sync() {
         .pragma_query_value(None, "synchronous", |row| row.get(0))
         .unwrap();
     assert_eq!(synchronous, 2);
+}
+
+#[test]
+fn put_refuses_different_vector() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let mut vectors = reader.vectors_writer().unwrap();
+    let key = "paid/synthetic/2/document/unit";
+    let vector = |text: u8, values: Vec<f32>| Vector {
+        text_hash: vec![text; 32],
+        chunk: 0,
+        values,
+    };
+    let stored = || -> Vec<(Vec<u8>, Vec<u8>)> {
+        let conn = rusqlite::Connection::open(archive.embeddings_db()).unwrap();
+        conn.prepare("SELECT text_hash, vector FROM embedded ORDER BY text_hash")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    vectors.put(key, &[vector(1, vec![1.0, 0.0])]).unwrap();
+    let first = stored();
+    // The same vector again is already stored.
+    vectors.put(key, &[vector(1, vec![1.0, 0.0])]).unwrap();
+    assert_eq!(stored(), first);
+    // A different one for the same text, key and chunk is refused, and
+    // nothing else the call carried is stored.
+    let error = vectors
+        .put(key, &[vector(2, vec![0.0, 1.0]), vector(1, vec![0.0, 1.0])])
+        .unwrap_err();
+    assert!(matches!(error, crate::StoreError::Conflict(_)), "{error}");
+    assert_eq!(stored(), first);
 }
