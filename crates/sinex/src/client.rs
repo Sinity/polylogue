@@ -298,8 +298,9 @@ impl Client {
                 },
             )
         };
-        if let Some(body) = body {
-            frame_bytes::write_prepared(&self.store_root, &self.producer, &prepared.identity, body)
+        // A chunked material's frame directory holds every chunk's encoding.
+        for part in body.into_iter().flatten() {
+            frame_bytes::write_prepared(&self.store_root, &self.producer, &prepared.identity, part)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
         }
         let body = if prepared

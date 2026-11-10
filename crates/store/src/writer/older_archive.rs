@@ -302,25 +302,25 @@ impl Inner {
                 let input = &group.inputs[index];
                 let rows =
                     |revision: Option<crate::input_rows::Revision>,
-                     extent: Option<crate::input_rows::Extent>,
+                     extents: Vec<crate::input_rows::Extent>,
                      observation: Option<crate::input_rows::ObservationRow>| {
                         InputRows {
                             acquisition: None,
                             input: input.id.clone(),
                             format: input.format.clone(),
                             revision,
-                            extent,
+                            extents,
                             observation,
                         }
                     };
                 for revision in &input.revisions {
-                    rows(Some(revision.clone()), None, None).insert(&tx, seq)?;
+                    rows(Some(revision.clone()), Vec::new(), None).insert(&tx, seq)?;
                 }
                 for extent in &input.extents {
-                    rows(None, Some(extent.clone()), None).insert(&tx, seq)?;
+                    rows(None, vec![extent.clone()], None).insert(&tx, seq)?;
                 }
                 for observation in &input.observations {
-                    rows(None, None, Some(observation.clone())).insert(&tx, seq)?;
+                    rows(None, Vec::new(), Some(observation.clone())).insert(&tx, seq)?;
                 }
             }
             crate::write_lock::commit(tx)?;

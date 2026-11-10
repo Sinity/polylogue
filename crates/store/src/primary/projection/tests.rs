@@ -18,7 +18,7 @@ fn input(position: i64, id: &str) -> Confirmed {
                 input: id.into(),
                 format: "synthetic".into(),
                 revision: None,
-                extent: None,
+                extents: Vec::new(),
                 observation: None,
             }),
             material: None,
@@ -352,13 +352,13 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
                     chain: 1,
                     length: 2,
                 }),
-                extent: Some(crate::input_rows::Extent {
+                extents: vec![crate::input_rows::Extent {
                     chain: 1,
                     offset: 0,
                     length: 2,
                     blob: hash,
                     blob_offset,
-                }),
+                }],
             }),
             material: Some(material.clone()),
         })),
@@ -480,7 +480,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
                     chain: 1,
                     length: 1,
                 }),
-                extent: None,
+                extents: Vec::new(),
                 observation: None,
             }),
             material: None,
@@ -628,7 +628,7 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
                     chain: 1,
                     length: 1,
                 }),
-                extent: None,
+                extents: Vec::new(),
                 observation: None,
             }),
             material: None,
@@ -695,6 +695,7 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
 }
 
 mod checkpoints;
+mod chunks;
 mod receipts;
 mod source_memberships;
 

@@ -138,18 +138,18 @@ fn later_chunks_keep_their_actual_admission_when_one_revision_grows() {
                 chain: 1,
                 length: 4,
             }),
-            extent: Some(crate::input_rows::Extent {
+            extents: vec![crate::input_rows::Extent {
                 chain: 1,
                 offset: 0,
                 length: 4,
                 blob: hash,
                 blob_offset: 0,
-            }),
+            }],
         };
         row.insert(&conn, 2).unwrap();
         row.revision.as_mut().unwrap().length = 8;
-        row.extent.as_mut().unwrap().offset = 4;
-        row.extent.as_mut().unwrap().blob_offset = 4;
+        row.extents[0].offset = 4;
+        row.extents[0].blob_offset = 4;
         row.insert(&conn, 9).unwrap();
         assert_eq!(
             Source::admitted_through(&conn, "input", 1, 4).unwrap(),
@@ -234,7 +234,7 @@ fn a_proven_shorter_prefix_has_a_receipt_without_replacing_native_progress() {
         input: "native".into(),
         format: "synthetic".into(),
         revision: None,
-        extent: None,
+        extents: Vec::new(),
         observation: Some(crate::input_rows::ObservationRow {
             id: "prefix-four".into(),
             machine: "machine".into(),

@@ -104,7 +104,10 @@ enum Msg {
     DrainPrimaryCaptures(SyncSender<Result<()>>),
     /// The stream follower handled a page, or failed to read one.
     StreamFollowed(Option<String>),
-    CaptureBody(String, SyncSender<Result<crate::primary::PreparedBody>>),
+    CaptureBody(
+        String,
+        SyncSender<Result<Vec<crate::primary::PreparedBody>>>,
+    ),
     Capture(String, SyncSender<Result<crate::primary::Capture>>),
     RawAcquisitionCursor(
         Box<crate::primary::RawAcquisitionQuery>,
@@ -679,7 +682,7 @@ impl Writer {
     }
 
     /// Pins one locally durable pending source body without network I/O.
-    pub fn capture_body(&self, identity: String) -> Result<crate::primary::PreparedBody> {
+    pub fn capture_body(&self, identity: String) -> Result<Vec<crate::primary::PreparedBody>> {
         capture_body_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, identity)
     }
 
@@ -1018,7 +1021,7 @@ impl WriterSender {
     }
 
     /// As [`Writer::capture_body`].
-    pub fn capture_body(&self, identity: String) -> Result<crate::primary::PreparedBody> {
+    pub fn capture_body(&self, identity: String) -> Result<Vec<crate::primary::PreparedBody>> {
         capture_body_via(&self.0, identity)
     }
 
@@ -1062,7 +1065,10 @@ fn capture_via(tx: &WriterQueue, identity: String) -> Result<crate::primary::Cap
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
-fn capture_body_via(tx: &WriterQueue, identity: String) -> Result<crate::primary::PreparedBody> {
+fn capture_body_via(
+    tx: &WriterQueue,
+    identity: String,
+) -> Result<Vec<crate::primary::PreparedBody>> {
     let (reply, wait) = sync_channel(1);
     tx.send(Msg::CaptureBody(identity, reply))
         .map_err(|_| StoreError::WriterGone)?;

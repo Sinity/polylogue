@@ -32,7 +32,7 @@ fn rows(id: &str, bytes: Option<Vec<u8>>) -> InputRows {
         input: id.into(),
         format: "synthetic".into(),
         revision: None,
-        extent: None,
+        extents: Vec::new(),
         observation: Some(observation(id, bytes)),
     }
 }
@@ -116,6 +116,7 @@ fn acquisition_evidence_keeps_original_body_when_an_extent_is_trimmed_or_absent(
             generation: None,
             raw_total: None,
             raw_predecessor: None,
+            chunks: Vec::new(),
         };
         conn.execute(
             &source
@@ -131,13 +132,13 @@ fn acquisition_evidence_keeps_original_body_when_an_extent_is_trimmed_or_absent(
             chain: 1,
             length: 12,
         });
-        row.extent = Some(crate::input_rows::Extent {
+        row.extents = vec![crate::input_rows::Extent {
             chain: 1,
             offset: 8,
             length: 4,
             blob: receipt.hash,
             blob_offset: 4,
-        });
+        }];
         row.insert(&conn, 7).unwrap();
         let packed: Vec<u8> = conn
             .query_row(
@@ -150,7 +151,7 @@ fn acquisition_evidence_keeps_original_body_when_an_extent_is_trimmed_or_absent(
             crate::encoding::unpack_json::<AcquisitionReceipt>(&packed).unwrap(),
             receipt
         );
-        row.extent = None;
+        row.extents.clear();
         row.revision = None;
         row.observation.as_mut().unwrap().id = "overlap".into();
         row.observation.as_mut().unwrap().details_json = Some("{\"import\":\"kept\"}".into());
@@ -170,13 +171,13 @@ fn acquisition_evidence_keeps_original_body_when_an_extent_is_trimmed_or_absent(
         );
         row.observation = None;
         assert!(row.insert(&conn, 9).is_err());
-        row.extent = Some(crate::input_rows::Extent {
+        row.extents = vec![crate::input_rows::Extent {
             chain: 1,
             offset: 8,
             length: 4,
             blob: receipt.hash,
             blob_offset: 0,
-        });
+        }];
         assert!(row.insert(&conn, 9).is_err());
         let count: i64 = conn
             .query_row(

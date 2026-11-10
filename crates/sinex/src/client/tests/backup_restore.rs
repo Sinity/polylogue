@@ -66,7 +66,7 @@ fn encoding(
     let queue = sinex.spool.lock().unwrap();
     (
         queue.prepared_frame(identity).unwrap().descriptor(),
-        queue.prepared_body(identity).unwrap().descriptor(),
+        queue.prepared_body(identity).unwrap()[0].descriptor(),
     )
 }
 

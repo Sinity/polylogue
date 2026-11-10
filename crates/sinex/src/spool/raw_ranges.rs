@@ -6,19 +6,37 @@ use polylogue_store::primary::{RawBodyRange, SourceGeneration};
 pub(crate) struct PinnedRange {
     pub order: u64,
     range: RawBodyRange,
-    file: File,
-    descriptor: EncodedBlob,
+    parts: Vec<(File, EncodedBlob)>,
 }
 
 impl PinnedRange {
     /// Payload verification runs after releasing the producer custody lock.
+    /// One encoding names the body; chunks are read through and hashed as
+    /// the body.
     pub fn verify(self) -> Result<RawBodyRange> {
-        let _verified = hashed_blobs::Prepared::from_encoded(
-            self.file,
-            self.descriptor,
-            None,
-            ReadLimits::default(),
-        )?;
+        let several = self.parts.len() > 1;
+        let mut whole = blake3::Hasher::new();
+        let mut length = 0u64;
+        for (file, descriptor) in self.parts {
+            let verified = hashed_blobs::Prepared::from_encoded(
+                file,
+                descriptor,
+                None,
+                ReadLimits::default(),
+            )?;
+            if several {
+                length += std::io::copy(
+                    &mut verified.reader(None, ReadLimits::default())?,
+                    &mut whole,
+                )?;
+            }
+        }
+        if several
+            && (whole.finalize().as_bytes() != &self.range.hash.0
+                || length != self.range.decoded_length)
+        {
+            return invalid("raw custody chunks differ from their original body");
+        }
         Ok(self.range)
     }
 }
@@ -128,11 +146,12 @@ impl Spool {
         let range = input
             .raw_range
             .ok_or_else(|| Error::Invalid("raw custody has no provider interval".into()))?;
-        let (path, descriptor) = self.encoded_body(identity)?;
-        if descriptor.hash.0 != input.hash.0
-            || descriptor.decoded_len != input.length
-            || range.length()? != input.length
-        {
+        let parts = self.encoded_body(identity)?;
+        let named = match parts.as_slice() {
+            [(_, one)] => one.hash.0 == input.hash.0 && one.decoded_len == input.length,
+            several => several.iter().map(|(_, d)| d.decoded_len).sum::<u64>() == input.length,
+        };
+        if !named || range.length()? != input.length {
             return invalid("raw custody body differs from its original interval");
         }
         Ok(PinnedRange {
@@ -147,8 +166,10 @@ impl Spool {
                 predecessor: input.raw_predecessor.clone(),
                 disposition: disposition(self, identity)?,
             },
-            file: regular(&path)?,
-            descriptor,
+            parts: parts
+                .into_iter()
+                .map(|(path, descriptor)| Ok((regular(&path)?, descriptor)))
+                .collect::<Result<_>>()?,
         })
     }
 

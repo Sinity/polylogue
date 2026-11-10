@@ -158,10 +158,10 @@ impl Engine {
                     change: Change::First,
                     observation: Some(observation),
                     continues: false,
-                    new_blob: Some(polylogue_store::NewBlob {
-                        hash: prepared.hash(),
-                        size: prepared.len(),
-                    }),
+                    new_blob: Some(polylogue_store::NewBlob::whole(
+                        prepared.hash(),
+                        prepared.len(),
+                    )),
                     blobs: Vec::new(),
                     length: prepared.len(),
                     parse: {

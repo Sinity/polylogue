@@ -14,8 +14,8 @@ pub(super) fn write_bytes(
 ) -> Result<(Option<i64>, Option<InputRows>)> {
     tx.prepare_cached("INSERT OR IGNORE INTO input(id, format) VALUES (?1, ?2)")?
         .execute(params![b.input.id, b.input.format])?;
-    for new_blob in &b.blobs {
-        insert_blob(tx, new_blob)?;
+    for part in b.blobs.iter().flat_map(NewBlob::parts) {
+        insert_blob(tx, part)?;
     }
     if let Change::Reparse { chain } = b.change {
         if b.new_blob.is_some()
@@ -32,8 +32,8 @@ pub(super) fn write_bytes(
         return Ok((Some(chain), None));
     }
     let (chain, rows) = input_rows(tx, b, seq)?;
-    if let Some(new_blob) = &b.new_blob {
-        insert_blob(tx, new_blob)?;
+    for part in b.new_blob.iter().flat_map(NewBlob::parts) {
+        insert_blob(tx, part)?;
     }
     rows.insert(tx, seq)?;
     Ok((chain, Some(rows)))
@@ -85,7 +85,7 @@ fn input_rows_at(
         input: b.input.id.clone(),
         format: b.input.format.clone(),
         revision: None,
-        extent: None,
+        extents: Vec::new(),
         observation: None,
     };
     if let Change::Observed {
@@ -173,18 +173,8 @@ fn input_rows_at(
             (next, next, 0)
         }
     };
-    // The physical blob is committed even for an empty acquisition. Logical
-    // extents describe covered source bytes, so an empty revision has none.
-    if let Some(new_blob) = &b.new_blob
-        && new_blob.size > 0
-    {
-        rows.extent = Some(Extent {
-            chain,
-            offset: offset as i64,
-            length: new_blob.size as i64,
-            blob: new_blob.hash,
-            blob_offset: 0,
-        });
+    if let Some(new_blob) = &b.new_blob {
+        rows.extents = extents(new_blob, chain, offset);
     }
     if b.observation.is_some() && !b.continues {
         let class = match &b.change {
@@ -202,7 +192,30 @@ fn input_rows_at(
     Ok((Some(chain), rows))
 }
 
-pub(super) fn insert_blob(tx: &Transaction<'_>, new_blob: &NewBlob) -> Result<()> {
+/// Where new bytes sit in their chain from `offset` on: one extent per blob
+/// that holds them. The physical blob is committed even for an empty
+/// acquisition; logical extents describe covered source bytes, so empty
+/// bytes have none.
+pub(super) fn extents(new_blob: &NewBlob, chain: i64, offset: u64) -> Vec<Extent> {
+    let mut offset = offset as i64;
+    new_blob
+        .parts()
+        .filter(|part| part.size > 0)
+        .map(|part| {
+            let extent = Extent {
+                chain,
+                offset,
+                length: part.size as i64,
+                blob: part.hash,
+                blob_offset: 0,
+            };
+            offset += part.size as i64;
+            extent
+        })
+        .collect()
+}
+
+fn insert_blob(tx: &Transaction<'_>, new_blob: crate::Chunk) -> Result<()> {
     let size: Option<i64> = tx
         .query_row(
             "SELECT size FROM blob WHERE hash=?1",

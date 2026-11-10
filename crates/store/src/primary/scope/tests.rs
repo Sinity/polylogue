@@ -21,7 +21,7 @@ fn input(position: i64, id: &str) -> Confirmed {
                 input: id.into(),
                 format: "synthetic".into(),
                 revision: None,
-                extent: None,
+                extents: Vec::new(),
                 observation: None,
             }),
             material: None,

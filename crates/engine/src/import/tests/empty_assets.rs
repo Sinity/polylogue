@@ -187,10 +187,7 @@ fn unrelated_empty_blob(engine: &Engine) {
     engine
         .writer
         .store_blob(
-            polylogue_store::NewBlob {
-                hash: prepared.hash(),
-                size: prepared.len(),
-            },
+            polylogue_store::NewBlob::whole(prepared.hash(), prepared.len()),
             Some(prepared),
         )
         .unwrap();

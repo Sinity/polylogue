@@ -31,6 +31,10 @@ pub struct AcquisitionReceipt {
     pub raw_total: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_predecessor: Option<String>,
+    /// The body's content-defined chunks, in order, when it is stored as
+    /// chunks; empty when it is one blob.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chunks: Vec<crate::Chunk>,
 }
 impl AcquisitionReceipt {
     pub const VERSION: u32 = 1;
@@ -259,5 +263,7 @@ pub struct PendingGroupPage {
 
 /// Enumerates owned encoded bodies one member at a time. The SDK stages every
 /// body and complete private facts before atomically publishing the group.
-pub type CaptureEmitter<'a> = dyn FnMut(CapturedInput, PreparedBody) -> Result<()> + 'a;
+/// Emits one member with its body's encodings in order: one, or one per
+/// content-defined chunk.
+pub type CaptureEmitter<'a> = dyn FnMut(CapturedInput, Vec<PreparedBody>) -> Result<()> + 'a;
 pub type CaptureMembers<'a> = dyn FnMut(&mut CaptureEmitter<'_>) -> Result<()> + 'a;

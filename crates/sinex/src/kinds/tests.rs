@@ -135,7 +135,8 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 | "polylogue.background"
                 | "polylogue.repository" => 5,
                 "polylogue.parse_progress" => 6,
-                "polylogue.input_observation" | "polylogue.query_run" => 4,
+                "polylogue.input_observation" => 5,
+                "polylogue.query_run" => 4,
                 "polylogue.blob" | "polylogue.coverage" | "polylogue.fragment" => 3,
                 "polylogue.assertion" | "polylogue.query" => 2,
                 "polylogue.assertion_restore"

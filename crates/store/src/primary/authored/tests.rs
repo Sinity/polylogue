@@ -360,10 +360,7 @@ fn canonical_refusal_creates_no_prepared_or_applied_state() {
 #[test]
 fn pending_attachment_metadata_is_validated_once_and_reference_survives_missing_blob() {
     let mut conn = cache();
-    let blob = NewBlob {
-        hash: BlobHash::of(b"attachment"),
-        size: 10,
-    };
+    let blob = NewBlob::whole(BlobHash::of(b"attachment"), 10);
     let mut action = chat("attached");
     action.attachments.push(ChatAttachment {
         id: "file".into(),

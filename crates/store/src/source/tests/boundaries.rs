@@ -20,13 +20,13 @@ fn append(conn: &Connection, input: &str, id: &str, seq: i64, from: i64, end: i6
             chain: 1,
             length: end,
         }),
-        extent: Some(Extent {
+        extents: vec![Extent {
             chain: 1,
             offset: from,
             length: end - from,
             blob: hash,
             blob_offset: 0,
-        }),
+        }],
         observation: Some(ObservationRow {
             id: id.into(),
             machine: "machine".into(),

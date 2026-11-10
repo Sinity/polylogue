@@ -75,10 +75,7 @@ fn an_unreferenced_private_stage_is_refused_before_any_group_installation() {
     let source_hash = source.hash();
     let stray_hash = stray.hash();
     let mut batch = batch(&source_hash.to_string(), source.len());
-    batch.new_blob = Some(NewBlob {
-        hash: source_hash,
-        size: source.len(),
-    });
+    batch.new_blob = Some(NewBlob::whole(source_hash, source.len()));
     let result = writer
         .sender()
         .unwrap()
@@ -247,10 +244,7 @@ fn a_late_encoding_refusal_publishes_no_group_and_reopen_can_retry_original_byte
         for body in bodies {
             let prepared = archive.prepare_bytes(body).unwrap();
             let mut item = batch(&prepared.hash().to_string(), prepared.len());
-            item.new_blob = Some(NewBlob {
-                hash: prepared.hash(),
-                size: prepared.len(),
-            });
+            item.new_blob = Some(NewBlob::whole(prepared.hash(), prepared.len()));
             group.push(crate::staging::PreparedBatch {
                 batch: item,
                 files: vec![prepared],
@@ -281,10 +275,7 @@ fn a_late_encoding_refusal_publishes_no_group_and_reopen_can_retry_original_byte
     for body in bodies {
         let prepared = archive.prepare_bytes(body).unwrap();
         let mut item = batch(&prepared.hash().to_string(), prepared.len());
-        item.new_blob = Some(NewBlob {
-            hash: prepared.hash(),
-            size: prepared.len(),
-        });
+        item.new_blob = Some(NewBlob::whole(prepared.hash(), prepared.len()));
         group.push(crate::staging::PreparedBatch {
             batch: item,
             files: vec![prepared],
@@ -316,10 +307,7 @@ fn an_equal_length_change_to_a_staged_file_is_refused_at_append() {
     let body = b"synthetic staged source".as_slice();
     let prepared = archive.prepare_bytes(body).unwrap();
     let mut item = batch(&prepared.hash().to_string(), prepared.len());
-    item.new_blob = Some(NewBlob {
-        hash: prepared.hash(),
-        size: prepared.len(),
-    });
+    item.new_blob = Some(NewBlob::whole(prepared.hash(), prepared.len()));
     // One encoded byte changes and the length stays: only the append's
     // encoded digest can see it.
     let path = prepared.body().unwrap().path.unwrap();

@@ -7,7 +7,7 @@ fn observe(tx: &Transaction<'_>, b: &Batch, seq: i64) {
         input: b.input.id.clone(),
         format: b.input.format.clone(),
         revision: None,
-        extent: None,
+        extents: Vec::new(),
         observation: bytes::observation(tx, b, "deleted", None, seq).unwrap(),
     };
     rows.insert(tx, seq).unwrap();

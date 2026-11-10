@@ -79,7 +79,7 @@ impl Running {
                         "material":capture.material.as_ref().map(|material| (&material.id, material.hash, material.length)),
                         "input":input.rows.input,"format":input.rows.format,"group":input.group,
                         "basis":input.basis,"raw_range":input.raw_range,"generation":input.generation,
-                        "revision":input.rows.revision,"extent":input.rows.extent,
+                        "revision":input.rows.revision,"extents":input.rows.extents,
                         "observation":input.rows.observation.as_ref().map(|observation| serde_json::json!({
                             "id":observation.id,"machine":observation.machine,"path":observation.path,
                             "path_bytes":observation.path_bytes,"class":observation.class,

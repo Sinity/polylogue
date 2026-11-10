@@ -80,14 +80,14 @@ fn acquire_ranges_on(
                     let bytes = vec![b'A' + (ordinal % 26) as u8; range.length()? as usize];
                     let mut input = capture(&bytes, vec![]);
                     // Logical NoExtent still owns the actual provider body.
-                    input.rows.extent = None;
+                    input.rows.extents.clear();
                     input.rows.input = generation.stream().input.id.clone();
                     input.raw_range = Some(range);
                     input.raw_predecessor = (ordinal == 0).then(|| predecessor.clone()).flatten();
                     input.generation = Some(generation.clone());
                     input.raw_total = (range.end == generation.window().end).then_some(range.end);
                     input.basis = Some(basis.clone());
-                    emit(input, body(root, &bytes))?;
+                    emit(input, vec![body(root, &bytes)])?;
                 }
                 Ok(())
             },
@@ -285,7 +285,8 @@ fn raw_cursor_refuses_holes_other_generations_and_corrupt_committed_bodies() {
         .queue()
         .unwrap()
         .encoded_body(cursor.last_body())
-        .unwrap();
+        .unwrap()
+        .remove(0);
     let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
     std::io::Write::write_all(&mut file, b"corrupt").unwrap();
     file.sync_all().unwrap();

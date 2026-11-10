@@ -17,6 +17,7 @@ mod live_first;
 mod one_worker;
 mod reading_version;
 mod returning_files;
+mod rewritten_documents;
 mod started_inputs;
 mod tool_captures;
 

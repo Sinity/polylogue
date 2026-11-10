@@ -59,6 +59,32 @@ impl Bytes {
     }
 }
 
+/// A material's body files: its one encoding (`body.zst`), or the encodings
+/// of its content-defined chunks in order (`body-<n>.zst`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum Body {
+    Whole(Bytes),
+    Chunks(Vec<Bytes>),
+}
+impl Body {
+    pub(crate) fn parts(&self) -> &[Bytes] {
+        match self {
+            Self::Whole(bytes) => std::slice::from_ref(bytes),
+            Self::Chunks(chunks) => chunks,
+        }
+    }
+    fn file_name(&self, index: usize) -> String {
+        match self {
+            Self::Whole(_) => "body.zst".into(),
+            Self::Chunks(_) => format!("body-{index}.zst"),
+        }
+    }
+    fn identity(&self) -> Vec<(&str, u64)> {
+        self.parts().iter().map(Bytes::identity).collect()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Group {
     pub captures_hash: String,
@@ -72,7 +98,7 @@ pub(crate) struct Material {
     pub id: String,
     pub blob: String,
     pub length: u64,
-    pub body: Bytes,
+    pub body: Body,
     pub capture: Option<Capture>,
     pub captured: Option<Bytes>,
     pub control: Option<Control>,
@@ -174,7 +200,7 @@ impl Record {
             _ => None,
         }
     }
-    pub(crate) fn body(&self) -> Option<&Bytes> {
+    pub(crate) fn body(&self) -> Option<&Body> {
         self.material().map(|material| &material.body)
     }
     pub(crate) fn capture(&self) -> Option<&Capture> {
@@ -549,7 +575,12 @@ impl Spool {
             record.frame.descriptor()?.stored_len,
         )?;
         if let Some(body) = record.body() {
-            check_length(&directory.join("body.zst"), body.descriptor()?.stored_len)?;
+            for (index, part) in body.parts().iter().enumerate() {
+                check_length(
+                    &directory.join(body.file_name(index)),
+                    part.descriptor()?.stored_len,
+                )?;
+            }
         }
         if let Some(captured) = record.captured() {
             check_length(
@@ -588,33 +619,48 @@ impl Spool {
         decode_json(self.frame(identity)?)
     }
 
-    pub fn body(&self, identity: &str) -> Result<BlobReader> {
-        self.prepared_body(identity)?
-            .reader(None, ReadLimits::default())
-            .map_err(Into::into)
+    /// The material's bytes, read through its body files in order.
+    pub fn body(&self, identity: &str) -> Result<Box<dyn Read + Send>> {
+        let mut reader: Box<dyn Read + Send> = Box::new(std::io::empty());
+        for part in self.prepared_body(identity)? {
+            reader = Box::new(reader.chain(part.reader(None, ReadLimits::default())?));
+        }
+        Ok(reader)
     }
 
-    /// The caller keeps the named spool inode immutable until the applied barrier.
-    pub fn encoded_body(&self, identity: &str) -> Result<(PathBuf, EncodedBlob)> {
+    /// The body files in order, each with its encoding. The caller keeps the
+    /// named spool inodes immutable until the applied barrier.
+    pub fn encoded_body(&self, identity: &str) -> Result<Vec<(PathBuf, EncodedBlob)>> {
         let prepared = self.required(identity)?;
         let body = prepared
             .body()
             .ok_or_else(|| Error::Invalid("operation has no material body".into()))?;
-        let descriptor = body.descriptor()?;
-        let path = self.operation(identity)?.join("body.zst");
-        check_length(&path, descriptor.stored_len)?;
-        Ok((path, descriptor))
+        let directory = self.operation(identity)?;
+        body.parts()
+            .iter()
+            .enumerate()
+            .map(|(index, part)| {
+                let descriptor = part.descriptor()?;
+                let path = directory.join(body.file_name(index));
+                check_length(&path, descriptor.stored_len)?;
+                Ok((path, descriptor))
+            })
+            .collect()
     }
 
-    /// A pinned handle survives publication retries without a decoded copy.
-    pub fn prepared_body(&self, identity: &str) -> Result<hashed_blobs::Prepared> {
-        let (path, descriptor) = self.encoded_body(identity)?;
-        Ok(hashed_blobs::Prepared::from_encoded(
-            regular(&path)?,
-            descriptor,
-            None,
-            ReadLimits::default(),
-        )?)
+    /// Pinned handles survive publication retries without a decoded copy.
+    pub fn prepared_body(&self, identity: &str) -> Result<Vec<hashed_blobs::Prepared>> {
+        self.encoded_body(identity)?
+            .into_iter()
+            .map(|(path, descriptor)| {
+                Ok(hashed_blobs::Prepared::from_encoded(
+                    regular(&path)?,
+                    descriptor,
+                    None,
+                    ReadLimits::default(),
+                )?)
+            })
+            .collect()
     }
 
     fn receipt(&self, identity: &str) -> Result<Option<Receipt>> {
@@ -686,13 +732,15 @@ impl Spool {
         if !matches!(&frame, Ingress::Material { .. }) {
             return invalid("only a material frame can own encoded bytes");
         }
-        self.prepare_operation(frame, None::<std::io::Empty>, None, None, Some(bytes))
+        self.prepare_operation(frame, None::<std::io::Empty>, None, None, Some(vec![bytes]))
     }
 
+    /// `bytes` are the body's encodings in order: one, or one per chunk the
+    /// frame names.
     pub fn prepare_encoded_capture(
         &self,
         frame: Ingress,
-        bytes: polylogue_store::primary::PreparedBody,
+        bytes: Vec<polylogue_store::primary::PreparedBody>,
         capture: &Capture,
     ) -> Result<Prepared> {
         if !matches!(&frame, Ingress::Material { .. }) {
@@ -784,7 +832,7 @@ impl Spool {
                 return Ok(None);
             };
             if original.frame.identity() != desired.frame.identity()
-                || original.body().map(Bytes::identity) != desired.body().map(Bytes::identity)
+                || original.body().map(Body::identity) != desired.body().map(Body::identity)
                 || original.captured().map(Bytes::identity)
                     != desired.captured().map(Bytes::identity)
             {
@@ -1354,7 +1402,7 @@ impl Spool {
         mut body: Option<R>,
         captures: Option<(&[&str], String)>,
         full_capture: Option<&Capture>,
-        encoded_body: Option<polylogue_store::primary::PreparedBody>,
+        encoded_body: Option<Vec<polylogue_store::primary::PreparedBody>>,
     ) -> Result<Prepared> {
         self.ensure_indexes()?;
         let identity = frame.frame().to_owned();
@@ -1375,21 +1423,29 @@ impl Spool {
                 let mut output = HashWriter::new(std::io::sink());
                 std::io::copy(input, &mut output)?;
                 let (blob, length) = output.finish();
-                if previous.body().map(Bytes::identity) != Some((blob.as_str(), length)) {
+                if previous.body().map(Body::identity) != Some(vec![(blob.as_str(), length)]) {
                     return invalid("prepared identity changed immutable body contents");
                 }
             }
             if let Some(encoded) = encoded_body {
-                let descriptor = encoded.descriptor;
-                let _validated = hashed_blobs::Prepared::from_encoded(
-                    encoded.file,
-                    descriptor.clone(),
-                    None,
-                    ReadLimits::default(),
-                )?;
-                let blob = descriptor.hash.to_string();
-                if previous.body().map(Bytes::identity)
-                    != Some((blob.as_str(), descriptor.decoded_len))
+                let mut offered = Vec::with_capacity(encoded.len());
+                for part in encoded {
+                    let descriptor = part.descriptor;
+                    let _validated = hashed_blobs::Prepared::from_encoded(
+                        part.file,
+                        descriptor.clone(),
+                        None,
+                        ReadLimits::default(),
+                    )?;
+                    offered.push((descriptor.hash.to_string(), descriptor.decoded_len));
+                }
+                if previous.body().map(Body::identity)
+                    != Some(
+                        offered
+                            .iter()
+                            .map(|(blob, length)| (blob.as_str(), *length))
+                            .collect(),
+                    )
                 {
                     return invalid("prepared identity changed immutable encoded body contents");
                 }
@@ -1425,25 +1481,58 @@ impl Spool {
             let descriptor = facts
                 .as_ref()
                 .ok_or_else(|| Error::Invalid("body has no material descriptor".into()))?;
-            let path = temporary.path().join("body.zst");
-            let bytes = if let Some(encoded) = encoded_body {
-                write_prepared(&path, encoded)?
-            } else {
-                let preparation = Preparation::new(temporary.path())?;
-                let encoded = preparation.plain_into(
-                    create_payload(&path)?,
-                    body.take().expect("decoded body"),
-                    3,
-                )?;
-                let descriptor = encoded.descriptor();
-                encoded.into_file().sync_all()?;
-                Bytes::new(&descriptor)
+            let body = match encoded_body {
+                Some(mut encoded) if encoded.len() == 1 => Body::Whole(write_prepared(
+                    &temporary.path().join("body.zst"),
+                    encoded.pop().expect("one part"),
+                )?),
+                Some(encoded) => Body::Chunks(
+                    encoded
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, part)| {
+                            write_prepared(
+                                &temporary.path().join(format!("body-{index}.zst")),
+                                part,
+                            )
+                        })
+                        .collect::<Result<_>>()?,
+                ),
+                None => {
+                    let path = temporary.path().join("body.zst");
+                    let preparation = Preparation::new(temporary.path())?;
+                    let encoded = preparation.plain_into(
+                        create_payload(&path)?,
+                        body.take().expect("decoded body"),
+                        3,
+                    )?;
+                    let descriptor = encoded.descriptor();
+                    encoded.into_file().sync_all()?;
+                    Body::Whole(Bytes::new(&descriptor))
+                }
             };
-            if bytes.blob != descriptor.blob || bytes.length != descriptor.length {
+            // One encoding is the material's bytes; chunks are the ones the
+            // frame names, in order.
+            let matches = match &body {
+                Body::Whole(bytes) => {
+                    bytes.blob == descriptor.blob
+                        && bytes.length == descriptor.length
+                        && descriptor.chunks.is_empty()
+                }
+                Body::Chunks(chunks) => {
+                    chunks.len() > 1
+                        && chunks.len() == descriptor.chunks.len()
+                        && chunks.iter().map(|bytes| bytes.length).sum::<u64>() == descriptor.length
+                        && chunks.iter().zip(&descriptor.chunks).all(|(bytes, chunk)| {
+                            bytes.blob == chunk.blob && bytes.length == chunk.length
+                        })
+                }
+            };
+            if !matches {
                 return invalid("captured bytes differ from their prepared material");
             }
             boundary("body_synced");
-            Some(bytes)
+            Some(body)
         } else {
             None
         };
@@ -1834,6 +1923,7 @@ struct MaterialFacts {
     id: String,
     blob: String,
     length: u64,
+    chunks: Vec<sinex_protocol::MaterialChunk>,
     capture: Option<Capture>,
     named: bool,
     request: bool,
@@ -1865,6 +1955,7 @@ fn material_facts(frame: &Ingress) -> Result<Option<MaterialFacts>> {
         id: material.id.to_string(),
         blob: material.blob.clone(),
         length: material.length,
+        chunks: material.chunks.clone(),
         capture,
         named: matches!(parser, "polylogue-products" | "polylogue-request-restore")
             && name.ends_with(":observation"),
