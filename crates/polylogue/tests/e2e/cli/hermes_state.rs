@@ -256,7 +256,14 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
         .unwrap()
         .0
         .clone();
-    for (flag, expected) in [(Some(1), 1), (Some(0), 0), (None, 2), (Some(0), 0)] {
+    // An unknown flag leaves the session's path unknown: `active` is
+    // three-valued, so those messages answer `active:unknown`.
+    for (flag, condition, expected) in [
+        (Some(1), "active:true", 1),
+        (Some(0), "active:true", 0),
+        (None, "active:unknown", 2),
+        (Some(0), "active:true", 0),
+    ] {
         let db = rusqlite::Connection::open(&native).unwrap();
         db.execute("UPDATE messages SET active=?1 WHERE id=2", [flag])
             .unwrap();
@@ -267,7 +274,7 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
                 &env,
                 &[
                     "--json",
-                    &format!("messages where session:{empty} active:true"),
+                    &format!("messages where session:{empty} {condition}"),
                 ],
             );
             if query_rows(&out)["count"] == expected {
@@ -289,13 +296,22 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
         assert_eq!(out["rows"], expected["rows"]);
         assert_eq!(out["columns"], expected["columns"]);
         assert_eq!(out["count"], expected["count"]);
-        let visible = cli(
-            &env,
-            &[
-                "--json",
-                &format!("messages where session:{sid} active:true"),
-            ],
-        );
-        assert_eq!(query_rows(&visible)["count"], active);
+        // `active` is three-valued: a session whose path is unknown has no
+        // message on or off it, and `active:unknown` names them.
+        let (on_path, unknown_path) = if sid.starts_with("hermes:unknown@") {
+            (0, active)
+        } else {
+            (active, 0)
+        };
+        for (condition, expected) in [("active:true", on_path), ("active:unknown", unknown_path)] {
+            let visible = cli(
+                &env,
+                &[
+                    "--json",
+                    &format!("messages where session:{sid} {condition}"),
+                ],
+            );
+            assert_eq!(query_rows(&visible)["count"], expected, "{sid} {condition}");
+        }
     }
 }

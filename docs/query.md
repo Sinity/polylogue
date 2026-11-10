@@ -68,7 +68,7 @@ Field rules:
 
 ## Defaults
 
-Each unit binds its default filters once, when its source is bound (a unit, `query:…` or `result:<id>`). A default is dropped only by a top-level AND condition on its field, or by `F:*`; a condition under OR, NOT, `exists`, `seq` or a saved query never drops one. After binding, everything further only narrows.
+Each unit binds its default filters once, when its source is bound (a unit, `query:…` or `result:<id>`). A default is dropped only by a top-level AND condition on its field, or by `F:*`; a condition under OR, NOT, `exists`, `seq` or a saved query never drops one. After binding, everything further only narrows. A saved relation binds the unit's defaults by its own top-level conditions wherever it stands. As the source, or as a top-level condition, it stands in for the unit's defaults, so the caller's conditions only narrow it: `query:x hidden:*` cannot show a session `x` hid. A field whose value is unknown, such as `active` for a message whose path is unknown, matches neither `active:true` nor `active:false`; `active:unknown` names it.
 
 | Unit | Default |
 |---|---|

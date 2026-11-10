@@ -211,7 +211,8 @@ fn a_nested_condition_does_not_drop_a_default() {
     assert_eq!(chrono(human), 2);
     for nested in [
         "(duplicate:true OR NOT duplicate:true)",
-        "(active:true OR NOT active:true)",
+        // `active` is three-valued: the tautology names its unknown too.
+        "(active:true OR NOT active:true OR active:unknown)",
         "NOT (kind:subagent AND kind:main)",
     ] {
         assert_eq!(chrono(&format!("{human} {nested}")), 2, "{nested}");

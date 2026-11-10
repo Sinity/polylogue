@@ -25,13 +25,24 @@ impl<'a> Compiler<'a> {
         query_language::depth::deeper(|| {
             let (unit, cond) = self.saved_relation(name, arguments, span)?;
             same_unit(name, unit, scope.unit, span)?;
-            let Some(cond) = cond else {
-                return Ok("1".into());
-            };
+            // The relation binds the unit's defaults by its own top-level
+            // conditions, wherever it stands.
             self.saved_stack.push(name.to_owned());
-            let sql = self.cond(&cond, scope, false);
+            let parts = (|| {
+                let top = cond.as_ref().map(top_level).unwrap_or_default();
+                let mut parts = self.defaults(scope, &top)?;
+                if let Some(cond) = &cond {
+                    parts.push(self.cond(cond, scope, false)?);
+                }
+                Ok::<_, QueryError>(parts)
+            })();
             self.saved_stack.pop();
-            Ok(format!("({})", sql?))
+            let parts = parts?;
+            Ok(if parts.is_empty() {
+                "1".into()
+            } else {
+                format!("({})", parts.join(" AND "))
+            })
         })
     }
 
@@ -75,6 +86,8 @@ impl<'a> Compiler<'a> {
                 Source::Unit {
                     unit, condition, ..
                 } => (bind_unit(&unit)?, condition),
+                // A saved relation over another stays a reference to it, so
+                // the inner one keeps the defaults it bound.
                 Source::Saved {
                     name: nested,
                     arguments,
@@ -84,17 +97,24 @@ impl<'a> Compiler<'a> {
                     self.saved_stack.push(name.to_owned());
                     let relation = self.saved_relation(&nested, &arguments, span);
                     self.saved_stack.pop();
-                    let (unit, base) = relation?;
-                    let condition = match (base, condition) {
-                        (Some(base), Some(condition)) => Some(Condition {
+                    let (unit, _) = relation?;
+                    let inner = Condition {
+                        span: Span::default(),
+                        kind: ConditionKind::Saved {
+                            name: nested,
+                            arguments,
+                        },
+                    };
+                    let condition = match condition {
+                        Some(condition) => Condition {
                             span: condition.span,
                             kind: ConditionKind::And {
-                                conditions: vec![base, condition],
+                                conditions: vec![inner, condition],
                             },
-                        }),
-                        (base, condition) => base.or(condition),
+                        },
+                        None => inner,
                     };
-                    (unit, condition)
+                    (unit, Some(condition))
                 }
                 _ => return Err(not_built("a saved source of this kind as a condition")),
             };
@@ -109,27 +129,12 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    pub(super) fn saved_defaults(
-        &mut self,
-        scope: &RowContext,
-        top: &[Condition],
-    ) -> Result<Vec<Condition>, QueryError> {
-        let mut bound = vec![];
-        for condition in top {
-            let ConditionKind::Saved { name, arguments } = &condition.kind else {
-                bound.push(condition.clone());
-                continue;
-            };
-            let (unit, cond) = self.saved_relation(name, arguments, condition.span)?;
-            same_unit(name, unit, scope.unit, condition.span)?;
-            if let Some(cond) = cond {
-                self.saved_stack.push(name.clone());
-                let defaults = self.saved_defaults(scope, &top_level(&cond));
-                self.saved_stack.pop();
-                bound.extend(defaults?);
-            }
-        }
-        Ok(bound)
+    /// Whether a top-level AND names a saved relation. That relation is the
+    /// source and has bound the unit's defaults itself, so they are not bound
+    /// again around it.
+    pub(super) fn saved_source(top: &[Condition]) -> bool {
+        top.iter()
+            .any(|condition| matches!(condition.kind, ConditionKind::Saved { .. }))
     }
 
     /// Records the revision a saved query's name resolved to.

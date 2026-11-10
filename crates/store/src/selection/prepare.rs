@@ -67,6 +67,46 @@ pub(crate) fn prepare_query_plan_on(
         kept: kept_results(authored, crate::source::Source::reading(authored)?)?,
     };
     let parsed = polylogue_query::parse::with_catalog(text, &bindings.catalog())?;
+    // `query:<prefix>`: a unique prefix of 12 or more hex characters names the
+    // retained question it starts. Saved names are never all hex, so a prefix
+    // cannot shadow one.
+    for name in polylogue_query::plan::referenced_saved_names(&parsed) {
+        let prefix = (12..64).contains(&name.len())
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+        if !prefix || bindings.saved.contains_key(&name) {
+            continue;
+        }
+        let found = crate::query_objects::query_object_on(
+            original,
+            crate::source::Source::reading(original)?,
+            &name,
+            pending,
+        )?
+        .map(|found| found.value.id)
+        .or_else(|| {
+            provisional.and_then(|prepared| {
+                let mut matching = prepared
+                    .objects()
+                    .filter(|object| object.id.to_string().starts_with(&name));
+                let first = matching.next()?.id;
+                matching.next().is_none().then_some(first)
+            })
+        })
+        .ok_or_else(|| QueryError::Unavailable {
+            what: format!("retained query:{name}"),
+        })?;
+        let mut frozen = retained_bindings(original, authored, pending, provisional, found)?
+            .ok_or_else(|| QueryError::Unavailable {
+                what: format!("retained query:{found} custody"),
+            })?;
+        let definition = frozen[&found.to_string()].clone();
+        frozen.insert(name, definition);
+        for (id, nodes) in frozen {
+            bindings.saved.entry(id).or_insert(nodes);
+        }
+    }
     for id in polylogue_query::plan::referenced_question_ids(&parsed) {
         if bindings.saved.contains_key(&id.to_string()) {
             continue;

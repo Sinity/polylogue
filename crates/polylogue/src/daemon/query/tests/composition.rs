@@ -154,12 +154,22 @@ fn parameterized_saved_references_agree_with_direct_references() {
             }
         }
     }
+    // Each call binds its own defaults, so two calls side by side select
+    // what both of their populations hold (docs/query.md#defaults): the
+    // reference lifts the reachability defaults for its own call only.
+    let both = row_ids(&q(
+        &w,
+        "sessions where query:pick(id=chrono) query:pick(id=7f3a2c10-0003)",
+    ));
+    let chrono = row_ids(&q(&w, "query:pick(id=chrono)"));
+    let referenced = row_ids(&q(&w, "query:pick(id=7f3a2c10-0003)"));
+    assert_eq!(referenced.len(), 1);
     assert_eq!(
-        ids(&q(
-            &w,
-            "sessions where query:pick(id=chrono) query:pick(id=7f3a2c10-0003)"
-        )),
-        ["#3"]
+        both,
+        chrono
+            .intersection(&referenced)
+            .cloned()
+            .collect::<BTreeSet<_>>()
     );
     // Calls sharing a name may bind different values in the same program.
     assert_eq!(

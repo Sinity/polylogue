@@ -110,16 +110,20 @@ fn a_saved_query_selects_what_it_says_inline_or_by_name() {
         ("morrow", "tag:project:morrow"),
         ("by-action", "tool_calls | group by action | count"),
     ]);
-    // As the source, narrowed by the rest.
+    // As the source, narrowed by the rest: its text, and its membership with
+    // the defaults it bound, so the rest only narrows it (docs/query.md#defaults).
     same(
         "query:failing session.repo:morrow",
-        "tool_calls where (outcome:error) session.repo:morrow",
+        "tool_calls where (outcome:error) query:failing session.repo:morrow",
         &o,
     );
     // As a condition over the same unit.
+    // (A condition on a default's field, such as `action:`, would narrow the
+    // saved relation instead of lifting its default; see
+    // tests::defaults::saved_query_hidden_condition_cannot_widen.)
     same(
-        "tool_calls where query:failing action:shell",
-        "tool_calls where (outcome:error) action:shell",
+        "tool_calls where query:failing tool:Bash",
+        "tool_calls where (outcome:error) tool:Bash",
         &o,
     );
     same("query:morrow", "sessions where (tag:project:morrow)", &o);
@@ -694,6 +698,7 @@ fn definition_metadata_uses_binding_visitor_and_preserves_quoted_dollars() {
 
 mod metadata;
 
+mod defaults;
 mod numeric;
 
 mod snippets;

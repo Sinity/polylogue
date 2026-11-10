@@ -89,14 +89,24 @@ fn expand_query(
                 else {
                     return Err(not_built("inline conditions on this saved source"));
                 };
-                *base_condition = Some(match base_condition.take() {
-                    None => condition,
-                    Some(previous) => Condition {
-                        span: condition.span,
-                        kind: ConditionKind::And {
-                            conditions: vec![previous, condition],
-                        },
+                // The saved relation bound its own defaults, and the caller's
+                // conditions only narrow it. Its text stays spliced in, so its
+                // top-level `exists` or `seq` still feeds `| matches`; its
+                // membership beside the caller's conditions keeps a top-level
+                // condition such as `hidden:*` from lifting a default it bound.
+                let saved = Condition {
+                    span: Span::default(),
+                    kind: ConditionKind::Saved {
+                        name: name.clone(),
+                        arguments: arguments.clone(),
                     },
+                };
+                let mut conditions: Vec<Condition> = base_condition.take().into_iter().collect();
+                conditions.push(saved);
+                conditions.push(condition.clone());
+                *base_condition = Some(Condition {
+                    span: condition.span,
+                    kind: ConditionKind::And { conditions },
                 });
             }
             base.transforms.append(&mut query.transforms);
