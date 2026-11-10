@@ -155,12 +155,20 @@ fn many_segment_blobs_stay_compressed_and_clones_share_one_extent_view() {
         .unwrap();
     assert_eq!(new_blobs, 512);
     assert!(compressed < (chain.length / 10) as i64);
-    w.conn.execute("DELETE FROM extent", []).unwrap();
     assert_eq!(
         chain
             .read_range(&w.store, 500 * 16384, 500 * 16384 + 8)
             .unwrap(),
         500u64.to_le_bytes()
+    );
+    // Each read checks that the extents are still the ones checked at load.
+    w.conn.execute("DELETE FROM extent", []).unwrap();
+    let error = chain
+        .read_range(&w.store, 500 * 16384, 500 * 16384 + 8)
+        .unwrap_err();
+    assert!(
+        matches!(&error, StoreError::Invalid(text) if text == "stored extents changed since the chain was loaded"),
+        "{error:?}"
     );
     let weak = Arc::downgrade(extents);
     let reader = clone.reader(Arc::clone(&w.store));
@@ -281,10 +289,15 @@ fn an_open_file_reader_needs_no_extent_list_lock() {
     let mut reader = chain.reader(Arc::clone(&w.store));
     let mut one = [0];
     reader.read_exact(&mut one).unwrap();
-    let _locked = chain.extents.as_ref().unwrap().connection();
-    let mut rest = Vec::new();
-    reader.read_to_end(&mut rest).unwrap();
-    assert_eq!(rest, bytes[1..]);
+    let locked = chain.extents.as_ref().unwrap().connection();
+    // Within the open extent no read takes the lock; reading the last byte
+    // ends the chain's read transaction, which does.
+    let mut rest = vec![0; bytes.len() - 2];
+    reader.read_exact(&mut rest).unwrap();
+    assert_eq!(rest, bytes[1..bytes.len() - 1]);
+    drop(locked);
+    reader.read_exact(&mut one).unwrap();
+    assert!(chain.extents.as_ref().unwrap().connection().is_none());
 }
 
 #[test]
@@ -327,16 +340,14 @@ fn chain_read_creates_no_database() {
         tx.commit().unwrap();
     }
     let chain = w.load(32768 * 256);
-    let mut all = Vec::new();
-    chain
-        .reader(Arc::clone(&w.store))
-        .read_to_end(&mut all)
-        .unwrap();
-    assert_eq!(all.len(), 32768 * 256);
+    let mut reader = chain.reader(Arc::clone(&w.store));
+    let mut all = vec![0; 32768 * 256 - 1];
+    reader.read_exact(&mut all).unwrap();
     assert_eq!(&all[256 * 100..256 * 101], &bytes[..256]);
     // The chain reads the archive itself, read-only: no database of its own,
     // and nothing in the temporary one.
-    let handle = chain.extents.as_ref().unwrap().connection();
+    let guard = chain.extents.as_ref().unwrap().connection();
+    let handle = guard.as_ref().expect("open while the chain is read");
     let databases: Vec<(String, String)> = handle
         .prepare("PRAGMA database_list")
         .unwrap()
@@ -354,4 +365,60 @@ fn chain_read_creates_no_database() {
         .query_row("PRAGMA temp.page_count", [], |r| r.get(0))
         .unwrap();
     assert_eq!(temporary, 0);
+    drop(guard);
+    let mut last = Vec::new();
+    reader.read_to_end(&mut last).unwrap();
+    assert_eq!(last.len(), 1);
+    assert!(chain.extents.as_ref().unwrap().connection().is_none());
+}
+
+/// The result of a truncating checkpoint on the fixture's archive: whether a
+/// reader kept it from completing.
+fn checkpoint_blocked(w: &Fixture) -> bool {
+    w.conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+    let (busy, log): (i64, i64) = w
+        .conn
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    busy != 0 || log != 0
+}
+
+#[test]
+fn loaded_chains_waiting_to_be_read_let_a_truncating_checkpoint_complete() {
+    let w = Fixture::new(3 * 64);
+    for n in 0..64u64 {
+        w.add(n * 3, 3, 0, format!("{n:03}").as_bytes());
+    }
+    // As a pass's queued plans: every chain loaded, none read yet.
+    let queued: Vec<_> = (1..=64).map(|n| w.load(n * 3)).collect();
+    w.conn
+        .execute("UPDATE revision SET produced='later'", [])
+        .unwrap();
+    assert!(!checkpoint_blocked(&w));
+    assert_eq!(queued[9].read_range(&w.store, 27, 30).unwrap(), b"009");
+}
+
+#[test]
+fn a_released_chain_lets_a_checkpoint_complete_and_reads_on() {
+    let w = Fixture::new(6);
+    w.add(0, 3, 0, b"abc");
+    w.add(3, 3, 0, b"def");
+    let chain = w.load(6);
+    let mut reader = chain.reader(Arc::clone(&w.store));
+    let mut first = [0; 2];
+    reader.read_exact(&mut first).unwrap();
+    w.conn
+        .execute("UPDATE revision SET produced='later'", [])
+        .unwrap();
+    assert!(
+        checkpoint_blocked(&w),
+        "a chain being read holds its snapshot"
+    );
+    reader.release();
+    assert!(!checkpoint_blocked(&w));
+    let mut rest = Vec::new();
+    reader.read_to_end(&mut rest).unwrap();
+    assert_eq!([&first[..], &rest].concat(), b"abcdef");
 }

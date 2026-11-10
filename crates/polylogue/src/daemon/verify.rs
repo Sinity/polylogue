@@ -17,7 +17,7 @@ pub(super) fn run(d: &Daemon, manifest: Option<&Path>) -> Answer<Value> {
         Ok(blobs) => Arc::new(blobs),
         Err(e) => return store_error(&e),
     };
-    let mut pace = || d.idle_admission.idle();
+    let mut pace = |release: &dyn Fn()| d.idle_admission.idle_releasing(release);
     let found = match manifest {
         None => polylogue_store::verify::verify(&d.reads, &blobs, None, &mut pace),
         Some(path) => {

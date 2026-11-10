@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 mod extents;
 mod reader;
+pub use extents::CHAIN_CACHE_KIB;
 use extents::ExtentList;
 pub use reader::ChainReader;
 use reader::Cursor;
@@ -70,6 +71,14 @@ impl StoredChain {
 
     pub fn reader<S: super::PlainBlobs>(&self, store: Arc<S>) -> ChainReader<S> {
         ChainReader::new(self.clone(), store)
+    }
+
+    /// Ends the chain's read transaction until its next extent lookup. A
+    /// reader calls this before it waits for anything other than bytes.
+    pub fn release(&self) {
+        if let Some(extents) = &self.extents {
+            extents.release();
+        }
     }
 
     /// A complete single file can use the blob store's sequential reader directly.

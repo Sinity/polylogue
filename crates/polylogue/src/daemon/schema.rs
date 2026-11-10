@@ -6,7 +6,12 @@ use polylogue_sources::{
     Capture, Parse,
     schema::{Framing, Observer, Schema, Selection},
 };
-use polylogue_store::{ReadPool, StoreError, read::limit::ReadLimit, schema_inputs::InputRevision};
+use polylogue_store::{
+    ReadPool, StoreError,
+    blobs::{ChainReader, PlainBlobs},
+    read::limit::ReadLimit,
+    schema_inputs::InputRevision,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -78,7 +83,7 @@ pub struct Inference {
 /// Ordinary work enters immediately. One idle-priority job (a schema
 /// inference or a verification) runs at a time and waits for ordinary work
 /// at each streaming read and before opening a SQL reader; waiting holds no
-/// reader.
+/// reader and no chain read transaction.
 #[derive(Default)]
 pub(super) struct Admission {
     state: Mutex<Activity>,
@@ -116,9 +121,17 @@ impl Admission {
             .foreground += 1;
         Foreground(self)
     }
-    fn wait(&self, predicate: impl Fn(&Activity) -> bool) -> Result<(), StoreError> {
+    fn wait(
+        &self,
+        predicate: impl Fn(&Activity) -> bool,
+        before_waiting: impl FnOnce(),
+    ) -> Result<(), StoreError> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut before_waiting = Some(before_waiting);
         while !predicate(&state) {
+            if let Some(release) = before_waiting.take() {
+                release();
+            }
             check()?;
             // A disconnect/deadline does not notify this condvar. The timed
             // wait bounds cancellation latency while activity changes notify it.
@@ -146,21 +159,29 @@ impl Admission {
         Ok(BackgroundLease(self))
     }
     pub(super) fn idle(&self) -> Result<(), StoreError> {
-        self.wait(|s| s.foreground == 0)
+        self.idle_releasing(|| ())
+    }
+    /// Waits like [`Admission::idle`]; when it has to wait, `release` runs
+    /// first, so a streaming read gives up its read transaction for the wait.
+    pub(super) fn idle_releasing(&self, release: impl FnOnce()) -> Result<(), StoreError> {
+        self.wait(|s| s.foreground == 0, release)
     }
 }
 fn check() -> Result<(), StoreError> {
     ReadLimit::current().map_or(Ok(()), |limit| limit.check())
 }
 
-struct IdleRead<'a, R> {
-    source: R,
+struct IdleRead<'a, B> {
+    source: ChainReader<B>,
     admission: &'a Admission,
     read: &'a std::cell::Cell<u64>,
 }
-impl<R: Read> Read for IdleRead<'_, R> {
+impl<B: PlainBlobs> Read for IdleRead<'_, B> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        self.admission.idle().map_err(io::Error::other)?;
+        let source = &self.source;
+        self.admission
+            .idle_releasing(|| source.release())
+            .map_err(io::Error::other)?;
         let n = self.source.read(bytes)?;
         self.read.set(self.read.get() + n as u64);
         Ok(n)
@@ -304,8 +325,10 @@ fn observe_input(
             return Err("native_capture_format");
         }
         admission.idle().map_err(|_| "input_read")?;
-        // Capture immutable extent descriptors and a read-only blob handle,
-        // then release the SQL transaction before reading any payload bytes.
+        // Check the chain's extents and take a read-only blob handle, then
+        // release the SQL reader before reading any payload bytes. The chain
+        // reads its extents in its own transaction, which it ends whenever
+        // the read waits for foreground work.
         let bytes = {
             let reader = pool.reader().map_err(|_| "input_read")?;
             let chain = reader

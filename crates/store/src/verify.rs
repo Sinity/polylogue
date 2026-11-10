@@ -147,6 +147,11 @@ impl Verification {
     }
 }
 
+/// Waits for foreground work and stops on cancellation. Its argument ends
+/// any chain read transaction the check holds; it runs only when the wait
+/// will block, so reads that need not wait keep their transaction.
+pub type Pace<'a> = dyn FnMut(&dyn Fn()) -> Result<()> + 'a;
+
 /// Runs the whole check. `pace` is called before each blob, between the
 /// frames of a large blob, and before each chain and each read of a chain
 /// while writing a manifest, holding no reader: the daemon
@@ -156,12 +161,12 @@ pub fn verify(
     pool: &ReadPool,
     blobs: &Arc<crate::blobs::Blobs>,
     manifest: Option<&mut dyn Write>,
-    pace: &mut dyn FnMut() -> Result<()>,
+    pace: &mut Pace<'_>,
 ) -> Result<Verification> {
     let mut found = Verification::default();
-    pace()?;
+    pace(&|| ())?;
     rows(pool, &mut found)?;
-    pace()?;
+    pace(&|| ())?;
     databases(pool, &mut found)?;
     blob_bytes(pool, blobs.root(), &mut found, pace)?;
     if let Some(out) = manifest {
@@ -332,7 +337,7 @@ fn blob_bytes(
     pool: &ReadPool,
     root: &Path,
     found: &mut Verification,
-    pace: &mut dyn FnMut() -> Result<()>,
+    pace: &mut Pace<'_>,
 ) -> Result<()> {
     let segments = hashed_blobs::Reader::new(root);
     let mut after: Vec<u8> = Vec::new();
@@ -355,7 +360,7 @@ fn blob_bytes(
         };
         after = last.0.clone();
         for (hash, size, stored_size, storage) in batch {
-            pace()?;
+            pace(&|| ())?;
             let name = hex(&hash);
             found.blobs.checked += 1;
             let extent = match hashed_blobs::Extent::decode(&storage) {
@@ -389,7 +394,7 @@ fn blob_bytes(
             }
             let mut stopped = None;
             let scanned = segments.scan_checked(&[extent], || {
-                pace().map_err(|error| {
+                pace(&|| ()).map_err(|error| {
                     stopped = Some(error);
                     hashed_blobs::Error::Refused("verification stopped".into())
                 })
@@ -412,7 +417,7 @@ fn write_manifest(
     blobs: &Arc<crate::blobs::Blobs>,
     out: &mut dyn Write,
     found: &mut Verification,
-    pace: &mut dyn FnMut() -> Result<()>,
+    pace: &mut Pace<'_>,
 ) -> Result<ManifestSummary> {
     let mut summary = ManifestSummary::default();
     let mut after = String::new();
@@ -432,7 +437,7 @@ fn write_manifest(
         };
         after = last.clone();
         for input in inputs {
-            pace()?;
+            pace(&|| ())?;
             let mut lines = input_revisions(pool, blobs, &input, &mut summary, found, pace)?;
             lines.sort_by_key(|line| line.0);
             for (number, length, hash) in lines {
@@ -454,10 +459,11 @@ fn input_revisions(
     input: &str,
     summary: &mut ManifestSummary,
     found: &mut Verification,
-    pace: &mut dyn FnMut() -> Result<()>,
+    pace: &mut Pace<'_>,
 ) -> Result<Vec<(i64, u64, String)>> {
-    // Each chain's revisions, shortest first, and its extents captured
-    // under one read; the bytes are read after the reader is released.
+    // Each chain's revisions, shortest first, and its extents checked
+    // under one read; the bytes are read after the reader is released, each
+    // chain in its own read transaction that it ends before waiting.
     let mut chains: Vec<ChainRevisions> = Vec::new();
     {
         let reader = pool.reader()?;
@@ -497,7 +503,7 @@ fn input_revisions(
         let Some(stored) = stored else {
             continue;
         };
-        pace()?;
+        pace(&|| ())?;
         let (hashes, read, failure) = hash_prefixes(&stored, blobs, &members, pace)?;
         summary.bytes_read += read;
         // Revisions read in full before a failure keep their hashes.
@@ -525,7 +531,7 @@ fn hash_prefixes(
     stored: &crate::blobs::StoredChain,
     blobs: &Arc<crate::blobs::Blobs>,
     members: &[(i64, u64)],
-    pace: &mut dyn FnMut() -> Result<()>,
+    pace: &mut Pace<'_>,
 ) -> Result<(Vec<String>, u64, Option<StoreError>)> {
     let mut reader = stored.reader(Arc::clone(blobs));
     let mut digest = blake3::Hasher::new();
@@ -534,7 +540,7 @@ fn hash_prefixes(
     let mut buffer = vec![0; 64 << 10];
     for &(_, length) in members {
         while at < length {
-            pace()?;
+            pace(&|| reader.release())?;
             let want = usize::try_from((length - at).min(buffer.len() as u64))
                 .expect("buffer length fits");
             let n = match reader.read(&mut buffer[..want]) {

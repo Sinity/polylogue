@@ -135,19 +135,21 @@ impl Config {
     /// One reader slot is kept for the loop; client reads have `workers`
     /// slots. All slots share one page-cache target, split again between index,
     /// archive and optional embeddings by the store. Integer division leaves unused bytes.
+    /// The target first sets aside the handles of chains being read: one
+    /// per parse worker and one per client slot.
     pub fn reader_memory_per_connection(&self) -> polylogue_store::Result<u64> {
         if self.workers == 0 {
             return Err(polylogue_store::StoreError::Invalid(
                 "workers must be positive".into(),
             ));
         }
-        let slots = u64::try_from(self.workers)
-            .ok()
-            .and_then(|n| n.checked_add(1))
-            .ok_or_else(|| {
-                polylogue_store::StoreError::Invalid("reader slot count overflow".into())
-            })?;
-        let bytes = self.reader_memory_bytes / slots;
+        let overflow = || polylogue_store::StoreError::Invalid("reader slot count overflow".into());
+        let workers = u64::try_from(self.workers).map_err(|_| overflow())?;
+        let slots = workers.checked_add(1).ok_or_else(overflow)?;
+        let chains = workers
+            .checked_mul(2 * polylogue_store::blobs::CHAIN_CACHE_KIB * 1024)
+            .ok_or_else(overflow)?;
+        let bytes = self.reader_memory_bytes.saturating_sub(chains) / slots;
         if bytes < 3 * 1024 {
             return Err(polylogue_store::StoreError::Invalid(
                 "reader memory budget needs at least 3 KiB per connection".into(),

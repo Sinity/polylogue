@@ -335,6 +335,27 @@ fn idle_inference_yields_at_stream_reads_and_cancellation_releases_its_lease() {
     });
     drop(foreground);
     let _lease = admission.background().unwrap();
+    let stored = Stored::new();
+    stored.put("a", "claude-code", false, "/a.jsonl", 1, b"abcdef");
+    // Frames written after the chain is loaded, still in the log: a
+    // transaction begun after them would keep a truncating checkpoint out.
+    stored.put("b", "claude-code", false, "/b.jsonl", 1, b"ghijkl");
+    let pool = ReadPool::open(&stored.archive).unwrap();
+    let source = {
+        let reader = pool.reader().unwrap();
+        let input = reader.schema_input("a", None).unwrap().unwrap();
+        let chain = reader
+            .stored_chain(&input.input, input.chain, input.length)
+            .unwrap();
+        chain.reader(Arc::new(reader.blob_reader().unwrap()))
+    };
+    let archive = rusqlite::Connection::open(stored.archive.archive_db()).unwrap();
+    archive.busy_timeout(Duration::ZERO).unwrap();
+    let checkpoint = || -> i64 {
+        archive
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
+            .unwrap()
+    };
     std::thread::scope(|scope| {
         let (first, started) = channel();
         let (next, proceed) = channel();
@@ -343,7 +364,7 @@ fn idle_inference_yields_at_stream_reads_and_cancellation_releases_its_lease() {
         scope.spawn(move || {
             let count = std::cell::Cell::new(0);
             let mut stream = IdleRead {
-                source: &b"abcdef"[..],
+                source,
                 admission: admission_ref,
                 read: &count,
             };
@@ -355,9 +376,16 @@ fn idle_inference_yields_at_stream_reads_and_cancellation_releases_its_lease() {
             done.send((byte, count.get())).unwrap();
         });
         assert_eq!(started.recv().unwrap(), [b'a']);
+        stored.put("c", "claude-code", false, "/c.jsonl", 1, b"mnopqr");
         let foreground = admission.foreground();
         next.send(()).unwrap();
         assert!(finished.recv_timeout(Duration::from_millis(40)).is_err());
+        // The read waiting for foreground work holds no read transaction.
+        assert_eq!(
+            checkpoint(),
+            0,
+            "a checkpoint is busy behind a waiting read"
+        );
         drop(foreground);
         assert_eq!(
             finished.recv_timeout(Duration::from_secs(2)).unwrap(),

@@ -188,7 +188,13 @@ impl Imported {
         }
         let previous = self.pending.len();
         self.pending.resize(length, 0);
-        self.reader.read_exact(&mut self.pending[previous..])?;
+        let read = self.reader.read_exact(&mut self.pending[previous..]);
+        // The next range is read by a later job: the chain holds no read
+        // transaction while that job waits in the pool.
+        if let Decoder::Chain(chain) = &self.reader {
+            chain.release();
+        }
+        read?;
         Ok(self.pending.clone())
     }
 

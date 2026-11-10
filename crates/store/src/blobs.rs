@@ -6,7 +6,7 @@ use std::fs::Metadata;
 use std::os::unix::fs::MetadataExt;
 
 mod chain;
-pub use chain::{ChainReader, ChainSource, StoredChain};
+pub use chain::{CHAIN_CACHE_KIB, ChainReader, ChainSource, StoredChain};
 
 mod segments;
 pub use segments::{BlobCatalog, Blobs};
