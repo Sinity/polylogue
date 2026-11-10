@@ -640,9 +640,7 @@ impl RowWriter<'_, '_> {
                     chain: choice.chain,
                     start: choice.start,
                     end: choice.end,
-                    in_progress: choice.message.as_ref().is_some_and(|message| {
-                        Completion::of(message, choice.route) == Completion::InProgress
-                    }),
+                    in_progress: choice.in_progress,
                 },
                 choice.session,
             )
@@ -666,8 +664,8 @@ impl RowWriter<'_, '_> {
         let order = choice.order;
         if !choice.changed {
             self.tx.execute("UPDATE message SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,
-                order_input_pk=?6,order_input_id=(SELECT id FROM input_ref WHERE pk=?6),seq=?7,record_position=?8 WHERE pk=?1",
-                params![pk,v.input_pk,v.chain,v.start,v.end,order.0,order.1.0,order.1.1])?;
+                order_input_pk=?6,order_input_id=(SELECT id FROM input_ref WHERE pk=?6),seq=?7,record_position=?8,in_progress=?9 WHERE pk=?1",
+                params![pk,v.input_pk,v.chain,v.start,v.end,order.0,order.1.0,order.1.1,v.in_progress])?;
             self.tx.execute(
                 "UPDATE session SET changed=?2 WHERE pk=?1",
                 params![session_pk, self.counter],

@@ -17,7 +17,9 @@ pub(crate) struct MessageChoice {
     pub end: i64,
     pub hash: Vec<u8>,
     pub session: i64,
-    pub route: Route,
+    /// The shown message is still being produced: its main reading is in
+    /// progress and no other reading supplies a stop reason.
+    pub in_progress: bool,
     pub order: (i64, (i64, i64)),
     /// Each field group taken from another input chain than the main route.
     pub routes: Vec<(FieldGroup, i64, i64)>,
@@ -273,7 +275,6 @@ fn known_message(
 #[derive(Clone, PartialEq)]
 struct Shown {
     hash: Vec<u8>,
-    route: Route,
     session: i64,
     layout: Option<Vec<u8>>,
     routes: Vec<(FieldGroup, i64, i64, Vec<u8>)>,
@@ -287,16 +288,15 @@ fn load_message(
 ) -> Result<(Vec<MessageMember>, Option<Shown>)> {
     let shown = index
         .query_row(
-            "SELECT s.version_hash,s.route,m.session_pk,p.layout FROM message m
+            "SELECT s.version_hash,m.session_pk,p.layout FROM message m
              JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
              LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE m.pk=?1",
             [pk],
             |r| {
                 Ok(Shown {
                     hash: r.get(0)?,
-                    route: named(r.get(1)?)?,
-                    session: r.get(2)?,
-                    layout: r.get(3)?,
+                    session: r.get(1)?,
+                    layout: r.get(2)?,
                     routes: Vec::new(),
                 })
             },
@@ -1118,7 +1118,6 @@ impl<'a> Projection<'a> {
                 .transpose()?;
             let changed = shown.is_none_or(|shown| {
                 shown.hash != main.hash
-                    || shown.route != main.route
                     || shown.session != main.session
                     || shown.routes != routes
                     || shown
@@ -1150,7 +1149,6 @@ impl<'a> Projection<'a> {
                 pk,
                 Some(Shown {
                     hash: main.hash.clone(),
-                    route: main.route,
                     session: main.session,
                     layout,
                     routes: routes.clone(),
@@ -1165,7 +1163,8 @@ impl<'a> Projection<'a> {
                     end: main.end,
                     hash: main.hash.clone(),
                     session: main.session,
-                    route: main.route,
+                    in_progress: main.completion == Completion::InProgress
+                        && !routes.iter().any(|(group, ..)| *group == FieldGroup::Stop),
                     order: (main.input, (main.seq, main.position)),
                     routes: routes
                         .into_iter()
