@@ -356,7 +356,10 @@ f(Sessions,"pr").custom(custom::pr),
 f(Sessions,"outcome").sql_fn(sessions_outcome),
 f(Sessions,"hidden").sql_fn(sessions_hidden),
 f(Sessions,"cwd").custom(custom::cwd).sql("{s}.cwd"),
-f(Sessions,"source").sql("CASE WHEN {s}.stub = 1 THEN 'missing' ELSE 'present' END"),
+// Gone: an export that lists every conversation of the session's account
+// (one input, or every input of its import) holds messages newer than the
+// session's last activity and does not hold the session.
+f(Sessions,"source").sql("CASE WHEN {s}.stub = 1 THEN 'missing' WHEN EXISTS(SELECT 1 FROM export_reading {s}_e JOIN input_ref {s}_ei ON {s}_ei.pk={s}_e.input_pk WHERE {s}_e.origin={s}.origin AND {s}_e.latest_at>{s}.last_activity_at AND NOT EXISTS(SELECT 1 FROM parsed {s}_p JOIN input_ref {s}_pi ON {s}_pi.pk={s}_p.input_pk WHERE {s}_p.session_pk={s}.pk AND ({s}_pi.pk={s}_e.input_pk OR {s}_pi.id IN (SELECT {s}_m.input FROM import_member {s}_m JOIN import_member {s}_x ON {s}_x.import_id={s}_m.import_id WHERE {s}_x.input={s}_ei.id)))) THEN 'gone' ELSE 'present' END"),
 f(Sessions,"live").custom(custom::live).sql_clock(sessions_live),
 f(Sessions,"waiting").custom(custom::waiting).sql_clock(sessions_waiting),
 f(Sessions,"running").custom(custom::running).sql_clock(sessions_running),

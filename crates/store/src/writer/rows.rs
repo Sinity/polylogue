@@ -274,6 +274,24 @@ fn apply_rows(
             *last = (*last).max(at);
         }
     }
+    if b.input.route.lists_every_conversation(&b.input.format) {
+        let mut latest = HashMap::<&str, i64>::new();
+        for row in &p.output.messages {
+            if let Some(at) = ms(row.message.at) {
+                let origin = latest
+                    .entry(row.message.session.origin().as_str())
+                    .or_insert(at);
+                *origin = (*origin).max(at);
+            }
+        }
+        for (origin, at) in latest {
+            tx.prepare_cached(
+                "INSERT INTO export_reading(input_pk,chain,origin,latest_at) VALUES (?1,?2,?3,?4)
+                 ON CONFLICT(input_pk,chain,origin) DO UPDATE SET latest_at=max(latest_at,excluded.latest_at)",
+            )?
+            .execute(params![input_pk, chain, origin, at])?;
+        }
+    }
     for (session_pk, at) in activity {
         tx.prepare_cached(
             "UPDATE session SET last_activity_at = MAX(COALESCE(last_activity_at, ?2), ?2),

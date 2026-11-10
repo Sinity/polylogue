@@ -48,7 +48,17 @@ stored_names!(Route {
     PageText => "page_text",
 });
 
+/// Origins whose export lists every conversation of the account, so a
+/// conversation a newer export lacks is gone upstream.
+const EXPORTS_EVERY_CONVERSATION: &[&str] = &["chatgpt", "claude-ai", "grok"];
+
 impl Route {
+    /// Whether an input of this route and format is an export that lists
+    /// every conversation of its account.
+    pub fn lists_every_conversation(self, format: &str) -> bool {
+        self == Self::Export && EXPORTS_EVERY_CONVERSATION.contains(&format)
+    }
+
     /// The route of an origin's input brought in by `polylogue import`
     /// rather than found where the tool writes it.
     pub const fn imported(self) -> Self {

@@ -29,6 +29,7 @@ impl RowWriter<'_, '_> {
             "parser_context_state",
             "unused",
             "message_injection_field",
+            "export_reading",
         ] {
             self.tx
                 .prepare_cached(&format!(

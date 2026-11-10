@@ -148,10 +148,23 @@ CREATE TABLE message_source (
 ) STRICT;
 CREATE INDEX message_source_input ON message_source(input_pk, chain, source_start);   -- foreign-key check; the next record's start
 
+-- The newest message time in each chain of an export that lists every
+-- conversation of its account, by session origin. A session of that origin
+-- the export does not hold, with no activity after that time, is gone
+-- upstream (sessions `source: gone`); its rows stay.
+CREATE TABLE export_reading (
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain             INTEGER NOT NULL,
+  origin            TEXT NOT NULL,
+  latest_at         INTEGER NOT NULL,
+  PRIMARY KEY (input_pk, chain, origin)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX export_reading_origin ON export_reading(origin, latest_at);
+
 -- The route each field group of a shown message came from, where it is not
 -- the main route (the message's own input_pk, source_chain).
 CREATE TABLE message_route (
-  message_pk        INTEGER NOT NULL REFERENCES message(pk) ON DELETE CASCADE,
+  message_pk        INTEGER NOT NULL REFERENCES message(pk),
   field_group       TEXT NOT NULL CHECK (field_group IN ('time','model','usage','stop','parent','production')),
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
