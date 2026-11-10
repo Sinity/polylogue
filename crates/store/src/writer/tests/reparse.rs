@@ -277,7 +277,7 @@ fn natural_rows(w: &TestArchive) -> Json {
         ),
         (
             "order",
-            "SELECT m.id,hex(m.session_order) AS session_order FROM message m ORDER BY m.id",
+            "SELECT m.id,m.session_order FROM message m ORDER BY m.id",
         ),
         (
             "events",

@@ -74,9 +74,9 @@ CREATE TABLE message (
   pk                INTEGER PRIMARY KEY,
   id                TEXT NOT NULL,          -- unique: message_id
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
-  session_order     BLOB NOT NULL,          -- the message's place in its session (docs/sessions.md, messages):
-                                            --   order time, input ID, position in that input, encoded so the
-                                            --   bytes sort in that order (encoding::session_order); ties by id
+  session_order     TEXT NOT NULL,          -- the message's place in its session (docs/sessions.md, messages):
+                                            --   order time, input ID, position in that input, written so the
+                                            --   text sorts in that order (encoding::session_order); ties by id
   role              TEXT NOT NULL,          -- user | assistant | system | tool (sources/ maps each provider's role)
   written_by        TEXT NOT NULL,          -- human | model | harness | unknown
   prompt_kind       TEXT,                   -- written_by human: prose | command

@@ -223,21 +223,22 @@ impl Fixture {
     }
 
     /// The sequence a fixture message's stored session order holds: the
-    /// eight bytes before its record position.
+    /// sixteen digits before its record position.
     pub fn message_order(&self, message_pk: i64) -> Result<i64> {
-        let order: Vec<u8> = self.index.query_row(
+        let order: String = self.index.query_row(
             "SELECT session_order FROM message WHERE pk=?1",
             [message_pk],
             |row| row.get(0),
         )?;
         let seq = order
             .len()
-            .checked_sub(16)
-            .and_then(|start| order[start..start + 8].try_into().ok())
+            .checked_sub(32)
+            .and_then(|start| order.get(start..start + 16))
+            .and_then(|digits| u64::from_str_radix(digits, 16).ok())
             .ok_or_else(|| {
                 crate::StoreError::Invalid("a session order without a sequence".into())
             })?;
-        Ok((u64::from_be_bytes(seq) ^ (1 << 63)) as i64)
+        Ok((seq ^ (1 << 63)) as i64)
     }
 
     /// Sets a session's live facts and git identity: the facts are the fold

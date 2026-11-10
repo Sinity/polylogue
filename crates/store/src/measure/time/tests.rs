@@ -654,7 +654,7 @@ fn a_stored_prefix_changes_shape_only_with_a_new_rule_version() {
     // another shape would not decode. Bumping RULE_VERSION derives every
     // session from its start, so a change here needs a new version.
     let prefix = Prefix {
-        end: Some(((vec![1, 2], "m".into()), 3)),
+        end: Some((("1order".into(), "m".into()), 3)),
         script: true,
         first: Some(4),
         last: Some(5),
@@ -687,7 +687,7 @@ fn a_stored_prefix_changes_shape_only_with_a_new_rule_version() {
         (
             3,
             json!({
-                "end":[[[1,2],"m"],3],"script":true,"first":4,"last":5,"timed":6,"untimed":7,
+                "end":[["1order","m"],3],"script":true,"first":4,"last":5,"timed":6,"untimed":7,
                 "unordered_gaps":8,"previous":[9,"model"],"tools":10,"intervals":11,"tool_untimed":12,
                 "tool_no_result":13,"tool_same_timestamp":14,"tool_reversed":15,"tool_sum_ms":16,
                 "tool_union_ms":17,"clustered_ms":18,"prompts":19,"failure":[20,21],"stop_reported":true,

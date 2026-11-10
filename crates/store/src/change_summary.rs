@@ -15,7 +15,7 @@ pub(crate) struct ChangeSummary {
 
 /// A message's place in session order (`message_session`): its
 /// `session_order` and ID.
-pub(crate) type OrderKey = (Vec<u8>, String);
+pub(crate) type OrderKey = (String, String);
 
 /// A message as it was before the transaction changed it.
 struct Before {

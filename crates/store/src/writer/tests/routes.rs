@@ -183,7 +183,7 @@ fn composed_rows(w: &TestArchive) -> Vec<String> {
     let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     let mut rows = Vec::new();
     for sql in [
-        "SELECT m.id,s.id,i.id,m.source_chain,m.source_start,m.source_end,hex(m.session_order),
+        "SELECT m.id,s.id,i.id,m.source_chain,m.source_start,m.source_end,m.session_order,
                 m.role,m.written_by,m.prompt_kind,m.model,m.at,hex(m.at_time),m.parent_id,m.in_progress,
                 m.input_tokens,m.output_tokens,m.stop_reason,m.attrs_json,m.words,m.cost_nusd
          FROM message m JOIN session s ON s.pk=m.session_pk JOIN input_ref i ON i.pk=m.input_pk",

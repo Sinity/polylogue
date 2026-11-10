@@ -19,7 +19,12 @@ fn message(tx: &Transaction<'_>, pk: i64, session: i64) {
     tx.execute(
         "INSERT INTO message(pk,id,session_pk,session_order,role,written_by,input_pk)
         VALUES(?1,?2,?3,?4,'user','human',1)",
-        params![pk, format!("claude-code:m-{pk}"), session, pk.to_be_bytes()],
+        params![
+            pk,
+            format!("claude-code:m-{pk}"),
+            session,
+            format!("{pk:08}")
+        ],
     )
     .unwrap();
 }

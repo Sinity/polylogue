@@ -563,31 +563,26 @@ pub(crate) fn restore_text(block: &mut Block, text: String) {
     }
 }
 
-/// A message's place in its session (docs/sessions.md, messages), encoded so
-/// that comparing the bytes compares (order time, input ID, sequence,
-/// record position): an unknown order time sorts first, integers are stored
-/// big-endian with the sign bit flipped, and the input ID ends with a zero
-/// byte so a shorter ID sorts before a longer one it begins.
+/// A message's place in its session (docs/sessions.md, messages), written so
+/// that comparing the text compares (order time, input ID, sequence, record
+/// position): `0` for an unknown order time or `1` and the time, then the
+/// input ID ended by U+0001 (below every character an ID holds, so a shorter
+/// ID sorts before a longer one it begins), then the sequence and the record
+/// position. Each number is sixteen lowercase hexadecimal digits of its value
+/// with the sign bit flipped. Text, not bytes, because query pages carry their
+/// sort keys as text.
 pub(crate) fn session_order(
     order_time: Option<i64>,
     input: &str,
     seq: i64,
     position: i64,
-) -> Vec<u8> {
-    let sortable = |n: i64| ((n as u64) ^ (1 << 63)).to_be_bytes();
-    let mut key = Vec::with_capacity(1 + 8 + input.len() + 1 + 16);
-    match order_time {
-        None => key.push(0),
-        Some(ms) => {
-            key.push(1);
-            key.extend_from_slice(&sortable(ms));
-        }
-    }
-    key.extend_from_slice(input.as_bytes());
-    key.push(0);
-    key.extend_from_slice(&sortable(seq));
-    key.extend_from_slice(&sortable(position));
-    key
+) -> String {
+    let sortable = |n: i64| format!("{:016x}", (n as u64) ^ (1 << 63));
+    let time = match order_time {
+        None => "0".to_owned(),
+        Some(ms) => format!("1{}", sortable(ms)),
+    };
+    format!("{time}{input}\u{1}{}{}", sortable(seq), sortable(position))
 }
 
 /// Lowercase hexadecimal.

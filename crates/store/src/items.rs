@@ -483,7 +483,7 @@ fn start(conn: &Connection, session_pk: i64, change: &SessionChange) -> Result<S
         if let Some(seq) = header(conn, session_pk, "message_pk", pk)? {
             lower(&mut limit, seq);
         }
-        let order: Option<(Vec<u8>, String)> = shown
+        let order: Option<(String, String)> = shown
             .query_row(params![pk, session_pk], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })

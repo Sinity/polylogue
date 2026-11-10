@@ -769,7 +769,7 @@ impl RowWriter<'_, '_> {
         m: &Message,
         session_pk: i64,
         v: &Version,
-        order: &[u8],
+        order: &str,
     ) -> Result<i64> {
         self.set_message(None, m, session_pk, v, order)
     }
@@ -780,7 +780,7 @@ impl RowWriter<'_, '_> {
         m: &Message,
         session_pk: i64,
         v: &Version,
-        order: &[u8],
+        order: &str,
     ) -> Result<()> {
         self.set_message(Some(pk), m, session_pk, v, order)
             .map(drop)
@@ -794,7 +794,7 @@ impl RowWriter<'_, '_> {
         m: &Message,
         session_pk: i64,
         v: &Version,
-        order: &[u8],
+        order: &str,
     ) -> Result<i64> {
         let written_by = polylogue_model::WrittenBy::of(m.role, m.prompt_kind).as_str();
         let words: i64 = m

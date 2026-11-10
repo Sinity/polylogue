@@ -35,7 +35,7 @@ fn tied_source_positions_use_ids_in_physical_logical_prompt_and_fingerprint_read
         crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
             .unwrap();
     conn.execute(
-        "UPDATE message SET session_order=CASE WHEN id='claude-code:zz-earlier' THEN x'00' ELSE x'07' END",
+        "UPDATE message SET session_order=CASE WHEN id='claude-code:zz-earlier' THEN '0' ELSE '7' END",
         [],
     )
     .unwrap();

@@ -987,7 +987,7 @@ impl Reader<'_> {
             LEFT JOIN message_projection projection ON projection.version_hash=shown.version_hash
             LEFT JOIN input_ref source_input ON source_input.pk=shown.input_pk";
         const ORDER: &str = "ORDER BY m.session_order, m.id";
-        let start: Option<(Vec<u8>, String)> = match from {
+        let start: Option<(String, String)> = match from {
             Some(pk) => self
                 .conn()?
                 .prepare_cached(

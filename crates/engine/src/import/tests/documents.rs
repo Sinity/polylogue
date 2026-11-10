@@ -36,7 +36,7 @@ fn whole_documents_cite_the_stored_bytes_and_preserve_reading_order_on_rebuild()
         assert_eq!(messages[1].parent.as_ref(), Some(&messages[0].id));
         let rows = r
             .query(
-                "SELECT source_start,source_end,seq AS source_order FROM message ORDER BY seq",
+                "SELECT m.source_start,m.source_end,s.seq AS source_order FROM message m JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain ORDER BY s.seq",
                 &[],
             )
             .unwrap();

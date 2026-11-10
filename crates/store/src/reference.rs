@@ -312,7 +312,7 @@ impl<'a> ReferenceText<'a> {
             first: first.clone(),
             last: last.clone(),
         };
-        type Position = (i64, Vec<u8>, String, bool);
+        type Position = (i64, String, String, bool);
         let conn = self.original;
         let position = |id: &polylogue_model::MessageId| -> Result<Option<Position>> {
             Ok(conn.query_row("SELECT session_pk,session_order,id,duplicate_of IS NOT NULL FROM message WHERE id=?1",[id.to_string()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?)

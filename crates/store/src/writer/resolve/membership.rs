@@ -21,7 +21,7 @@ pub(crate) struct MessageChoice {
     /// progress and no other reading supplies a stop reason.
     pub in_progress: bool,
     /// The message's place in its session (`encoding::session_order`).
-    pub order: Vec<u8>,
+    pub order: String,
     /// Each field group taken from another input chain than the main route.
     pub routes: Vec<(FieldGroup, i64, i64)>,
     pub changed: bool,
