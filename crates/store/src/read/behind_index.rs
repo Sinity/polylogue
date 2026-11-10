@@ -32,15 +32,7 @@ pub enum StoppedChains {
     ForAttempt(polylogue_model::batch::StoppedAttempt),
 }
 
-/// The existing lag planner and completeness proof read this same row stream.
-pub(super) struct ChainState {
-    pub plan: BehindChain,
-    pub origin: String,
-    pub version: Option<String>,
-    pub progress: Option<polylogue_model::batch::ParseProgress>,
-}
-
-const CHAIN_STATES: &str = r#"WITH inputs AS MATERIALIZED (
+const CHAINS_BEHIND: &str = r#"WITH inputs AS MATERIALIZED (
                 SELECT input, max(number) AS number, max(produced = 'imported') AS imported
                 FROM source_revision GROUP BY input
             ), chains AS (
@@ -70,14 +62,14 @@ const CHAIN_STATES: &str = r#"WITH inputs AS MATERIALIZED (
             LEFT JOIN source_observation o ON o.rowid = fp.observation
             LEFT JOIN input_ref ir ON ir.id = c.input
             LEFT JOIN parse_state p ON p.input_pk = ir.pk AND p.chain = c.chain
-            WHERE (?2 OR (c.length > 0
+            WHERE (c.length > 0
               AND (p.input_pk IS NULL
-                OR (NOT COALESCE(p.at_length = c.length AND (p.status = 'waiting' OR NOT ?3), 0)
+                OR (NOT COALESCE(p.at_length = c.length AND (p.status = 'waiting' OR NOT ?2), 0)
                     AND p.parsed_upto < c.length)
-                OR (?3 AND p.status IN ('refused','failed') AND p.at_length=c.length)
+                OR (?2 AND p.status IN ('refused','failed') AND p.at_length=c.length)
                 OR EXISTS(SELECT 1 FROM json_each(?1) expected
                     WHERE json_extract(expected.value, '$[0]') = COALESCE(f.format, i.format)
-                      AND json_extract(expected.value, '$[1]') IS NOT p.reading_version))))
+                      AND json_extract(expected.value, '$[1]') IS NOT p.reading_version)))
             ORDER BY 5,(SELECT max(o.seen_at) FROM source_observation o WHERE o.input=c.input) DESC,c.input,c.chain DESC"#;
 
 impl Reader<'_> {
@@ -104,21 +96,10 @@ impl Reader<'_> {
         stopped: StoppedChains,
         visit: &mut dyn FnMut(BehindChain) -> Result<std::ops::ControlFlow<()>>,
     ) -> Result<()> {
-        self.visit_chain_states(versions, false, stopped, &mut |state| visit(state.plan))
-    }
-
-    pub(super) fn visit_chain_states(
-        &self,
-        versions: &[(String, String)],
-        all: bool,
-        stopped: StoppedChains,
-        visit: &mut dyn FnMut(ChainState) -> Result<std::ops::ControlFlow<()>>,
-    ) -> Result<()> {
         let token = self.scope_token();
-        let mut statement = self.conn()?.prepare(CHAIN_STATES)?;
+        let mut statement = self.conn()?.prepare(CHAINS_BEHIND)?;
         let mut rows = statement.query(params![
             serde_json::to_string(versions)?,
-            all,
             matches!(stopped, StoppedChains::ForAttempt(_))
         ])?;
         while let Some(row) = rows.next()? {
@@ -143,48 +124,40 @@ impl Reader<'_> {
             let stopped_at_length = progress
                 .as_ref()
                 .is_some_and(|progress| progress.stopped() && progress.at_length() == Some(length));
-            let state = ChainState {
-                plan: BehindChain {
-                    input: row.get(0)?,
-                    current: row.get(3)?,
-                    imported: if imported {
-                        Some(ImportedAs {
-                            format: origin.clone(),
-                            path: row.get(6)?,
-                        })
-                    } else {
-                        None
-                    },
-                    reading_changed,
-                    stopped_at_length,
-                    stopped_attempt: row
-                        .get::<_, Option<Vec<u8>>>(14)?
-                        .as_deref()
-                        .map(crate::encoding::unpack_json)
-                        .transpose()?,
-                    progress: ChainProgress {
-                        chain: row.get(1)?,
-                        length,
-                        parsed_upto,
-                        parsed: row.get(8)?,
-                        waiting: row.get(9)?,
-                        imported,
-                    },
+            let chain = BehindChain {
+                input: row.get(0)?,
+                current: row.get(3)?,
+                imported: if imported {
+                    Some(ImportedAs {
+                        format: origin,
+                        path: row.get(6)?,
+                    })
+                } else {
+                    None
                 },
-                origin,
-                version,
-                progress,
+                reading_changed,
+                stopped_at_length,
+                stopped_attempt: row
+                    .get::<_, Option<Vec<u8>>>(14)?
+                    .as_deref()
+                    .map(crate::encoding::unpack_json)
+                    .transpose()?,
+                progress: ChainProgress {
+                    chain: row.get(1)?,
+                    length,
+                    parsed_upto,
+                    parsed: row.get(8)?,
+                    waiting: row.get(9)?,
+                    imported,
+                },
             };
-            if !all
-                && !state.plan.reading_changed
-                && state.progress.as_ref().is_some_and(|progress| {
-                    progress.stopped() && progress.at_length() == Some(state.plan.progress.length)
-                })
-                && matches!(stopped, StoppedChains::ForAttempt(attempt) if state.plan.stopped_attempt == Some(attempt))
+            if !chain.reading_changed
+                && chain.stopped_at_length
+                && matches!(stopped, StoppedChains::ForAttempt(attempt) if chain.stopped_attempt == Some(attempt))
             {
                 continue;
             }
-            if visit(state)?.is_break() {
+            if visit(chain)?.is_break() {
                 break;
             }
         }

@@ -348,6 +348,7 @@ impl Inner {
                 return Err(error.into());
             }
         }
+        self.refresh_chain_progress()?;
         Ok(GroupOutcome {
             inputs: outcomes,
             machines,

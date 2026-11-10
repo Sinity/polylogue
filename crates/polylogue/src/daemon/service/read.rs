@@ -175,6 +175,14 @@ pub(crate) fn with_variants(
 
 /// What read cursors are sealed with: this index generation's key and the
 /// generation.
+/// Whether the index has caught up, read from the snapshot of `reader`
+/// through the counts the writer keeps, without walking the chains.
+fn caught_up(reader: &Reader<'_>) -> polylogue_store::Result<bool> {
+    Ok(reader
+        .completeness(&polylogue_engine::reading_contracts())?
+        .caught_up())
+}
+
 fn cursor_seal(reader: &polylogue_store::Reader<'_>) -> Result<CursorSeal, Failure> {
     Ok(CursorSeal {
         key: reader.cursor_key()?,
@@ -295,14 +303,7 @@ fn prepared<T>(
             let compile = crate::daemon::query::options(reader, &ask, seed(&reading.target))?;
             let selection = reader.prepare_selection(&reading.target, &compile)?;
             let positions = reader.change_position()?;
-            // A stream (a bundle) states a consistent snapshot, so it asks
-            // at its own position, checked once per position; a page reports
-            // what the caught-up worker last found, without a scan.
-            let caught_up = if reading.budget.is_none() {
-                d.warm.caught_up(reader, &positions.to_string())?
-            } else {
-                d.warm.caught_up_for_read(reader, &positions.to_string())?
-            };
+            let caught_up = caught_up(reader)?;
             let snapshot = ReadSnapshot {
                 query: format!("query:{}", selection.question_id()),
                 query_text: reading.target.clone(),

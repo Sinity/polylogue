@@ -14,45 +14,6 @@ fn recent_keeps_the_most_recently_used() {
 }
 
 #[test]
-fn caught_up_failures_are_visible_and_a_success_clears_them() {
-    let daemon = crate::test_daemon::start("caught-up failure");
-    let warm = Warm::default();
-    warm.refresh_caught_up(&daemon.daemon.reads);
-    assert!(warm.caught_up_error().is_none());
-    let closed = polylogue_store::ReadPool::open(&daemon.daemon.archive).unwrap();
-    closed.close();
-    warm.refresh_caught_up(&closed);
-    assert!(warm.caught_up_error().is_some());
-    warm.refresh_caught_up(&daemon.daemon.reads);
-    assert!(warm.caught_up_error().is_none());
-}
-
-#[test]
-fn a_read_at_a_newer_position_has_the_worker_check_at_it() {
-    let daemon = crate::test_daemon::start("caught-up at a newer position");
-    let warm = Warm::default();
-    warm.refresh_caught_up(&daemon.daemon.reads);
-    warm.recheck_wanted.store(false, Ordering::Release);
-    let before = warm.caught_up.lock().unwrap().clone().unwrap().0;
-    daemon.set("browser.actions", "on");
-    let reader = daemon.daemon.reads.reader().unwrap();
-    let position = reader.change_position().unwrap().to_string();
-    assert_ne!(position, before);
-    // The read answers with what was last found and asks for a newer answer.
-    warm.caught_up_for_read(&reader, &position).unwrap();
-    assert!(warm.recheck_wanted.load(Ordering::Acquire));
-    drop(reader);
-    std::thread::scope(|scope| {
-        let worker = scope.spawn(|| warm.caught_up_worker(&daemon.daemon.reads, None));
-        while warm.caught_up.lock().unwrap().as_ref().unwrap().0 != position {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        warm.stop_checking();
-        worker.join().unwrap();
-    });
-}
-
-#[test]
 fn completion_reads_declared_values_and_refreshes_observed_models() {
     let d = crate::test_daemon::start("synthetic prompt");
     let values = |word: &str| {

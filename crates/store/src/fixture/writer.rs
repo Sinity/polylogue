@@ -155,6 +155,12 @@ impl WriterArchive {
         }
     }
 
+    /// Stops the writer and starts a new one on the same archive.
+    pub fn restart(&mut self) {
+        self.writer.stop();
+        self.writer = Writer::start(&self.archive).expect("start the writer");
+    }
+
     /// Writes `messages` as one appended step of the session's input.
     pub fn write(&mut self, session: &str, messages: Vec<Message>) {
         self.write_session(Session::new(sid(session), SessionKind::Main), messages);

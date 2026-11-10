@@ -902,7 +902,6 @@ pub struct Runtime {
     pub operations: Arc<command_surface::OperationTable>,
     signals_stop: Option<Sender<()>>,
     signals: Option<JoinHandle<()>>,
-    caught_up: Option<JoinHandle<()>>,
     live_evidence_stop: Option<Sender<()>>,
     live_evidence: Option<JoinHandle<()>>,
     completion: Option<crate::completion_catalog::publisher::Publisher>,
@@ -973,9 +972,6 @@ impl Runtime {
         if self.signals.as_ref().is_some_and(JoinHandle::is_finished) {
             return Some("signal worker terminated");
         }
-        if self.caught_up.as_ref().is_some_and(JoinHandle::is_finished) {
-            return Some("caught-up worker terminated");
-        }
         if let Some(failure) = self
             .scope
             .as_ref()
@@ -1012,15 +1008,6 @@ impl Runtime {
         self.scope.take();
         if let Some(stop) = self.signals_stop.take() {
             let _ = stop.send(());
-        }
-        if self.caught_up.is_some() {
-            self.daemon.warm.stop_checking();
-            self.daemon.warm.clear();
-        }
-        if let Some(caught_up) = self.caught_up.take()
-            && caught_up.join().is_err()
-        {
-            failure.get_or_insert_with(|| std::io::Error::other("caught-up worker panicked"));
         }
         if let Some(stop) = self.live_evidence_stop.take() {
             let _ = stop.send(());
@@ -1292,7 +1279,6 @@ pub fn start(
         operations,
         signals_stop: None,
         signals: None,
-        caught_up: None,
         live_evidence_stop: None,
         live_evidence: None,
         completion: None,
@@ -1385,27 +1371,6 @@ pub fn start(
                     None,
                 );
                 crate::signals::run(daemon, stopped)
-            })?,
-    );
-    let caught_up_commits = runtime
-        .daemon
-        .writes
-        .as_ref()
-        .map(WriterSender::completion_commits);
-    let daemon = Arc::clone(&runtime.daemon);
-    let worker_events = runtime.worker_events.clone();
-    runtime.caught_up = Some(
-        std::thread::Builder::new()
-            .name("polylogue-caught-up".into())
-            .spawn(move || {
-                let _exit = super::lifecycle::WorkerExit::new(
-                    worker_events,
-                    "caught-up worker terminated",
-                    None,
-                );
-                daemon
-                    .warm
-                    .caught_up_worker(&daemon.reads, caught_up_commits)
             })?,
     );
     let (stop, stopped) = channel();

@@ -80,6 +80,7 @@ A halt survives a restart and clears only when what it depends on changes: a new
 - Every figure has its own deadline; one that misses it is `not_measured: timed out`, and the rest still answers within the class budget.
 - A figure is reused only while its key (file times, counters, positions) is unchanged, and is then shown with its age; time alone never makes an old value reusable.
 - Totals come from counters the writer keeps in the transaction of the rows they count, never from a recount.
+- Whether the index has caught up comes the same way: the writer keeps each stored chain's parse state (no checkpoint, current, no parser, partial, behind) with the change that moves it, counted by origin and reading version, and a read applies the reading contracts to those counts. No read or commit walks every chain; a writer that stopped without closing recounts once at its next start.
 - An unmeasured figure is never shown as zero or healthy; a ratio with a zero denominator is `not_measured`.
 
 **Exit code.** `status`, with or without `--line` or `--json`, exits with its answer's code: 0 for a current answer, the degraded code when the answer is degraded (an index behind or a figure not measured), as every other command does ([interfaces.md](interfaces.md#exit-codes)).

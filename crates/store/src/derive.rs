@@ -338,7 +338,9 @@ impl<'a> Pass<'a> {
 /// versions are the current ones.
 pub(crate) fn caught_up(conn: &Connection) -> Result<bool> {
     let due: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM derive_due d JOIN session s ON s.pk = d.session_pk WHERE s.stub = 0)",
+        // CROSS JOIN keeps the due marks the outer loop: an empty
+        // `derive_due` answers without visiting any session.
+        "SELECT EXISTS(SELECT 1 FROM derive_due d CROSS JOIN session s ON s.pk = d.session_pk WHERE s.stub = 0)",
         [],
         |r| r.get(0),
     )?;

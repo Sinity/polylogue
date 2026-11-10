@@ -6,10 +6,6 @@
 //! - **Query vectors**: the provider's vector for each recent `similar:` text,
 //!   so a repeated or paged query neither pays nor waits for the provider
 //!   again, and ranks by the same values.
-//! - **Whether the index has caught up**, for reads: found by a worker of
-//!   its own when the daemon starts, after the writer commits and when a
-//!   read at a newer position asks, one at a time, so a read reports the
-//!   last answer instead of walking every chain.
 //!
 //! Entries are bound to their read position or embeddings snapshot revision.
 //! SQL reads and quantization do not hold the vector cache mutex.
@@ -75,14 +71,6 @@ struct VectorCache {
 
 pub struct Warm {
     vectors: Mutex<VectorCache>,
-    /// Whether the index had caught up, with the change position it was read at.
-    caught_up: Mutex<Option<(String, bool)>>,
-    caught_up_error: Mutex<Option<String>>,
-    /// Wakes the caught-up worker: the writer committed, or a read saw an
-    /// answer older than its position.
-    recheck: std::sync::Condvar,
-    recheck_wanted: std::sync::atomic::AtomicBool,
-    checking_stopped: std::sync::atomic::AtomicBool,
     query_vectors: Mutex<Recent<Arc<Vec<f32>>>>,
     counts: Counts,
     /// Session item indexes read by recent reads.
@@ -93,12 +81,6 @@ impl Default for Warm {
     fn default() -> Self {
         Self {
             vectors: Mutex::new(VectorCache::default()),
-            caught_up: Mutex::new(None),
-            caught_up_error: Mutex::new(None),
-            recheck: std::sync::Condvar::new(),
-            // The first check starts with the daemon.
-            recheck_wanted: std::sync::atomic::AtomicBool::new(true),
-            checking_stopped: std::sync::atomic::AtomicBool::new(false),
             query_vectors: Mutex::new(Recent::new(QUERY_VECTORS)),
             counts: Counts::default(),
             items: super::items::ItemCache::default(),
@@ -223,140 +205,6 @@ impl Warm {
             .map_err(|e| e.to_string())
     }
 
-    /// Whether the index has caught up at `position`. The answer is computed
-    /// once per change position, by the caught-up worker or by the first read
-    /// at a new position; later pages and reads at that position reuse it.
-    pub fn caught_up(&self, reader: &Reader<'_>, position: &str) -> polylogue_store::Result<bool> {
-        if let Some((known, caught_up)) = self
-            .caught_up
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .as_ref()
-            && known == position
-        {
-            return Ok(*caught_up);
-        }
-        let caught_up = reader
-            .completeness(&polylogue_engine::reading_contracts())?
-            .caught_up();
-        *self
-            .caught_up
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some((position.to_owned(), caught_up));
-        Ok(caught_up)
-    }
-
-    /// Whether the index had caught up, as the caught-up worker last found
-    /// it. A read never scans for this: when the position moved since, the
-    /// worker is asked to check again and the read reports the last answer.
-    /// Before the first check it is computed once.
-    pub fn caught_up_for_read(
-        &self,
-        reader: &Reader<'_>,
-        position: &str,
-    ) -> polylogue_store::Result<bool> {
-        let known = self
-            .caught_up
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone();
-        match known {
-            Some((at, caught_up)) => {
-                if at != position {
-                    self.request_check();
-                }
-                Ok(caught_up)
-            }
-            None => self.caught_up(reader, position),
-        }
-    }
-
-    fn request_check(&self) {
-        self.recheck_wanted.store(true, Ordering::Release);
-        // Under the worker's lock, so the wake cannot fall between its check
-        // and its wait.
-        let _guard = self.caught_up.lock();
-        self.recheck.notify_one();
-    }
-
-    /// The caught-up worker: finds whether the index has caught up when the
-    /// daemon starts, whenever the writer committed (`commits`) and whenever
-    /// a read asked for a newer answer, one at a time, until
-    /// [`Warm::stop_checking`].
-    pub fn caught_up_worker(
-        &self,
-        reads: &polylogue_store::ReadPool,
-        commits: Option<polylogue_store::completion::CommitSubscription>,
-    ) {
-        let wake = commits
-            .as_ref()
-            .map(polylogue_store::completion::CommitSubscription::wake_handle);
-        std::thread::scope(|scope| {
-            if let Some(commits) = commits {
-                scope.spawn(move || {
-                    while commits.recv().is_ok() && !self.checking_stopped() {
-                        self.request_check();
-                    }
-                });
-            }
-            loop {
-                {
-                    let Ok(held) = self.caught_up.lock() else {
-                        break;
-                    };
-                    let Ok(held) = self.recheck.wait_while(held, |_| {
-                        !self.checking_stopped() && !self.recheck_wanted.load(Ordering::Acquire)
-                    }) else {
-                        break;
-                    };
-                    drop(held);
-                }
-                if self.checking_stopped() {
-                    break;
-                }
-                self.recheck_wanted.store(false, Ordering::Release);
-                self.refresh_caught_up(reads);
-            }
-            self.checking_stopped.store(true, Ordering::Release);
-            if let Some(wake) = wake {
-                // The relay sees the stop on its next wake.
-                let _ = wake.try_send(());
-            }
-        });
-    }
-
-    /// Ends [`Warm::caught_up_worker`].
-    pub fn stop_checking(&self) {
-        self.checking_stopped.store(true, Ordering::Release);
-        let _guard = self.caught_up.lock();
-        self.recheck.notify_all();
-    }
-
-    fn checking_stopped(&self) -> bool {
-        self.checking_stopped.load(Ordering::Acquire)
-    }
-
-    fn refresh_caught_up(&self, reads: &polylogue_store::ReadPool) {
-        let result = (|| {
-            let reader = reads.reader()?;
-            let position = reader.change_position()?.to_string();
-            self.caught_up(&reader, &position).map(drop)
-        })();
-        *self
-            .caught_up_error
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) =
-            result.err().map(|error| error.to_string());
-    }
-
-    /// Why the last check of whether the index caught up failed.
-    pub fn caught_up_error(&self) -> Option<String> {
-        self.caught_up_error
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone()
-    }
-
     /// Drops everything; the next requests rebuild what they use.
     pub fn clear(&self) {
         if let Ok(mut v) = self.vectors.lock() {
@@ -365,10 +213,6 @@ impl Warm {
         if let Ok(mut q) = self.query_vectors.lock() {
             q.clear();
         }
-        if let Ok(mut c) = self.caught_up.lock() {
-            *c = None;
-        }
-        self.recheck.notify_all();
     }
 
     /// What `status` shows.

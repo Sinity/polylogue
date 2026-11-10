@@ -111,6 +111,20 @@ impl Inner {
     /// ([`atomic_acquisition`]) succeeds or fails as a whole.
     pub(super) fn store_group(
         &mut self,
+        group: Vec<PreparedBatch>,
+        store: std::sync::Arc<crate::blobs::Blobs>,
+    ) -> Vec<Result<StoredInput>> {
+        let results = self.store_group_rows(group, store);
+        // The index counts the stored chains before the answer, also when
+        // no parsed rows followed them; a failure is retried after the turn.
+        if let Err(error) = self.refresh_chain_progress() {
+            self.report.errors.push(format!("chain progress: {error}"));
+        }
+        results
+    }
+
+    fn store_group_rows(
+        &mut self,
         mut group: Vec<PreparedBatch>,
         _store: std::sync::Arc<crate::blobs::Blobs>,
     ) -> Vec<Result<StoredInput>> {
