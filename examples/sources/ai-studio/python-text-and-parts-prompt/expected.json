@@ -109,7 +109,10 @@
       {
         "id": "ai-studio:text_and_parts_prompt",
         "kind": "main",
-        "started_quality": "unknown"
+        "started_quality": "unknown",
+        "aliases": [
+          "ai-studio:content-593250a4ff3060a89dd7f397d2aec1bf"
+        ]
       },
       {
         "id": "ai-studio:text_and_parts_prompt",

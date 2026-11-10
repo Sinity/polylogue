@@ -75,8 +75,12 @@ impl RowWriter<'_, '_> {
             .get(resolve::Kind::Session, link.child.to_string().as_bytes())?
             .pk;
         let (kind, how) = link.kind.columns();
-        self.changes.link_child(&link.child.to_string());
-        self.tx.prepare_cached("INSERT OR IGNORE INTO link(pk,parent_id,child_id,child_pk,kind,how,evidence,input_pk,source_chain) VALUES (?1,?2,?3,(SELECT pk FROM session WHERE pk=?4),?5,?6,?7,?8,?9)")?.execute(params![pk,link.parent.to_string(),link.child.to_string(),child,kind,how,link.evidence,self.input_pk,self.chain])?;
+        // A copy's session is named by the session its name is an alias of.
+        let (parent, child_id) = (link.parent.to_string(), link.child.to_string());
+        let ids = &self.keys.identities;
+        let (parent, child_id) = (ids.shown_session(&parent), ids.shown_session(&child_id));
+        self.changes.link_child(child_id);
+        self.tx.prepare_cached("INSERT OR IGNORE INTO link(pk,parent_id,child_id,child_pk,kind,how,evidence,input_pk,source_chain) VALUES (?1,?2,?3,(SELECT pk FROM session WHERE pk=?4),?5,?6,?7,?8,?9)")?.execute(params![pk,parent,child_id,child,kind,how,link.evidence,self.input_pk,self.chain])?;
         let value = &self.choices.link_values[index];
         self.tx
             .prepare_cached("INSERT OR IGNORE INTO link_value(pk,hash,body) VALUES (?1,?2,?3)")?

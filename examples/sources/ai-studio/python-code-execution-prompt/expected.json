@@ -158,7 +158,10 @@
       {
         "id": "ai-studio:code_execution_prompt",
         "kind": "main",
-        "started_quality": "unknown"
+        "started_quality": "unknown",
+        "aliases": [
+          "ai-studio:content-5bea29fc4afaa70f00e279d4eb96233a"
+        ]
       },
       {
         "id": "ai-studio:code_execution_prompt",

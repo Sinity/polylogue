@@ -166,7 +166,10 @@
       {
         "id": "ai-studio:multi_turn_prompt",
         "kind": "main",
-        "started_quality": "unknown"
+        "started_quality": "unknown",
+        "aliases": [
+          "ai-studio:content-d8086d8775c76c2192959b8357cd5d24"
+        ]
       },
       {
         "id": "ai-studio:multi_turn_prompt",

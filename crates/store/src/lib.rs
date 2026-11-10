@@ -57,6 +57,7 @@ pub mod schema_inputs;
 pub mod scope_index;
 pub mod search;
 pub mod selection;
+pub mod session_alias;
 pub mod session_export;
 mod session_row;
 pub mod session_sql;

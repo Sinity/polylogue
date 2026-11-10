@@ -78,7 +78,10 @@
       {
         "id": "ai-studio:text_only_session",
         "kind": "main",
-        "started_quality": "unknown"
+        "started_quality": "unknown",
+        "aliases": [
+          "ai-studio:content-f6655b4754cad827ddeb6b6fc79eb9ff"
+        ]
       },
       {
         "id": "ai-studio:text_only_session",

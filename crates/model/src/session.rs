@@ -88,6 +88,12 @@ pub struct Session {
     /// Code `bg` for a background session).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// The IDs a copy of this session is named by where the copy carries no
+    /// native ID: an AI Studio prompt read from Drive names the content key
+    /// a Takeout or downloaded copy of it would have (docs/capture.md, AI
+    /// Studio through Drive). Sorted, without repeats.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<SessionId>,
 }
 
 impl Session {
@@ -129,6 +135,7 @@ impl Session {
             started_precision: None,
             started_until: None,
             mode: None,
+            aliases: Vec::new(),
         }
     }
 
@@ -216,6 +223,11 @@ impl Session {
         }
         if other.mode.is_some() {
             self.mode.clone_from(&other.mode);
+        }
+        for alias in &other.aliases {
+            if let Err(at) = self.aliases.binary_search(alias) {
+                self.aliases.insert(at, alias.clone());
+            }
         }
     }
 }
