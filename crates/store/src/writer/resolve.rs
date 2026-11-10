@@ -198,7 +198,9 @@ impl Resolver {
 
     pub(super) fn resolve_key(&self, index: &Connection, key: &Key) -> Result<RowKey> {
         let existing = self.find(index, key)?;
-        let pk = if key.kind == Kind::Text {
+        // Texts and sessions are shared by batches resolved at once: a
+        // reservation gives them all one row, whichever commits first.
+        let pk = if matches!(key.kind, Kind::Text | Kind::Session) {
             self.identity(key.clone(), existing)?.pk
         } else {
             match existing {
@@ -268,6 +270,41 @@ impl Resolver {
             }
         }
     }
+}
+
+/// Sessions these batches only name, as the session of an event: their row
+/// is created on first sight (a stub) or found, and nothing these batches
+/// write depends on the rest of it, so they need no lease. Session facts,
+/// and what a reading replaces when it starts over, are kept per input
+/// chain, under that input's lease. A session a batch also states facts
+/// about, writes messages or links in, or updates is leased as before.
+fn sessions_only_named(batches: &[&mut Batch]) -> BTreeSet<Key> {
+    let session = |id: &polylogue_model::SessionId| Key::new(Kind::Session, id.to_string());
+    let mut named = BTreeSet::new();
+    let mut written = BTreeSet::new();
+    for batch in batches {
+        for step in &batch.parse {
+            let output = &step.output;
+            named.extend(
+                output
+                    .events
+                    .iter()
+                    .filter_map(|e| e.session.as_ref())
+                    .map(session),
+            );
+            written.extend(output.sessions.iter().map(|s| session(&s.id)));
+            written.extend(output.messages.iter().map(|m| session(&m.message.session)));
+            written.extend(
+                output
+                    .links
+                    .iter()
+                    .flat_map(|link| [session(&link.child), session(&link.parent)]),
+            );
+            written.extend(output.background.iter().map(|u| session(&u.session)));
+        }
+    }
+    named.retain(|key| !written.contains(key));
+    named
 }
 
 pub(super) fn link_key(link: &Link) -> Result<Vec<u8>> {
@@ -489,7 +526,13 @@ impl Resolver {
             let index = crate::archive::open_read(&self.archive.index_db())?;
             let (keys, _) = self.gather(batches, &index, archive)?;
             drop(index);
-            let lease = self.lease(keys.clone());
+            let named = sessions_only_named(batches);
+            let leased = keys
+                .iter()
+                .filter(|key| !named.contains(key))
+                .cloned()
+                .collect();
+            let lease = self.lease(leased);
             let index = crate::archive::open_read(&self.archive.index_db())?;
             let snapshot = index.unchecked_transaction()?;
             let (fresh, chains) = self.gather(batches, &snapshot, archive)?;

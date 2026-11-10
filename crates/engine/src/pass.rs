@@ -10,8 +10,10 @@ const KEEP_STATE_NS: i128 = 6 * 3600 * 1_000_000_000;
 /// The longest a burst of file events delays the next pass.
 const COALESCE: Duration = Duration::from_secs(2);
 /// Jobs queued in the parse pool per worker; the rest of a pass's plans
-/// wait outside it.
-const IN_POOL_PER_WORKER: usize = 16;
+/// wait outside it. A job's memory is bounded by the pool's bytes in
+/// flight; this bounds how many small inputs are between planning and
+/// commit, and so how many the writer can commit in one transaction.
+const IN_POOL_PER_WORKER: usize = 64;
 /// A known file written this recently is live: the session being written.
 const RECENT_NS: i128 = 10 * 60 * 1_000_000_000;
 

@@ -447,6 +447,9 @@ pub(crate) fn restart_full_log(
     Ok(busy? == 0)
 }
 
+/// Prepared statements a write connection keeps.
+const WRITER_STATEMENTS: usize = 512;
+
 /// A connection the writer (or setup) uses. Each connection belongs to one
 /// thread, so SQLite's own mutexes are off (they cost about 3% of the
 /// writer's time).
@@ -459,6 +462,9 @@ pub fn open_write(path: &Path, cache_mib: i64) -> Result<Connection> {
             | OpenFlags::SQLITE_OPEN_URI,
     )?;
     tune(&conn)?;
+    // The writer runs a few hundred distinct statements per batch; rusqlite
+    // keeps 16 by default, so most were parsed again for every batch.
+    conn.set_prepared_statement_cache_capacity(WRITER_STATEMENTS);
     conn.pragma_update(None, "cache_size", -(cache_mib * 1024))?;
     // Mapped pages count as resident memory and speed up reads only; the
     // writer's reads go through its page cache.
