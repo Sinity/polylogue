@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 fn bytes(archive: &Archive, from: u64, body: &[u8]) -> PreparedBatch {
     let (blob, file) = archive.prepare_blob(body).unwrap();
-    let mut batch = batch("input", 0, from, vec![], &[]);
+    let mut batch = batch("input", Route::Live, from, vec![], &[]);
     batch.parse.clear();
     batch.new_blob = Some(blob);
     batch.length = from + body.len() as u64;

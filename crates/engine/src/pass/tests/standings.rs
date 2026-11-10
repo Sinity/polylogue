@@ -223,7 +223,7 @@ fn an_unrecorded_failure_gets_one_real_attempt_then_stops_across_restart() {
             input: InputKey {
                 id: state.input_id.clone(),
                 format: state.origin.name.into(),
-                arrival_rank: 0,
+                route: polylogue_model::Route::Live,
             },
             change: Change::Reparse {
                 chain: progress.chain,

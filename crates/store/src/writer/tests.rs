@@ -1,7 +1,8 @@
 use super::*;
 use crate::ReadPool;
 use polylogue_model::{
-    Json, LinkKind, MessageId, PromptKind, RecordOutcome, SessionKind, TitleSource, Usage,
+    Json, LinkKind, MessageId, PromptKind, RecordOutcome, Role, Route, SessionKind, TitleSource,
+    Usage,
 };
 
 mod assertions;
@@ -11,6 +12,7 @@ mod input_events;
 mod items;
 mod parent_order;
 mod resolution;
+mod routes;
 mod saved;
 mod scoped;
 mod sparse_projection;
@@ -147,14 +149,14 @@ fn counts(n: u64) -> RecordCounts {
     a
 }
 
-fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&str]) -> Batch {
+fn batch(input: &str, route: Route, start: u64, rows: Vec<MessageRow>, sessions: &[&str]) -> Batch {
     let n = rows.len() as u64;
     Batch {
         required_disposition: None,
         input: InputKey {
             id: input.into(),
             format: "claude-code".into(),
-            arrival_rank: rank,
+            route,
         },
         change: if start == 0 {
             Change::First
@@ -200,6 +202,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
 
 fn row(offset: u64, message: Message) -> MessageRow {
     MessageRow {
+        page_text: false,
         id_kind: polylogue_model::IdKind::Native,
         offset,
         end: offset,
@@ -225,7 +228,7 @@ fn messages_read_back_in_order_and_unchanged() {
     w.store_reading(
         batch(
             "i1",
-            0,
+            Route::Live,
             0,
             vec![row(50, b.clone()), row(10, a.clone())],
             &["s"],
@@ -246,12 +249,12 @@ fn the_same_record_sent_longer_replaces_itself() {
     let short = text_message("r", "s", Role::Assistant, "part", None);
     let long = text_message("r", "s", Role::Assistant, "part and more", Some("end_turn"));
     w.store_reading(
-        batch("i1", 0, 0, vec![row(0, short)], &["s"]),
+        batch("i1", Route::Live, 0, vec![row(0, short)], &["s"]),
         Some(&SOURCE_RECORD),
     )
     .unwrap();
     w.store_reading(
-        batch("i1", 0, 100, vec![row(0, long)], &["s"]),
+        batch("i1", Route::Live, 100, vec![row(0, long)], &["s"]),
         Some(&SOURCE_RECORD),
     )
     .unwrap();
@@ -265,7 +268,13 @@ fn within_one_input_the_earliest_record_wins() {
     let first = text_message("u", "s", Role::User, "original", None);
     let dup = text_message("u", "s", Role::User, "conflicting duplicate", None);
     w.store_reading(
-        batch("i1", 0, 0, vec![row(10, first), row(90, dup)], &["s"]),
+        batch(
+            "i1",
+            Route::Live,
+            0,
+            vec![row(10, first), row(90, dup)],
+            &["s"],
+        ),
         Some(&SOURCE_RECORD),
     )
     .unwrap();
@@ -273,21 +282,17 @@ fn within_one_input_the_earliest_record_wins() {
     assert_eq!(texts(&w, "s"), ["original"]);
 }
 
+/// docs/sessions.md, one conversation through several routes: a finished
+/// reading wins over an in-progress one of the same route.
 #[test]
-fn across_inputs_a_complete_version_beats_an_open_one_whichever_comes_first() {
+fn within_a_route_a_finished_version_beats_an_open_one_whichever_comes_first() {
     for order in [[0, 1], [1, 0]] {
         let w = test_archive();
         let open = text_message("r", "s", Role::Assistant, "open", None);
         let done = text_message("r", "s", Role::Assistant, "done", Some("end_turn"));
         let batches = [
-            batch("live", 0, 0, vec![row(0, open)], &["s"]),
-            batch(
-                &polylogue_model::BlobHash::of(&SOURCE_RECORD).to_string(),
-                2,
-                0,
-                vec![row(0, done)],
-                &["s"],
-            ),
+            batch("a", Route::Live, 0, vec![row(0, open)], &["s"]),
+            batch("b", Route::Live, 0, vec![row(0, done)], &["s"]),
         ];
         for i in order {
             w.store_reading(batches[i].clone(), Some(&SOURCE_RECORD))
@@ -313,12 +318,12 @@ fn a_winning_version_from_another_session_moves_the_message_with_its_blocks() {
     });
     let done = text_message("r", "second", Role::Assistant, "done", Some("end_turn"));
     w.store_reading(
-        batch("a", 0, 0, vec![row(0, open)], &["first"]),
+        batch("a", Route::Live, 0, vec![row(0, open)], &["first"]),
         Some(&SOURCE_RECORD),
     )
     .unwrap();
     w.store_reading(
-        batch("b", 0, 0, vec![row(0, done)], &["second"]),
+        batch("b", Route::Live, 0, vec![row(0, done)], &["second"]),
         Some(&SOURCE_RECORD),
     )
     .unwrap();
@@ -359,12 +364,12 @@ fn a_tool_result_pairs_with_its_call_in_either_order() {
             (call, result)
         };
         w.store_reading(
-            batch("i", 0, 0, vec![row(0, first)], &["s"]),
+            batch("i", Route::Live, 0, vec![row(0, first)], &["s"]),
             Some(&SOURCE_RECORD),
         )
         .unwrap();
         w.store_reading(
-            batch("i", 0, 100, vec![row(100, second)], &["s"]),
+            batch("i", Route::Live, 100, vec![row(100, second)], &["s"]),
             Some(&SOURCE_RECORD),
         )
         .unwrap();
@@ -405,7 +410,7 @@ fn prose_and_tool_output_are_searchable_once_a_first_build_ends() {
         attachments: vec![],
     });
     w.store_reading(
-        batch("i", 0, 0, vec![row(0, m)], &["s"]),
+        batch("i", Route::Live, 0, vec![row(0, m)], &["s"]),
         Some(&SOURCE_RECORD),
     )
     .unwrap();
@@ -438,7 +443,7 @@ fn the_search_thread_indexes_live_writes_without_a_flush() {
             w.commit_source(
                 batch(
                     "i",
-                    0,
+                    Route::Live,
                     0,
                     vec![row(0, text_message("a", "s", Role::User, "first", None))],
                     &["s"],
@@ -454,7 +459,7 @@ fn the_search_thread_indexes_live_writes_without_a_flush() {
             w.commit_source(
                 batch(
                     "j",
-                    0,
+                    Route::Live,
                     0,
                     vec![row(
                         0,
@@ -497,7 +502,7 @@ fn the_search_thread_indexes_live_writes_without_a_flush() {
 #[test]
 fn session_facts_merge_and_a_pending_link_finds_its_child() {
     let w = test_archive();
-    let mut b1 = batch("i", 0, 0, vec![], &[]);
+    let mut b1 = batch("i", Route::Live, 0, vec![], &[]);
     let p = b1.parse.first_mut().unwrap();
     let mut s = Session::new(sid("parent"), SessionKind::Main);
     s.offer_cwd("/a");
@@ -511,7 +516,7 @@ fn session_facts_merge_and_a_pending_link_finds_its_child() {
         evidence: "agent_progress".into(),
     }];
     w.store_reading(b1, Some(&SOURCE_RECORD)).unwrap();
-    let mut b2 = batch("j", 0, 0, vec![], &[]);
+    let mut b2 = batch("j", Route::Live, 0, vec![], &[]);
     let p = b2.parse.first_mut().unwrap();
     s.offer_cwd("/b");
     s.offer_title("named", TitleSource::Custom);
@@ -549,7 +554,13 @@ fn copied_messages_are_stored_once_and_read_logically() {
     // The parent's own file.
     let a = text_message("a", "parent", Role::User, "first", None);
     w.store_reading(
-        batch("parent-file", 0, 0, vec![row(0, a.clone())], &["parent"]),
+        batch(
+            "parent-file",
+            Route::Live,
+            0,
+            vec![row(0, a.clone())],
+            &["parent"],
+        ),
         Some(&SOURCE_RECORD),
     )
     .unwrap();
@@ -557,7 +568,7 @@ fn copied_messages_are_stored_once_and_read_logically() {
     let b = text_message("b", "child", Role::User, "second", None);
     let mut child = batch(
         "child-file",
-        0,
+        Route::Live,
         0,
         vec![row(0, a), row(50, b)],
         &["parent", "child"],
@@ -597,14 +608,14 @@ fn a_step_whose_counts_do_not_add_up_is_refused_alone() {
     let w = test_archive();
     let good = batch(
         "good",
-        0,
+        Route::Live,
         0,
         vec![row(0, text_message("g", "s", Role::User, "ok", None))],
         &["s"],
     );
     let mut bad = batch(
         "bad",
-        0,
+        Route::Live,
         0,
         vec![row(0, text_message("x", "t", Role::User, "x", None))],
         &["t"],
@@ -632,12 +643,12 @@ fn a_step_whose_counts_do_not_add_up_is_refused_alone() {
 fn revisions_extents_and_parse_state_follow_appends() {
     let w = test_archive();
     let store = Arc::new(w.archive.blobs().unwrap());
-    let mut b1 = batch("i", 0, 0, vec![], &[]);
+    let mut b1 = batch("i", Route::Live, 0, vec![], &[]);
     let (blob1, file1) = w.archive.prepare_blob(b"line one\n").unwrap();
     b1.new_blob = Some(blob1);
     b1.length = 9;
     b1.parse.first_mut().unwrap().parsed_upto = 9;
-    let mut b2 = batch("i", 0, 9, vec![], &[]);
+    let mut b2 = batch("i", Route::Live, 9, vec![], &[]);
     let (blob2, file2) = w.archive.prepare_blob(b"line two\npartial").unwrap();
     b2.new_blob = Some(blob2);
     b2.length = 25;
@@ -701,7 +712,7 @@ fn revisions_extents_and_parse_state_follow_appends() {
 fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     let w = test_archive();
     let store = Arc::new(w.archive.blobs().unwrap());
-    let mut first = batch("i", 0, 0, vec![], &[]);
+    let mut first = batch("i", Route::Live, 0, vec![], &[]);
     let (first_blob, first_file) = w.archive.prepare_blob(b"line\npartial").unwrap();
     first.new_blob = Some(first_blob);
     first.length = 12;
@@ -725,7 +736,7 @@ fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     let pool = ReadPool::open(&w.archive).unwrap();
     assert!(pool.reader().unwrap().known_inputs("m").unwrap()[0].waiting);
 
-    let mut append = batch("i", 0, 12, vec![], &[]);
+    let mut append = batch("i", Route::Live, 12, vec![], &[]);
     let (append_blob, append_file) = w.archive.prepare_blob(b"rest").unwrap();
     append.new_blob = Some(append_blob);
     append.length = 16;
@@ -761,8 +772,8 @@ fn a_copy_in_a_spawned_session_never_takes_the_message_from_its_origin() {
         let w = test_archive();
         let original = text_message("h1", "s", Role::User, "original", None);
         let copy = text_message("h1", "agent-c", Role::User, "copy", None);
-        let main = batch("main", 0, 0, vec![row(0, original)], &["s"]);
-        let mut spawned = batch("spawned", 0, 0, vec![row(0, copy)], &[]);
+        let main = batch("main", Route::Live, 0, vec![row(0, original)], &["s"]);
+        let mut spawned = batch("spawned", Route::Live, 0, vec![row(0, copy)], &[]);
         if let Some(p) = spawned.parse.first_mut() {
             p.output.sessions = vec![Session::new(sid("agent-c"), SessionKind::Compaction)];
         }
@@ -786,7 +797,7 @@ fn a_release_runs_once_when_its_batch_is_dropped() {
     use std::sync::atomic::{AtomicU64, Ordering};
     let released = Arc::new(AtomicU64::new(0));
     let counter = Arc::clone(&released);
-    let mut b = batch("a", 0, 0, vec![], &[]);
+    let mut b = batch("a", Route::Live, 0, vec![], &[]);
     b.release = InFlight::new(move || {
         counter.fetch_add(7, Ordering::SeqCst);
     });
@@ -808,7 +819,7 @@ fn session_in(id: &str, cwd: &str, repo: Option<&str>) -> Session {
 }
 
 fn lookup_batch(input: &str, path: &str, remote: Option<&str>, root: &str) -> Batch {
-    let mut b = batch(input, 0, 0, vec![], &[]);
+    let mut b = batch(input, Route::Live, 0, vec![], &[]);
     b.input.format = "polylogue-repo-lookup".into();
     let p = b.parse.first_mut().unwrap();
     p.output.repo_lookups.push(polylogue_model::RepoLookup {
@@ -839,7 +850,7 @@ fn repo_of(w: &TestArchive, session: &str) -> (Option<String>, Option<String>) {
 #[test]
 fn sessions_take_the_repository_of_the_nearest_lookup_above_their_cwd() {
     let w = test_archive();
-    let mut b = batch("i1", 0, 0, vec![], &[]);
+    let mut b = batch("i1", Route::Live, 0, vec![], &[]);
     let out = &mut b.parse.first_mut().unwrap().output;
     out.sessions
         .push(session_in("deep", "/work/outer/inner/src", None));
@@ -882,7 +893,7 @@ fn sessions_take_the_repository_of_the_nearest_lookup_above_their_cwd() {
         (Some("https://host/o/outer.git".into()), Some("r1".into()))
     );
     // A session written after its lookup joins as it is written.
-    let mut b = batch("i2", 0, 0, vec![], &[]);
+    let mut b = batch("i2", Route::Live, 0, vec![], &[]);
     let out = &mut b.parse.first_mut().unwrap().output;
     out.sessions.push(session_in("late", "/work/outer/x", None));
     w.store_reading(b, Some(&SOURCE_RECORD)).unwrap();
@@ -932,7 +943,13 @@ fn reasons(w: &TestArchive) -> Vec<(String, String)> {
 fn a_call_the_session_went_past_without_a_result_will_never_get_one() {
     let w = test_archive();
     w.store_reading(
-        batch("i1", 0, 0, vec![row(10, call_message("a", "c1"))], &["s"]),
+        batch(
+            "i1",
+            Route::Live,
+            0,
+            vec![row(10, call_message("a", "c1"))],
+            &["s"],
+        ),
         Some(&SOURCE_RECORD),
     )
     .unwrap();
@@ -940,8 +957,11 @@ fn a_call_the_session_went_past_without_a_result_will_never_get_one() {
     // The last response's call may still be answered.
     assert_eq!(reasons(&w), [("c1".into(), "no_result".into())]);
     let later = vec![row(20, call_message("b", "c2"))];
-    w.store_reading(batch("i1", 0, 100, later, &["s"]), Some(&SOURCE_RECORD))
-        .unwrap();
+    w.store_reading(
+        batch("i1", Route::Live, 100, later, &["s"]),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
     w.writer.flush().unwrap();
     assert_eq!(
         reasons(&w),
@@ -959,7 +979,7 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
         .commit_source(
             batch(
                 "shutdown",
-                0,
+                Route::Live,
                 0,
                 vec![row(
                     0,
@@ -1047,8 +1067,11 @@ fn source_arrival_order_does_not_change_message_order_or_derived_title() {
                     ),
                 ]
             };
-            w.store_reading(batch(input, 0, 0, rows, &["s1"]), Some(&SOURCE_RECORD))
-                .unwrap();
+            w.store_reading(
+                batch(input, Route::Live, 0, rows, &["s1"]),
+                Some(&SOURCE_RECORD),
+            )
+            .unwrap();
             w.writer.flush().unwrap();
         }
         w.writer.derive().unwrap();
@@ -1125,9 +1148,10 @@ fn first_build_stays_in_wal_and_finishes_while_a_read_stays_open() {
             w.commit_source(
                 batch(
                     "first",
-                    0,
+                    Route::Live,
                     0,
                     vec![MessageRow {
+                        page_text: false,
                         id_kind: polylogue_model::IdKind::Native,
                         offset: 0,
                         end: 100,
@@ -1179,14 +1203,14 @@ fn a_user_write_goes_ahead_of_queued_batches() {
     let (entered, inside) = sync_channel(1);
     let (open, gate) = sync_channel::<()>(1);
     let mut a = w
-        .commit_source(batch("a", 0, 0, vec![], &[]), &SOURCE_RECORD)
+        .commit_source(batch("a", Route::Live, 0, vec![], &[]), &SOURCE_RECORD)
         .unwrap();
     let (committed, completed) = sync_channel(5);
     let queued_batches: Vec<_> = ["b", "c", "d", "e", "f"]
         .into_iter()
         .map(|name| {
             let mut reading = w
-                .commit_source(batch(name, 0, 0, vec![], &[]), &SOURCE_RECORD)
+                .commit_source(batch(name, Route::Live, 0, vec![], &[]), &SOURCE_RECORD)
                 .unwrap();
             let committed = committed.clone();
             let archive = w.archive.archive_db();
@@ -1260,9 +1284,10 @@ fn parse_positions_and_rows_commit_atomically_during_first_build() {
     let parsed = || {
         batch(
             "atomic-position",
-            0,
+            Route::Live,
             0,
             vec![MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
                 end: 100,
@@ -1309,9 +1334,10 @@ fn interrupted_secondary_index_finish_retries_ordinary_build() {
     w.store_reading(
         batch(
             "finish-input",
-            0,
+            Route::Live,
             0,
             vec![MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
                 end: 100,
@@ -1401,7 +1427,7 @@ fn recorded_message_sessions_preserve_ambiguity_after_shown_row_deduplication() 
         w.store_reading(
             batch(
                 input,
-                0,
+                Route::Live,
                 0,
                 vec![row(
                     0,
@@ -1462,7 +1488,7 @@ fn a_refused_reading_in_a_group_of_independent_inputs_costs_only_itself() {
     ] {
         let mut reading = batch(
             input,
-            0,
+            Route::Live,
             0,
             vec![row(
                 0,

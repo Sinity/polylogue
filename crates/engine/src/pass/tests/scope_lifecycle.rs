@@ -170,6 +170,7 @@ fn held_origin() -> &'static OriginSpec {
         modules: native.modules,
         support: Support::Parsed,
         arrival: Arrival::Live,
+        route: polylogue_model::Route::Live,
         input_identity: polylogue_sources::InputIdentity::Location,
         root: Root::HOME,
         locations: &[],

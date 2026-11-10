@@ -12,7 +12,7 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
         input: InputKey {
             id: "synthetic-input".into(),
             format: "codex-database".into(),
-            arrival_rank: 0,
+            route: polylogue_model::Route::Live,
         },
         acquisition: crate::acquisition::AcquisitionContext {
             source: polylogue_store::primary::SourceSelector {
@@ -118,7 +118,7 @@ fn native_capture_continues_the_input_at_the_observed_byte_path() {
                     input: InputKey {
                         id: "stored-database".into(),
                         format: "codex-database".into(),
-                        arrival_rank: 0,
+                        route: polylogue_model::Route::Live,
                     },
                     change: Change::First,
                     observation: Some(Observation {
@@ -276,7 +276,7 @@ fn a_database_pass_yields_when_its_waiting_parser_has_no_local_work() {
                 input: InputKey {
                     id: input.clone(),
                     format: "codex-database".into(),
-                    arrival_rank: 0,
+                    route: polylogue_model::Route::Live,
                 },
                 change: Change::First,
                 observation: Some(engine.observation(&db, None)),

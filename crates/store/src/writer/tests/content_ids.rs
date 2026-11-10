@@ -4,6 +4,7 @@ use super::*;
 
 fn content_row(offset: u64, id: &str, role: Role, text: &str) -> MessageRow {
     MessageRow {
+        page_text: false,
         id_kind: polylogue_model::IdKind::Content,
         ..row(offset, text_message(id, "s", role, text, Some("end_turn")))
     }
@@ -24,7 +25,7 @@ fn chunks(rows: &[(&str, &str)]) -> Vec<MessageRow> {
 }
 
 fn store(w: &TestArchive, rows: Vec<MessageRow>, rewritten: bool) {
-    let mut b = batch("prompt", 0, 0, rows, &["s"]);
+    let mut b = batch("prompt", Route::Live, 0, rows, &["s"]);
     if rewritten {
         b.change = Change::Rewritten;
     }
@@ -77,6 +78,7 @@ fn a_rewrite_keeps_natively_named_messages_it_no_longer_holds() {
     let native = |rows: Vec<MessageRow>| {
         rows.into_iter()
             .map(|r| MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 ..r
             })
@@ -91,7 +93,13 @@ fn a_rewrite_keeps_natively_named_messages_it_no_longer_holds() {
 fn a_copy_in_another_input_keeps_a_content_named_message() {
     let w = test_archive();
     store(&w, chunks(&[("a", "A"), ("b", "B")]), false);
-    let mut copy = batch("export", 1, 0, chunks(&[("a", "A"), ("b", "B")]), &["s"]);
+    let mut copy = batch(
+        "export",
+        Route::Capture,
+        0,
+        chunks(&[("a", "A"), ("b", "B")]),
+        &["s"],
+    );
     copy.parse[0].reading_version = "synthetic=1".into();
     w.store_reading(copy, Some(&SOURCE_RECORD)).unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());

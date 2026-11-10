@@ -36,7 +36,7 @@ fn record_ordinals_precede_subsets_and_use_record_positions_before_ids() {
         &w,
         batch(
             "middle",
-            0,
+            Route::Live,
             0,
             vec![
                 row(20, message("z", "s")),
@@ -76,7 +76,7 @@ fn record_ordinals_precede_subsets_and_use_record_positions_before_ids() {
         &w,
         batch(
             "aaa-earlier",
-            0,
+            Route::Live,
             0,
             vec![row(0, message("new", "s"))],
             &["s"],
@@ -97,7 +97,7 @@ fn fork_prefixes_keep_parent_ordinals_and_the_childs_own_order() {
         &w,
         batch(
             "parent",
-            0,
+            Route::Live,
             0,
             vec![
                 row(0, message("p0", "s")),
@@ -109,7 +109,7 @@ fn fork_prefixes_keep_parent_ordinals_and_the_childs_own_order() {
     );
     let mut child = batch(
         "child",
-        0,
+        Route::Live,
         0,
         vec![row(10, message("c", "child"))],
         &["s", "child"],
@@ -146,7 +146,7 @@ fn copied_parent_subsets_do_not_renumber_their_original_own_session() {
         &w,
         batch(
             "aaa-parent",
-            0,
+            Route::Live,
             0,
             vec![
                 row(0, message("p0", "s")),
@@ -158,7 +158,7 @@ fn copied_parent_subsets_do_not_renumber_their_original_own_session() {
     );
     let mut child = batch(
         "zzz-child",
-        0,
+        Route::Live,
         0,
         vec![
             row(20, message("p1", "s")),
@@ -195,7 +195,7 @@ fn metadata_order_has_an_id_tiebreak_and_never_reads_message_bodies() {
         &w,
         batch(
             "ties",
-            0,
+            Route::Live,
             0,
             vec![
                 row(20, message("z", "s")),

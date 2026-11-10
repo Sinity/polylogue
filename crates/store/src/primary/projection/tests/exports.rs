@@ -101,7 +101,7 @@ fn callback(position: i64, id: &str, step: &crate::ParseStep) -> Vec<Confirmed> 
     let key = crate::InputKey {
         id: id.into(),
         format: "synthetic".into(),
-        arrival_rank: 0,
+        route: polylogue_model::Route::Live,
     };
     let mut step = step.clone();
     step.prepare();

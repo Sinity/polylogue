@@ -196,7 +196,7 @@ fn a_proven_shorter_prefix_has_a_receipt_without_replacing_native_progress() {
                     input: InputKey {
                         id: "native".into(),
                         format: "synthetic".into(),
-                        arrival_rank: 0,
+                        route: polylogue_model::Route::Live,
                     },
                     change: Change::First,
                     observation: Some(Observation {

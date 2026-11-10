@@ -4,12 +4,13 @@ use super::*;
 fn a_parse_from_the_first_byte_restates_event_positions() {
     let w = test_archive();
     let row = MessageRow {
+        page_text: false,
         id_kind: polylogue_model::IdKind::Native,
         offset: 100,
         end: 200,
         message: text_message("a", "s", Role::User, "A", None),
     };
-    let mut seed = batch("array", 0, 0, vec![row], &["s"]);
+    let mut seed = batch("array", Route::Live, 0, vec![row], &["s"]);
     seed.length = 200;
     seed.parse[0].parsed_upto = 200;
     seed.parse[0].output.events.push(Event {

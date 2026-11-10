@@ -31,7 +31,7 @@ fn selected(message: &Message, ordinals: &[u64]) -> (Message, MessageProjection)
 }
 
 fn projected_batch(input: &str, message: Message, projection: MessageProjection) -> Batch {
-    let mut batch = batch(input, 0, 0, vec![row(0, message)], &["s"]);
+    let mut batch = batch(input, Route::Live, 0, vec![row(0, message)], &["s"]);
     batch.parse[0]
         .output
         .message_projections
@@ -44,7 +44,7 @@ fn write(w: &TestArchive, mut batch: Batch) {
     if matches!(batch.change, Change::First) {
         let bytes = vec![b' '; batch.length as usize];
         let prepared = w.archive.prepare_bytes(bytes.as_slice()).unwrap();
-        if batch.input.arrival_rank >= 2 {
+        if batch.input.route.is_imported() {
             batch.input.id = prepared.hash().to_string();
         }
         let mut captured = batch.clone();
@@ -208,7 +208,13 @@ fn sparse_observation_cannot_replace_a_complete_native_value() {
     let message = original();
     write(
         &w,
-        batch("native", 0, 0, vec![row(0, message.clone())], &["s"]),
+        batch(
+            "native",
+            Route::Live,
+            0,
+            vec![row(0, message.clone())],
+            &["s"],
+        ),
     );
     let part = selected(&message, &[1]);
     write(&w, projected_batch("import", part.0, part.1));
@@ -223,7 +229,7 @@ fn sparse_parts_at_later_records_of_one_input_still_union() {
     let second = selected(&message, &[1, 2, 3]);
     let mut input = batch(
         "same-input",
-        0,
+        Route::Live,
         0,
         vec![row(0, first.0), row(50, second.0)],
         &["s"],
@@ -250,7 +256,7 @@ fn sparse_streamed_confirmed_readings_preserve_every_known_block() {
         let part = selected(&message, ordinals);
         let mut input = batch(
             &format!("confirmed-{n}"),
-            0,
+            Route::Live,
             0,
             vec![row(0, part.0)],
             &["s"],
@@ -380,10 +386,22 @@ fn sparse_message_admission_requires_a_valid_fact_position() {
     let message = original();
     write(
         &w,
-        batch("proof", 0, 0, vec![row(0, message.clone())], &["s"]),
+        batch(
+            "proof",
+            Route::Live,
+            0,
+            vec![row(0, message.clone())],
+            &["s"],
+        ),
     );
     for (index, receipt) in [(0, 0), (0, u64::MAX), (1, 1)] {
-        let mut invalid = batch("proof", 0, 0, vec![row(0, message.clone())], &["s"]);
+        let mut invalid = batch(
+            "proof",
+            Route::Live,
+            0,
+            vec![row(0, message.clone())],
+            &["s"],
+        );
         invalid.change = Change::Reparse { chain: 1 };
         invalid.parse[0]
             .output
@@ -450,7 +468,7 @@ fn sparse_distinct_source_versions_keep_the_existing_selection_rule() {
     };
     let second = selected(&different, &[3]);
     let mut batch = projected_batch("other", second.0, second.1);
-    batch.input.arrival_rank = 2;
+    batch.input.route = polylogue_model::Route::Export;
     write(&w, batch);
     assert_eq!(current(&w, &message.id), first);
     let pool = ReadPool::open(&w.archive).unwrap();
@@ -504,7 +522,13 @@ fn complete_repeated_readings_do_not_reload_historical_message_bodies() {
     let message = original();
     write(
         &w,
-        batch("native", 0, 0, vec![row(0, message.clone())], &["s"]),
+        batch(
+            "native",
+            Route::Live,
+            0,
+            vec![row(0, message.clone())],
+            &["s"],
+        ),
     );
     let mut index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     let tx = index.transaction().unwrap();
@@ -516,7 +540,7 @@ fn complete_repeated_readings_do_not_reload_historical_message_bodies() {
         _ => Authorization::Allow,
     }))
     .unwrap();
-    let mut replay = batch("native", 0, 0, vec![row(0, message)], &["s"]);
+    let mut replay = batch("native", Route::Live, 0, vec![row(0, message)], &["s"]);
     replay.change = Change::Reparse { chain: 1 };
     assert_eq!(
         write_test_rows(&tx, &replay, &replay.parse[0], 1, 2, None).unwrap(),

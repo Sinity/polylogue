@@ -425,7 +425,7 @@ impl Engine {
             input: InputKey {
                 id: hash.to_string(),
                 format: origin.name.into(),
-                arrival_rank: 2,
+                route: origin.route.imported(),
             },
             change: Change::First,
             observation: Some(observation),

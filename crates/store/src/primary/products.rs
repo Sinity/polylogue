@@ -191,7 +191,7 @@ pub struct CapturedInput {
     pub hash: BlobHash,
     pub length: u64,
     pub group: Option<CaptureGroup>,
-    pub arrival_rank: u8,
+    pub route: polylogue_model::Route,
     pub parsed: Vec<CapturedReading>,
     /// Original acquired interval, independent of tentative source coordinates.
     #[serde(default, skip_serializing_if = "Option::is_none")]

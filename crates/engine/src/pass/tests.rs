@@ -579,7 +579,7 @@ fn confirmed_stopped_readings_settle_only_their_exact_bytes_and_reader() {
         let input = InputKey {
             id: state.input_id.clone(),
             format: state.origin.name.into(),
-            arrival_rank: 0,
+            route: polylogue_model::Route::Live,
         };
         let chain = engine
             .reads

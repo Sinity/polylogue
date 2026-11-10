@@ -61,7 +61,7 @@ fn preparations(messages: usize, tools: bool) -> u64 {
             row(n as u64, message)
         })
         .collect();
-    let batch = batch("input1", 0, 0, rows, &["session1"]);
+    let batch = batch("input1", Route::Live, 0, rows, &["session1"]);
     assert_eq!(
         write_test_rows(&tx, &batch, &batch.parse[0], 1, 1, Some(&first_build)).unwrap(),
         messages as u64

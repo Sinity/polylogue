@@ -243,6 +243,7 @@ impl ExportParser for GeminiCli {
         };
         let offset = sink.position();
         sink.out.messages.push(MessageRow {
+            page_text: false,
             id_kind: polylogue_model::IdKind::Native,
             offset,
             end: offset + 1,

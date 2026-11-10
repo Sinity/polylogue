@@ -8,7 +8,7 @@ fn fixture(changed: bool) -> Vec<Batch> {
     let message = |id, text| text_message(id, "main", Role::Assistant, text, Some("end_turn"));
     let mut main = batch(
         "a-main-file",
-        0,
+        Route::Live,
         0,
         vec![
             row(10, message("shared", "the main session's reading")),
@@ -34,7 +34,7 @@ fn fixture(changed: bool) -> Vec<Batch> {
     }
     let mut child = batch(
         "child-file",
-        0,
+        Route::Live,
         0,
         vec![row(
             1,
@@ -55,7 +55,13 @@ fn fixture(changed: bool) -> Vec<Batch> {
         m.session = SessionId::parse("chatgpt:conversation").unwrap();
         m
     };
-    let mut browser = batch("browser", 1, 0, vec![row(9, browser_message())], &[]);
+    let mut browser = batch(
+        "browser",
+        Route::Capture,
+        0,
+        vec![row(9, browser_message())],
+        &[],
+    );
     browser.input.format = "browser-capture".into();
     browser.parse[0].output.sessions.push(Session::new(
         SessionId::parse("chatgpt:conversation").unwrap(),
@@ -63,7 +69,7 @@ fn fixture(changed: bool) -> Vec<Batch> {
     ));
     let mut export = browser.clone();
     export.input.id = polylogue_model::BlobHash::of(&EXPORT_RECORD).to_string();
-    export.input.arrival_rank = 2;
+    export.input.route = polylogue_model::Route::Export;
     export.input.format = "chatgpt".into();
     export.observation.as_mut().unwrap().path = "/p/export".into();
     export.parse[0].output.messages[0].offset = 50;
@@ -155,12 +161,13 @@ fn write(w: &TestArchive, batches: impl IntoIterator<Item = Batch>) {
         for step in &mut b.parse {
             step.prepare();
         }
-        let bytes =
-            (!matches!(b.change, Change::Reparse { .. })).then_some(if b.input.arrival_rank == 2 {
+        let bytes = (!matches!(b.change, Change::Reparse { .. })).then_some(
+            if b.input.route.is_imported() {
                 EXPORT_RECORD.as_slice()
             } else {
                 SOURCE_RECORD.as_slice()
-            });
+            },
+        );
         w.store_reading(b, bytes).unwrap();
     }
     let report = w.writer.flush().unwrap();
@@ -183,7 +190,7 @@ fn chain_selection_keeps_changed_readings_and_incomplete_stored_bytes() {
         ]
         .into_iter()
         .map(|input| {
-            let mut b = batch(input, 0, 0, vec![], &[]);
+            let mut b = batch(input, Route::Live, 0, vec![], &[]);
             b.parse[0].reading_version = "synthetic=1".into();
             if input == "unrelated" {
                 b.input.format = "other".into();
@@ -348,10 +355,10 @@ fn retracting_the_winner_restores_complete_structured_payloads_without_parsing_s
     write(
         &w,
         [
-            batch("a", 0, 0, vec![row(1, winner)], &["hash-order"]),
+            batch("a", Route::Live, 0, vec![row(1, winner)], &["hash-order"]),
             batch(
                 &polylogue_model::BlobHash::of(&EXPORT_RECORD).to_string(),
-                2,
+                Route::Export,
                 0,
                 vec![row(3, original.clone())],
                 &["hash-order"],
@@ -374,7 +381,7 @@ fn retracting_the_winner_restores_complete_structured_payloads_without_parsing_s
             InputKey {
                 id: "a".into(),
                 format: "claude-code".into(),
-                arrival_rank: 0,
+                route: polylogue_model::Route::Live,
             },
             1,
             100,
@@ -402,7 +409,7 @@ fn newest_chain_is_selected_before_comparing_inputs() {
         let batches = [
             batch(
                 "a",
-                0,
+                Route::Live,
                 0,
                 vec![row(
                     1,
@@ -418,7 +425,7 @@ fn newest_chain_is_selected_before_comparing_inputs() {
             ),
             batch(
                 "b",
-                1,
+                Route::Capture,
                 0,
                 vec![row(
                     1,
@@ -435,7 +442,7 @@ fn newest_chain_is_selected_before_comparing_inputs() {
             {
                 let mut b = batch(
                     "a",
-                    0,
+                    Route::Live,
                     0,
                     vec![row(
                         1,
@@ -511,7 +518,7 @@ fn a_chain_reading_preserves_deep_structured_values() {
         &w,
         [batch(
             "a",
-            0,
+            Route::Live,
             0,
             vec![row(
                 1,
@@ -526,7 +533,7 @@ fn a_chain_reading_preserves_deep_structured_values() {
         type_name: "nested".into(),
         data: nested,
     }];
-    let mut b = batch("a", 0, 0, vec![row(1, message.clone())], &["s"]);
+    let mut b = batch("a", Route::Live, 0, vec![row(1, message.clone())], &["s"]);
     let mut reading = ChainReading::new().unwrap();
     reading.push(&mut b.parse[0]).unwrap();
     w.writer
@@ -548,7 +555,7 @@ fn a_later_complete_conversation_updates_its_shown_message_body() {
         &w,
         [batch(
             "a",
-            0,
+            Route::Live,
             0,
             vec![row(
                 1,
@@ -565,7 +572,7 @@ fn a_later_complete_conversation_updates_its_shown_message_body() {
     );
     let mut appended = batch(
         "a",
-        0,
+        Route::Live,
         100,
         vec![row(
             120,
@@ -587,7 +594,7 @@ fn a_later_complete_conversation_updates_its_shown_message_body() {
 #[test]
 fn hook_event_times_produce_the_same_live_state_in_both_input_orders() {
     let make = |input, kind: &str, at, data| {
-        let mut b = batch(input, 0, 0, Vec::new(), &["s"]);
+        let mut b = batch(input, Route::Live, 0, Vec::new(), &["s"]);
         b.parse[0].output.events.push(Event {
             at_quality: polylogue_model::TimeQuality::Intrinsic,
             at_precision: Some(polylogue_model::Precision::Instant),
@@ -625,7 +632,7 @@ fn a_session_stated_later_in_a_reading_is_not_removed_mid_transaction() {
     let w = test_archive();
     let original = batch(
         "a",
-        0,
+        Route::Live,
         0,
         vec![row(
             1,
@@ -635,7 +642,10 @@ fn a_session_stated_later_in_a_reading_is_not_removed_mid_transaction() {
     );
     write(
         &w,
-        [original.clone(), batch("b", 0, 0, Vec::new(), &["other"])],
+        [
+            original.clone(),
+            batch("b", Route::Live, 0, Vec::new(), &["other"]),
+        ],
     );
     let pool = ReadPool::open(&w.archive).unwrap();
     let before = pool
@@ -692,9 +702,9 @@ fn changing_a_shared_event_marks_the_old_and_restored_sessions() {
             .as_i64()
             .unwrap()
     };
-    write(&w, [make("b", "b", 1, 100)]);
+    write(&w, [make("b", "b", Route::Capture, 100)]);
     let before = changed();
-    let winner = make("a", "a", 0, 90);
+    let winner = make("a", "a", Route::Live, 90);
     write(&w, [winner.clone()]);
     let moved = changed();
     assert!(moved > before);
@@ -728,11 +738,11 @@ fn changing_a_shared_event_marks_the_old_and_restored_sessions() {
 
 #[test]
 fn missing_source_kinds_do_not_depend_on_an_earlier_derive() {
-    let mut facts = batch("kind-facts", 0, 0, vec![], &["copy"]);
+    let mut facts = batch("kind-facts", Route::Live, 0, vec![], &["copy"]);
     facts.parse[0].output.sessions[0].kind = SessionKind::Subagent;
     let copy = batch(
         "copy",
-        0,
+        Route::Live,
         0,
         vec![row(
             1,
@@ -748,7 +758,7 @@ fn missing_source_kinds_do_not_depend_on_an_earlier_derive() {
     );
     let main = batch(
         "main",
-        1,
+        Route::Capture,
         0,
         vec![row(
             1,
@@ -772,7 +782,7 @@ fn missing_source_kinds_do_not_depend_on_an_earlier_derive() {
 
 #[test]
 fn repeated_kind_facts_use_the_same_first_kind_in_whole_and_appended_steps() {
-    let mut facts = batch("copy", 0, 0, vec![], &["copy"]);
+    let mut facts = batch("copy", Route::Live, 0, vec![], &["copy"]);
     facts.parse[0].output.sessions[0].kind = SessionKind::Subagent;
     let mut whole = facts.clone();
     whole.length = 200;
@@ -790,14 +800,14 @@ fn repeated_kind_facts_use_the_same_first_kind_in_whole_and_appended_steps() {
     ));
     let appended = batch(
         "copy",
-        0,
+        Route::Live,
         100,
         whole.parse[0].output.messages.clone(),
         &["copy"],
     );
     let main = batch(
         "main",
-        1,
+        Route::Capture,
         0,
         vec![row(
             1,
@@ -839,7 +849,7 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
             .as_i64()
             .unwrap()
     };
-    let mut events = batch("events", 0, 0, vec![], &["events"]);
+    let mut events = batch("events", Route::Live, 0, vec![], &["events"]);
     for (kind, range) in [("message_position", None), ("own_position", Some((7, 8)))] {
         events.parse[0].output.events.push(Event {
             at_quality: polylogue_model::TimeQuality::Intrinsic,
@@ -864,7 +874,7 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     let before = changed();
     let mut messages = batch(
         "messages",
-        0,
+        Route::Live,
         0,
         vec![row(
             10,

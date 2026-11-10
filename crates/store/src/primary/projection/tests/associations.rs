@@ -17,7 +17,7 @@ fn admit_step(
     let key = crate::InputKey {
         id: input.into(),
         format: "synthetic".into(),
-        arrival_rank: 0,
+        route: polylogue_model::Route::Live,
     };
     for original in crate::primary::products::parse(&key, 1, None, &step).unwrap() {
         // Use the canonical product's actual serialization boundary before the
@@ -163,6 +163,7 @@ fn confirmed_forward_message_associations_survive_weaker_donors_and_target_arriv
         step(
             Output {
                 messages: vec![MessageRow {
+                    page_text: false,
                     id_kind: polylogue_model::IdKind::Native,
                     offset: 1,
                     end: 2,

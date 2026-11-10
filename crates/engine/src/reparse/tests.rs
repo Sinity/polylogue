@@ -40,6 +40,7 @@ const fn origin(open: fn(&Path) -> Option<Parse>) -> OriginSpec {
         harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Live,
+        route: polylogue_model::Route::Live,
         input_identity: polylogue_sources::InputIdentity::Location,
         root: Root::HOME,
         locations: &[],
@@ -122,7 +123,7 @@ fn chains_parse_together_and_continue_while_the_writer_is_blocked() {
                 InputKey {
                     id: chain.input,
                     format: "claude-code".into(),
-                    arrival_rank: 0,
+                    route: polylogue_model::Route::Live,
                 },
                 Change::Reparse {
                     chain: chain.progress.chain,
@@ -276,7 +277,7 @@ fn a_committed_live_path_can_append_while_another_chain_is_still_parsing() {
                 InputKey {
                     id: chain.input,
                     format: "claude-code".into(),
-                    arrival_rank: 0,
+                    route: polylogue_model::Route::Live,
                 },
                 Change::Reparse {
                     chain: chain.progress.chain,

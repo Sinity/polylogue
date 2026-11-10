@@ -7,7 +7,7 @@ fn key(length: u64) -> ExportReadingKey {
         input: polylogue_store::InputKey {
             id: "input-x".into(),
             format: "codex".into(),
-            arrival_rank: 0,
+            route: polylogue_model::Route::Live,
         },
         chain: 1,
         reading_version: "export-2".into(),
@@ -121,7 +121,7 @@ fn export_callbacks_keep_exact_keys_and_prefixes_through_real_spool_restart_and_
         })
         .unwrap();
     other = key.clone();
-    other.input.arrival_rank = 9;
+    other.input.route = polylogue_model::Route::Copy;
     assert_eq!(
         reopened
             .prepare_export_products(&other, &header)

@@ -72,7 +72,7 @@ fn native_time_spans_overlap_bounds_and_comparisons_preserve_unknown_and_nanosec
         .unwrap();
     let mut input = batch(
         "native-temporal",
-        0,
+        Route::Live,
         0,
         vec![row(1, message)],
         &["temporal"],
@@ -327,7 +327,7 @@ fn native_time_spans_overlap_bounds_and_comparisons_preserve_unknown_and_nanosec
 #[test]
 fn native_time_day_overlap_uses_the_resolved_owner_boundary_across_both_dst_changes() {
     let w = test_archive();
-    let mut input = batch("native-zones", 0, 0, vec![], &["zones"]);
+    let mut input = batch("native-zones", Route::Live, 0, vec![], &["zones"]);
     for (index, (kind, start, end)) in [
         ("spring", "2026-03-29T02:00:00Z", "2026-03-29T03:00:00Z"),
         ("fold", "2026-10-25T03:00:00Z", "2026-10-25T04:00:00Z"),

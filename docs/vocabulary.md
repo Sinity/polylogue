@@ -102,8 +102,14 @@ generated page of the thing they belong to, or on the area page that owns them.
   exact it is. Unknown times stay unknown.
 - **paste**: a pasted range of a prompt.
 - **sidecar**: a file read into its session, never as a session of its own.
-- **route**: one way a conversation reached the archive (live file, capture,
-  export). **Route precedence** says, per field, whose value is shown.
+- **route**: one way a conversation reached the archive: `live`, `capture`,
+  `recorded`, `export`, `copy` or `page_text`. **Route precedence** says, per
+  field group, whose value is shown; the reading that supplies the content is
+  the message's **main route**.
+- **field group**: the fields of a message taken together from one route
+  (content, time, model, usage, stop reason, parent, production).
+- **completion**: whether a reading's message is `finished`, `unknown` or
+  `in_progress`.
 - **availability**: whether an attachment's bytes are `present`, `unfetched`,
   `failed` or `unavailable_at_source`.
 

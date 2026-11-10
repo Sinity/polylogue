@@ -73,7 +73,7 @@ pub(crate) fn capture(bytes: &[u8], parsed: Vec<CapturedReading>) -> CapturedInp
     serde_json::from_value(json!({
         "input":{"origin":"codex","path":"/home/op/session.jsonl","host":"fixture-host"},
         "rows":{"input":"input-x","format":"codex","revision":{"number":1,"produced":"file","chain":1,"length":bytes.len()},"extent":{"chain":1,"offset":0,"length":bytes.len(),"blob":BlobHash::of(bytes),"blob_offset":0}},
-        "index":0,"previous":null,"hash":BlobHash::of(bytes),"length":bytes.len(),"raw_range":{"start":0,"end":bytes.len()},"group":null,"arrival_rank":0,"parsed":parsed
+        "index":0,"previous":null,"hash":BlobHash::of(bytes),"length":bytes.len(),"raw_range":{"start":0,"end":bytes.len()},"group":null,"route":"live","parsed":parsed
     })).unwrap()
 }
 fn extent(root: &std::path::Path, bytes: &[u8]) -> hashed_blobs::Extent {
@@ -224,7 +224,7 @@ fn complete_reading_custody_uses_the_encoded_plain_identity_and_survives_restart
     let sinex = client(root.path());
     let write = ProductWrite {
         product: Product::Session {
-            reading: serde_json::from_value(json!({"input":{"id":"input-x","format":"codex","arrival_rank":0},"chain":1,"reading_version":"reading-2","order_from":null,"repeats_whole_conversations":false,"start":0,"parsed_upto":12,"progress":"at_end"})).unwrap(),
+            reading: serde_json::from_value(json!({"input":{"id":"input-x","format":"codex","route":"live"},"chain":1,"reading_version":"reading-2","order_from":null,"repeats_whole_conversations":false,"start":0,"parsed_upto":12,"progress":"at_end"})).unwrap(),
             facts: polylogue_model::Session::new(polylogue_model::SessionId::parse("codex:session").unwrap(), polylogue_model::SessionKind::Main),
         },
         location: Some(SourceLocation {material:"00000000-0000-0000-0000-000000000001".into(),anchor:0}),
@@ -238,7 +238,7 @@ fn complete_reading_custody_uses_the_encoded_plain_identity_and_survives_restart
                     input: polylogue_store::InputKey {
                         id: "input-x".into(),
                         format: "codex".into(),
-                        arrival_rank: 0,
+                        route: polylogue_model::Route::Live,
                     },
                     chain: 1,
                     reading_version: "reading-2".into(),

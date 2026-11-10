@@ -7,7 +7,7 @@ fn batch(id: &str, length: u64) -> Batch {
         input: InputKey {
             id: id.into(),
             format: "export-file".into(),
-            arrival_rank: 2,
+            route: polylogue_model::Route::Export,
         },
         change: Change::First,
         observation: Some(Observation {

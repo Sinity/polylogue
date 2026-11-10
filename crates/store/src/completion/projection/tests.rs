@@ -32,7 +32,7 @@ fn remove_reading(archive: &WriterArchive, input: &str) {
             InputKey {
                 id: input.into(),
                 format: "claude-code".into(),
-                arrival_rank: 0,
+                route: polylogue_model::Route::Live,
             },
             progress.chain,
             progress.length,

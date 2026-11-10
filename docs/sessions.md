@@ -116,14 +116,18 @@ An attachment is a stored entity, not a flag on a block:
 
 A conversation can arrive as a live file, a browser capture, an export, a Drive revision, a Takeout and an imported old copy. This redundancy is deliberate. All routes arrive as `<origin>:<native id>` and are one session; every route's reading is stored, and the shown message is composed field by field. (ruling 2026-07-31, cc:38baa1de-9715-48fa-8175-f2a29d92800e:a36102a7-666b-480b-8f62-f282494b1932).
 
-1. A field present in one route and absent in another is taken from where it is present.
-2. Where several routes have the field, the origin's declared **route precedence for that field** decides: for example, message text from the provider's API data over the export over a page scrape; provider timestamps from the export when the capture has none; attachment bytes from whichever route stored them.
-3. A finished reading wins over an in-progress one of the same route.
-4. The last tie-break is the content hash, so the result never depends on arrival order or recency.
+A route is one of `live` (the tool's own file or database), `capture` (the provider's data for one conversation, fetched as it is shown: the extension's capture of the page's data, a Drive revision), `recorded` (Polylogue's own hook, process and collector records), `export` (a provider export), `copy` (an imported tool file, a bundle, an older archive) and `page_text` (text read from the page). Each origin declares the route of its inputs; an input brought in with `polylogue import` is an `export` when the origin is an export and a `copy` otherwise. The shown message is a pure function of each input's latest reading of it, composed in **field groups** taken together from one reading: content (role, prompt kind, blocks and the provider fields indexed by block), time, model, usage (tokens, reported cost and duration), stop reason, parent and production.
 
-- The composition records, for each shown field, the route it came from. Each origin declares its precedence table beside its parser.
+1. A field group present in one reading and absent in another is taken from where it is present.
+2. Then a reading from a main session wins over a sidechain's copy of the message.
+3. Where several readings have the group, the **route precedence for that group** decides: `live`, `capture`, `recorded`, `export`, `copy`, then `page_text` for every group. For example, message text comes from the provider's data over the export over a page scrape, and provider timestamps from the export when the capture has none. One table serves every origin today; an origin whose routes call for another order declares its own.
+4. Between readings of the same route, a finished reading wins over one whose completion is unknown, which wins over one still in progress. A message is finished when it is not an assistant message or carries a stop reason; an assistant message without one is in progress from an origin that records stop reasons when a response ends (Claude Code, claude.ai, AI Studio, Hermes) and of unknown completion otherwise.
+5. The last tie-break is the content hash, so the result never depends on arrival order or recency. Between readings with identical content, the main route is the one whose input ID sorts first; nothing shown depends on it.
+
+- The reading that supplies the content is the message's **main route**: its version is the stored reading and its position orders the message. The composition records, for each other field group, the input and chain it came from (`message_route`), when that is not the main route.
+- Documents show the newest source time, then route precedence, then the content hash. Events and links show their reading by route precedence, then value hash; a link's optional coordinates and evidence still merge over every reading.
 - **Routes without shared turn IDs** (a Gemini page capture and a Takeout of the same conversation) are matched by the repeated-turn rule; the matched message names the shown one (`duplicate_of`). That rule and its validity evidence are in [measures.md](measures.md#catalog).
-- **A capture read from the page** rather than the provider's data is marked *partial fidelity* and is outranked by any other route for every field.
+- **A capture read from the page** rather than the provider's data is marked *partial fidelity* (the `page_text` route) and is outranked by any other route for every field; it supplies only what no other reading has.
 
 ## Logical sessions
 

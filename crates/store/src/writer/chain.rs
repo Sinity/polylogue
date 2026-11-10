@@ -202,7 +202,7 @@ fn prepare_readings(
         }
         let keys = Arc::new(resolved);
         let mut projection =
-            resolve::versions::Projection::new(resolver, &snapshot, &keys, Some(&history))?;
+            resolve::membership::Projection::new(resolver, &snapshot, &keys, Some(&history))?;
         let mut prepared = Vec::new();
         for reading in readings.iter() {
             let input = keys
@@ -361,7 +361,7 @@ struct StoredStep(
     Vec<(String, Vec<u8>)>,
     Vec<([u8; 32], Vec<u8>)>,
     bool,
-    Option<resolve::versions::Choices>,
+    Option<resolve::membership::Choices>,
 );
 #[derive(Clone, Copy)]
 struct Location {
@@ -432,7 +432,7 @@ impl<'a> History<'a> {
         Ok(step)
     }
 }
-impl resolve::versions::ValueSource for History<'_> {
+impl resolve::membership::ValueSource for History<'_> {
     fn session(&self, pk: i64, input: i64, chain: i64) -> Result<Option<Session>> {
         let Some(location) = self.sessions.borrow().get(&(pk, input, chain)).copied() else {
             return Ok(None);
@@ -448,7 +448,7 @@ impl resolve::versions::ValueSource for History<'_> {
         pk: i64,
         input: i64,
         chain: i64,
-    ) -> Result<Option<resolve::versions::EventChoice>> {
+    ) -> Result<Option<resolve::membership::EventChoice>> {
         let Some(location) = self
             .event_sources
             .borrow()

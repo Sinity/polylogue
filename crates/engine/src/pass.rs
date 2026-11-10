@@ -440,7 +440,7 @@ impl Engine {
                         input: InputKey {
                             id: state.input_id.clone(),
                             format: state.origin.name.into(),
-                            arrival_rank: state.origin.arrival.rank(),
+                            route: state.origin.route,
                         },
                         change: Change::Disappeared,
                         observation: Some(self.observation(&path, None)),
@@ -722,7 +722,7 @@ impl Engine {
             input: InputKey {
                 id: state.input_id.clone(),
                 format: state.origin.name.into(),
-                arrival_rank: state.origin.arrival.rank(),
+                route: state.origin.route,
             },
             change: Change::Unchanged,
             observation: Some(self.observation(path, Some(now))),
@@ -790,7 +790,7 @@ impl Engine {
                 InputKey {
                     id: self.inputs[path].input_id.clone(),
                     format: origin.name.into(),
-                    arrival_rank: origin.arrival.rank(),
+                    route: origin.route,
                 },
                 Change::Unchanged,
                 Some(now),
@@ -979,7 +979,7 @@ impl Engine {
             input: InputKey {
                 id: st.input_id.clone(),
                 format: st.origin.name.into(),
-                arrival_rank: st.origin.arrival.rank(),
+                route: st.origin.route,
             },
             change,
             observation: Some(obs),
@@ -1085,7 +1085,7 @@ impl Engine {
                                 InputKey {
                                     id: c.input.clone(),
                                     format: origin.name.into(),
-                                    arrival_rank: 2,
+                                    route: origin.route.imported(),
                                 },
                                 &state,
                                 None,
@@ -1137,10 +1137,10 @@ impl Engine {
                 InputKey {
                     id: c.input,
                     format: origin.name.into(),
-                    arrival_rank: if c.imported.is_some() {
-                        2
+                    route: if c.imported.is_some() {
+                        origin.route.imported()
                     } else {
-                        origin.arrival.rank()
+                        origin.route
                     },
                 },
                 &reading_state,
@@ -1248,28 +1248,32 @@ impl Engine {
         let (input_id, origin, facts) = (st.input_id.clone(), st.origin, st.facts);
         let state = polylogue_store::read::ChainProgress {
             chain,
-            arrival_rank: 0,
+            imported: false,
             waiting: st.waiting,
             length: st.stored,
             parsed_upto: st.parsed_upto,
             parsed: st.parsed,
         };
-        let arrival_rank = self
+        let imported = self
             .reads
             .reader()?
             .input_progress(&input_id)?
             .ok_or_else(|| {
                 polylogue_store::StoreError::Invalid("the stored revision disappeared".into())
             })?
-            .arrival_rank
-            .max(origin.arrival.rank());
+            .imported
+            || origin.route.is_imported();
         Ok(Some(self.reparse_plan(
             path.to_path_buf(),
             origin,
             InputKey {
                 id: input_id,
                 format: origin.name.into(),
-                arrival_rank,
+                route: if imported {
+                    origin.route.imported()
+                } else {
+                    origin.route
+                },
             },
             &state,
             facts,

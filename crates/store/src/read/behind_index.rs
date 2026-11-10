@@ -168,7 +168,7 @@ impl Reader<'_> {
                         parsed_upto,
                         parsed: row.get(8)?,
                         waiting: row.get(9)?,
-                        arrival_rank: if imported { 2 } else { 0 },
+                        imported,
                     },
                 },
                 origin,

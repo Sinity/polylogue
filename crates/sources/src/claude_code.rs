@@ -532,6 +532,7 @@ impl ClaudeCode {
                 );
             }
             out.messages.push(MessageRow {
+                page_text: false,
                 offset: record.offset,
                 end: range(record).1,
                 id_kind,
@@ -778,6 +779,7 @@ impl ClaudeCode {
                 }
             };
             out.messages.push(MessageRow {
+                page_text: false,
                 id_kind,
                 offset: record.offset,
                 end,
@@ -914,6 +916,7 @@ fn remember(state: &ParserState, response: &Response) {
         },
         polylogue_model::parser_context::Value::Response {
             row: Box::new(MessageRow {
+                page_text: false,
                 id_kind: response.id_kind,
                 offset: response.offset,
                 end: response.end,
@@ -927,6 +930,7 @@ fn remember(state: &ParserState, response: &Response) {
 fn close(parser_state: &mut ParserState, out: &mut Output) {
     if let Some(open) = parser_state.open.take() {
         out.messages.push(MessageRow {
+            page_text: false,
             id_kind: open.id_kind,
             offset: open.offset,
             end: open.end,
@@ -1561,6 +1565,7 @@ impl Parser for ClaudeCode {
         if let Some(open) = &parser_state.open {
             remember(parser_state, open);
             out.messages.push(MessageRow {
+                page_text: false,
                 id_kind: open.id_kind,
                 offset: open.offset,
                 end: open.end,

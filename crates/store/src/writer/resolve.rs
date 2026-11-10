@@ -3,7 +3,7 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Condvar;
-pub(crate) mod versions;
+pub(crate) mod membership;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Kind {
@@ -554,7 +554,7 @@ impl Resolver {
                 let row = self.resolve_key(&snapshot, &key)?;
                 resolved.rows.insert(key, row);
             }
-            versions::resolve(self, &snapshot, batches, &chains, &resolved)?;
+            membership::resolve(self, &snapshot, batches, &chains, &resolved)?;
             let resolved = Arc::new(resolved);
             let lease = Arc::new(lease);
             for (batch, chain) in batches.iter_mut().zip(chains) {
@@ -683,7 +683,7 @@ pub(super) fn prepare_index(
         let row = resolver.resolve_key(index, &key)?;
         resolved.rows.insert(key, row);
     }
-    versions::resolve(&resolver, index, &mut [batch], &chains, &resolved)?;
+    membership::resolve(&resolver, index, &mut [batch], &chains, &resolved)?;
     let keys = Arc::new(resolved);
     for step in &mut batch.parse {
         step.prepared.keys = Some(Arc::clone(&keys));

@@ -1,5 +1,5 @@
-//! Text documents: one shown version each, with source time before arrival
-//! rank, and reads in the reader's read transaction.
+//! Text documents: one shown version each, with source time before route
+//! precedence, and reads in the reader's read transaction.
 use crate::encoding::hex;
 use crate::encoding::{PreparedDocument, restore_text, unpack_block, unpack_json, unpack_text};
 use crate::versions::VersionKind;
@@ -13,7 +13,7 @@ use std::ops::ControlFlow;
 pub(crate) struct Source<'a> {
     pub input_pk: i64,
     pub chain: i64,
-    pub rank: i64,
+    pub route: polylogue_model::Route,
     pub counter: i64,
     pub packed: &'a HashMap<[u8; 32], Vec<u8>>,
     /// Set during a first build ([`crate::first_build`]).
@@ -74,7 +74,7 @@ pub(crate) fn write(
 pub(crate) fn apply_choice(
     tx: &Transaction<'_>,
     pk: i64,
-    choice: Option<&crate::writer::resolve::versions::DocumentChoice>,
+    choice: Option<&crate::writer::resolve::membership::DocumentChoice>,
     counter: i64,
     first_build: Option<&crate::first_build::FirstBuild>,
     keys: &crate::writer::resolve::ResolvedKeys,
@@ -91,7 +91,7 @@ pub(crate) fn apply_choice(
     let source = Source {
         input_pk: choice.input,
         chain: choice.chain,
-        rank: choice.rank,
+        route: choice.route,
         counter,
         packed: &packed,
         first_build,
@@ -130,11 +130,11 @@ fn set_source(
     prepared: &PreparedDocument,
     admitted: Option<i64>,
 ) -> Result<()> {
-    tx.execute("INSERT INTO document_source(document_pk,input_pk,chain,source_start,source_end,arrival_rank,source_time,version_hash,shown,time,admitted)
+    tx.execute("INSERT INTO document_source(document_pk,input_pk,chain,source_start,source_end,route,source_time,version_hash,shown,time,admitted)
         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
         ON CONFLICT(document_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,source_end=excluded.source_end,
-            arrival_rank=excluded.arrival_rank,source_time=excluded.source_time,version_hash=excluded.version_hash,shown=excluded.shown,time=excluded.time,admitted=excluded.admitted",
-        params![pk,source.input_pk,source.chain,row.offset as i64,row.end as i64,source.rank,time,&prepared.hash[..],false,prepared.time,admitted])?;
+            route=excluded.route,source_time=excluded.source_time,version_hash=excluded.version_hash,shown=excluded.shown,time=excluded.time,admitted=excluded.admitted",
+        params![pk,source.input_pk,source.chain,row.offset as i64,row.end as i64,source.route.as_str(),time,&prepared.hash[..],false,prepared.time,admitted])?;
     Ok(())
 }
 

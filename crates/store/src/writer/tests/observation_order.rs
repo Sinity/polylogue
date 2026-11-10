@@ -23,7 +23,7 @@ fn the_latest_observation_is_the_last_inserted_despite_earlier_times() {
     let tx = db.transaction().unwrap();
     let seq = bump_counter(&tx).unwrap();
     for at in [900, 1, 500, 2] {
-        let mut b = batch("input", 0, 0, vec![], &[]);
+        let mut b = batch("input", Route::Live, 0, vec![], &[]);
         let observation = b.observation.as_mut().unwrap();
         observation.seen_at_ms = at;
         observation.path = format!("location-{at}");
@@ -54,7 +54,7 @@ fn independent_archives_cannot_assign_the_same_observation_identity() {
             .unwrap();
         let tx = db.transaction().unwrap();
         let seq = bump_counter(&tx).unwrap();
-        let mut b = batch("input", 0, 0, vec![], &[]);
+        let mut b = batch("input", Route::Live, 0, vec![], &[]);
         b.observation.as_mut().unwrap().seen_at_ms = seen_at;
         observe(&tx, &b, seq);
         tx.commit().unwrap();

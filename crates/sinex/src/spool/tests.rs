@@ -854,7 +854,7 @@ fn parsed_capture(bytes: &[u8], text: &str) -> Capture {
     Capture::Input(serde_json::from_value(serde_json::json!({
         "input":{"origin":"codex","path":"/fixture/session.jsonl","host":"fixture-host"},
         "rows":{"input":"input-x","format":"codex","revision":{"number":1,"produced":"file","chain":1,"length":bytes.len()},"extent":{"chain":1,"offset":0,"length":bytes.len(),"blob_offset":0,"blob":polylogue_model::BlobHash::of(bytes)}},
-        "index":0,"previous":null,"hash":polylogue_model::BlobHash::of(bytes),"length":bytes.len(),"group":null,"arrival_rank":1,"parsed":parsed
+        "index":0,"previous":null,"hash":polylogue_model::BlobHash::of(bytes),"length":bytes.len(),"group":null,"route":"capture","parsed":parsed
     })).unwrap())
 }
 

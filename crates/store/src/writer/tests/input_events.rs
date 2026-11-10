@@ -15,7 +15,7 @@ fn event(range: (u64, u64), name: &str) -> Event {
 }
 
 fn unbound(input: &str, from: u64, events: Vec<Event>, prepared: bool) -> Batch {
-    let mut b = batch(input, 0, from, vec![], &[]);
+    let mut b = batch(input, Route::Live, from, vec![], &[]);
     b.input.format = "hermes".into();
     b.parse[0].output.events = events;
     if prepared {

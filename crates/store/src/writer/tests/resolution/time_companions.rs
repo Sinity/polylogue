@@ -96,7 +96,7 @@ fn native_time_companions_use_evidence_and_keep_missing_relations_distinct() {
     }];
     let mut input = batch(
         "time-companions",
-        0,
+        Route::Live,
         0,
         vec![row(1, call), row(2, result)],
         &["metadata", "child-unknown"],

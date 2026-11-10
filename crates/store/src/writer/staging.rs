@@ -283,7 +283,7 @@ impl Inner {
                 )
                 .optional()?;
             let again = !seen.insert(b.input.id.clone());
-            if b.input.arrival_rank == 2 && b.new_blob.is_some() && (known.is_some() || again) {
+            if b.input.route.is_imported() && b.new_blob.is_some() && (known.is_some() || again) {
                 let new_blob = b.new_blob.as_ref().expect("checked new_blob");
                 // Empty bytes are stored with no extent.
                 let same: bool = tx.query_row(
@@ -332,7 +332,7 @@ impl Inner {
             let (Some(observation), Some(blob)) = (&b.observation, &b.new_blob) else {
                 return Ok(None);
             };
-            if b.input.arrival_rank != 2 || !b.parse.is_empty() || !b.blobs.is_empty() {
+            if !b.input.route.is_imported() || !b.parse.is_empty() || !b.blobs.is_empty() {
                 return Ok(None);
             }
             let details = observation
@@ -408,7 +408,7 @@ impl Inner {
                 ));
             }
         }
-        if b.input.arrival_rank == 2
+        if b.input.route.is_imported()
             && let Some(new_blob) = &b.new_blob
             && (b.input.id != new_blob.hash.to_string() || new_blob.size != b.length || b.continues)
         {

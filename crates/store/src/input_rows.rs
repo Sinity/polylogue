@@ -200,7 +200,7 @@ impl InputRows {
         receipt.validate_for(&crate::InputKey {
             format: self.format.clone(),
             id: self.input.clone(),
-            arrival_rank: 0,
+            route: polylogue_model::Route::Live,
         })?;
         let length = receipt.range.length()?;
         let invalid = || {

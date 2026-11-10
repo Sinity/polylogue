@@ -19,6 +19,7 @@ fn step() -> ParseStep {
     );
     let mut output = Output {
         messages: vec![MessageRow {
+            page_text: false,
             id_kind: polylogue_model::IdKind::Native,
             offset: 10,
             end: 80,
@@ -88,6 +89,7 @@ fn sparse_field_claims_keep_original_ordinals_instead_of_selected_positions() {
     original.blocks = vec![original.blocks[3].clone()];
     let mut output = Output {
         messages: vec![MessageRow {
+            page_text: false,
             id_kind: polylogue_model::IdKind::Native,
             offset: 10,
             end: 80,

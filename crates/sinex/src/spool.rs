@@ -1816,7 +1816,7 @@ pub(crate) fn capture_header(capture: &Capture) -> Capture {
                 hash: input.hash,
                 length: input.length,
                 group: input.group.clone(),
-                arrival_rank: input.arrival_rank,
+                route: input.route,
                 parsed: Vec::new(),
                 raw_range: input.raw_range,
                 basis: input.basis.clone(),

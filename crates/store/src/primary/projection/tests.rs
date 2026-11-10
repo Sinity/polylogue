@@ -444,6 +444,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
         Output {
             sessions: vec![Session::new(session, SessionKind::Main)],
             messages: vec![MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
                 end: 1,
@@ -460,7 +461,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
     let key = crate::InputKey {
         id: "input".into(),
         format: "synthetic".into(),
-        arrival_rank: 0,
+        route: polylogue_model::Route::Live,
     };
     let products = crate::primary::products::parse(&key, 1, None, &step).unwrap();
     let mut changes = vec![Confirmed {
@@ -600,7 +601,7 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
     let key = crate::InputKey {
         id: "input".into(),
         format: "synthetic".into(),
-        arrival_rank: 0,
+        route: polylogue_model::Route::Live,
     };
     let products = crate::primary::products::parse(&key, 1, None, &step).unwrap();
     let ids = products

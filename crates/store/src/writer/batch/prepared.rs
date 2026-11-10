@@ -12,7 +12,7 @@ pub(crate) struct PreparedRows {
     pub(in crate::writer) released: bool,
     pub(in crate::writer) keys: Option<Arc<super::super::resolve::ResolvedKeys>>,
     pub(in crate::writer) chain: Option<i64>,
-    pub(in crate::writer) choices: Option<super::super::resolve::versions::Choices>,
+    pub(in crate::writer) choices: Option<super::super::resolve::membership::Choices>,
 }
 
 impl PreparedRows {

@@ -541,6 +541,7 @@ fn forked_subagent(w: &mut WriterArchive, description: Option<&str>) {
             .into_iter()
             .enumerate()
             .map(|(i, message)| polylogue_model::MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: i as u64,
                 end: i as u64 + 1,

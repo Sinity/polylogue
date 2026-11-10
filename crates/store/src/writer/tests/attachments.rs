@@ -44,7 +44,13 @@ fn absent_and_present_blobs_keep_other_prepared_values() {
             type_name: "detail".into(),
             data: serde_json::json!({"kept":true}),
         });
-        let mut original = batch("input1", 0, 1, vec![row(0, message.clone())], &["s"]);
+        let mut original = batch(
+            "input1",
+            Route::Live,
+            1,
+            vec![row(0, message.clone())],
+            &["s"],
+        );
         if prepared {
             original.parse[0].prepare();
         }

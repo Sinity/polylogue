@@ -76,7 +76,7 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
                 input: InputKey {
                     id: engine.location_id(&db),
                     format: "codex-database".into(),
-                    arrival_rank: 0,
+                    route: polylogue_model::Route::Live,
                 },
                 observation: engine.observation(&db, None),
                 acquisition: engine.acquisition_context(
@@ -99,6 +99,7 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
         modules: &[],
         support: Support::Parsed,
         arrival: Arrival::Live,
+        route: polylogue_model::Route::Live,
         input_identity: polylogue_sources::InputIdentity::Location,
         root: Root::HOME,
         locations: &[],
@@ -125,7 +126,7 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
         InputKey {
             id: "synthetic-held-input".into(),
             format: "synthetic".into(),
-            arrival_rank: 0,
+            route: polylogue_model::Route::Live,
         },
         Change::First,
         None,

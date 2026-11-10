@@ -58,7 +58,9 @@ impl Engine {
     ) -> Result<(), EngineError> {
         // A loop without sources reads no file outside the archive, a
         // referenced image included.
-        if !self.config.reads_sources || plan.origin.name != "codex" || plan.input.arrival_rank >= 2
+        if !self.config.reads_sources
+            || plan.origin.name != "codex"
+            || plan.input.route.is_imported()
         {
             return Ok(());
         }
@@ -151,7 +153,7 @@ impl Engine {
                     input: InputKey {
                         id,
                         format: origin.name.into(),
-                        arrival_rank: 2,
+                        route: polylogue_model::Route::Copy,
                     },
                     change: Change::First,
                     observation: Some(observation),
@@ -238,7 +240,7 @@ impl Engine {
             input: InputKey {
                 id: id.clone(),
                 format: "codex-local-file".into(),
-                arrival_rank: 2,
+                route: polylogue_model::Route::Copy,
             },
             change: if exists {
                 Change::Unchanged

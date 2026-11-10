@@ -22,7 +22,7 @@ fn stage(
         input: InputKey {
             id: prepared.hash().to_string(),
             format: "export-file".into(),
-            arrival_rank: 2,
+            route: polylogue_model::Route::Export,
         },
         change: Change::First,
         observation: Some(Observation {

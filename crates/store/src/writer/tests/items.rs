@@ -26,7 +26,7 @@ fn every_committed_batch_leaves_the_index_equal_to_the_rows() {
     w.store_reading(
         batch(
             "i1",
-            0,
+            Route::Live,
             0,
             vec![
                 row(10, message("a", Role::User, "first question")),
@@ -43,7 +43,7 @@ fn every_committed_batch_leaves_the_index_equal_to_the_rows() {
     w.store_reading(
         batch(
             "i1",
-            0,
+            Route::Live,
             100,
             vec![row(110, message("c", Role::User, "second question"))],
             &["s"],
@@ -62,7 +62,7 @@ fn an_append_moves_only_the_append_counter() {
     w.store_reading(
         batch(
             "i1",
-            0,
+            Route::Live,
             0,
             vec![row(10, message("a", Role::User, "question"))],
             &["s"],
@@ -76,7 +76,7 @@ fn an_append_moves_only_the_append_counter() {
         w.store_reading(
             batch(
                 "i1",
-                0,
+                Route::Live,
                 n * 100,
                 vec![row(
                     n * 100 + 10,
@@ -102,7 +102,7 @@ fn a_changed_earlier_message_moves_the_rewrite_version() {
     w.store_reading(
         batch(
             "i1",
-            0,
+            Route::Live,
             0,
             vec![
                 row(0, text_message("r", "s", Role::Assistant, "part", None)),
@@ -118,7 +118,7 @@ fn a_changed_earlier_message_moves_the_rewrite_version() {
     w.store_reading(
         batch(
             "i1",
-            0,
+            Route::Live,
             100,
             vec![row(
                 0,
@@ -147,7 +147,7 @@ fn a_newly_stored_parent_link_moves_the_child_rewrite_version() {
     w.store_reading(
         batch(
             "child-file",
-            0,
+            Route::Live,
             0,
             vec![row(
                 0,
@@ -160,7 +160,7 @@ fn a_newly_stored_parent_link_moves_the_child_rewrite_version() {
     .unwrap();
     w.writer.flush().unwrap();
     let before = stored(&w, "child");
-    let mut linked = batch("child-file", 0, 100, vec![], &["child"]);
+    let mut linked = batch("child-file", Route::Live, 100, vec![], &["child"]);
     linked.parse[0].output.links.push(polylogue_model::Link {
         parent: sid("parent"),
         child: sid("child"),
@@ -183,7 +183,7 @@ fn a_growing_last_message_is_an_append() {
     let mut first = message("g", Role::Assistant, "start");
     first.stop_reason = None;
     w.store_reading(
-        batch("i1", 0, 0, vec![row(0, first.clone())], &["s"]),
+        batch("i1", Route::Live, 0, vec![row(0, first.clone())], &["s"]),
         Some(&SOURCE_RECORD),
     )
     .unwrap();
@@ -195,7 +195,7 @@ fn a_growing_last_message_is_an_append() {
     });
     grown.stop_reason = Some("end_turn".into());
     w.store_reading(
-        batch("i1", 0, 100, vec![row(0, grown)], &["s"]),
+        batch("i1", Route::Live, 100, vec![row(0, grown)], &["s"]),
         Some(&SOURCE_RECORD),
     )
     .unwrap();
@@ -211,7 +211,7 @@ fn an_event_naming_no_message_keeps_later_messages_appends() {
     let w = test_archive();
     let mut first = message("a", Role::User, "question");
     first.at = Timestamp::from_unix_ms(1_000);
-    let mut opening = batch("i1", 0, 0, vec![row(10, first)], &["s"]);
+    let mut opening = batch("i1", Route::Live, 0, vec![row(10, first)], &["s"]);
     opening.parse[0].output.events.push(polylogue_model::Event {
         session: Some(sid("s")),
         kind: "hook_run".into(),
@@ -229,7 +229,7 @@ fn an_event_naming_no_message_keeps_later_messages_appends() {
     let mut later = message("b", Role::Assistant, "answer");
     later.at = Timestamp::from_unix_ms(3_000);
     w.store_reading(
-        batch("i1", 0, 100, vec![row(110, later)], &["s"]),
+        batch("i1", Route::Live, 100, vec![row(110, later)], &["s"]),
         Some(&SOURCE_RECORD),
     )
     .unwrap();
@@ -294,7 +294,7 @@ fn indexing_errors_abort_the_changed_rows_transaction() {
         w.store_reading(
             batch(
                 "i1",
-                0,
+                Route::Live,
                 0,
                 vec![row(10, message("a", Role::User, "original"))],
                 &["s"],

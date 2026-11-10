@@ -4,13 +4,14 @@ fn restating(input: &str, at: u64, texts: &[(&str, &str)]) -> Batch {
     let rows = texts
         .iter()
         .map(|(id, text)| MessageRow {
+            page_text: false,
             id_kind: polylogue_model::IdKind::Native,
             offset: at,
             end: at + 100,
             message: text_message(id, "s", Role::User, text, None),
         })
         .collect();
-    let mut b = batch(input, 0, at, rows, &["s"]);
+    let mut b = batch(input, Route::Live, at, rows, &["s"]);
     b.parse[0].repeats_whole_conversations = true;
     b.parse[0].progress = polylogue_model::batch::StepProgress::AtEnd;
     b
@@ -51,7 +52,7 @@ fn replace_observations(w: &TestArchive, observations: &std::collections::BTreeM
             InputKey {
                 id: "a".into(),
                 format: "claude-code".into(),
-                arrival_rank: 0,
+                route: polylogue_model::Route::Live,
             },
             1,
             300,
@@ -64,7 +65,7 @@ fn replace_observations(w: &TestArchive, observations: &std::collections::BTreeM
 fn repeated_active_leaf_uses_record_order_in_both_replay_orders() {
     for reverse in [false, true] {
         let w = test_archive();
-        let mut seed = batch("a", 0, 0, vec![], &[]);
+        let mut seed = batch("a", Route::Live, 0, vec![], &[]);
         seed.length = 300;
         seed.parse.clear();
         w.store_reading(seed, Some(&[b'r'; 300])).unwrap();
@@ -166,7 +167,7 @@ fn empty_and_nonempty_path_markers_replace_each_other_in_both_replay_orders() {
     for last_empty in [false, true] {
         for reverse in [false, true] {
             let w = test_archive();
-            let mut seed = batch("a", 0, 0, vec![], &[]);
+            let mut seed = batch("a", Route::Live, 0, vec![], &[]);
             seed.length = 300;
             seed.parse.clear();
             w.store_reading(seed, Some(&[b'r'; 300])).unwrap();

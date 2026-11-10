@@ -10,7 +10,7 @@ fn overlapping_workers_read_after_the_preceding_commit() {
         .commit_source(
             batch(
                 "first-route",
-                0,
+                Route::Live,
                 0,
                 vec![row(
                     1,
@@ -23,7 +23,7 @@ fn overlapping_workers_read_after_the_preceding_commit() {
         .unwrap();
     let mut second = batch(
         "second-route",
-        2,
+        Route::Export,
         0,
         vec![row(
             1,
@@ -80,7 +80,7 @@ fn disjoint_workers_reserve_unique_rows_before_either_commits() {
             w.commit_source(
                 batch(
                     input,
-                    0,
+                    Route::Live,
                     0,
                     vec![row(1, text_message(input, session, Role::User, word, None))],
                     &[session],
@@ -145,7 +145,7 @@ fn disjoint_workers_share_text_identity_without_waiting_for_a_commit() {
             w.commit_source(
                 batch(
                     input,
-                    0,
+                    Route::Live,
                     0,
                     vec![row(1, text_message(input, session, Role::User, word, None))],
                     &[session],
@@ -217,7 +217,7 @@ fn refused_commit_releases_reservations_for_an_ordinary_retry() {
     let make = || {
         batch(
             "retry-input",
-            0,
+            Route::Live,
             0,
             vec![row(
                 1,
@@ -273,7 +273,7 @@ fn refused_commit_releases_reservations_for_an_ordinary_retry() {
 #[test]
 fn collection_without_a_parser_commits_its_explicit_status() {
     let w = test_archive();
-    let mut input = batch("collected", 0, 0, Vec::new(), &[]);
+    let mut input = batch("collected", Route::Live, 0, Vec::new(), &[]);
     input.parse[0].progress = polylogue_model::batch::StepProgress::NoParserYet {
         at_end: input.parse[0].progress.reached_end(),
     };
@@ -300,7 +300,10 @@ fn value_identity_survives_a_commit_newer_than_the_workers_snapshot() {
     let w = test_archive();
     let sender = w.writer.sender().unwrap();
     let captured = w
-        .commit_source(batch("value-route", 0, 0, Vec::new(), &[]), &SOURCE_RECORD)
+        .commit_source(
+            batch("value-route", Route::Live, 0, Vec::new(), &[]),
+            &SOURCE_RECORD,
+        )
         .unwrap();
     let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
     let snapshot = index.unchecked_transaction().unwrap();
@@ -312,7 +315,7 @@ fn value_identity_survives_a_commit_newer_than_the_workers_snapshot() {
         0
     );
     let data = serde_json::json!({"shared":42});
-    let mut input = batch("value-route", 0, 0, Vec::new(), &["s"]);
+    let mut input = batch("value-route", Route::Live, 0, Vec::new(), &["s"]);
     input.parse[0].output.events.push(Event {
         at_quality: polylogue_model::TimeQuality::Unknown,
         at_precision: None,
@@ -352,7 +355,7 @@ fn keys_created_after_the_first_build_are_shared_by_following_routes() {
             w.commit_source(
                 batch(
                     "initial",
-                    0,
+                    Route::Live,
                     0,
                     vec![row(
                         1,
@@ -373,7 +376,7 @@ fn keys_created_after_the_first_build_are_shared_by_following_routes() {
                 w.commit_source(
                     batch(
                         input,
-                        0,
+                        Route::Live,
                         0,
                         vec![row(
                             1,
@@ -411,7 +414,7 @@ fn a_metadata_only_observation_keeps_the_following_rewrite_chain_number() {
             w.commit_source(
                 batch(
                     "observed",
-                    0,
+                    Route::Live,
                     0,
                     vec![row(
                         1,
@@ -426,12 +429,12 @@ fn a_metadata_only_observation_keeps_the_following_rewrite_chain_number() {
         .unwrap();
     let report = w.writer.flush().unwrap();
     assert!(report.errors.is_empty(), "{report:?}");
-    let mut metadata = batch("observed", 0, 0, Vec::new(), &[]);
+    let mut metadata = batch("observed", Route::Live, 0, Vec::new(), &[]);
     metadata.change = Change::Unchanged;
     metadata.parse.clear();
     let mut rewritten = batch(
         "observed",
-        0,
+        Route::Live,
         0,
         vec![row(1, text_message("same", "s", Role::User, "after", None))],
         &["s"],
@@ -480,7 +483,13 @@ fn confirmed_readings_resolve_and_apply_without_a_local_source_database() {
             blob: Some(blob),
             ..Default::default()
         }));
-    let mut input = batch("confirmed-input", 0, 0, vec![row(1, message)], &["s"]);
+    let mut input = batch(
+        "confirmed-input",
+        Route::Live,
+        0,
+        vec![row(1, message)],
+        &["s"],
+    );
     input.change = Change::Reparse { chain: 41 };
     let available = HashMap::from([(blob, Some(15))]);
     let mut reading = ChainReading::new().unwrap();
@@ -523,7 +532,7 @@ fn confirmed_readings_require_the_confirmed_chain_identity() {
     let index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
     crate::schema::create_index(&index).unwrap();
     let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
-    let mut input = batch("confirmed-input", 0, 0, Vec::new(), &[]);
+    let mut input = batch("confirmed-input", Route::Live, 0, Vec::new(), &[]);
     let mut reading = ChainReading::new().unwrap();
     reading.push(&mut input.parse.remove(0)).unwrap();
     let mut readings = vec![(input.input, 0, input.length, reading)];
@@ -540,7 +549,7 @@ fn continuing_readings_require_the_committed_prefix_and_retry_once() {
     let tx = conn.transaction().unwrap();
     let first = batch(
         "cursor",
-        0,
+        Route::Live,
         0,
         vec![row(
             1,
@@ -551,7 +560,7 @@ fn continuing_readings_require_the_committed_prefix_and_retry_once() {
     write_test_rows(&tx, &first, &first.parse[0], 1, 1, None).unwrap();
     let gap = batch(
         "cursor",
-        0,
+        Route::Live,
         200,
         vec![row(
             201,
@@ -567,7 +576,7 @@ fn continuing_readings_require_the_committed_prefix_and_retry_once() {
     );
     let middle = batch(
         "cursor",
-        0,
+        Route::Live,
         100,
         vec![row(
             101,
@@ -601,7 +610,7 @@ fn no_parser_metadata_waits_at_partial_eof_and_resumes_on_append() {
     let w = test_archive();
     let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     let tx = conn.transaction().unwrap();
-    let mut partial = batch("metadata", 0, 0, Vec::new(), &[]);
+    let mut partial = batch("metadata", Route::Live, 0, Vec::new(), &[]);
     partial.parse[0].progress = polylogue_model::batch::StepProgress::NoParserYet {
         at_end: partial.parse[0].progress.reached_end(),
     };
@@ -615,7 +624,7 @@ fn no_parser_metadata_waits_at_partial_eof_and_resumes_on_append() {
         )
         .unwrap();
     assert_eq!(state, ("waiting".into(), 100, "synthetic=1".into()));
-    let mut append = batch("metadata", 0, 40, Vec::new(), &[]);
+    let mut append = batch("metadata", Route::Live, 40, Vec::new(), &[]);
     append.parse[0].progress = polylogue_model::batch::StepProgress::NoParserYet {
         at_end: append.parse[0].progress.reached_end(),
     };
@@ -638,7 +647,7 @@ fn imported_message_order_is_independent_of_local_byte_ranges() {
     let tx = conn.transaction().unwrap();
     let mut input = batch(
         "bundle",
-        2,
+        Route::Export,
         0,
         vec![
             row(
@@ -689,8 +698,15 @@ fn imported_message_order_is_independent_of_local_byte_ranges() {
 
 fn overlapping_confirmed_readings() -> Vec<(InputKey, i64, u64, ChainReading)> {
     [
-        ("source-a", 1, 0u8, "partial", None, "/first"),
-        ("source-b", 7, 2u8, "complete", Some("end_turn"), "/second"),
+        ("source-a", 1, Route::Live, "partial", None, "/first"),
+        (
+            "source-b",
+            7,
+            Route::Export,
+            "complete",
+            Some("end_turn"),
+            "/second",
+        ),
     ]
     .into_iter()
     .map(|(id, chain, rank, text, stop, cwd)| {
@@ -844,7 +860,7 @@ fn a_refused_streamed_position_keeps_all_rows_and_positions_uncommitted() {
 
 fn commit_event_bytes(w: &TestArchive, mut input: Batch, bytes: &[u8]) -> Batch {
     let (blob, file) = w.archive.prepare_blob(bytes).unwrap();
-    if input.input.arrival_rank == 2 {
+    if input.input.route.is_imported() {
         input.input.id = blob.hash.to_string();
     }
     input.new_blob = Some(blob);
@@ -883,7 +899,7 @@ fn commit_event_bytes(w: &TestArchive, mut input: Batch, bytes: &[u8]) -> Batch 
 #[test]
 fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
     let first = test_archive();
-    let mut input = batch("original", 0, 0, Vec::new(), &[]);
+    let mut input = batch("original", Route::Live, 0, Vec::new(), &[]);
     let event = Event {
         at_quality: polylogue_model::TimeQuality::Intrinsic,
         at_precision: Some(polylogue_model::Precision::Instant),
@@ -915,7 +931,7 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
         .unwrap();
     commit_event_bytes(
         &first,
-        batch("unrelated", 0, 0, Vec::new(), &[]),
+        batch("unrelated", Route::Live, 0, Vec::new(), &[]),
         b"         ",
     );
     let reads = ReadPool::open(&first.archive).unwrap();
@@ -930,7 +946,7 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
         serde_json::from_slice(&wire).unwrap();
     imported.validate().unwrap();
     let second = test_archive();
-    let mut portable = batch("bundle-local", 2, 0, Vec::new(), &[]);
+    let mut portable = batch("bundle-local", Route::Export, 0, Vec::new(), &[]);
     portable.input.format = polylogue_model::bundle::FORMAT.into();
     portable.parse[0].output.events.push(imported.event);
     portable.parse[0]
@@ -998,7 +1014,7 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
         event: newer.clone(),
     };
     let wire = serde_json::to_vec(&record).unwrap();
-    let mut competing = batch("preferred-local", 0, 0, Vec::new(), &[]);
+    let mut competing = batch("preferred-local", Route::Live, 0, Vec::new(), &[]);
     competing.input.format = polylogue_model::bundle::FORMAT.into();
     competing.parse[0].output.events.push(newer.clone());
     competing.parse[0]
@@ -1062,7 +1078,7 @@ fn confirmed_projection_applies_live_facts_after_an_archived_byte_prefix() {
     let tx = index.transaction().unwrap();
     let mut input = batch(
         "confirmed-subset",
-        0,
+        Route::Live,
         100,
         vec![row(
             120,
@@ -1137,7 +1153,7 @@ fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_c
     document.set_time(at, evidence).unwrap();
     let mut input = batch(
         "precise-source",
-        0,
+        Route::Live,
         0,
         vec![row(1, message.clone())],
         &["s"],
@@ -1197,7 +1213,7 @@ fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_c
             TimeEvidence::intrinsic(Precision::Instant),
         )
         .unwrap();
-    let mut other = batch("other-source", 0, 0, Vec::new(), &[]);
+    let mut other = batch("other-source", Route::Live, 0, Vec::new(), &[]);
     other.parse[0].output.documents.push(DocumentRow {
         offset: 2,
         end: 3,
@@ -1235,7 +1251,7 @@ fn a_remaining_native_event_keeps_its_original_identity_after_subset_projection(
         range: Some((3, 17)),
         data: serde_json::json!({"same":true}),
     };
-    let mut full = batch("native-source", 0, 0, Vec::new(), &[]);
+    let mut full = batch("native-source", Route::Live, 0, Vec::new(), &[]);
     full.parse[0].output.events = vec![event.clone(), event.clone()];
     full.parse[0].prepare();
     let ids = full.parse[0].event_identities("native-source", 1).unwrap();
@@ -1243,7 +1259,7 @@ fn a_remaining_native_event_keeps_its_original_identity_after_subset_projection(
     let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     let tx = conn.transaction().unwrap();
     write_test_rows(&tx, &full, &full.parse[0], 1, 1, None).unwrap();
-    let mut subset = batch("native-source", 0, 0, Vec::new(), &[]);
+    let mut subset = batch("native-source", Route::Live, 0, Vec::new(), &[]);
     subset.parse[0].output.events.push(event);
     subset.parse[0].output.event_ids.insert(0, ids[1].clone());
     write_test_rows(&tx, &subset, &subset.parse[0], 1, 2, None).unwrap();
@@ -1287,7 +1303,7 @@ fn retained_event_admission_precedes_raw_receipts_and_survives_missing_source_ma
         range: Some((0, 1000)),
         data: serde_json::json!({"retained":true}),
     };
-    let mut input = batch("retained-source", 0, 0, Vec::new(), &[]);
+    let mut input = batch("retained-source", Route::Live, 0, Vec::new(), &[]);
     input.parse[0].output.events.push(event);
     input.parse[0].counts = counts(1);
     let mut bytes = serde_json::to_vec(&input.parse[0].output.events[0]).unwrap();
@@ -1354,7 +1370,7 @@ fn retained_event_admission_precedes_raw_receipts_and_survives_missing_source_ma
 fn checkpoint_admission_stamps_survive_duplicate_resets_and_rollback() {
     let w = test_archive();
     let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
-    let first = batch("checkpoint", 0, 0, Vec::new(), &[]);
+    let first = batch("checkpoint", Route::Live, 0, Vec::new(), &[]);
     let tx = conn.transaction().unwrap();
     write_test_rows(&tx, &first, &first.parse[0], 1, 10, None).unwrap();
     write_test_rows(&tx, &first, &first.parse[0], 1, 20, None).unwrap();
@@ -1365,7 +1381,7 @@ fn checkpoint_admission_stamps_survive_duplicate_resets_and_rollback() {
         10
     );
     tx.commit().unwrap();
-    let continuation = batch("checkpoint", 0, 100, Vec::new(), &[]);
+    let continuation = batch("checkpoint", Route::Live, 100, Vec::new(), &[]);
     let tx = conn.transaction().unwrap();
     write_test_rows(&tx, &continuation, &continuation.parse[0], 1, 25, None).unwrap();
     assert_eq!(
@@ -1381,7 +1397,7 @@ fn checkpoint_admission_stamps_survive_duplicate_resets_and_rollback() {
             .unwrap(),
         10
     );
-    let mut waiting = batch("checkpoint", 0, 100, Vec::new(), &[]);
+    let mut waiting = batch("checkpoint", Route::Live, 100, Vec::new(), &[]);
     waiting.parse[0].parsed_upto = 100;
     let tx = conn.transaction().unwrap();
     write_test_rows(&tx, &waiting, &waiting.parse[0], 1, 30, None).unwrap();
@@ -1408,7 +1424,13 @@ fn checkpoint_admission_stamps_survive_duplicate_resets_and_rollback() {
 fn canonical_fold_receipts_survive_raw_mapping_absence_and_cache_rebuild() {
     use polylogue_model::{Document, DocumentId, DocumentPurpose, DocumentRow};
     let w = test_archive();
-    let mut input = batch("fact-source", 0, 0, Vec::new(), &["receipt-session"]);
+    let mut input = batch(
+        "fact-source",
+        Route::Live,
+        0,
+        Vec::new(),
+        &["receipt-session"],
+    );
     input.parse[0].output.sessions[0].offer_cwd("/workspace/first");
     let mut document = Document::new(
         DocumentId::parse("claude-code:receipt-document").unwrap(),
@@ -1451,7 +1473,13 @@ fn canonical_fold_receipts_survive_raw_mapping_absence_and_cache_rebuild() {
         tx.commit().unwrap();
     };
     apply(&mut conn, &mut confirmed);
-    let mut contributor = batch("later-fact-source", 0, 0, Vec::new(), &["receipt-session"]);
+    let mut contributor = batch(
+        "later-fact-source",
+        Route::Live,
+        0,
+        Vec::new(),
+        &["receipt-session"],
+    );
     contributor.parse[0].output.sessions[0].offer_cwd("/workspace/second");
     contributor.parse[0].output.session_receipts.insert(0, 160);
     contributor.parse[0].output.links.push(link.clone());
@@ -1514,7 +1542,13 @@ fn canonical_fold_receipts_survive_raw_mapping_absence_and_cache_rebuild() {
 fn record_visitors_stop_before_decoding_later_session_payloads() {
     use std::ops::ControlFlow;
     let w = test_archive();
-    let mut input = batch("visitor-source", 0, 0, Vec::new(), &["visitor-session"]);
+    let mut input = batch(
+        "visitor-source",
+        Route::Live,
+        0,
+        Vec::new(),
+        &["visitor-session"],
+    );
     for ordinal in 0..2 {
         input.parse[0].output.events.push(Event {
             session: Some(sid("visitor-session")),
@@ -1611,7 +1645,11 @@ fn link_evidence_merges_across_sources_independently_of_the_source_winner() {
     // file paths, while the exported relation must survive relocation/rebuild.
     for child_first in [false, true] {
         for child_id_first in [false, true] {
-            for (child_rank, parent_rank) in [(0, 0), (0, 1), (1, 0)] {
+            for (child_rank, parent_rank) in [
+                (Route::Live, Route::Live),
+                (Route::Live, Route::Capture),
+                (Route::Capture, Route::Live),
+            ] {
                 let w = test_archive();
                 let mut child = batch(
                     if child_id_first { "a-child" } else { "z-child" },
@@ -1714,7 +1752,7 @@ fn inputs_that_only_name_a_session_share_it_without_waiting_for_a_commit() {
     let readings = ["first-side", "second-side"]
         .into_iter()
         .map(|input| {
-            let mut b = batch(input, 0, 0, vec![], &[]);
+            let mut b = batch(input, Route::Live, 0, vec![], &[]);
             b.parse[0].output.events.push(polylogue_model::Event {
                 at_quality: polylogue_model::TimeQuality::Unknown,
                 at_precision: None,

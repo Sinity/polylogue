@@ -245,12 +245,14 @@ fn sparse_original_ordinals_and_hidden_current_projection_never_fall_back_to_old
         sessions: vec![Session::new(call.session.clone(), SessionKind::Main)],
         messages: vec![
             MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
                 end: 1,
                 message: call.clone(),
             },
             MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 1,
                 end: 2,

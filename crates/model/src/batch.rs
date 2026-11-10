@@ -173,8 +173,8 @@ pub struct FragmentRow {
 /// byte range covers every record the message was built from. The same
 /// message at the same offset may be sent again, longer (a response still
 /// being written); the writer replaces it. At another offset or in another
-/// input it is another version; the writer keeps every version and prefers
-/// one.
+/// input it is another version; the writer keeps every version and composes
+/// the shown message from them field group by field group.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct MessageRow {
     pub offset: u64,
@@ -182,7 +182,22 @@ pub struct MessageRow {
     /// Whether the message's ID came from the source or from its content.
     #[serde(default, skip_serializing_if = "IdKind::is_native")]
     pub id_kind: IdKind,
+    /// Read from the page's text rather than the provider's data: partial
+    /// fidelity, outranked by every other route ([`crate::Route::PageText`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub page_text: bool,
     pub message: Message,
+}
+
+impl MessageRow {
+    /// The row's route, from its input's route.
+    pub fn route(&self, input: crate::Route) -> crate::Route {
+        if self.page_text {
+            crate::Route::PageText
+        } else {
+            input
+        }
+    }
 }
 
 /// Where a message's ID came from. A content ID names a message by what it

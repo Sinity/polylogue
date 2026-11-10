@@ -216,6 +216,7 @@ impl DocumentParser for Antigravity {
                 *occurrence += 1;
                 let position = sink.position();
                 sink.out.messages.push(MessageRow {
+                    page_text: false,
                     id_kind: polylogue_model::IdKind::Native,
                     offset: position,
                     end: position + 1,

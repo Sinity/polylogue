@@ -188,6 +188,7 @@ impl ExportParser for GeminiApp {
         for row in rows {
             let offset = sink.position();
             sink.out.messages.push(MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Content,
                 offset,
                 end: offset + 1,

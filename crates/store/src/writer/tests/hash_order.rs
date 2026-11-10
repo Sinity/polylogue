@@ -71,7 +71,10 @@ fn version_hash_ignores_nested_json_member_order() {
     let mut counts = Vec::new();
     for prepared in [false, true] {
         let w = test_archive();
-        for (input, rank, message) in [("first", 0, first.clone()), ("second", 1, second.clone())] {
+        for (input, rank, message) in [
+            ("first", Route::Live, first.clone()),
+            ("second", Route::Capture, second.clone()),
+        ] {
             let mut b = batch(input, rank, 0, vec![row(1, message)], &["hash-order"]);
             if prepared {
                 b.parse[0].prepare();
@@ -126,8 +129,8 @@ fn distinct_structured_values_remain_inspectable_versions() {
         assert_ne!(first, different);
         let w = test_archive();
         for (input, rank, message) in [
-            ("first", 0, first.clone()),
-            ("different", 1, different.clone()),
+            ("first", Route::Live, first.clone()),
+            ("different", Route::Capture, different.clone()),
         ] {
             let mut b = batch(input, rank, 0, vec![row(1, message)], &["hash-order"]);
             if prepared {

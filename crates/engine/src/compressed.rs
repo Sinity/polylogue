@@ -251,7 +251,7 @@ impl Engine {
                             InputKey {
                                 id: raw_id.clone(),
                                 format: found.origin.name.into(),
-                                arrival_rank: 2,
+                                route: found.origin.route.imported(),
                             },
                             observed.clone(),
                             polylogue_store::primary::RawStreamRole::ProviderBytes,
@@ -313,7 +313,7 @@ impl Engine {
                 InputKey {
                     id: id.clone(),
                     format: origin.name.into(),
-                    arrival_rank: origin.arrival.rank(),
+                    route: origin.route,
                 },
                 observed.clone(),
                 role,

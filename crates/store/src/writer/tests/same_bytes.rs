@@ -17,7 +17,7 @@ fn document(body: &str) -> Document {
 /// Chain `number` of input `doc`, holding `fill` bytes and, when `parsed`,
 /// its reading: one document named by those bytes.
 fn chain(w: &TestArchive, number: u64, fill: u8, parsed: bool) {
-    let mut batch = batch("doc", 0, 0, Vec::new(), &[]);
+    let mut batch = batch("doc", Route::Live, 0, Vec::new(), &[]);
     batch.input.format = "claude-ai".into();
     if number > 1 {
         batch.change = Change::Rewritten;

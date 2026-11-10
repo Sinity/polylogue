@@ -72,7 +72,7 @@ fn job(
         input: polylogue_store::InputKey {
             id: engine.location_id(path),
             format: origin.name.into(),
-            arrival_rank: origin.arrival.rank(),
+            route: origin.route,
         },
         change: polylogue_store::Change::First,
         observation: Some(engine.observation(
