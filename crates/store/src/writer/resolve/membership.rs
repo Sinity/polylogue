@@ -73,6 +73,20 @@ trait Member {
     fn chain(&self) -> i64;
 }
 
+macro_rules! members {
+    ($($kind:ty),*) => {$(
+        impl Member for $kind {
+            fn input(&self) -> i64 {
+                self.input
+            }
+            fn chain(&self) -> i64 {
+                self.chain
+            }
+        }
+    )*};
+}
+members!(MessageMember, DocumentMember, ValueMember);
+
 /// Every input chain's reading of each item of one kind, and the items a
 /// step touched.
 struct Table<M> {
@@ -158,14 +172,6 @@ struct MessageMember {
     /// The message is named by its content, not by the source.
     content: bool,
 }
-impl Member for MessageMember {
-    fn input(&self) -> i64 {
-        self.input
-    }
-    fn chain(&self) -> i64 {
-        self.chain
-    }
-}
 
 #[derive(Clone)]
 struct DocumentMember {
@@ -177,14 +183,6 @@ struct DocumentMember {
     route: Route,
     hash: Vec<u8>,
     time: Option<Timestamp>,
-}
-impl Member for DocumentMember {
-    fn input(&self) -> i64 {
-        self.input
-    }
-    fn chain(&self) -> i64 {
-        self.chain
-    }
 }
 
 /// An event's or link's reading: a value shared by hash.
@@ -199,30 +197,14 @@ struct ValueMember {
     body: Vec<u8>,
     event: Option<EventChoice>,
 }
-impl Member for ValueMember {
-    fn input(&self) -> i64 {
-        self.input
-    }
-    fn chain(&self) -> i64 {
-        self.chain
-    }
-}
 
-fn route_of(name: String) -> rusqlite::Result<Route> {
-    Route::from_name(&name).ok_or_else(|| {
+/// A closed-set value stored by its name.
+fn named<T: polylogue_model::StoredName>(name: String) -> rusqlite::Result<T> {
+    T::from_name(&name).ok_or_else(|| {
         rusqlite::Error::FromSqlConversionFailure(
             0,
             rusqlite::types::Type::Text,
-            format!("unknown route {name}").into(),
-        )
-    })
-}
-fn completion_of(name: String) -> rusqlite::Result<Completion> {
-    Completion::from_name(&name).ok_or_else(|| {
-        rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Text,
-            format!("unknown completion {name}").into(),
+            format!("unknown stored name {name}").into(),
         )
     })
 }
@@ -312,7 +294,7 @@ fn load_message(
             |r| {
                 Ok(Shown {
                     hash: r.get(0)?,
-                    route: route_of(r.get(1)?)?,
+                    route: named(r.get(1)?)?,
                     session: r.get(2)?,
                     layout: r.get(3)?,
                     routes: Vec::new(),
@@ -361,8 +343,8 @@ fn load_message(
                     end: r.get(3)?,
                     session: r.get(4)?,
                     main: r.get(5)?,
-                    completion: completion_of(r.get(6)?)?,
-                    route: route_of(r.get(7)?)?,
+                    completion: named(r.get(6)?)?,
+                    route: named(r.get(7)?)?,
                     seq: r.get(8)?,
                     position: r.get(9)?,
                     hash: r.get(10)?,
@@ -392,7 +374,7 @@ fn load_document(index: &Connection, pk: i64) -> Result<Vec<DocumentMember>> {
                 chain: r.get(1)?,
                 start: r.get(2)?,
                 end: r.get(3)?,
-                route: route_of(r.get(4)?)?,
+                route: named(r.get(4)?)?,
                 hash: r.get(5)?,
                 time: crate::encoding::read_time(r, 6)?.0,
             })
@@ -408,7 +390,7 @@ fn load_event(index: &Connection, pk: i64) -> Result<Vec<ValueMember>> {
                 input: r.get(0)?,
                 input_id: r.get(12)?,
                 chain: r.get(1)?,
-                route: route_of(r.get(2)?)?,
+                route: named(r.get(2)?)?,
                 value_pk: r.get(3)?,
                 hash: r.get(4)?,
                 body: Vec::new(),
@@ -441,7 +423,7 @@ fn load_link(index: &Connection, pk: i64) -> Result<Vec<ValueMember>> {
                 input: r.get(0)?,
                 input_id: r.get(5)?,
                 chain: r.get(1)?,
-                route: route_of(r.get(2)?)?,
+                route: named(r.get(2)?)?,
                 value_pk: r.get(3)?,
                 hash: r.get(4)?,
                 body: Vec::new(),
