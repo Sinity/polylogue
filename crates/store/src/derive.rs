@@ -14,6 +14,10 @@
 //! A row-class derivation computes a value of one row alone (a message's
 //! cost, a shell call's normalized command). The writer writes it with the
 //! row by the same function, so it runs here only when its version moves.
+//! A fold-class derivation (the session counts) is kept by schema triggers
+//! in the transaction of each change to the rows it folds, including the
+//! changes this step makes to duplicates and the active path, so it too
+//! runs here only when its version moves or for a session it never ran on.
 //! A first build and an incremental one derive the same rows from the same
 //! records. Replacing a reading recomputes the derived rows it changes.
 
@@ -59,6 +63,10 @@ enum Class {
     /// One row's value, written by the writer with the row: derived again
     /// only when its version moves.
     Row,
+    /// A session value that schema triggers keep from every change to the
+    /// rows it folds, in the transaction of the change: derived again only
+    /// when its version moves.
+    Fold,
     /// A value of the whole session: derived again whenever the session's
     /// rows changed.
     Session,

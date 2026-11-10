@@ -106,3 +106,113 @@ fn stored_counts_match_the_shown_path_and_action_population() {
         assert_eq!(stored, computed, "{column}");
     }
 }
+
+/// The stored counts of `session` and the full recompute over its rows.
+fn stored_and_recomputed(w: &crate::fixture::writer::WriterArchive, session: &str) -> (Json, Json) {
+    let pool = crate::ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let conn = reader.conn().unwrap();
+    let pk: i64 = conn
+        .query_row(
+            "SELECT pk FROM session WHERE id = ?1",
+            [format!("claude-code:{session}")],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let stored = serde_json::to_value(read(conn, pk, true).unwrap()).unwrap();
+    let recomputed = serde_json::to_value(compute(conn, pk).unwrap()).unwrap();
+    (stored, recomputed)
+}
+
+use polylogue_model::Json;
+
+#[test]
+fn fold_after_append_equals_full_recompute() {
+    use crate::fixture::writer::{WriterArchive, bash, message, prose, sid};
+    use polylogue_model::{Block, Event, Output, Role, Session, SessionKind, TimeQuality};
+    let mut w = WriterArchive::new();
+    let mut seen = Vec::new();
+    let mut check = |w: &WriterArchive, stage: &str| {
+        let (stored, recomputed) = stored_and_recomputed(w, "s");
+        assert_eq!(stored, recomputed, "{stage}");
+        seen.push(stored);
+    };
+    let answer = |n: u32, at: i64, text: &str| {
+        message(
+            &format!("a{n}"),
+            "s",
+            Role::Assistant,
+            at,
+            vec![
+                Block::Thinking {
+                    text: Some("considering".into()),
+                    signature: None,
+                    redacted: false,
+                },
+                Block::Text { text: text.into() },
+            ],
+        )
+    };
+    // Appends: a prompt, an answer with thinking, a call without its result.
+    w.write("s", prose("s", 1, 1_000, "one two three"));
+    check(&w, "first prompt");
+    w.write("s", vec![answer(1, 2_000, "four five")]);
+    check(&w, "append");
+    let mut call = bash("s", 1, 3_000, "cargo test", false, "exit 101");
+    let result = call.pop().unwrap();
+    w.write("s", call);
+    check(&w, "call without result");
+    // A late result: the call's outcome changes in a later transaction.
+    w.write("s", vec![result]);
+    check(&w, "late result");
+    // A compaction and a new active-path marker: every message but the
+    // marked leaf leaves the path in the derive step.
+    let event = |kind: &str, after: Option<&str>| Event {
+        session: Some(sid("s")),
+        kind: kind.into(),
+        at: None,
+        at_quality: TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
+        after: after.map(|id| polylogue_model::MessageId::parse(id).unwrap()),
+        range: None,
+        data: Json::Null,
+    };
+    let offset = w.offset();
+    w.write_output(
+        "input-s",
+        "claude-code",
+        "/p/s",
+        Output {
+            sessions: vec![Session::new(sid("s"), SessionKind::Main)],
+            events: vec![
+                event("compaction", None),
+                event("active_leaf", Some("claude-code:s-a1")),
+            ],
+            ..Output::default()
+        },
+        2,
+    );
+    assert!(w.offset() > offset);
+    w.writer.derive().unwrap();
+    check(&w, "compaction and new marker");
+    // A rewrite: a snapshot replaces the answer's text.
+    w.write_snapshot("s", vec![answer(1, 2_000, "a longer replacement answer")]);
+    check(&w, "rewrite");
+    // A new input states the same session's prompt again.
+    w.write_from(
+        "input-copy",
+        Session::new(sid("s"), SessionKind::Main),
+        prose("s", 1, 1_000, "one two three"),
+    );
+    check(&w, "new input");
+    w.write_from(
+        "input-copy",
+        Session::new(sid("s"), SessionKind::Main),
+        prose("s", 9, 9_000, "a prompt only the copy has"),
+    );
+    check(&w, "append to the new input");
+    // The stages changed the counts, so agreement is not of unchanged values.
+    seen.dedup();
+    assert!(seen.len() >= 6, "{seen:?}");
+}
