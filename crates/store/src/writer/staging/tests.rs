@@ -307,3 +307,42 @@ fn a_late_encoding_refusal_publishes_no_group_and_reopen_can_retry_original_byte
         assert_eq!(restored, body);
     }
 }
+
+#[test]
+fn an_equal_length_change_to_a_staged_file_is_refused_at_append() {
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    let body = b"synthetic staged source".as_slice();
+    let prepared = archive.prepare_bytes(body).unwrap();
+    let mut item = batch(&prepared.hash().to_string(), prepared.len());
+    item.new_blob = Some(NewBlob {
+        hash: prepared.hash(),
+        size: prepared.len(),
+    });
+    // One encoded byte changes and the length stays: only the append's
+    // encoded digest can see it.
+    let path = prepared.body().unwrap().path.unwrap();
+    let mut encoded = std::fs::read(&path).unwrap();
+    encoded[0] ^= 1;
+    std::fs::write(&path, &encoded).unwrap();
+    let results = writer
+        .sender()
+        .unwrap()
+        .store_group(
+            vec![crate::staging::PreparedBatch {
+                batch: item,
+                files: vec![prepared],
+            }],
+            Arc::new(archive.blobs().unwrap()),
+        )
+        .unwrap();
+    assert!(results[0].is_err());
+    assert!(matches!(
+        archive
+            .blobs()
+            .unwrap()
+            .extent(&hashed_blobs::Hash::of(body)),
+        Err(StoreError::NotFound(_))
+    ));
+}
