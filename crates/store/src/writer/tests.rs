@@ -5,6 +5,7 @@ use polylogue_model::{
     Usage,
 };
 
+mod append_cost;
 mod assertions;
 mod empty_source;
 mod extent_checkpoint;
