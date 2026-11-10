@@ -924,3 +924,112 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     );
     assert!(changed() > before);
 }
+
+/// The totals `status` reads, counted again from the rows.
+fn assert_totals_equal_a_recount(w: &TestArchive) {
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let r = pool.reader().unwrap();
+    let status = r.status().unwrap();
+    let count = |sql: &str| r.query(sql, &[]).unwrap()[0]["n"].as_u64().unwrap();
+    let parse_states: std::collections::BTreeMap<String, u64> = r
+        .query(
+            "SELECT status, count(*) AS n FROM parse_state GROUP BY status",
+            &[],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| {
+            (
+                row["status"].as_str().unwrap().to_owned(),
+                row["n"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    let unused: Vec<(String, u64)> = r
+        .query(
+            "SELECT what, sum(count) AS n FROM unused GROUP BY what
+             ORDER BY n DESC, what LIMIT 20",
+            &[],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| {
+            (
+                row["what"].as_str().unwrap().to_owned(),
+                row["n"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(status.parse_states, parse_states);
+    assert_eq!(status.unused, unused);
+    assert_eq!(
+        status.search_pending,
+        count("SELECT count(*) AS n FROM search_pending")
+    );
+    assert_eq!(status.sessions, count("SELECT count(*) AS n FROM session"));
+    assert_eq!(status.messages, count("SELECT count(*) AS n FROM message"));
+    assert_eq!(
+        status.documents,
+        count("SELECT count(*) AS n FROM document")
+    );
+    assert_eq!(
+        status.tool_calls,
+        count("SELECT count(*) AS n FROM tool_call")
+    );
+}
+
+#[test]
+fn status_totals_equal_a_recount_across_imports_reparses_and_retractions() {
+    let w = test_archive();
+    // First readings, with records set aside and fields left unread.
+    for mut b in fixture(false) {
+        b.parse[0].counts.records += 1;
+        b.parse[0]
+            .counts
+            .add("progress", &RecordOutcome::skipped("display only"));
+        b.parse[0].counts.unread("user", "extra");
+        for step in &mut b.parse {
+            step.prepare();
+        }
+        let bytes = if b.input.arrival_rank == 2 {
+            EXPORT_RECORD.as_slice()
+        } else {
+            SOURCE_RECORD.as_slice()
+        };
+        w.store_reading(b, Some(bytes)).unwrap();
+        assert!(w.writer.flush().unwrap().errors.is_empty());
+        assert_totals_equal_a_recount(&w);
+    }
+    // A live append adds to its chain's counts.
+    let mut append = batch(
+        "a-main-file",
+        0,
+        100,
+        vec![row(
+            110,
+            text_message("appended", "main", Role::User, "later", Some("end_turn")),
+        )],
+        &["main"],
+    );
+    append.parse[0].counts.records += 1;
+    append.parse[0]
+        .counts
+        .add("progress", &RecordOutcome::skipped("display only"));
+    append.parse[0].prepare();
+    w.store_reading(append, Some(&SOURCE_RECORD)).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    assert_totals_equal_a_recount(&w);
+    // Re-parses retract each chain's rows and counts and write the new reading's.
+    for mut b in fixture(true) {
+        let mut reading = ChainReading::new().unwrap();
+        reading.push(&mut b.parse[0]).unwrap();
+        w.writer
+            .sender()
+            .unwrap()
+            .replace_chain(b.input, 1, b.length, reading)
+            .unwrap();
+        assert_totals_equal_a_recount(&w);
+    }
+    w.writer.derive().unwrap();
+    assert_totals_equal_a_recount(&w);
+}

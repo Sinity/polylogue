@@ -1220,15 +1220,14 @@ impl Reader<'_> {
         let count =
             |sql: &str| -> Result<u64> { Ok(c.query_row(sql, [], |r| r.get::<_, i64>(0))? as u64) };
         let mut parse_states = BTreeMap::new();
-        let mut stmt =
-            c.prepare_cached("SELECT status, COUNT(*) FROM parse_state GROUP BY status")?;
+        let mut stmt = c.prepare_cached("SELECT status, n FROM parse_status_count WHERE n > 0")?;
         for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
             let (s, n) = row?;
             parse_states.insert(s, n as u64);
         }
         let mut unused = Vec::new();
         let mut stmt = c.prepare_cached(
-            "SELECT what, SUM(count) AS n FROM unused GROUP BY what ORDER BY n DESC LIMIT 20",
+            "SELECT what, n FROM unused_count WHERE n > 0 ORDER BY n DESC, what LIMIT 20",
         )?;
         for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
             let (w, n) = row?;
@@ -1244,7 +1243,7 @@ impl Reader<'_> {
             stored_bytes: count("SELECT n FROM source_row_count WHERE name = 'stored_bytes'")?,
             parse_states,
             unused,
-            search_pending: count("SELECT COUNT(*) FROM search_pending")?,
+            search_pending: count("SELECT n FROM main.row_count WHERE name = 'search_pending'")?,
             capture_coverage: self.all_capture_coverage()?,
         })
     }
