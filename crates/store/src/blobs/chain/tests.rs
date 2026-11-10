@@ -12,6 +12,7 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         let catalog = dir.path().join("archive.db");
         let conn = Connection::open(&catalog).unwrap();
+        conn.pragma_update(None, "journal_mode", "wal").unwrap();
         crate::schema::ensure_archive(&conn).unwrap();
         conn.execute(
             "INSERT INTO input(id,format) VALUES ('input','synthetic')",
@@ -68,8 +69,14 @@ impl Fixture {
             .map(|extent| BlobHash(extent.hash.0))
             .collect()
     }
+    fn source(&self) -> ChainSource {
+        ChainSource {
+            path: self._dir.path().join("archive.db"),
+            tables: "",
+        }
+    }
     fn load(&self, length: u64) -> StoredChain {
-        StoredChain::load(&self.conn, "", "input", 1, length).unwrap()
+        StoredChain::load(&self.source(), "input", 1, length).unwrap()
     }
 }
 
@@ -205,7 +212,7 @@ fn invalid_extent_metadata_refuses_capture_without_panicking() {
             .execute(&format!("UPDATE extent SET {column}=?1"), [value])
             .unwrap();
         // A zero-length extent is outside the requested range and leaves a gap.
-        let result = StoredChain::load(&w.conn, "", "input", 1, 3);
+        let result = StoredChain::load(&w.source(), "input", 1, 3);
         if value == 0 {
             assert!(result.unwrap().read_range(&w.store, 0, 3).is_err());
         } else {
@@ -243,7 +250,7 @@ fn overlapping_extents_refuse_instead_of_selecting_a_different_source_by_cursor_
     let w = Fixture::new(6);
     w.add(0, 4, 0, b"abcd");
     w.add(3, 3, 0, b"def");
-    assert!(StoredChain::load(&w.conn, "", "input", 1, 6).is_err());
+    assert!(StoredChain::load(&w.source(), "input", 1, 6).is_err());
 }
 
 #[test]
@@ -298,5 +305,53 @@ fn a_poisoned_extent_list_returns_a_typed_error() {
     assert!(matches!(error, StoreError::Invalid(text) if text.contains("lock poisoned")));
 }
 
-#[cfg(target_os = "linux")]
-mod scratch;
+#[test]
+fn chain_read_creates_no_database() {
+    // Enough extents that a copy of the list would spill out of any cache.
+    let w = Fixture::new(32768 * 256);
+    let bytes: Vec<_> = (0u64..64)
+        .flat_map(|n| blake3::hash(&n.to_le_bytes()).as_bytes().to_vec())
+        .collect();
+    let hash = w.add(0, 256, 0, &bytes[..256]);
+    {
+        let tx = w.conn.unchecked_transaction().unwrap();
+        let mut insert = tx
+            .prepare("INSERT INTO extent(input,chain,offset,length,blob,blob_offset,commit_seq) VALUES ('input',1,?1,256,?2,0,1)")
+            .unwrap();
+        for n in 1u64..32768 {
+            insert
+                .execute(params![(n * 256) as i64, hash.0.as_slice()])
+                .unwrap();
+        }
+        drop(insert);
+        tx.commit().unwrap();
+    }
+    let chain = w.load(32768 * 256);
+    let mut all = Vec::new();
+    chain
+        .reader(Arc::clone(&w.store))
+        .read_to_end(&mut all)
+        .unwrap();
+    assert_eq!(all.len(), 32768 * 256);
+    assert_eq!(&all[256 * 100..256 * 101], &bytes[..256]);
+    // The chain reads the archive itself, read-only: no database of its own,
+    // and nothing in the temporary one.
+    let handle = chain.extents.as_ref().unwrap().connection();
+    let databases: Vec<(String, String)> = handle
+        .prepare("PRAGMA database_list")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let archive = w._dir.path().join("archive.db").canonicalize().unwrap();
+    assert_eq!(
+        databases,
+        vec![("main".to_owned(), archive.display().to_string())]
+    );
+    assert!(handle.is_readonly("main").unwrap());
+    let temporary: i64 = handle
+        .query_row("PRAGMA temp.page_count", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(temporary, 0);
+}

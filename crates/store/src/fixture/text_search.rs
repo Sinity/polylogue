@@ -30,7 +30,12 @@ pub fn stored_blobs_containing(archive: &crate::Archive, needle: &str) -> Result
         .collect::<rusqlite::Result<_>>()?;
     let mut out = BTreeSet::new();
     for (input, chain, length) in chains {
-        let bytes = crate::blobs::StoredChain::load(&conn, "", &input, chain, length as u64)?;
+        let bytes = crate::blobs::StoredChain::load(
+            &crate::blobs::ChainSource::of(archive),
+            &input,
+            chain,
+            length as u64,
+        )?;
         let mut all = Vec::new();
         bytes.reader(Arc::clone(&store)).read_to_end(&mut all)?;
         for spelling in spellings(needle)? {
