@@ -4,10 +4,10 @@
 
 use crate::archive::{Archive, open_read};
 use crate::blobs::FileFacts;
-use crate::encoding::{NamedColumns, restore_text, unpack_block, unpack_text};
+use crate::encoding::{Columns, restore_text, unpack_block, unpack_text};
 use crate::{Result, StoreError};
 use polylogue_model::{
-    Block, Message, MessageId, PromptKind, Role, Session, SessionId, Timestamp, Usage,
+    Block, Message, MessageId, PromptKind, Role, Session, SessionId, Usage,
     bundle::MessageProjection,
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -481,10 +481,6 @@ impl rusqlite::ToSql for SqlValue {
             SqlValue::Null => ToSqlOutput::Borrowed(ValueRef::Null),
         })
     }
-}
-
-pub(crate) fn ts(ms: Option<i64>) -> Option<Timestamp> {
-    ms.and_then(Timestamp::from_unix_ms)
 }
 
 struct MessageContent<'a> {

@@ -22,12 +22,49 @@ macro_rules! check {
     };
 }
 
+/// Every enum declared with `stored_names!` stores, queries and serializes
+/// under one name per variant: `ALL` and `NAMES` line up, `from_name` reads
+/// each name back, and serde writes the same name.
 #[test]
-fn stored_names_are_the_serde_names() {
+fn stored_name_round_trips_for_every_enum() {
+    use crate::assertion::{AssertionKind, LinkRole};
+    use crate::authored::ExecutionEligibility;
+    use crate::batch::IdKind;
+    use crate::block::CallOutcome;
+    use crate::document::{DocumentAuthorship, DocumentPurpose};
+    use crate::live::channel::{Channel as LiveChannel, HostProtocol};
+    use crate::live::{Activity, Aspect, LiveState, Stall, WaitingOn};
+    use crate::message::WrittenBy;
+    use crate::settings::EmbeddingProvider;
+    use crate::variant::{VariantKind, VariantRelation};
+    use crate::{DeliveryEvent, DeliveryOutcome, DeliverySender};
     check!(SessionKind);
     check!(Role);
     check!(PromptKind);
+    check!(WrittenBy);
     check!(ToolAction);
+    check!(CallOutcome);
+    check!(BlockKind);
+    check!(AssertionKind);
+    check!(LinkRole);
+    check!(crate::authorship::Channel);
+    check!(ExecutionEligibility);
+    check!(IdKind);
+    check!(DocumentPurpose);
+    check!(DocumentAuthorship);
+    check!(DeliveryEvent);
+    check!(DeliverySender);
+    check!(DeliveryOutcome);
+    check!(LiveState);
+    check!(Activity);
+    check!(WaitingOn);
+    check!(Stall);
+    check!(Aspect);
+    check!(LiveChannel);
+    check!(HostProtocol);
+    check!(EmbeddingProvider);
+    check!(VariantKind);
+    check!(VariantRelation);
 }
 
 #[test]

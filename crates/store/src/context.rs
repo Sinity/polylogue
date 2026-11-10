@@ -2,6 +2,7 @@
 //! session did, whether sessions are hidden, a session's own prompts, what
 //! it left open, earlier deliveries and settings.
 
+use crate::encoding::Columns;
 use crate::{Reader, Result};
 use polylogue_model::Timestamp;
 
@@ -165,7 +166,7 @@ impl Reader<'_> {
         let rows = stmt.query_map([session], |r| {
             Ok((
                 r.get::<_, String>(0)?,
-                r.get::<_, Option<i64>>(1)?,
+                r.optional_time_ms(1)?,
                 r.get::<_, Vec<u8>>(2)?,
             ))
         })?;
@@ -182,7 +183,7 @@ impl Reader<'_> {
                 _ => out.push(Prompt {
                     written_by: "human".into(),
                     message_id,
-                    at: at.and_then(Timestamp::from_unix_ms),
+                    at,
                     text,
                 }),
             }
@@ -201,7 +202,7 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let selected = conn.prepare_cached(
             "SELECT m.pk,m.id,m.at,m.written_by FROM session s JOIN message m INDEXED BY message_session ON m.session_pk=s.pk WHERE s.id=?1 AND m.duplicate_of IS NULL AND COALESCE(m.on_active_path,1)=1 AND (m.written_by='human' OR (m.role='user' AND m.written_by='unknown')) AND COALESCE(m.prompt_kind,'prose')='prose' ORDER BY m.order_input_id DESC,m.seq DESC,m.record_position DESC,m.id DESC LIMIT 1"
-        )?.query_row([session], |row| Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<i64>>(2)?,row.get::<_,String>(3)?))).optional()?;
+        )?.query_row([session], |row| Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?,row.optional_time_ms(2)?,row.get::<_,String>(3)?))).optional()?;
         let Some((pk, message_id, at, written_by)) = selected else {
             return Ok(None);
         };
@@ -215,7 +216,7 @@ impl Reader<'_> {
         Ok(Some(Prompt {
             written_by,
             message_id,
-            at: at.and_then(Timestamp::from_unix_ms),
+            at,
             text: parts.join("\n"),
         }))
     }
@@ -305,9 +306,8 @@ impl Reader<'_> {
                 event: r.get(1)?,
                 sender: r.get(2)?,
                 recipient_id: r.get(3)?,
-                at: Timestamp::from_unix_ms(r.get(4)?)
-                    .unwrap_or_else(|| Timestamp::from_unix_ms(0).expect("epoch")),
-                bytes: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
+                at: r.time_ms(4)?,
+                bytes: r.get(5)?,
                 seq: r.get(6)?,
                 events: r
                     .get::<_, Option<String>>(7)?

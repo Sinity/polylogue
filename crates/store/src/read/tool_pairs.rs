@@ -23,8 +23,6 @@ struct BlockFact {
 impl BlockFact {
     fn read(row: &Row<'_>, offset: usize) -> Result<Self> {
         let ordinal: String = row.get(offset + 2)?;
-        let message: String = row.get(offset + 3)?;
-        let session: String = row.get(offset + 4)?;
         Ok(Self {
             pk: row.get(offset)?,
             index: usize::try_from(row.get::<_, i64>(offset + 1)?)
@@ -32,8 +30,8 @@ impl BlockFact {
             ordinal: ordinal
                 .parse()
                 .map_err(|_| invalid("invalid original block ordinal"))?,
-            message: MessageId::parse(&message).map_err(|error| invalid(&error.to_string()))?,
-            session: SessionId::parse(&session).map_err(|error| invalid(&error.to_string()))?,
+            message: crate::encoding::Columns::id(row, offset + 3)?,
+            session: crate::encoding::Columns::id(row, offset + 4)?,
             call_id: row.get(offset + 5)?,
             version: row.get(offset + 6)?,
             layout: row.get(offset + 7)?,

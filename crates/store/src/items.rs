@@ -8,7 +8,7 @@
 //! the difference is only new units at the end, `append_seq` moves; when an
 //! indexed unit changed, moved or disappeared, or the links that compose the
 //! session changed, `rewrite_version` moves and outstanding cursors go stale.
-use crate::encoding::{NamedColumns, restore_text, unpack_block, unpack_text};
+use crate::encoding::{Columns, restore_text, unpack_block, unpack_text};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
     Message, MessageId, PromptKind, Role, SessionId, Usage,
@@ -235,11 +235,11 @@ fn message_body(conn: &Connection, pk: i64, id: &str) -> Result<(Message, Vec<u6
         )?
         .query_row([pk], |row| {
             Ok((
-                row.get::<_, String>(0)?,
+                row.id::<SessionId>(0)?,
                 row.name::<Role>(1)?,
                 row.optional_name::<PromptKind>(2)?,
                 row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<i64>>(4)?,
+                row.optional_time_ms(4)?,
                 [
                     row.get::<_, Option<u64>>(5)?,
                     row.get::<_, Option<u64>>(6)?,
@@ -261,18 +261,14 @@ fn message_body(conn: &Connection, pk: i64, id: &str) -> Result<(Message, Vec<u6
             restore_text(&mut block, unpack_text(&text)?);
         }
         blocks.push(block);
-        ordinals.push(
-            u64::try_from(row.get::<_, i64>(2)?)
-                .map_err(|_| invalid("a block has a negative position"))?,
-        );
+        ordinals.push(row.get::<_, u64>(2)?);
     }
     let message = Message {
         id,
-        session: SessionId::parse(&session)
-            .map_err(|_| invalid("its session ID does not parse"))?,
+        session,
         parent: None,
         role,
-        at: crate::read::ts(at),
+        at,
         at_quality: polylogue_model::TimeQuality::Unknown,
         at_precision: None,
         at_until: None,

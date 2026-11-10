@@ -85,8 +85,7 @@ impl Reader<'_> {
         let mut rows = statement.query(rusqlite::params_from_iter(&params))?;
         while let Some(row) = rows.next()? {
             self.check()?;
-            let id = MessageId::parse(&row.get::<_, String>(0)?)
-                .map_err(|error| StoreError::Invalid(error.to_string()))?;
+            let id: MessageId = crate::encoding::Columns::id(row, 0)?;
             if visit(id)?.is_break() {
                 break;
             }

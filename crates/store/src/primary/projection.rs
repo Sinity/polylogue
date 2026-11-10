@@ -647,7 +647,7 @@ fn plan(index: &Connection) -> Result<Plan> {
         let mut length = index.query_row(
             "SELECT coalesce(max(length),0) FROM source_revision WHERE input=?1 AND chain=?2",
             params![input, chain],
-            |row| unsigned_column(row, 0),
+            |row| row.get::<_, u64>(0),
         )?;
         // Appends on the same immutable chain create a new length-bound export
         // reading instance. Select its actual reset control in original owner
@@ -711,7 +711,7 @@ fn plan(index: &Connection) -> Result<Plan> {
         while let Some(row) = rows.next()? {
             let bytes: Vec<u8> = row.get(0)?;
             let product: Product = unpacked(&bytes)?;
-            let admitted = unsigned_column(row, 2)?;
+            let admitted = row.get::<_, u64>(2)?;
             if admitted == 0 {
                 return Err(StoreError::Invalid(
                     "a canonical product has no positive admission receipt".into(),
@@ -771,7 +771,7 @@ fn plan(index: &Connection) -> Result<Plan> {
     for hash in needed {
         let size=match new_materials.get(&hash) {
             Some(size)=>Some(*size),
-            None=>index.query_row("SELECT m.length FROM source_material m JOIN primary_next f ON f.event=m.event WHERE f.state='live' AND m.hash=?1 LIMIT 1",[&hash.0[..]],|row|unsigned_column(row,0)).optional()?,
+            None=>index.query_row("SELECT m.length FROM source_material m JOIN primary_next f ON f.event=m.event WHERE f.state='live' AND m.hash=?1 LIMIT 1",[&hash.0[..]],|row|row.get::<_, u64>(0)).optional()?,
         };
         out.available.insert(hash, size);
     }
@@ -819,11 +819,6 @@ fn store_material(tx: &Connection, event: &str, product: &Product) -> Result<()>
     tx.execute("INSERT OR REPLACE INTO source_material(id,event,input,chain,offset,length,hash,source_length,blob_offset) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![material.id,event,input,chain,offset,length,&material.hash.0[..],source_length,blob_offset])?;
     tx.execute("INSERT INTO source_blob(hash,size,stored_size,storage) VALUES (?1,?2,?3,?4) ON CONFLICT(hash) DO UPDATE SET storage=excluded.storage,stored_size=excluded.stored_size",params![&material.hash.0[..],length,stored,extent.encode()])?;
     Ok(())
-}
-
-fn unsigned_column(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<u64> {
-    let value: i64 = row.get(column)?;
-    u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(column, value))
 }
 
 fn sources(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
@@ -932,7 +927,7 @@ fn queries(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
                 crate::query_objects::apply_object(tx, &object, row.get(1)?)?
             }
             Product::QueryRun { run } => {
-                crate::query_objects::apply_run(tx, &run, row.get(1)?, unsigned_column(row, 2)?)?;
+                crate::query_objects::apply_run(tx, &run, row.get(1)?, row.get::<_, u64>(2)?)?;
             }
             Product::QueryRunOutcome { outcome } => {
                 crate::query_objects::apply_run_outcome(tx, &outcome)?

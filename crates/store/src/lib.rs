@@ -224,7 +224,17 @@ impl From<rusqlite::Error> for StoreError {
         {
             return stopped;
         }
-        Self::Sqlite(error)
+        // A stored value the model cannot read back is invalid stored data,
+        // whichever reader met it; the column error says which column and why.
+        match error {
+            rusqlite::Error::FromSqlConversionFailure(column, _, why) => {
+                Self::Invalid(format!("stored column {column}: {why}"))
+            }
+            rusqlite::Error::IntegralValueOutOfRange(column, value) => {
+                Self::Invalid(format!("stored column {column}: {value} is out of range"))
+            }
+            error => Self::Sqlite(error),
+        }
     }
 }
 
