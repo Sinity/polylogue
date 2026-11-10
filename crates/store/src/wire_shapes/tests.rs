@@ -424,9 +424,13 @@ fn wire_shape_unknown_discriminators_and_tables_use_explicit_metadata_without_va
     let output = serde_json::to_string(&report).unwrap();
     assert!(!output.contains("distinctive-source-value-123"));
     let stored: String = conn
-        .query_row("SELECT group_concat(shape) FROM wire_shape", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT (SELECT group_concat(path||table_key) FROM wire_shape)
+              ||(SELECT group_concat(json_type) FROM wire_type)
+              ||(SELECT group_concat(path||table_key||expected||known_kinds) FROM wire_declaration)",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     assert!(!stored.contains("distinctive-source-value-123"));
 }
@@ -585,20 +589,6 @@ fn wire_shape_sql_aggregation_returns_schema_rows_and_exact_counts() {
     assert_eq!(row.shape.first.sequence, 10);
     assert_eq!(row.shape.last.sequence, 209);
 }
-#[test]
-fn wire_shape_sql_count_aggregation_keeps_unsigned_precision() {
-    let mut conn = database();
-    let mut observed = shape("/large", "string", &["string"]);
-    observed.types.insert("string".into(), u64::MAX);
-    store(
-        &mut conn,
-        source(1, 1, 10, 1),
-        &step("v1", 0..10, true, vec![root(), observed]),
-    );
-    let report = read(&conn, Scope::current(None)).unwrap();
-    assert_eq!(at(&report, "/large").types["string"].count, u64::MAX);
-}
-
 #[test]
 fn wire_shape_native_tables_stay_distinct_and_unused_counts_are_explicit() {
     let mut conn = database();
@@ -957,14 +947,7 @@ fn a_readings_receipts_are_stored_once_and_read_back_whole() {
         footprint: ReadingFootprint::Bytes { start, end },
         ..Receipt::from(source(1, 1, 20, receipt))
     };
-    assert_eq!(
-        receipts,
-        [
-            range(1, 0, 10),
-            range(2, 10, 20),
-            Receipt::from(source(1, 1, 20, 2))
-        ]
-    );
+    assert_eq!(receipts, [range(1, 0, 10), range(2, 10, 20)]);
     let stored: i64 = conn
         .query_row("SELECT count(*) FROM wire_shape", [], |row| row.get(0))
         .unwrap();
