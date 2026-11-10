@@ -550,9 +550,12 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         top: &[Condition],
     ) -> Result<Vec<(String, String)>, QueryError> {
-        // OR and NOT keep the outer defaults: only top-level ANDs expand.
-        let bound = self.saved_defaults(scope, top)?;
-        let named = named_fields(&bound, scope.unit);
+        // OR and NOT keep the outer defaults: only top-level ANDs lift them.
+        if Self::saved_source(top) {
+            return Ok(vec![]);
+        }
+        let bound = top;
+        let named = named_fields(bound, scope.unit);
         let row_reference = bound
             .iter()
             .any(|c| self.is_reference(c, scope.unit) && !self.names_a_session(c, scope.unit));

@@ -257,3 +257,55 @@ fn accepting_preparation_uses_original_native_rows_and_scratch_definitions() {
     )
     .unwrap();
 }
+
+#[test]
+fn hash_prefix_resolves() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(dir.path()).unwrap();
+    let object = polylogue_query::plan::prepare(
+        "sessions where repo:prefixed",
+        &Bindings::default(),
+        |_| Ok(()),
+    )
+    .unwrap()
+    .query_object()
+    .unwrap();
+    let archive = crate::archive::open_write(&fixture.archive.archive_db(), 1).unwrap();
+    crate::query_objects::apply_object(&archive, &object, 1).unwrap();
+    drop(archive);
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let original = reader.conn().unwrap();
+    let full = object.id.to_string();
+    let prepare = |text: &str| {
+        prepare_query_plan_on(
+            original,
+            original,
+            text,
+            &Bindings::default(),
+            None,
+            None,
+            None,
+        )
+    };
+    let by_hash = prepare(&format!("query:{full}")).unwrap();
+    for length in [12, 20, 63] {
+        let by_prefix = prepare(&format!("query:{}", &full[..length])).unwrap();
+        assert_eq!(
+            by_prefix.definitions()[0].question_id,
+            object.id,
+            "{length}"
+        );
+        assert_eq!(by_prefix.question_id(), by_hash.question_id(), "{length}");
+    }
+    // Shorter than 12 characters is not a hash, and no saved query has that name.
+    assert!(prepare(&format!("query:{}", &full[..11])).is_err());
+    // A prefix no retained question starts with is unavailable.
+    let other = if full.starts_with('0') { "1" } else { "0" };
+    assert_eq!(
+        prepare(&format!("query:{other}{}", &full[1..12]))
+            .unwrap_err()
+            .code(),
+        "not_yet_available"
+    );
+}
