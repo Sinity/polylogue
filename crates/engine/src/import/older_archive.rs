@@ -23,7 +23,7 @@ const BYTES_PER_GROUP: u64 = 256 << 20;
 const VECTORS_PER_GROUP: usize = 4096;
 
 /// What became of the rows of one class. `found` is always the sum of the
-/// other four.
+/// other five.
 #[derive(
     Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
@@ -39,6 +39,25 @@ pub struct ClassCount {
     /// Kept only verbatim in the rows input: rows this archive recomputes,
     /// and requests whose effect is carried as a note or setting.
     pub kept: u64,
+    /// Rows of an input folded into another input of the older archive that
+    /// holds the same file with the same bytes (see [`FoldedInput`]): its
+    /// revisions and extents are that input's, and its observations are
+    /// carried by that input.
+    #[serde(default)]
+    pub folded: u64,
+}
+
+/// An input of the older archive held here as part of another one. The older
+/// format recorded a file reached through two paths (a linked directory, such
+/// as `~/.claude` pointing at `$CLAUDE_CONFIG_DIR`) as one input per path.
+/// When both inputs saw the same file (same machine, device and inode) and
+/// hold the same bytes, this archive keeps one input, as its own capture
+/// does: the input whose path is the file's real path, with every
+/// observation of both, each with the path it was made at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct FoldedInput {
+    pub input: String,
+    pub into: String,
 }
 
 /// One row, or one table's rows, the import did not carry.
@@ -71,6 +90,9 @@ pub struct OlderArchiveReport {
     /// each refused input, with its refusal reason, by its ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refused_inputs: Option<String>,
+    /// Inputs held here as part of another input of the older archive.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folded_inputs: Vec<FoldedInput>,
     /// What a dry run cannot tell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dry_run_limits: Option<String>,
@@ -100,6 +122,74 @@ impl OlderArchiveReport {
     fn keep(&mut self, class: &str, n: u64) {
         keep(&mut self.classes, class, n);
     }
+
+    /// Counts an input folded into `into`, with its revisions and extents.
+    /// Its observations are counted with `into`, which carries them.
+    fn fold(&mut self, input: &older_archive::Input, into: &str) {
+        for (class, n) in [
+            ("input", 1),
+            ("revision", input.revisions.len() as u64),
+            ("extent", input.extents.len() as u64),
+        ] {
+            let count = self.count(class);
+            count.found += n;
+            count.folded += n;
+        }
+        self.folded_inputs.push(FoldedInput {
+            input: input.id.clone(),
+            into: into.to_owned(),
+        });
+    }
+}
+
+/// Which inputs of an older archive are held as part of another.
+#[derive(Default)]
+struct Folds {
+    /// Folded input → the input that holds it.
+    into: HashMap<String, String>,
+    /// Holding input → the observations of the inputs folded into it.
+    carried: HashMap<String, Vec<polylogue_store::input_rows::ObservationRow>>,
+}
+
+/// Whether two inputs hold the same bytes: the same format, revisions and
+/// extents. Revision times are not compared; the folded input's observations
+/// keep when it saw each revision.
+fn same_bytes(a: &older_archive::Input, b: &older_archive::Input) -> bool {
+    a.format == b.format
+        && a.extents == b.extents
+        && a.revisions.len() == b.revisions.len()
+        && a.revisions
+            .iter()
+            .zip(&b.revisions)
+            .all(|(x, y)| (x.number, x.chain, x.length) == (y.number, y.chain, y.length))
+}
+
+/// Whether the folder holding `path` is its real location: no linked
+/// directory on the way. `None` when this machine cannot tell (the folder is
+/// gone, or the path is not a filesystem path).
+fn real_location(path: &str) -> Option<bool> {
+    let parent = Path::new(path).parent()?;
+    if !parent.is_absolute() {
+        return None;
+    }
+    let real = std::fs::canonicalize(parent).ok()?;
+    Some(real == parent)
+}
+
+/// The input that holds a group of inputs of one file: the one last seen at
+/// the file's real path, else the one seen most recently, else the first ID.
+fn holder(members: &[older_archive::Input]) -> usize {
+    fn key(input: &older_archive::Input) -> (bool, i64, std::cmp::Reverse<&str>) {
+        let latest = input.observations.last();
+        (
+            latest.and_then(|o| real_location(&o.path)) == Some(true),
+            latest.map_or(i64::MIN, |o| o.seen_at),
+            std::cmp::Reverse(input.id.as_str()),
+        )
+    }
+    (0..members.len())
+        .max_by_key(|&index| key(&members[index]))
+        .unwrap_or(0)
 }
 
 /// Counts `n` rows of `class` with one outcome; a refusal is listed once,
@@ -361,6 +451,7 @@ impl Engine {
         let mut blobs: HashMap<polylogue_model::BlobHash, BlobState> = HashMap::new();
         let mut cited: BTreeSet<polylogue_model::BlobHash> = BTreeSet::new();
         let mut machines_sent = false;
+        let folds = self.plan_folds(older)?;
         let mut after: Option<String> = None;
         loop {
             let ids = older.input_ids(after.as_deref(), INPUTS_PER_GROUP)?;
@@ -368,10 +459,21 @@ impl Engine {
                 break;
             };
             after = Some(last.clone());
-            let mut inputs = ids
-                .iter()
-                .map(|id| older.input(id))
-                .collect::<polylogue_store::Result<Vec<_>>>()?;
+            let mut inputs = Vec::with_capacity(ids.len());
+            for id in &ids {
+                let mut input = older.input(id)?;
+                if let Some(into) = folds.into.get(id) {
+                    report.fold(&input, into);
+                    continue;
+                }
+                if let Some(carried) = folds.carried.get(id) {
+                    input.observations.extend(carried.iter().cloned());
+                    // Still in the order they were made: the last is the
+                    // input's latest observation.
+                    input.observations.sort_by_key(|o| o.seen_at);
+                }
+                inputs.push(input);
+            }
             // An input this archive does not hold must not land where this
             // archive already watches another input the older archive does
             // not hold either: one file would have two inputs.
@@ -478,6 +580,89 @@ impl Engine {
             )?;
         }
         Ok(())
+    }
+
+    /// Finds the inputs of the older archive that are one file reached
+    /// through two paths, with the same bytes, and which input holds each.
+    /// A group any of whose inputs this archive already holds (an earlier
+    /// import kept them apart) is left as it is.
+    fn plan_folds(&self, older: &OlderArchive) -> Result<Folds, EngineError> {
+        // Inputs linked by a shared file, joined across groups: one input can
+        // have seen several files over time, at one path.
+        let groups = older.same_file_groups()?;
+        let mut parent: HashMap<String, String> = HashMap::new();
+        fn root(parent: &mut HashMap<String, String>, id: &str) -> String {
+            let mut current = id.to_owned();
+            while let Some(next) = parent.get(&current).cloned() {
+                if next == current {
+                    break;
+                }
+                current = next;
+            }
+            parent.insert(id.to_owned(), current.clone());
+            current
+        }
+        for group in &groups {
+            for id in group {
+                parent.entry(id.clone()).or_insert_with(|| id.clone());
+            }
+            let first = root(&mut parent, &group[0]);
+            for id in &group[1..] {
+                let other = root(&mut parent, id);
+                if other != first {
+                    let (keep, join) = if first < other {
+                        (first.clone(), other)
+                    } else {
+                        (other, first.clone())
+                    };
+                    parent.insert(join, keep);
+                }
+            }
+        }
+        let ids: Vec<String> = parent.keys().cloned().collect();
+        let mut components: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for id in ids {
+            let r = root(&mut parent, &id);
+            components.entry(r).or_default().push(id);
+        }
+        let mut folds = Folds::default();
+        let reader = self.reads.reader()?;
+        'component: for mut member_ids in components.into_values() {
+            member_ids.sort();
+            let mut members = Vec::with_capacity(member_ids.len());
+            for id in &member_ids {
+                let input = older.input(id)?;
+                if input.refusal.is_some() {
+                    continue;
+                }
+                members.push(input);
+            }
+            if members.len() < 2 {
+                continue;
+            }
+            let holding = holder(&members);
+            let folding: Vec<usize> = (0..members.len())
+                .filter(|&index| index != holding && same_bytes(&members[index], &members[holding]))
+                .collect();
+            // An earlier import that kept them apart stays as it is.
+            for &index in &folding {
+                if reader.input_progress(&members[index].id)?.is_some() {
+                    continue 'component;
+                }
+            }
+            let mut carried = Vec::new();
+            for &index in &folding {
+                let input = &members[index];
+                folds
+                    .into
+                    .insert(input.id.clone(), members[holding].id.clone());
+                carried.extend(input.observations.iter().cloned());
+            }
+            if !carried.is_empty() {
+                folds.carried.insert(members[holding].id.clone(), carried);
+            }
+        }
+        Ok(folds)
     }
 
     /// Checks one blob and, unless this archive holds it already, prepares

@@ -699,3 +699,68 @@ pub const STANDARD_REFUSALS: [(&str, &str); 3] = [
     ("deliveries", "d3"),
     ("chat_action", "1 rows"),
 ];
+
+/// What [`linked_twins`] wrote.
+pub struct LinkedTwins {
+    pub root: PathBuf,
+    /// The input last seen at the file's real path.
+    pub real: String,
+    /// The input last seen through the linked directory.
+    pub linked: String,
+    pub real_path: String,
+    pub linked_path: String,
+}
+
+/// An older archive holding one file as two inputs, one per path, the way
+/// the older format recorded a file reached through a linked directory: the
+/// same bytes, the same device and inode, observed at `real_dir/one.jsonl`
+/// and at `linked_dir/one.jsonl`, where `linked_dir` links to `real_dir`.
+pub fn linked_twins(root: &Path, real_dir: &Path, linked_dir: &Path) -> LinkedTwins {
+    let b = Builder::create(root, 4);
+    let machine = "0123456789abcdef0123456789abcdef";
+    b.machine(machine, "workstation", 1_000);
+    let bytes = b"{\"line\":1,\"text\":\"one record\"}\n".to_vec();
+    let blob = b.inline_blob(&bytes);
+    let length = bytes.len() as i64;
+    let real = "0190f000-0000-7000-8000-0000000000a1";
+    let linked = "0190f000-0000-7000-8000-0000000000a2";
+    let real_path = real_dir.join("one.jsonl").to_string_lossy().into_owned();
+    let linked_path = linked_dir.join("one.jsonl").to_string_lossy().into_owned();
+    let sql = |statement: &str, values: &[&dyn rusqlite::ToSql]| {
+        b.archive.execute(statement, values).expect(statement);
+    };
+    for (n, id) in [real, linked].into_iter().enumerate() {
+        sql(
+            "INSERT INTO input(id, format) VALUES (?1, 'claude-code')",
+            &[&id],
+        );
+        sql(
+            "INSERT INTO revision(input, number, produced, chain, length, commit_seq)
+             VALUES (?1, 1, 'first', 1, ?2, ?3)",
+            &[&id, &length, &(n as i64 + 1)],
+        );
+        sql(
+            "INSERT INTO extent(input, chain, offset, length, blob, blob_offset)
+             VALUES (?1, 1, 0, ?2, ?3, 0)",
+            &[&id, &length, &&blob.0[..]],
+        );
+    }
+    let observation = "INSERT INTO observation(id, input, machine, path, class, revision, length,
+        device, inode, size, mtime_ns, ctime_ns, polylogue_version, seen_at, commit_seq)
+        VALUES (?1, ?2, ?3, ?4, 'first', 1, ?5, 64, 21, ?5, 2000000000, 2000000000, '0.9.0', ?6, ?7)";
+    sql(
+        observation,
+        &[&"r1", &real, &machine, &real_path, &length, &2_000, &3],
+    );
+    sql(
+        observation,
+        &[&"l1", &linked, &machine, &linked_path, &length, &2_001, &4],
+    );
+    LinkedTwins {
+        root: b.finish(),
+        real: real.to_owned(),
+        linked: linked.to_owned(),
+        real_path,
+        linked_path,
+    }
+}
