@@ -6,7 +6,7 @@
 //! member of its set; its `repo` comes from the lookup too, unless a record
 //! of its own named the repository (`record_repo`).
 
-use super::{Class, Derivation, Version};
+use super::{Cause, Class, Derivation, Version};
 use crate::Result;
 use rusqlite::{OptionalExtension, Transaction, params};
 
@@ -17,6 +17,7 @@ pub(super) const DERIVATION: Derivation = Derivation {
     version: Version::Rules(2),
     // Reads the session's working directory and recorded repository.
     after: &["session"],
+    dirtied_by: &[Cause::RepoLookupChanged],
     run: |tx, pk, _| run(tx, pk),
 };
 

@@ -52,6 +52,9 @@ struct Derivation {
     pub version: Version,
     /// Derivations whose rows this one reads; they run first.
     pub after: &'static [&'static str],
+    /// Changes outside the session's own rows that make it due for this
+    /// derivation alone; a change of its own rows is implicit.
+    pub dirtied_by: &'static [Cause],
     /// Recomputes the session's rows: replaces whatever an earlier run
     /// made, from the session's current rows.
     pub run: fn(&Transaction<'_>, i64, &Inputs<'_>) -> Result<()>,
@@ -70,6 +73,14 @@ enum Class {
     /// A value of the whole session: derived again whenever the session's
     /// rows changed.
     Session,
+}
+
+/// A change outside a session's own rows that a derivation reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Cause {
+    /// A repository lookup at or above the session's working directory
+    /// changed (`derive_due.repo_lookup`).
+    RepoLookupChanged,
 }
 
 /// What a derivation reads besides the session's rows, and where it records
@@ -255,13 +266,19 @@ impl<'a> Pass<'a> {
         index: &mut Connection,
         commits: Option<&crate::completion::CommitEvents>,
     ) -> Result<Option<u64>> {
-        let due: Vec<(i64, bool)> = index
+        let due: Vec<(i64, Due)> = index
             .prepare_cached(
-                "SELECT session_pk, rows_changed FROM derive_due
+                "SELECT session_pk, rows_changed, repo_lookup FROM derive_due
                  ORDER BY session_pk DESC LIMIT ?1",
             )?
             .query_map([SESSIONS_PER_TRANSACTION as i64], |r| {
-                Ok((r.get(0)?, r.get(1)?))
+                Ok((
+                    r.get(0)?,
+                    Due {
+                        rows_changed: r.get(1)?,
+                        repo_lookup: r.get(2)?,
+                    },
+                ))
             })?
             .collect::<rusqlite::Result<_>>()?;
         if due.is_empty() {
@@ -277,8 +294,8 @@ impl<'a> Pass<'a> {
             changes: &changes,
         };
         let mut done = 0;
-        for (pk, rows_changed) in due {
-            let derived = self.derive_session(&tx, pk, rows_changed, &inputs)?;
+        for (pk, due) in due {
+            let derived = self.derive_session(&tx, pk, due, &inputs)?;
             if derived > 0 {
                 // Its derived values reach the change feed; its own rows
                 // did not change.
@@ -298,14 +315,14 @@ impl<'a> Pass<'a> {
     }
 
     /// Runs, in order, the derivations the session needs: every session
-    /// derivation when its rows changed, and each derivation whose stored
-    /// version is not its current one; returns how many ran. The session's
-    /// rows are read once into the cache.
+    /// derivation when its rows changed, each derivation a marked outside
+    /// cause dirties, and each derivation whose stored version is not its
+    /// current one; returns how many ran.
     fn derive_session(
         &self,
         tx: &Transaction<'_>,
         pk: i64,
-        rows_changed: bool,
+        due: Due,
         inputs: &Inputs<'_>,
     ) -> Result<u64> {
         let exists: bool = tx
@@ -326,7 +343,8 @@ impl<'a> Pass<'a> {
         let stale: Vec<usize> = (0..self.derivations.len())
             .filter(|&i| {
                 let d = &self.derivations[i];
-                (rows_changed && d.class == Class::Session)
+                (due.rows_changed && d.class == Class::Session)
+                    || (due.repo_lookup && d.dirtied_by.contains(&Cause::RepoLookupChanged))
                     || stored.get(d.name) != Some(&self.versions[i])
             })
             .collect();
@@ -340,6 +358,13 @@ impl<'a> Pass<'a> {
         }
         Ok(stale.len() as u64)
     }
+}
+
+/// Why a session is due (`derive_due`).
+#[derive(Clone, Copy)]
+struct Due {
+    rows_changed: bool,
+    repo_lookup: bool,
 }
 
 /// Whether no derivation is behind: no session is due and the stored

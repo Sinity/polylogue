@@ -1,20 +1,19 @@
-//! Repository lookups are
-//! stored as records; which sessions they attribute is the `repository`
-//! derivation's job. A changed lookup marks the sessions under its
-//! directory changed, so they are attributed again.
+//! Repository lookups are stored as records; which sessions they attribute
+//! is the `repository` derivation's job. A changed lookup marks the sessions
+//! at or under its directory due for that derivation alone; their own rows
+//! did not change.
 
 use crate::Result;
 use polylogue_model::RepoLookup;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 /// Stores a lookup; when it differs from the stored one, marks every
-/// session under its directory changed.
+/// session at or under its directory due for its repository.
 pub(crate) fn upsert_lookup(
     tx: &Transaction<'_>,
     l: &RepoLookup,
     input_pk: i64,
     chain: i64,
-    counter: i64,
 ) -> Result<()> {
     let roots = serde_json::to_string(&l.root_commits)?;
     let previous: Option<(Option<String>, String)> = tx
@@ -29,11 +28,15 @@ pub(crate) fn upsert_lookup(
     )?
     .execute(params![l.path, l.remote, roots, input_pk, chain])?;
     if previous != Some((l.remote.clone(), roots)) {
+        // `cwd` under the directory sorts between `<path>/` and `<path>0`
+        // ('0' follows '/'), so the session index serves the range.
         tx.prepare_cached(
-            "UPDATE session SET changed = ?2
-             WHERE cwd = ?1 OR substr(cwd, 1, length(?1) + 1) = ?1 || '/'",
+            "INSERT INTO derive_due(session_pk, rows_changed, repo_lookup)
+             SELECT pk, 0, 1 FROM session
+             WHERE cwd = ?1 OR (cwd >= ?1 || '/' AND cwd < ?1 || '0')
+             ON CONFLICT(session_pk) DO UPDATE SET repo_lookup = 1",
         )?
-        .execute(params![l.path, counter])?;
+        .execute([&l.path])?;
     }
     Ok(())
 }

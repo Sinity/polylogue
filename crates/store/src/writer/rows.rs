@@ -330,7 +330,7 @@ fn apply_rows(
         rows.write_link(l, i, admitted)?;
     }
     for l in &p.output.repo_lookups {
-        crate::repo_lookup::upsert_lookup(tx, l, input_pk, chain, counter)?;
+        crate::repo_lookup::upsert_lookup(tx, l, input_pk, chain)?;
     }
     {
         for (message_pk, source_input, source_chain) in &choices.dropped_message_sources {

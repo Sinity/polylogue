@@ -10,6 +10,7 @@ pub(super) const DERIVATION: Derivation = Derivation {
     ],
     version: Version::Rules(crate::measure::time::RULE_VERSION),
     after: &["duplicates", "active_path", "tool_calls"],
+    dirtied_by: &[],
     run: |tx, pk, _| {
         let (span, lanes) =
             crate::measure::time::compute(tx, pk, polylogue_model::derived::CLUSTER_GAP_MS)?;

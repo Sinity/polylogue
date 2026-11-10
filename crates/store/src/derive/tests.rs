@@ -198,6 +198,7 @@ fn versioned_rules(version: i64) -> [super::Derivation; 4] {
             name: "upstream",
             version: Version::Rules(version),
             after: &[],
+            dirtied_by: &[],
             run: if version == 1 {
                 |tx, pk, _| {
                     tx.execute(
@@ -222,6 +223,7 @@ fn versioned_rules(version: i64) -> [super::Derivation; 4] {
             name: "dependent",
             version: Version::Rules(1),
             after: &["upstream"],
+            dirtied_by: &[],
             run: |tx, pk, _| {
                 tx.execute(
                     "UPDATE session SET repo = derived_title WHERE pk = ?1",
@@ -236,6 +238,7 @@ fn versioned_rules(version: i64) -> [super::Derivation; 4] {
             name: "unrelated",
             version: Version::Rules(1),
             after: &[],
+            dirtied_by: &[],
             run: |tx, pk, _| {
                 tx.execute(
                     "UPDATE session SET repo_root = 'unrelated' WHERE pk = ?1",
@@ -322,6 +325,7 @@ fn dependency_identity_includes_transitive_rules_and_ignores_list_order() {
         name: "grandchild",
         version: super::Version::Rules(1),
         after: &["upstream", "dependent"],
+        dirtied_by: &[],
         run: |_, _, _| Ok(()),
         class: super::Class::Session,
     });
@@ -397,6 +401,7 @@ fn a_failed_derivation_rolls_back_values_counters_and_markers() {
         name: "synthetic",
         version: Version::Rules(1),
         after: &[],
+        dirtied_by: &[],
         run: |tx, pk, _| {
             tx.execute(
                 "UPDATE session SET derived_title='before' WHERE pk=?1",
@@ -759,4 +764,63 @@ fn user_write_served_between_derive_commits() {
         assert!(deriving.join().unwrap() > 0);
     });
     assert_eq!(due(), 0);
+}
+
+#[test]
+fn a_changed_lookup_derives_only_the_repository_of_sessions_under_it() {
+    let mut w = WriterArchive::new();
+    for (name, cwd) in [
+        ("a", "/r/project/x/sub"),
+        ("b", "/r/project/x"),
+        ("c", "/r/project/xy"),
+        ("d", "/r/other"),
+    ] {
+        let mut s = Session::new(sid(name), SessionKind::Main);
+        s.offer_cwd(cwd);
+        w.write_session(s, prose(name, 1, 1_000, "hi"));
+    }
+    let state = |w: &WriterArchive| w.rows("SELECT id, repo, changed FROM session ORDER BY id");
+    let before = state(&w);
+    // A lookup collector's record, written on an input of its own, with
+    // the derive step left to run separately so its work can be counted.
+    let mut lookup = crate::fixture::writer::step(
+        "input-lookups",
+        "repo-lookup",
+        "repo-lookup:/r/project/x",
+        polylogue_model::Output {
+            repo_lookups: vec![RepoLookup {
+                path: "/r/project/x".into(),
+                remote: Some("https://example.com/x".into()),
+                root_commits: vec!["abc".into()],
+            }],
+            ..polylogue_model::Output::default()
+        },
+        0,
+        1,
+    );
+    let mut raw = lookup.clone();
+    raw.parse.clear();
+    let stored = w
+        .writer
+        .store_bytes(w.archive.prepare_bytes(&b"r\n"[..]).unwrap(), raw)
+        .unwrap();
+    lookup.change = crate::Change::Reparse {
+        chain: stored.chain,
+    };
+    lookup.observation = None;
+    w.writer.send(lookup).unwrap();
+    assert!(w.writer.flush_rows().unwrap().errors.is_empty());
+    // Two sessions lie under the lookup; each runs the repository alone.
+    assert_eq!(w.writer.derive().unwrap(), 2);
+    let after = state(&w);
+    let repo = "https://example.com/x";
+    for (before, after) in before.iter().zip(&after) {
+        let under = ["claude-code:a", "claude-code:b"].contains(&after["id"].as_str().unwrap());
+        assert_eq!(after["changed"], before["changed"], "{after}");
+        assert_eq!(
+            after["repo"],
+            if under { json!(repo) } else { Json::Null },
+            "{after}"
+        );
+    }
 }

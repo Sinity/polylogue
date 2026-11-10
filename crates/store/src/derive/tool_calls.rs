@@ -12,6 +12,7 @@ pub(super) const DERIVATION: Derivation = Derivation {
     products: &[],
     version: Version::Rules(3),
     after: &["command_norm"],
+    dirtied_by: &[],
     run: |tx, pk, _| passed_without_result(tx, pk),
 };
 
@@ -21,6 +22,7 @@ pub(super) const COMMAND_NORM: Derivation = Derivation {
     products: &[],
     version: Version::Rules(1),
     after: &[],
+    dirtied_by: &[],
     run: |tx, pk, _| normalize(tx, pk),
 };
 
