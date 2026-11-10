@@ -447,6 +447,10 @@ pub(crate) fn finish(
     first_build: bool,
 ) -> Result<u64> {
     let read = crate::items::refresh(tx, changes)?;
+    // A first build derives every session's links once, when it ends.
+    if !first_build {
+        crate::derive::links::fold(tx, changes)?;
+    }
     crate::versions::remove_unreferenced(tx, first_build)?;
     Ok(read)
 }

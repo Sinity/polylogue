@@ -38,6 +38,9 @@ pub(crate) struct SessionChange {
     pub events: BTreeSet<i64>,
     pub links: bool,
     pub whole: bool,
+    /// A changed message of the session existed before the transaction:
+    /// something already stored was rewritten, not only added to.
+    pub rewritten: bool,
 }
 
 impl ChangeSummary {
@@ -117,6 +120,7 @@ impl ChangeSummary {
             for (session, parent) in before.iter().chain(after.iter()) {
                 let change = out.entry(*session).or_default();
                 change.messages.insert(pk);
+                change.rewritten |= before.is_some();
                 if let Some(parent) = parent {
                     change.parents.insert(parent.clone());
                 }

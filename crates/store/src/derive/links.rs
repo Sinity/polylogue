@@ -2,6 +2,10 @@
 //! pull requests a session's commands made (from the output of `git commit` and
 //! `gh pr create`). A session's live task never comes from here: a command's
 //! name or arguments establish no task (`polylogue_model::live`).
+//!
+//! A fold: the transaction that writes a call's message or its result adds
+//! the links of the calls it finished ([`fold`]); one that rewrites a stored
+//! message of the session derives the session's links again.
 
 use crate::Result;
 use crate::encoding::{unpack_block, unpack_text};
@@ -9,9 +13,9 @@ use polylogue_model::Block;
 use polylogue_model::command::{Stage, effective_stages};
 use rusqlite::{Transaction, params};
 
-pub(crate) const DERIVATION: super::Derivation = super::Derivation {
+pub(super) const DERIVATION: super::Derivation = super::Derivation {
     name: "links",
-    class: super::Class::Session,
+    class: super::Class::Fold,
     // Bumped when the rules change; every session is derived again.
     products: &[],
     version: super::Version::Rules(2),
@@ -73,16 +77,61 @@ fn pull_requests(output: &str) -> Vec<(String, i64, String)> {
 
 fn derive_session(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     clear(tx, session_pk)?;
-    let mut stmt = tx.prepare_cached(
-        "SELECT t.pk, t.command FROM tool_call t
-         WHERE t.session_pk = ?1 AND t.outcome = 'ok' AND t.command IS NOT NULL
-         ORDER BY t.at IS NULL, t.at, t.pk",
-    )?;
-    let calls = stmt
+    let calls = tx
+        .prepare_cached(
+            "SELECT t.pk, t.command FROM tool_call t
+             WHERE t.session_pk = ?1 AND t.outcome = 'ok' AND t.command IS NOT NULL
+             ORDER BY t.at IS NULL, t.at, t.pk",
+        )?
         .query_map([session_pk], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    add_links(tx, session_pk, calls)
+}
+
+/// Brings the links of every session `changes` names up to date in the
+/// transaction that changed it: a session with a rewritten message is
+/// derived again; otherwise the finished calls whose call or result block
+/// is in one of its new messages add their links.
+pub(crate) fn fold(
+    tx: &Transaction<'_>,
+    changes: &crate::change_summary::ChangeSummary,
+) -> Result<()> {
+    for (session_pk, change) in changes.sessions(tx)? {
+        let exists: bool = tx
+            .prepare_cached("SELECT EXISTS(SELECT 1 FROM session WHERE pk = ?1)")?
+            .query_row([session_pk], |r| r.get(0))?;
+        if !exists {
+            continue;
+        }
+        if change.whole || change.rewritten {
+            derive_session(tx, session_pk)?;
+            continue;
+        }
+        let mut calls = Vec::new();
+        let mut finished = tx.prepare_cached(
+            "SELECT t.pk, t.command FROM block b JOIN tool_call t
+                 ON t.call_block_pk = b.pk OR t.result_block_pk = b.pk
+             WHERE b.message_pk = ?1 AND t.session_pk = ?2
+               AND t.outcome = 'ok' AND t.command IS NOT NULL",
+        )?;
+        for message_pk in &change.messages {
+            for call in finished.query_map(rusqlite::params![message_pk, session_pk], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })? {
+                calls.push(call?);
+            }
+        }
+        calls.sort_unstable();
+        calls.dedup();
+        add_links(tx, session_pk, calls)?;
+    }
+    Ok(())
+}
+
+/// Adds the links the finished `calls` (call key and command) made.
+fn add_links(tx: &Transaction<'_>, session_pk: i64, calls: Vec<(i64, String)>) -> Result<()> {
     for (call_pk, command) in calls {
         let stages = effective_stages(&command);
         let output = if stages.iter().any(makes_artifact) {
