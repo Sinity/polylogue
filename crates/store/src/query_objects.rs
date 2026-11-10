@@ -91,7 +91,17 @@ pub(crate) fn validate_result_bindings(
     if result_outputs.is_empty() {
         return Ok(());
     }
-    let kept = crate::selection::kept_results(conn, source)?;
+    // Only the kept results these outputs name are read.
+    let ids: Vec<&str> = result_outputs
+        .iter()
+        .filter_map(|output| match &output.source {
+            query_language::catalog::OutputSource::Result { reference, .. } => {
+                Some(reference.strip_prefix("result:").unwrap_or(reference))
+            }
+            _ => None,
+        })
+        .collect();
+    let kept = crate::selection::kept_results_named(conn, source, ids)?;
     let bindings = polylogue_query::Bindings {
         kept,
         ..Default::default()

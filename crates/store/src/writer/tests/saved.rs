@@ -152,8 +152,9 @@ fn invalid_ordered_saved_batch_does_not_ack_objects_or_publish_partial_assertion
             .is_none()
     );
     assert!(
-        crate::assertions::saved_queries(reader.conn().unwrap())
+        crate::assertions::saved_query_snapshot(reader.conn().unwrap(), ["alpha", "beta"])
             .unwrap()
+            .definitions
             .is_empty()
     );
 }

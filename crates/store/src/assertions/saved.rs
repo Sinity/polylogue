@@ -102,31 +102,36 @@ pub(crate) fn saved_family(conn: &Connection, root: &str) -> Result<SavedQuerySn
 #[cfg(test)]
 mod tests;
 
-/// SQL nominates saved families; the stored currency index selects heads.
-/// Both pinned Reader and original/scratch preparation consume this loader.
-pub(crate) fn saved_queries(
+/// The current saved definitions under `names`, and no others. SQL
+/// nominates every family any revision of which carried one of the names;
+/// the stored currency index selects heads, and only heads still named so
+/// are kept.
+pub(crate) fn saved_query_snapshot<'a>(
     conn: &Connection,
-) -> Result<BTreeMap<String, Vec<CurrentSavedDefinition>>> {
-    Ok(saved_query_snapshot(conn)?.definitions)
-}
-
-pub(crate) fn saved_query_snapshot(conn: &Connection) -> Result<SavedQuerySnapshot> {
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<SavedQuerySnapshot> {
+    let names: Vec<&str> = names.into_iter().collect();
+    let mut definitions = SavedQuerySnapshot::default();
+    if names.is_empty() {
+        return Ok(definitions);
+    }
     let source = Source::reading(conn)?;
     let roots = conn
         .prepare_cached(&source.sql(
-            "SELECT DISTINCT root FROM @source.assertion WHERE kind='saved_query' ORDER BY root",
+            "SELECT DISTINCT root FROM @source.assertion WHERE kind='saved_query' AND key IN (SELECT value FROM json_each(?1)) ORDER BY root",
         ))?
-        .query_map([], |row| row.get::<_, String>(0))?
+        .query_map([serde_json::to_string(&names)?], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut definitions = SavedQuerySnapshot::default();
     for root in roots {
         let family = saved_family(conn, &root)?;
         for (name, mut family) in family.definitions {
-            definitions
-                .definitions
-                .entry(name)
-                .or_default()
-                .append(&mut family);
+            if names.contains(&name.as_str()) {
+                definitions
+                    .definitions
+                    .entry(name)
+                    .or_default()
+                    .append(&mut family);
+            }
         }
     }
     Ok(definitions)

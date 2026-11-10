@@ -140,7 +140,9 @@ fn accepting_preparation_uses_original_native_rows_and_scratch_definitions() {
         .unwrap();
     let actual =
         prepare_query_plan_on(original, &tx, "query:focus", &native, None, None, None).unwrap();
-    let loaded = saved_queries_on(original, &tx, None, None).unwrap();
+    let loaded = named_definitions(original, &tx, "query:focus", &[], None, None)
+        .unwrap()
+        .saved;
     assert_eq!(loaded["focus"][0].hash, object.id);
     assert_eq!(loaded["focus"][0].denominator, Some(object.id));
     assert_eq!(actual.definitions()[0].question_id, object.id);

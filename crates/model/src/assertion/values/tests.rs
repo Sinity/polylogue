@@ -274,9 +274,10 @@ fn setting_payload_resolves_target_host_without_changing_accepting_identity() {
             .is_err()
     );
     assert!(
-        Value::NonnegativeNumber(-1.0)
-            .validate_for("embed.price_per_mtok", Owner::Standalone)
-            .is_err()
+        serde_json::from_value::<Value>(
+            serde_json::json!({"type":"nonnegative_number","value":-1})
+        )
+        .is_err()
     );
     assert!(
         Value::Boolean(true)

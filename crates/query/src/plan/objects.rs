@@ -83,6 +83,30 @@ pub fn referenced_saved_names(query: &Query) -> Vec<String> {
     names.into_inner().into_iter().collect()
 }
 
+/// Kept results (`result:<id>`, by id) read as sources anywhere in the query,
+/// nested queries included. Syntax only, like [`referenced_saved_names`].
+pub fn referenced_kept_results(query: &Query) -> Vec<String> {
+    let ids = std::cell::RefCell::new(BTreeSet::new());
+    let mut query = query.clone();
+    walk(
+        &mut query,
+        &mut |query| {
+            if let Source::Result { reference, .. } = &query.source {
+                ids.borrow_mut().insert(
+                    reference
+                        .strip_prefix("result:")
+                        .unwrap_or(reference)
+                        .to_owned(),
+                );
+            }
+            Ok(())
+        },
+        &mut |_| Ok(()),
+    )
+    .expect("collecting typed kept references is infallible");
+    ids.into_inner().into_iter().collect()
+}
+
 /// Exact semantic object sources requested by the parsed query. Ordinary text,
 /// field values and saved names are not executable object lookup requests.
 pub fn referenced_question_ids(query: &Query) -> Vec<QuestionId> {

@@ -227,3 +227,24 @@ fn money_stays_integer_nano_usd_and_kept_dollars_read_back_exactly() {
     assert_eq!(one("SELECT pl_rounded_quotient(5, 0)").unwrap(), None);
     assert_eq!(one("SELECT pl_rounded_quotient(NULL, 2)").unwrap(), None);
 }
+
+#[test]
+fn money_percentiles_rank_integers_exactly() {
+    let conn = Connection::open_in_memory().unwrap();
+    crate::sql_functions::register(&conn).unwrap();
+    // 2^53 + 1 is not a float; a float ranking would return 2^53.
+    let median: i64 = conn
+        .query_row(
+            "WITH amounts(x) AS (VALUES (9007199254740993),(9007199254740993),(1),(NULL)) SELECT pl_integer_percentile(x, 50) FROM amounts",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(median, 9_007_199_254_740_993);
+    let none: Option<i64> = conn
+        .query_row("SELECT pl_integer_percentile(NULL, 50)", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(none, None);
+}

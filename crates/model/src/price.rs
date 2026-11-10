@@ -19,6 +19,10 @@ pub struct Rate {
 }
 
 impl Rate {
+    pub const ZERO: Rate = Rate {
+        pico_usd_per_token: 0,
+    };
+
     pub fn pico_usd_per_token(self) -> i128 {
         self.pico_usd_per_token
     }

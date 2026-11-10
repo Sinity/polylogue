@@ -70,31 +70,23 @@ fn with_similarity<T>(
     reader.with_query_context(program, near, read)
 }
 
-/// Saved definitions come from the same Store snapshot as selection preparation.
-pub(crate) fn saved_queries(
-    reader: &Reader<'_>,
-) -> Result<std::collections::BTreeMap<String, Vec<polylogue_query::SavedQuery>>, Failure> {
-    reader.selection_saved_queries().map_err(Failure::from)
-}
-fn kept_results(
-    reader: &Reader<'_>,
-) -> Result<std::collections::BTreeMap<String, polylogue_query::Kept>, Failure> {
-    reader.selection_kept_results().map_err(Failure::from)
-}
-
+/// The options for `ask`, with the saved queries and kept results its text
+/// names, read from the same Store snapshot as selection preparation.
 pub(crate) fn options(reader: &Reader<'_>, ask: &Ask<'_>, seed: u64) -> Result<Options, Failure> {
+    let origins: Vec<String> = polylogue_sources::origin::ORIGINS
+        .iter()
+        .map(|o| o.name.to_owned())
+        .collect();
+    let named = reader.selection_definitions(ask.text, &origins)?;
     Ok(Options {
         clock: ask.context.clock.clone(),
-        origins: polylogue_sources::origin::ORIGINS
-            .iter()
-            .map(|o| o.name.to_owned())
-            .collect(),
+        origins,
         page_size: ask.page_size,
         random_seed: Some(seed),
         embeddings: ask.embeddings,
         self_session: ask.session.clone(),
-        saved: saved_queries(reader)?,
-        kept: kept_results(reader)?,
+        saved: named.saved,
+        kept: named.kept,
         fields: ask.fields.to_vec(),
         chat_pages: chat_pages(),
     })
@@ -257,7 +249,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<QueryAnswer, Failure> {
         opts.clock = cursor.context.clock.clone();
     }
     opts.random_seed = Some(seed);
-    let mut program = polylogue_store::query::lower(&plan, &opts)?;
+    let mut program = reader.lower_plan(&plan, &opts)?;
     validate(reader, &program)?;
     prepare_measure(&mut program, ask.page_size)?;
     // A `similar:` ranking whose query vector cannot be had (the provider is

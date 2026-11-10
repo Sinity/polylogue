@@ -829,6 +829,44 @@ fn turns_list_their_prompts_and_whether_their_answer_was_corrected() {
     }
 }
 
+/// A query that names no kept result reads none of their bodies: its SQLite
+/// work is the same with 500 kept results stored as with none.
+#[test]
+fn unrelated_query_steps_flat_with_500_kept() {
+    let mut w = morrow();
+    let steps = |w: &TestArchive, text: &str| {
+        let limit = polylogue_store::read::limit::ReadLimit::without_deadline(Default::default());
+        limit.scope(|| {
+            let pool = w.fx.reads().unwrap();
+            let r = pool.reader().unwrap();
+            run(&r, ask(text)).unwrap_or_else(|f| panic!("{text}: {}", f.message));
+        });
+        limit.sqlite_steps()
+    };
+    let kept = {
+        let pool = w.fx.reads().unwrap();
+        let r = pool.reader().unwrap();
+        keep(&r, ask("messages")).unwrap()
+    };
+    w.fx.kept_result("0199-named", "messages", &kept.to_string())
+        .unwrap();
+    let unrelated = "sessions where repo:morrow | count";
+    let named = "result:0199-named | count";
+    let (unrelated_before, named_before) = (steps(&w, unrelated), steps(&w, named));
+    assert!(unrelated_before > 0);
+    for index in 0..500 {
+        w.fx.kept_result(
+            &format!("0199-other-{index:03}"),
+            "messages",
+            &kept.to_string(),
+        )
+        .unwrap();
+    }
+    assert_eq!(steps(&w, unrelated), unrelated_before);
+    // A query naming one kept result reads that one alone.
+    assert_eq!(steps(&w, named), named_before);
+}
+
 #[test]
 fn kept_results_read_back_as_they_were_kept() {
     let mut w = morrow();
@@ -1342,7 +1380,10 @@ fn failed_saved_result_storage_is_not_an_empty_catalog() {
         )
         .unwrap();
     fixture.fx.corrupt_kept_body("broken", "not JSON").unwrap();
-    let failure = run_q(&fixture, ask("sessions")).unwrap_err();
+    // A query reads only the kept results it names; one naming the damaged
+    // result fails with the storage error, never an empty or default body.
+    assert!(run_q(&fixture, ask("sessions")).is_ok());
+    let failure = run_q(&fixture, ask("result:broken")).unwrap_err();
     assert_eq!(failure.code(), "store");
     assert_eq!(
         failure.message,
@@ -1350,7 +1391,7 @@ fn failed_saved_result_storage_is_not_an_empty_catalog() {
     );
     let pool = fixture.fx.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let kept_failure = keep(&reader, ask("sessions")).unwrap_err();
+    let kept_failure = keep(&reader, ask("result:broken")).unwrap_err();
     assert_eq!(kept_failure.code(), "store");
     assert_eq!(kept_failure.message, failure.message);
 }
@@ -1361,8 +1402,10 @@ fn absent_saved_queries_and_results_are_a_valid_empty_catalog() {
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    assert!(saved_queries(&reader).unwrap().is_empty());
-    assert!(kept_results(&reader).unwrap().is_empty());
+    let saved = reader.selection_definitions("query:none", &[]).unwrap();
+    assert!(saved.saved.is_empty());
+    let kept = reader.selection_definitions("result:none", &[]).unwrap();
+    assert!(kept.kept.is_empty());
     assert_eq!(run(&reader, ask("sessions")).unwrap()["count"], 0);
 }
 
@@ -1403,9 +1446,10 @@ fn damaged_kept_result_shapes_are_not_defaulted_or_discarded() {
         fixture.corrupt_kept_body("broken", &body).unwrap();
         let pool = fixture.reads().unwrap();
         let reader = pool.reader().unwrap();
+        assert!(run(&reader, ask("sessions")).is_ok());
         for failure in [
-            run(&reader, ask("sessions")).unwrap_err(),
-            keep(&reader, ask("sessions")).unwrap_err(),
+            run(&reader, ask("result:broken")).unwrap_err(),
+            keep(&reader, ask("result:broken")).unwrap_err(),
         ] {
             assert_eq!(failure.code(), "store");
             assert!(failure.message.contains("broken"), "{failure:?}");
@@ -1429,7 +1473,10 @@ fn kept_results_without_match_rows_do_not_need_match_columns() {
         .unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let kept = kept_results(&reader).unwrap();
+    let kept = reader
+        .selection_definitions("result:empty", &[])
+        .unwrap()
+        .kept;
     assert!(kept["empty"].match_columns.is_empty());
     assert_eq!(run(&reader, ask("result:empty")).unwrap()["count"], 0);
 }

@@ -55,7 +55,7 @@ fn provider_consumes_typed_settings_and_captured_credentials() {
         .unwrap()
         .unwrap();
     assert_eq!(local.endpoint, "http://127.0.0.1:11434/v1");
-    assert_eq!(local.price_per_mtok, Some(0.0));
+    assert_eq!(local.price_per_mtok, Some(polylogue_model::Rate::ZERO));
     let voyage = Provider::from_settings(&snapshot("voyage"), &credentials)
         .unwrap()
         .unwrap();
@@ -161,9 +161,30 @@ fn the_local_provider_only_uses_loopback_addresses() {
         kind: ProviderKind::Local,
         endpoint: "http://192.0.2.1:11434/v1".into(),
         model: "synthetic".into(),
-        price_per_mtok: Some(0.0),
+        price_per_mtok: Some(polylogue_model::Rate::ZERO),
         credentials: Credentials::new(None),
     };
     let error = provider.embed(&["private text".into()], false).unwrap_err();
     assert!(matches!(error, EmbedError::Config(_)), "{error:?}");
+}
+
+#[test]
+fn the_purchase_estimate_uses_the_exact_price() {
+    let price = |text: &str| {
+        polylogue_model::Rate::try_from(text.parse::<serde_json::Number>().unwrap()).unwrap()
+    };
+    // $0.02 per million tokens: 1 234 567 tokens are $0.02469134.
+    assert_eq!(
+        purchase_estimate(1_234_567, price("0.02")),
+        Some(polylogue_model::money::Amount(24_691_340))
+    );
+    // $0.0005 per million: 3 tokens are 1.5 nano-USD, rounded once to 2.
+    assert_eq!(
+        purchase_estimate(3, price("0.0005")),
+        Some(polylogue_model::money::Amount(2))
+    );
+    assert_eq!(
+        purchase_estimate(5, polylogue_model::Rate::ZERO),
+        Some(polylogue_model::money::Amount(0))
+    );
 }
