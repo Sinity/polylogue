@@ -12,7 +12,7 @@ fn append(archive: &Archive, writer: &Writer, input: &str, bytes: &[u8]) -> Resu
         input: InputKey {
             id: input.into(),
             format: "test-bytes".into(),
-            arrival_rank: 0,
+            route: polylogue_model::Route::Live,
         },
         change: Change::First,
         observation: Some(Observation {
@@ -56,7 +56,7 @@ fn group_commits_one_sync_and_one_extent_for_equal_bytes() {
     let mut group = Vec::new();
     for input in ["first", "second", "third"] {
         let (new_blob, file) = archive.prepare_blob(b"the exact source bytes\n").unwrap();
-        let mut batch = batch(input, 0, 0, vec![], &[]);
+        let mut batch = batch(input, Route::Live, 0, vec![], &[]);
         batch.input.format = "test-bytes".into();
         batch.length = new_blob.size;
         batch.new_blob = Some(new_blob);

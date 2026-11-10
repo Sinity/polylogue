@@ -354,12 +354,14 @@ fn keyed_context_reuses_a_retained_message_version_without_changing_source_selec
         )],
         messages: vec![
             polylogue_model::MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
                 end: 1,
                 message: first.clone(),
             },
             polylogue_model::MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 1,
                 end: 2,

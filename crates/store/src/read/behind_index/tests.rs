@@ -27,7 +27,7 @@ fn expected(
             parsed_upto: parsed_upto.unwrap_or(0),
             parsed: parsed_upto.is_some(),
             waiting: false,
-            arrival_rank: if imported.is_some() { 2 } else { 0 },
+            imported: imported.is_some(),
         },
     }
 }

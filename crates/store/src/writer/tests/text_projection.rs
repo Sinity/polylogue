@@ -21,7 +21,7 @@ fn current_blocks_reuse_stored_text_identities() {
             )
         })
         .collect();
-    let mut b = batch("input", 0, 0, rows, &["session"]);
+    let mut b = batch("input", Route::Live, 0, rows, &["session"]);
     resolve::prepare_index(&tx, &mut b, 1, false).unwrap();
     tx.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {

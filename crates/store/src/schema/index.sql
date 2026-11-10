@@ -77,7 +77,6 @@ CREATE TABLE message (
   order_input_id    TEXT NOT NULL,          -- stable input identity in the order key, independent of insertion order
   seq               INTEGER NOT NULL,       -- byte offset of the first record in that input
   record_position   INTEGER NOT NULL DEFAULT 0, -- its place among the messages that record holds
-  arrival_rank        INTEGER NOT NULL DEFAULT 0, -- the shown version's arrival: 0 live, 1 spool, 2 import
   role              TEXT NOT NULL,          -- user | assistant | system | tool (sources/ maps each provider's role)
   written_by        TEXT NOT NULL,          -- human | model | harness | unknown
   prompt_kind       TEXT,                   -- written_by human: prose | command
@@ -85,12 +84,12 @@ CREATE TABLE message (
   at_time           BLOB NOT NULL DEFAULT X'5b6e756c6c2c7b227175616c697479223a22756e6b6e6f776e227d5d',
   at                INTEGER,                -- provider time
   parent_id         TEXT,                   -- natural message id of the tree parent (may arrive later)
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- input the stored (shown) version came from
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- the main route's input: its version is the stored reading
   source_chain      INTEGER,                -- the revision chain the byte range is in (archive.db revision.chain):
                                             --   offsets are stable only within a chain, which only appends
   source_start      INTEGER,                -- byte range of its records in that chain (export `sources[0]`):
   source_end        INTEGER,                --   raw view and outside anchors; for a JSON export, the conversation object
-  in_progress       INTEGER NOT NULL DEFAULT 0, -- the provider marked this version as still being produced
+  in_progress       INTEGER NOT NULL DEFAULT 0, -- the shown message's completion is in_progress (message_source.completion)
   on_active_path    INTEGER,                -- 1 on the path, 0 off, NULL unknown (no marked leaf);
                                             --   always written, no default
   duplicate_of      TEXT,                   -- derived (duplicates): natural message id of another input's message the
@@ -123,8 +122,9 @@ CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' A
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
 
 -- Every stored version that contributed to a message: one row per input chain
--- whose records hold a version of it. The shown version's row is the one at the
--- message's own (input_pk, source_chain). A citation names a row here, never
+-- whose records hold a version of it. The shown message is composed field group
+-- by field group from each input's latest chain (writer/compose.rs); the main
+-- route's row is the one at the message's own (input_pk, source_chain). A citation names a row here, never
 -- just an input and offsets, because a rewritten input's new chain puts other
 -- bytes at the same offsets (an outside review, 2026-10-12). Rebuilt with the
 -- message. A message named by its content (id_kind 'content') keeps a row only
@@ -139,14 +139,25 @@ CREATE TABLE message_source (
   id_kind           TEXT NOT NULL CHECK (id_kind IN ('native','content')), -- where the message ID came from
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
   main              INTEGER NOT NULL DEFAULT 1,
-  arrival_rank      INTEGER NOT NULL DEFAULT 0,
+  route             TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
   seq               INTEGER NOT NULL DEFAULT 0,
   record_position   INTEGER NOT NULL DEFAULT 0,
-  complete          INTEGER NOT NULL DEFAULT 1, -- 0 while the source marks it in progress (no stop reason yet)
+  completion        TEXT NOT NULL CHECK (completion IN ('finished','unknown','in_progress')),
   version_hash      BLOB NOT NULL REFERENCES message_version(version_hash), -- BLAKE3 of the version's canonical JSON: the last tie-break
   PRIMARY KEY (message_pk, input_pk, chain)
 ) STRICT;
 CREATE INDEX message_source_input ON message_source(input_pk, chain, source_start);   -- foreign-key check; the next record's start
+
+-- The route each field group of a shown message came from, where it is not
+-- the main route (the message's own input_pk, source_chain).
+CREATE TABLE message_route (
+  message_pk        INTEGER NOT NULL REFERENCES message(pk) ON DELETE CASCADE,
+  field_group       TEXT NOT NULL CHECK (field_group IN ('time','model','usage','stop','parent','production')),
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain             INTEGER NOT NULL,
+  PRIMARY KEY (message_pk, field_group)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX message_route_input ON message_route(input_pk, chain);
 
 -- Text is stored once per distinct content; `id` is the rowid of its search entries.
 CREATE TABLE text (
@@ -502,7 +513,7 @@ CREATE TABLE document_source (
   chain INTEGER NOT NULL,
   source_start INTEGER NOT NULL,
   source_end INTEGER NOT NULL,
-  arrival_rank INTEGER NOT NULL,
+  route TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
   source_time INTEGER,
   time BLOB NOT NULL DEFAULT X'5b6e756c6c2c7b227175616c697479223a22756e6b6e6f776e227d5d',
   version_hash BLOB NOT NULL REFERENCES document_version(version_hash),
@@ -622,7 +633,7 @@ CREATE TABLE event_source (
   input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
   chain INTEGER NOT NULL,
   value_pk INTEGER NOT NULL REFERENCES event_value(pk),
-  arrival_rank INTEGER NOT NULL,
+  route TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
   session_pk INTEGER REFERENCES session(pk),
   seq INTEGER,
   source_start INTEGER,
@@ -645,7 +656,7 @@ CREATE TABLE link_source (
   input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
   chain INTEGER NOT NULL,
   value_pk INTEGER NOT NULL REFERENCES link_value(pk),
-  arrival_rank INTEGER NOT NULL,
+  route TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
   admitted INTEGER CHECK(admitted > 0),
   PRIMARY KEY(link_pk, input_pk, chain)
 ) STRICT, WITHOUT ROWID;

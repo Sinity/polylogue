@@ -7,7 +7,7 @@ fn reading() -> crate::primary::Reading {
         input: crate::InputKey {
             id: "source".into(),
             format: "synthetic".into(),
-            arrival_rank: 2,
+            route: polylogue_model::Route::Export,
         },
         chain: 1,
         reading_version: "v1".into(),

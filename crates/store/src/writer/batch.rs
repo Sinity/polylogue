@@ -13,9 +13,9 @@ pub struct InputKey {
     pub id: String,
     /// The origin that parses it (`claude-code`).
     pub format: String,
-    /// How faithful the arrival is, for choosing between versions of a
-    /// message: 0 live file, 1 spool, 2 import.
-    pub arrival_rank: u8,
+    /// Which route its readings are: the route precedence composes a
+    /// message seen through several routes from them.
+    pub route: polylogue_model::Route,
 }
 
 /// One look at a file that found something.

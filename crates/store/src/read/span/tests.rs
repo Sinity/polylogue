@@ -185,6 +185,7 @@ fn sparse_known_prefix_preserves_version_and_never_bridges_unknown_blocks() {
     let mut output = Output {
         sessions: vec![Session::new(original.session.clone(), SessionKind::Main)],
         messages: vec![MessageRow {
+            page_text: false,
             id_kind: polylogue_model::IdKind::Native,
             offset: 0,
             end: 1,

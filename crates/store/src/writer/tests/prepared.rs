@@ -13,7 +13,7 @@ fn session_kind_reads(supplied: bool) -> u64 {
     conn.set_prepared_statement_cache_capacity(0);
     let first_build = crate::first_build::FirstBuild::default();
     let tx = conn.transaction().unwrap();
-    let mut seed = batch("input1", 0, 0, vec![], &["main", "child"]);
+    let mut seed = batch("input1", Route::Live, 0, vec![], &["main", "child"]);
     seed.parse[0].output.sessions[1] = Session::new(sid("child"), SessionKind::Subagent);
     write_test_rows(&tx, &seed, &seed.parse[0], 1, 1, Some(&first_build)).unwrap();
     tx.execute(
@@ -53,7 +53,7 @@ fn session_kind_reads(supplied: bool) -> u64 {
         .collect();
     let mut b = batch(
         "input1",
-        0,
+        Route::Live,
         100,
         rows,
         if supplied { &["main", "child"] } else { &[] },
@@ -87,7 +87,7 @@ fn new_messages_do_not_read_a_previous_source() {
     // With caching disabled, authorization sees every statement execution.
     conn.set_prepared_statement_cache_capacity(0);
     let tx = conn.transaction().unwrap();
-    let prefix = batch("input1", 0, 0, Vec::new(), &[]);
+    let prefix = batch("input1", Route::Live, 0, Vec::new(), &[]);
     write_test_rows(&tx, &prefix, &prefix.parse[0], 1, 0, Some(&first_build)).unwrap();
     let observed = Arc::new(AtomicU64::new(0));
     let count = observed.clone();
@@ -113,7 +113,7 @@ fn new_messages_do_not_read_a_previous_source() {
             )
         })
         .collect();
-    let mut b = batch("input1", 0, 100, rows, &["main"]);
+    let mut b = batch("input1", Route::Live, 100, rows, &["main"]);
     b.parse[0].progress = polylogue_model::batch::StepProgress::Partway;
     assert_eq!(
         write_test_rows(&tx, &b, &b.parse[0], 1, 1, Some(&first_build)).unwrap(),
@@ -177,7 +177,13 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
             range: Some((10, 20)),
             data: serde_json::json!({"nested":[null, false, "Ω"]}),
         };
-        let mut b = batch("input1", 0, 0, vec![row(1, message.clone())], &["s"]);
+        let mut b = batch(
+            "input1",
+            Route::Live,
+            0,
+            vec![row(1, message.clone())],
+            &["s"],
+        );
         b.parse[0].output.events.push(event.clone());
         match mode {
             "prepared" => b.parse[0].prepare(),
@@ -226,7 +232,7 @@ fn misaligned_prepared_rows_refuse_before_writing() {
         let w = test_archive();
         let mut b = batch(
             "input1",
-            0,
+            Route::Live,
             0,
             vec![row(
                 1,
@@ -283,7 +289,7 @@ fn prepared_hook_events_keep_waiting_reasons_and_current_tool_facts() {
                 command: None,
                 path: None,
             });
-            let mut b = batch("input1", 0, 0, vec![row(1, message)], &["s"]);
+            let mut b = batch("input1", Route::Live, 0, vec![row(1, message)], &["s"]);
             b.parse[0].output.events.push(Event {
                 at_quality: polylogue_model::TimeQuality::Intrinsic,
                 at_precision: Some(polylogue_model::Precision::Instant),
@@ -351,7 +357,7 @@ fn complete_products_restore_prepared_structured_values_without_an_index_read() 
     );
     document.blocks = message.blocks.clone();
     document.metadata = serde_json::json!({"native":false,"empty":"","unknown":null});
-    let mut batch = batch("input", 0, 0, vec![row(0, message)], &["s"]);
+    let mut batch = batch("input", Route::Live, 0, vec![row(0, message)], &["s"]);
     batch.parse[0].output.documents.push(DocumentRow {
         offset: 1,
         end: 9,

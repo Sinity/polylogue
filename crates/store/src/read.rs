@@ -172,7 +172,8 @@ pub struct KnownInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainProgress {
     pub chain: i64,
-    pub arrival_rank: u8,
+    /// The chain's bytes came in through `polylogue import`.
+    pub imported: bool,
     pub waiting: bool,
     pub length: u64,
     pub parsed_upto: u64,
@@ -1543,9 +1544,9 @@ impl Reader<'_> {
         let Some((length, parsed_upto, parsed, produced, waiting, chain)) = row else {
             return Ok(None);
         };
-        let arrival_rank = match produced.as_str() {
-            "imported" => 2,
-            "first" | "appended" | "rewritten" => 0,
+        let imported = match produced.as_str() {
+            "imported" => true,
+            "first" | "appended" | "rewritten" => false,
             _ => {
                 return Err(StoreError::Invalid(format!(
                     "unknown revision source: {produced}"
@@ -1554,7 +1555,7 @@ impl Reader<'_> {
         };
         Ok(Some(ChainProgress {
             chain,
-            arrival_rank,
+            imported,
             waiting,
             length: length as u64,
             parsed_upto: parsed_upto as u64,

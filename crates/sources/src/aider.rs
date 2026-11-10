@@ -184,6 +184,7 @@ impl History {
             .ok_or("unusable Aider message identity")?;
         let offset = sink.position();
         sink.out.messages.push(MessageRow {
+            page_text: false,
             id_kind: polylogue_model::IdKind::Content,
             offset,
             end: offset + 1,

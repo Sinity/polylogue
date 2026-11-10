@@ -37,7 +37,7 @@ impl Test {
             input: InputKey {
                 id: "synthetic-db".into(),
                 format: "codex-database".into(),
-                arrival_rank: 0,
+                route: polylogue_model::Route::Live,
             },
             length: 0,
         }

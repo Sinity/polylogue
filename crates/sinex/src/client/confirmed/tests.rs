@@ -12,7 +12,7 @@ fn reading(progress: StepProgress) -> Reading {
         input: polylogue_store::InputKey {
             id: "earlier-input".into(),
             format: "codex".into(),
-            arrival_rank: 0,
+            route: polylogue_model::Route::Live,
         },
         chain: 1,
         reading_version: "reader-earlier".into(),

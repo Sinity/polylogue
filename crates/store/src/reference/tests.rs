@@ -187,6 +187,7 @@ fn sparse_source_blocks_keep_original_addresses_and_never_hash_as_complete_text(
         let mut output = Output {
             sessions: vec![Session::new(original.session.clone(), SessionKind::Main)],
             messages: vec![MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
                 end: 1,

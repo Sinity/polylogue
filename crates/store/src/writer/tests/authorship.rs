@@ -10,6 +10,7 @@ fn commit(origin: &str, messages: Vec<Message>) -> TestArchive {
             message.id = MessageId::parse(&format!("{origin}:{}", message.id.native())).unwrap();
             message.session = session.clone();
             MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: i as u64 * 10,
                 end: i as u64 * 10 + 1,
@@ -17,7 +18,7 @@ fn commit(origin: &str, messages: Vec<Message>) -> TestArchive {
             }
         })
         .collect();
-    let mut b = batch("authorship", 0, 0, rows, &["s"]);
+    let mut b = batch("authorship", Route::Live, 0, rows, &["s"]);
     b.input.format = origin.into();
     b.parse[0].output.sessions = vec![Session::new(session, SessionKind::Main)];
     w.store_reading(b, Some(&SOURCE_RECORD)).unwrap();

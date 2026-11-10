@@ -200,6 +200,7 @@ impl WriterArchive {
             .into_iter()
             .enumerate()
             .map(|(i, message)| MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: start + i as u64,
                 end: start + i as u64 + 1,
@@ -312,7 +313,7 @@ pub fn step(
         input: InputKey {
             id: input.to_owned(),
             format: format.into(),
-            arrival_rank: 0,
+            route: polylogue_model::Route::Live,
         },
         change: if start == 0 {
             crate::Change::First

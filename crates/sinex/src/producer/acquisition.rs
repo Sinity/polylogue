@@ -41,7 +41,7 @@ fn semantic(input: &CapturedInput, mode: CaptureMode) -> Result<serde_json::Valu
     Ok(serde_json::json!({
         "hash":input.hash, "length":input.length, "raw_range":input.raw_range,
         "generation":input.generation, "raw_total":input.raw_total, "raw_predecessor":input.raw_predecessor,
-        "index":input.index, "arrival_rank":input.arrival_rank, "parsed":input.parsed,
+        "index":input.index, "route":input.route, "parsed":input.parsed,
         "origin":input.input.origin,
         "source":(mode == CaptureMode::Mutable).then(|| input.basis.as_ref().map(|basis| &basis.source)),
     }))

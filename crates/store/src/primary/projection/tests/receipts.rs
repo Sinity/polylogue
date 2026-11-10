@@ -67,7 +67,7 @@ fn source(input: &str, message: &Message, ordinal: usize, position: i64) -> Vec<
         input: crate::InputKey {
             id: input.into(),
             format: "synthetic".into(),
-            arrival_rank: 2,
+            route: polylogue_model::Route::Export,
         },
         chain: 1,
         reading_version: "synthetic-v1".into(),
@@ -130,6 +130,7 @@ fn source(input: &str, message: &Message, ordinal: usize, position: i64) -> Vec<
             Product::Message {
                 reading: reading.clone(),
                 facts: Box::new(MessageRow {
+                    page_text: false,
                     id_kind: polylogue_model::IdKind::Native,
                     offset: 0,
                     end: 2,
@@ -289,7 +290,7 @@ fn sealed_export_callbacks_rebuild_from_confirmed_facts_without_recounting_or_re
     let input = crate::InputKey {
         id: "export".into(),
         format: "synthetic".into(),
-        arrival_rank: 0,
+        route: polylogue_model::Route::Live,
     };
     let mut changes = vec![source("export", &message, 0, 10).remove(0)];
     let mut prefix = ExportDelivery::seed();
@@ -312,6 +313,7 @@ fn sealed_export_callbacks_rebuild_from_confirmed_facts_without_recounting_or_re
                 .sessions
                 .push(Session::new(message.session.clone(), SessionKind::Main));
             output.messages.push(MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
                 end: 2,

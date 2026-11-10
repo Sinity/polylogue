@@ -628,7 +628,7 @@ impl Engine {
             .chain
             .map(|chain| polylogue_store::read::ChainProgress {
                 chain,
-                arrival_rank: origin.arrival.rank(),
+                imported: origin.route.is_imported(),
                 length: known.stored,
                 parsed_upto: known.parsed_upto,
                 parsed: known.parsed,

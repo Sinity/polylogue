@@ -32,7 +32,7 @@ impl Stored {
                     input: InputKey {
                         id: input.into(),
                         format: format.into(),
-                        arrival_rank: 0,
+                        route: polylogue_model::Route::Live,
                     },
                     change: if revision {
                         Change::Rewritten

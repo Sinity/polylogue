@@ -520,7 +520,11 @@ fn acquired_file(
             path.file_stem().unwrap().to_str().unwrap().into()
         },
         format: source.origin.clone(),
-        arrival_rank: if imported { 2 } else { 0 },
+        route: if imported {
+            polylogue_model::Route::Export
+        } else {
+            polylogue_model::Route::Live
+        },
     };
     let range = RawRange {
         start: 0,
@@ -927,7 +931,7 @@ fn an_idle_continuation_reports_queued_writer_errors_without_clearing_custody() 
             input: polylogue_store::InputKey {
                 id: "idle-continuation-error".into(),
                 format: "codex-database".into(),
-                arrival_rank: 0,
+                route: polylogue_model::Route::Live,
             },
             change: polylogue_store::Change::Reparse { chain: 1 },
             observation: None,

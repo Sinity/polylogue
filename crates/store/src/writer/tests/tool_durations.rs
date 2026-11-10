@@ -36,13 +36,13 @@ fn a_duration_outside_sql_integer_range_remains_canonical_in_both_pairing_orders
             };
             archive
                 .store_reading(
-                    batch("duration", 0, 0, vec![row(0, first)], &["s"]),
+                    batch("duration", Route::Live, 0, vec![row(0, first)], &["s"]),
                     Some(&SOURCE_RECORD),
                 )
                 .unwrap();
             archive
                 .store_reading(
-                    batch("duration", 0, 100, vec![row(100, second)], &["s"]),
+                    batch("duration", Route::Live, 100, vec![row(100, second)], &["s"]),
                     Some(&SOURCE_RECORD),
                 )
                 .unwrap();
@@ -78,11 +78,17 @@ fn an_oversized_background_duration_does_not_wrap_or_rewrite_the_canonical_resul
     let (call, result) = messages(27);
     archive
         .store_reading(
-            batch("duration", 0, 0, vec![row(0, call), row(1, result)], &["s"]),
+            batch(
+                "duration",
+                Route::Live,
+                0,
+                vec![row(0, call), row(1, result)],
+                &["s"],
+            ),
             Some(&SOURCE_RECORD),
         )
         .unwrap();
-    let mut update = batch("duration", 0, 100, vec![], &["s"]);
+    let mut update = batch("duration", Route::Live, 100, vec![], &["s"]);
     update.parse[0].counts.records = 1;
     update.parse[0].counts.add("notice", &RecordOutcome::Used);
     update.parse[0]

@@ -490,7 +490,7 @@ impl Engine {
                             .map(|state| state.input_id.clone())
                             .unwrap_or_else(|| self.location_id(&path)),
                         format: origin.into(),
-                        arrival_rank: 0,
+                        route: polylogue_model::Route::Live,
                     },
                     observation: self.observation(&path, None),
                     acquisition,

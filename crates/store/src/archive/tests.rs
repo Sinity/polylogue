@@ -288,6 +288,7 @@ fn a_stopped_process_resumes_its_committed_parse_positions() {
                 polylogue_model::SessionKind::Main,
             )],
             messages: vec![polylogue_model::MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
                 end: 1,

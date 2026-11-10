@@ -12,7 +12,7 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
     let input = InputKey {
         id: "synthetic-segmented-asset".into(),
         format: "export-file".into(),
-        arrival_rank: 0,
+        route: polylogue_model::Route::Live,
     };
     let sender = writer.sender().unwrap();
     let store = Arc::new(archive.blobs().unwrap());

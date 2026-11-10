@@ -24,6 +24,6 @@ pub(super) fn deserialize<'de, D: Deserializer<'de>>(
     Ok(InputKey {
         id,
         format,
-        arrival_rank: 0,
+        route: polylogue_model::Route::Live,
     })
 }

@@ -284,7 +284,7 @@ fn metadata_only_and_mismatched_receipts_cannot_borrow_an_unrelated_empty_body()
                 input: InputKey {
                     id: BlobHash::of(b"").to_string(),
                     format: "export-file".into(),
-                    arrival_rank: 2,
+                    route: polylogue_model::Route::Export,
                 },
                 change: Change::First,
                 observation: Some(observation),
@@ -336,7 +336,7 @@ fn saved_empty_selection_refuses_a_real_nonempty_source_rewrite() {
                 input: InputKey {
                     id: asset.input.clone(),
                     format: "export-file".into(),
-                    arrival_rank: 0,
+                    route: polylogue_model::Route::Live,
                 },
                 change: Change::Rewritten,
                 observation: Some(engine.observation(&path, None)),

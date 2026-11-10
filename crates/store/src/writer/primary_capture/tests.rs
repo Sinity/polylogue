@@ -9,7 +9,7 @@ fn source(id: &str, bytes: &[u8]) -> PreparedBatch {
             input: InputKey {
                 id: id.into(),
                 format: "codex".into(),
-                arrival_rank: 0,
+                route: polylogue_model::Route::Live,
             },
             change: Change::First,
             observation: Some(Observation {
@@ -415,7 +415,7 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
         });
         let writer = Writer::start_on_sinex(&archive, producer.clone()).unwrap();
         let mut input = source("offline", bytes);
-        input.batch.input.arrival_rank = 2;
+        input.batch.input.route = polylogue_model::Route::Export;
         let mut counts = RecordCounts {
             records: 1,
             ..Default::default()
@@ -529,7 +529,7 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
         .read_to_end(&mut restored)
         .unwrap();
     assert_eq!(restored, bytes);
-    assert_eq!(captured.arrival_rank, 2);
+    assert_eq!(captured.route, polylogue_model::Route::Export);
     assert_eq!(captured.parsed.len(), 1);
     assert_eq!(captured.parsed[0].output.events[0].data, payload);
     assert_eq!(captured.parsed[0].reading_version, "synthetic:1");
@@ -675,7 +675,7 @@ fn pending_export_fork_is_refused_before_semantic_preparation_or_publication() {
         input: InputKey {
             id: "export".into(),
             format: "fixture".into(),
-            arrival_rank: 0,
+            route: polylogue_model::Route::Live,
         },
         chain: 1,
         reading_version: "crate::export::VERSION=2".into(),
@@ -1092,7 +1092,7 @@ fn captured_body_anchors_survive_duplicate_and_trimmed_logical_extents() {
         hash,
         length: 8,
         group: None,
-        arrival_rank: 0,
+        route: polylogue_model::Route::Live,
         parsed: vec![],
         raw_range: Some(crate::primary::RawRange { start: 10, end: 18 }),
         generation: None,

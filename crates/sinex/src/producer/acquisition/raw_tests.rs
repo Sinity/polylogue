@@ -14,7 +14,7 @@ fn generation(size: u64) -> SourceGeneration {
             input: polylogue_store::InputKey {
                 id: "raw-input".into(),
                 format: "codex".into(),
-                arrival_rank: 0,
+                route: polylogue_model::Route::Live,
             },
             role: RawStreamRole::ProviderBytes,
             namespace: None,

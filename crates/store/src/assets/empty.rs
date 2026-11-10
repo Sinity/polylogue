@@ -54,7 +54,7 @@ pub(crate) fn source(
         let key = crate::InputKey {
             id: input.to_owned(),
             format: format.clone(),
-            arrival_rank: 2,
+            route: polylogue_model::Route::Export,
         };
         if import.version != 1
             || import.import_id.is_empty()

@@ -6,7 +6,7 @@ fn corrupt_stored_session_facts_refuse_without_erasure_and_can_retry_after_repai
         let w = test_archive();
         let mut first = batch(
             "input",
-            0,
+            Route::Live,
             0,
             vec![row(10, text_message("a", "s", Role::User, "kept", None))],
             &["s"],
@@ -24,7 +24,7 @@ fn corrupt_stored_session_facts_refuse_without_erasure_and_can_retry_after_repai
             .unwrap();
         let next = batch(
             "input",
-            0,
+            Route::Live,
             100,
             vec![row(130, text_message("b", "s", Role::User, "new", None))],
             &["s"],

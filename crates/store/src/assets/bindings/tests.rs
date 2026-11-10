@@ -56,7 +56,7 @@ impl Fixture {
         &self,
         input: &str,
         namespace: &str,
-        rank: u8,
+        route: polylogue_model::Route,
         record: &MessageRecord,
     ) -> BindingContext {
         let bytes = serde_json::to_vec(record).unwrap();
@@ -68,7 +68,7 @@ impl Fixture {
             bytes.len(),
         );
         batch.input.format = "polylogue-bundle".into();
-        batch.input.arrival_rank = rank;
+        batch.input.route = route;
         let mut counts = RecordCounts {
             records: 1,
             ..Default::default()
@@ -81,6 +81,7 @@ impl Fixture {
                     SessionKind::Main,
                 )],
                 messages: vec![MessageRow {
+                    page_text: false,
                     id_kind: polylogue_model::IdKind::Native,
                     offset: 0,
                     end: bytes.len() as u64,
@@ -174,7 +175,7 @@ fn raw(input: &str, namespace: Option<&str>, member: &str, change: Change, lengt
         input: InputKey {
             id: input.into(),
             format: "export-file".into(),
-            arrival_rank: 0,
+            route: polylogue_model::Route::Live,
         },
         change,
         observation: Some(Observation {
@@ -224,7 +225,12 @@ fn claims_without_received_bytes_never_borrow_a_later_same_hash_member() {
     let fixture = Fixture::new();
     let bytes = b"actual member bytes";
     let record = record(bytes);
-    let context = fixture.message("message-input", "scope-a", 0, &record);
+    let context = fixture.message(
+        "message-input",
+        "scope-a",
+        polylogue_model::Route::Live,
+        &record,
+    );
     fixture.refresh();
     let fact = AttachmentBindingRecord::new(context, &record, 0, Vec::new()).unwrap();
     let selection = fact.selection();
@@ -262,7 +268,12 @@ fn validated_multi_extent_member_pins_survive_a_later_input_rewrite() {
     let fixture = Fixture::new();
     let bytes = "prefix λ🙂 suffix".as_bytes();
     let record = record(bytes);
-    let context = fixture.message("message-input", "scope-a", 0, &record);
+    let context = fixture.message(
+        "message-input",
+        "scope-a",
+        polylogue_model::Route::Live,
+        &record,
+    );
     fixture.capture(
         raw("received-member", None, "blobs/received", Change::First, 8),
         &bytes[..8],
@@ -351,8 +362,18 @@ fn same_message_hash_in_other_source_and_namespace_cannot_authorize_a_binding() 
     let fixture = Fixture::new();
     let bytes = b"same actual bytes";
     let record = record(bytes);
-    let first = fixture.message("message-a", "scope-a", 0, &record);
-    let second = fixture.message("message-b", "scope-b", 1, &record);
+    let first = fixture.message(
+        "message-a",
+        "scope-a",
+        polylogue_model::Route::Live,
+        &record,
+    );
+    let second = fixture.message(
+        "message-b",
+        "scope-b",
+        polylogue_model::Route::Capture,
+        &record,
+    );
     fixture.member("member-b", "scope-b", bytes);
     let sources = fixture.refresh();
     let reader = fixture.reads.reader().unwrap();
@@ -440,7 +461,12 @@ fn a_frozen_witness_does_not_recertify_an_unrelated_member_and_restores_only_its
     let fixture = Fixture::new();
     let bytes = b"same bytes";
     let record = record(bytes);
-    let context = fixture.message("message-input", "scope-a", 0, &record);
+    let context = fixture.message(
+        "message-input",
+        "scope-a",
+        polylogue_model::Route::Live,
+        &record,
+    );
     fixture.member("member-a", "scope-a", bytes);
     let sources = fixture.refresh();
     let observed = source(&sources, "member-a").clone();
@@ -509,7 +535,12 @@ fn a_frozen_witness_does_not_recertify_an_unrelated_member_and_restores_only_its
 fn zero_length_received_bytes_are_known_and_conflicting_candidates_stay_ambiguous() {
     let fixture = Fixture::new();
     let mut record = record(b"");
-    let context = fixture.message("message-input", "scope-a", 0, &record);
+    let context = fixture.message(
+        "message-input",
+        "scope-a",
+        polylogue_model::Route::Live,
+        &record,
+    );
     fixture.member("empty-member", "scope-a", b"");
     let sources = fixture.refresh();
     let reader = fixture.reads.reader().unwrap();
@@ -537,7 +568,12 @@ fn zero_length_received_bytes_are_known_and_conflicting_candidates_stay_ambiguou
     let mut alternative = record.bindings[0].candidates[0].clone();
     alternative.sources[0].input = "different-history".into();
     record.bindings[0].candidates.push(alternative);
-    let other = fixture.message("other-message-input", "scope-a", 1, &record);
+    let other = fixture.message(
+        "other-message-input",
+        "scope-a",
+        polylogue_model::Route::Capture,
+        &record,
+    );
     fixture.refresh();
     let fact =
         AttachmentBindingRecord::new(other, &record, 0, vec![witness.for_candidate(0)]).unwrap();
@@ -576,7 +612,12 @@ fn different_opaque_source_ids_can_bind_one_actual_member_without_overwriting_me
     other.block = 1;
     other.source_id = "another:opaque/#id".into();
     record.bindings.push(other);
-    let context = fixture.message("message-input", "scope-a", 0, &record);
+    let context = fixture.message(
+        "message-input",
+        "scope-a",
+        polylogue_model::Route::Live,
+        &record,
+    );
     fixture.member("member-a", "scope-a", bytes);
     let sources = fixture.refresh();
     let reader = fixture.reads.reader().unwrap();
@@ -633,7 +674,12 @@ fn different_opaque_source_ids_can_bind_one_actual_member_without_overwriting_me
 fn one_selected_source_with_two_import_namespaces_remains_ambiguous_even_for_equal_claim_hashes() {
     let fixture = Fixture::new();
     let record = record(b"not received");
-    let first = fixture.message("message-input", "scope-a", 0, &record);
+    let first = fixture.message(
+        "message-input",
+        "scope-a",
+        polylogue_model::Route::Live,
+        &record,
+    );
     fixture.refresh();
     fixture
         .install(AttachmentBindingRecord::new(first.clone(), &record, 0, Vec::new()).unwrap())
@@ -680,7 +726,12 @@ fn a_slot_with_unknown_candidates_stays_explicitly_unknown() {
     let fixture = Fixture::new();
     let mut record = record(b"unknown bytes");
     record.bindings[0].candidates.clear();
-    let context = fixture.message("message-input", "scope-a", 0, &record);
+    let context = fixture.message(
+        "message-input",
+        "scope-a",
+        polylogue_model::Route::Live,
+        &record,
+    );
     fixture.refresh();
     let fact = AttachmentBindingRecord::new(context, &record, 0, Vec::new()).unwrap();
     let selection = fact.selection();
@@ -777,7 +828,12 @@ fn distinct_declared_namespaces_and_full_claims_survive_one_receiving_context() 
         }
         record.bindings.push(another);
     }
-    let context = fixture.message("message-input", "receiving-scope", 0, &record);
+    let context = fixture.message(
+        "message-input",
+        "receiving-scope",
+        polylogue_model::Route::Live,
+        &record,
+    );
     fixture.member("member-input", "receiving-scope", bytes);
     let observed = fixture.refresh();
     let witness = fixture
@@ -847,7 +903,12 @@ fn unknown_declared_namespaces_remain_distinct_and_never_borrow_foreign_membersh
     let mut another = record.bindings[0].clone();
     another.namespace.import_id = "another-original-scope".into();
     record.bindings.push(another);
-    let context = fixture.message("message-input", "receiving-scope", 0, &record);
+    let context = fixture.message(
+        "message-input",
+        "receiving-scope",
+        polylogue_model::Route::Live,
+        &record,
+    );
     fixture.member("foreign-member", "original-scope", bytes);
     let observed = fixture.refresh();
     let witness = fixture
@@ -895,8 +956,18 @@ fn retained_nonshown_claims_export_exactly_without_granting_their_members_to_the
     let fixture = Fixture::new();
     let bytes = b"retained namespace bytes";
     let record = record(bytes);
-    let first = fixture.message("message-a", "scope-a", 0, &record);
-    let second = fixture.message("message-b", "scope-b", 1, &record);
+    let first = fixture.message(
+        "message-a",
+        "scope-a",
+        polylogue_model::Route::Live,
+        &record,
+    );
+    let second = fixture.message(
+        "message-b",
+        "scope-b",
+        polylogue_model::Route::Capture,
+        &record,
+    );
     fixture.member("member-b", "scope-b", bytes);
     let observed = fixture.refresh();
     let witness = fixture

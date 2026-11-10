@@ -91,7 +91,7 @@ fn document_block_visitors_seek_original_ordinals_and_stop_before_corrupt_bodies
 }
 
 fn doc_batch(input: &str, doc: Document, prepared: bool) -> Batch {
-    let mut batch = batch(input, 1, 0, Vec::new(), &[]);
+    let mut batch = batch(input, Route::Capture, 0, Vec::new(), &[]);
     batch.input.format = "claude-ai".into();
     batch.parse[0].output.documents.push(DocumentRow {
         offset: 11,
@@ -285,9 +285,10 @@ fn shared_message_document_text_keeps_vectors_after_both_sources_disappear() {
     w.store_reading(
         batch(
             "message-input",
-            1,
+            Route::Capture,
             0,
             vec![MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
                 end: 90,
@@ -320,7 +321,7 @@ fn shared_message_document_text_keeps_vectors_after_both_sources_disappear() {
     vectors.execute("INSERT INTO embedded(text_hash,model,chunk,dims,vector,embedded_at) VALUES (?1,'synthetic/model/1/document/unit',0,1,?2,1)",rusqlite::params![hash,1.25f32.to_le_bytes().to_vec()]).unwrap();
     drop(vectors);
     for input in ["message-input", "document-input"] {
-        let mut gone = batch(input, 1, 0, vec![], &[]);
+        let mut gone = batch(input, Route::Capture, 0, vec![], &[]);
         gone.change = Change::Disappeared;
         gone.parse.clear();
         w.writer.send(gone).unwrap();

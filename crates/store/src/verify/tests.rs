@@ -31,7 +31,7 @@ impl Stored {
             input: InputKey {
                 id: input.into(),
                 format: "test-bytes".into(),
-                arrival_rank: 0,
+                route: polylogue_model::Route::Live,
             },
             change: if from == 0 {
                 Change::First

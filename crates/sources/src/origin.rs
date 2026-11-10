@@ -2,7 +2,7 @@
 //! live, how a file is recognized and which parser reads it.
 
 use crate::parse::Parse;
-use polylogue_model::QuotaLimit;
+use polylogue_model::{QuotaLimit, Route};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,16 +83,6 @@ pub enum Capture {
     RowDump,
 }
 
-impl Arrival {
-    pub const fn rank(self) -> u8 {
-        match self {
-            Self::Live => 0,
-            Self::Spool => 1,
-            Self::Import => 2,
-        }
-    }
-}
-
 /// A tool's resume command line (program first) from a session's native
 /// ID, or `None` when that session cannot be resumed on its own.
 pub type Resume = fn(&str) -> Option<Vec<String>>;
@@ -129,6 +119,10 @@ pub struct OriginSpec {
     pub harness_prefixes: &'static [&'static str],
     pub support: Support,
     pub arrival: Arrival,
+    /// Which route its readings of a conversation are, for the route
+    /// precedence that composes a message seen through several routes
+    /// (docs/sessions.md).
+    pub route: Route,
     /// What names this origin's inputs.
     pub input_identity: InputIdentity,
     pub root: Root,
@@ -317,6 +311,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: modules!(crate::claude_code::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
+        route: Route::Live,
         input_identity: InputIdentity::Location,
         root: crate::claude_code::ROOT,
         locations: crate::claude_code::LOCATIONS,
@@ -340,6 +335,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         ),
         support: Support::Parsed,
         arrival: Arrival::Live,
+        route: Route::Live,
         input_identity: InputIdentity::Location,
         root: crate::claude_code::side::SIDE_ROOT,
         locations: crate::claude_code::side::SIDE_LOCATIONS,
@@ -363,6 +359,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         ),
         support: Support::Parsed,
         arrival: Arrival::Live,
+        route: Route::Live,
         input_identity: InputIdentity::Location,
         root: crate::claude_code::ROOT,
         locations: crate::claude_code::side::HISTORY_LOCATIONS,
@@ -394,6 +391,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: modules!(crate::codex::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
+        route: Route::Live,
         input_identity: InputIdentity::ProviderId,
         root: crate::codex::ROOT,
         locations: crate::codex::LOCATIONS,
@@ -414,6 +412,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: modules!(crate::codex::VERSION, crate::codex::database::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
+        route: Route::Live,
         input_identity: InputIdentity::Location,
         root: crate::codex::database::ROOT,
         locations: crate::codex::database::LOCATIONS,
@@ -440,6 +439,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         ),
         support: Support::Parsed,
         arrival: Arrival::Live,
+        route: Route::Live,
         input_identity: InputIdentity::Location,
         root: Root::HOME,
         locations: crate::gemini_cli::LOCATIONS,
@@ -460,6 +460,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Live,
+        route: Route::Live,
         input_identity: InputIdentity::Location,
         root: Root::HOME,
         locations: crate::antigravity::LOCATIONS,
@@ -480,6 +481,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Spool,
+        route: Route::Capture,
         input_identity: InputIdentity::Location,
         root: Root::STATE,
         locations: &["polylogue/antigravity/*.json"],
@@ -500,6 +502,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: modules!(crate::export::VERSION, crate::hermes::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
+        route: Route::Live,
         input_identity: InputIdentity::Location,
         root: crate::locations::HERMES_ROOT,
         locations: &["state.db", "verification_evidence.db"],
@@ -522,6 +525,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: modules!(crate::grok_cli::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
+        route: Route::Live,
         input_identity: InputIdentity::Location,
         root: Root::HOME,
         locations: crate::grok_cli::LOCATIONS,
@@ -542,6 +546,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: modules!(crate::repo_lookup::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Spool,
+        route: Route::Recorded,
         input_identity: InputIdentity::Location,
         root: Root::STATE,
         locations: crate::repo_lookup::LOCATIONS,
@@ -562,6 +567,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: modules!(crate::hook_spool::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Spool,
+        route: Route::Recorded,
         input_identity: InputIdentity::Location,
         root: Root::STATE,
         locations: crate::hook_spool::LOCATIONS,
@@ -588,6 +594,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         ),
         support: Support::Parsed,
         arrival: Arrival::Spool,
+        route: Route::Capture,
         input_identity: InputIdentity::Location,
         root: Root::STATE,
         locations: crate::browser_capture::LOCATIONS,
@@ -608,6 +615,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: &[],
         support: Support::NoParser,
         arrival: Arrival::Live,
+        route: Route::Live,
         input_identity: InputIdentity::Location,
         root: Root {
             env: None,
@@ -631,6 +639,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: &[],
         support: Support::NoParser,
         arrival: Arrival::Live,
+        route: Route::Live,
         input_identity: InputIdentity::Location,
         root: Root {
             env: None,
@@ -654,6 +663,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: &[],
         support: Support::NoParser,
         arrival: Arrival::Live,
+        route: Route::Live,
         input_identity: InputIdentity::Location,
         root: Root::HOME,
         locations: &[],
@@ -674,6 +684,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: &[],
         support: Support::NoParser,
         arrival: Arrival::Live,
+        route: Route::Live,
         input_identity: InputIdentity::Location,
         root: Root::HOME,
         locations: &[],
@@ -694,6 +705,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: &[],
         support: Support::Kept,
         arrival: Arrival::Live,
+        route: Route::Live,
         input_identity: InputIdentity::Location,
         root: Root::HOME,
         locations: &[],
@@ -714,6 +726,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: &[],
         support: Support::Kept,
         arrival: Arrival::Live,
+        route: Route::Live,
         input_identity: InputIdentity::ProviderId,
         root: Root::HOME,
         locations: &[],
@@ -734,6 +747,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: modules!(crate::export::VERSION, crate::codex_cloud::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
+        route: Route::Export,
         input_identity: InputIdentity::Content,
         root: Root::HOME,
         locations: &[],
@@ -754,6 +768,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: modules!(crate::export::VERSION, crate::aider::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
+        route: Route::Export,
         input_identity: InputIdentity::Content,
         root: Root::HOME,
         locations: &[],
@@ -774,6 +789,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: &[],
         support: Support::Kept,
         arrival: Arrival::Import,
+        route: Route::Copy,
         input_identity: InputIdentity::Content,
         root: Root::HOME,
         locations: &[],
@@ -798,6 +814,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         ),
         support: Support::Parsed,
         arrival: Arrival::Import,
+        route: Route::Copy,
         input_identity: InputIdentity::Content,
         root: Root::HOME,
         locations: &[],
@@ -818,6 +835,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: modules!(crate::chatgpt::VERSION, crate::export::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
+        route: Route::Export,
         input_identity: InputIdentity::Content,
         root: Root::HOME,
         locations: &[],
@@ -848,6 +866,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: modules!(crate::chatgpt::VERSION, crate::claude_ai::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
+        route: Route::Export,
         input_identity: InputIdentity::Content,
         root: Root::HOME,
         locations: &[],
@@ -875,6 +894,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: modules!(crate::chatgpt::VERSION, crate::claude_ai::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
+        route: Route::Export,
         input_identity: InputIdentity::Content,
         root: Root::HOME,
         locations: &[],
@@ -899,6 +919,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         ),
         support: Support::Parsed,
         arrival: Arrival::Spool,
+        route: Route::Capture,
         input_identity: InputIdentity::Location,
         root: Root::STATE,
         locations: crate::ai_studio::LOCATIONS,
@@ -929,6 +950,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: modules!(crate::export::VERSION, crate::gemini_app::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
+        route: Route::Export,
         input_identity: InputIdentity::Content,
         root: Root::HOME,
         locations: &[],
@@ -959,6 +981,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: modules!(crate::export::VERSION, crate::grok::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
+        route: Route::Export,
         input_identity: InputIdentity::Content,
         root: Root::HOME,
         locations: &[],
@@ -990,6 +1013,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         ),
         support: Support::Parsed,
         arrival: Arrival::Import,
+        route: Route::Export,
         input_identity: InputIdentity::Content,
         root: Root::HOME,
         locations: &[],
@@ -1014,6 +1038,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         ),
         support: Support::Parsed,
         arrival: Arrival::Import,
+        route: Route::Export,
         input_identity: InputIdentity::Content,
         root: Root::HOME,
         locations: &[],
@@ -1040,6 +1065,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         ),
         support: Support::Parsed,
         arrival: Arrival::Import,
+        route: Route::Export,
         input_identity: InputIdentity::Content,
         root: Root::HOME,
         locations: &[],

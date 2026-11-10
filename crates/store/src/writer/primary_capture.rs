@@ -545,7 +545,7 @@ impl Inner {
                         }),
                     basis: Some(bases[&self.capture_source_selector(batch, &pending)?].clone()),
                     input: name,
-                    arrival_rank: batch.input.arrival_rank,
+                    route: batch.input.route,
                     parsed: batch
                         .parse
                         .iter()
@@ -850,7 +850,7 @@ impl Inner {
                     let key = InputKey {
                         id: rows.input.clone(),
                         format: rows.format.clone(),
-                        arrival_rank: input.arrival_rank,
+                        route: input.route,
                     };
                     let machine = rows.observation.as_ref().map(|o| o.machine.clone());
                     if let Some(revision) = &rows.revision {

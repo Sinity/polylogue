@@ -407,6 +407,7 @@ impl ExportParser for AiStudio {
                         let id = message_id(ORIGIN, &message_key(&self.native, "system", ""))
                             .ok_or("unusable system id")?;
                         sink.out.messages.push(MessageRow {
+                            page_text: false,
                             id_kind: polylogue_model::IdKind::Native,
                             offset: 0,
                             end: self.state.length,
@@ -436,6 +437,7 @@ impl ExportParser for AiStudio {
                 self.state.previous = Some(message.id.clone());
                 let offset = sink.position();
                 sink.out.messages.push(MessageRow {
+                    page_text: false,
                     id_kind,
                     offset,
                     end: offset + 1,

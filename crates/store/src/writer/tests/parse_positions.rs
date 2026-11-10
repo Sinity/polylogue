@@ -6,7 +6,7 @@ fn a_failed_middle_batch_blocks_its_suffix_until_a_committed_progress_retry() {
     let make = |input, start, id, text| {
         batch(
             input,
-            0,
+            Route::Live,
             start,
             vec![row(start, text_message(id, input, Role::User, text, None))],
             &[input],

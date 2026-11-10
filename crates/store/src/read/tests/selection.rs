@@ -248,6 +248,7 @@ fn reads_answer_promptly_while_the_writer_works_through_a_backlog() {
                 let session = format!("backlog-{sent}");
                 let messages = (0..MESSAGES_PER_BATCH)
                     .map(|n| MessageRow {
+                        page_text: false,
                         id_kind: polylogue_model::IdKind::Native,
                         offset: n,
                         end: n + 1,

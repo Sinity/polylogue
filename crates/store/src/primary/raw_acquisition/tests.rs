@@ -11,7 +11,7 @@ fn generation() -> SourceGeneration {
             input: InputKey {
                 format: "synthetic".into(),
                 id: "input".into(),
-                arrival_rank: 0,
+                route: polylogue_model::Route::Live,
             },
             role: RawStreamRole::ProviderBytes,
             namespace: None,
@@ -179,7 +179,7 @@ fn scheduling_rank_does_not_rename_a_raw_stream_or_its_durable_wire_key() {
     let SourceGeneration::File { stream, .. } = &mut imported else {
         unreachable!()
     };
-    stream.input.arrival_rank = 2;
+    stream.input.route = polylogue_model::Route::Export;
     assert_eq!(original, imported);
     assert_eq!(
         serde_json::to_vec(&original).unwrap(),

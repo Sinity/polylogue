@@ -538,6 +538,7 @@ impl Rollout {
             }
         };
         let row = MessageRow {
+            page_text: false,
             id_kind,
             offset: record.offset,
             end: record.offset + record.bytes.len() as u64,
@@ -826,6 +827,7 @@ impl Rollout {
                 };
                 let duration = items::completed(item).and_then(|c| c.duration_ms);
                 out.messages.push(MessageRow {
+                    page_text: false,
                     id_kind: polylogue_model::IdKind::Native,
                     offset: record.offset,
                     end: record.offset + record.bytes.len() as u64,

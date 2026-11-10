@@ -4,6 +4,7 @@
 use super::*;
 use crate::first_build::FirstBuild;
 use crate::versions::VersionKind;
+use polylogue_model::{Completion, Route};
 
 mod checkpoint;
 mod events_links;
@@ -157,7 +158,7 @@ fn apply_rows(
         },
         input_pk,
         chain,
-        rank: i64::from(b.input.arrival_rank),
+        route: b.input.route,
         counter,
         first_build,
         keys,
@@ -205,7 +206,7 @@ fn apply_rows(
     let source = crate::documents::Source {
         input_pk,
         chain,
-        rank: i64::from(b.input.arrival_rank),
+        route: b.input.route,
         counter,
         packed: &p.prepared.texts,
         first_build,
@@ -454,7 +455,8 @@ pub(super) struct RowWriter<'a, 't> {
     tx: &'a Transaction<'t>,
     input_pk: i64,
     chain: i64,
-    rank: i64,
+    /// The input's route; a message row read from page text has its own.
+    route: Route,
     counter: i64,
     /// Set during a first build ([`Writer::start`]): search entries,
     /// trigram entries and secondary indexes are built once, in bulk, when
@@ -462,19 +464,17 @@ pub(super) struct RowWriter<'a, 't> {
     /// key through it ([`FirstBuild`]).
     first_build: Option<&'a FirstBuild>,
     keys: &'a resolve::ResolvedKeys,
-    choices: &'a resolve::versions::Choices,
+    choices: &'a resolve::membership::Choices,
 }
 
-/// A message reading's source and shown fields.
+/// The main route's reading of a shown message.
 pub(super) struct Version {
     time: Vec<u8>,
     input_pk: i64,
     chain: i64,
     start: i64,
     end: i64,
-    complete: bool,
-    rank: i64,
-    hash: Vec<u8>,
+    in_progress: bool,
 }
 
 pub(super) fn ms(t: Option<Timestamp>) -> Option<i64> {
@@ -581,15 +581,15 @@ impl RowWriter<'_, '_> {
         let id = m.id.to_string();
         let pk = self.message_pk(&id)?;
         let new = pk.is_none();
+        let route = row.route(self.route);
+        let completion = Completion::of(m, route);
         let v = Version {
             time: prepared.time.clone(),
             input_pk: self.input_pk,
             chain: self.chain,
             start: row.offset as i64,
             end: row.end.max(row.offset) as i64,
-            complete: !(m.role == Role::Assistant && m.stop_reason.is_none()),
-            rank: self.rank,
-            hash: prepared.hash.to_vec(),
+            in_progress: completion == Completion::InProgress,
         };
         let pk = match pk {
             Some(pk) => pk,
@@ -602,21 +602,23 @@ impl RowWriter<'_, '_> {
             }
         };
         let id_kind = row.id_kind.as_str();
+        let hash = prepared.hash.as_slice();
+        let (route, completion) = (route.as_str(), completion.as_str());
         if new {
             self.tx.prepare_cached(
-                "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,complete,version_hash,session_pk,main,arrival_rank,seq,record_position)
+                "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_hash,session_pk,main,route,seq,record_position)
                  VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12)"
-            )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,v.complete,v.hash,session_pk,main,self.rank,position.0,position.1,id_kind])?;
+            )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,hash,session_pk,main,route,position.0,position.1,id_kind])?;
             return Ok(false);
         }
         self.tx.prepare_cached(
-            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,complete,version_hash,session_pk,main,arrival_rank,seq,record_position)
+            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_hash,session_pk,main,route,seq,record_position)
              VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12)
              ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,
-             source_end=excluded.source_end,id_kind=excluded.id_kind,complete=excluded.complete,version_hash=excluded.version_hash,
-             session_pk=excluded.session_pk,main=excluded.main,arrival_rank=excluded.arrival_rank,
+             source_end=excluded.source_end,id_kind=excluded.id_kind,completion=excluded.completion,version_hash=excluded.version_hash,
+             session_pk=excluded.session_pk,main=excluded.main,route=excluded.route,
              seq=excluded.seq,record_position=excluded.record_position"
-        )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,v.complete,v.hash,session_pk,main,self.rank,position.0,position.1,id_kind])?;
+        )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,hash,session_pk,main,route,position.0,position.1,id_kind])?;
         Ok(false)
     }
 
@@ -638,9 +640,7 @@ impl RowWriter<'_, '_> {
                     chain: choice.chain,
                     start: choice.start,
                     end: choice.end,
-                    complete: choice.complete,
-                    rank: choice.rank,
-                    hash: choice.hash.clone(),
+                    in_progress: choice.in_progress,
                 },
                 choice.session,
             )
@@ -655,15 +655,17 @@ impl RowWriter<'_, '_> {
             }
             self.clear_blocks(pk)?;
             self.update_event_anchors(pk, false)?;
+            self.tx
+                .execute("DELETE FROM message_route WHERE message_pk=?1", [pk])?;
             self.tx.execute("DELETE FROM message WHERE pk=?1", [pk])?;
             return Ok(true);
         };
         let choice = choice.as_ref().expect("selected message");
         let order = choice.order;
         if !choice.changed {
-            self.tx.execute("UPDATE message SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,arrival_rank=?6,
-                order_input_pk=?7,order_input_id=(SELECT id FROM input_ref WHERE pk=?7),seq=?8,record_position=?9 WHERE pk=?1",
-                params![pk,v.input_pk,v.chain,v.start,v.end,v.rank,order.0,order.1.0,order.1.1])?;
+            self.tx.execute("UPDATE message SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,
+                order_input_pk=?6,order_input_id=(SELECT id FROM input_ref WHERE pk=?6),seq=?7,record_position=?8,in_progress=?9 WHERE pk=?1",
+                params![pk,v.input_pk,v.chain,v.start,v.end,order.0,order.1.0,order.1.1,v.in_progress])?;
             self.tx.execute(
                 "UPDATE session SET changed=?2 WHERE pk=?1",
                 params![session_pk, self.counter],
@@ -682,6 +684,16 @@ impl RowWriter<'_, '_> {
         self.clear_blocks(pk)?;
         self.update_message(pk, m, session_pk, &v, order)?;
         self.insert_blocks(pk, session_pk, m, prepared)?;
+        self.tx
+            .prepare_cached("DELETE FROM message_route WHERE message_pk=?1")?
+            .execute([pk])?;
+        for (group, input, chain) in &choice.routes {
+            self.tx
+                .prepare_cached(
+                    "INSERT INTO message_route(message_pk,field_group,input_pk,chain) VALUES (?1,?2,?3,?4)",
+                )?
+                .execute(params![pk, group.as_str(), input, chain])?;
+        }
         Ok(true)
     }
 
@@ -743,28 +755,28 @@ impl RowWriter<'_, '_> {
         let u = &m.usage;
         let n = |x: Option<u64>| x.map(|x| x as i64);
         let sql = if pk.is_some() {
-            "UPDATE message SET session_pk = ?2, order_input_pk = ?3, seq = ?4, arrival_rank = ?5,
-                 role = ?6, written_by = ?7, prompt_kind = ?8, model = ?9, at = ?10,
-                 parent_id = ?11, input_pk = ?12, source_chain = ?13, source_start = ?14,
-                 source_end = ?26, in_progress = ?15, input_tokens = ?16, output_tokens = ?17,
-                 cache_read_tokens = ?18, cache_write_tokens = ?19, reasoning_tokens = ?20,
-                 service_tier = ?21, stop_reason = ?22, duration_ms = ?23, attrs_json = ?24,
-                 words = ?25, cost_nusd = ?32, provider_cost_nusd = ?27,
-                 cache_write_5m_tokens = ?28, cache_write_1h_tokens = ?29, speed = ?30,
-                 record_position = ?31, at_time = ?34,
+            "UPDATE message SET session_pk = ?2, order_input_pk = ?3, seq = ?4,
+                 role = ?5, written_by = ?6, prompt_kind = ?7, model = ?8, at = ?9,
+                 parent_id = ?10, input_pk = ?11, source_chain = ?12, source_start = ?13,
+                 source_end = ?25, in_progress = ?14, input_tokens = ?15, output_tokens = ?16,
+                 cache_read_tokens = ?17, cache_write_tokens = ?18, reasoning_tokens = ?19,
+                 service_tier = ?20, stop_reason = ?21, duration_ms = ?22, attrs_json = ?23,
+                 words = ?24, cost_nusd = ?31, provider_cost_nusd = ?26,
+                 cache_write_5m_tokens = ?27, cache_write_1h_tokens = ?28, speed = ?29,
+                 record_position = ?30, at_time = ?33,
                  order_input_id = (SELECT id FROM input_ref WHERE pk = ?3)
-             WHERE pk = ?1 AND (?33 IS NULL OR pk=?33)"
+             WHERE pk = ?1 AND pk = ?32"
         } else {
-            "INSERT INTO message(pk, id, session_pk, order_input_pk, seq, arrival_rank, role, written_by,
+            "INSERT INTO message(pk, id, session_pk, order_input_pk, seq, role, written_by,
                  prompt_kind, model, at, parent_id, input_pk, source_chain, source_start,
                  source_end, in_progress, input_tokens, output_tokens, cache_read_tokens,
                  cache_write_tokens, reasoning_tokens, service_tier, stop_reason, duration_ms,
                  attrs_json, words, provider_cost_nusd,
                  cache_write_5m_tokens, cache_write_1h_tokens, speed, record_position,
                  cost_nusd, order_input_id, at_time)
-             VALUES (?33, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?26, ?15, ?16,
-                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?27, ?28, ?29, ?30, ?31, ?32,
-                 (SELECT id FROM input_ref WHERE pk = ?3), ?34)"
+             VALUES (?32, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?25, ?14, ?15,
+                 ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?26, ?27, ?28, ?29, ?30, ?31,
+                 (SELECT id FROM input_ref WHERE pk = ?3), ?33)"
         };
         let first: rusqlite::types::Value = match pk {
             Some(pk) => pk.into(),
@@ -775,7 +787,6 @@ impl RowWriter<'_, '_> {
             session_pk,
             order.0,
             order.1.0,
-            v.rank,
             name(&m.role),
             written_by,
             m.prompt_kind.map(|k| name(&k)),
@@ -785,7 +796,7 @@ impl RowWriter<'_, '_> {
             v.input_pk,
             v.chain,
             v.start,
-            i64::from(!v.complete),
+            i64::from(v.in_progress),
             n(u.input),
             n(u.output),
             n(u.cached_input),
@@ -808,11 +819,15 @@ impl RowWriter<'_, '_> {
             // The cost derivation's value, written with the row so a first
             // build's derive does not rewrite every priced message.
             polylogue_model::Catalog::builtin().cost_nusd(m.model.as_deref(), u),
-            Some(
-                self.keys
-                    .get(resolve::Kind::Message, m.id.to_string().as_bytes())?
-                    .pk
-            ),
+            // An update names its row; an insert takes the reserved key.
+            match pk {
+                Some(pk) => pk,
+                None => {
+                    self.keys
+                        .get(resolve::Kind::Message, m.id.to_string().as_bytes())?
+                        .pk
+                }
+            },
             v.time,
         ])?;
         let pk = pk.unwrap_or_else(|| self.tx.last_insert_rowid());

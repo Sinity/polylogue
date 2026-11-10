@@ -203,7 +203,7 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
             InputKey {
                 id: input,
                 format: "claude-code".into(),
-                arrival_rank: 0,
+                route: polylogue_model::Route::Live,
             },
             Change::Reparse {
                 chain: progress.chain,
@@ -359,7 +359,7 @@ fn a_submit_waiting_for_room_returns_when_a_stop_is_requested() {
             InputKey {
                 id: input,
                 format: "claude-code".into(),
-                arrival_rank: 0,
+                route: polylogue_model::Route::Live,
             },
             Change::Reparse {
                 chain: progress.chain,
@@ -450,7 +450,7 @@ fn a_new_empty_native_file_has_a_real_body_and_known_eof_without_parser_progress
     let input = polylogue_store::InputKey {
         id: "empty-native".into(),
         format: origin.name.into(),
-        arrival_rank: 0,
+        route: polylogue_model::Route::Live,
     };
     let mut plan = crate::plan::Plan::stored(
         path.clone(),

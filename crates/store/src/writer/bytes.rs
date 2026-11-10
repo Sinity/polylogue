@@ -164,8 +164,8 @@ fn input_rows_at(
             (next, chain, *from)
         }
         (change, _, _) => {
-            let produced = match (change, b.input.arrival_rank) {
-                (_, 2) => "imported",
+            let produced = match (change, b.input.route.is_imported()) {
+                (_, true) => "imported",
                 (Change::First, _) => "first",
                 _ => "rewritten",
             };
@@ -188,11 +188,11 @@ fn input_rows_at(
     }
     if b.observation.is_some() && !b.continues {
         let class = match &b.change {
-            Change::First if b.input.arrival_rank == 2 => "imported",
+            Change::First if b.input.route.is_imported() => "imported",
             Change::First => "first",
             Change::Appended { .. } => "appended",
             Change::Rewritten => "rewritten",
-            Change::Unchanged if b.input.arrival_rank == 2 => "imported",
+            Change::Unchanged if b.input.route.is_imported() => "imported",
             Change::Unchanged => "back",
             Change::Reparse { .. } | Change::Observed { .. } => unreachable!(),
             Change::Disappeared => "deleted",

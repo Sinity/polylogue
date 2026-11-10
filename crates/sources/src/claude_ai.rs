@@ -326,6 +326,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
     for (_, _, _, message) in rows {
         let offset = sink.position();
         sink.out.messages.push(MessageRow {
+            page_text: false,
             id_kind: polylogue_model::IdKind::Native,
             offset,
             end: offset + 1,
@@ -815,6 +816,7 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
         };
         let offset = sink.position();
         sink.out.messages.push(MessageRow {
+            page_text: false,
             id_kind: polylogue_model::IdKind::Native,
             offset,
             end: offset + 1,

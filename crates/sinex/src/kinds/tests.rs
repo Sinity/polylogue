@@ -10,7 +10,7 @@ fn reading(input: &str, start: u64) -> Reading {
         input: polylogue_store::InputKey {
             id: input.into(),
             format: "codex".into(),
-            arrival_rank: 0,
+            route: polylogue_model::Route::Live,
         },
         chain: 1,
         reading_version: "reader-3".into(),

@@ -9,6 +9,7 @@ fn messages_one_record_holds_read_in_record_order() {
     let record = |offset, ids: &[(&str, Role, &str)]| {
         ids.iter()
             .map(|(id, role, text)| MessageRow {
+                page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset,
                 end: offset + 100,
@@ -25,7 +26,7 @@ fn messages_one_record_holds_read_in_record_order() {
         ],
     );
     rows.extend(record(100, &[("0", Role::Assistant, "fourth")]));
-    let mut first = batch("lines", 0, 0, rows, &["s"]);
+    let mut first = batch("lines", Route::Live, 0, rows, &["s"]);
     first.length = 200;
     first.parse[0].parsed_upto = 200;
     w.store_reading(first, Some(&[b'r'; 200])).unwrap();
@@ -36,7 +37,7 @@ fn messages_one_record_holds_read_in_record_order() {
     // A record appended later with the same shape keeps its own order.
     let later = batch(
         "lines",
-        0,
+        Route::Live,
         200,
         record(
             200,

@@ -567,8 +567,8 @@ impl Fixture {
             "INSERT OR IGNORE INTO event_value(hash,body) VALUES (?1,?2)",
             params![hash.as_slice(), data],
         )?;
-        self.index.execute("INSERT INTO event_source(event_pk,input_pk,chain,value_pk,arrival_rank,session_pk,fields,imported_provenance)
-            SELECT e.pk,?2,1,v.pk,0,?3,?4,'[]' FROM event e,event_value v WHERE e.id=?1 AND v.hash=?5",
+        self.index.execute("INSERT INTO event_source(event_pk,input_pk,chain,value_pk,route,session_pk,fields,imported_provenance)
+            SELECT e.pk,?2,1,v.pk,'live',?3,?4,'[]' FROM event e,event_value v WHERE e.id=?1 AND v.hash=?5",
             params![id,self.input_pk,session_pk,fields,hash.as_slice()])?;
         self.index.execute(
             "UPDATE session SET changed=changed+1 WHERE pk=?1",

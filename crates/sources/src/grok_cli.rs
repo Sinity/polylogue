@@ -306,6 +306,7 @@ impl Parser for GrokCli {
             ..Default::default()
         };
         out.messages.push(MessageRow {
+            page_text: false,
             id_kind: polylogue_model::IdKind::Content,
             offset: record.offset,
             end,

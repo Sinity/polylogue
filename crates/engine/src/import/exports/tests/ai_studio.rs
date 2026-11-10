@@ -327,7 +327,7 @@ fn missing_retained_export_prefix_captures_a_full_rewrite_without_repair() {
         InputKey {
             id: input.clone(),
             format: origin.name.into(),
-            arrival_rank: origin.arrival.rank(),
+            route: origin.route,
         },
         Change::Appended { from: old_length },
         Some(facts),
