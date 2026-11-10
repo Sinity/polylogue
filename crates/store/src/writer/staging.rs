@@ -80,8 +80,8 @@ impl Inner {
     /// Stores the groups that were waiting together, so their files and
     /// rows share syncs and commits ([`Self::store_group`]), and answers
     /// each. Logical package and database groups retain the caller's boundary.
-    /// Primary custody also preserves each caller group before file samples
-    /// receive their separate acquisition dispositions.
+    /// In primary mode each caller's group also stays whole before its file
+    /// samples receive their separate acquisition dispositions.
     pub(super) fn store_groups(&mut self, groups: Vec<WaitingGroup>) {
         let (alone, together): (Vec<WaitingGroup>, Vec<WaitingGroup>) = groups
             .into_iter()
