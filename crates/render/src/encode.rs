@@ -120,7 +120,11 @@ impl<'a> Encoder<'a> {
                     );
                     encoder.line(&text)?;
                 }
-                if let Some(zone) = &header.zone {
+                if let Some(zone) = header
+                    .zone
+                    .as_deref()
+                    .or(options.model_facing.then_some("UTC"))
+                {
                     encoder.line(&format!("Times {zone}."))?;
                 }
                 writeln!(encoder.out)?;
