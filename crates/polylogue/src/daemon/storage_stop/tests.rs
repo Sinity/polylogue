@@ -51,18 +51,19 @@ fn a_failed_register_sync_stops_the_daemon_and_names_the_log() {
         .unwrap();
     let write = UserWrite::Assert {
         assertions: vec![polylogue_model::assertion::NewAssertion {
-            kind: polylogue_model::assertion::AssertionKind::Lesson,
-            key: None,
-            value: Some(serde_json::json!("written before the disk fails")),
+            kind: polylogue_model::assertion::AssertionKind::Signal,
+            key: Some("storage-test".into()),
+            value: Some(serde_json::json!({"name": "storage-test", "query": "sessions"})),
             valid_until: None,
             links: vec![],
         }],
     };
     let writes = daemon.daemon.writes.as_ref().unwrap();
+    // The write commits, its sync fails, and the writer stops before answering.
+    let answer = writes.user(context.request("storage-test".into(), write));
     assert!(
-        writes
-            .user(context.request("storage-test".into(), write))
-            .is_err()
+        matches!(answer, Err(polylogue_store::StoreError::WriterGone)),
+        "{answer:?}"
     );
     let stopped = tokio::runtime::Builder::new_current_thread()
         .enable_time()
