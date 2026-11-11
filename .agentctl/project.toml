@@ -155,3 +155,15 @@ scratch = "none"
 cache = "none"
 admission = { memory_mib = 10240 }
 unit_properties = ["CPUWeight=20", "IOWeight=20", "MemoryHigh=10G", "MemoryMax=14G", "MemorySwapMax=2G"]
+
+[operations.import_preserved]
+description = "Import preserved sources with an explicit prebuilt command and retained reports"
+exec = ["env", "-u", "VOYAGE_API_KEY", "ionice", "-c", "3", "nice", "-n", "19"]
+arguments = "required"
+pool = "measure"
+result = "exit"
+timeout_seconds = 0
+scratch = "none"
+cache = "none"
+admission = { memory_mib = 512 }
+unit_properties = ["CPUWeight=20", "IOWeight=20", "MemoryHigh=1G"]
