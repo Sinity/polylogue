@@ -11,7 +11,7 @@ use polylogue_model::live::channel::Probe;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 #[cfg(test)]
 mod tests;
@@ -266,6 +266,25 @@ impl Hosted {
     }
 }
 
+/// What the live-session acts hand to the daemon's acts worker, which
+/// records outcomes and runs resumes; the acts hold no reference to the
+/// daemon.
+pub(crate) enum Report {
+    /// A message that waited for a running prompt was written, or dropped.
+    Sent {
+        delivery: String,
+        sent: Result<(), String>,
+    },
+    /// A resumed run to start; no run of its session is in progress.
+    Resume(ResumeRun),
+    /// The daemon stops.
+    Stop,
+}
+
+/// One hosted session's connection. Each session has its own lock, so an
+/// act blocked on one session's adapter never delays another session.
+type Handle = Arc<Mutex<Hosted>>;
+
 /// What the daemon keeps for live-session acts.
 pub(crate) struct Acts {
     mail: PathBuf,
@@ -276,7 +295,7 @@ pub(crate) struct Acts {
     /// Sessions with a resumed run in progress, each with the runs queued
     /// behind it: one resumed run per session at a time, in order.
     resuming: Mutex<BTreeMap<String, VecDeque<ResumeRun>>>,
-    hosted: Mutex<BTreeMap<String, Hosted>>,
+    hosted: Mutex<BTreeMap<String, Handle>>,
     permission_hook: OnceLock<bool>,
     /// The program that proxies Codex's control socket, and the socket.
     codex: Mutex<(PathBuf, PathBuf)>,
@@ -284,7 +303,7 @@ pub(crate) struct Acts {
     pub(crate) hosts: PathBuf,
     /// The hook spool, whose `registry/` hosts write status lines to.
     pub(crate) spool: PathBuf,
-    daemon: OnceLock<Weak<crate::daemon::service::Daemon>>,
+    reports: Mutex<std::sync::mpsc::Sender<Report>>,
 }
 
 impl Acts {
@@ -294,6 +313,7 @@ impl Acts {
         spool: PathBuf,
         codex_socket: PathBuf,
         codex_program: PathBuf,
+        reports: std::sync::mpsc::Sender<Report>,
     ) -> Self {
         Self {
             hosts,
@@ -305,7 +325,7 @@ impl Acts {
             hosted: Mutex::new(BTreeMap::new()),
             permission_hook: OnceLock::new(),
             codex: Mutex::new((codex_program, codex_socket)),
-            daemon: OnceLock::new(),
+            reports: Mutex::new(reports),
         }
     }
 
@@ -326,13 +346,17 @@ impl Acts {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = (program, socket);
     }
 
-    /// Binds the daemon the resume runner records outcomes through.
-    pub(crate) fn bind(&self, daemon: Weak<crate::daemon::service::Daemon>) {
-        let _ = self.daemon.set(daemon);
+    fn report(&self, report: Report) -> bool {
+        self.reports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .send(report)
+            .is_ok()
     }
 
-    pub(crate) fn daemon(&self) -> Option<std::sync::Arc<crate::daemon::service::Daemon>> {
-        self.daemon.get().and_then(Weak::upgrade)
+    /// Ends the acts worker.
+    pub(crate) fn stop_reports(&self) {
+        let _ = self.report(Report::Stop);
     }
 
     pub(crate) fn mail(&self) -> &Path {
@@ -398,13 +422,23 @@ impl Acts {
         })
     }
 
-    /// Whether Polylogue holds an open control connection to the session.
-    pub(crate) fn is_hosted(&self, session: &SessionId) -> bool {
+    fn handle(&self, session: &SessionId) -> Option<Handle> {
         self.hosted
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&session.to_string())
-            .is_some_and(Hosted::open)
+            .cloned()
+    }
+
+    /// Whether Polylogue holds an open control connection to the session.
+    /// A session whose connection an act is using now is open.
+    pub(crate) fn is_hosted(&self, session: &SessionId) -> bool {
+        self.handle(session)
+            .is_some_and(|handle| match handle.try_lock() {
+                Ok(hosted) => hosted.open(),
+                Err(std::sync::TryLockError::WouldBlock) => true,
+                Err(std::sync::TryLockError::Poisoned(hosted)) => hosted.into_inner().open(),
+            })
     }
 
     /// Takes a hosted Codex thread in, recording it for reattachment; its
@@ -431,17 +465,22 @@ impl Acts {
         if let Hosted::Stdio(stdio) = &hosted {
             // A message that waited for the running prompt is recorded
             // when it is written, or `not_sent` when it is dropped.
-            let daemon = self.daemon.get().cloned();
-            stdio.on_sent(std::sync::Arc::new(move |delivery: &str, sent| {
-                if let Some(daemon) = daemon.as_ref().and_then(Weak::upgrade) {
-                    crate::daemon::service::acts::record_sent(&daemon, delivery, sent);
-                }
+            let reports = self
+                .reports
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            stdio.on_sent(Arc::new(move |delivery: &str, sent| {
+                let _ = reports.send(Report::Sent {
+                    delivery: delivery.to_owned(),
+                    sent,
+                });
             }));
         }
         self.hosted
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(session.to_string(), hosted);
+            .insert(session.to_string(), Arc::new(Mutex::new(hosted)));
     }
 
     /// Connects again to every recorded hosted session, after a daemon
@@ -502,19 +541,20 @@ impl Acts {
         }
     }
 
+    /// Runs `act` on the session's own connection; only acts on the same
+    /// session wait for each other.
     fn with_hosted<T>(
         &self,
         session: &SessionId,
         act: impl FnOnce(&mut Hosted) -> std::io::Result<T>,
     ) -> Result<T, String> {
-        let mut hosted = self
-            .hosted
+        let handle = self
+            .handle(session)
+            .ok_or_else(|| "the session is not hosted".to_owned())?;
+        let mut connection = handle
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let connection = hosted
-            .get_mut(&session.to_string())
-            .ok_or_else(|| "the session is not hosted".to_owned())?;
-        act(connection).map_err(|e| e.to_string())
+        act(&mut connection).map_err(|e| e.to_string())
     }
 
     /// Sends a message to a hosted session: `true` when written now,
@@ -557,7 +597,16 @@ impl Acts {
             }
             resuming.insert(key, VecDeque::new());
         }
-        crate::daemon::service::acts::run_resume(self, run);
+        let delivery = run.delivery.clone();
+        let session = run.session.clone();
+        if !self.report(Report::Resume(run)) {
+            // Nothing runs: the pings go back to the mailbox, where they
+            // are settled like any other.
+            self.release(&delivery);
+            while let Some(queued) = self.resume_finished(&session) {
+                self.release(&queued.delivery);
+            }
+        }
         true
     }
 

@@ -909,6 +909,8 @@ pub struct Runtime {
     signals: Option<JoinHandle<()>>,
     live_evidence_stop: Option<Sender<()>>,
     live_evidence: Option<JoinHandle<()>>,
+    /// Records hosted-connection outcomes and runs resumes.
+    acts: Option<JoinHandle<()>>,
     completion: Option<crate::completion_catalog::publisher::Publisher>,
     scope: Option<super::scope::ScopeWorker>,
     completion_scope: Option<polylogue_store::ScopeInvalidation>,
@@ -991,6 +993,9 @@ impl Runtime {
         {
             return Some("live evidence worker terminated");
         }
+        if self.acts.as_ref().is_some_and(JoinHandle::is_finished) {
+            return Some("acts worker terminated");
+        }
         self.completion
             .as_ref()
             .and_then(|worker| worker.worker_failure())
@@ -1024,6 +1029,12 @@ impl Runtime {
             && worker.join().is_err()
         {
             failure.get_or_insert_with(|| std::io::Error::other("live evidence worker panicked"));
+        }
+        if let Some(worker) = self.acts.take() {
+            self.daemon.acts.stop_reports();
+            if worker.join().is_err() {
+                failure.get_or_insert_with(|| std::io::Error::other("acts worker panicked"));
+            }
         }
         if let Some(signals) = self.signals.take()
             && signals.join().is_err()
@@ -1223,6 +1234,7 @@ pub fn start(
     let reads = ReadPool::with_budget(&archive, readers, per_reader * readers as u64)
         .map_err(|e| to_io(&e))?;
     let (tx, rx) = channel();
+    let (act_reports, act_reports_received) = channel();
     // The loop's first pass starts as soon as it runs.
     let status = Arc::new(Mutex::new(LoopStatus {
         busy: engine.is_some(),
@@ -1256,6 +1268,7 @@ pub fn start(
                 })
                 .unwrap_or_default(),
             "codex".into(),
+            act_reports,
         ),
         writes,
         mode,
@@ -1270,7 +1283,12 @@ pub fn start(
         #[cfg(test)]
         read_limits: Mutex::new(None),
     });
-    daemon.acts.bind(Arc::downgrade(&daemon));
+    let acts_worker = {
+        let daemon = Arc::clone(&daemon);
+        std::thread::Builder::new()
+            .name("polylogue-acts".into())
+            .spawn(move || acts::run_reports(daemon, act_reports_received))?
+    };
     // Hosted sessions outlive a daemon restart: their hosts, or Codex's
     // app-server, kept them running; connect to each again.
     daemon.acts.reattach();
@@ -1289,6 +1307,7 @@ pub fn start(
         signals: None,
         live_evidence_stop: None,
         live_evidence: None,
+        acts: Some(acts_worker),
         completion: None,
         scope: None,
         completion_scope: Some(completion_scope),

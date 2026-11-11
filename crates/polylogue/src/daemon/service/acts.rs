@@ -326,7 +326,7 @@ fn protocol_send(
 
 /// Records what happened to a message that waited for a hosted session's
 /// running prompt.
-pub(crate) fn record_sent(d: &Daemon, delivery: &str, sent: Result<(), String>) {
+fn record_sent(d: &Daemon, delivery: &str, sent: Result<(), String>) {
     let invocation = d.invocation(&crate::operation::Context::worker_authorship("hosted"));
     let (what, detail) = match sent {
         Ok(()) => (
@@ -835,16 +835,32 @@ fn interrupt(
 
 /// Runs a resumed run on its own thread, then any queued behind it whose
 /// delivery no hook has claimed meanwhile.
-pub(crate) fn run_resume(acts: &crate::live_acts::Acts, run: ResumeRun) {
-    let Some(daemon) = acts.daemon() else {
-        let _ = acts.resume_finished(&run.session);
-        return;
-    };
+/// The acts worker: records the outcomes hosted connections report and
+/// starts each session's resumed runs on a thread of that session's own,
+/// so one session's run never delays another's.
+pub(crate) fn run_reports(
+    daemon: std::sync::Arc<Daemon>,
+    reports: std::sync::mpsc::Receiver<crate::live_acts::Report>,
+) {
+    use crate::live_acts::Report;
+    while let Ok(report) = reports.recv() {
+        match report {
+            Report::Sent { delivery, sent } => record_sent(&daemon, &delivery, sent),
+            Report::Resume(run) => resume_session(&daemon, run),
+            Report::Stop => return,
+        }
+    }
+}
+
+/// Runs a session's resumed run, then each run queued behind it.
+fn resume_session(daemon: &std::sync::Arc<Daemon>, run: ResumeRun) {
     let session = run.session.clone();
     let delivery = run.delivery.clone();
+    let daemon_for_runs = std::sync::Arc::clone(daemon);
     let spawned = std::thread::Builder::new()
         .name("polylogue-resume".into())
         .spawn(move || {
+            let daemon = daemon_for_runs;
             let mut next = Some(run);
             while let Some(run) = next.take() {
                 resume_once(&daemon, &run);
@@ -879,9 +895,9 @@ pub(crate) fn run_resume(acts: &crate::live_acts::Acts, run: ResumeRun) {
     if spawned.is_err() {
         // Nothing runs: the pings go back to the mailbox, where they are
         // settled like any other.
-        acts.release(&delivery);
-        while let Some(queued) = acts.resume_finished(&session) {
-            acts.release(&queued.delivery);
+        daemon.acts.release(&delivery);
+        while let Some(queued) = daemon.acts.resume_finished(&session) {
+            daemon.acts.release(&queued.delivery);
         }
     }
 }
