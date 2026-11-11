@@ -32,6 +32,7 @@ fn a_pass_captures_a_database_while_serving_files() {
 }
 
 /// How many of this process's open files are `path`, deleted or not.
+/// Descriptors name the canonical path, so `path` must already be one.
 fn open_descriptors(path: &std::path::Path) -> usize {
     let deleted = format!("{} (deleted)", path.display());
     fs::read_dir("/proc/self/fd")
@@ -57,7 +58,8 @@ fn ordinary_inputs_are_serviced_while_a_database_is_read() {
     assert!(first.errors.is_empty(), "{:?}", first.errors);
     assert_eq!(w.texts("live"), ["before capture"]);
     // The read has opened the database once a second descriptor names it.
-    while open_descriptors(&db) < 2 {
+    let canonical = fs::canonicalize(&db).unwrap();
+    while open_descriptors(&canonical) < 2 {
         std::thread::yield_now();
     }
     w.append("live.jsonl", &user("u2", "live", "during capture"));
