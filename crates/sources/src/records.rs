@@ -180,13 +180,15 @@ impl Records {
             ("timestamp", Rule::Read(T::StringOrNumber)),
         ])
         .for_kind("event");
+        // Each declaration has a kind of its own: a reading declares one
+        // shape per kind and path.
         static PAYLOAD: Fields = Fields::new(&[
             ("type", Rule::Read(T::String)),
             ("timestamp", Rule::Read(T::StringOrNumber)),
             ("payload", Rule::Kept("complete native event payload")),
         ])
-        .for_kind("event");
-        static UNREAD: Fields = Fields::new(&[]).for_kind("*");
+        .for_kind("event_payload");
+        static UNREAD: Fields = Fields::new(&[]).for_kind("unread");
         self.fields(
             kind,
             value,

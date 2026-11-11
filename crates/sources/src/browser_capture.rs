@@ -141,7 +141,7 @@ static OTHER_BLOCK_FIELDS: Fields = Fields::new(&[(
     "",
     Rule::Kept("the normalized block is retained whole as Other data"),
 )])
-.for_kind("block");
+.for_kind("other_block");
 
 /// The origin a capture's `session.provider` names: the provider's export
 /// origin, so a capture and an export of one conversation unite.

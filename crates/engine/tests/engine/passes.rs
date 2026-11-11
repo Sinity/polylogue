@@ -574,6 +574,66 @@ fn a_capture_rewritten_in_place_is_parsed_again_whole() {
     assert_eq!(texts(&w.root), ["one", "two"]);
 }
 
+/// A reading declares one wire shape per record kind and path (docs/archive.md,
+/// the wire-shape tables), and every declaration has a kind of its own. A
+/// rollout read in small ranges, with a record nothing reads in an early
+/// range and a response item of a type the parser does not know in a later
+/// one, is read to its end; when both shared a kind the writer refused the
+/// later range and the chain stayed short of its end.
+#[test]
+fn a_rollout_with_an_unread_record_and_an_unknown_item_is_read_to_its_end() {
+    let w = ClaudeHome::new();
+    let rollouts = w.home.join(".codex/sessions/2026/03/02");
+    fs::create_dir_all(&rollouts).unwrap();
+    let thread = "019a0000-0000-7000-8000-000000000002";
+    let env = |n: u64, ty: &str, payload: serde_json::Value| {
+        serde_json::json!({"timestamp": format!("2026-03-02T10:{:02}:{:02}.000Z", n / 60, n % 60),
+                           "type": ty, "payload": payload})
+        .to_string()
+            + "\n"
+    };
+    let mut codex = env(
+        0,
+        "session_meta",
+        serde_json::json!({"id": thread, "timestamp": "2026-03-02T10:00:00.000Z", "cwd": "/work/c"}),
+    );
+    // A 2025 turn-state marker: skipped, and no declaration reads it.
+    codex += &env(1, "state", serde_json::json!({"turn": 1}));
+    for n in 2..120 {
+        codex += &env(
+            n,
+            "response_item",
+            serde_json::json!({"type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": format!("prompt {n} of a long session")}]}),
+        );
+    }
+    codex += &env(
+        120,
+        "response_item",
+        serde_json::json!({"type": "ghost_snapshot", "ghost_commit": {"id": "c1"}}),
+    );
+    assert!(codex.len() > 3 * 4096);
+    fs::write(
+        rollouts.join(format!("rollout-2026-03-02T10-00-00-{thread}.jsonl")),
+        &codex,
+    )
+    .unwrap();
+
+    let (mut e, _lock) = w.engine(4 << 10);
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    let reads = w.reads();
+    let state = reads
+        .reader()
+        .unwrap()
+        .query("SELECT status, parsed_upto FROM parse_state", &[])
+        .unwrap();
+    assert_eq!(
+        state,
+        [serde_json::json!({"status": "done", "parsed_upto": codex.len()})]
+    );
+}
+
 #[test]
 fn every_origin_s_shell_and_file_calls_reach_failing_commands_and_files() {
     let w = ClaudeHome::new();

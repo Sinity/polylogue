@@ -1,7 +1,7 @@
 //! Each leaf is read at its path, retained in row attributes, or reported unused.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 use polylogue_model::Json;
 use std::collections::{BTreeMap, HashMap};
@@ -72,6 +72,10 @@ impl Fields {
         self
     }
     /// Public shape kinds come from declarations, never arbitrary wire scalars.
+    /// A wire shape is keyed by its kind and path, and a reading version
+    /// declares one shape per key, so a kind names one declaration: a kind
+    /// the declaration does not list is `unknown_kind`, which no other
+    /// declaration names.
     pub fn kind(&self, supplied: &str) -> &'static str {
         if let Some(kind) = self.record_kind {
             return kind;
@@ -81,7 +85,7 @@ impl Fields {
             .iter()
             .filter(|known| known.path == "type")
             .find_map(|known| known.values.iter().copied().find(|kind| *kind == tail))
-            .unwrap_or("*")
+            .unwrap_or("unknown_kind")
     }
     pub fn declarations(&self) -> &'static [(&'static str, Rule)] {
         self.rules
