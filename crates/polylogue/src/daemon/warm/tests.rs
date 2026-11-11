@@ -445,6 +445,14 @@ fn only_an_executed_ranking_asks_the_provider() {
                 }
             }
         });
+        // The provider stops serving when the checks end, failed or not.
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let _stop = Stop(&stop);
         // Explaining a ranking runs nothing.
         crate::test_answers::ok(crate::test_daemon::call(
             d,
@@ -470,6 +478,5 @@ fn only_an_executed_ranking_asks_the_provider() {
             json!({"query": "messages where similar:\"executed\""}),
         ));
         assert_eq!(calls.load(Ordering::Acquire), 1, "executed query");
-        stop.store(true, Ordering::Release);
     });
 }
