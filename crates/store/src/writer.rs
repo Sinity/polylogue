@@ -446,6 +446,7 @@ impl Writer {
             crate::archive::open_read(&archive.index_db())?
         } else {
             let conn = crate::archive::open_archive_writer(archive)?;
+            crate::write_lock::sync_register(archive)?;
             crate::chain_progress::record_source_changes(&conn)?;
             conn
         };

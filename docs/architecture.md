@@ -154,7 +154,11 @@ segments sync before their extents commit. `index.db` is rebuilt from those,
 so it commits with `NORMAL`. The `archive.db` sync happens after the commit is
 visible and outside the lock readers take to start a read, so a read never
 waits for a disk sync; a power loss during that sync loses only that commit,
-which nothing was written after.
+which nothing was written after. A failed sync stops the writer: the commit
+is visible, so a retry would find it stored and answer success, and after a
+failed sync the kernel may have dropped the unwritten pages, so a later
+successful sync proves nothing. Every request is then refused, and a writer
+syncs `archive.db` and its log when it starts, before it answers anything.
 
 ## Pipeline
 
