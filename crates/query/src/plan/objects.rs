@@ -3,6 +3,7 @@ use super::*;
 use polylogue_model::query_objects::{FrozenQueryDefinition, QueryEdge, QueryObject, SourceOutput};
 use query_language::identity;
 use std::collections::{BTreeSet, VecDeque};
+use std::sync::Arc;
 
 fn invalid(message: impl Into<String>) -> QueryError {
     QueryError::Invalid {
@@ -13,7 +14,7 @@ fn invalid(message: impl Into<String>) -> QueryError {
 fn language(error: query_language::Error) -> QueryError {
     QueryError::language(error, "")
 }
-fn native_catalog() -> Catalog {
+fn native_catalog() -> Arc<Catalog> {
     crate::catalog::catalog(&[])
 }
 
@@ -24,14 +25,17 @@ pub fn catalog_fingerprint() -> &'static str {
     static FINGERPRINT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         // Catalog has no arbitrary JSON maps; derived struct serialization has stable
         // field order even when serde_json's preserve_order feature is enabled.
-        let bytes = serde_json::to_vec(&native_catalog()).expect("native catalog is serializable");
+        let bytes = serde_json::to_vec(&*native_catalog()).expect("native catalog is serializable");
         blake3::hash(&bytes).to_hex().to_string()
     });
     &FINGERPRINT
 }
-fn catalog(outputs: &[SourceOutput]) -> Catalog {
+fn catalog(outputs: &[SourceOutput]) -> Arc<Catalog> {
     let mut catalog = native_catalog();
-    catalog.source_outputs = outputs.iter().map(SourceOutput::catalog_output).collect();
+    if !outputs.is_empty() {
+        Arc::make_mut(&mut catalog).source_outputs =
+            outputs.iter().map(SourceOutput::catalog_output).collect();
+    }
     catalog
 }
 fn parse_id(name: &str) -> Result<QuestionId, QueryError> {
@@ -390,7 +394,7 @@ pub(super) fn retained_definition(
 }
 
 /// Bind only the declarations retained with this immutable definition closure.
-fn runtime_catalog(object: &QueryObject) -> Result<Catalog, QueryError> {
+fn runtime_catalog(object: &QueryObject) -> Result<Arc<Catalog>, QueryError> {
     Ok(catalog(&all_outputs(object)?))
 }
 fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, QueryError> {

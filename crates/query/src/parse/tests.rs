@@ -179,7 +179,7 @@ fn shared_units_stages_and_nested_queries_use_product_names() {
         ConditionKind::Compare { .. }
     ));
     let source = "tool_calls | group by day(at), tool | agg count, sum(duration), p90(duration), count_distinct(session) | sort by count desc | where count >= 3 | limit 5 | offset 10";
-    let mut catalog = crate::catalog::catalog(&[]);
+    let mut catalog = (*crate::catalog::catalog(&[])).clone();
     catalog
         .units
         .iter_mut()

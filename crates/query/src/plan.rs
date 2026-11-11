@@ -13,6 +13,7 @@ pub use objects::{
     catalog_fingerprint, question_id_from_reference, referenced_kept_results,
     referenced_question_ids, referenced_saved_names, replay, saved_query_bindings, validate_object,
 };
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ResolvedDefinition {
@@ -28,11 +29,11 @@ pub struct Plan {
     expanded: BoundQuery,
     text: String,
     identity: Query,
-    catalog: Catalog,
+    catalog: Arc<Catalog>,
     definitions: Vec<ResolvedDefinition>,
     bindings: Bindings,
     frozen: Vec<polylogue_model::query_objects::FrozenQueryDefinition>,
-    identity_catalog: Catalog,
+    identity_catalog: Arc<Catalog>,
     question_id: QuestionId,
 }
 impl Plan {
@@ -123,7 +124,7 @@ impl Plan {
     pub fn identity_query(&self) -> &Query {
         &self.identity
     }
-    pub fn catalog(&self) -> &Catalog {
+    pub fn catalog(&self) -> &Arc<Catalog> {
         &self.catalog
     }
     pub fn definitions(&self) -> &[ResolvedDefinition] {
@@ -186,7 +187,9 @@ fn prepare_inner(
                         arguments: arguments.clone(),
                     };
                     if catalog.source_output(&query.source).is_none() {
-                        catalog.source_outputs.push(SourceOutput { source, schema });
+                        Arc::make_mut(&mut catalog)
+                            .source_outputs
+                            .push(SourceOutput { source, schema });
                     }
                 }
                 Ok(())
@@ -319,12 +322,18 @@ fn prepare_inner(
                 Ok(())
             },
         )?;
+        // Saved sources are named by their question identity; without one
+        // the identity catalog is the catalog itself.
         let mut identity_catalog = catalog.clone();
-        for output in &mut identity_catalog.source_outputs {
-            if let OutputSource::Saved { name, .. } = &mut output.source
-                && let Some(hash) = identities.get(name)
-            {
-                *name = hash.to_string();
+        if identity_catalog.source_outputs.iter().any(
+            |output| matches!(&output.source, OutputSource::Saved { name, .. } if identities.contains_key(name)),
+        ) {
+            for output in &mut Arc::make_mut(&mut identity_catalog).source_outputs {
+                if let OutputSource::Saved { name, .. } = &mut output.source
+                    && let Some(hash) = identities.get(name)
+                {
+                    *name = hash.to_string();
+                }
             }
         }
         let question_id =

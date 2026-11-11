@@ -2,8 +2,12 @@
 use super::*;
 use query_language::catalog::{Catalog, FieldKind, OutputSource, SourceOutput};
 
-pub(crate) fn catalog(options: &Bindings) -> Catalog {
-    let mut catalog = crate::catalog::catalog(&options.origins);
+pub(crate) fn catalog(options: &Bindings) -> std::sync::Arc<Catalog> {
+    let mut shared = crate::catalog::catalog(&options.origins);
+    if options.kept.is_empty() {
+        return shared;
+    }
+    let catalog = std::sync::Arc::make_mut(&mut shared);
     for (id, kept) in &options.kept {
         for part in [ResultPart::Rows, ResultPart::Matches] {
             let schema = kept.output_schema(part);
@@ -16,7 +20,7 @@ pub(crate) fn catalog(options: &Bindings) -> Catalog {
             });
         }
     }
-    catalog
+    shared
 }
 
 pub(crate) fn expand(

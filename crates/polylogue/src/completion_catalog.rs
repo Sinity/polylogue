@@ -13,7 +13,7 @@ pub(super) fn base_catalog() -> Catalog {
         .iter()
         .map(|origin| origin.name.to_owned())
         .collect::<Vec<_>>();
-    polylogue_query::catalog::catalog(&origins)
+    (*polylogue_query::catalog::catalog(&origins)).clone()
 }
 pub(crate) fn grammar(text: &str, position: usize) -> Vec<Completion> {
     if position > text.len() || !text.is_char_boundary(position) {

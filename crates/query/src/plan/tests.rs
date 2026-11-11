@@ -376,6 +376,6 @@ fn the_catalog_fingerprint_is_computed_once_per_process() {
     let first = catalog_fingerprint();
     // Every caller borrows the same hashed value instead of rebuilding the catalog.
     assert!(std::ptr::eq(first, catalog_fingerprint()));
-    let bytes = serde_json::to_vec(&crate::catalog::catalog(&[])).unwrap();
+    let bytes = serde_json::to_vec(&*crate::catalog::catalog(&[])).unwrap();
     assert_eq!(first, blake3::hash(&bytes).to_hex().as_str());
 }

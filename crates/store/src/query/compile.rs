@@ -437,7 +437,7 @@ pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Progr
     let mut compiler = Compiler::new(&rendered, opts);
     compiler.query_scope = bound.typing().query(&Default::default()).cloned();
     compiler.typing = Some(std::sync::Arc::new(bound.typing().clone()));
-    compiler.catalog = Some(std::sync::Arc::new(catalog.clone()));
+    compiler.catalog = Some(catalog.clone());
     let mut program = compiler.program(bound.query())?;
     for definition in plan.definitions() {
         let used = Definition {

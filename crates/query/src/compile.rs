@@ -218,7 +218,7 @@ impl Options {
     pub fn definition_parameters(&self, text: &str) -> Result<Vec<String>, QueryError> {
         definition_parameters(text, &self.catalog())
     }
-    pub fn catalog(&self) -> query_language::catalog::Catalog {
+    pub fn catalog(&self) -> std::sync::Arc<query_language::catalog::Catalog> {
         source::catalog(&self.bindings())
     }
     pub fn output_schema(
@@ -260,7 +260,7 @@ impl Bindings {
         self.saved.entry(name.into()).or_default().push(definition);
         Ok(())
     }
-    pub fn catalog(&self) -> query_language::catalog::Catalog {
+    pub fn catalog(&self) -> std::sync::Arc<query_language::catalog::Catalog> {
         source::catalog(self)
     }
     pub fn output_schema(
