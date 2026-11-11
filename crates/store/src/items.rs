@@ -1120,14 +1120,6 @@ impl RecordTable {
     }
 }
 
-/// The messages of one context reading, by reference.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContextMessages {
-    pub in_context: Vec<MessageId>,
-    pub evicted: Vec<MessageId>,
-    pub complete: bool,
-}
-
 /// One stored link between two sessions, as the reading needs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionLink {
@@ -1275,51 +1267,6 @@ impl Reader<'_> {
         };
         let bytes = self.stored_range(&input, chain, start, end, &self.blob_reader()?)?;
         Ok(Some(StoredRecord { input, bytes }))
-    }
-
-    /// The messages in the model's context at `message` and the ones the
-    /// newest compaction before it removed, read from the owning session's
-    /// item index. This is what the `in_context_at:` and `evicted_at:` query
-    /// terms select.
-    pub fn context_messages(&self, message: &MessageId) -> Result<Option<ContextMessages>> {
-        let Some(session) = self.message_session(message)? else {
-            return Ok(None);
-        };
-        let Some(items) = self.item_index(&session)? else {
-            return Ok(None);
-        };
-        let header = polylogue_model::read::EntryKey::header(message);
-        let Some(at) = items.entries.iter().position(|entry| entry.key == header) else {
-            return Ok(None);
-        };
-        let parts = [polylogue_model::read::Part {
-            session,
-            start: 0,
-            end: items.entries.len(),
-            inherited: false,
-            joined_by: None,
-        }];
-        let context = polylogue_model::read::context_at(
-            &parts,
-            |_| &items.entries,
-            polylogue_model::read::Place { part: 0, entry: at },
-        );
-        let messages = |places: &[polylogue_model::read::Place]| -> Vec<MessageId> {
-            let mut out: Vec<MessageId> = Vec::new();
-            for place in places {
-                if let Some(id) = items.entries[place.entry].key.message()
-                    && out.last() != Some(id)
-                {
-                    out.push(id.clone());
-                }
-            }
-            out
-        };
-        Ok(Some(ContextMessages {
-            in_context: messages(&context.members),
-            evicted: messages(&context.evicted),
-            complete: context.complete,
-        }))
     }
 
     /// The links that compose `id` from a parent, in the order they were stored.
