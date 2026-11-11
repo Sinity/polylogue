@@ -2093,11 +2093,13 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "canonical-json",
+ "jiff",
  "polylogue-model",
  "query-language",
  "schemars",
  "serde",
  "serde_json",
+ "strsim",
  "thiserror 2.0.21",
 ]
 
@@ -2188,7 +2190,6 @@ dependencies = [
  "serde",
  "serde_json",
  "signals",
- "strsim",
  "tempfile",
  "thiserror 2.0.21",
  "uuid",

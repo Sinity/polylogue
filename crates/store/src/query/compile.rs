@@ -10,7 +10,7 @@ use crate::query::units::{self, Index, Search, Via};
 use combine::join;
 use polylogue_query::QueryError;
 use polylogue_query::compile::Parameters;
-use polylogue_query::selection::{Projection, Selection, contains_order, newest_word, top_level};
+use polylogue_query::selection::{Projection, Selection, contains_order, top_level};
 pub use polylogue_query::{
     ChatPage, ColKind, Column, ColumnReference, Definition, Kept, Options, SavedQuery, Shape,
 };
@@ -27,6 +27,7 @@ mod sequences;
 mod stages;
 mod statements;
 use conditions::unknown_field;
+use polylogue_query::filter::{alternatives, bind_unit, value_text};
 pub use statements::{DerivedRows, KeyedRows, PageColumns, Statements};
 
 /// Reciprocal rank fusion gives a row `1 / (RANK_FUSION_OFFSET + place)` in
@@ -494,13 +495,6 @@ impl<'a> Compiler<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum FieldOp<'q> {
-    Match(&'q Value),
-    Compare(Op, &'q str),
-    Between(&'q str, &'q str),
-}
-
 /// A column of `| matches` rows, by name.
 fn column_sql(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
@@ -536,56 +530,6 @@ fn like_escape(s: &str) -> String {
 
 fn like_prefix(s: &str) -> String {
     format!("{}%", like_escape(s))
-}
-
-fn alternatives(v: &Value) -> Vec<String> {
-    match v {
-        Value::Scalar { text, .. } => vec![text.clone()],
-        Value::Set { values } => values.iter().flat_map(alternatives).collect(),
-        Value::Unknown => vec!["unknown".into()],
-        Value::Known => vec!["known".into()],
-        Value::Parameter { name } => vec![format!("${name}")],
-        Value::Any => vec![],
-    }
-}
-
-fn kind_name(k: Kind) -> &'static str {
-    match k {
-        Kind::Match | Kind::Prefix => "match",
-        Kind::Substring => "substring",
-        Kind::Subtree => "path",
-        Kind::Number => "number",
-        Kind::Money => "money",
-        Kind::Duration => "duration",
-        Kind::Time => "time",
-        Kind::Bool => "true/false",
-        Kind::Special => "special",
-    }
-}
-
-/// The message refused for a value outside a closed set: the set, and the
-/// units where the value does exist (`"error" is an outcome of tool_calls`).
-fn closed_set_message(def: &fields::Field, value: &str) -> String {
-    let set = def.values.unwrap_or(&[]).join(", ");
-    let elsewhere: Vec<&str> = fields::FIELDS
-        .iter()
-        .filter(|f| f.name == def.name && f.unit != def.unit)
-        .filter(|f| {
-            f.values
-                .is_some_and(|vs| vs.iter().any(|v| v.eq_ignore_ascii_case(value)))
-        })
-        .map(|f| f.unit.name())
-        .collect();
-    let mut m = format!("{} on {} is one of {set}", def.name, def.unit.name());
-    if let Some(u) = elsewhere.first() {
-        let article = if def.name.starts_with(['a', 'e', 'i', 'o', 'u']) {
-            "an"
-        } else {
-            "a"
-        };
-        m.push_str(&format!("; \"{value}\" is {article} {} of {u}", def.name));
-    }
-    m
 }
 
 /// The FROM clause of a unit over the given aliases.
@@ -690,10 +634,6 @@ fn scalar(kind: ColKind, field: &str, at: usize) -> Result<(), QueryError> {
 fn parse_query(text: &str, opts: &Options) -> Result<Query, QueryError> {
     crate::query::parse::with_catalog(text, &opts.catalog())
 }
-fn bind_unit(name: &str) -> Result<Unit, QueryError> {
-    Unit::from_name(name.strip_prefix("pl.").unwrap_or(name))
-        .ok_or_else(|| not_built(&format!("unit {name}")))
-}
 fn field_operand(operand: &Expression) -> Result<&str, QueryError> {
     match operand {
         Expression::Field { name } => Ok(name),
@@ -704,14 +644,6 @@ fn literal_expression(expression: &Expression) -> Result<&Value, QueryError> {
     match expression {
         Expression::Value { value } => Ok(value),
         _ => Err(not_built("a computed value in this position")),
-    }
-}
-fn value_text(value: &Value) -> Result<&str, QueryError> {
-    match value {
-        Value::Scalar { text, .. } => Ok(text),
-        Value::Unknown => Ok("unknown"),
-        Value::Parameter { name } => Ok(name),
-        _ => Err(not_built("a set in this scalar position")),
     }
 }
 fn parse_random_seed(operand: &Expression) -> Result<Option<u64>, QueryError> {

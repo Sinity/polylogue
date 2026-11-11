@@ -10,10 +10,11 @@ pub mod time;
 pub mod units;
 pub mod ast {
     pub use polylogue_query::ast::*;
-    pub trait Comparison {
+    /// The SQL spelling of a comparison operator.
+    pub trait SqlOperator {
         fn sql(self) -> &'static str;
     }
-    impl Comparison for Op {
+    impl SqlOperator for Op {
         fn sql(self) -> &'static str {
             if self == Op::Ne { "<>" } else { self.symbol() }
         }

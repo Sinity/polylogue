@@ -12,10 +12,21 @@ fn bindings() -> Bindings {
     }
 }
 
+fn clock() -> crate::time::Clock {
+    crate::time::Clock::new(
+        jiff::Timestamp::from_millisecond(1_790_000_000_000).unwrap(),
+        crate::time::DaySetting::new(
+            jiff::tz::TimeZone::UTC,
+            jiff::civil::Time::constant(4, 0, 0, 0),
+        )
+        .unwrap(),
+    )
+}
+
 fn selection_with(text: &str, fields: &[String]) -> Selection {
     prepare(text, &bindings(), |_| Ok(()))
         .unwrap()
-        .selection(fields)
+        .selection(fields, &clock())
         .unwrap()
         .unwrap()
 }
@@ -23,7 +34,7 @@ fn selection_with(text: &str, fields: &[String]) -> Selection {
 fn error(text: &str) -> QueryError {
     prepare(text, &bindings(), |_| Ok(()))
         .unwrap()
-        .selection(&[])
+        .selection(&[], &clock())
         .unwrap_err()
 }
 
@@ -114,11 +125,22 @@ fn similar_is_the_semantic_leg() {
     assert_eq!(conditions(&ranked), ["messages where role:\"user\""]);
     let calls = selection("tool_calls where similar:deploy");
     assert_eq!(calls.semantic.map(|s| s.unit), Some(Unit::Sessions));
-    assert!(calls.filter.is_empty());
+    assert!(calls.written.is_empty());
+    assert_eq!(calls.filter, None);
     // A second similar: stays in the filter for lowering to refuse.
     let twice = selection("sessions where similar:deploy similar:retry");
     assert_eq!(twice.semantic.map(|s| s.text), Some("deploy".to_owned()));
-    assert_eq!(twice.filter.len(), 1);
+    assert_eq!(twice.written.len(), 1);
+    let Some(crate::filter::Filter::All(kept)) = &twice.filter else {
+        panic!("{:?}", twice.filter);
+    };
+    assert!(matches!(
+        kept.as_slice(),
+        [crate::filter::Filter::Field(crate::filter::FieldTest {
+            field: crate::fields::FieldId::SessionsSimilar,
+            ..
+        })]
+    ));
 }
 
 #[test]

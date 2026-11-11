@@ -8,6 +8,7 @@ pub mod compile;
 pub mod defaults;
 pub mod explain;
 pub mod fields;
+pub mod filter;
 pub mod parse;
 pub mod plan;
 pub mod selection;
