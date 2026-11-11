@@ -141,6 +141,62 @@ pub(super) fn wait_status(
     }
 }
 
+/// Poll a query until the current answer has the expected rows. A degraded
+/// answer cannot satisfy a settled fixture even when its partial rows match.
+pub(super) fn wait_rows(
+    env: &crate::Fixture,
+    query: &str,
+    ready: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let started = Instant::now();
+    loop {
+        let out = cli(env, &["--json", query]);
+        let answer: command_surface::Answer<serde_json::Value> =
+            serde_json::from_slice(&out.stdout)
+                .unwrap_or_else(|error| panic!("invalid query answer: {error}: {out:?}"));
+        assert_eq!(
+            out.status.code(),
+            Some(i32::from(answer.exit_code())),
+            "{out:?}"
+        );
+        if !matches!(&answer.outcome, command_surface::Outcome::Degraded { .. }) {
+            let rows = query_rows(&out);
+            if ready(&rows) {
+                return rows;
+            }
+        }
+        assert!(
+            started.elapsed() < READY_DEADLINE,
+            "the awaited current rows did not come within {READY_DEADLINE:?}: {answer:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+pub(super) fn query_rows(out: &Output) -> serde_json::Value {
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&out.stdout).unwrap();
+    match answer {
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Ok(value),
+            ..
+        } => {
+            assert!(out.status.success(), "{out:?}");
+            value
+        }
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Empty(value),
+            ..
+        } => {
+            assert_eq!(out.status.code(), Some(1), "{out:?}");
+            assert_eq!(value["count"], 0, "{value}");
+            assert_eq!(value["rows"], serde_json::json!([]), "{value}");
+            value
+        }
+        answer => panic!("expected rows or typed empty query: {answer:?}; {out:?}"),
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn killing_the_test_parent_stops_its_real_daemon() {

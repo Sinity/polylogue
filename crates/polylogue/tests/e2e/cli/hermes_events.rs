@@ -221,7 +221,7 @@ fn hermes_observer_preserves_exact_evidence_and_rebuilds_without_conversations()
     std::fs::remove_file(&source).unwrap();
     polylogue_testkit::delete_index(&archive);
     let _daemon = start_daemon(&env);
-    wait_ledger(&env, |rows| {
+    wait_rows(&env, "events where source:hermes | sort by id", |rows| {
         ledger_count(rows, "hermes_approval_response") == 1
     });
     let out = cli(
@@ -237,30 +237,6 @@ fn hermes_observer_preserves_exact_evidence_and_rebuilds_without_conversations()
     assert_eq!(json(&out)["rows"], first["rows"]);
 }
 
-pub(super) fn query_rows(out: &Output) -> serde_json::Value {
-    let answer: command_surface::Answer<serde_json::Value> =
-        serde_json::from_slice(&out.stdout).unwrap();
-    match answer {
-        command_surface::Answer {
-            outcome: command_surface::Outcome::Ok(value),
-            ..
-        } => {
-            assert!(out.status.success(), "{out:?}");
-            value
-        }
-        command_surface::Answer {
-            outcome: command_surface::Outcome::Empty(value),
-            ..
-        } => {
-            assert_eq!(out.status.code(), Some(1), "{out:?}");
-            assert_eq!(value["count"], 0, "{value}");
-            assert_eq!(value["rows"], json!([]), "{value}");
-            value
-        }
-        answer => panic!("expected rows or typed empty query: {answer:?}; {out:?}"),
-    }
-}
-
 fn ledger_rows(env: &crate::Fixture) -> serde_json::Value {
     let out = cli(env, &["--json", "events where source:hermes | sort by id"]);
     query_rows(&out)
@@ -272,28 +248,6 @@ fn ledger_count(rows: &serde_json::Value, kind: &str) -> usize {
         .iter()
         .filter(|row| row["kind"] == kind)
         .count()
-}
-fn wait_ledger(
-    env: &crate::Fixture,
-    ready: impl Fn(&serde_json::Value) -> bool,
-) -> serde_json::Value {
-    loop {
-        let out = cli(env, &["--json", "events where source:hermes | sort by id"]);
-        let answer: command_surface::Answer<serde_json::Value> =
-            serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(
-            out.status.code(),
-            Some(i32::from(answer.exit_code())),
-            "{out:?}"
-        );
-        if !matches!(&answer.outcome, command_surface::Outcome::Degraded { .. }) {
-            let rows = query_rows(&out);
-            if ready(&rows) {
-                return rows;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
 }
 
 #[test]
@@ -315,7 +269,7 @@ fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_obs
     let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let before_rebuild = {
         let daemon = start_daemon(&env);
-        let initial = wait_ledger(&env, |rows| {
+        let initial = wait_rows(&env, "events where source:hermes | sort by id", |rows| {
             ledger_count(rows, "hermes_verification_event") == 1
                 && ledger_count(rows, "hermes_verification_state") == 1
         });
@@ -360,7 +314,7 @@ fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_obs
             COMMIT;").unwrap();
         drop(db);
         let _daemon = start_daemon(&env);
-        let final_rows = wait_ledger(&env, |rows| {
+        let final_rows = wait_rows(&env, "events where source:hermes | sort by id", |rows| {
             ledger_count(rows, "hermes_verification_event") == 2
                 && ledger_count(rows, "hermes_verification_state") == 2
                 && ledger_count(rows, "hermes_verification_row_deleted") == 1
@@ -383,7 +337,7 @@ fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_obs
     std::fs::remove_file(&native).unwrap();
     polylogue_testkit::delete_index(&archive);
     let _daemon = start_daemon(&env);
-    let rebuilt = wait_ledger(&env, |rows| {
+    let rebuilt = wait_rows(&env, "events where source:hermes | sort by id", |rows| {
         ledger_count(rows, "hermes_verification_event") == 2
             && ledger_count(rows, "hermes_verification_state") == 2
             && ledger_count(rows, "hermes_verification_row_deleted") == 1

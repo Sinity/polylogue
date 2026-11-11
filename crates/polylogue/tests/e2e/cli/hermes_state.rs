@@ -1,5 +1,4 @@
 use super::claude_account_text::{messages, reading, records};
-use super::hermes_events::query_rows;
 use super::*;
 use polylogue_model::bundle::Record;
 use serde_json::json;
@@ -269,18 +268,11 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
             .unwrap();
         drop(db);
         let daemon = start_daemon(&env);
-        loop {
-            let out = cli(
-                &env,
-                &[
-                    "--json",
-                    &format!("messages where session:{empty} {condition}"),
-                ],
-            );
-            if query_rows(&out)["count"] == expected {
-                break;
-            }
-        }
+        wait_rows(
+            &env,
+            &format!("messages where session:{empty} {condition}"),
+            |rows| rows["count"] == expected,
+        );
         assert_eq!(messages(&env, &empty).len(), 2);
         drop(daemon);
     }
