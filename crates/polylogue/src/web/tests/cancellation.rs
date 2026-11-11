@@ -334,3 +334,36 @@ fn an_expired_http_read_parent_creates_no_query_object_begin_or_outcome() {
     let observed = reads.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(observed.sqlite_steps(), 0);
 }
+
+/// A read the table stops at its deadline names the reason in its code, so
+/// every client prints it instead of a fallback.
+#[test]
+fn a_page_read_past_its_deadline_answers_deadline_exceeded() {
+    let r = reader();
+    rt().block_on(async {
+        let path = typed_url(
+            &r.w,
+            "read",
+            serde_json::json!({"target": "session:claude-code:s1"}),
+            "page-past-deadline",
+            command_surface::Deadline::Milliseconds(0),
+        );
+        let (status, _, body) =
+            send_wire(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::GATEWAY_TIMEOUT, "{body}");
+        let answer: command_surface::Answer<serde_json::Value> =
+            serde_json::from_str(&body).unwrap();
+        let command_surface::Answer {
+            outcome: command_surface::Outcome::Error(error),
+            ..
+        } = answer
+        else {
+            panic!("a read past its deadline must fail: {body}")
+        };
+        assert_eq!(error.kind, command_surface::FailureKind::Timeout);
+        assert_eq!(
+            error.code.as_deref(),
+            Some(command_surface::DEADLINE_EXCEEDED)
+        );
+    });
+}
