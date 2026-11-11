@@ -677,10 +677,12 @@ fn after_a_failed_register_sync_nothing_is_acknowledged_until_a_writer_has_synce
 
     let writer = Writer::start(&archive).unwrap();
     crate::fault::arm("write.register_sync", "", crate::fault::Action::Fail, 0, 1);
-    assert!(writer.restore_authored(original.clone()).is_err());
+    let first = writer.restore_authored(original.clone());
+    assert!(matches!(first, Err(StoreError::WriterGone)), "{first:?}");
+    let retry = writer.restore_authored(original.clone());
     assert!(
-        writer.restore_authored(original.clone()).is_err(),
-        "a retry was acknowledged before the commit was synced"
+        matches!(retry, Err(StoreError::WriterGone)),
+        "a retry was answered before the commit was synced: {retry:?}"
     );
     drop(writer);
     // A new writer refuses to start while the register cannot be synced.
@@ -691,12 +693,13 @@ fn after_a_failed_register_sync_nothing_is_acknowledged_until_a_writer_has_synce
 
     crate::fault::arm("write.register_sync", "", crate::fault::Action::Fail, 0, 1);
     let sender = writer.sender().unwrap();
+    // The import commits, its sync fails, and the writer stops.
     let first = sender.store_group(vec![imported(&archive, bytes)], blobs());
-    assert!(first.is_err() || first.unwrap()[0].is_err());
+    assert!(matches!(first, Err(StoreError::WriterGone)), "{first:?}");
     let retry = sender.store_group(vec![imported(&archive, bytes)], blobs());
     assert!(
-        retry.is_err() || retry.unwrap()[0].is_err(),
-        "a repeated import was acknowledged before the commit was synced"
+        matches!(retry, Err(StoreError::WriterGone)),
+        "a repeated import was answered before the commit was synced: {retry:?}"
     );
     drop(sender);
     drop(writer);
