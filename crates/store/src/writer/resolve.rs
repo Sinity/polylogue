@@ -529,7 +529,12 @@ impl Resolver {
                     if let Some(message) = &event.after {
                         keys.insert(Key::new(Kind::Message, message.to_string().into_bytes()));
                     }
-                    keys.insert(Key::new(Kind::Event, event_ids[index].as_bytes()));
+                    let id = identities.shown_event(
+                        event,
+                        &p.prepared.events[index].1,
+                        &event_ids[index],
+                    )?;
+                    keys.insert(Key::new(Kind::Event, id.as_bytes()));
                 }
                 for link in &p.output.links {
                     keys.insert(Key::new(Kind::Link, link_key(link)?));
@@ -559,6 +564,10 @@ impl Resolver {
             for (old, new) in &absorbed.messages {
                 keys.insert(Key::new(Kind::Message, old.as_bytes()));
                 keys.insert(Key::new(Kind::Message, new.as_bytes()));
+            }
+            for (old, new) in &absorbed.events {
+                keys.insert(Key::new(Kind::Event, old.as_bytes()));
+                keys.insert(Key::new(Kind::Event, new.as_bytes()));
             }
         }
         let event_keys: Vec<_> = keys

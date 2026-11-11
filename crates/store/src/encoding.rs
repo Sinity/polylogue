@@ -471,6 +471,11 @@ pub(crate) fn identity_encoding(error: canonical_json::Error) -> StoreError {
     StoreError::Invalid(error.to_string())
 }
 
+/// The ID an event of a session is named by when its source gives none.
+pub(crate) fn event_content_id(e: &Event) -> Result<String> {
+    Ok(event_bytes(e)?.0)
+}
+
 fn event_bytes(e: &Event) -> Result<(String, Vec<u8>)> {
     let data = serde_json::to_vec(&e.data)?;
     if let Some(id) = reading_id(e) {

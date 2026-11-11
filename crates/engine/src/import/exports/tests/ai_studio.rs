@@ -465,6 +465,21 @@ fn drive_and_takeout_copy_give_one_session() {
                 2,
                 "both copies are readings of the one session"
             );
+            // The copy's settings are the session's settings, read twice.
+            assert_eq!(
+                w.count("SELECT COUNT(*) AS n FROM event WHERE kind='run_settings'"),
+                1,
+                "drive first {drive_first}, rebuild {rebuild}"
+            );
+            assert_eq!(
+                w.count(
+                    "SELECT COUNT(DISTINCT s.input_pk) AS n FROM event_source s
+                     JOIN event e ON e.pk=s.event_pk JOIN session x ON x.pk=e.session_pk
+                     WHERE e.kind='run_settings' AND x.id='ai-studio:drive-id'"
+                ),
+                2,
+                "drive first {drive_first}, rebuild {rebuild}"
+            );
             shown.push(serde_json::to_value(&messages).unwrap());
         }
     }
