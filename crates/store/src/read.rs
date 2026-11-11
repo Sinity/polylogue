@@ -356,7 +356,6 @@ impl ReadPool {
     }
 
     fn acquire(&self, connect: impl FnOnce() -> Result<Connection>) -> Result<Reader<'_>> {
-        let probe_start = std::time::Instant::now();
         let scope = self.archive.read_scope.token()?;
         let limit = limit::ReadLimit::current();
         if let Some(limit) = &limit {
@@ -416,15 +415,6 @@ impl ReadPool {
                 }
             }
         };
-        crate::probe_tmp::log(
-            if idle.is_some() {
-                "acquire.slot(idle)"
-            } else {
-                "acquire.slot(new)"
-            },
-            probe_start.elapsed(),
-        );
-        let probe_open = std::time::Instant::now();
         // Hold the slot before the open and BEGIN, which can fail. Every
         // failure releases the slot and wakes a waiter, including a racing close.
         let mut reader = Reader {
@@ -475,7 +465,6 @@ impl ReadPool {
         reader.conn = Some(conn);
         reader.index_identity = Some(identity);
         drop(state);
-        crate::probe_tmp::log("acquire.open+begin", probe_open.elapsed());
         Ok(reader)
     }
 
@@ -687,7 +676,6 @@ impl Reader<'_> {
                     return Err(StoreError::ReadPoolClosed);
                 }
                 let waiting = std::time::Instant::now();
-                let probe_waits = std::cell::Cell::new(0u32);
                 let _shared = crate::write_lock::wait_shared(&self.pool.archive, || {
                     self.scope.check()?;
                     if conn.is_interrupted() {
@@ -711,7 +699,6 @@ impl Reader<'_> {
                         )
                         .into());
                     }
-                    probe_waits.set(probe_waits.get() + 1);
                     drop(
                         self.pool
                             .available
@@ -720,11 +707,6 @@ impl Reader<'_> {
                     );
                     Ok(())
                 })?;
-                crate::probe_tmp::log(
-                    &format!("conn.wait_shared(polls={})", probe_waits.get()),
-                    waiting.elapsed(),
-                );
-                let probe_first = std::time::Instant::now();
                 // This closed check under the lock is the read's start. Closing
                 // before it refuses; a read that started here may finish afterward.
                 if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
@@ -742,7 +724,6 @@ impl Reader<'_> {
                     [],
                     |_| Ok(()),
                 )?;
-                crate::probe_tmp::log("conn.first_read", probe_first.elapsed());
                 self.state.set(ReadState::Ready);
             }
         }

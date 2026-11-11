@@ -45,7 +45,6 @@ pub mod older_archive;
 mod ordered_blocks;
 pub mod predecessor;
 pub mod primary;
-pub mod probe_tmp;
 pub mod query;
 pub mod query_objects;
 pub mod read;

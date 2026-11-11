@@ -80,40 +80,11 @@ pub(crate) fn hold(conn: &Connection) -> Result<WriteLock> {
     })
 }
 
-fn probe_cpu() -> std::time::Duration {
-    let text = std::fs::read_to_string("/proc/thread-self/schedstat").unwrap_or_default();
-    std::time::Duration::from_nanos(
-        text.split_whitespace()
-            .next()
-            .and_then(|n| n.parse().ok())
-            .unwrap_or(0),
-    )
-}
 /// Commits a register transaction under the lock.
-#[track_caller]
 pub(crate) fn commit(tx: rusqlite::Transaction<'_>) -> Result<()> {
-    let probe = std::time::Instant::now();
     let lock = hold(&tx)?;
-    let probe_held = std::time::Instant::now();
-    let probe_cpu0 = probe_cpu();
-    let caller = std::panic::Location::caller();
-    let db = tx
-        .path()
-        .map(|p| p.rsplit('/').next().unwrap_or("").to_owned())
-        .unwrap_or_default();
-    crate::probe_tmp::log("writelock.acquire", probe.elapsed());
     let committed = tx.commit();
-    let probe_cpu1 = probe_cpu();
     drop(lock);
-    crate::probe_tmp::log(
-        &format!(
-            "writelock.held_commit[{db} {}:{} cpu={:.1}ms]",
-            caller.file().rsplit('/').next().unwrap_or(""),
-            caller.line(),
-            (probe_cpu1 - probe_cpu0).as_secs_f64() * 1000.0
-        ),
-        probe_held.elapsed(),
-    );
     committed?;
     Ok(())
 }

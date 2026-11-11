@@ -501,7 +501,6 @@ impl<H: Handler> Operation for Row<H> {
         context: RequestContext,
     ) -> OperationFuture<'_, Answer<Self::Response>> {
         Box::pin(async move {
-            let probe_entry = std::time::Instant::now();
             if context.request_id.is_empty() {
                 return Answer::error(command_surface::Failure::new(
                     FailureKind::BadRequest,
@@ -582,29 +581,7 @@ impl<H: Handler> Operation for Row<H> {
                 }
                 None => None,
             };
-            polylogue_store::probe_tmp::log(
-                &format!("execute.before_submit[{}]", self.row.name),
-                probe_entry.elapsed(),
-            );
-            let probe_submitted = std::time::Instant::now();
-            let probe_name = self.row.name;
             let job = move || {
-                polylogue_store::probe_tmp::log(
-                    &format!("executor.queue[{probe_name}]"),
-                    probe_submitted.elapsed(),
-                );
-                let probe_ran = std::time::Instant::now();
-                struct ProbeEnd(&'static str, std::time::Instant);
-                impl Drop for ProbeEnd {
-                    fn drop(&mut self) {
-                        polylogue_store::probe_tmp::log(
-                            &format!("job.ran[{}]", self.0),
-                            self.1.elapsed(),
-                        );
-                    }
-                }
-                let _probe_end = ProbeEnd(probe_name, probe_ran);
-                let _probe_cpu = polylogue_store::probe_tmp::span("job.cpu");
                 let _table = TableContext::enter(table_context);
                 let limit = match (&parent, deadline) {
                     (Some(parent), _) => parent.read_limit(cancellation),
@@ -630,16 +607,7 @@ impl<H: Handler> Operation for Row<H> {
                 return Answer::error(super::service::shutting_down().error);
             };
             drop(guard);
-            polylogue_store::probe_tmp::log(
-                &format!("execute.until_answer[{}]", self.row.name),
-                probe_entry.elapsed(),
-            );
-            let typed_answer = typed(answer, self.row.name);
-            polylogue_store::probe_tmp::log(
-                &format!("execute.total[{}]", self.row.name),
-                probe_entry.elapsed(),
-            );
-            typed_answer
+            typed(answer, self.row.name)
         })
     }
 }
@@ -700,15 +668,10 @@ fn answer<H: Handler>(
             #[cfg(test)]
             reader_acquired: &reader_acquired,
         };
-        let probe = std::time::Instant::now();
         if let Some(text) = H::ranking_query(&arguments, row) {
             super::query::prefetch_ranking(&call, &text);
         }
-        polylogue_store::probe_tmp::log("handler.prefetch_ranking", probe.elapsed());
-        let probe = std::time::Instant::now();
-        let ran = H::run(arguments, &call).unwrap_or_else(Failure::answer);
-        polylogue_store::probe_tmp::log("handler.run", probe.elapsed());
-        ran
+        H::run(arguments, &call).unwrap_or_else(Failure::answer)
     };
     #[cfg(not(test))]
     let _ = &reader_acquired;

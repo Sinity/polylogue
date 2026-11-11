@@ -314,13 +314,8 @@ fn prepared<T>(
                 near: Some(near),
                 fields: &[],
             };
-            let probe = std::time::Instant::now();
             let compile = crate::daemon::query::options(reader, &ask, seed(&reading.target))?;
-            polylogue_store::probe_tmp::log("read.compile_options", probe.elapsed());
-            let probe = std::time::Instant::now();
             let selection = reader.prepare_selection(&reading.target, &compile)?;
-            polylogue_store::probe_tmp::log("read.prepare_selection", probe.elapsed());
-            let probe = std::time::Instant::now();
             let positions = reader.change_position()?;
             let caught_up = caught_up(reader)?;
             let snapshot = ReadSnapshot {
@@ -379,17 +374,13 @@ fn prepared<T>(
                 figures: Vec::new(),
                 zone: Some(operation.clock.day.zone_name().to_owned()),
             };
-            polylogue_store::probe_tmp::log("read.snapshot_header", probe.elapsed());
             polylogue_store::read::limit::ReadLimit::set_stage("read records");
-            let probe = std::time::Instant::now();
             let compiled = Compiled {
                 selection: &selection,
                 options: &compile,
                 ranking_identity,
             };
-            let ran = run(&compiled, snapshot, header, Some(near));
-            polylogue_store::probe_tmp::log("read.records", probe.elapsed());
-            ran
+            run(&compiled, snapshot, header, Some(near))
         },
     )
 }
