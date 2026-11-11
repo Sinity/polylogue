@@ -330,61 +330,46 @@ impl Archive {
     /// build ends ([`index_rebuild`]).
     pub(crate) fn prepare_index(&self) -> Result<()> {
         let path = self.index_db();
-        let index = open_write(&path, cache::SETUP)?;
-        let index = match self.ensure_index(index) {
-            Ok(index) => index,
-            Err((error, index)) => {
-                let Some(reason) = index_rebuild::reason(&error) else {
-                    return Err(error);
-                };
-                let previous = schema::index_identity(&index)?;
-                drop(index);
-                index_rebuild::set_aside(&path, &previous)?;
-                let index = self
-                    .ensure_index(open_write(&path, cache::SETUP)?)
-                    .map_err(|(error, _)| error)?;
-                index_rebuild::record(
-                    &index,
-                    reason,
-                    previous,
-                    schema::build_index_identity(self.is_primary())?,
-                )?;
-                index
-            }
-        };
+        let mut index = open_write(&path, cache::SETUP)?;
+        if let Err(error) = self.ensure_index(&index) {
+            let Some(reason) = index_rebuild::reason(&error) else {
+                return Err(error);
+            };
+            let previous = schema::index_identity(&index)?;
+            drop(index);
+            index_rebuild::set_aside(&path, &previous)?;
+            index = open_write(&path, cache::SETUP)?;
+            self.ensure_index(&index)?;
+            index_rebuild::record(
+                &index,
+                reason,
+                previous,
+                schema::build_index_identity(self.is_primary())?,
+            )?;
+        }
         index_rebuild::remove_when_built(&index, &path, self.is_primary())?;
         crate::fault::check("index.after_creation", "")?;
         Ok(())
     }
 
-    /// Creates or opens the index schema, handing the connection back with
-    /// a refusal so the caller can read what it refused.
-    fn ensure_index(
-        &self,
-        index: Connection,
-    ) -> std::result::Result<Connection, (StoreError, Connection)> {
-        let ensured = (|| {
-            let fresh = schema::version(&index)? == 0;
-            if fresh {
-                let mut reset = self.read_scope.begin_reset()?;
-                reset.invalidate()?;
-            }
-            if self.is_primary() {
-                schema::ensure_primary_index(&index)?;
-            } else {
-                let archive = open_read(&self.archive_db())?;
-                let _write = crate::write_lock::hold(&archive)?;
-                schema::ensure_index(&index)?;
-            }
-            if fresh {
-                self.read_scope.finish_reset();
-            }
-            Ok(())
-        })();
-        match ensured {
-            Ok(()) => Ok(index),
-            Err(error) => Err((error, index)),
+    /// Creates the index schema in an empty file or opens the one there.
+    fn ensure_index(&self, index: &Connection) -> Result<()> {
+        let fresh = schema::version(index)? == 0;
+        if fresh {
+            let mut reset = self.read_scope.begin_reset()?;
+            reset.invalidate()?;
         }
+        if self.is_primary() {
+            schema::ensure_primary_index(index)?;
+        } else {
+            let archive = open_read(&self.archive_db())?;
+            let _write = crate::write_lock::hold(&archive)?;
+            schema::ensure_index(index)?;
+        }
+        if fresh {
+            self.read_scope.finish_reset();
+        }
+        Ok(())
     }
 }
 

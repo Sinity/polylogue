@@ -1304,7 +1304,7 @@ impl Reader<'_> {
             search_pending: count("SELECT n FROM main.row_count WHERE name = 'search_pending'")?,
             capture_coverage: self.all_capture_coverage()?,
             index_rebuild: crate::archive::index_rebuild::status(
-                &c,
+                c,
                 self.pool.archive.is_primary(),
             )?,
         })
