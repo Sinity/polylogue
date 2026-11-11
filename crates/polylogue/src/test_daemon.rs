@@ -90,9 +90,19 @@ pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
 /// `messages` more messages, so the daemon's first pass reads them all as
 /// one first build, as it reads an existing home.
 pub(crate) fn start_with_sources(text: &str, seed: &dyn Fn(&Path), messages: u64) -> TestDaemon {
+    start_with_sources_and_workers(text, seed, messages, 2)
+}
+
+/// [`start_with_sources`] with `workers` loop and request workers.
+pub(crate) fn start_with_sources_and_workers(
+    text: &str,
+    seed: &dyn Fn(&Path),
+    messages: u64,
+    workers: usize,
+) -> TestDaemon {
     start_with_clock_and_workers(
         text,
-        2,
+        workers,
         polylogue_model::WallClock::new(jiff::Timestamp::now),
         None,
         (seed, messages),
@@ -258,6 +268,15 @@ impl TestDaemon {
         &self.runtime.operations
     }
 
+    /// How often the socket's listener thread has woken.
+    pub(crate) fn server_wakeups(&self) -> u64 {
+        self.server.wakeups()
+    }
+
+    pub(crate) fn stop_server(&mut self) -> std::io::Result<()> {
+        self.server.shutdown()
+    }
+
     pub(crate) fn watch_reads(&self) -> std::sync::mpsc::Receiver<ReadObservation> {
         let (sender, receiver) = std::sync::mpsc::channel();
         *self.daemon.read_limits.lock().unwrap() = Some(sender);
@@ -275,24 +294,18 @@ impl TestDaemon {
         }
     }
 
-    pub(crate) fn assert_slot_freed(&self) -> Duration {
+    /// Waits until the observed read has given its reader slot back, which
+    /// it must within 2 s, and returns how long that took.
+    pub(crate) fn assert_read_released(&self, read: &ReadObservation) -> Duration {
         let start = std::time::Instant::now();
-        let reads = &self.daemon.reads;
-        std::thread::scope(|scope| {
-            scope
-                .spawn(|| {
-                    let limit = crate::daemon::execution::limit(
-                        Some(crate::daemon::execution::deadline(Duration::from_secs(2))),
-                        Default::default(),
-                    );
-                    limit.scope(|| reads.reader().map(drop)).unwrap();
-                })
-                .join()
-                .unwrap();
-        });
-        let elapsed = start.elapsed();
-        assert!(elapsed < Duration::from_secs(2));
-        elapsed
+        while self.daemon.reads.checked_out_by(read.owner) > 0 {
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "the read kept its reader slot"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        start.elapsed()
     }
 
     /// Sets an archive setting through the daemon.

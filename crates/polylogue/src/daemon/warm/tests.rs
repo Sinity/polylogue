@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use std::time::Duration;
 
 #[test]
 fn recent_keeps_the_most_recently_used() {

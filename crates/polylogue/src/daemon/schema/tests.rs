@@ -1,6 +1,7 @@
 use super::*;
 use polylogue_store::{Archive, ArchiveLock, Batch, Change, InputKey, Observation, Writer};
 use std::sync::mpsc::channel;
+use std::time::Duration;
 
 struct Stored {
     writer: Option<Writer>,

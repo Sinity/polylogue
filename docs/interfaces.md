@@ -155,7 +155,7 @@ Over MCP the timeout answer carries both as `next` entries.
 
 | Daemon | Command line |
 |---|---|
-| busy with a first build or re-parse | interactive reads keep their budgets on the reserved read path; answers over data not yet indexed say `up_to_date: false` on stderr |
+| busy with a first build or re-parse | interactive answers keep their budgets on the reserved executor place and read connection; answers over data not yet indexed say `up_to_date: false` on stderr |
 | starting (lock held, socket not bound) | waits up to the class deadline, printing "daemon starting" once on stderr, then exit 6 |
 | down | the local class and completion (from the catalog file) work; everything else exits 6 with one line naming the archive and the installed service command (`systemctl --user start polylogue`), or `polylogue daemon` when no service is installed. Nothing starts a daemon implicitly |
 | hung | the socket timeout ends the command, exit 7 |

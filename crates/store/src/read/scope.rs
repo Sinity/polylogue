@@ -3,15 +3,21 @@ use crate::{Result, StoreError};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockWriteGuard, Weak};
 
 type Invalidator = dyn Fn() -> Result<()> + Send + Sync;
+/// Wakes a reader waiting for a pool connection, so a scope change ends
+/// its wait.
+pub(crate) type ResetWake = dyn Fn() + Send + Sync;
 
 #[derive(Default)]
 pub(crate) struct ReadScopeState {
     epoch: AtomicU64,
     resetting: AtomicBool,
-    fence: Mutex<Vec<Weak<Invalidator>>>,
+    /// Publications share the fence; registration and reset take it alone,
+    /// so concurrent publications never wait for each other.
+    fence: RwLock<Vec<Weak<Invalidator>>>,
+    wakes: Mutex<Vec<Weak<ResetWake>>>,
 }
 
 impl std::fmt::Debug for ReadScopeState {
@@ -32,7 +38,7 @@ pub struct ScopeInvalidation {
 }
 
 pub(crate) struct ScopeReset<'a> {
-    callbacks: MutexGuard<'a, Vec<Weak<Invalidator>>>,
+    callbacks: RwLockWriteGuard<'a, Vec<Weak<Invalidator>>>,
 }
 
 impl ScopeReset<'_> {
@@ -96,7 +102,7 @@ impl ReadScopeState {
         callback: impl Fn() -> Result<()> + Send + Sync + 'static,
     ) -> Result<ScopeInvalidation> {
         let callback: Arc<Invalidator> = Arc::new(callback);
-        let mut fence = self.fence.lock().map_err(|_| poisoned())?;
+        let mut fence = self.fence.write().map_err(|_| poisoned())?;
         // Install before the first snapshot. Startup cannot expose a pointer
         // from an earlier process while its current scope is still unknown.
         callback()?;
@@ -116,9 +122,30 @@ impl ReadScopeState {
         token.check()?;
         Ok(token)
     }
+    /// Calls `wake` at the start of every reset for as long as the caller
+    /// keeps it.
+    pub(crate) fn on_reset(&self, wake: &Arc<ResetWake>) {
+        let mut wakes = self
+            .wakes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        wakes.retain(|wake| wake.strong_count() > 0);
+        wakes.push(Arc::downgrade(wake));
+    }
+
     pub(crate) fn begin_reset(&self) -> Result<ScopeReset<'_>> {
         self.resetting.store(true, Ordering::Release);
-        let callbacks = self.fence.lock().map_err(|_| poisoned())?;
+        let wakes: Vec<_> = self
+            .wakes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect();
+        for wake in wakes {
+            wake();
+        }
+        let callbacks = self.fence.write().map_err(|_| poisoned())?;
         self.epoch
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
                 epoch.checked_add(1)
@@ -136,7 +163,7 @@ impl ReadScopeToken {
     /// re-enter this fence.
     pub fn with_current<T>(&self, publish: impl FnOnce() -> Result<T>) -> Result<T> {
         self.check()?;
-        let _fence = self.state.fence.lock().map_err(|_| poisoned())?;
+        let _fence = self.state.fence.read().map_err(|_| poisoned())?;
         self.check()?;
         publish()
     }

@@ -14,7 +14,6 @@ async fn send_wire(r: &Reader, request: Http<Body>) -> (StatusCode, HeaderMap, S
 #[test]
 fn http_disconnect_interrupts_sql_and_releases_the_reader_slot() {
     let daemon = test_daemon::start("HTTP cancellation");
-    let _held = daemon.daemon.reads.reader().unwrap();
     let reads = daemon.watch_reads();
     let mut server = start_on(
         Arc::clone(&daemon.daemon),
@@ -28,7 +27,7 @@ fn http_disconnect_interrupts_sql_and_releases_the_reader_slot() {
     let limit = reads.recv_timeout(Duration::from_secs(5)).unwrap();
     test_daemon::TestDaemon::wait_for_sql(&limit);
     drop(stream);
-    let elapsed = daemon.assert_slot_freed();
+    let elapsed = daemon.assert_read_released(&limit);
     assert!(limit.cancellation.is_cancelled());
     eprintln!("HTTP disconnect released reader in {elapsed:?}");
     server.shutdown().unwrap();
@@ -37,7 +36,6 @@ fn http_disconnect_interrupts_sql_and_releases_the_reader_slot() {
 #[test]
 fn aborting_an_http_handler_cancels_its_blocking_read() {
     let r = reader();
-    let _held = r.w.daemon.reads.reader().unwrap();
     let reads = r.w.watch_reads();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -53,7 +51,7 @@ fn aborting_an_http_handler_cancels_its_blocking_read() {
     runtime.block_on(async {
         assert!(task.await.unwrap_err().is_cancelled());
     });
-    r.w.assert_slot_freed();
+    r.w.assert_read_released(&limit);
     assert!(limit.cancellation.is_cancelled());
 }
 
@@ -174,7 +172,7 @@ fn outer_parent_expires_during_actual_sql_under_a_null_envelope() {
     assert_eq!(error.kind, command_surface::FailureKind::Timeout);
     assert_eq!(error.code.as_deref(), Some("deadline_exceeded"));
     assert!(observed.sqlite_steps() >= 10_000, "no SQL-phase evidence");
-    r.w.assert_slot_freed();
+    r.w.assert_read_released(&observed);
 }
 
 #[test]
@@ -259,9 +257,6 @@ fn an_expired_http_parent_never_submits_a_new_pure_write() {
 #[test]
 fn no_header_null_sql_has_no_implicit_read_cap_and_disconnect_still_cleans_up() {
     let daemon = test_daemon::start("null HTTP SQL cancellation");
-    // Hold the other reader slot, so the slot check below waits for the SQL
-    // read's own slot, which its cancellation frees.
-    let _held = daemon.daemon.reads.reader().unwrap();
     let reads = daemon.watch_reads();
     let mut server = start_on(
         Arc::clone(&daemon.daemon),
@@ -292,7 +287,7 @@ fn no_header_null_sql_has_no_implicit_read_cap_and_disconnect_still_cleans_up() 
     std::thread::sleep(default + Duration::from_millis(20));
     observed.check().unwrap();
     drop(stream);
-    daemon.assert_slot_freed();
+    daemon.assert_read_released(&observed);
     assert!(observed.cancellation.is_cancelled());
     server.shutdown().unwrap();
 }

@@ -82,12 +82,14 @@ fn run(
                 .map_err(|e| Failure::new("io", e));
         }
         let wait = left.map_or(IDLE_WAIT, |left| left.min(IDLE_WAIT));
-        match &commits {
+        // Waiting for the next commit is not work: the executor place goes to
+        // other requests meanwhile.
+        crate::daemon::executor::outside(|| match &commits {
             Some(commits) => {
                 let _ = commits.recv_timeout(wait);
             }
             None => std::thread::sleep(wait),
-        }
+        });
     }
 }
 

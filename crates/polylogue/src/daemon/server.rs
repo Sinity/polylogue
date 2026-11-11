@@ -1,56 +1,80 @@
 //! Unix socket framing and listener lifecycle. Application operations live
 //! in `service`; ordinary requests receive one response, finite feeds a batch.
+//!
+//! One thread blocks on the listener and wakes only for a connection or the
+//! stop signal. Each connection has one thread that reads its requests,
+//! hands their work to the executor and sends the answers; one shared
+//! watcher notices hang-ups. Sending follows one rule: a send waits for the
+//! client until the request's deadline, or until the client hangs up, and
+//! never while holding a reader or an executor place.
 
 use super::service::{self, Daemon, error};
 use std::io::{BufRead, BufReader, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// Serialize before entering the native epoch fence; fence only each bounded write.
-fn write_scoped_json(
+/// The largest piece written between two checks of the access scope.
+const SEND_CHUNK: usize = 64 * 1024;
+
+/// Writes `bytes` under the send rule: each piece waits for the client until
+/// `deadline` (a send past it still takes what the socket accepts at once),
+/// and the access scope is checked before each piece, outside the scope
+/// fence. A hang-up or a stopping daemon ends a blocked write at once.
+fn send(
+    output: &mut UnixStream,
+    bytes: &[u8],
+    scopes: &crate::protocol::ReadScopes,
+    deadline: Option<Instant>,
+) -> Result<(), SendError> {
+    for piece in bytes.chunks(SEND_CHUNK) {
+        scopes.check().map_err(SendError::Scope)?;
+        let wait = deadline.map(|deadline| {
+            deadline
+                .saturating_duration_since(Instant::now())
+                .max(Duration::from_millis(1))
+        });
+        output.set_write_timeout(wait).map_err(SendError::Io)?;
+        output.write_all(piece).map_err(SendError::Io)?;
+    }
+    Ok(())
+}
+
+enum SendError {
+    Scope(polylogue_store::StoreError),
+    Io(std::io::Error),
+}
+
+/// Sends one finite answer. Serialization happens before the first byte;
+/// an answer whose scope changed before anything was sent is replaced by the
+/// safe failure, and one that changes mid-answer ends the connection, since a
+/// truncated line is never a complete answer.
+fn send_answer(
     output: &mut UnixStream,
     answer: &impl serde::Serialize,
     scopes: &crate::protocol::ReadScopes,
+    deadline: Option<Instant>,
 ) -> std::io::Result<()> {
     let mut bytes = serde_json::to_vec(answer).map_err(std::io::Error::other)?;
     bytes.push(b'\n');
-    output.set_write_timeout(Some(Duration::from_millis(10)))?;
-    let until = std::time::Instant::now() + Duration::from_secs(1);
-    let mut offset = 0;
-    while offset < bytes.len() {
-        let end = bytes.len().min(offset + 64 * 1024);
-        let published = scopes.with_current(|| Ok(output.write(&bytes[offset..end])));
-        let published = match published {
-            Ok(result) => result,
-            Err(error) if offset == 0 => {
-                // No old response bytes escaped; publish the safe failure without its old scope.
-                let mut error = serde_json::to_vec(&service::store_error(&error))
-                    .map_err(std::io::Error::other)?;
-                error.push(b'\n');
-                return output.write_all(&error);
-            }
-            // A truncated JSON line cannot be accepted as a completed response.
-            Err(error) => return Err(std::io::Error::other(error)),
-        };
-        match published {
-            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
-            Ok(written) => offset += written,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock
-                        | std::io::ErrorKind::TimedOut
-                        | std::io::ErrorKind::Interrupted
-                ) && std::time::Instant::now() < until => {}
-            Err(error) => return Err(error),
-        }
+    let mut scopes = scopes;
+    let unscoped = crate::protocol::ReadScopes::default();
+    if let Err(error) = scopes.check() {
+        // The safe failure carries nothing from the old scope.
+        let mut failure =
+            serde_json::to_vec(&service::store_error(&error)).map_err(std::io::Error::other)?;
+        failure.push(b'\n');
+        bytes = failure;
+        scopes = &unscoped;
     }
-    Ok(())
+    match send(output, &bytes, scopes, deadline) {
+        Ok(()) => Ok(()),
+        Err(SendError::Scope(error)) => Err(std::io::Error::other(error)),
+        Err(SendError::Io(error)) => Err(error),
+    }
 }
 
 /// The liveness check readiness and the systemd watchdog send. The client's
@@ -59,26 +83,44 @@ fn write_scoped_json(
 pub(crate) const PING: &str = "ping";
 
 fn write_answer(out: &mut UnixStream, answer: &command_surface::Answer<serde_json::Value>) -> bool {
-    writeln!(
-        out,
-        "{}",
-        serde_json::to_string(answer).expect("answer serializes")
-    )
-    .is_ok()
+    send_answer(out, answer, &Default::default(), None).is_ok()
 }
 
-fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surface::OperationTable) {
-    if stream
-        .set_write_timeout(Some(Duration::from_secs(1)))
-        .is_err()
-    {
-        return;
+/// What every connection of one server shares.
+struct Shared {
+    daemon: Arc<Daemon>,
+    operations: Arc<command_surface::OperationTable>,
+    /// Drives the operation table's futures; the work itself runs on the
+    /// executor.
+    runtime: tokio::runtime::Runtime,
+    hangups: super::hangup::Watcher,
+    clients: Clients,
+}
+
+/// The connections still being served, for the drain at shutdown.
+#[derive(Default)]
+struct Clients {
+    open: Mutex<Vec<(u64, UnixStream)>>,
+    next: std::sync::atomic::AtomicU64,
+    closed: Condvar,
+    panicked: std::sync::atomic::AtomicBool,
+}
+
+impl Clients {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<(u64, UnixStream)>> {
+        self.open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+fn serve_client(stream: UnixStream, shared: &Shared) {
+    let d = &shared.daemon;
     let Ok(read_half) = stream.try_clone() else {
         return;
     };
     let cancellation = polylogue_store::read::limit::ReadCancellation::default();
-    let Ok(_watch) = super::disconnect::Watch::start(&stream, cancellation.clone()) else {
+    let Ok(_watched) = shared.hangups.watch(&stream, cancellation.clone()) else {
         return;
     };
     let mut out = stream;
@@ -163,9 +205,19 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
         };
         if let crate::commands::Run::Feed { registration, .. } = command.run {
             let limit = stream_limit(&request, command, true, &accepted, &cancellation);
-            write_stream(&mut out, d, &accepted, &limit, |d, context, output| {
-                registration.produce(&request.arguments, d, context, output)
-            });
+            let arguments = request.arguments.clone();
+            if !send_stream(
+                &mut out,
+                d,
+                super::executor::Class::Ordinary,
+                &accepted,
+                limit,
+                Box::new(move |d, _, context, output| {
+                    registration.produce(&arguments, d, context, output)
+                }),
+            ) {
+                return;
+            }
             continue;
         }
         let Some(registration) = command.registration() else {
@@ -213,23 +265,31 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                 &accepted,
                 &cancellation,
             );
-            let invocation = accepted
-                .invocation
-                .clone()
-                .expect("an accepted request captures its invocation");
-            write_stream(&mut out, d, &accepted, &limit, |d, context, output| {
-                registration.produce(
-                    &request.arguments,
-                    command,
-                    d,
-                    &invocation,
-                    &caller,
-                    context,
-                    output,
-                )
-            });
+            let arguments = request.arguments.clone();
+            let produce_caller = caller.clone();
+            if !send_stream(
+                &mut out,
+                d,
+                policy.class,
+                &accepted,
+                limit,
+                Box::new(move |d, invocation, context, output| {
+                    registration.produce(
+                        &arguments,
+                        command,
+                        d,
+                        invocation,
+                        &produce_caller,
+                        context,
+                        output,
+                    )
+                }),
+            ) {
+                return;
+            }
             continue;
         }
+        let deadline = stream_limit(&request, command, true, &accepted, &cancellation).deadline();
         let via = if channel == polylogue_model::authorship::Channel::Mcp {
             command_surface::Via::Mcp
         } else {
@@ -237,15 +297,15 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
         };
         let trusted = command_surface::Caller::authenticated(accepted.scope(), accepted)
             .with_access(command_surface::Access::Write);
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("operation runtime starts");
-        let answer =
-            runtime.block_on(operations.call_as(request, via, trusted, Default::default()));
+        let answer = shared.runtime.block_on(shared.operations.call_as(
+            request,
+            via,
+            trusted,
+            Default::default(),
+        ));
         let publication = crate::protocol::ReadScopes::single(read_scope);
         let answer = crate::protocol::scope_answer(answer, &publication);
-        if write_scoped_json(&mut out, &answer, &publication).is_err() {
+        if send_answer(&mut out, &answer, &publication, deadline).is_err() {
             return;
         }
     }
@@ -285,102 +345,48 @@ fn stream_limit(
     limit
 }
 
-/// Writes a stream's events to the socket under its read limit; a failure
-/// after the stream began ends it with the error answer.
-fn write_stream(
+/// Starts a stream on the executor and sends its events as they come,
+/// outside the producer's reader; `false` when the connection is unusable.
+fn send_stream(
     out: &mut UnixStream,
-    d: &Daemon,
+    d: &Arc<Daemon>,
+    class: super::executor::Class,
     accepted: &crate::protocol::caller::Accepted,
-    limit: &polylogue_store::read::limit::ReadLimit,
-    produce: impl FnOnce(
-        &Daemon,
-        &Arc<crate::operation::Context>,
-        &mut dyn std::io::Write,
-    ) -> Result<(), crate::daemon::Failure>,
-) {
-    let _ = out.set_write_timeout(Some(Duration::from_millis(10)));
-    let produced = limit.scope(|| {
-        limit.check()?;
-        let invocation = accepted
-            .invocation
-            .clone()
-            .expect("an accepted request captures its invocation");
-        let context = d.resolve_operation_context(invocation)?;
-        let scope = d.reads.scope_token()?;
-        let mut writer = GuardedWriter::new(out, limit.clone(), scope);
-        let result = produce(d, &context, &mut writer);
-        match writer.failure() {
-            Some(failure) => Err(failure),
-            None => result,
-        }
-    });
-    if let Err(failure) = produced {
-        let _ = crate::protocol::stream::error(out, failure);
-    }
-    let _ = out.set_write_timeout(Some(Duration::from_secs(1)));
-}
-
-/// Data writes yield regularly so revoked scopes and cancellations release readers.
-pub(crate) struct GuardedWriter<'a> {
-    output: &'a mut dyn Write,
     limit: polylogue_store::read::limit::ReadLimit,
-    failure: Option<crate::daemon::Failure>,
-    scope: polylogue_store::ReadScopeToken,
-}
-impl<'a> GuardedWriter<'a> {
-    pub fn new(
-        output: &'a mut dyn Write,
-        limit: polylogue_store::read::limit::ReadLimit,
-        scope: polylogue_store::ReadScopeToken,
-    ) -> Self {
-        Self {
-            output,
-            limit,
-            failure: None,
-            scope,
-        }
-    }
-    /// Actual transport writes are individually bounded; never fence their retry loop.
-    fn activate<T>(
-        &mut self,
-        publish: impl FnOnce(&mut dyn Write) -> std::io::Result<T>,
-    ) -> std::io::Result<T> {
-        if let Err(error) = self.limit.check() {
-            self.failure = Some(crate::daemon::Failure::store(&error));
-            return Err(std::io::Error::other(error));
-        }
-        match self.scope.with_current(|| Ok(publish(self.output))) {
-            Ok(result) => result,
+    produce: super::streaming::Produce,
+) -> bool {
+    let deadline = limit.deadline();
+    let invocation = accepted
+        .invocation
+        .clone()
+        .expect("an accepted request captures its invocation");
+    let scopes = crate::protocol::ReadScopes::single(d.reads.scope_token().ok());
+    let input = match super::streaming::start(d, class, limit, invocation, produce) {
+        Ok(input) => input,
+        Err(failure) => return crate::protocol::stream::error(out, failure).is_ok(),
+    };
+    loop {
+        let next = match input.next_blocking() {
+            Ok(next) => next,
             Err(error) => {
-                self.failure = Some(crate::daemon::Failure::store(&error));
-                Err(std::io::Error::other(error))
+                return crate::protocol::stream::error(
+                    out,
+                    crate::daemon::Failure::new("io", error),
+                )
+                .is_ok();
             }
-        }
-    }
-    pub fn failure(&mut self) -> Option<crate::daemon::Failure> {
-        self.failure.take()
-    }
-}
-impl Write for GuardedWriter<'_> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        loop {
-            match self.activate(|output| output.write(bytes)) {
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::WouldBlock
-                            | std::io::ErrorKind::TimedOut
-                            | std::io::ErrorKind::Interrupted
-                    ) =>
-                {
-                    continue;
+        };
+        match next {
+            super::stream_buffer::Next::Bytes(bytes) => {
+                if send(out, &bytes, &scopes, deadline).is_err() {
+                    return false;
                 }
-                result => return result,
+            }
+            super::stream_buffer::Next::End => return true,
+            super::stream_buffer::Next::Failed(failure) => {
+                return crate::protocol::stream::error(out, failure).is_ok();
             }
         }
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.activate(|output| output.flush())
     }
 }
 
@@ -459,10 +465,12 @@ pub fn serve(
 
 /// Owns the socket listener and every accepted client thread.
 pub struct Server {
-    stop: Option<Sender<()>>,
+    stop: Option<UnixStream>,
     thread: Option<JoinHandle<std::io::Result<()>>>,
     socket: Option<PathBuf>,
     quiescing: Option<tokio::sync::oneshot::Receiver<()>>,
+    #[cfg(test)]
+    wakeups: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Server {
@@ -471,27 +479,53 @@ impl Server {
         operations: Arc<command_surface::OperationTable>,
     ) -> std::io::Result<Self> {
         let listener = bind(&daemon)?;
-        let (stop, stopped) = channel();
+        let (stop, stopped) = UnixStream::pair()?;
         let (quiesce, quiescing) = tokio::sync::oneshot::channel();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("polylogue-socket-timers")
+            .enable_time()
+            .build()?;
+        let shared = Arc::new(Shared {
+            daemon: Arc::clone(&daemon),
+            operations,
+            runtime,
+            hangups: super::hangup::Watcher::start()?,
+            clients: Clients::default(),
+        });
+        #[cfg(test)]
+        let wakeups = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let mut server = Self {
             stop: Some(stop),
             thread: None,
             socket: Some(daemon.archive.socket()),
             quiescing: Some(quiescing),
+            #[cfg(test)]
+            wakeups: Arc::clone(&wakeups),
         };
-        listener.set_nonblocking(true)?;
+        let accept = Accept {
+            listener,
+            stopped,
+            #[cfg(test)]
+            wakeups,
+        };
         server.thread = Some(
             std::thread::Builder::new()
                 .name("polylogue-socket".into())
-                .spawn(move || listen(listener, daemon, operations, stopped, quiesce))?,
+                .spawn(move || listen(accept, shared, quiesce))?,
         );
         Ok(server)
     }
 
-    pub fn shutdown(&mut self) -> std::io::Result<()> {
-        if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
+    /// Asks the listener to stop without waiting for it.
+    pub(crate) fn request_stop(&mut self) {
+        if let Some(mut stop) = self.stop.take() {
+            let _ = stop.write_all(&[1]);
         }
+    }
+
+    pub fn shutdown(&mut self) -> std::io::Result<()> {
+        self.request_stop();
         self.join()
     }
 
@@ -516,6 +550,12 @@ impl Server {
             .take()
             .ok_or_else(|| std::io::Error::other("socket lifecycle already observed"))
     }
+
+    /// How often the listener thread has woken.
+    #[cfg(test)]
+    pub(crate) fn wakeups(&self) -> u64 {
+        self.wakeups.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 impl Drop for Server {
@@ -537,92 +577,142 @@ pub fn bind(daemon: &Daemon) -> std::io::Result<UnixListener> {
     UnixListener::bind(&socket)
 }
 
-fn listen(
+/// The listener and the stop signal the accept thread blocks on.
+struct Accept {
     listener: UnixListener,
-    daemon: Arc<Daemon>,
-    operations: Arc<command_surface::OperationTable>,
-    stopped: Receiver<()>,
-    quiesce: tokio::sync::oneshot::Sender<()>,
-) -> std::io::Result<()> {
-    let mut clients: Vec<(UnixStream, JoinHandle<()>)> = Vec::new();
-    let mut failure = None;
-    loop {
-        for _ in 0..32 {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    let to_close = match stream.try_clone() {
-                        Ok(to_close) => to_close,
-                        Err(error) => {
-                            failure = Some(error);
-                            break;
-                        }
-                    };
-                    let daemon = Arc::clone(&daemon);
-                    let operations = Arc::clone(&operations);
-                    match std::thread::Builder::new()
-                        .name("polylogue-client".into())
-                        .spawn(move || serve_client(stream, &daemon, &operations))
-                    {
-                        Ok(thread) => clients.push((to_close, thread)),
-                        Err(error) => {
-                            failure = Some(error);
-                            break;
-                        }
-                    }
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => {
-                    failure = Some(error);
-                    break;
-                }
+    stopped: UnixStream,
+    #[cfg(test)]
+    wakeups: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Accept {
+    /// Blocks until a connection arrives or the stop signal is written;
+    /// `None` on stop.
+    fn next(&self) -> std::io::Result<Option<UnixStream>> {
+        use rustix::event::{PollFd, PollFlags, poll};
+        loop {
+            let mut events = [
+                PollFd::new(&self.listener, PollFlags::IN),
+                PollFd::new(&self.stopped, PollFlags::IN),
+            ];
+            match poll(&mut events, None) {
+                Ok(_) => {}
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(error) => return Err(error.into()),
             }
-        }
-        let mut i = 0;
-        while i < clients.len() {
-            if clients[i].1.is_finished() {
-                let (_, thread) = clients.swap_remove(i);
-                if thread.join().is_err() {
-                    failure.get_or_insert_with(|| std::io::Error::other("socket client panicked"));
-                }
-            } else {
-                i += 1;
+            #[cfg(test)]
+            self.wakeups
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if !events[1].revents().is_empty() {
+                return Ok(None);
             }
-        }
-        if failure.is_some()
-            || !matches!(
-                stopped.recv_timeout(Duration::from_millis(20)),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-            )
-        {
-            break;
+            match self.listener.accept() {
+                Ok((stream, _)) => return Ok(Some(stream)),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => return Err(error),
+            }
         }
     }
-    drop(listener);
+}
+
+fn listen(
+    accept: Accept,
+    shared: Arc<Shared>,
+    quiesce: tokio::sync::oneshot::Sender<()>,
+) -> std::io::Result<()> {
+    let mut failure = None;
+    if let Err(error) = accept.listener.set_nonblocking(true) {
+        failure = Some(error);
+    }
+    while failure.is_none() {
+        let stream = match accept.next() {
+            Ok(Some(stream)) => stream,
+            Ok(None) => break,
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        };
+        if let Err(error) = start_client(&shared, stream) {
+            failure = Some(error);
+        }
+    }
+    drop(accept);
     let _ = quiesce.send(());
     // Stop receiving new input while complete queued requests can still receive
     // their refusal and an accepted write can publish its durable receipt.
-    for (stream, _) in &clients {
+    let clients = &shared.clients;
+    for (_, stream) in clients.lock().iter() {
         let _ = stream.shutdown(Shutdown::Read);
     }
-    let drain_until = std::time::Instant::now() + Duration::from_secs(5);
-    while clients.iter().any(|(_, thread)| !thread.is_finished())
-        && std::time::Instant::now() < drain_until
-    {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    // Unresponsive peers cannot hold shutdown past the response drain window.
-    for (stream, thread) in &clients {
-        if !thread.is_finished() {
-            let _ = stream.shutdown(Shutdown::Both);
+    let drain_until = Instant::now() + Duration::from_secs(5);
+    let mut open = clients.lock();
+    while !open.is_empty() {
+        let left = drain_until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
         }
+        open = clients
+            .closed
+            .wait_timeout(open, left)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0;
     }
-    for (_, thread) in clients {
-        if thread.join().is_err() {
-            failure.get_or_insert_with(|| std::io::Error::other("socket client panicked"));
-        }
+    // Unresponsive peers cannot hold shutdown past the response drain window:
+    // the shutdown ends blocked sends and the hang-up cancels their reads.
+    for (_, stream) in open.iter() {
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+    while !open.is_empty() {
+        open = clients
+            .closed
+            .wait(open)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+    drop(open);
+    if clients.panicked.load(std::sync::atomic::Ordering::Acquire) {
+        failure.get_or_insert_with(|| std::io::Error::other("socket client panicked"));
     }
     failure.map_or(Ok(()), Err)
+}
+
+/// Serves one connection on a thread of its own; the thread removes the
+/// connection from the open set when it ends, however it ends.
+fn start_client(shared: &Arc<Shared>, stream: UnixStream) -> std::io::Result<()> {
+    stream.set_nonblocking(false)?;
+    let id = shared
+        .clients
+        .next
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    shared.clients.lock().push((id, stream.try_clone()?));
+    struct Close<'a>(&'a Clients, u64);
+    impl Drop for Close<'_> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                self.0
+                    .panicked
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            self.0.lock().retain(|(id, _)| *id != self.1);
+            self.0.closed.notify_all();
+        }
+    }
+    let worker = Arc::clone(shared);
+    let started = std::thread::Builder::new()
+        .name("polylogue-client".into())
+        .spawn(move || {
+            let _close = Close(&worker.clients, id);
+            serve_client(stream, &worker);
+        });
+    if let Err(error) = started {
+        shared.clients.lock().retain(|(open, _)| *open != id);
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

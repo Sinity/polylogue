@@ -145,9 +145,15 @@ async fn answer(
         Run::Feed { registration, .. } => {
             let limit = stream_limit(&request, true);
             let arguments = request.arguments.clone();
-            return stream(web, limit, request, move |d, _, context, output| {
-                registration.produce(&arguments, d, context, output)
-            })
+            return stream(
+                web,
+                crate::daemon::executor::Class::Ordinary,
+                limit,
+                request,
+                Box::new(move |d, _, context, output| {
+                    registration.produce(&arguments, d, context, output)
+                }),
+            )
             .await;
         }
         Run::Local(_) | Run::ConfiguredLocal(_) => return StatusCode::NOT_FOUND.into_response(),
@@ -164,11 +170,12 @@ async fn answer(
         let arguments = request.arguments.clone();
         return stream(
             web,
+            policy.class,
             limit,
             request,
-            move |d, invocation, context, output| {
+            Box::new(move |d, invocation, context, output| {
                 registration.produce(&arguments, c, d, invocation, &caller, context, output)
-            },
+            }),
         )
         .await;
     }
@@ -319,22 +326,11 @@ fn scoped_body_response(
 /// terminate the stream with an error event, without completion.
 async fn stream(
     web: &Arc<Web>,
+    class: crate::daemon::executor::Class,
     limit: polylogue_store::read::limit::ReadLimit,
     accepted_request: command_surface::RunnableRequest,
-    produce: impl FnOnce(
-        &crate::daemon::service::Daemon,
-        &crate::operation::Invocation,
-        &Arc<crate::operation::Context>,
-        &mut dyn std::io::Write,
-    ) -> Result<(), crate::daemon::Failure>
-    + Send
-    + 'static,
+    produce: crate::daemon::streaming::Produce,
 ) -> HttpResponse {
-    let scope = match web.daemon.reads.scope_token() {
-        Ok(scope) => scope,
-        Err(error) => return json_answer(web, crate::daemon::service::store_error(&error)),
-    };
-    let worker = Arc::clone(web);
     let cancellation = limit.cancellation.clone();
     let accepted = crate::protocol::caller::accept(
         &web.daemon.callers,
@@ -347,113 +343,108 @@ async fn stream(
         .invocation(&accepted.authorship)
         .with_accepted_request(Some(Arc::new(accepted_request)))
         .with_parent(super::parent_lifetime());
-    let (output, input) = tokio::io::duplex(64 * 1024);
-    let (ready, first) = tokio::sync::oneshot::channel();
-    let runtime = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || {
-        let mut output = ProducerWriter {
-            output,
-            runtime,
-            ready: Some(ready),
-        };
-        let mut guarded =
-            crate::daemon::server::GuardedWriter::new(&mut output, limit.clone(), scope);
-        let result = limit.scope(|| {
-            let context = worker
-                .daemon
-                .resolve_operation_context(invocation.clone())?;
-            produce(&worker.daemon, &invocation, &context, &mut guarded)
-        });
-        let result = match guarded.failure() {
-            Some(failure) => Err(failure),
-            None => result,
-        };
-        drop(guarded);
-        match result {
-            Err(failure) => {
-                if let Some(ready) = output.ready.take() {
-                    let _ = ready.send(Err(failure));
-                } else {
-                    let _ = crate::protocol::stream::error(&mut output, failure);
-                }
-            }
-            Ok(()) => {
-                if let Some(ready) = output.ready.take() {
-                    let _ = ready.send(Err(crate::daemon::Failure::new(
-                        "internal",
-                        "stream completed without producing events",
-                    )));
-                }
-            }
-        }
-    });
     let mut cancel = super::CancelRead(Some(cancellation.clone()));
-    match first.await {
-        Ok(Ok(())) => {
-            cancel.0.take();
-            let input = StreamInput {
-                input,
-                cancellation,
-            };
-            (
-                [
-                    (header::CONTENT_TYPE, "text/event-stream"),
-                    (header::CACHE_CONTROL, "no-cache"),
-                ],
-                axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(input)),
-            )
-                .into_response()
+    let input =
+        match crate::daemon::streaming::start(&web.daemon, class, limit, invocation, produce) {
+            Ok(input) => input,
+            Err(failure) => return json_answer(web, failure.answer::<serde_json::Value>()),
+        };
+    let first = match input.next().await {
+        Ok(crate::daemon::stream_buffer::Next::Bytes(bytes)) => bytes,
+        Ok(crate::daemon::stream_buffer::Next::Failed(failure)) => {
+            return json_answer(web, failure.answer::<serde_json::Value>());
         }
-        Ok(Err(failure)) => json_answer(web, failure),
-        Err(error) => json_answer(web, crate::daemon::service::error("internal", error)),
-    }
+        Ok(crate::daemon::stream_buffer::Next::End) => {
+            return json_answer(
+                web,
+                crate::daemon::service::error(
+                    "internal",
+                    "stream completed without producing events",
+                ),
+            );
+        }
+        Err(error) => return json_answer(web, crate::daemon::service::error("io", error)),
+    };
+    cancel.0.take();
+    let body = StreamBody {
+        input: Arc::new(input),
+        pending: first,
+        offset: 0,
+        next: None,
+        ended: false,
+        cancellation,
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "text/event-stream"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(body)),
+    )
+        .into_response()
 }
 
-struct ProducerWriter {
-    output: tokio::io::DuplexStream,
-    runtime: tokio::runtime::Handle,
-    ready: Option<tokio::sync::oneshot::Sender<Result<(), crate::daemon::Failure>>>,
-}
-impl std::io::Write for ProducerWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        use tokio::io::AsyncWriteExt;
-        if bytes.is_empty() {
-            return Ok(0);
-        }
-        if let Some(ready) = self.ready.take() {
-            ready
-                .send(Ok(()))
-                .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
-        }
-        self.runtime.block_on(async {
-            tokio::time::timeout(
-                std::time::Duration::from_millis(10),
-                self.output.write(bytes),
-            )
-            .await
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::WouldBlock))?
-        })
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        use tokio::io::AsyncWriteExt;
-        self.runtime.block_on(self.output.flush())
-    }
-}
+type NextChunk = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = std::io::Result<crate::daemon::stream_buffer::Next>>
+            + Send,
+    >,
+>;
 
-struct StreamInput {
-    input: tokio::io::DuplexStream,
+/// The body of a streamed response, read from the stream buffer; dropping
+/// it, as when the browser goes away, cancels the producer.
+struct StreamBody {
+    input: Arc<crate::daemon::stream_buffer::StreamInput>,
+    pending: Vec<u8>,
+    offset: usize,
+    next: Option<NextChunk>,
+    ended: bool,
     cancellation: polylogue_store::read::limit::ReadCancellation,
 }
-impl tokio::io::AsyncRead for StreamInput {
+impl tokio::io::AsyncRead for StreamBody {
     fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
+        self: std::pin::Pin<&mut Self>,
         context: &mut std::task::Context<'_>,
         buffer: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.input).poll_read(context, buffer)
+        use crate::daemon::stream_buffer::Next;
+        let this = self.get_mut();
+        loop {
+            if this.offset < this.pending.len() {
+                let end = this
+                    .pending
+                    .len()
+                    .min(this.offset.saturating_add(buffer.remaining()));
+                buffer.put_slice(&this.pending[this.offset..end]);
+                this.offset = end;
+                return std::task::Poll::Ready(Ok(()));
+            }
+            if this.ended {
+                return std::task::Poll::Ready(Ok(()));
+            }
+            let next = this.next.get_or_insert_with(|| {
+                let input = Arc::clone(&this.input);
+                Box::pin(async move { input.next().await })
+            });
+            let chunk = std::task::ready!(next.as_mut().poll(context));
+            this.next = None;
+            this.offset = 0;
+            match chunk? {
+                Next::Bytes(bytes) => this.pending = bytes,
+                Next::Failed(failure) => {
+                    this.pending.clear();
+                    crate::protocol::stream::error(&mut this.pending, failure)?;
+                    this.ended = true;
+                }
+                Next::End => {
+                    this.pending.clear();
+                    this.ended = true;
+                }
+            }
+        }
     }
 }
-impl Drop for StreamInput {
+impl Drop for StreamBody {
     fn drop(&mut self) {
         self.cancellation.cancel();
     }

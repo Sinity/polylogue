@@ -114,8 +114,9 @@ pub(crate) trait Handler: Send + Sync + 'static {
     const PAGES: bool = false;
     /// Prepares context within the request's token budget.
     const BUDGETED: bool = false;
-    /// Runs at idle priority, without holding ordinary work back.
-    const IDLE: bool = false;
+    /// Which executor places its work may take: interactive answers may take
+    /// the reserved place; idle-priority work runs in the background place.
+    const CLASS: super::executor::Class = super::executor::Class::Ordinary;
     /// Answers with nothing, never with a timeout, when its limit runs out.
     const FAILS_OPEN: bool = false;
     /// Reads under a deadline before it writes.
@@ -184,6 +185,8 @@ pub(crate) struct Policy {
     pub read_phase: bool,
     pub default_deadline: bool,
     pub streaming: bool,
+    /// The executor places its work may take.
+    pub class: super::executor::Class,
 }
 
 type Produce = fn(
@@ -379,6 +382,7 @@ fn admit<H: Handler>(
         read_phase: H::read_phase(&arguments, row, caller),
         default_deadline: H::default_deadline(&arguments),
         streaming: false,
+        class: H::CLASS,
     })
 }
 
@@ -393,6 +397,7 @@ fn admit_stream<H: Streams>(
         read_phase: H::read_phase(&arguments, row, caller),
         default_deadline: H::default_deadline(&arguments),
         streaming: H::streaming(&arguments),
+        class: H::CLASS,
     })
 }
 
@@ -563,12 +568,19 @@ impl<H: Handler> Operation for Row<H> {
             let daemon = Arc::clone(&self.daemon);
             let row = self.row;
             let table_context = context.clone();
-            let worker = tokio::task::spawn_blocking(move || {
+            let deadline = match &parent {
+                Some(parent) => parent.read_limit(cancellation.clone()).deadline(),
+                None if default_limit => {
+                    super::execution::limit(None, cancellation.clone()).deadline()
+                }
+                None => None,
+            };
+            let job = move || {
                 let _table = TableContext::enter(table_context);
-                let limit = match &parent {
-                    Some(parent) => parent.read_limit(cancellation),
-                    None if default_limit => super::execution::limit(None, cancellation),
-                    None => ReadLimit::without_deadline(cancellation),
+                let limit = match (&parent, deadline) {
+                    (Some(parent), _) => parent.read_limit(cancellation),
+                    (None, Some(deadline)) => ReadLimit::at(deadline, cancellation),
+                    (None, None) => ReadLimit::without_deadline(cancellation),
                 };
                 let invocation = invocation
                     .unwrap_or_else(|| daemon.invocation(&authorship))
@@ -584,15 +596,9 @@ impl<H: Handler> Operation for Row<H> {
                     cursor.as_deref(),
                     budget,
                 )
-            });
-            let answer = match worker.await {
-                Ok(answer) => answer,
-                Err(error) => {
-                    return Answer::error(command_surface::Failure::new(
-                        FailureKind::Io,
-                        error.to_string(),
-                    ));
-                }
+            };
+            let Some(answer) = self.daemon.executor.run(H::CLASS, deadline, job).await else {
+                return Answer::error(super::service::shutting_down().error);
             };
             drop(guard);
             typed(answer, self.row.name)
@@ -643,7 +649,8 @@ fn answer<H: Handler>(
         if daemon.blocked() && !read_only {
             return daemon.write_refusal().answer();
         }
-        let _foreground = (!H::IDLE).then(|| daemon.foreground());
+        let _foreground =
+            (H::CLASS != super::executor::Class::Background).then(|| daemon.foreground());
         let call = Call {
             daemon,
             row,
@@ -659,14 +666,21 @@ fn answer<H: Handler>(
     };
     #[cfg(not(test))]
     let _ = &reader_acquired;
-    within_limit(
-        limit,
-        read_phase,
-        H::FAILS_OPEN,
-        row.name,
-        text.as_deref(),
-        work,
-    )
+    let bounded = || {
+        within_limit(
+            limit,
+            read_phase,
+            H::FAILS_OPEN,
+            row.name,
+            text.as_deref(),
+            work,
+        )
+    };
+    if H::CLASS == super::executor::Class::Interactive {
+        polylogue_store::reserved_reads(bounded)
+    } else {
+        bounded()
+    }
 }
 
 /// Runs `work` under the request's read limit. A read phase that has
