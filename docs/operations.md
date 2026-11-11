@@ -219,7 +219,7 @@ An upgrade is a version change in `status` and, when a parser changed, a while i
 
 **Spools across a rollback.** Hooks and the browser host keep writing their spools while the daemon is replaced, and the spools are never deleted, so the build a deployment rolls back to reads what the newer build wrote. A spool line's shape is therefore part of the deployed format: the hook's line shapes are pinned by a fixture that the previous build's reader is checked against, and a change to them is checked against the deployed reader before it ships.
 
-No code path deletes the index. A full rebuild is a rare deliberate act: someone moves `index.db` aside and starts the daemon, which rebuilds from stored bytes and answers reads with `index building` and progress until it can answer. Moving a whole archive aside and starting fresh is likewise a deliberate act, never something code does to get past a change.
+No code path deletes the index. A full rebuild is a rare deliberate act: someone moves `index.db` aside and starts the daemon, which rebuilds from stored bytes and answers reads with `index building` and progress until it can answer. The rebuild reads every input's newest revision chain first. Once those are read (or refused) the first build ends: its read indexes and search are built and the sessions derived, and the older chains, which hold earlier readings of the same inputs, are read afterwards as ordinary work, with reads reporting parsing as incomplete until they are. Moving a whole archive aside and starting fresh is likewise a deliberate act, never something code does to get past a change.
 
 ## Backup and restore
 
