@@ -1225,6 +1225,36 @@ fn text_and_similarity_rank_together() {
 }
 
 #[test]
+fn prose_words_rank_a_query_that_also_searches_output() {
+    let w = morrow();
+    // Session #1 has the prose word and the output term; its relevance is
+    // the prose word's, whatever else the conditions search.
+    let ranks = |text: &str| -> std::collections::BTreeMap<String, f64> {
+        let v = q(&w, text);
+        assert_eq!(v["ranked"], true, "{v}");
+        v["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["id"].as_str().unwrap().to_owned(),
+                    r["rank"].as_f64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let mixed = ranks("sessions where output:ok parser");
+    let prose = ranks("sessions where parser");
+    assert!(!mixed.is_empty());
+    for (id, rank) in &mixed {
+        assert_eq!(Some(rank), prose.get(id), "{id}");
+    }
+    let output = ranks("sessions where output:ok");
+    assert!(mixed.iter().any(|(id, rank)| output.get(id) != Some(rank)));
+}
+
+#[test]
 fn pages_continue_with_a_cursor_and_keep_their_now() {
     let w = morrow();
     let mut a = ask("kind:*");

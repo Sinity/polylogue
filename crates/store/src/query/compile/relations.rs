@@ -212,105 +212,35 @@ pub(super) fn as_of_unavailable() -> QueryError {
     }
 }
 
-fn source_order_needed(query: &Query) -> bool {
-    let mut inherited = true;
-    let mut group_input = None;
-    for stage in &query.transforms {
-        match &stage.kind {
-            TransformKind::Group { .. } => {
-                group_input = Some(inherited);
-                inherited = false;
-                continue;
-            }
-            TransformKind::First { .. } if group_input.is_some() => {
-                inherited = group_input.take().expect("group input order");
-                if inherited {
-                    return true;
-                }
-            }
-            TransformKind::Limit { .. }
-            | TransformKind::Offset { .. }
-            | TransformKind::First { .. } => {
-                if inherited {
-                    return true;
-                }
-            }
-            TransformKind::Sort { .. }
-            | TransformKind::Aggregate { .. }
-            | TransformKind::Scope { .. }
-            | TransformKind::Matches => inherited = false,
-            TransformKind::Extension { name, .. } if name == polylogue_query::catalog::MEASURE => {
-                inherited = false
-            }
-            TransformKind::Diff { .. } => return true,
-            TransformKind::Combine {
-                how: Combination::Union | Combination::Fuse,
-                ..
-            } => inherited = true,
-            _ => {}
-        }
-        group_input = None;
-    }
-    inherited
-}
-
-fn relational(kind: &TransformKind) -> bool {
-    matches!(
-        kind,
-        TransformKind::Where { .. }
-            | TransformKind::Sort { .. }
-            | TransformKind::Fields { .. }
-            | TransformKind::Group { .. }
-            | TransformKind::Aggregate { .. }
-            | TransformKind::First { .. }
-            | TransformKind::Limit { .. }
-            | TransformKind::Offset { .. }
-            | TransformKind::Distinct
-            | TransformKind::Join { .. }
-            | TransformKind::Diff { .. }
-            | TransformKind::Scope { .. }
-            | TransformKind::Matches
-            | TransformKind::Combine { .. }
-    )
-}
-
 impl<'a> Compiler<'a> {
     pub(super) fn program_with(
         mut self,
         query: &Query,
         preset: Option<MatchRel>,
     ) -> Result<Program, QueryError> {
+        let Some(selection) = Selection::of(query, &self.binder(), &self.opts.fields)? else {
+            return Err(not_built("this shared query source"));
+        };
+        let Some(first) = selection.relations_from else {
+            let stages = &query.transforms[selection.stages_from..];
+            return self.native_program_with(&selection, stages, preset);
+        };
         let source_order = match &query.source {
             Source::Unit {
                 condition: Some(c), ..
             } if contains_order(c) => Some(c),
             _ => None,
         };
-        // The where stages folded into the source's selection are not stages.
-        let folded = polylogue_query::selection::stages_from(query);
-        let first = if source_order.is_some() {
-            Some(0)
-        } else {
-            query.transforms[folded..]
-                .iter()
-                .position(|s| relational(&s.kind))
-                .map(|at| at + folded)
-        };
-        let Some(first) = first else {
-            return self.native_program_with(query, preset);
-        };
-        let mut prefix = query.clone();
-        prefix.transforms.truncate(first);
         let mut compiler = Compiler::new(self.text, self.opts);
         compiler.saved_stack = self.saved_stack.clone();
         compiler.query_scope = self.query_scope.clone();
         compiler.typing = self.typing.clone();
         compiler.source_near_allowed = self.source_near_allowed;
         compiler.catalog = self.catalog.clone();
-        self.near_needed = source_order_needed(query);
-        // The stages read the prefix's rows whole.
+        // The stages read the selection's rows whole.
         self.answer = false;
-        let mut program = self.native_program_with(&prefix, preset)?;
+        let stages = &query.transforms[selection.stages_from.min(first)..first];
+        let mut program = self.native_program_with(&selection, stages, preset)?;
         compiler.params = std::mem::take(&mut program.params);
         compiler.near = program.near.clone();
         let relation = Relation::new(program);
@@ -1273,7 +1203,14 @@ impl Compiler<'_> {
         compiler.params = std::mem::take(&mut self.params);
         compiler.input_rows = Some(parent_input.rows().to_owned());
         compiler.near = self.near.clone().or(relation.program.near.clone());
-        let mut result = compiler.native_program_with(&native, None)?;
+        let Some(selection) = Selection::of(&native, &compiler.binder(), &self.opts.fields)? else {
+            unreachable!("a unit source");
+        };
+        let mut result = compiler.native_program_with(
+            &selection,
+            &native.transforms[selection.stages_from..],
+            None,
+        )?;
         if matches!(stage.kind, TransformKind::Matches) {
             sequences::project_match_parent(&mut result, &parent_input);
         }
