@@ -255,3 +255,59 @@ fn model_filter_plans_unchanged() {
         "{steps:#?}"
     );
 }
+
+/// An attachment reads each page parent's children through the parent's
+/// key, however many children other sessions have.
+#[test]
+fn attachment_reads_children_through_each_parent_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    for (n, id) in ["test:big", "test:small"].into_iter().enumerate() {
+        let session = f
+            .session(SessionFacts {
+                id,
+                last: Some(1_000 + n as i64),
+                ..Default::default()
+            })
+            .unwrap();
+        let count = if n == 0 { 3_000 } else { 3 };
+        for m in 0..count {
+            let message = format!("{id}:m{m}");
+            f.message(
+                session,
+                MessageFacts {
+                    id: &message,
+                    role: if m % 2 == 0 { "user" } else { "assistant" },
+                    written_by: if m % 2 == 0 { "human" } else { "model" },
+                    at: Some(m as i64),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+    }
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let program = crate::query::compile(
+        "sessions with messages(id, role)[role:assistant, last:1]",
+        &options(),
+    )
+    .unwrap();
+    let steps = plan(&reader, &program.attach[0].sql);
+    let parents = steps
+        .iter()
+        .position(|step| step.starts_with("SCAN _parents"));
+    let children = steps
+        .iter()
+        .position(|step| step.starts_with("SEARCH m USING INDEX") && step.contains("session_pk=?"));
+    assert!(
+        matches!((parents, children), (Some(p), Some(c)) if p < c),
+        "{steps:#?}"
+    );
+    assert!(
+        !steps
+            .iter()
+            .any(|step| step == "SCAN m" || step.starts_with("SCAN m ")),
+        "{steps:#?}"
+    );
+}
