@@ -106,6 +106,8 @@ struct State {
     free: [usize; 3],
     parked: usize,
     threads: usize,
+    /// Jobs started and not finished.
+    running: usize,
     sequence: u64,
     stopping: bool,
 }
@@ -210,6 +212,13 @@ impl Executor {
     #[cfg(test)]
     pub(crate) fn threads(&self) -> usize {
         self.shared.lock().threads
+    }
+
+    /// Work started and not yet finished, holding a place or waiting
+    /// outside one.
+    #[cfg(test)]
+    pub(crate) fn running(&self) -> usize {
+        self.shared.lock().running
     }
 
     #[cfg(test)]
@@ -357,6 +366,9 @@ impl Shared {
             };
             // More work may be startable than this thread can take.
             self.dispatch(&mut state);
+            if matches!(queued.work, Work::Job(_)) {
+                state.running += 1;
+            }
             drop(state);
             let job = match queued.work {
                 Work::Resume(resumption) => {
@@ -377,8 +389,11 @@ impl Shared {
                 eprintln!("polylogue: a request panicked");
             }
             let held = HOLDING.with(|holding| holding.borrow_mut().take());
+            let mut state = self.lock();
+            state.running -= 1;
             if let Some(place) = held.and_then(|held| held.place) {
-                self.release(place);
+                state.free[place.index()] += 1;
+                self.dispatch(&mut state);
             }
         }
     }

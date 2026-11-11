@@ -5,6 +5,7 @@ use polylogue_store::{
     ReadPool,
     fixture::writer::{WriterArchive, prose, sid},
 };
+use std::time::Duration;
 
 #[test]
 fn repeated_reads_reuse_prepared_positions_and_append_preserves_older_snapshots() {
@@ -228,4 +229,74 @@ fn a_cached_index_is_sized_by_the_strings_it_holds() {
         .bytes()
     };
     assert!(keyed(1_000) - keyed(10) >= 2 * 100 * 990);
+}
+
+#[test]
+fn older_reader_never_uses_newer_cache() {
+    let mut archive = WriterArchive::new();
+    archive.write("aging", prose("aging", 0, 1000, "first"));
+    let cache = ItemCache::default();
+    let pool = ReadPool::open(&archive.archive).unwrap();
+    let older = pool.reader().unwrap();
+    let before = cache.get(&older, &sid("aging")).unwrap().unwrap();
+    archive.write(
+        "aging",
+        [
+            prose("aging", 1, 2000, "second"),
+            prose("aging", 2, 3000, "third"),
+        ]
+        .concat(),
+    );
+    let newer = cache
+        .get(&pool.reader().unwrap(), &sid("aging"))
+        .unwrap()
+        .unwrap();
+    assert!(newer.entries.len() > before.entries.len());
+    // The read that began first still sees the session as it began.
+    let seen = cache.get(&older, &sid("aging")).unwrap().unwrap();
+    assert_eq!(seen.entries, before.entries);
+    assert_eq!(seen.versions, before.versions);
+    // And the newer index stays cached for newer reads.
+    let again = cache
+        .get(&pool.reader().unwrap(), &sid("aging"))
+        .unwrap()
+        .unwrap();
+    assert!(Arc::ptr_eq(&again, &newer));
+}
+
+#[test]
+fn cold_and_warm_cache_answers_agree() {
+    let mut archive = WriterArchive::new();
+    archive.write("both", prose("both", 0, 1000, "first"));
+    let warm = ItemCache::default();
+    let pool = ReadPool::open(&archive.archive).unwrap();
+    let agree = |warm: &ItemCache| {
+        let reader = pool.reader().unwrap();
+        let held = warm.get(&reader, &sid("both")).unwrap().unwrap();
+        let cold = ItemCache::default()
+            .get(&reader, &sid("both"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(held.versions, cold.versions);
+        assert_eq!(held.entries, cold.entries);
+        assert_eq!(held.places, cold.places);
+        held.versions
+    };
+    let first = agree(&warm);
+    archive.write("both", prose("both", 1, 2000, "second"));
+    let appended = agree(&warm);
+    assert_eq!(appended.rewrite_version, first.rewrite_version);
+    assert!(appended.append_seq > first.append_seq);
+    archive.write_snapshot_at("both", 1, prose("both", 1, 2000, "second, revised"));
+    let rewritten = agree(&warm);
+    assert!(rewritten.rewrite_version > appended.rewrite_version);
+    archive.write(
+        "both",
+        [
+            prose("both", 2, 3000, "third"),
+            prose("both", 3, 4000, "fourth"),
+        ]
+        .concat(),
+    );
+    agree(&warm);
 }

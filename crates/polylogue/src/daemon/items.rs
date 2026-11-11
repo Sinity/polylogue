@@ -11,7 +11,6 @@ use std::collections::{HashMap, VecDeque};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
 
 /// One session's entries and where each key sits.
 #[derive(Debug)]
@@ -199,9 +198,6 @@ impl Drop for Waiting<'_> {
     }
 }
 
-/// How often a waiting read checks its own deadline and cancellation.
-const WAIT_CHECK: Duration = Duration::from_millis(50);
-
 impl ItemCache {
     /// The current index of a session, or `None` when it is not stored.
     pub fn get(
@@ -221,6 +217,12 @@ impl ItemCache {
                 if now == cached.versions {
                     self.touch(&cached);
                     return Ok(Some(cached));
+                }
+                if older(now, cached.versions) {
+                    // A read that began before the cached index was built
+                    // sees an earlier session: it loads that for itself and
+                    // leaves the newer index cached.
+                    return Ok(load(reader, session)?.map(Arc::new));
                 }
                 if now.rewrite_version == cached.versions.rewrite_version {
                     // Release the cache's ownership before asking for mutable
@@ -260,22 +262,31 @@ impl ItemCache {
         session: &SessionId,
     ) -> polylogue_store::Result<Option<Arc<CachedIndex>>> {
         loop {
-            let (load, leader) = {
+            let (shared, leader) = {
                 let mut loading = self.loading.lock().unwrap_or_else(|e| e.into_inner());
                 match loading.get(session) {
-                    Some(load) => (Arc::clone(load), false),
+                    Some(running) => (Arc::clone(running), false),
                     None => {
-                        let load = Arc::new(Load::default());
-                        loading.insert(session.clone(), Arc::clone(&load));
-                        (load, true)
+                        let started = Arc::new(Load::default());
+                        loading.insert(session.clone(), Arc::clone(&started));
+                        (started, true)
                     }
                 }
             };
             if leader {
-                return self.lead(reader, session, &load);
+                return self.lead(reader, session, &shared);
             }
-            if let Some(done) = self.follow(&load)? {
-                return Ok(done);
+            if let Some(done) = self.follow(&shared)? {
+                // Another read's load serves this one only when both read
+                // the same versions of the session.
+                return match done {
+                    Some(index)
+                        if reader.item_versions_of(index.session_pk)? != Some(index.versions) =>
+                    {
+                        Ok(load(reader, session)?.map(Arc::new))
+                    }
+                    done => Ok(done),
+                };
             }
         }
     }
@@ -310,11 +321,23 @@ impl ItemCache {
 
     /// Waits for another read's load. `Ok(Some(_))` is its result; `Ok(None)`
     /// means it failed and this read should load the session itself.
-    fn follow(&self, shared: &Load) -> polylogue_store::Result<Option<Option<Arc<CachedIndex>>>> {
+    /// The wait ends at the reader's deadline, and its cancellation wakes it.
+    fn follow(
+        &self,
+        shared: &Arc<Load>,
+    ) -> polylogue_store::Result<Option<Option<Arc<CachedIndex>>>> {
         #[cfg(test)]
         shared.waiting.fetch_add(1, Ordering::Relaxed);
         #[cfg(test)]
         let _waiting = Waiting(&shared.waiting);
+        let limit = ReadLimit::current();
+        let _wake = limit.as_ref().map(|limit| {
+            let load = Arc::clone(shared);
+            limit.cancellation.on_cancel(move || {
+                let _held = load.state.lock().unwrap_or_else(|e| e.into_inner());
+                load.ended.notify_all();
+            })
+        });
         let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             match &*state {
@@ -322,14 +345,19 @@ impl ItemCache {
                 LoadState::Failed => return Ok(None),
                 LoadState::Running => {}
             }
-            if let Some(limit) = ReadLimit::current() {
+            if let Some(limit) = &limit {
                 limit.check()?;
             }
-            state = shared
-                .ended
-                .wait_timeout(state, WAIT_CHECK)
-                .unwrap_or_else(|e| e.into_inner())
-                .0;
+            state = match limit.as_ref().and_then(ReadLimit::remaining) {
+                Some(left) => {
+                    shared
+                        .ended
+                        .wait_timeout(state, left)
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0
+                }
+                None => shared.ended.wait(state).unwrap_or_else(|e| e.into_inner()),
+            };
         }
     }
 
@@ -375,6 +403,11 @@ impl ItemCache {
         held.push_back(index);
         trim(&mut held);
     }
+}
+
+/// Whether a reader seeing `now` reads an earlier session than `cached`.
+fn older(now: ItemVersions, cached: ItemVersions) -> bool {
+    (now.rewrite_version, now.append_seq) < (cached.rewrite_version, cached.append_seq)
 }
 
 fn trim(held: &mut VecDeque<Arc<CachedIndex>>) {

@@ -669,3 +669,81 @@ fn idle_listener_makes_no_wakeups() {
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(daemon.server_wakeups(), before);
 }
+
+/// The JSON of each `record` event a follow sends, as they arrive.
+fn follow_records(stream: UnixStream) -> impl Iterator<Item = serde_json::Value> {
+    BufReader::new(stream)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| line.strip_prefix("data: ").map(str::to_owned))
+        .filter_map(|data| serde_json::from_str(&data).ok())
+}
+
+#[test]
+fn a_follow_shows_what_a_session_appends_and_ends_with_its_marks() {
+    let daemon = crate::test_daemon::start("followed session");
+    let d = &daemon.daemon;
+    let mut stream = UnixStream::connect(d.archive.socket()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    stream
+        .write_all(
+            request_line_with(
+                "follow",
+                serde_json::json!({"target": "sessions"}),
+                "follow-appends",
+                command_surface::Deadline::Milliseconds(8_000),
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    let mut records = follow_records(stream);
+    let first = records.next().expect("the first look shows the session");
+    assert_eq!(first["session"], "claude-code:s1", "{first}");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(daemon.home.join(".claude/projects/-p/s1.jsonl"))
+        .unwrap()
+        .write_all(polylogue_testkit::claude_user("u2", "s1", "appended later").as_bytes())
+        .unwrap();
+    let mut appended = false;
+    let mut last = serde_json::Value::Null;
+    for record in records {
+        if record["kind"] == "message" && record["message"] == "claude-code:u2" {
+            appended = true;
+        }
+        last = record;
+    }
+    assert!(appended, "the appended message was followed");
+    assert_eq!(last["kind"], "marks", "{last}");
+    assert!(
+        last["marks"]["sessions"]["claude-code:s1"].is_object(),
+        "{last}"
+    );
+}
+
+#[test]
+fn a_follow_whose_client_hangs_up_gives_up_its_place_at_once() {
+    let mut daemon = crate::test_daemon::start("follow hang-up");
+    // Nothing commits while the follow waits: only its client can end it.
+    daemon.pause_signals();
+    let d = &daemon.daemon;
+    let mut stream = UnixStream::connect(d.archive.socket()).unwrap();
+    stream
+        .write_all(
+            request_line(
+                "follow",
+                serde_json::json!({"target": "claude-code:s1"}),
+                "follow-without-deadline",
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    let mut first = [0u8; 1];
+    rustix::net::recv(&stream, &mut first, rustix::net::RecvFlags::PEEK).unwrap();
+    drop(stream);
+    eventually("the follow ended when its client hung up", || {
+        d.executor.running() == 0
+    });
+}

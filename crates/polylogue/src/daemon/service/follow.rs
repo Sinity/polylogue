@@ -1,16 +1,16 @@
 //! The `follow` stream: lines for the sessions a query selects, as their
 //! live state changes and their messages and tool calls arrive. It wakes on
 //! each committed index change (the live clock commits transitions that
-//! come from time alone), reads the selection again, and ends before the
-//! request's deadline with the marks the client sends back.
+//! come from time alone), reads the selection again and looks again only at
+//! the selected sessions whose rows or live state changed since its last
+//! look, and ends before the request's deadline with the marks the client
+//! sends back.
 use super::{Daemon, Failure, accepting};
 use crate::protocol::follow::{Line, Marks, step};
 use polylogue_model::SessionId;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// The longest wait between two readings with no commit in between.
-const IDLE_WAIT: Duration = Duration::from_secs(10);
 /// Time kept before the deadline to send the marks.
 const MARKS_MARGIN: Duration = Duration::from_millis(500);
 
@@ -48,14 +48,35 @@ fn run(
 ) -> Result<(), Failure> {
     let commits = d.writes.as_ref().map(|w| w.completion_commits());
     let limit = polylogue_store::read::limit::ReadLimit::current();
+    // A cancelled follow (its client gone, or the daemon stopping) stops
+    // waiting for the next commit at once.
+    let _wake = match (&commits, &limit) {
+        (Some(commits), Some(limit)) => {
+            let wake = commits.wake_handle();
+            Some(limit.cancellation.on_cancel(move || {
+                let _ = wake.try_send(());
+            }))
+        }
+        _ => None,
+    };
     let mut marks = marks.unwrap_or_default();
+    // The index write counter of the last look; before the first look every
+    // selected session is looked at.
+    let mut looked: Option<i64> = None;
     loop {
         accepting(d)?;
+        if let Some(limit) = &limit {
+            limit.check()?;
+        }
         let now = d.config.requests.now().unix_ms();
         {
             let reader = d.reads.reader()?;
+            let (counter, changed) = reader.sessions_changed_after(looked.unwrap_or(i64::MAX))?;
             for session in selected(&reader, operation, query, now)? {
                 let mark = marks.sessions.get(&session);
+                if looked.is_some() && mark.is_some() && !changed.contains(&session) {
+                    continue;
+                }
                 let Some(snapshot) = reader.follow_snapshot(
                     &session,
                     now,
@@ -72,6 +93,7 @@ fn run(
                 }
                 marks.sessions.insert(session, mark);
             }
+            looked = Some(counter);
         }
         let left = limit
             .as_ref()
@@ -81,15 +103,23 @@ fn run(
             return crate::protocol::stream::event(output, "record", &Line::Marks { marks })
                 .map_err(|e| Failure::new("io", e));
         }
-        let wait = left.map_or(IDLE_WAIT, |left| left.min(IDLE_WAIT));
-        // Waiting for the next commit is not work: the executor place goes to
-        // other requests meanwhile.
-        crate::daemon::executor::outside(|| match &commits {
-            Some(commits) => {
-                let _ = commits.recv_timeout(wait);
+        // Waiting for the next commit is not work: the executor place goes
+        // to other requests meanwhile.
+        crate::daemon::executor::outside(|| match (&commits, left) {
+            (Some(commits), Some(left)) => {
+                let _ = commits.recv_timeout(left);
             }
-            None => std::thread::sleep(wait),
+            (Some(commits), None) => {
+                let _ = commits.recv();
+            }
+            // A daemon without a writer commits nothing: only the deadline
+            // can end the follow.
+            (None, Some(left)) => std::thread::sleep(left),
+            (None, None) => {}
         });
+        if commits.is_none() && left.is_none() {
+            return Ok(());
+        }
     }
 }
 
