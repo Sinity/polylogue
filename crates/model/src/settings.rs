@@ -74,6 +74,13 @@ pub const CATALOG: &[Declaration] = &[
         standalone_only: false,
     },
     Declaration {
+        key: "embed.calls",
+        kind: Kind::Boolean,
+        default: Some("off"),
+        scope: Scope::Archive,
+        standalone_only: false,
+    },
+    Declaration {
         key: "embed.endpoint",
         kind: Kind::Endpoint,
         default: None,

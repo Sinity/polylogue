@@ -129,6 +129,7 @@ fn a_voyage_provider_pointed_elsewhere_sends_no_key() {
         endpoint: format!("http://{}/v1", listener.local_addr().unwrap()),
         model: "voyage-4".into(),
         price_per_mtok: None,
+        calls: true,
         credentials: Credentials::new(Some("synthetic-voyage-key".into())),
     };
     let error = provider.embed(&["text".into()], false).unwrap_err();
@@ -162,6 +163,7 @@ fn the_local_provider_only_uses_loopback_addresses() {
         endpoint: "http://192.0.2.1:11434/v1".into(),
         model: "synthetic".into(),
         price_per_mtok: Some(polylogue_model::Rate::ZERO),
+        calls: true,
         credentials: Credentials::new(None),
     };
     let error = provider.embed(&["private text".into()], false).unwrap_err();

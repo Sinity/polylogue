@@ -572,3 +572,69 @@ fn only_an_executed_ranking_asks_the_provider() {
         assert_eq!(calls.load(Ordering::Acquire), 1, "executed query");
     });
 }
+
+#[test]
+fn ranking_with_model_calls_off_uses_stored_vectors() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    let daemon = crate::test_daemon::start("parser text");
+    let listener = daemon.embedding_endpoint();
+    listener.set_nonblocking(true).unwrap();
+    let calls = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let d = &daemon.daemon;
+    let query = |text: &str| crate::test_daemon::call(d, "query", json!({ "query": text }));
+    std::thread::scope(|scope| {
+        // A provider that counts the calls it answers.
+        scope.spawn(|| {
+            while !stop.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((peer, _)) => {
+                        peer.set_nonblocking(false).unwrap();
+                        calls.fetch_add(1, Ordering::AcqRel);
+                        crate::test_daemon::embeddings::response(
+                            peer,
+                            200,
+                            r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#,
+                        );
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            }
+        });
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let _stop = Stop(&stop);
+        // With calls on, a new text is asked for once and stored.
+        let asked = crate::test_answers::ok(query("messages where similar:\"parser\""));
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        // Calls off, and nothing kept in memory: the stored vector ranks the
+        // same rows in the same order without a call.
+        daemon.set("embed.calls", "off");
+        d.warm.clear();
+        let stored = crate::test_answers::ok(query("messages where similar:\"parser\""));
+        assert_eq!(stored["rows"], asked["rows"], "{stored}");
+        assert_eq!(calls.load(Ordering::Acquire), 1, "a stored text");
+        // A text never stored is unranked, and says why, without a call.
+        let (_, notes) =
+            crate::test_answers::degraded(query("messages where similar:\"never asked\""));
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.ends_with(crate::embeddings::CALLS_OFF)),
+            "{notes:?}"
+        );
+        let refused = crate::test_daemon::call(d, "embed build", json!({ "yes": true }));
+        assert!(
+            matches!(refused.outcome, command_surface::Outcome::Error(_)),
+            "{refused:?}"
+        );
+        assert_eq!(calls.load(Ordering::Acquire), 1, "calls off");
+    });
+}

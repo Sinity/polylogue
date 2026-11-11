@@ -39,6 +39,7 @@ fn stalled_provider(cancel: bool) {
         endpoint: format!("http://{}", listener.local_addr().unwrap()),
         model: "synthetic".into(),
         price_per_mtok: Some(polylogue_model::Rate::ZERO),
+        calls: true,
         credentials: Credentials::new(None),
     };
     let stop_peer = Arc::new(AtomicBool::new(false));

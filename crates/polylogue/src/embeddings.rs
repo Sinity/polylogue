@@ -7,6 +7,9 @@
 //!
 //! Settings (`polylogue setting KEY VALUE`):
 //! - `embed.provider`: `local` or `voyage`; unset means embeddings are off;
+//! - `embed.calls`: `on` lets Polylogue send text to the provider (building
+//!   vectors, embedding new `similar:` texts); default `off`, when stored
+//!   vectors still rank and nothing is sent;
 //! - `embed.endpoint`: default `http://127.0.0.1:11434/v1` (local) or
 //!   `https://api.voyageai.com/v1`; for Voyage it must stay on Voyage's
 //!   origin, because the Voyage key is sent nowhere else; for the local
@@ -112,8 +115,15 @@ pub struct Provider {
     pub endpoint: String,
     pub model: String,
     pub price_per_mtok: Option<polylogue_model::Rate>,
+    /// Model calls are on: text may be sent to the provider. Off, only
+    /// stored vectors rank.
+    pub calls: bool,
     credentials: Credentials,
 }
+
+/// Why a text without a stored vector cannot be embedded.
+pub const CALLS_OFF: &str = "semantic search for new text is off (model calls are off); \
+     `similar:` on a stored session or message still works";
 
 impl Provider {
     /// From settings; `None` while embeddings are off.
@@ -172,11 +182,20 @@ impl Provider {
             None => None,
             _ => return Err("invalid typed embed.price_per_mtok".into()),
         };
+        let calls = match settings
+            .get("embed.calls")
+            .map_err(|error| error.to_string())?
+        {
+            Some(Value::Boolean(value)) => *value,
+            None => false,
+            _ => return Err("invalid typed embed.calls".into()),
+        };
         Ok(Some(Self {
             endpoint,
             model,
             kind,
             price_per_mtok,
+            calls,
             credentials: credentials.clone(),
         }))
     }
@@ -198,8 +217,17 @@ impl Provider {
         format!("{}{dims}/document/unit", self.key_prefix())
     }
 
-    /// Embeds `inputs`, returning one unit vector each.
+    /// The embedding key of a query vector with `dims` values.
+    pub fn query_key(&self, dims: usize) -> String {
+        format!("{}{dims}/query/unit", self.key_prefix())
+    }
+
+    /// Embeds `inputs`, returning one unit vector each. Nothing is sent
+    /// while model calls are off.
     pub fn embed(&self, inputs: &[String], query: bool) -> Result<Vec<Vec<f32>>, EmbedError> {
+        if !self.calls {
+            return Err(EmbedError::CallsOff);
+        }
         let limit = polylogue_store::read::limit::ReadLimit::current();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -297,6 +325,8 @@ pub enum EmbedError {
     Transport(String),
     #[error(transparent)]
     Store(#[from] polylogue_store::StoreError),
+    #[error("{CALLS_OFF}")]
+    CallsOff,
 }
 
 /// Validate the complete indexed response before any vector reaches storage.
@@ -658,10 +688,14 @@ pub fn build(
     Ok(out)
 }
 
-/// For `similar:`: the query text as a unit vector, embedded as a query.
+/// A `similar:` text as it is embedded and stored: NFC.
+pub fn query_text(text: &str) -> String {
+    text.nfc().collect()
+}
+
+/// For `similar:`: the query text (NFC) as a unit vector, embedded as a query.
 pub fn query_vector(provider: &Provider, text: &str) -> Result<Vec<f32>, EmbedError> {
-    let nfc: String = text.nfc().collect();
-    Ok(provider.embed(&[nfc], true)?.remove(0))
+    Ok(provider.embed(&[text.to_owned()], true)?.remove(0))
 }
 
 /// The embedding key `similar:` ranks by: the provider's model with vectors,
@@ -744,7 +778,7 @@ pub fn handle(
         return match vectors {
             Ok(s) => ok(serde_json::json!({
                 "provider": provider.as_ref().map(|p| serde_json::json!({
-                    "endpoint": p.endpoint, "model": p.model,
+                    "endpoint": p.endpoint, "model": p.model, "calls": p.calls,
                 })),
                 "vectors": s,
             })),
@@ -765,6 +799,13 @@ pub fn handle(
             Err(failure) => return failure.answer(),
         },
     };
+    if what == "build" && !provider.calls {
+        return error(
+            "model_calls_off",
+            "model calls are off, so no text is sent to the provider; \
+             `polylogue setting embed.calls on` turns them on",
+        );
+    }
     let result = match what {
         "preview" => preview(reader, &provider, sessions.as_deref(), limit)
             .map(|p| serde_json::to_value(p).unwrap_or_default()),

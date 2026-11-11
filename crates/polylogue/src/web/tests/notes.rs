@@ -496,6 +496,7 @@ fn semantic_and_mixed_annotation_use_the_public_query_population() {
         });
         for (key, value) in [
             ("embed.provider", "local"),
+            ("embed.calls", "on"),
             ("embed.model", "notes-test"),
             ("embed.endpoint", endpoint.as_str()),
         ] {

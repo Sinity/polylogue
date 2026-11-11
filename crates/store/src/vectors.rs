@@ -3,13 +3,18 @@
 //! The texts come from `index.db`'s `text` table; a vector outlives every
 //! index generation because the hash, not the row, names its text.
 //!
-//! Search is a scan of every vector of one key held in memory ([`Loaded`]):
-//! a dot product against a unit query vector, the best chunk per text. The
+//! Search holds every vector of one key in memory as int8 copies
+//! ([`Loaded`]) and scores only the texts a query selects, each by its best
+//! chunk's dot product with a unit query vector, then re-scores the best
+//! [`RESCORED`] of them from their stored f32 values ([`Similarity`]). The
 //! daemon keeps loaded vectors by model revision read from the same SQLite
 //! snapshot as their rows, and brings them to a newer revision by reading
 //! only the rows stored since ([`Vectors::append`]), on a cue from
 //! [`write_events`]. [`writes`] is a coarse process-local invalidation
 //! counter for query continuations, not the identity of a loaded snapshot.
+//! Query vectors the provider answered are stored too
+//! ([`Vectors::query_vector`]), so a query text is paid for once and ranks
+//! with model calls off.
 
 use crate::archive::{Archive, open_read, open_write};
 use crate::read::Reader;
@@ -17,7 +22,8 @@ use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Commits that stored vectors in this process. Only the daemon
 /// writes `embeddings.db` (its embedding build), so a copy
@@ -110,6 +116,73 @@ impl Vectors {
     /// for the daemon's vectors worker, which reads outside any request.
     pub fn snapshot(archive: &Archive, cache_kib: i64) -> Result<Self> {
         Self::for_reader(archive, cache_kib, false, None)
+    }
+
+    /// A writable handle outside any reader, for the daemon storing the
+    /// query vectors the provider answered.
+    pub fn writer(archive: &Archive, cache_kib: i64) -> Result<Self> {
+        Self::for_reader(archive, cache_kib, true, None)
+    }
+
+    /// The stored vector of a query text (NFC) under an embedding key
+    /// starting with `prefix`, if one was stored.
+    pub fn query_vector(&self, prefix: &str, text: &str) -> Result<Option<Vec<f32>>> {
+        let _read = self.read_transaction()?;
+        let mut statement = self.conn.prepare_cached(
+            "SELECT vector FROM query_vector
+             WHERE substr(key, 1, length(?1)) = ?1 AND text_hash = ?2
+             ORDER BY key LIMIT 1",
+        )?;
+        let bytes: Option<Vec<u8>> = statement
+            .query_row(params![prefix, query_text_hash(text)], |row| row.get(0))
+            .optional()?;
+        Ok(bytes.map(|bytes| floats(&bytes)))
+    }
+
+    /// Stores the provider's vector for a query text (NFC) under its
+    /// embedding key. A text already stored under the key keeps the vector
+    /// stored first, the one every earlier ranking used.
+    pub fn put_query_vector(&self, key: &str, text: &str, values: &[f32]) -> Result<()> {
+        let bytes: Vec<u8> = values.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        tx.execute(
+            "INSERT INTO query_vector(key, text_hash, vector, embedded_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(key, text_hash) DO NOTHING",
+            params![key, query_text_hash(text), bytes, now_ms()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The stored f32 vectors of `hashes` under `key`, every chunk of each.
+    fn stored(&self, key: &str, hashes: &[&[u8]]) -> Result<HashMap<Vec<u8>, Vec<Vec<f32>>>> {
+        let mut out: HashMap<Vec<u8>, Vec<Vec<f32>>> = HashMap::new();
+        if hashes.is_empty() {
+            return Ok(out);
+        }
+        let _read = self.read_transaction()?;
+        let placeholders = (0..hashes.len())
+            .map(|index| format!("?{}", index + 2))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut arguments = vec![rusqlite::types::Value::Text(key.into())];
+        arguments.extend(
+            hashes
+                .iter()
+                .map(|hash| rusqlite::types::Value::Blob(hash.to_vec())),
+        );
+        let mut statement = self.conn.prepare_cached(&format!(
+            "SELECT text_hash, vector FROM embedded WHERE model = ?1 AND text_hash IN ({placeholders})"
+        ))?;
+        let mut rows = statement.query(rusqlite::params_from_iter(arguments))?;
+        while let Some(row) = rows.next()? {
+            let bytes: Vec<u8> = row.get(1)?;
+            out.entry(row.get(0)?).or_default().push(floats(&bytes));
+        }
+        Ok(out)
     }
 
     pub(crate) fn writable(&self) -> bool {
@@ -395,7 +468,7 @@ impl Vectors {
             .unwrap_or(0))
     }
 
-    /// Every vector of `key` in memory, for `near:`. Each value is kept as
+    /// Every vector of `key` in memory, for `similar:`. Each value is kept as
     /// one signed byte scaled by its vector's largest value: a quarter of
     /// the size, and similarities within about 1% of the stored ones,
     /// which keeps their order for ranking.
@@ -439,12 +512,7 @@ impl Vectors {
                     loaded.dims * 4
                 )));
             }
-            let floats: Vec<f32> = bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|b| f32::from_le_bytes(*b))
-                .collect();
+            let floats = floats(&bytes);
             let largest = floats.iter().fold(0f32, |m, x| m.max(x.abs()));
             let scale = if largest > 0.0 { largest / 127.0 } else { 1.0 };
             let text = run.text(hash.into_boxed_slice());
@@ -541,6 +609,21 @@ impl Reader<'_> {
     }
 }
 
+/// Little-endian f32 values.
+fn floats(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
+        .collect()
+}
+
+/// A query text's key in `query_vector`: the BLAKE3 hash of its NFC bytes.
+fn query_text_hash(text: &str) -> Vec<u8> {
+    blake3::hash(text.as_bytes()).as_bytes().to_vec()
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -574,9 +657,39 @@ struct Run {
     owner: Vec<u32>,
     scale: Vec<f32>,
     values: Vec<i8>,
+    /// Vector numbers grouped by text: text `t`'s are
+    /// `by_text[starts[t]..starts[t + 1]]`. Built once a run is complete.
+    starts: Vec<u32>,
+    by_text: Vec<u32>,
 }
 
 impl Run {
+    /// Groups the vectors by text, for scoring one text at a time.
+    fn indexed(mut self) -> Self {
+        let mut starts = vec![0u32; self.hashes.len() + 1];
+        for text in &self.owner {
+            starts[*text as usize + 1] += 1;
+        }
+        for t in 1..starts.len() {
+            starts[t] += starts[t - 1];
+        }
+        let mut next = starts.clone();
+        let mut by_text = vec![0u32; self.owner.len()];
+        for (v, text) in self.owner.iter().enumerate() {
+            let at = &mut next[*text as usize];
+            by_text[*at as usize] = u32::try_from(v).unwrap_or(u32::MAX);
+            *at += 1;
+        }
+        self.starts = starts;
+        self.by_text = by_text;
+        self
+    }
+
+    fn vectors_of(&self, text: u32) -> &[u32] {
+        let text = text as usize;
+        &self.by_text[self.starts[text] as usize..self.starts[text + 1] as usize]
+    }
+
     fn text(&mut self, hash: Box<[u8]>) -> u32 {
         if let Some(text) = self.texts.get(&hash) {
             return *text;
@@ -595,6 +708,8 @@ impl Run {
             owner: self.owner.clone(),
             scale: self.scale.clone(),
             values: self.values.clone(),
+            starts: Vec::new(),
+            by_text: Vec::new(),
         };
         let renumbered: Vec<u32> = later
             .hashes
@@ -606,7 +721,7 @@ impl Run {
         out.scale.extend_from_slice(&later.scale);
         out.values.extend_from_slice(&later.values);
         out.texts.shrink_to_fit();
-        out
+        out.indexed()
     }
 }
 
@@ -623,7 +738,7 @@ impl Loaded {
     }
 
     fn push(&mut self, run: Run) {
-        let mut run = Arc::new(run);
+        let mut run = Arc::new(run.indexed());
         while let Some(last) = self.runs.last()
             && last.owner.len() <= run.owner.len() * 2
         {
@@ -637,8 +752,8 @@ impl Loaded {
         self.runs.iter().map(|run| run.owner.len()).sum()
     }
 
-    /// The similarity of every text to `query`, a unit vector of the same
-    /// dimension: its best chunk's.
+    /// The similarity of texts to `query`, a unit vector of the same
+    /// dimension, scored as a query asks for them: nothing is scored here.
     pub fn similarity(self: &Arc<Self>, query: &[f32]) -> Result<Similarity> {
         if query.len() != self.dims && self.vectors() > 0 {
             return Err(StoreError::Invalid(format!(
@@ -648,74 +763,55 @@ impl Loaded {
                 self.dims
             )));
         }
-        let limit = crate::read::limit::ReadLimit::current();
-        let best = self
-            .runs
-            .iter()
-            .map(|run| run.best(self.dims.max(1), query, limit.as_ref()))
-            .collect::<Result<_>>()?;
         Ok(Similarity {
             loaded: Arc::clone(self),
-            best,
+            query: query.to_vec(),
+            scores: Mutex::default(),
+            vectors_scored: AtomicUsize::new(0),
+            rescored: AtomicBool::new(false),
         })
     }
-}
 
-impl Run {
-    /// Each of this run's texts' best similarity to `query`.
-    fn best(
-        &self,
-        dims: usize,
-        query: &[f32],
-        limit: Option<&crate::read::limit::ReadLimit>,
-    ) -> Result<Vec<f32>> {
-        let n = self.owner.len();
-        let mut scores = vec![0f32; n];
-        let workers = std::thread::available_parallelism()
-            .map_or(1, |n| n.get())
-            .min(8);
-        let per = n.div_ceil(workers).max(1);
-        std::thread::scope(|scope| {
-            for (part, out) in scores.chunks_mut(per).enumerate() {
-                let first = part * per;
-                scope.spawn(move || {
-                    for (i, score) in out.iter_mut().enumerate() {
-                        if i % 256 == 0 && limit.is_some_and(|limit| limit.check().is_err()) {
-                            break;
-                        }
-                        let v = first + i;
-                        let row = &self.values[v * dims..(v + 1) * dims];
-                        let dot: f32 = row.iter().zip(query).map(|(a, q)| f32::from(*a) * q).sum();
-                        *score = dot * self.scale[v];
-                    }
-                });
-            }
-        });
-        if let Some(limit) = limit {
-            limit.check()?;
-        }
-        let mut best = vec![f32::MIN; self.hashes.len()];
-        for (v, score) in scores.into_iter().enumerate() {
-            if v % 256 == 0
-                && let Some(limit) = limit
-            {
-                limit.check()?;
-            }
-            let text = self.owner[v] as usize;
-            if score > best[text] {
-                best[text] = score;
+    /// A text's best chunk similarity to `query` from the int8 copies, and
+    /// the vectors scored for it.
+    fn score(&self, hash: &[u8], query: &[f32]) -> (Option<f32>, usize) {
+        let dims = self.dims.max(1);
+        let mut best: Option<f32> = None;
+        let mut scored = 0;
+        for run in &self.runs {
+            let Some(&text) = run.texts.get(hash) else {
+                continue;
+            };
+            for &v in run.vectors_of(text) {
+                let v = v as usize;
+                let row = &run.values[v * dims..(v + 1) * dims];
+                let dot: f32 = row.iter().zip(query).map(|(a, q)| f32::from(*a) * q).sum();
+                let score = dot * run.scale[v];
+                best = Some(best.map_or(score, |best| best.max(score)));
+                scored += 1;
             }
         }
-        Ok(best)
+        (best, scored)
     }
 }
 
-/// Every text's similarity to one query, looked up by text hash while a
-/// query runs (`pl_similarity`, [`Reader::with_similarity`]).
+/// Texts re-scored from their stored f32 vectors after the int8 pass: the
+/// best this many of the selected texts.
+pub const RESCORED: usize = 200;
+
+/// Texts' similarities to one query, looked up by text hash while a query
+/// runs (`pl_similarity`, [`Reader::with_similarity`]). A text is scored
+/// from the int8 copies when a query first asks for it, so the work is the
+/// selected rows' texts, not every loaded vector; [`Reader::rank_selection`]
+/// then re-scores the best [`RESCORED`] of them from their stored f32
+/// vectors, which fixes the order where quantization tied or misordered.
 pub struct Similarity {
     loaded: Arc<Loaded>,
-    /// Per run, its texts' best similarity.
-    best: Vec<Vec<f32>>,
+    query: Vec<f32>,
+    /// Each text asked for and its best chunk's score; `None`: no vector.
+    scores: Mutex<HashMap<Box<[u8]>, Option<f32>>>,
+    vectors_scored: AtomicUsize,
+    rescored: AtomicBool,
 }
 
 impl Similarity {
@@ -724,22 +820,93 @@ impl Similarity {
     pub fn unknown() -> Self {
         Self {
             loaded: Arc::new(Loaded::empty("")),
-            best: Vec::new(),
+            query: Vec::new(),
+            scores: Mutex::default(),
+            vectors_scored: AtomicUsize::new(0),
+            rescored: AtomicBool::new(false),
         }
     }
 
     /// The best similarity of a text's chunks, which may sit in several runs.
     pub fn of(&self, hash: &[u8]) -> Option<f32> {
-        self.loaded
-            .runs
+        let mut scores = self
+            .scores
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(score) = scores.get(hash) {
+            return *score;
+        }
+        let (score, scored) = self.loaded.score(hash, &self.query);
+        self.vectors_scored.fetch_add(scored, Ordering::Relaxed);
+        scores.insert(hash.into(), score);
+        score
+    }
+
+    /// Int8 vectors scored so far.
+    pub fn vectors_scored(&self) -> usize {
+        self.vectors_scored.load(Ordering::Relaxed)
+    }
+
+    /// Re-scores the best [`RESCORED`] texts scored so far from their
+    /// stored f32 vectors in `store`, once.
+    fn rescore(&self, store: &Vectors) -> Result<()> {
+        if self.rescored.load(Ordering::Acquire) || self.loaded.vectors() == 0 {
+            return Ok(());
+        }
+        let mut best: Vec<(Box<[u8]>, f32)> = self
+            .scores
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
-            .zip(&self.best)
-            .filter_map(|(run, best)| best.get(*run.texts.get(hash)? as usize).copied())
-            .reduce(f32::max)
+            .filter_map(|(hash, score)| Some((hash.clone(), (*score)?)))
+            .collect();
+        best.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        best.truncate(RESCORED);
+        let hashes: Vec<&[u8]> = best.iter().map(|(hash, _)| &**hash).collect();
+        let stored = store.stored(&self.loaded.key, &hashes)?;
+        let mut scores = self
+            .scores
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (hash, chunks) in stored {
+            let score = chunks
+                .iter()
+                .map(|values| values.iter().zip(&self.query).map(|(a, q)| a * q).sum())
+                .reduce(f32::max);
+            if let Some(score) = score {
+                scores.insert(hash.into_boxed_slice(), Some(score));
+            }
+        }
+        self.rescored.store(true, Ordering::Release);
+        Ok(())
     }
 }
 
 impl Reader<'_> {
+    /// Scores the texts of the rows `members` selects (a statement whose
+    /// `_near` column asks `pl_similarity` for each selected row's texts)
+    /// from the int8 copies, then re-scores the best [`RESCORED`] from their
+    /// stored f32 vectors. Rows the query reads afterwards rank by these
+    /// scores.
+    pub(crate) fn rank_selection(
+        &self,
+        similarity: &Arc<Similarity>,
+        members: &str,
+        params: &[crate::SqlValue],
+    ) -> Result<()> {
+        if similarity.loaded.vectors() == 0 || similarity.rescored.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        crate::sql_functions::with_similarity(Arc::clone(similarity), || {
+            self.query_counts(
+                &format!("SELECT count(*), count(_near) FROM ({members})"),
+                params,
+            )
+        })?;
+        self.check()?;
+        similarity.rescore(&*self.vectors()?)
+    }
+
     /// Runs `f` with `pl_similarity(text_hash)` answering from
     /// `similarity`, on this thread, where the reader's queries run.
     pub fn with_similarity<T>(&self, similarity: Arc<Similarity>, f: impl FnOnce() -> T) -> T {
