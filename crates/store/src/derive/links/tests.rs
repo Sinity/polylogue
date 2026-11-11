@@ -160,7 +160,7 @@ fn command_only_links_do_not_read_tool_result_bodies() {
         }))
         .unwrap();
     let tx = index.transaction().unwrap();
-    super::derive_session(&tx, session_pk).unwrap();
+    super::replace(&tx, session_pk, &super::compute(&tx, session_pk).unwrap()).unwrap();
     tx.commit().unwrap();
     index
         .authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
@@ -202,7 +202,7 @@ fn compound_artifact_commands_keep_text_and_packed_result_provenance() {
             })
             .unwrap();
         let tx = index.transaction().unwrap();
-        super::derive_session(&tx, session_pk).unwrap();
+        super::replace(&tx, session_pk, &super::compute(&tx, session_pk).unwrap()).unwrap();
         tx.commit().unwrap();
         assert_eq!(w.rows("SELECT c.commit_hash, c.evidence, c.evidence_block_pk=t.call_block_pk AS original_call FROM commit_link c JOIN tool_call t ON t.session_pk=c.session_pk"),
             vec![json!({"commit_hash":"1a2b3c4", "evidence":"commit-output", "original_call":1})]);
@@ -241,7 +241,7 @@ fn stored_and_derived(w: &WriterArchive) -> (Vec<serde_json::Value>, Vec<serde_j
         .collect::<rusqlite::Result<_>>()
         .unwrap();
     for pk in sessions {
-        super::derive_session(&tx, pk).unwrap();
+        super::replace(&tx, pk, &super::compute(&tx, pk).unwrap()).unwrap();
     }
     let derived = links(&tx);
     tx.rollback().unwrap();

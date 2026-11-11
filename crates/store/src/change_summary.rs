@@ -130,19 +130,6 @@ impl ChangeSummary {
         Ok(())
     }
 
-    /// The changed messages that were in `session_pk` before the
-    /// transaction: every message a derivation changed, since derivations
-    /// change messages without moving them.
-    pub(crate) fn messages_before(&self, session_pk: i64) -> BTreeSet<i64> {
-        self.changed
-            .borrow()
-            .messages
-            .iter()
-            .filter(|(_, before)| before.as_ref().is_some_and(|b| b.session == session_pk))
-            .map(|(pk, _)| *pk)
-            .collect()
-    }
-
     /// What a changed message contributed to completion before the
     /// transaction, when it was in `session_pk` then.
     pub(crate) fn values_before(

@@ -1,7 +1,7 @@
 //! One read of a session produces its clocks, tool unions and time lanes.
 //! An append reads only the messages after the last settled one
 //! ([`crate::measure::time::derive`]).
-use super::{Class, Derivation, Version};
+use super::{Class, Derivation, Output, Version};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "session_span",
@@ -13,7 +13,8 @@ pub(super) const DERIVATION: Derivation = Derivation {
     version: Version::Rules(crate::measure::time::RULE_VERSION),
     after: &["duplicates", "active_path", "tool_calls"],
     dirtied_by: &[],
-    run: |tx, pk, inputs| {
-        crate::measure::time::derive(tx, pk, inputs.changes, inputs.from_start).map(|_| ())
+    compute: |conn, pk, inputs| {
+        crate::measure::time::derive(conn, pk, inputs.from_start)
+            .map(|(derived, _)| Output::Span(Box::new(derived)))
     },
 };

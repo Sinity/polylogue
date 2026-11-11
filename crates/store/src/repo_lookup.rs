@@ -34,7 +34,7 @@ pub(crate) fn upsert_lookup(
             "INSERT INTO derive_due(session_pk, rows_changed, repo_lookup)
              SELECT pk, 0, 1 FROM session
              WHERE cwd = ?1 OR (cwd >= ?1 || '/' AND cwd < ?1 || '0')
-             ON CONFLICT(session_pk) DO UPDATE SET repo_lookup = 1",
+             ON CONFLICT(session_pk) DO UPDATE SET repo_lookup = 1, marked = marked + 1",
         )?
         .execute([&l.path])?;
     }

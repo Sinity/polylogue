@@ -7,9 +7,9 @@
 //! choose each input's latest marker; known event time and content identity
 //! resolve different inputs without depending on row insertion order.
 
-use super::{Class, Derivation, Version};
+use super::{Class, Derivation, Output, Version};
 use crate::Result;
-use rusqlite::Transaction;
+use rusqlite::{Connection, Transaction};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "active_path",
@@ -18,16 +18,15 @@ pub(super) const DERIVATION: Derivation = Derivation {
     version: Version::Rules(5),
     after: &[],
     dirtied_by: &[],
-    run: |tx, pk, inputs| run(tx, pk, inputs.changes),
+    compute: |conn, pk, _| compute(conn, pk).map(Output::ActivePath),
 };
 
-pub(super) fn run(
-    tx: &Transaction<'_>,
-    session_pk: i64,
-    changes: &crate::change_summary::ChangeSummary,
-) -> Result<()> {
-    let moved = tx.prepare_cached(
-        "WITH RECURSIVE
+/// The session's messages whose place on the path changes, with their new
+/// place.
+fn compute(conn: &Connection, session_pk: i64) -> Result<Vec<(i64, Option<i64>)>> {
+    Ok(conn
+        .prepare_cached(
+            "WITH RECURSIVE
            observations AS (
              SELECT m.id, e.kind, e.at, e.id AS event_id, r.id AS input_id,
                     row_number() OVER (
@@ -47,19 +46,27 @@ pub(super) fn run(
              UNION
              SELECT m.parent_id FROM message m JOIN path ON m.id = path.id
              WHERE m.parent_id IS NOT NULL),
-           marked(pk, v) AS (
-             SELECT pk, CASE WHEN EXISTS (SELECT 1 FROM marker WHERE kind <> 'active_path_unknown')
-                             THEN (id IN (SELECT id FROM path)) END
+           marked(pk, was, v) AS (
+             SELECT pk, on_active_path,
+                    CASE WHEN EXISTS (SELECT 1 FROM marker WHERE kind <> 'active_path_unknown')
+                         THEN (id IN (SELECT id FROM path)) END
              FROM message WHERE session_pk = ?1)
-         UPDATE message SET on_active_path = marked.v FROM marked
-         WHERE message.pk = marked.pk AND message.on_active_path IS NOT marked.v
-         RETURNING message.pk",
-    )?
-    .query_map([session_pk], |row| row.get(0))?
-    .collect::<rusqlite::Result<Vec<i64>>>()?;
-    // The session and parent stay as they were; only the place changed.
-    for pk in moved {
-        changes.message(tx, pk)?;
+         SELECT pk, v FROM marked WHERE was IS NOT v",
+        )?
+        .query_map([session_pk], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+pub(super) fn apply(
+    tx: &Transaction<'_>,
+    moved: &[(i64, Option<i64>)],
+    changes: &crate::change_summary::ChangeSummary,
+) -> Result<()> {
+    let mut set = tx.prepare_cached("UPDATE message SET on_active_path = ?2 WHERE pk = ?1")?;
+    for (pk, place) in moved {
+        // The session and parent stay as they were; only the place changed.
+        changes.message(tx, *pk)?;
+        set.execute(rusqlite::params![pk, place])?;
     }
     Ok(())
 }

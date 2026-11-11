@@ -644,12 +644,15 @@ fn an_append_derives_the_span_from_the_messages_after_the_settled_one() {
             r.get(0)
         })
         .unwrap();
-    let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-    assert_eq!(derive(&tx, pk, &changes, false).unwrap(), 1);
+    let (derived, read) = derive(&tx, pk, false).unwrap();
+    assert_eq!(read, 1);
+    write_derived(&tx, pk, &derived).unwrap();
     let (stored, computed) = stored_and_computed(&tx, "s");
     assert_eq!(stored, computed);
     // From the start, the same derivation reads all 201 messages.
-    assert_eq!(derive(&tx, pk, &changes, true).unwrap(), 201);
+    let (derived, read) = derive(&tx, pk, true).unwrap();
+    assert_eq!(read, 201);
+    write_derived(&tx, pk, &derived).unwrap();
     assert_eq!(stored, stored_and_computed(&tx, "s").0);
 }
 
