@@ -21,10 +21,9 @@ pub(super) fn with_source(records: &[Value], check: impl FnOnce(&crate::Fixture,
     check(&fixture, directory.path());
     assert_eq!(std::fs::read_to_string(source).unwrap(), original);
 }
-// Serving precedes the initial ingest and count pass. The startup poll lifts
-// its deadline: status then answers once the daemon can, so the only answer
-// accepted is a successful one.
-fn wait_for_source(fixture: &crate::Fixture, messages: usize) {
+// Serving precedes index construction. Wait for the source and a current
+// freshness report before testing commands that require a settled archive.
+pub(super) fn wait_for_source(fixture: &crate::Fixture, messages: usize) {
     let until = Instant::now() + Duration::from_secs(30);
     loop {
         let output = cli(fixture, &["--deadline", "none", "--json", "status"]);
@@ -35,15 +34,18 @@ fn wait_for_source(fixture: &crate::Fixture, messages: usize) {
             Some(i32::from(answer.exit_code())),
             "startup status exit disagrees with its answer: {output:?}"
         );
-        // A standalone archive's status is current, so never degraded.
-        let value = match answer {
+        let (value, current) = match answer {
             command_surface::Answer {
                 outcome: command_surface::Outcome::Ok(value),
                 ..
-            } => value,
+            } => (value, true),
+            command_surface::Answer {
+                outcome: command_surface::Outcome::Degraded { value, .. },
+                ..
+            } => (value, false),
             answer => panic!("startup status failed: {answer:?}; {output:?}"),
         };
-        if value["busy"] == false && value["store"]["messages"] == messages {
+        if current && value["busy"] == false && value["store"]["messages"] == messages {
             return;
         }
         assert!(

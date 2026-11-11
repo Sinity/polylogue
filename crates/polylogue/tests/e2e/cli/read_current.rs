@@ -90,20 +90,7 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
     let expected = "A synthetic λ🙂 prompt across source and transport boundaries.";
     std::fs::write(project.join("typed.jsonl"), line("u1", "typed", expected)).unwrap();
     let _daemon = start_daemon(&fixture);
-    let until = Instant::now() + Duration::from_secs(30);
-    loop {
-        let output = cli(&fixture, &["--deadline", "none", "--json", "status"]);
-        assert!(output.status.success(), "{output:?}");
-        let status = json(&output);
-        if status["store"]["messages"] == 1 && status["busy"] == false {
-            break;
-        }
-        assert!(
-            Instant::now() < until,
-            "synthetic source never became ready: {status}"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    super::stored_text::wait_for_source(&fixture, 1);
     let target = "session:claude-code:typed";
     let whole = typed_page(&cli(
         &fixture,

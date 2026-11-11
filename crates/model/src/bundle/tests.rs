@@ -40,7 +40,7 @@ fn manifest() -> Manifest {
 fn bundle_header_refuses_earlier_and_newer_formats_before_contents() {
     let mut value = manifest();
     assert!(value.validate().is_ok());
-    for version in [0, 2, u32::MAX] {
+    for version in [0, 1, 3, u32::MAX] {
         value.version = version;
         assert_eq!(
             value.validate(),
