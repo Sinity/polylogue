@@ -1,6 +1,7 @@
 //! The archive directory, its single-writer lock and connection settings.
 
 pub(crate) mod generation;
+pub mod index_rebuild;
 
 use crate::{Result, StoreError, schema};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction};
@@ -323,26 +324,51 @@ impl Archive {
     }
 
     /// The caller holds the archive lock. Parse positions in the index
-    /// resume an interrupted build; incompatible indexes require an explicit
-    /// schema change rather than removing already indexed rows.
+    /// resume an interrupted build. An index from another schema is set
+    /// aside under its schema identity and a new one is built from the
+    /// archive's stored bytes; the set-aside file is removed once that first
+    /// build ends ([`index_rebuild`]).
     pub(crate) fn prepare_index(&self) -> Result<()> {
-        let index = open_write(&self.index_db(), cache::SETUP)?;
-        let fresh = schema::version(&index)? == 0;
+        let path = self.index_db();
+        let mut index = open_write(&path, cache::SETUP)?;
+        if let Err(error) = self.ensure_index(&index) {
+            let Some(reason) = index_rebuild::reason(&error) else {
+                return Err(error);
+            };
+            let previous = schema::index_identity(&index)?;
+            drop(index);
+            index_rebuild::set_aside(&path, &previous)?;
+            index = open_write(&path, cache::SETUP)?;
+            self.ensure_index(&index)?;
+            index_rebuild::record(
+                &index,
+                reason,
+                previous,
+                schema::build_index_identity(self.is_primary())?,
+            )?;
+        }
+        index_rebuild::remove_when_built(&index, &path, self.is_primary())?;
+        crate::fault::check("index.after_creation", "")?;
+        Ok(())
+    }
+
+    /// Creates the index schema in an empty file or opens the one there.
+    fn ensure_index(&self, index: &Connection) -> Result<()> {
+        let fresh = schema::version(index)? == 0;
         if fresh {
             let mut reset = self.read_scope.begin_reset()?;
             reset.invalidate()?;
         }
         if self.is_primary() {
-            schema::ensure_primary_index(&index)?;
+            schema::ensure_primary_index(index)?;
         } else {
             let archive = open_read(&self.archive_db())?;
             let _write = crate::write_lock::hold(&archive)?;
-            schema::ensure_index(&index)?;
+            schema::ensure_index(index)?;
         }
         if fresh {
             self.read_scope.finish_reset();
         }
-        crate::fault::check("index.after_creation", "")?;
         Ok(())
     }
 }

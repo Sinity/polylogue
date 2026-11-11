@@ -1713,7 +1713,11 @@ impl Inner {
         self.first_build = None;
         self.search.ready();
         self.commits.committed();
-        Ok(())
+        crate::archive::index_rebuild::remove_when_built(
+            &self.index,
+            &self.location.index_db(),
+            false,
+        )
     }
 
     /// Ends a first build's bulk load: writes the search entries the build

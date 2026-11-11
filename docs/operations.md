@@ -11,11 +11,12 @@ Polylogue runs as one resident daemon per archive. The daemon is the only proces
 **Start.** `polylogue daemon` runs in the foreground under a service manager (a systemd user unit on Linux). In order, it:
 1. raises the open-file limit;
 2. takes the archive lock, an exclusive `flock` on `<archive>/lock` opened through the resolved directory path, and writes its pid into it; a second daemon on the same archive, by any path, exits 1 naming the holder's pid;
-3. applies the numbered migrations of its stores in place ([archive.md#evolution](archive.md#evolution)), or refuses with exit 78 when the archive is newer than the binary or has no migration from its version;
-4. opens the segment log at its last committed extent and the index at its saved positions;
-5. binds the socket, serves requests, then starts its work.
+3. opens `archive.db` and `embeddings.db` at the current format, or refuses with exit 78 when either is in another format; the refused file is left exactly as it was ([archive.md#evolution](archive.md#evolution));
+4. opens `index.db` at its saved positions; an index written for another schema is set aside and a new one is built ([Replacing an index from another schema](#replacing-an-index-from-another-schema));
+5. opens the segment log at its last committed extent;
+6. binds the socket, serves requests, then starts its work.
 
-No step deletes the index or any store.
+No step changes `archive.db`, the segment log or the embeddings store to get past a format difference.
 
 **Readiness.** With `Type=notify` the daemon signals readiness once the socket answers a `ping`, before catching up. The connection's thread answers `ping` without a reader or any cache, so a vector load or a full reader pool never delays readiness or the watchdog. Catching up is shown as work in `status`, never as unavailability.
 
@@ -31,7 +32,7 @@ No step deletes the index or any store.
 
 **Without sources.** `polylogue daemon --no-sources` reads none of its sources: no root is scanned or watched, no spool or tool database is read, no collector runs and no repository lookup is written, so no input, observation or coverage is recorded from the machine. It parses and derives what the archive already stores (an index behind its archive catches up, a reading-version change re-parses) and serves every request, `import` included. A file that has gone from its location is not observed as gone, because nothing looked. With `--until-idle` it processes what is stored and exits. An archive that receives another archive's contents (`import`) is started this way, so that none of its locations is watched before the import, and the restore drill uses it to check a restored copy without touching the machine's live files.
 
-**Exits:** 0 clean stop; 1 failure or lock held; 78 refused archive. The service sets `RestartPreventExitStatus=78`, and the service manager's failure notification reports it, since no daemon is running to send a notice.
+**Exits:** 0 clean stop; 1 failure or lock held; 78 refused archive (`archive.db` or `embeddings.db` in another format; an index never causes it). The service sets `RestartPreventExitStatus=78`, and the service manager's failure notification reports it, since no daemon is running to send a notice.
 
 Requests that need the archive, schema inference, verification and import included, go to the daemon at idle priority.
 
@@ -69,7 +70,7 @@ A halt survives a restart and clears only when what it depends on changes: a new
 
 **`status` is the full health view.** Orientation and `status` share one snapshot. `status` shows, in order:
 1. **Daemon:** pid, uptime, binary version (crate version and commit), reading versions in force, the previous run's end, warming, I/O rates, and pacing under I/O pressure with the pressure measured.
-2. **Up to date:** `up to date`, or what is behind: inputs waiting, chains behind their reading version, derived products pending, positions behind; what holds the writer and its last commit's age; idle, busy, stalled or halted per unit. A rate and an estimate are shown only while the rate is steady (within about 20% over the last few minutes), otherwise "rate varying".
+2. **Up to date:** `up to date`, or what is behind: an index rebuilt after one from another schema was set aside (the reason, the previous and current schema identities, and the set-aside file while it remains), inputs waiting, chains behind their reading version, derived products pending, positions behind; what holds the writer and its last commit's age; idle, busy, stalled or halted per unit. A rate and an estimate are shown only while the rate is steady (within about 20% over the last few minutes), otherwise "rate varying".
 3. **Archive:** the path; bytes of the segment log, each database and the embeddings store, logical and on disk; the mode (`standalone` or `primary`, with the primary section of [primary-mode.md](primary-mode.md)).
 4. **Sources:** one line per origin and location with input and session counts, the last new input, and the location's state: present, missing (since when), unreadable (the error), files no declared pattern matched (counted by extension), and for Claude Code a warning when its transcript cleanup period is short.
 5. **Problems**, each by name: chains that failed to parse, with path and reason; halted and stalled units; record types and field paths new since the previous reading version; models with no price; texts the embedder rejected; stored bytes whose hash did not match; archive permissions wider than 0700/0600.
@@ -216,12 +217,20 @@ An upgrade is a version change in `status` and, when a parser changed, a while i
 |---|---|---|
 | no storage change | restart, resume from committed positions | down for the restart |
 | a parser module's reading version | chains read with the old version are re-parsed one at a time, live inputs first, then newest first | every read answers; results touching a chain not yet re-parsed carry `up_to_date: false`; `status` shows progress |
-| a schema change of any store | a numbered in-place migration at open | down for the migration |
-| an archive newer than the binary, or with no migration from its version | refused, exit 78, not restarted | down |
+| a change to the index schema | the old index is set aside and a new one built from stored bytes ([below](#replacing-an-index-from-another-schema)) | every read answers; reads report the index as building until the first build ends |
+| `archive.db` or `embeddings.db` in another format than the binary's | refused, exit 78, not restarted | down |
 
 **Spools across a rollback.** Hooks and the browser host keep writing their spools while the daemon is replaced, and the spools are never deleted, so the build a deployment rolls back to reads what the newer build wrote. A spool line's shape is therefore part of the deployed format: the hook's line shapes are pinned by a fixture that the previous build's reader is checked against, and a change to them is checked against the deployed reader before it ships.
 
-No code path deletes the index. A full rebuild is a rare deliberate act: someone moves `index.db` aside and starts the daemon, which rebuilds from stored bytes and answers reads with `index building` and progress until it can answer. The rebuild reads every input's newest revision chain first. Once those are read (or refused) the first build ends: its read indexes and search are built and the sessions derived, and the older chains, which hold earlier readings of the same inputs, are read afterwards as ordinary work, with reads reporting parsing as incomplete until they are. Moving a whole archive aside and starting fresh is likewise a deliberate act, never something code does to get past a change.
+### Replacing an index from another schema
+
+`index.db` holds only what is parsed and derived from the archive's stored bytes, and it has one current format, so an index this build cannot open is replaced rather than migrated or refused. At start, an index whose tables, indexes or triggers differ from the build's, that is at another index format version, or that carries no Polylogue format identity, is closed and renamed beside it as `index-set-aside-<schema identity>.db` (with any write-ahead files it left), and a new index is created in its place. The schema identity is a short hash of the file's version, format identity and its tables, views and triggers; indexes are left out of it, since read indexes are added at open and a first build defers some.
+
+The new index records why it replaced the old one, and `status` reports it under `store.index_rebuild`: the reason (`schema_differs`, `format_version` with the version found and wanted, or `older_format`), the previous and current schema identities, whether the first build is still running, and the set-aside file's name while it remains. Progress is the rest of the same answer: chains by parse state against the stored inputs, and the read completeness, which reports the first build until it ends. The set-aside file is removed when the first build ends (standalone: its search and deferred indexes are built; primary: the confirmed stream is applied to its head); a file left by a stop at the wrong moment is removed at the next open of a built index. The record stays with the index it describes.
+
+The archive is never handled this way: `archive.db`, the segment log and the embeddings store in another format are refused (exit 78) and left as they were, because they hold what cannot be recomputed.
+
+The first build reads every input's newest revision chain first and answers reads with `index building` and progress until it can answer. Once those are read (or refused) the first build ends: its read indexes and search are built and the sessions derived, and the older chains, which hold earlier readings of the same inputs, are read afterwards as ordinary work, with reads reporting parsing as incomplete until they are. Moving `index.db` aside by hand and starting the daemon builds a new index the same way. Moving a whole archive aside and starting fresh is a deliberate act, never something code does to get past a change.
 
 ## Backup and restore
 
@@ -229,6 +238,6 @@ No code path deletes the index. A full rebuild is a rare deliberate act: someone
   - An atomic snapshot of the archive directory is consistent.
   - A file copy needs either a stopped daemon, or each SQLite database copied through SQLite's backup API followed by the segment log: committed extents never move and no row cites an extent before it commits, so databases first and segments after is consistent.
 - **Polylogue provides** the paths and sizes in `status`, and `verify` to check a restored copy.
-- **Restore** is putting the files back and starting the daemon. Migrations apply as on any open; an uncommitted segment tail is truncated; an index behind its positions catches up; a daemon that finds a segment log but no `archive.db` refuses to start a fresh archive over it and says why. There is no restore command.
+- **Restore** is putting the files back and starting the daemon. Each store opens as at any start; an uncommitted segment tail is truncated; an index behind its positions catches up; a daemon that finds a segment log but no `archive.db` refuses to start a fresh archive over it and says why. There is no restore command.
 - **A restore drill** restores the latest backup into a scratch directory, runs `polylogue --archive <dir> daemon --no-sources --until-idle`, then starts `polylogue --archive <dir> daemon --no-sources` and runs `polylogue --archive <dir> verify` against it. Someone runs it when they want the evidence, for example after changing the backup route.
 - **Primary mode:** Sinex is the store of record, and its backup covers Polylogue's materials and authored records. Losing the local directory means a rebuild from the confirmed stream ([primary-mode.md](primary-mode.md)). The embeddings store stays local and is backed up, because recomputing it costs money.

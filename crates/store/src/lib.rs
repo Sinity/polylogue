@@ -128,9 +128,8 @@ pub enum StoreError {
     /// The importer lane matches this wording.
     #[error("older format: import with `polylogue import --from-archive PATH`")]
     OlderFormat { database: &'static str },
-    #[error(
-        "index format {found} is not {wanted}; stop the daemon, move index.db and its WAL/SHM files aside, then restart the daemon to rebuild from stored bytes"
-    )]
+    /// The archive's open sets such an index aside and builds a new one.
+    #[error("index format {found} is not {wanted}")]
     IndexVersion { found: u32, wanted: u32 },
     #[error("blob {0} failed its check")]
     BlobCorrupt(polylogue_model::BlobHash),

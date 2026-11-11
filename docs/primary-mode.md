@@ -189,7 +189,7 @@ Publication and read failures remain distinct observations in that status. A suc
 
 ## Rebuild and parser upgrades
 
-**Rebuild.** Moving the local `index.db` aside and starting the daemon resets its subscription position and applies the confirmed stream from its start, with progress in `status`. A rebuild reads only the stream; it does not read materials back to re-parse them.
+**Rebuild.** A new local `index.db` (one from another schema set aside at start, [operations.md](operations.md#replacing-an-index-from-another-schema), or one moved aside by hand) resets its subscription position and applies the confirmed stream from its start, with progress in `status`. A rebuild reads only the stream; it does not read materials back to re-parse them.
 
 **Parser upgrades.** A chain whose reading version changed is re-parsed from its materials, read through the producer client, and its facts are sent again under the same stable keys as a producer replay of those materials: the new readings become live and the previous ones are archived with their derived chains, which never include authored records about the session.
 

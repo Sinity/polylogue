@@ -241,7 +241,8 @@ impl TestDaemon {
             .expect("the daemon runs a loop")
     }
 
-    fn restart_after_stop(&mut self, reset: impl FnOnce()) {
+    /// Stops the daemon, runs `reset` over its stopped archive, and starts it again.
+    pub(crate) fn restart_after_stop(&mut self, reset: impl FnOnce()) {
         self.stop().unwrap();
         reset();
         self.runtime = service::start(

@@ -60,6 +60,14 @@ impl Inner {
             self.search.wake();
             self.report.transactions += 1;
         }
+        if result.is_ok() {
+            // A head page or a completion can end the first replay.
+            crate::archive::index_rebuild::remove_when_built(
+                &self.index,
+                &self.location.index_db(),
+                true,
+            )?;
+        }
         result
     }
 

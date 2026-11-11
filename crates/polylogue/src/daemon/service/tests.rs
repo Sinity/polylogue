@@ -425,6 +425,8 @@ mod reading_shapes;
 
 mod hook_errors;
 
+mod index_rebuild;
+
 mod codex_reports;
 
 mod attachments;
