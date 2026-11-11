@@ -114,8 +114,11 @@ pub(super) fn similar_misplaced(span: Span) -> QueryError {
 
 impl Compiler<'_> {
     /// Build similarities once, when the answer or an earlier selection
-    /// needs an order. Counts and groups need membership only.
-    pub(super) fn setup_near(&mut self, required: bool) {
+    /// needs an order. Counts and groups need membership only. Only the
+    /// rows `where_sql` selects from `rows` are scored: a text's similarity
+    /// is looked up for the selected rows' texts, never for the archive's
+    /// (docs/search.md: Forms and meaning).
+    pub(super) fn setup_near(&mut self, required: bool, rows: &RowContext, where_sql: &[String]) {
         if !self.opts.embeddings {
             self.near_unavailable |= required && self.near_request.is_some();
             return;
@@ -124,26 +127,30 @@ impl Compiler<'_> {
             return;
         };
         let a = &scope.a;
-        let messages = format!("n{}", self.ctes.len() + 1);
-        self.ctes.push(format!(
-            "{messages} AS MATERIALIZED (SELECT xb.message_pk AS m, max(xs.s) AS s \
-         FROM (SELECT xt.id AS t, pl_similarity(xt.hash) AS s FROM text xt) xs \
-         JOIN block xb ON xb.text_id = xs.t WHERE xs.s IS NOT NULL GROUP BY xb.message_pk)"
-        ));
+        let selected = format!(
+            "{} WHERE {}",
+            base_from(rows.unit, &rows.a),
+            and_all(where_sql)
+        );
+        // A message's similarity is its best text's.
+        let best = |messages: &str| {
+            format!(
+                "(SELECT max(pl_similarity(xt.hash)) FROM block xb JOIN text xt ON xt.id = xb.text_id \
+                 WHERE xb.message_pk {messages})"
+            )
+        };
         let rank = match scope.unit {
             Unit::Sessions => {
-                // Each session's best message, carried up to the sessions that
-                // spawned it, once per query.
-                let tree = format!("n{}", self.ctes.len() + 1);
-                self.ctes.push(format!(
-                    "{tree}(p, s) AS (SELECT xm.session_pk, max(nm.s) FROM {messages} nm \
-                 JOIN message xm ON xm.pk = nm.m GROUP BY xm.session_pk \
-                 UNION SELECT lp.pk, nt.s FROM {tree} nt JOIN link l ON l.child_pk = nt.p \
-                 AND l.kind = 'subagent' JOIN session lp ON lp.id = l.parent_id)"
-                ));
+                // Each selected session's best message, its subagents' included.
                 let sessions = format!("n{}", self.ctes.len() + 1);
                 self.ctes.push(format!(
-                    "{sessions} AS MATERIALIZED (SELECT p, max(s) AS s FROM {tree} GROUP BY p)"
+                    "{sessions} AS MATERIALIZED (SELECT xs.pk AS p, {} AS s \
+                     FROM (SELECT DISTINCT {}.pk AS pk FROM {selected}) xs)",
+                    best(&format!(
+                        "IN (SELECT xm.pk FROM message xm WHERE xm.session_pk IN ({}))",
+                        fields::subtree("xs")
+                    )),
+                    a.s
                 ));
                 self.near_join = Some(format!(
                     "LEFT JOIN {sessions} near_s ON near_s.p = {}.pk",
@@ -152,6 +159,13 @@ impl Compiler<'_> {
                 "-near_s.s".to_owned()
             }
             Unit::Messages => {
+                let messages = format!("n{}", self.ctes.len() + 1);
+                self.ctes.push(format!(
+                    "{messages} AS MATERIALIZED (SELECT xs.pk AS m, {} AS s \
+                     FROM (SELECT DISTINCT {}.pk AS pk FROM {selected}) xs)",
+                    best("= xs.pk"),
+                    a.m
+                ));
                 self.near_join = Some(format!(
                     "LEFT JOIN {messages} near_m ON near_m.m = {}.pk",
                     a.m
