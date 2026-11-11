@@ -315,7 +315,7 @@ impl<'a> Pass<'a> {
         crate::session_values::refresh(&tx, &changes)?;
         tx.commit()?;
         if let Some(events) = commits {
-            events.committed();
+            events.committed(crate::completion::Committed::CONTENT);
         }
         Ok(Some(done))
     }

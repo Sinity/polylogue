@@ -1467,7 +1467,8 @@ impl Inner {
                 let before = self.index.total_changes();
                 let result = self.install_assets(*staged);
                 if result.is_ok() && self.index.total_changes() != before {
-                    self.commits.committed();
+                    self.commits
+                        .committed(crate::completion::Committed::CONTENT);
                 }
                 let _ = reply.send(result);
             }
@@ -1571,7 +1572,8 @@ impl Inner {
         crate::chain_progress::refresh(&tx, &source_changed)?;
         tx.commit()?;
         crate::chain_progress::forget(&self.archive, &source_changed)?;
-        self.commits.committed();
+        self.commits
+            .committed(crate::completion::Committed::CONTENT);
         self.report.transactions += 1;
         Ok(())
     }
@@ -1617,7 +1619,8 @@ impl Inner {
                 .execute(rusqlite::params![session, counter])?;
         }
         crate::write_lock::commit(tx)?;
-        self.commits.committed();
+        self.commits
+            .committed(crate::completion::Committed::CONTENT);
         self.report.transactions += 1;
         Ok(())
     }
@@ -1640,7 +1643,8 @@ impl Inner {
             answers.push(answer);
         }
         crate::write_lock::commit(tx)?;
-        self.commits.committed();
+        self.commits
+            .committed(crate::completion::Committed::CONTENT);
         self.report.transactions += 1;
         Ok(answers)
     }
@@ -1664,7 +1668,8 @@ impl Inner {
         bump_counter(&tx)?;
         crate::coverage::apply(&tx, &coverage)?;
         crate::write_lock::commit(tx)?;
-        self.commits.committed();
+        self.commits
+            .committed(crate::completion::Committed::CONTENT);
         self.report.transactions += 1;
         Ok(())
     }
@@ -1713,7 +1718,8 @@ impl Inner {
         }
         self.first_build = None;
         self.search.ready();
-        self.commits.committed();
+        self.commits
+            .committed(crate::completion::Committed::CONTENT);
         crate::archive::index_rebuild::remove_when_built(
             &self.index,
             &self.location.index_db(),
@@ -1828,7 +1834,8 @@ impl Inner {
             tx.execute("INSERT INTO segment(name,committed_end) VALUES (?1,?2) ON CONFLICT(name) DO UPDATE SET committed_end=excluded.committed_end",
                 params!["segments/current.hb",synced.end as i64])?;
             crate::write_lock::commit(tx)?;
-            self.commits.committed();
+            self.commits
+                .committed(crate::completion::Committed::CONTENT);
             Ok(())
         })();
         if let Err(error) = result {
@@ -1894,7 +1901,8 @@ impl Inner {
             tx.rollback()?;
         } else {
             crate::write_lock::commit(tx)?;
-            self.commits.committed();
+            self.commits
+                .committed(crate::completion::Committed::AUTHORED);
         }
         self.project_variant_text()?;
         Ok(outcome)
@@ -1982,7 +1990,8 @@ impl Inner {
             }
             crate::fault::check("write.archive_commit", "")?;
             crate::write_lock::commit(atx)?;
-            self.commits.committed();
+            self.commits
+                .committed(crate::completion::Committed::CONTENT);
             crate::fault::check("write.between_commits", "")?;
         }
 
@@ -2034,7 +2043,8 @@ impl Inner {
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
         crate::chain_progress::forget(&self.archive, &source_changed)?;
-        self.commits.committed();
+        self.commits
+            .committed(crate::completion::Committed::CONTENT);
         self.search.wake();
         self.report.batches += stats.0;
         self.report.messages += stats.1;

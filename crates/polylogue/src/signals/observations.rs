@@ -6,17 +6,36 @@ use serde_json::Value;
 pub(crate) enum Phase {
     Subscribed,
     SubscriptionReceived,
-    CueForwarded { queued: bool },
-    ControllerWake { refresh: bool },
+    CueForwarded {
+        queued: bool,
+    },
+    /// The commit changed nothing a tick reads.
+    CueIgnored,
+    ControllerWake {
+        refresh: bool,
+    },
     ControllerWaiting,
-    TickStarted { at: i64 },
-    RulesRead { ids: Vec<String> },
+    TickStarted {
+        at: i64,
+    },
+    RulesRead {
+        ids: Vec<String>,
+    },
     Status(Value),
-    PersistStarted { request: String },
-    PersistAcknowledged { request: String, confirmed: bool },
-    TickCompleted { persisted: bool },
+    PersistStarted {
+        request: String,
+    },
+    PersistAcknowledged {
+        request: String,
+        confirmed: bool,
+    },
+    TickCompleted {
+        persisted: bool,
+    },
     TickFailed(Value),
-    CommittedSource { request: String },
+    CommittedSource {
+        request: String,
+    },
     IndependentCommitCue,
 }
 
@@ -26,6 +45,7 @@ impl std::fmt::Display for Phase {
             Self::Subscribed => output.write_str("subscribed"),
             Self::SubscriptionReceived => output.write_str("subscription received a cue"),
             Self::CueForwarded { queued } => write!(output, "cue forwarded queued={queued}"),
+            Self::CueIgnored => output.write_str("cue ignored: no authored change"),
             Self::ControllerWake { refresh } => write!(output, "controller wake refresh={refresh}"),
             Self::ControllerWaiting => output.write_str("controller waiting"),
             Self::TickStarted { at } => write!(output, "tick started at={at}"),

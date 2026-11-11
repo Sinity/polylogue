@@ -332,7 +332,11 @@ impl Inner {
             }
             return Err(error);
         }
-        self.commits.committed();
+        self.commits.committed(crate::completion::Committed {
+            content: true,
+            authored: true,
+            query_records: false,
+        });
         if let Some(synced) = synced {
             self.report.segment_syncs += synced.metrics.syncs;
             self.report.segment_bytes_written += synced.metrics.appended_bytes;
