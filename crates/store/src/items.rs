@@ -77,6 +77,16 @@ pub fn entries_decoded() -> u64 {
     ENTRIES_DECODED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// How many sessions' links reads have looked up, for tests of how much of
+/// a links tree a page reads.
+#[cfg(any(test, feature = "fixture"))]
+static LINK_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(any(test, feature = "fixture"))]
+pub fn link_reads() -> u64 {
+    LINK_READS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The counters alone, read in O(1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemVersions {
@@ -1146,6 +1156,8 @@ pub struct StoredRecord {
 
 impl Reader<'_> {
     fn links_where(&self, column: &str, session: &str) -> Result<Vec<SessionLink>> {
+        #[cfg(any(test, feature = "fixture"))]
+        LINK_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self
             .conn()?
             .prepare_cached(&format!(

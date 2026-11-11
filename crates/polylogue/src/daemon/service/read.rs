@@ -19,6 +19,7 @@ mod before;
 mod blobs;
 mod documents;
 mod evidence;
+mod links;
 mod live;
 mod object;
 mod output;
@@ -808,7 +809,7 @@ pub(crate) fn page(
                 session::page(reader, d, request, operation, scope)?
             }
             Some(scope) if reading.options.view == View::Links => {
-                session::links_page(reader, d, request, operation, scope)?
+                links::page(reader, d, request, operation, scope)?
             }
             _ => rows_page(reader, d, request, operation, &reading, cursor)?,
         };
@@ -857,7 +858,7 @@ fn rows_page(
                 PagePosition::Record { anchor_row, place } => {
                     Ok::<_, Failure>((anchor_row, place, opened.direction))
                 }
-                PagePosition::Entry { .. } | PagePosition::Node { .. } => Err(Failure::new(
+                PagePosition::Entry { .. } | PagePosition::Links { .. } => Err(Failure::new(
                     "invalid_query",
                     "the cursor names a session place, not a row position",
                 )),
