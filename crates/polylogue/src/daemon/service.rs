@@ -1005,7 +1005,15 @@ impl Runtime {
         self.stop_accepting();
         // Transports have stopped; queued requests are refused and running
         // ones end (the closed reader pool ends any still waiting for a read).
-        self.daemon.executor.stop();
+        // Work that ignores its cancellation is left behind after the bound,
+        // so a stop never hangs on it.
+        let running = self.daemon.executor.stop(super::executor::STOP_WAIT);
+        if running > 0 {
+            eprintln!(
+                "polylogue: {running} request(s) did not stop within {} s; stopping without them",
+                super::executor::STOP_WAIT.as_secs()
+            );
+        }
         let mut failure = None;
         if let Some(completion) = self.completion.as_mut()
             && let Err(error) = completion.shutdown()

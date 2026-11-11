@@ -19,6 +19,9 @@ use std::collections::BinaryHeap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+/// How long a stop waits for running work.
+pub(crate) const STOP_WAIT: Duration = Duration::from_secs(5);
+
 /// Which places a piece of work may take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Class {
@@ -197,16 +200,25 @@ impl Executor {
     }
 
     /// Refuses new work, drops queued work unrun and waits for running work
-    /// to end. Call it from outside the executor's own threads.
-    pub(crate) fn stop(&self) {
+    /// to end, at most `wait`. Returns how many jobs were still running then:
+    /// work that never checks its cancellation does not hold up a stop.
+    /// Call it from outside the executor's own threads.
+    pub(crate) fn stop(&self, wait: Duration) -> usize {
+        let until = Instant::now() + wait;
         let mut state = self.refuse();
         while state.threads > 0 {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return state.running;
+            }
             state = self
                 .shared
                 .finished
-                .wait(state)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                .wait_timeout(state, left)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
         }
+        0
     }
 
     #[cfg(test)]

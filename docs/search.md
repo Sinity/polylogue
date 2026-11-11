@@ -48,7 +48,7 @@ The full-text indexes are contentless, keyed by text ID, with contentless delete
 
 ### Forms and meaning
 
-- `similar:"text"` ranks by similarity to a text and needs a vector for that text. Concurrent reads of one text share one provider call for its vector, and later reads reuse the kept vector. `similar:REF` (a session, message or assertion reference) ranks by a stored item's vector and needs no provider call; the seed itself is excluded.
+- `similar:"text"` ranks by similarity to a text and needs a vector for that text. The vector of each quoted text is asked for before the request takes a reader, so waiting for the provider holds no reader slot; concurrent reads of one text share one provider call, and later reads reuse the kept vector. `similar:REF` (a session, message or assertion reference) ranks by a stored item's vector and needs no provider call; the seed itself is excluded.
 - `similar:` ranks the whole query and appears once, among the top-level AND terms; anywhere else it is `invalid_query`.
 - **A ranking, never a filter.** Conditions select; `similar:` orders the selection. Vectors are scanned exactly over the selected rows, with no approximate index and no global top-K cut-off.
 - **Grain:** a message ranks by its vector, a block by its message's, a session by its best message (subagents included), an assertion by its own.

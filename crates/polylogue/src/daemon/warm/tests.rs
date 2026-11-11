@@ -349,3 +349,69 @@ fn one_provider_call_per_query_text_in_flight() {
     assert_eq!(calls.load(Ordering::Relaxed), 1);
     assert_eq!(answers, vec![Ok(()); readers]);
 }
+
+#[test]
+fn slow_provider_calls_cannot_fill_the_read_pool() {
+    let daemon = crate::test_daemon::start("parser text");
+    let listener = daemon.embedding_endpoint();
+    let d = &daemon.daemon;
+    // More slow calls in flight than the pool has readers.
+    let calls = d.reads.max_readers() + 1;
+    let answers: Vec<_> = std::thread::scope(|scope| {
+        let queries: Vec<_> = (0..calls)
+            .map(|n| {
+                scope.spawn(move || {
+                    crate::test_daemon::call(
+                        d,
+                        "query",
+                        serde_json::json!({"query": format!("messages where similar:\"slow {n}\"")}),
+                    )
+                })
+            })
+            .collect();
+        // The provider answers nothing until every call is waiting on it; a
+        // call that holds a reader slot while it waits keeps the last one out.
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        listener.set_nonblocking(true).unwrap();
+        let mut peers = Vec::new();
+        while peers.len() < calls {
+            match listener.accept() {
+                Ok((peer, _)) => {
+                    peer.set_nonblocking(false).unwrap();
+                    peers.push(peer);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < until,
+                        "{} of {calls} calls reached the provider",
+                        peers.len()
+                    );
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+        while d.reads.checked_out() > 0 {
+            assert!(
+                std::time::Instant::now() < until,
+                "reads waiting on the provider hold reader slots"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        drop(d.reads.reader().unwrap());
+        for peer in peers {
+            crate::test_daemon::embeddings::response(
+                peer,
+                200,
+                r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#,
+            );
+        }
+        queries
+            .into_iter()
+            .map(|query| query.join().unwrap())
+            .collect()
+    });
+    for answer in answers {
+        crate::test_answers::ok(answer);
+    }
+}
