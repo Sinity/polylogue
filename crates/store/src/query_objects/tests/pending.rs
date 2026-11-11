@@ -29,6 +29,12 @@ fn completed_history_keeps_question_lookup_and_one_durable_run_group() {
             crate::Archive::open_primary(&dir.path().join("cache"), &dir.path().join("bytes"))
                 .unwrap();
         let writer = crate::Writer::start_on_sinex(&archive, producer.clone()).unwrap();
+        // This fixture deliberately keeps all products pending. Observe its
+        // offline follower explicitly, rather than depending on its poll timer.
+        let offline = writer.synchronize_primary().unwrap_err();
+        assert!(
+            matches!(&offline, StoreError::Sinex(message) if message == "synthetic offline producer")
+        );
         writer
             .sender()
             .unwrap()
@@ -36,7 +42,10 @@ fn completed_history_keeps_question_lookup_and_one_durable_run_group() {
             .unwrap()
             .record(object.clone(), expected.clone(), completed.clone())
             .unwrap();
-        assert!(writer.flush_rows().unwrap().errors.is_empty());
+        assert_eq!(
+            writer.flush_rows().unwrap().errors,
+            [format!("confirmed stream: after position 0: {offline}")]
+        );
         let pool = crate::ReadPool::open(&archive).unwrap();
         let reader = pool.reader().unwrap();
         assert_eq!(
