@@ -24,12 +24,9 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
     .unwrap();
     assert_eq!(listed["count"], 1);
     let reference = format!("event:{}", listed["rows"][0]["id"].as_str().unwrap());
-    let ordinary: ReadPage = serde_json::from_str(
-        &super::read_pages::read_without_deadline(
-            &archive,
-            json!({"target":reference,"format":"json"}),
-        )
-        .unwrap(),
+    let ordinary: ReadPage = super::read_pages::structured_read_without_deadline(
+        &archive,
+        json!({"target":reference,"format":"json"}),
     )
     .unwrap();
     let (ordinary, _) = super::read_pages::collect(
@@ -49,12 +46,9 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
     };
     assert_eq!(data["event"]["data"]["data"]["text"], text);
     assert_eq!(data["event"]["data"]["data"]["credential"], credential);
-    let page: ReadPage = serde_json::from_str(
-        &super::read_pages::read_without_deadline(
-            &archive,
-            json!({"target":reference,"page_tokens":128}),
-        )
-        .unwrap(),
+    let page: ReadPage = super::read_pages::structured_read_without_deadline(
+        &archive,
+        json!({"target":reference,"page_tokens":128}),
     )
     .unwrap();
     let next = page

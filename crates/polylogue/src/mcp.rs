@@ -2,7 +2,8 @@
 //! over MCP are grouped into five tools; a call names the operation (the
 //! command) and carries its arguments, which are checked against the table
 //! and sent as the same request the CLI sends. Answers are the daemon's
-//! JSON; context (briefs, takeovers, recalls) is answered with its text and
+//! structured answers; reads use the shared Markdown renderer, and context
+//! (briefs, takeovers, recalls) is answered with its text and
 //! recorded as a delivery from `mcp`. Refusals are tool errors.
 
 mod completion;
@@ -78,9 +79,8 @@ fn bad_request(message: &str) -> String {
     polylogue_render::terminal::escape(&format!("error (bad_request): {message}"))
 }
 
-/// The text content beside the structured answer. A value stays parseable
-/// JSON; prepared context is answered with its text. A failure's text names
-/// its notes too.
+/// The text content beside the structured answer: shared Markdown for reads,
+/// prepared text for context, and JSON for other values. A failure names its notes.
 fn format_answer(
     command: &Command,
     answer: Result<&Answer<Value>, &std::io::Error>,
@@ -99,6 +99,12 @@ fn format_answer(
             ..
         } => Err(format!("{}{notes}", error_text(error))),
         answer => {
+            if command.name == "read" {
+                return crate::commands::declarations()
+                    .render_text(command.name, answer, command_surface::TextStyle::Plain)
+                    .map(|text| format!("{text}{notes}"))
+                    .map_err(|failure| error_text(&failure));
+            }
             let value = answer.value().expect("a non-error answer has a value");
             Ok(
                 if command.tool == Some(Tool::Context) && value.get("prepared").is_some() {

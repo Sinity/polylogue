@@ -146,8 +146,18 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
         args(json!({"target": "session:claude-code:s1", "format": "markdown"})),
     )
     .unwrap();
-    let read: polylogue_model::read::ReadPage = serde_json::from_str(&text).unwrap();
-    assert!(read_pages::body(&read).contains("walrus"), "{text}");
+    assert!(text.starts_with(polylogue_render::ARCHIVE_NOTICE), "{text}");
+    assert!(text.contains("walrus"), "{text}");
+    assert!(text.contains("Times "), "{text}");
+    let structured = structured_call_as(
+        &archive,
+        "read",
+        args(json!({"target": "session:claude-code:s1"})),
+        &uuid::Uuid::now_v7().to_string(),
+    );
+    let read: polylogue_model::read::ReadPage =
+        serde_json::from_value(structured.value().unwrap().clone()).unwrap();
+    assert!(read_pages::body(&read).contains("walrus"));
 
     let text = call(&archive, "query", args(json!({"query": "walrus"}))).unwrap();
     assert!(text.contains("claude-code:s1"), "{text}");
