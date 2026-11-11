@@ -107,8 +107,8 @@ fn a_read_timeout_does_not_turn_a_write_reply_into_a_failure() {
     assert!(!receipt.repeat && !receipt.pending);
 }
 
-#[test]
-fn explicit_unbounded_read_stream_waits_beyond_the_read_default_and_finishes_exactly() {
+/// A finished synthetic read stream and the document it delivers.
+fn read_stream() -> (Vec<u8>, polylogue_model::read::ReadDocument) {
     use polylogue_model::read::{
         Format, HeaderKind, ItemKind, ReadBegin, ReadComplete, ReadDocument, ReadFooter,
         ReadHeader, ReadItem, ReadOptions, ReadPart, ReadRecord, Source, ValueState,
@@ -170,6 +170,17 @@ fn explicit_unbounded_read_stream_waits_beyond_the_read_default_and_finishes_exa
     ] {
         wire.extend_from_slice(format!("event: {name}\ndata: {value}\n\n").as_bytes());
     }
+    let document = ReadDocument {
+        header,
+        items: vec![item],
+        footer,
+    };
+    (wire, document)
+}
+
+#[test]
+fn explicit_unbounded_read_stream_waits_beyond_the_read_default_and_finishes_exactly() {
+    let (wire, expected) = read_stream();
     let output = answer(
         &[
             "--deadline",
@@ -186,15 +197,33 @@ fn explicit_unbounded_read_stream_waits_beyond_the_read_default_and_finishes_exa
         command_surface::Deadline::None,
     );
     assert!(output.status.success(), "{output:?}");
-    let actual: ReadDocument = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(
-        actual,
-        ReadDocument {
-            header,
-            items: vec![item],
-            footer
-        }
+    let actual: polylogue_model::read::ReadDocument =
+        serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(actual, expected);
+}
+
+/// The daemon gives a streamed read no default deadline, so neither does the
+/// client: a stream that starts after the read default still finishes.
+#[test]
+fn a_read_stream_without_a_deadline_waits_for_the_daemon() {
+    let (wire, expected) = read_stream();
+    let output = answer(
+        &[
+            "read",
+            "session:claude-code:s1",
+            "--delivery",
+            "stream",
+            "--format",
+            "json",
+        ],
+        Duration::from_millis(1250),
+        wire,
+        command_surface::Deadline::Default,
     );
+    assert!(output.status.success(), "{output:?}");
+    let actual: polylogue_model::read::ReadDocument =
+        serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(actual, expected);
 }
 
 #[test]

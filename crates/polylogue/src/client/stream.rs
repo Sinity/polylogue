@@ -28,16 +28,6 @@ pub fn run_call(
     send(archive, &outgoing, budget, event)
 }
 
-/// The budget of a streaming call from its row's declared latency.
-pub fn declared_budget(request: &command_surface::RunnableRequest) -> Option<Duration> {
-    let class = crate::commands::command(&request.operation)
-        .map(|command| command.latency)
-        .unwrap_or(command_surface::LatencyClass::Local);
-    request
-        .deadline
-        .connection_timeout(crate::commands::deadlines().get(class))
-}
-
 fn send(
     archive: &Archive,
     outgoing: &impl serde::Serialize,

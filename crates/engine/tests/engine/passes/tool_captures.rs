@@ -31,6 +31,17 @@ fn a_pass_captures_a_database_while_serving_files() {
     );
 }
 
+/// How many of this process's open files are `path`, deleted or not.
+/// Descriptors name the canonical path, so `path` must already be one.
+fn open_descriptors(path: &std::path::Path) -> usize {
+    let deleted = format!("{} (deleted)", path.display());
+    fs::read_dir("/proc/self/fd")
+        .unwrap()
+        .filter_map(|entry| fs::read_link(entry.ok()?.path()).ok())
+        .filter(|target| target == path || target.as_os_str() == deleted.as_str())
+        .count()
+}
+
 #[test]
 fn ordinary_inputs_are_serviced_while_a_database_is_read() {
     let w = ClaudeHome::new();
@@ -38,12 +49,22 @@ fn ordinary_inputs_are_serviced_while_a_database_is_read() {
     let (mut engine, _lock) = w.engine(64 << 20);
     assert!(engine.run_pass().unwrap().errors.is_empty());
     let db = database(&w, 3000);
+    // The tool holds its database locked, so the read stays open, waiting,
+    // until this test releases it.
+    let tool = rusqlite::Connection::open(&db).unwrap();
+    tool.execute_batch("BEGIN EXCLUSIVE").unwrap();
     let first = engine.run_turn().unwrap();
     assert!(first.capture_pending);
     assert!(first.errors.is_empty(), "{:?}", first.errors);
     assert_eq!(w.texts("live"), ["before capture"]);
+    // The read has opened the database once a second descriptor names it.
+    let canonical = fs::canonicalize(&db).unwrap();
+    while open_descriptors(&canonical) < 2 {
+        std::thread::yield_now();
+    }
     w.append("live.jsonl", &user("u2", "live", "during capture"));
     let second = engine.run_turn().unwrap();
+    assert!(second.capture_pending);
     assert!(
         second.errors.is_empty(),
         "ordinary append during database capture: {second:?}"
@@ -51,6 +72,8 @@ fn ordinary_inputs_are_serviced_while_a_database_is_read() {
     assert_eq!(w.texts("live"), ["before capture", "during capture"]);
     // The active batch is independent of later discovery results.
     fs::remove_file(&db).unwrap();
+    tool.execute_batch("ROLLBACK").unwrap();
+    drop(tool);
     let complete = engine.run_pass().unwrap();
     assert!(!complete.capture_pending);
     assert!(complete.errors.is_empty(), "{:?}", complete.errors);
