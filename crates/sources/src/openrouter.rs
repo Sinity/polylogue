@@ -43,80 +43,84 @@ pub struct OpenRouter {
     characters: Json,
 }
 
-static DOCUMENT_FIELDS: Fields = Fields::new(&[
-    (
-        "version",
-        Rule::Excluded("the export format's version string"),
-    ),
-    ("title", Rule::Read(T::String)),
-    ("characters", Rule::Kept("complete room_models event")),
-    ("messages", Rule::Read(T::Array)),
-    ("artifacts", Rule::Kept("artifact panes, kept as an event")),
-    (
-        "artifactFiles",
-        Rule::Kept("artifact panes, kept as an event"),
-    ),
-    (
-        "artifactVersions",
-        Rule::Kept("artifact panes, kept as an event"),
-    ),
-    (
-        "artifactFileContents",
-        Rule::Kept("artifact panes, kept as an event"),
-    ),
-])
-.shape(&["characters"], &[])
-.for_kind("document");
+static DOCUMENT_FIELDS: Fields = Fields::new(
+    "document",
+    &[
+        (
+            "version",
+            Rule::Excluded("the export format's version string"),
+        ),
+        ("title", Rule::Read(T::String)),
+        ("characters", Rule::Kept("complete room_models event")),
+        ("messages", Rule::Read(T::Array)),
+        ("artifacts", Rule::Kept("artifact panes, kept as an event")),
+        (
+            "artifactFiles",
+            Rule::Kept("artifact panes, kept as an event"),
+        ),
+        (
+            "artifactVersions",
+            Rule::Kept("artifact panes, kept as an event"),
+        ),
+        (
+            "artifactFileContents",
+            Rule::Kept("artifact panes, kept as an event"),
+        ),
+    ],
+)
+.shape(&["characters"], &[]);
 
-static MESSAGE_FIELDS: Fields = Fields::new(&[
-    ("attachments[].type", Rule::Read(T::String)),
-    ("attachments[].content", Rule::Read(T::String)),
-    ("id", Rule::Read(T::String)),
-    ("type", Rule::Read(T::String)),
-    ("content", Rule::Read(T::StringOrArray)),
-    ("contentType", Rule::Read(T::String)),
-    ("characterId", Rule::Read(T::String)),
-    ("parentMessageId", Rule::Read(T::String)),
-    ("createdAt", Rule::Read(T::String)),
-    (
-        "updatedAt",
-        Rule::Excluded("edit time; the creation time orders messages"),
-    ),
-    ("attachments", Rule::Read(T::Array)),
-    ("files", Rule::Read(T::Array)),
-    ("citations", Rule::Kept("web search citations")),
-    (
-        "context",
-        Rule::Excluded("always the main chat in a room export"),
-    ),
-    ("isGenerating", Rule::Excluded("the page's UI state")),
-    ("isRetrying", Rule::Excluded("the page's UI state")),
-    ("isCollapsed", Rule::Excluded("the page's UI state")),
-    (
-        "isEdited",
-        Rule::Kept("the operator edited the message after sending"),
-    ),
-    ("metadata", Rule::Read(T::Object)),
-    ("metadata.tokensCount", Rule::Read(T::Number)),
-    ("metadata.generateDuration", Rule::Read(T::Number)),
-    ("metadata.latencyDuration", Rule::Read(T::Number)),
-    ("metadata.cost", Rule::Read(T::Number)),
-    (
-        "metadata.provider",
-        Rule::Kept("the upstream host that served the reply"),
-    ),
-    ("metadata.variantSlug", Rule::Read(T::String)),
-    (
-        "metadata.tokensPerSecond",
-        Rule::Excluded("tokens divided by duration, both read"),
-    ),
-    (
-        "metadata.plugins",
-        Rule::Kept("plugins enabled for the reply"),
-    ),
-    ("metadata.reasoning", Rule::Read(T::String)),
-])
-.for_kind("message");
+static MESSAGE_FIELDS: Fields = Fields::new(
+    "message",
+    &[
+        ("attachments[].type", Rule::Read(T::String)),
+        ("attachments[].content", Rule::Read(T::String)),
+        ("id", Rule::Read(T::String)),
+        ("type", Rule::Read(T::String)),
+        ("content", Rule::Read(T::StringOrArray)),
+        ("contentType", Rule::Read(T::String)),
+        ("characterId", Rule::Read(T::String)),
+        ("parentMessageId", Rule::Read(T::String)),
+        ("createdAt", Rule::Read(T::String)),
+        (
+            "updatedAt",
+            Rule::Excluded("edit time; the creation time orders messages"),
+        ),
+        ("attachments", Rule::Read(T::Array)),
+        ("files", Rule::Read(T::Array)),
+        ("citations", Rule::Kept("web search citations")),
+        (
+            "context",
+            Rule::Excluded("always the main chat in a room export"),
+        ),
+        ("isGenerating", Rule::Excluded("the page's UI state")),
+        ("isRetrying", Rule::Excluded("the page's UI state")),
+        ("isCollapsed", Rule::Excluded("the page's UI state")),
+        (
+            "isEdited",
+            Rule::Kept("the operator edited the message after sending"),
+        ),
+        ("metadata", Rule::Read(T::Object)),
+        ("metadata.tokensCount", Rule::Read(T::Number)),
+        ("metadata.generateDuration", Rule::Read(T::Number)),
+        ("metadata.latencyDuration", Rule::Read(T::Number)),
+        ("metadata.cost", Rule::Read(T::Number)),
+        (
+            "metadata.provider",
+            Rule::Kept("the upstream host that served the reply"),
+        ),
+        ("metadata.variantSlug", Rule::Read(T::String)),
+        (
+            "metadata.tokensPerSecond",
+            Rule::Excluded("tokens divided by duration, both read"),
+        ),
+        (
+            "metadata.plugins",
+            Rule::Kept("plugins enabled for the reply"),
+        ),
+        ("metadata.reasoning", Rule::Read(T::String)),
+    ],
+);
 
 impl ExportParser for OpenRouter {
     fn scan(

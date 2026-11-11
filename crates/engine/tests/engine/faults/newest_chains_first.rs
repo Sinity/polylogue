@@ -234,3 +234,91 @@ fn a_rebuild_stopped_mid_chain_finishes_that_chain_first_on_restart() {
     );
     assert_eq!(readings(&w), captured);
 }
+
+/// A rebuild whose newest chain has a range the writer refuses for its
+/// content (here a wire declaration the index already holds differently, as
+/// two declarations sharing a kind once produced): the chain stops at the
+/// refused range's start, failed with the writer's reason, which the pass
+/// and the parse-state counts report; the first build still ends, and the
+/// next pass does not read the refused range again.
+#[test]
+fn a_range_the_writer_refuses_fails_its_chain_and_the_first_build_ends() {
+    fault::clear();
+    const CHUNK: u64 = 4 << 10;
+    let w = ClaudeHome::new();
+    let session: String = (0..120)
+        .map(|n| {
+            let text = format!("turn {n} {}", "words of a long turn ".repeat(n % 7 + 6));
+            if n % 2 == 0 {
+                user(&format!("u{n}"), "big", &text)
+            } else {
+                assistant(&format!("a{n}"), "big", &text)
+            }
+        })
+        .collect();
+    assert!(session.len() as u64 > 6 * CHUNK);
+    {
+        let (mut engine, _lock) = w.engine(CHUNK);
+        w.append("big.jsonl", &session);
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+    }
+
+    delete_index(&w.root);
+    let (engine, lock) = one_worker(&w, CHUNK);
+    fault::arm("parse", "big.jsonl", Action::Hold, 2, 1);
+    let pass = held_pass(engine, lock);
+    let cursor = chains(&w, "big.jsonl")[0]["parsed_upto"].as_u64().unwrap();
+    assert!(cursor > 0, "the first ranges are committed");
+    let index = rusqlite::Connection::open(w.root.join("index.db")).unwrap();
+    index
+        .busy_timeout(std::time::Duration::from_secs(30))
+        .unwrap();
+    let changed = index
+        .execute(
+            "UPDATE wire_declaration SET expected = '[\"$.declared_otherwise\"]'",
+            [],
+        )
+        .unwrap();
+    assert!(
+        changed > 0,
+        "the committed ranges declared their wire shapes"
+    );
+    drop(index);
+    fault::release();
+    let pass = pass.join().unwrap().unwrap();
+    fault::clear();
+    let refusal = "wire declarations changed without a reading version change";
+    assert!(
+        pass.errors.iter().any(|error| error.contains(refusal)),
+        "{:?}",
+        pass.errors
+    );
+    assert_eq!(building(&w), 0, "the first build ended");
+    let reads = w.reads();
+    let reader = reads.reader().unwrap();
+    let state = reader
+        .query(
+            "SELECT status, parsed_upto, at_length, instr(reason, ?1) > 0 AS has_reason
+             FROM parse_state",
+            &[polylogue_store::SqlValue::Text(refusal.into())],
+        )
+        .unwrap();
+    assert_eq!(
+        state,
+        [
+            serde_json::json!({"status": "failed", "parsed_upto": cursor,
+                            "at_length": session.len(), "has_reason": 1})
+        ]
+    );
+    assert_eq!(
+        reader.status().unwrap().parse_states.get("failed"),
+        Some(&1)
+    );
+    drop(reader);
+    drop(reads);
+
+    let (mut engine, _lock) = one_worker(&w, CHUNK);
+    let again = engine.run_pass().unwrap();
+    assert!(again.errors.is_empty(), "{:?}", again.errors);
+    assert_eq!(again.bytes_read, 0, "the refused range is not read again");
+}

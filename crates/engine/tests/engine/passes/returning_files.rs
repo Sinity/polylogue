@@ -166,6 +166,59 @@ fn a_growing_capture_log_appends_to_one_chain() {
     );
 }
 
+/// A reading declares one wire shape per record kind and path (docs/archive.md,
+/// the wire-shape tables). A capture log whose early range holds a capture
+/// read from the page's turns and whose later range holds one read from the
+/// provider's own conversation is read to its end: the two session
+/// declarations have kinds of their own. When they shared one, the writer
+/// refused the later range and the chain stayed short of its end.
+#[test]
+fn a_capture_log_with_turn_and_native_captures_is_read_to_its_end() {
+    let w = ClaudeHome::new();
+    let path = w
+        .config(256)
+        .spool_dir("browser-capture")
+        .join("chatgpt/mixed.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let native: serde_json::Value = serde_json::from_slice(
+        &fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/sources/browser-capture/python-chatgpt-capture/input.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut from_turns = native.clone();
+    from_turns["raw_provider_payload"] = serde_json::json!({});
+    from_turns["session"]
+        .as_object_mut()
+        .unwrap()
+        .remove("attachments");
+    let mut log = capture_log::MAGIC.to_vec();
+    log.extend(frame(&from_turns));
+    let later = log.len();
+    log.extend(frame(&native));
+    assert!(
+        log.len() - later > 256,
+        "the native capture is in a later range"
+    );
+    fs::write(&path, &log).unwrap();
+
+    let (mut engine, _lock) = w.engine(256);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    let state = w
+        .reads()
+        .reader()
+        .unwrap()
+        .query("SELECT status, parsed_upto FROM parse_state", &[])
+        .unwrap();
+    assert_eq!(
+        state,
+        [serde_json::json!({"status": "done", "parsed_upto": log.len()})]
+    );
+}
+
 /// Chains of one input that hold the same bytes share their blobs: the
 /// segment log holds each content once, whatever number of chains cite it
 /// (docs/archive.md, stored inputs).

@@ -22,77 +22,80 @@ pub fn open(_: &Path) -> Option<Parse> {
 }
 pub struct Cloud;
 
-static FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read(T::String)),
-    ("title", Rule::Read(T::String)),
-    ("archived", Rule::Kept("task archive state")),
-    ("turns", Rule::Read(T::Array)),
-    ("turns[]", Rule::Read(T::Object)),
-    ("turns[].id", Rule::Read(T::String)),
-    ("turns[].role", Rule::Read(T::String)),
-    ("turns[].previous_turn_id", Rule::Read(T::String)),
-    (
-        "turns[].custom_instructions",
-        Rule::Kept("instructions supplied to the cloud run"),
-    ),
-    ("turns[].branch", Rule::Kept("native cloud run metadata")),
-    (
-        "turns[].branch_name",
-        Rule::Kept("native cloud run metadata"),
-    ),
-    (
-        "turns[].external_pull_request_id",
-        Rule::Kept("native cloud pull request reference"),
-    ),
-    (
-        "turns[].pull_request_status",
-        Rule::Kept("native cloud run metadata"),
-    ),
-    (
-        "turns[].turn_status",
-        Rule::Kept("native cloud run metadata"),
-    ),
-    ("turns[].input_items", Rule::Read(T::Array)),
-    ("turns[].input_items[]", Rule::Read(T::Object)),
-    ("turns[].input_items[].type", Rule::Read(T::String)),
-    ("turns[].input_items[].role", Rule::Read(T::String)),
-    ("turns[].input_items[].content", Rule::Read(T::Array)),
-    ("turns[].input_items[].content[]", Rule::Read(T::Object)),
-    (
-        "turns[].input_items[].content[].content_type",
-        Rule::Read(T::String),
-    ),
-    (
-        "turns[].input_items[].content[].text",
-        Rule::Read(T::String),
-    ),
-    ("turns[].output_items", Rule::Read(T::Array)),
-    ("turns[].output_items[]", Rule::Read(T::Object)),
-    ("turns[].output_items[].type", Rule::Read(T::String)),
-    ("turns[].output_items[].role", Rule::Read(T::String)),
-    ("turns[].output_items[].content", Rule::Read(T::Array)),
-    ("turns[].output_items[].content[]", Rule::Read(T::Object)),
-    (
-        "turns[].output_items[].content[].content_type",
-        Rule::Read(T::String),
-    ),
-    (
-        "turns[].output_items[].content[].text",
-        Rule::Read(T::String),
-    ),
-    (
-        "turns[].output_items[].content[].path",
-        Rule::Read(T::String),
-    ),
-    (
-        "turns[].output_items[].content[].line_range_start",
-        Rule::Read(T::Number),
-    ),
-    (
-        "turns[].output_items[].content[].line_range_end",
-        Rule::Read(T::Number),
-    ),
-])
+static FIELDS: Fields = Fields::new(
+    "task",
+    &[
+        ("id", Rule::Read(T::String)),
+        ("title", Rule::Read(T::String)),
+        ("archived", Rule::Kept("task archive state")),
+        ("turns", Rule::Read(T::Array)),
+        ("turns[]", Rule::Read(T::Object)),
+        ("turns[].id", Rule::Read(T::String)),
+        ("turns[].role", Rule::Read(T::String)),
+        ("turns[].previous_turn_id", Rule::Read(T::String)),
+        (
+            "turns[].custom_instructions",
+            Rule::Kept("instructions supplied to the cloud run"),
+        ),
+        ("turns[].branch", Rule::Kept("native cloud run metadata")),
+        (
+            "turns[].branch_name",
+            Rule::Kept("native cloud run metadata"),
+        ),
+        (
+            "turns[].external_pull_request_id",
+            Rule::Kept("native cloud pull request reference"),
+        ),
+        (
+            "turns[].pull_request_status",
+            Rule::Kept("native cloud run metadata"),
+        ),
+        (
+            "turns[].turn_status",
+            Rule::Kept("native cloud run metadata"),
+        ),
+        ("turns[].input_items", Rule::Read(T::Array)),
+        ("turns[].input_items[]", Rule::Read(T::Object)),
+        ("turns[].input_items[].type", Rule::Read(T::String)),
+        ("turns[].input_items[].role", Rule::Read(T::String)),
+        ("turns[].input_items[].content", Rule::Read(T::Array)),
+        ("turns[].input_items[].content[]", Rule::Read(T::Object)),
+        (
+            "turns[].input_items[].content[].content_type",
+            Rule::Read(T::String),
+        ),
+        (
+            "turns[].input_items[].content[].text",
+            Rule::Read(T::String),
+        ),
+        ("turns[].output_items", Rule::Read(T::Array)),
+        ("turns[].output_items[]", Rule::Read(T::Object)),
+        ("turns[].output_items[].type", Rule::Read(T::String)),
+        ("turns[].output_items[].role", Rule::Read(T::String)),
+        ("turns[].output_items[].content", Rule::Read(T::Array)),
+        ("turns[].output_items[].content[]", Rule::Read(T::Object)),
+        (
+            "turns[].output_items[].content[].content_type",
+            Rule::Read(T::String),
+        ),
+        (
+            "turns[].output_items[].content[].text",
+            Rule::Read(T::String),
+        ),
+        (
+            "turns[].output_items[].content[].path",
+            Rule::Read(T::String),
+        ),
+        (
+            "turns[].output_items[].content[].line_range_start",
+            Rule::Read(T::Number),
+        ),
+        (
+            "turns[].output_items[].content[].line_range_end",
+            Rule::Read(T::Number),
+        ),
+    ],
+)
 .shape(
     &[],
     &[

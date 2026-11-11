@@ -115,22 +115,24 @@ struct Selected {
     active: Option<bool>,
 }
 
-static SESSION_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read(T::String)),
-    ("source", Rule::Read(T::String)),
-    ("model", Rule::Read(T::String)),
-    ("model_config", Rule::Read(T::StringOrObject)),
-    ("parent_session_id", Rule::Read(T::String)),
-    ("title", Rule::Read(T::String)),
-    ("cwd", Rule::Read(T::String)),
-    ("git_branch", Rule::Read(T::String)),
-    ("git_remote", Rule::Read(T::String)),
-    ("started_at", Rule::Read(T::StringOrNumber)),
-    ("ended_at", Rule::Read(T::StringOrNumber)),
-    ("end_reason", Rule::Read(T::String)),
-    ("system_prompt", Rule::Read(T::String)),
-])
-.for_kind("session");
+static SESSION_FIELDS: Fields = Fields::new(
+    "session",
+    &[
+        ("id", Rule::Read(T::String)),
+        ("source", Rule::Read(T::String)),
+        ("model", Rule::Read(T::String)),
+        ("model_config", Rule::Read(T::StringOrObject)),
+        ("parent_session_id", Rule::Read(T::String)),
+        ("title", Rule::Read(T::String)),
+        ("cwd", Rule::Read(T::String)),
+        ("git_branch", Rule::Read(T::String)),
+        ("git_remote", Rule::Read(T::String)),
+        ("started_at", Rule::Read(T::StringOrNumber)),
+        ("ended_at", Rule::Read(T::StringOrNumber)),
+        ("end_reason", Rule::Read(T::String)),
+        ("system_prompt", Rule::Read(T::String)),
+    ],
+);
 
 fn lines(
     reader: &mut dyn Input,

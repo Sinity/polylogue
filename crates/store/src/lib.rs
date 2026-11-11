@@ -191,6 +191,14 @@ pub enum StoreError {
     Sinex(String),
     #[error("{0}")]
     Invalid(String),
+    /// A batch's bytes were stored and its parsed rows refused for their
+    /// content ([`Self::refuses_content`]): the bytes are in `stored`'s chain,
+    /// the reading of them is not.
+    #[error("{reason}")]
+    RowsRefused {
+        stored: staging::StoredInput,
+        reason: String,
+    },
     /// A value in the archive that this build cannot read back: corrupt or
     /// foreign stored data, never the caller's request.
     #[error("stored column {column} is unreadable: {reason}")]
@@ -205,6 +213,35 @@ pub enum StoreError {
 }
 
 impl StoreError {
+    /// Whether the writer refused the batch's content: writing the same
+    /// rows to the same archive again is refused again. Every other write
+    /// error is a failure to commit, which a later attempt can get past.
+    pub fn refuses_content(&self) -> bool {
+        match self {
+            Self::Invalid(_)
+            | Self::Counts(_)
+            | Self::Conflict(_)
+            | Self::Projection(_)
+            | Self::RowsRefused { .. } => true,
+            Self::Sqlite(error) => {
+                error.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation)
+            }
+            _ => false,
+        }
+    }
+
+    /// The error of a group member that a write of the whole group lost:
+    /// the group's reason, refusing content exactly when the group's error
+    /// did.
+    pub(crate) fn for_group_member(&self) -> Self {
+        let reason = self.to_string();
+        if self.refuses_content() {
+            Self::Invalid(reason)
+        } else {
+            Self::Io(std::io::Error::other(reason))
+        }
+    }
+
     /// A stored value at `column` of the row being decoded that this build
     /// cannot read back.
     pub(crate) fn stored(column: usize, reason: impl Into<String>) -> Self {

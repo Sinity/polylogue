@@ -22,40 +22,43 @@ pub fn for_item(ty: &str) -> &'static Fields {
     }
 }
 
-static MESSAGE: Fields = Fields::new(&[
-    ("type", Read(T::String)),
-    ("id", Read(T::String)),
-    ("timestamp", Read(T::StringOrNumber)),
-    ("role", Read(T::String)),
-    ("content", Read(T::StringOrArray)),
-    ("content[].type", Read(T::String)),
-    ("content[].text", Read(T::String)),
-    ("content[].image_url", Read(T::String)),
-    ("content[].file_url", Read(T::String)),
-    ("content[].filename", Read(T::String)),
-    // A `code` part (2025 assistant items) is kept whole as a block.
-    ("content[].code", Read(T::String)),
-    ("content[].language", Read(T::String)),
-    (
-        "content[].detail",
-        Excluded("image resolution hint sent to the API"),
-    ),
-    (
-        "content[].annotations",
-        Excluded("not read yet; stays in the stored bytes"),
-    ),
-    (
-        "content[].logprobs",
-        Excluded("not read yet; stays in the stored bytes"),
-    ),
-    ("phase", Read(T::String)),
-    ("status", Excluded("always \"completed\" when written")),
-    (
-        "end_turn",
-        Excluded("the turn's end is its task_complete record"),
-    ),
-    PASSTHROUGH,
-])
+static MESSAGE: Fields = Fields::new(
+    "unlisted_message",
+    &[
+        ("type", Read(T::String)),
+        ("id", Read(T::String)),
+        ("timestamp", Read(T::StringOrNumber)),
+        ("role", Read(T::String)),
+        ("content", Read(T::StringOrArray)),
+        ("content[].type", Read(T::String)),
+        ("content[].text", Read(T::String)),
+        ("content[].image_url", Read(T::String)),
+        ("content[].file_url", Read(T::String)),
+        ("content[].filename", Read(T::String)),
+        // A `code` part (2025 assistant items) is kept whole as a block.
+        ("content[].code", Read(T::String)),
+        ("content[].language", Read(T::String)),
+        (
+            "content[].detail",
+            Excluded("image resolution hint sent to the API"),
+        ),
+        (
+            "content[].annotations",
+            Excluded("not read yet; stays in the stored bytes"),
+        ),
+        (
+            "content[].logprobs",
+            Excluded("not read yet; stays in the stored bytes"),
+        ),
+        ("phase", Read(T::String)),
+        ("status", Excluded("always \"completed\" when written")),
+        (
+            "end_turn",
+            Excluded("the turn's end is its task_complete record"),
+        ),
+        PASSTHROUGH,
+    ],
+)
 .shape(
     &[],
     &[
@@ -79,19 +82,22 @@ static MESSAGE: Fields = Fields::new(&[
     ],
 );
 
-static REASONING: Fields = Fields::new(&[
-    ("type", Read(T::String)),
-    ("id", Read(T::String)),
-    ("timestamp", Read(T::StringOrNumber)),
-    ("summary", Read(T::Array)),
-    ("summary[].type", Read(T::String)),
-    ("summary[].text", Read(T::String)),
-    ("content", Read(T::StringOrArray)),
-    ("content[].type", Read(T::String)),
-    ("content[].text", Read(T::String)),
-    ("encrypted_content", Read(T::String)),
-    PASSTHROUGH,
-])
+static REASONING: Fields = Fields::new(
+    "unlisted_reasoning",
+    &[
+        ("type", Read(T::String)),
+        ("id", Read(T::String)),
+        ("timestamp", Read(T::StringOrNumber)),
+        ("summary", Read(T::Array)),
+        ("summary[].type", Read(T::String)),
+        ("summary[].text", Read(T::String)),
+        ("content", Read(T::StringOrArray)),
+        ("content[].type", Read(T::String)),
+        ("content[].text", Read(T::String)),
+        ("encrypted_content", Read(T::String)),
+        PASSTHROUGH,
+    ],
+)
 .shape(
     &[],
     &[crate::fields::KnownKinds {
@@ -100,26 +106,29 @@ static REASONING: Fields = Fields::new(&[
     }],
 );
 
-static CALL: Fields = Fields::new(&[
-    ("type", Read(T::String)),
-    ("id", Read(T::String)),
-    ("timestamp", Read(T::StringOrNumber)),
-    ("call_id", Read(T::String)),
-    ("name", Read(T::String)),
-    ("namespace", Read(T::String)),
-    ("arguments", Kept("complete call input in tool block")),
-    ("input", Kept("complete custom input in tool block")),
-    ("action", Kept("complete action in tool block")),
-    (
-        "execution",
-        Excluded("client or server side; the tool name already says"),
-    ),
-    (
-        "status",
-        Excluded("the call's outcome is read from its output"),
-    ),
-    PASSTHROUGH,
-])
+static CALL: Fields = Fields::new(
+    "unlisted_call",
+    &[
+        ("type", Read(T::String)),
+        ("id", Read(T::String)),
+        ("timestamp", Read(T::StringOrNumber)),
+        ("call_id", Read(T::String)),
+        ("name", Read(T::String)),
+        ("namespace", Read(T::String)),
+        ("arguments", Kept("complete call input in tool block")),
+        ("input", Kept("complete custom input in tool block")),
+        ("action", Kept("complete action in tool block")),
+        (
+            "execution",
+            Excluded("client or server side; the tool name already says"),
+        ),
+        (
+            "status",
+            Excluded("the call's outcome is read from its output"),
+        ),
+        PASSTHROUGH,
+    ],
+)
 .shape(
     &[],
     &[crate::fields::KnownKinds {
@@ -133,25 +142,28 @@ static CALL: Fields = Fields::new(&[
     }],
 );
 
-static OUTPUT: Fields = Fields::new(&[
-    ("type", Read(T::String)),
-    ("timestamp", Read(T::StringOrNumber)),
-    ("id", Read(T::String)),
-    ("call_id", Read(T::String)),
-    ("output", Kept("complete structured output in tool result")),
-    ("tools", Kept("tool search output in structured result")),
-    ("name", Excluded("repeats the call's tool name")),
-    ("namespace", Excluded("repeats the call's namespace")),
-    (
-        "execution",
-        Excluded("client or server side; the call says"),
-    ),
-    (
-        "status",
-        Excluded("the outcome is read from the output text"),
-    ),
-    PASSTHROUGH,
-])
+static OUTPUT: Fields = Fields::new(
+    "unlisted_output",
+    &[
+        ("type", Read(T::String)),
+        ("timestamp", Read(T::StringOrNumber)),
+        ("id", Read(T::String)),
+        ("call_id", Read(T::String)),
+        ("output", Kept("complete structured output in tool result")),
+        ("tools", Kept("tool search output in structured result")),
+        ("name", Excluded("repeats the call's tool name")),
+        ("namespace", Excluded("repeats the call's namespace")),
+        (
+            "execution",
+            Excluded("client or server side; the call says"),
+        ),
+        (
+            "status",
+            Excluded("the outcome is read from the output text"),
+        ),
+        PASSTHROUGH,
+    ],
+)
 .shape(
     &[],
     &[crate::fields::KnownKinds {
@@ -164,13 +176,16 @@ static OUTPUT: Fields = Fields::new(&[
     }],
 );
 
-static WEB_SEARCH: Fields = Fields::new(&[
-    ("type", Read(T::String)),
-    ("id", Read(T::String)),
-    ("status", Read(T::String)),
-    ("action", Kept("complete action in tool block")),
-    PASSTHROUGH,
-])
+static WEB_SEARCH: Fields = Fields::new(
+    "unlisted_web_search",
+    &[
+        ("type", Read(T::String)),
+        ("id", Read(T::String)),
+        ("status", Read(T::String)),
+        ("action", Kept("complete action in tool block")),
+        PASSTHROUGH,
+    ],
+)
 .shape(
     &[],
     &[crate::fields::KnownKinds {
@@ -179,20 +194,23 @@ static WEB_SEARCH: Fields = Fields::new(&[
     }],
 );
 
-static AGENT_MESSAGE: Fields = Fields::new(&[
-    ("type", Read(T::String)),
-    ("id", Read(T::String)),
-    ("author", Read(T::String)),
-    ("recipient", Read(T::String)),
-    ("content", Read(T::StringOrArray)),
-    ("content[].type", Read(T::String)),
-    ("content[].text", Read(T::String)),
-    (
-        "content[].encrypted_content",
-        Excluded("a message between agents only the API can read"),
-    ),
-    PASSTHROUGH,
-])
+static AGENT_MESSAGE: Fields = Fields::new(
+    "unlisted_agent_message",
+    &[
+        ("type", Read(T::String)),
+        ("id", Read(T::String)),
+        ("author", Read(T::String)),
+        ("recipient", Read(T::String)),
+        ("content", Read(T::StringOrArray)),
+        ("content[].type", Read(T::String)),
+        ("content[].text", Read(T::String)),
+        (
+            "content[].encrypted_content",
+            Excluded("a message between agents only the API can read"),
+        ),
+        PASSTHROUGH,
+    ],
+)
 .shape(
     &[],
     &[crate::fields::KnownKinds {
@@ -201,7 +219,7 @@ static AGENT_MESSAGE: Fields = Fields::new(&[
     }],
 );
 
-static TYPE_ONLY: Fields = Fields::new(&[("type", Read(T::String))]).shape(
+static TYPE_ONLY: Fields = Fields::new("unlisted_item", &[("type", Read(T::String))]).shape(
     &[],
     &[crate::fields::KnownKinds {
         path: "type",
@@ -221,37 +239,40 @@ static TYPE_ONLY: Fields = Fields::new(&[("type", Read(T::String))]).shape(
     }],
 );
 
-pub static ITEM_COMPLETED: Fields = Fields::new(&[
-    ("type", Read(T::String)),
-    ("item.type", Read(T::String)),
-    ("item.id", Read(T::String)),
-    ("item.status", Read(T::String)),
-    ("item.exit_code", Read(T::Number)),
-    ("item.duration", Read(T::NumberOrObject)),
-    ("item.duration.secs", Read(T::Number)),
-    ("item.duration.nanos", Read(T::Number)),
-    ("item.durationMs", Read(T::Number)),
-    ("item.command", Read(T::StringOrArray)),
-    ("item.command[]", Read(T::String)),
-    ("item.cwd", Read(T::String)),
-    ("item.parsed_cmd", Kept("complete recovered command input")),
-    ("item.aggregated_output", Read(T::String)),
-    ("item.formatted_output", Read(T::String)),
-    ("item.stdout", Read(T::String)),
-    ("item.changes", Kept("complete recovered edit input")),
-    ("item.path", Read(T::String)),
-    ("item.server", Read(T::String)),
-    ("item.tool", Read(T::String)),
-    ("item.arguments", Kept("complete recovered MCP input")),
-    ("item.input", Kept("complete recovered MCP input")),
-    (
-        "item.result",
-        Kept("complete structured recovered tool result"),
-    ),
-    ("item.error", Kept("complete recovered tool error")),
-    ("item.query", Read(T::String)),
-    ("item.action", Kept("complete recovered web input")),
-])
+pub static ITEM_COMPLETED: Fields = Fields::new(
+    "item_completed",
+    &[
+        ("type", Read(T::String)),
+        ("item.type", Read(T::String)),
+        ("item.id", Read(T::String)),
+        ("item.status", Read(T::String)),
+        ("item.exit_code", Read(T::Number)),
+        ("item.duration", Read(T::NumberOrObject)),
+        ("item.duration.secs", Read(T::Number)),
+        ("item.duration.nanos", Read(T::Number)),
+        ("item.durationMs", Read(T::Number)),
+        ("item.command", Read(T::StringOrArray)),
+        ("item.command[]", Read(T::String)),
+        ("item.cwd", Read(T::String)),
+        ("item.parsed_cmd", Kept("complete recovered command input")),
+        ("item.aggregated_output", Read(T::String)),
+        ("item.formatted_output", Read(T::String)),
+        ("item.stdout", Read(T::String)),
+        ("item.changes", Kept("complete recovered edit input")),
+        ("item.path", Read(T::String)),
+        ("item.server", Read(T::String)),
+        ("item.tool", Read(T::String)),
+        ("item.arguments", Kept("complete recovered MCP input")),
+        ("item.input", Kept("complete recovered MCP input")),
+        (
+            "item.result",
+            Kept("complete structured recovered tool result"),
+        ),
+        ("item.error", Kept("complete recovered tool error")),
+        ("item.query", Read(T::String)),
+        ("item.action", Kept("complete recovered web input")),
+    ],
+)
 .shape(
     &["item.changes"],
     &[crate::fields::KnownKinds {
@@ -269,14 +290,15 @@ pub static ITEM_COMPLETED: Fields = Fields::new(&[
             "SubAgentActivity",
         ],
     }],
-)
-.for_kind("item_completed");
+);
 
-pub static USER_MESSAGE: Fields = Fields::new(&[
-    ("type", Read(T::String)),
-    ("client_id", Read(T::String)),
-    ("message", Read(T::String)),
-    ("images", Read(T::Array)),
-    ("images[]", Read(T::String)),
-])
-.for_kind("user_message");
+pub static USER_MESSAGE: Fields = Fields::new(
+    "user_message",
+    &[
+        ("type", Read(T::String)),
+        ("client_id", Read(T::String)),
+        ("message", Read(T::String)),
+        ("images", Read(T::Array)),
+        ("images[]", Read(T::String)),
+    ],
+);

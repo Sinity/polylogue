@@ -236,18 +236,17 @@ impl Inner {
         if independent && parsed.len() > 1 {
             for (position, batch) in &parsed {
                 if let Err(error) = self.write(std::iter::once(batch)) {
-                    results[*position] = Err(error);
+                    results[*position] = rows_refused(results[*position].as_ref().ok(), error);
                 }
             }
             return results;
         }
         if results.len() == 1 {
-            return vec![Err(error)];
+            return vec![rows_refused(results[0].as_ref().ok(), error)];
         }
-        let reason = error.to_string();
         results
-            .into_iter()
-            .map(|_| Err(StoreError::Invalid(reason.clone())))
+            .iter()
+            .map(|result| rows_refused(result.as_ref().ok(), error.for_group_member()))
             .collect()
     }
 
@@ -453,11 +452,22 @@ fn errors(group: &[PreparedBatch], error: StoreError) -> Vec<Result<StoredInput>
     if group.len() == 1 {
         return vec![Err(error)];
     }
-    let reason = error.to_string();
     group
         .iter()
-        .map(|_| Err(StoreError::Invalid(reason.clone())))
+        .map(|_| Err(error.for_group_member()))
         .collect()
+}
+
+/// The answer for a batch whose bytes are `stored` and whose rows `error`
+/// lost: a refusal of the rows' content keeps where the bytes are.
+fn rows_refused(stored: Option<&StoredInput>, error: StoreError) -> Result<StoredInput> {
+    match stored {
+        Some(stored) if error.refuses_content() => Err(StoreError::RowsRefused {
+            stored: stored.clone(),
+            reason: error.to_string(),
+        }),
+        _ => Err(error),
+    }
 }
 
 #[cfg(test)]

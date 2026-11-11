@@ -13,21 +13,23 @@ use polylogue_model::{Event, Json, Session, SessionKind, TitleSource};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-static NAME_FIELDS: crate::fields::Fields = crate::fields::Fields::new(&[
-    (
-        "id",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-    ),
-    (
-        "thread_name",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-    ),
-    (
-        "updated_at",
-        crate::fields::Rule::Excluded("native index edit time; receipt order chooses the name"),
-    ),
-])
-.for_kind("name");
+static NAME_FIELDS: crate::fields::Fields = crate::fields::Fields::new(
+    "name",
+    &[
+        (
+            "id",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        ),
+        (
+            "thread_name",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        ),
+        (
+            "updated_at",
+            crate::fields::Rule::Excluded("native index edit time; receipt order chooses the name"),
+        ),
+    ],
+);
 
 pub struct History;
 

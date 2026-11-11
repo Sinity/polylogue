@@ -61,23 +61,25 @@ impl DocumentParser for ConversationFile {
     }
 }
 pub struct Antigravity;
-static FIELDS: Fields = Fields::new(&[
-    ("source", Rule::Read(T::String)),
-    ("conversationFile", Rule::Read(T::String)),
-    ("cascadeId", Rule::Read(T::String)),
-    ("markdown", Rule::Read(T::String)),
-    ("title", Rule::Read(T::String)),
-    ("lastModifiedTime", Rule::Read(T::StringOrNumber)),
-    (
-        "workspaceName",
-        Rule::Kept("workspace label, not a working directory"),
-    ),
-    (
-        "snippet",
-        Rule::Excluded("preview repeated in the transcript"),
-    ),
-])
-.for_kind("record");
+static FIELDS: Fields = Fields::new(
+    "record",
+    &[
+        ("source", Rule::Read(T::String)),
+        ("conversationFile", Rule::Read(T::String)),
+        ("cascadeId", Rule::Read(T::String)),
+        ("markdown", Rule::Read(T::String)),
+        ("title", Rule::Read(T::String)),
+        ("lastModifiedTime", Rule::Read(T::StringOrNumber)),
+        (
+            "workspaceName",
+            Rule::Kept("workspace label, not a working directory"),
+        ),
+        (
+            "snippet",
+            Rule::Excluded("preview repeated in the transcript"),
+        ),
+    ],
+);
 
 impl DocumentParser for Antigravity {
     fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
@@ -92,14 +94,17 @@ impl DocumentParser for Antigravity {
             records.fields(
                 "conversion",
                 &value,
-                &Fields::new(&[
-                    ("source", Rule::Read(T::String)),
-                    ("cascadeId", Rule::Read(T::String)),
-                    ("conversationFile", Rule::Read(T::String)),
-                    ("status", Rule::Read(T::String)),
-                    ("server_pid", Rule::Read(T::Number)),
-                    ("error", Rule::Read(T::String)),
-                ]),
+                &Fields::new(
+                    "conversion",
+                    &[
+                        ("source", Rule::Read(T::String)),
+                        ("cascadeId", Rule::Read(T::String)),
+                        ("conversationFile", Rule::Read(T::String)),
+                        ("status", Rule::Read(T::String)),
+                        ("server_pid", Rule::Read(T::Number)),
+                        ("error", Rule::Read(T::String)),
+                    ],
+                ),
             );
             let Some(id) = str_of(&value, "cascadeId").and_then(|id| session_id(ORIGIN, id)) else {
                 records.record(

@@ -69,50 +69,56 @@ struct Sidecars {
     metadata: Vec<Metadata>,
     at: usize,
 }
-static ACCOUNT: Fields = Fields::new(&[
-    ("account_uuid", Rule::Read(T::String)),
-    ("conversations_memory", Rule::Read(T::String)),
-    ("project_memories", Rule::Read(T::Object)),
-    ("created_at", Rule::Read(T::StringOrNumber)),
-    ("updated_at", Rule::Read(T::StringOrNumber)),
-])
-.for_kind("account");
-static PROJECT: Fields = Fields::new(&[
-    ("uuid", Rule::Read(T::String)),
-    ("name", Rule::Read(T::String)),
-    (
-        "description",
-        Rule::Kept("project descriptor, not supplied document text"),
-    ),
-    ("is_private", Rule::Kept("project visibility")),
-    ("is_starter_project", Rule::Read(T::Boolean)),
-    ("prompt_template", Rule::Read(T::String)),
-    ("docs", Rule::Read(T::Array)),
-    ("created_at", Rule::Read(T::StringOrNumber)),
-    ("updated_at", Rule::Read(T::StringOrNumber)),
-    (
-        "creator",
-        Rule::Kept("project creator is not text authorship"),
-    ),
-])
-.for_kind("project");
-static DOC: Fields = Fields::new(&[
-    ("uuid", Rule::Read(T::String)),
-    ("filename", Rule::Read(T::String)),
-    ("content", Rule::Read(T::StringOrArray)),
-    ("created_at", Rule::Read(T::StringOrNumber)),
-    ("updated_at", Rule::Read(T::StringOrNumber)),
-    (
-        "file_type",
-        Rule::Kept("reference descriptor; original bytes are not supplied"),
-    ),
-    (
-        "file_size",
-        Rule::Kept("reference descriptor; original bytes are not supplied"),
-    ),
-    ("url", Rule::Kept("reference kept without fetching")),
-])
-.for_kind("doc");
+static ACCOUNT: Fields = Fields::new(
+    "account",
+    &[
+        ("account_uuid", Rule::Read(T::String)),
+        ("conversations_memory", Rule::Read(T::String)),
+        ("project_memories", Rule::Read(T::Object)),
+        ("created_at", Rule::Read(T::StringOrNumber)),
+        ("updated_at", Rule::Read(T::StringOrNumber)),
+    ],
+);
+static PROJECT: Fields = Fields::new(
+    "project",
+    &[
+        ("uuid", Rule::Read(T::String)),
+        ("name", Rule::Read(T::String)),
+        (
+            "description",
+            Rule::Kept("project descriptor, not supplied document text"),
+        ),
+        ("is_private", Rule::Kept("project visibility")),
+        ("is_starter_project", Rule::Read(T::Boolean)),
+        ("prompt_template", Rule::Read(T::String)),
+        ("docs", Rule::Read(T::Array)),
+        ("created_at", Rule::Read(T::StringOrNumber)),
+        ("updated_at", Rule::Read(T::StringOrNumber)),
+        (
+            "creator",
+            Rule::Kept("project creator is not text authorship"),
+        ),
+    ],
+);
+static DOC: Fields = Fields::new(
+    "doc",
+    &[
+        ("uuid", Rule::Read(T::String)),
+        ("filename", Rule::Read(T::String)),
+        ("content", Rule::Read(T::StringOrArray)),
+        ("created_at", Rule::Read(T::StringOrNumber)),
+        ("updated_at", Rule::Read(T::StringOrNumber)),
+        (
+            "file_type",
+            Rule::Kept("reference descriptor; original bytes are not supplied"),
+        ),
+        (
+            "file_size",
+            Rule::Kept("reference descriptor; original bytes are not supplied"),
+        ),
+        ("url", Rule::Kept("reference kept without fetching")),
+    ],
+);
 
 fn names(fields: &BTreeMap<String, Field<'_>>) -> Json {
     Json::Object(fields.keys().map(|key| (key.clone(), Json::Null)).collect())

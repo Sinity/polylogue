@@ -120,38 +120,40 @@ pub struct HookSpool;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParserState {}
 
-static FIELDS: Fields = Fields::new(&[
-    ("event_id", Rule::Read(T::String)),
-    ("event_type", Rule::Read(T::String)),
-    ("event", Rule::Read(T::String)),
-    ("at_ns", Rule::Read(T::Number)),
-    ("harness_pid", Rule::Read(T::Number)),
-    ("harness_start", Rule::Read(T::Number)),
-    ("route", Rule::Read(T::String)),
-    ("observed_at_ms", Rule::Read(T::Number)),
-    ("timestamp", Rule::Read(T::StringOrNumber)),
-    ("provider", Rule::Read(T::String)),
-    ("session_id", Rule::Read(T::String)),
-    ("git_identity", Rule::Kept("native Git snapshot")),
-    (
-        "terminal_identity",
-        Rule::Kept("native terminal adapter identity"),
-    ),
-    (
-        "repository",
-        Rule::Kept("repository named by native Git configuration"),
-    ),
-    ("boot_id", Rule::Kept("the source boot identity")),
-    (
-        "native_unavailable",
-        Rule::Kept("unavailable optional native observations"),
-    ),
-    (
-        "payload",
-        Rule::Kept("the hook's input, kept whole as the event's data"),
-    ),
-])
-.for_kind("record");
+static FIELDS: Fields = Fields::new(
+    "record",
+    &[
+        ("event_id", Rule::Read(T::String)),
+        ("event_type", Rule::Read(T::String)),
+        ("event", Rule::Read(T::String)),
+        ("at_ns", Rule::Read(T::Number)),
+        ("harness_pid", Rule::Read(T::Number)),
+        ("harness_start", Rule::Read(T::Number)),
+        ("route", Rule::Read(T::String)),
+        ("observed_at_ms", Rule::Read(T::Number)),
+        ("timestamp", Rule::Read(T::StringOrNumber)),
+        ("provider", Rule::Read(T::String)),
+        ("session_id", Rule::Read(T::String)),
+        ("git_identity", Rule::Kept("native Git snapshot")),
+        (
+            "terminal_identity",
+            Rule::Kept("native terminal adapter identity"),
+        ),
+        (
+            "repository",
+            Rule::Kept("repository named by native Git configuration"),
+        ),
+        ("boot_id", Rule::Kept("the source boot identity")),
+        (
+            "native_unavailable",
+            Rule::Kept("unavailable optional native observations"),
+        ),
+        (
+            "payload",
+            Rule::Kept("the hook's input, kept whole as the event's data"),
+        ),
+    ],
+);
 
 /// `PreToolUse` → `hook_pre_tool_use`.
 fn event_kind(event_type: &str) -> String {

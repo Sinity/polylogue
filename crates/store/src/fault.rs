@@ -115,9 +115,11 @@ pub fn check(point: &str, subject: &str) -> crate::Result<()> {
     #[cfg(feature = "faults")]
     match armed::take(point, subject) {
         Some(Action::Fail) => {
-            return Err(crate::StoreError::Invalid(format!(
+            // An injected failure stands for a step that could not
+            // complete (a sync, a commit), never a refusal of content.
+            return Err(crate::StoreError::Io(std::io::Error::other(format!(
                 "injected fault at {point} ({subject})"
-            )));
+            ))));
         }
         Some(Action::Panic) => panic!("injected panic at {point} ({subject})"),
         Some(Action::StopProcess) => {

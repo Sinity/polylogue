@@ -26,6 +26,18 @@ pub(crate) enum Chains {
     Older,
 }
 
+/// Why `origin`'s parser does not read the bytes recorded at `path`, when
+/// it does not.
+fn unread_path(origin: &OriginSpec, path: &Path) -> Option<String> {
+    (origin.support == Support::Parsed && (origin.open)(path).is_none()).then(|| {
+        format!(
+            "no {} parser reads the recorded path {}",
+            origin.name,
+            path.display()
+        )
+    })
+}
+
 impl Engine {
     /// Fails `plan` with `error` and records the failure as its chain's parse
     /// state, at the position the chain was parsed to. Recording needs stored
@@ -1085,18 +1097,10 @@ impl Engine {
                             PathBuf::new(),
                             "the stored import has no recorded path".to_owned(),
                         )),
-                        Some(path)
-                            if origin.support == Support::Parsed
-                                && (origin.open)(&path).is_none() =>
-                        {
-                            let reason = format!(
-                                "no {} parser reads the recorded path {}",
-                                origin.name,
-                                path.display()
-                            );
-                            Err((path, reason))
-                        }
-                        Some(path) => Ok(path),
+                        Some(path) => match unread_path(origin, &path) {
+                            Some(reason) => Err((path, reason)),
+                            None => Ok(path),
+                        },
                     };
                     match path {
                         Ok(path) => (path, origin),
@@ -1439,6 +1443,23 @@ impl Engine {
                 continue;
             }
 
+            if matches!(plan.change, Change::Reparse { .. })
+                && let Some(reason) = unread_path(plan.origin, &plan.path)
+            {
+                // Stored bytes at a path this build's parser does not read
+                // (an earlier build captured it): refused with the reason,
+                // never read range by range with nothing to record.
+                pass.errors
+                    .push(format!("refuse stored input {}: {reason}", plan.input.id));
+                plan.failed = true;
+                self.record_stop(
+                    &mut plan,
+                    polylogue_model::batch::StepProgress::Refused { reason },
+                    pass,
+                );
+                self.finish_plan(plan);
+                continue;
+            }
             if let Err(error) = self.restore_captured_authored(&plan, pass) {
                 let error = format!("authored restoration {}: {error}", plan.path.display());
                 self.record_failure(&mut plan, error, pass);
@@ -1524,6 +1545,9 @@ impl Engine {
         // ranges of started ones wait in `done_rx`, and every large input of
         // a pass would end up started, each holding its state.
         let mut started: HashSet<PathBuf> = HashSet::new();
+        // Plans whose range the writer refused for its content; their
+        // failures are recorded once the pool's writes are flushed.
+        let mut refused: Vec<(Plan, String)> = Vec::new();
         let mut outstanding = 0usize;
         let mut checked = Instant::now();
         let room = self.config.workers.max(1) * IN_POOL_PER_WORKER;
@@ -1654,6 +1678,20 @@ impl Engine {
                 }
                 continue;
             }
+            if d.write_failed && d.content_refused {
+                // Reading this range again is refused again: the chain stops
+                // at its cursor, failed with the writer's reason, until the
+                // bytes or the reading change.
+                if let Some(chain) = d.chain {
+                    plan.parser_chain = Some(chain);
+                    if d.end > plan.stored_upto {
+                        plan.stored_upto = d.end;
+                        plan.storing_started = true;
+                    }
+                }
+                refused.push((plan, d.error.unwrap_or_default()));
+                continue;
+            }
             if d.write_failed {
                 if let Some(error) = d.error {
                     pass.errors.push(error);
@@ -1706,6 +1744,11 @@ impl Engine {
         pass.blobs_appended += report.blobs_appended;
         pass.blobs_deduplicated += report.blobs_deduplicated;
         pass.errors.extend(report.errors);
+        for (mut plan, error) in refused {
+            let error = format!("the writer refused {}: {error}", plan.path.display());
+            self.record_failure(&mut plan, error, pass);
+            self.finish_plan(plan);
+        }
         Ok(())
     }
 

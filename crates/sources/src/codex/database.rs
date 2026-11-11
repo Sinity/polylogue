@@ -76,92 +76,102 @@ fn row_session(row: &Json, field: &str) -> Option<polylogue_model::SessionId> {
     str_field(row, field).and_then(session_id)
 }
 
-static ROW_ENVELOPE: crate::fields::Fields = crate::fields::Fields::new(&[
-    (
-        "t",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-    ),
-    (
-        "r",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::Object),
-    ),
-    (
-        "k",
-        crate::fields::Rule::Excluded("row key is redundant with the consumed native row ID"),
-    ),
-    (
-        "h",
-        crate::fields::Rule::Excluded("capture row hash is not consumed by native row decoding"),
-    ),
-])
-.for_kind("row_envelope");
-static THREAD_FIELDS: crate::fields::Fields = crate::fields::Fields::new(&[
-    (
-        "id",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-    ),
-    (
-        "name",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-    ),
-    (
-        "title",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-    ),
-    (
-        "first_user_message",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-    ),
-    (
-        "agent_nickname",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-    ),
-    (
-        "cwd",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-    ),
-    (
-        "git_branch",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-    ),
-    (
-        "cli_version",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-    ),
-    (
-        "thread_source",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-    ),
-    (
-        "source",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-    ),
-    (
-        "created_at_ms",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::Number),
-    ),
-    (
-        "created_at",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::Number),
-    ),
-])
-.for_kind("thread");
-static EDGE_FIELDS: crate::fields::Fields = crate::fields::Fields::new(&[
-    (
-        "parent_thread_id",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-    ),
-    (
-        "child_thread_id",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-    ),
-])
-.for_kind("spawn_edge");
-static EVENT_FIELDS: crate::fields::Fields = crate::fields::Fields::new(&[(
-    "",
-    crate::fields::Rule::Kept("complete native row in the event data"),
-)])
-.for_kind("thread_event");
+static ROW_ENVELOPE: crate::fields::Fields = crate::fields::Fields::new(
+    "row_envelope",
+    &[
+        (
+            "t",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        ),
+        (
+            "r",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::Object),
+        ),
+        (
+            "k",
+            crate::fields::Rule::Excluded("row key is redundant with the consumed native row ID"),
+        ),
+        (
+            "h",
+            crate::fields::Rule::Excluded(
+                "capture row hash is not consumed by native row decoding",
+            ),
+        ),
+    ],
+);
+static THREAD_FIELDS: crate::fields::Fields = crate::fields::Fields::new(
+    "thread",
+    &[
+        (
+            "id",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        ),
+        (
+            "name",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        ),
+        (
+            "title",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        ),
+        (
+            "first_user_message",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        ),
+        (
+            "agent_nickname",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        ),
+        (
+            "cwd",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        ),
+        (
+            "git_branch",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        ),
+        (
+            "cli_version",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        ),
+        (
+            "thread_source",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        ),
+        (
+            "source",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        ),
+        (
+            "created_at_ms",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::Number),
+        ),
+        (
+            "created_at",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::Number),
+        ),
+    ],
+);
+static EDGE_FIELDS: crate::fields::Fields = crate::fields::Fields::new(
+    "spawn_edge",
+    &[
+        (
+            "parent_thread_id",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        ),
+        (
+            "child_thread_id",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        ),
+    ],
+);
+static EVENT_FIELDS: crate::fields::Fields = crate::fields::Fields::new(
+    "thread_event",
+    &[(
+        "",
+        crate::fields::Rule::Kept("complete native row in the event data"),
+    )],
+);
 
 impl Parser for Database {
     type ParserState = NoState;

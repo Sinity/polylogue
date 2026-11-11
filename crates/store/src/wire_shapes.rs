@@ -585,7 +585,11 @@ fn declare(
         {
             Ok(())
         }
-        Some(_) => invalid("wire declarations changed without a reading version change"),
+        Some(_) => Err(StoreError::Invalid(format!(
+            "wire declarations changed without a reading version change: {format} {version} \
+             declares {} {} {table_key} otherwise",
+            observation.record_kind, observation.path
+        ))),
         None => {
             tx.prepare_cached("INSERT INTO wire_declaration(format,reading_version,record_kind,path,table_key,expected,dynamic_map,known_kinds) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")?
                 .execute(params![

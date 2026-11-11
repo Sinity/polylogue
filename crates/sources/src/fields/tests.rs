@@ -4,14 +4,16 @@ use serde_json::json;
 
 #[test]
 fn unused_leaf_counted_below_declared_containers_and_unknown_arrays() {
-    static FIELDS: Fields = Fields::new(&[
-        ("message", Rule::Read(T::Object)),
-        ("message.content", Rule::Read(T::StringOrArray)),
-        ("message.content[].text", Rule::Read(T::String)),
-        ("saved", Rule::Kept("copied into row attrs")),
-        ("ignored", Rule::Excluded("known but not indexed")),
-    ])
-    .for_kind("record");
+    static FIELDS: Fields = Fields::new(
+        "record",
+        &[
+            ("message", Rule::Read(T::Object)),
+            ("message.content", Rule::Read(T::StringOrArray)),
+            ("message.content[].text", Rule::Read(T::String)),
+            ("saved", Rule::Kept("copied into row attrs")),
+            ("ignored", Rule::Excluded("known but not indexed")),
+        ],
+    );
     assert_eq!(
         unaccounted(
             &json!({
@@ -32,8 +34,10 @@ fn unused_leaf_counted_below_declared_containers_and_unknown_arrays() {
 
 #[test]
 fn retained_attributes_copy_wire_values_without_covering_unknown_siblings() {
-    static FIELDS: Fields =
-        Fields::new(&[("message.meta", Rule::Kept("provider metadata"))]).for_kind("record");
+    static FIELDS: Fields = Fields::new(
+        "record",
+        &[("message.meta", Rule::Kept("provider metadata"))],
+    );
     let source = json!({"message":{"meta":{"nested":[{"text":"given"}]},"other":{"x":1}}});
     assert_eq!(
         attributes(&source, &FIELDS),
@@ -47,7 +51,7 @@ fn retained_attributes_copy_wire_values_without_covering_unknown_siblings() {
 
 #[test]
 fn empty_containers_and_null_are_values_at_their_own_paths() {
-    static FIELDS: Fields = Fields::new(&[("read", Rule::Read(T::String))]).for_kind("record");
+    static FIELDS: Fields = Fields::new("record", &[("read", Rule::Read(T::String))]);
     assert_eq!(
         unaccounted(&json!({"a":[],"b":{},"c":null,"read":[]}), &FIELDS),
         ["a", "b", "c"]
@@ -56,7 +60,7 @@ fn empty_containers_and_null_are_values_at_their_own_paths() {
 
 #[test]
 fn declaration_lookup_is_shared_by_parsing_threads() {
-    static FIELDS: Fields = Fields::new(&[("a[].x", Rule::Read(T::String))]).for_kind("record");
+    static FIELDS: Fields = Fields::new("record", &[("a[].x", Rule::Read(T::String))]);
     std::thread::scope(|scope| {
         let readers: Vec<_> = (0..8)
             .map(|_| {
@@ -79,11 +83,14 @@ fn declaration_lookup_is_shared_by_parsing_threads() {
 
 #[test]
 fn wire_observation_counts_types_and_declarations_without_scalar_bodies() {
-    static FIELDS: Fields = Fields::new(&[
-        ("type", Rule::Read(T::String)),
-        ("items[].n", Rule::Read(T::Number)),
-        ("map", Rule::Kept("complete map in attrs")),
-    ])
+    static FIELDS: Fields = Fields::new(
+        "test_record",
+        &[
+            ("type", Rule::Read(T::String)),
+            ("items[].n", Rule::Read(T::Number)),
+            ("map", Rule::Kept("complete map in attrs")),
+        ],
+    )
     .shape(
         &["map"],
         &[KnownKinds {
@@ -114,7 +121,7 @@ fn wire_observation_counts_types_and_declarations_without_scalar_bodies() {
 
 #[test]
 fn observed_paths_distinguish_literal_keys_arrays_and_nested_fields() {
-    static EMPTY: Fields = Fields::new(&[]).for_kind("empty");
+    static EMPTY: Fields = Fields::new("empty", &[]);
     let observed = inspect(
         &json!({"a.b":1,"a":{"b":2},"[]":3,"*":4,"/":5,"~":6,"list":[7]}),
         &EMPTY,
@@ -126,11 +133,13 @@ fn observed_paths_distinguish_literal_keys_arrays_and_nested_fields() {
 
 #[test]
 fn literal_keys_do_not_impersonate_declared_nested_or_array_paths() {
-    static FIELDS: Fields = Fields::new(&[
-        ("a.b", Rule::Read(T::Number)),
-        ("list[].n", Rule::Read(T::Number)),
-    ])
-    .for_kind("record");
+    static FIELDS: Fields = Fields::new(
+        "record",
+        &[
+            ("a.b", Rule::Read(T::Number)),
+            ("list[].n", Rule::Read(T::Number)),
+        ],
+    );
     let source = json!({"a.b":1,"a":{"b":2},"list[].n":3,"list":[{"n":4}]});
     assert_eq!(unaccounted(&source, &FIELDS), ["a.b", "list[].n"]);
     let observed = inspect(&source, &FIELDS);
@@ -140,13 +149,15 @@ fn literal_keys_do_not_impersonate_declared_nested_or_array_paths() {
 
 #[test]
 fn declared_open_values_and_dynamic_members_differ_from_new_kept_object_fields() {
-    static FIELDS: Fields = Fields::new(&[
-        ("saved", Rule::Kept("raw attributes")),
-        ("ignored", Rule::Excluded("not indexed")),
-        ("map", Rule::Kept("dynamic attributes")),
-    ])
-    .shape(&["map"], &[])
-    .for_kind("record");
+    static FIELDS: Fields = Fields::new(
+        "record",
+        &[
+            ("saved", Rule::Kept("raw attributes")),
+            ("ignored", Rule::Excluded("not indexed")),
+            ("map", Rule::Kept("dynamic attributes")),
+        ],
+    )
+    .shape(&["map"], &[]);
     let got = inspect(
         &json!({"saved":{"new_field":1},"ignored":true,"map":{"id":{"n":2}}}),
         &FIELDS,
@@ -159,7 +170,7 @@ fn declared_open_values_and_dynamic_members_differ_from_new_kept_object_fields()
 
 #[test]
 fn new_kind_is_counted_without_retaining_its_scalar_value() {
-    static FIELDS: Fields = Fields::new(&[("type", Rule::Read(T::String))]).shape(
+    static FIELDS: Fields = Fields::new("test_record", &[("type", Rule::Read(T::String))]).shape(
         &[],
         &[KnownKinds {
             path: "type",
@@ -177,13 +188,15 @@ fn new_kind_is_counted_without_retaining_its_scalar_value() {
 
 #[test]
 fn typed_dynamic_members_override_open_map_expectations() {
-    static FIELDS: Fields = Fields::new(&[
-        ("mapping", Rule::Kept("native key map")),
-        ("mapping.*.role", Rule::Read(T::String)),
-        ("/literal/~2", Rule::Read(T::Number)),
-    ])
-    .shape(&["mapping"], &[])
-    .for_kind("record");
+    static FIELDS: Fields = Fields::new(
+        "record",
+        &[
+            ("mapping", Rule::Kept("native key map")),
+            ("mapping.*.role", Rule::Read(T::String)),
+            ("/literal/~2", Rule::Read(T::Number)),
+        ],
+    )
+    .shape(&["mapping"], &[]);
     let got = inspect(
         &json!({"mapping":{"first":{"role":"assistant"},"second":{"role":1}},"literal":{"*":2}}),
         &FIELDS,

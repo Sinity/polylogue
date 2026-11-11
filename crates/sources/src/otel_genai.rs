@@ -44,26 +44,28 @@ pub struct OtelGenAi {
 
 mod stream;
 
-static SPAN_FIELDS: crate::fields::Fields = crate::fields::Fields::new(&[
-    ("", crate::fields::Rule::Kept("complete native span event")),
-    (
-        "traceId",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-    ),
-    (
-        "startTimeUnixNano",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::StringOrNumber),
-    ),
-    (
-        "endTimeUnixNano",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::StringOrNumber),
-    ),
-    (
-        "status.code",
-        crate::fields::Rule::Read(crate::fields::ExpectedType::Number),
-    ),
-])
-.for_kind("span");
+static SPAN_FIELDS: crate::fields::Fields = crate::fields::Fields::new(
+    "span",
+    &[
+        ("", crate::fields::Rule::Kept("complete native span event")),
+        (
+            "traceId",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        ),
+        (
+            "startTimeUnixNano",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::StringOrNumber),
+        ),
+        (
+            "endTimeUnixNano",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::StringOrNumber),
+        ),
+        (
+            "status.code",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::Number),
+        ),
+    ],
+);
 
 /// One span with its attributes decoded from OTLP `AnyValue`s.
 struct Span<'a> {
@@ -155,8 +157,7 @@ impl ExportParser for OtelGenAi {
             .get("gen_ai.operation.name")
             .and_then(Json::as_str);
         if op.is_none() && !span.attrs.keys().any(|k| k.starts_with("gen_ai.")) {
-            static UNUSED: crate::fields::Fields =
-                crate::fields::Fields::new(&[]).for_kind("unused");
+            static UNUSED: crate::fields::Fields = crate::fields::Fields::new("unused", &[]);
             sink.records.fields("span", value, &UNUSED);
             sink.records
                 .record("span", &RecordOutcome::skipped("not a GenAI span"));

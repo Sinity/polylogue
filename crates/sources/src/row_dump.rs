@@ -16,14 +16,16 @@ pub struct RowDump;
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct NoState {}
 
-static HEADER: Fields = Fields::new(&[
-    ("db", Rule::Read(T::String)),
-    ("at_ms", Rule::Read(T::Number)),
-    ("schema", Rule::Read(T::Object)),
-    ("table_metadata", Rule::Read(T::Object)),
-])
-.for_kind("schema_header");
-static INVALID: Fields = Fields::new(&[]).for_kind("record");
+static HEADER: Fields = Fields::new(
+    "schema_header",
+    &[
+        ("db", Rule::Read(T::String)),
+        ("at_ms", Rule::Read(T::Number)),
+        ("schema", Rule::Read(T::Object)),
+        ("table_metadata", Rule::Read(T::Object)),
+    ],
+);
+static INVALID: Fields = Fields::new("record", &[]);
 
 impl Parser for RowDump {
     type ParserState = NoState;
