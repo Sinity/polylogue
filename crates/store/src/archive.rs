@@ -500,9 +500,11 @@ pub fn open_write(path: &Path, cache_mib: i64) -> Result<Connection> {
 }
 
 /// The writer's `archive.db` connection; its temporary tables spill to disk.
+/// Its commits do not sync: every one goes through
+/// [`crate::write_lock::commit`], which syncs the log after the commit is
+/// visible, outside the readers' lock.
 pub(crate) fn open_archive_writer(archive: &Archive) -> Result<Connection> {
     let conn = open_write(&archive.archive_db(), cache::ARCHIVE_WRITER)?;
-    conn.pragma_update(None, "synchronous", "full")?;
     conn.pragma_update(None, "temp_store", "file")?;
     conn.pragma_update(Some("temp"), "cache_size", -1024)?;
     Ok(conn)

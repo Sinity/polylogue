@@ -42,6 +42,37 @@ fn a_register_transaction_takes_the_lock_only_to_commit() {
 }
 
 #[test]
+fn readers_start_and_see_a_register_commit_while_its_log_syncs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _writer) = Archive::open_or_create(dir.path()).unwrap();
+    let mut register = crate::archive::open_archive_writer(&archive).unwrap();
+    crate::fault::arm("write.register_sync", "", crate::fault::Action::Hold, 0, 1);
+    let committer = std::thread::spawn(move || {
+        let tx = register.transaction().unwrap();
+        tx.execute("INSERT INTO meta(key, value) VALUES ('synthetic', '1')", [])
+            .unwrap();
+        commit(tx).unwrap();
+    });
+    while !crate::fault::held() {
+        std::thread::yield_now();
+    }
+    // The sync is under way: a reader starts without waiting and reads the
+    // commit.
+    let shared = wait_shared(&archive, || panic!("the log sync holds the lock")).unwrap();
+    let reader = crate::archive::open_read(&archive.archive_db()).unwrap();
+    let value: String = reader
+        .query_row("SELECT value FROM meta WHERE key='synthetic'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(value, "1");
+    drop(shared);
+    crate::fault::release();
+    committer.join().unwrap();
+    crate::fault::clear();
+}
+
+#[test]
 fn in_memory_derivations_have_no_shared_archive_file() {
     let conn = Connection::open_in_memory().unwrap();
     let _guard = hold(&conn).unwrap();

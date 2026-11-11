@@ -147,9 +147,14 @@ twice.
 
 Those states cover a process crash. A power loss or kernel panic also drops
 writes the kernel had not yet flushed, so the stores that hold irreplaceable
-data sync every commit: `archive.db` and `embeddings.db` (paid vectors) commit
-with SQLite's `synchronous=FULL`, and segments sync before their extents
-commit. `index.db` is rebuilt from those, so it commits with `NORMAL`.
+data sync every commit: `embeddings.db` (paid vectors) commits with SQLite's
+`synchronous=FULL`; the writer syncs `archive.db`'s log after each commit,
+before the commit is acknowledged or anything is written after it; and
+segments sync before their extents commit. `index.db` is rebuilt from those,
+so it commits with `NORMAL`. The `archive.db` sync happens after the commit is
+visible and outside the lock readers take to start a read, so a read never
+waits for a disk sync; a power loss during that sync loses only that commit,
+which nothing was written after.
 
 ## Pipeline
 
