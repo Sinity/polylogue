@@ -7,6 +7,73 @@ use polylogue_model::{BlobHash, authored::PendingAuthored, user::UserOutcome};
 use std::{path::PathBuf, sync::Arc};
 
 struct PendingProducer(PathBuf);
+
+#[test]
+fn completed_history_keeps_question_lookup_and_one_durable_run_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let producer = Arc::new(PendingProducer(dir.path().join("named.json")));
+    let object = question("sessions");
+    let expected = run(
+        &object,
+        "completed-pending-history",
+        7,
+        ChangePosition {
+            generation: "synthetic-generation".into(),
+            index: 5,
+            archive: 4,
+        },
+    );
+    let completed = outcome(&expected, 5);
+    for _ in 0..2 {
+        let (archive, _lock) =
+            crate::Archive::open_primary(&dir.path().join("cache"), &dir.path().join("bytes"))
+                .unwrap();
+        let writer = crate::Writer::start_on_sinex(&archive, producer.clone()).unwrap();
+        writer
+            .sender()
+            .unwrap()
+            .reserve_history()
+            .unwrap()
+            .record(object.clone(), expected.clone(), completed.clone())
+            .unwrap();
+        assert!(writer.flush_rows().unwrap().errors.is_empty());
+        let pool = crate::ReadPool::open(&archive).unwrap();
+        let reader = pool.reader().unwrap();
+        assert_eq!(
+            reader
+                .query_object(&object.id.to_string(), Some(producer.as_ref()))
+                .unwrap()
+                .unwrap()
+                .value,
+            object
+        );
+        assert_eq!(
+            reader
+                .query_run(&expected.id, Some(producer.as_ref()))
+                .unwrap()
+                .unwrap()
+                .value,
+            expected
+        );
+        assert_eq!(
+            reader
+                .query_run_outcome(&expected.id, Some(producer.as_ref()))
+                .unwrap()
+                .unwrap()
+                .value,
+            completed
+        );
+        let retained = producer.writes().unwrap();
+        assert_eq!(retained.len(), 2);
+        let group = &retained[&format!("query-run:{}", expected.id)];
+        assert_eq!(group.len(), 2);
+        assert!(matches!(&group[0].product, Product::QueryRun { run } if **run == expected));
+        assert!(
+            matches!(&group[1].product, Product::QueryRunOutcome { outcome } if **outcome == completed)
+        );
+    }
+}
+
 impl PendingProducer {
     fn writes(&self) -> Result<BTreeMap<String, Vec<ProductWrite>>> {
         if !self.0.exists() {

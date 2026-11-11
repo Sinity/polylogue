@@ -12,7 +12,7 @@ fn accepted(operation: &crate::operation::Context) -> Result<Option<serde_json::
         .map_err(|e| Failure::new("internal", e))
 }
 
-fn target(request: &ReadRequest) -> Option<Result<Reference, Failure>> {
+pub(super) fn target(request: &ReadRequest) -> Option<Result<Reference, Failure>> {
     let ReadRequest {
         target, options, ..
     } = request;

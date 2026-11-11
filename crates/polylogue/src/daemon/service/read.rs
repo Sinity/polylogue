@@ -121,10 +121,19 @@ impl crate::daemon::handler::Handler for Read {
             Ok(request) => request,
             Err(message) => return Ok(error("bad_request", message)),
         };
+        let history = if request.cursor.is_none() && object::target(&request).is_none() {
+            call.daemon
+                .writes
+                .as_ref()
+                .map(|writer| writer.reserve_history())
+                .transpose()?
+        } else {
+            None
+        };
         let reader = call.reader()?;
         let context = call.context()?;
         let request = with_variants(&reader, call.daemon, request)?;
-        Ok(page(&reader, call.daemon, &request, &context))
+        Ok(page(&reader, call.daemon, &request, &context, history))
     }
 }
 
@@ -637,8 +646,9 @@ fn record_run(
     operation: &Arc<crate::operation::Context>,
     request: &ReadRequest,
     reading: &Reading,
+    history: Option<polylogue_store::writer::HistorySlot>,
 ) -> Result<(), Failure> {
-    if d.writes.is_none() {
+    if history.is_none() {
         return Ok(());
     }
     crate::daemon::query::with_ranking(
@@ -675,6 +685,7 @@ fn record_run(
                     options: &options,
                     ranking_identity,
                 },
+                history,
             )
         },
     )
@@ -688,12 +699,13 @@ fn record_compiled(
     request: &ReadRequest,
     reading: &Reading,
     compiled: &Compiled<'_>,
+    history: Option<polylogue_store::writer::HistorySlot>,
 ) -> Result<(), Failure> {
     use polylogue_model::query_objects::{
         ExecutionPresentation, QueryRun, QueryRunOutcome, RunBinding, RunOutcome,
     };
     let ReadRequest { delivery, .. } = request;
-    let Some(writer) = d.writes.as_ref() else {
+    let Some(history) = history else {
         return Ok(());
     };
     let Compiled {
@@ -751,9 +763,7 @@ fn record_compiled(
         exact: false,
         next: None,
     };
-    writer
-        .record_after_answer(object, run, outcome)
-        .map_err(Failure::from)
+    history.record(object, run, outcome).map_err(Failure::from)
 }
 
 /// A reading's seed is its target's, so a sampled or shuffled reading
@@ -824,6 +834,7 @@ pub(crate) fn page(
     d: &Daemon,
     request: &ReadRequest,
     operation: &Arc<crate::operation::Context>,
+    history: Option<polylogue_store::writer::HistorySlot>,
 ) -> Answer<Value> {
     if matches!(
         request,
@@ -857,12 +868,12 @@ pub(crate) fn page(
             Some(scope) if reading.options.view == View::Links => {
                 links::page(reader, d, request, operation, scope)?
             }
-            _ => return rows_page(reader, d, request, operation, &reading, cursor),
+            _ => return rows_page(reader, d, request, operation, &reading, cursor, history),
         };
         if cursor.is_none() {
             // The answer stands whatever happens to its run record;
             // building it needs this reader, storing it happens after.
-            let _ = record_run(reader, d, operation, request, &reading);
+            let _ = record_run(reader, d, operation, request, &reading, history);
         }
         Ok(session_page)
     })();
@@ -886,6 +897,7 @@ fn rows_page(
     operation: &Arc<crate::operation::Context>,
     reading: &Reading,
     cursor: Option<&str>,
+    history: Option<polylogue_store::writer::HistorySlot>,
 ) -> Result<ReadPage, Failure> {
     let key = cursor_seal(reader)?;
     let opened = cursor
@@ -1058,7 +1070,7 @@ fn rows_page(
             scope.check()?;
             if cursor.is_none() {
                 // The answer stands whatever happens to its run record.
-                let _ = record_compiled(reader, d, operation, request, reading, compiled);
+                let _ = record_compiled(reader, d, operation, request, reading, compiled, history);
             }
             Ok(ReadPage {
                 format: reading.format,

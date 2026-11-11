@@ -65,6 +65,37 @@ fn finish_via(
     Ok(wait)
 }
 
+/// Space admitted before a read, consumed by its completed execution record.
+/// Dropping it returns capacity without creating a run.
+pub struct HistorySlot {
+    slot: super::user_queue::Reservation,
+    writer: WriterQueue,
+}
+
+pub(super) struct History {
+    pub(super) object: QueryObject,
+    pub(super) run: QueryRun,
+    pub(super) outcome: QueryRunOutcome,
+}
+
+impl HistorySlot {
+    /// Hand one whole record to the writer, without waiting for a commit.
+    pub fn record(
+        self,
+        object: QueryObject,
+        run: QueryRun,
+        outcome: QueryRunOutcome,
+    ) -> Result<()> {
+        self.slot.push(UserMsg::History(Box::new(History {
+            object,
+            run,
+            outcome,
+        })))?;
+        self.writer.wake();
+        Ok(())
+    }
+}
+
 impl Writer {
     /// Establishes durable custody before a response exposes the question reference.
     pub fn query_object(&self, object: QueryObject) -> Result<QueryCustody> {
@@ -90,46 +121,16 @@ impl Writer {
 }
 
 impl WriterSender {
-    /// Hand a read's question, its run and the run's outcome to the writer
-    /// without waiting for them: the writer commits them on its next turn,
-    /// after the answer has gone. The read never waits on custody or for
-    /// room in the queue. The records enter the queue before the read
-    /// answers, in order, so a later request is queued behind them; only
-    /// when the queue is full does a thread hand over the rest.
-    pub fn record_after_answer(
-        &self,
-        object: QueryObject,
-        run: QueryRun,
-        outcome: QueryRunOutcome,
-    ) -> Result<()> {
-        let (object_reply, _) = sync_channel(1);
-        let (run_reply, _) = sync_channel(1);
-        let (outcome_reply, _) = sync_channel(1);
-        let mut messages = vec![
-            UserMsg::QueryObject(Box::new(object), None, object_reply),
-            UserMsg::QueryRun(Box::new(run), None, run_reply),
-            UserMsg::QueryRunOutcome(Box::new(outcome), outcome_reply),
-        ]
-        .into_iter();
-        while let Some(message) = messages.next() {
-            match self.0.try_send_user(message) {
-                Ok(()) => {}
-                Err(None) => return Err(StoreError::WriterGone),
-                Err(Some(message)) => {
-                    let queue = self.0.clone();
-                    let rest: Vec<UserMsg> = std::iter::once(message).chain(messages).collect();
-                    std::thread::spawn(move || {
-                        for message in rest {
-                            if queue.send_user(message).is_err() {
-                                break;
-                            }
-                        }
-                    });
-                    return Ok(());
-                }
-            }
-        }
-        Ok(())
+    /// Reserve bounded writer capacity before preparing an ordinary read.
+    /// The request's existing deadline and cancellation cover this admission.
+    pub fn reserve_history(&self) -> Result<HistorySlot> {
+        crate::read::limit::ReadLimit::set_stage("query history admission");
+        let limit = crate::read::limit::ReadLimit::current();
+        let slot = self.0.users.reserve(limit.as_ref())?;
+        Ok(HistorySlot {
+            slot,
+            writer: self.0.clone(),
+        })
     }
 
     pub fn query_object_with_parent(
@@ -172,6 +173,94 @@ impl Inner {
             scoped::require_current(&self.location, Some(&prepared.scope))?;
         }
         Ok(prepared.scope)
+    }
+
+    /// The reusable question has its own natural name in primary custody;
+    /// one completed run and outcome form one immutable event group.
+    pub(super) fn write_history(&mut self, history: &History) -> Result<()> {
+        let History {
+            object,
+            run,
+            outcome,
+        } = history;
+        crate::query_objects::validate_object(object)?;
+        crate::query_objects::validate_run(run)?;
+        crate::query_objects::validate_run_outcome(outcome)?;
+        if run.question != Some(object.id)
+            || outcome.run != run.id
+            || outcome.binding_hash
+                != run
+                    .binding_hash()
+                    .map_err(|error| StoreError::Invalid(error.to_string()))?
+            || outcome.run_hash
+                != run
+                    .record_hash()
+                    .map_err(|error| StoreError::Invalid(error.to_string()))?
+        {
+            return Err(StoreError::Invalid(
+                "query history has inconsistent execution identities".into(),
+            ));
+        }
+        if self.sinex.is_some() {
+            self.primary_cache_ready()?;
+            // Refuse a conflicting canonical Begin or Outcome before adding
+            // another immutable intent to producer custody.
+            let run_known = crate::query_objects::known_run(&self.index, run)?;
+            let outcome_known = crate::query_objects::known_run_outcome(&self.index, outcome)?;
+            // Questions are shared by runs and remain directly addressable
+            // through their existing query:<hash> custody name.
+            self.write_query_object(object)?;
+            if run_known && outcome_known {
+                return Ok(());
+            }
+            self.sinex
+                .as_ref()
+                .expect("primary writer")
+                .prepare_named_products(
+                    &format!("query-run:{}", run.id),
+                    &[
+                        crate::primary::ProductWrite {
+                            product: crate::primary::Product::QueryRun {
+                                run: Box::new(run.clone()),
+                            },
+                            location: None,
+                            parents: Vec::new(),
+                            machine: Some(run.machine.clone()),
+                            output_index: 0,
+                        },
+                        crate::primary::ProductWrite {
+                            product: crate::primary::Product::QueryRunOutcome {
+                                outcome: Box::new(outcome.clone()),
+                            },
+                            location: None,
+                            parents: Vec::new(),
+                            machine: None,
+                            output_index: 1,
+                        },
+                    ],
+                )?;
+            return Ok(());
+        }
+        crate::query_objects::validate_result_bindings(
+            &self.archive,
+            crate::source::Source::of(&self.archive)?,
+            object,
+        )?;
+        let tx = self.archive.transaction()?;
+        let counter = bump_counter(&tx)?;
+        let before = tx.total_changes();
+        crate::query_objects::apply_object(&tx, object, counter)?;
+        crate::query_objects::apply_run(&tx, run, counter, 0)?;
+        crate::query_objects::apply_run_outcome(&tx, outcome)?;
+        if tx.total_changes() != before {
+            crate::write_lock::commit(tx)?;
+            self.commits
+                .committed(crate::completion::Committed::QUERY_RECORDS);
+            self.report.transactions += 1;
+        } else {
+            tx.rollback()?;
+        }
+        Ok(())
     }
 
     pub(super) fn write_query_object(&mut self, object: &QueryObject) -> Result<QueryCustody> {

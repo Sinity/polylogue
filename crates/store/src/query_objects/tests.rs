@@ -1,3 +1,4 @@
+mod history;
 mod parent_admission;
 
 use super::*;
