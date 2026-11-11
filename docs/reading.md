@@ -175,6 +175,7 @@ A [variant](assertions.md#variants) is transformed content (a translation, trans
 - An HTML file embeds images as data URIs up to 10 MiB each (a setting) and links larger ones; the web reader uses daemon-served blob links. SVG and HTML attachments are always links, never inline.
 - In a bundle written with `--with-blobs`, Markdown links `![name](blobs/<hex>)`; otherwise the plain line.
 - A tool-result attachment is listed under its call.
+- Pages resolve attachment availability from stored file metadata without reading or hashing blob bodies. The byte-returning attachment operation checks the selected bytes and refuses missing or corrupt bodies.
 - Exact bytes come from `block:<message>#<n> read --to FILE` (a hash-checked atomic write) on the CLI, or as bytes from MCP and HTTP, for every caller.
 
 ## Value states
