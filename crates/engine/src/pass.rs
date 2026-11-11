@@ -17,6 +17,15 @@ const IN_POOL_PER_WORKER: usize = 64;
 /// A known file written this recently is live: the session being written.
 const RECENT_NS: i128 = 10 * 60 * 1_000_000_000;
 
+/// Which revision chains of each input [`Engine::reparse_behind`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Chains {
+    /// The chain holding the input's latest revision.
+    Newest,
+    /// Every earlier chain.
+    Older,
+}
+
 impl Engine {
     /// Fails `plan` with `error` and records the failure as its chain's parse
     /// state, at the position the chain was parsed to. Recording needs stored
@@ -382,7 +391,7 @@ impl Engine {
             self.refresh_import_assets(&mut pass)?;
         }
         if discover {
-            self.reparse_behind(None, &mut pass)?;
+            self.reparse_behind(None, Chains::Newest, &mut pass)?;
         }
 
         let mut seen = HashSet::new();
@@ -496,6 +505,14 @@ impl Engine {
             pass.errors.extend(report.errors);
         }
         self.execute(plans, &mut pass)?;
+        if discover {
+            // Every input's newest chain is read: a first build ends here, so
+            // its read indexes exist while the older chains are read.
+            if !pass.capture_pending && !self.captures.pending() {
+                pass.sessions_derived += self.derive()?;
+            }
+            self.reparse_behind(None, Chains::Older, &mut pass)?;
+        }
         self.copy_same_bytes(&mut pass)?;
         if deferred_database && pass.errors.is_empty() && !self.captures.pending() {
             // Local parsing may have made a deferred database runnable. Start
@@ -504,7 +521,7 @@ impl Engine {
         }
         pass.capture_pending |= self.captures.pending();
         if !pass.capture_pending {
-            pass.sessions_derived = self.derive()?;
+            pass.sessions_derived += self.derive()?;
         }
         self.pass_open = pass.capture_pending;
         pass.seconds = started.elapsed().as_secs_f64();
@@ -1005,12 +1022,14 @@ impl Engine {
         }))
     }
 
-    /// Parses again, from what the archive stored, every revision chain the
-    /// index is behind, except the current chain of a watched location,
-    /// which follows its file ([`Engine::stored_plan`]). The same loop builds
-    /// the index from stored bytes as from files, so a rebuild needs no
-    /// command of its own; older chains go through the ordinary parser and
-    /// writer, where a newer chain wins. An older chain that holds exactly
+    /// Parses again, from what the archive stored, every revision chain of
+    /// `chains` the index is behind, except the current chain of a watched
+    /// location, which follows its file ([`Engine::stored_plan`]). The same
+    /// loop builds the index from stored bytes as from files, so a rebuild
+    /// needs no command of its own; older chains go through the ordinary
+    /// parser and writer, where a newer chain wins. A pass reads every
+    /// input's newest chain before any older chain, so a first build ends
+    /// once the newest chains are read. An older chain that holds exactly
     /// the bytes of a newer chain of its input is not parsed: its reading is
     /// that chain's, copied once that chain is read ([`Engine::copy_same_bytes`]).
     /// `selected` limits it to some inputs.
@@ -1020,6 +1039,7 @@ impl Engine {
     pub(crate) fn reparse_behind(
         &mut self,
         selected: Option<&[String]>,
+        chains: Chains,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         let behind = self.reads.reader()?.chains_behind_index(
@@ -1045,7 +1065,9 @@ impl Engine {
             .map(|(path, st)| (st.input_id.clone(), path.clone()))
             .collect();
         for c in behind {
-            if selected.is_some_and(|ids| !ids.contains(&c.input)) {
+            if selected.is_some_and(|ids| !ids.contains(&c.input))
+                || c.current != (chains == Chains::Newest)
+            {
                 continue;
             }
             let state = c.progress;
@@ -1090,7 +1112,7 @@ impl Engine {
                                 &state,
                                 None,
                                 false,
-                            );
+                            )?;
                             pass.errors
                                 .push(format!("refuse stored import {}: {reason}", c.input));
                             self.record_stop(
@@ -1146,7 +1168,7 @@ impl Engine {
                 &reading_state,
                 facts,
                 tracked,
-            );
+            )?;
             plan.input_finished = c.imported.is_some();
             if c.current && origin.arrival == polylogue_sources::Arrival::Live {
                 plan.priority = Priority::Live;
@@ -1278,13 +1300,15 @@ impl Engine {
             &state,
             facts,
             true,
-        )))
+        )?))
     }
 
     /// A parse-only plan over a chain's stored bytes. A capture log resumes
-    /// at its last parsed record; anything else parses from the start, so a
-    /// line parser rebuilds its state. `None` while the bytes are still
-    /// being written.
+    /// at its last parsed record, and a line input whose read was
+    /// interrupted (still `parsing`) at its last committed parser
+    /// checkpoint; anything else parses from the start as a replacement of
+    /// the chain's reading, so a line parser rebuilds its state. The parser
+    /// state itself is restored as the plan starts ([`Engine::load_stored`]).
     fn reparse_plan(
         &self,
         path: PathBuf,
@@ -1293,7 +1317,7 @@ impl Engine {
         state: &polylogue_store::read::ChainProgress,
         facts: Option<FileFacts>,
         tracked: bool,
-    ) -> Plan {
+    ) -> Result<Plan, EngineError> {
         let parser = (origin.open)(&path);
         let independent_rows =
             origin.is_row_dump(&path) && matches!(parser, Some(polylogue_sources::Parse::Lines(_)));
@@ -1301,6 +1325,22 @@ impl Engine {
             && (independent_rows || parser.as_ref().is_some_and(|p| p.is_capture_log()))
         {
             state.parsed_upto
+        } else if state.parsed
+            && state.parsed_upto > 0
+            && matches!(parser, Some(polylogue_sources::Parse::Lines(_)))
+            && origin.support == Support::Parsed
+        {
+            let version = origin.reading_version();
+            self.reads
+                .reader()?
+                .parser_checkpoint(&input.id, state.chain, &version)?
+                .filter(|stored| {
+                    stored.reading_version == version
+                        && stored.parsed_upto == state.parsed_upto
+                        && stored.checkpoint.is_some()
+                        && stored.progress == polylogue_model::batch::ParseProgress::Parsing
+                })
+                .map_or(0, |stored| stored.parsed_upto)
         } else {
             0
         };
@@ -1322,7 +1362,7 @@ impl Engine {
             tracked,
         );
         plan.replace = state.parsed && parse_pos == 0;
-        plan
+        Ok(plan)
     }
 
     /// Loads a plan's stored bytes as it starts ([`pool::Bytes::Unloaded`]).

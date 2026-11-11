@@ -8,6 +8,7 @@ use polylogue_store::fault::{self, Action};
 use polylogue_testkit::{Morrow, Set, session};
 use std::fs;
 
+mod newest_chains_first;
 mod older_chains;
 mod reparse;
 mod same_bytes;
