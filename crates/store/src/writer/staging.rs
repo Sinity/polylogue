@@ -236,17 +236,17 @@ impl Inner {
         if independent && parsed.len() > 1 {
             for (position, batch) in &parsed {
                 if let Err(error) = self.write(std::iter::once(batch)) {
-                    results[*position] = rows_refused(results[*position].as_ref(), error);
+                    results[*position] = rows_refused(results[*position].as_ref().ok(), error);
                 }
             }
             return results;
         }
         if results.len() == 1 {
-            return vec![rows_refused(results[0].as_ref(), error)];
+            return vec![rows_refused(results[0].as_ref().ok(), error)];
         }
         results
             .iter()
-            .map(|result| rows_refused(result.as_ref(), error.for_group_member()))
+            .map(|result| rows_refused(result.as_ref().ok(), error.for_group_member()))
             .collect()
     }
 
