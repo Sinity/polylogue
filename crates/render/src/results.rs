@@ -311,18 +311,19 @@ fn next_page(data: &Value) -> Option<String> {
 }
 
 fn footer(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<()> {
-    let count = data["count"].as_u64().unwrap_or(0);
+    let count = data["count"].as_u64();
     let shown = data["rows"].as_array().map_or(0, Vec::len);
     let mut lines = vec![];
     let incomplete = data["incomplete"]
         .as_array()
         .is_some_and(|parts| !parts.is_empty());
-    lines.push(if count == 0 && !incomplete {
-        "no rows".to_owned()
-    } else if shown as u64 == count {
-        format!("{count} row{}", if count == 1 { "" } else { "s" })
-    } else {
-        format!("{shown} of {count} rows")
+    lines.push(match count {
+        Some(0) if !incomplete => "no rows".to_owned(),
+        Some(count) if shown as u64 == count => {
+            format!("{count} row{}", if count == 1 { "" } else { "s" })
+        }
+        Some(count) => format!("{shown} of {count} rows"),
+        None => format!("{shown} rows shown; count deferred"),
     });
     if let Some(next) = next_page(data) {
         lines.push(next);

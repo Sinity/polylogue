@@ -1,7 +1,6 @@
-//! Running a query: compile it, check pasted IDs, count the whole answer,
-//! read one page, cut snippets for text matches, fill attached rows, and
-//! explain an empty result when asked. Every step reads through one reader, so the count, the page and
-//! the attachments agree.
+//! Prepare a query's page, snippets, attachments and requested explanations,
+//! then count its population within the same read transaction. A slow optional
+//! count leaves the completed rows available.
 
 use polylogue_store::Reader;
 use polylogue_store::query::{Options, Program, RowBasis, Shape};
@@ -252,7 +251,72 @@ impl QueryAnswer {
     }
 }
 
+/// An answer whose rows are ready before its optional exact count runs.
+pub struct PreparedQuery<'read, 'pool> {
+    reader: &'read Reader<'pool>,
+    answer: QueryAnswer,
+    count: Option<Program>,
+    similarity: Option<std::sync::Arc<polylogue_store::vectors::Similarity>>,
+}
+impl PreparedQuery<'_, '_> {
+    pub fn complete(mut self) -> Result<QueryAnswer, Failure> {
+        let reader = self.reader;
+        if let Some(program) = self.count {
+            let count = || reader.query_count(&program);
+            let counts = match self.similarity {
+                Some(similarity) => reader.with_similarity(similarity, count),
+                None => count(),
+            }?;
+            let count = counts.map(|counts| counts.0);
+            let deferred = || {
+                format!(
+                    "count deferred; run the exact count without a deadline: polylogue {} --deadline none",
+                    polylogue_render::shell_quote(&if program.measure.is_some() {
+                        program.query.clone()
+                    } else {
+                        format!("{} | count", program.query)
+                    })
+                )
+            };
+            match &mut self.answer.value {
+                crate::protocol::query::Answer::Rows(rows) => {
+                    rows.count = count;
+                    if program.counts_near
+                        && let Some((count, without)) = counts
+                    {
+                        rows.unknown.insert("near".into(), without);
+                        if without > 0 {
+                            let note = format!(
+                                "{without} of {count} rows have no vector; their semantic similarity is unknown"
+                            );
+                            rows.notes.push(note.clone());
+                            self.answer.notes.push(note);
+                        }
+                    }
+                    if count.is_none() {
+                        rows.notes.push(deferred());
+                    }
+                }
+                crate::protocol::query::Answer::PagedMeasure(measure) => measure.count = count,
+                crate::protocol::query::Answer::Measure(_) => {}
+            }
+            if count.is_none() {
+                self.answer.notes.push(deferred());
+            }
+        }
+        Ok(self.answer)
+    }
+}
+
+/// Internal query consumers retain their enclosing operation's read phase.
 pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<QueryAnswer, Failure> {
+    prepare(reader, ask)?.complete()
+}
+
+pub fn prepare<'read, 'pool>(
+    reader: &'read Reader<'pool>,
+    ask: Ask<'_>,
+) -> Result<PreparedQuery<'read, 'pool>, Failure> {
     polylogue_store::read::limit::ReadLimit::set_stage("query preparation");
     let seal = CursorSeal::new(reader.cursor_key()?);
     let position = reader.change_position()?;
@@ -340,7 +404,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<QueryAnswer, Failure> {
         context: evaluation.provenance(),
         times: program.resolved_times.clone(),
     };
-    with_similarity(
+    let answer = with_similarity(
         reader,
         &program,
         ask.near.map(|_| &ready as &NearFn<'_>),
@@ -355,10 +419,20 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<QueryAnswer, Failure> {
                 resolved,
             )
         },
-    )
+    )?;
+    let count = match &answer.value {
+        crate::protocol::query::Answer::Measure(_) => None,
+        _ => Some(program),
+    };
+    Ok(PreparedQuery {
+        reader,
+        answer,
+        count,
+        similarity,
+    })
 }
 
-/// The answer to a compiled program: its count and one page after `after`.
+/// Prepare one page after `after`, before its optional population count.
 /// `day` is the logical day its times resolved in.
 fn answer(
     reader: &Reader<'_>,
@@ -376,7 +450,7 @@ fn answer(
         polylogue_store::read::limit::ReadLimit::set_stage("measure");
         let (definition, _) = super::measure::find_checked(&m.what)?;
         if let Some(measure_paging) = definition.paging {
-            let (rows, count, next, _) = read_page(reader, program, &after, paging)?;
+            let (rows, next) = read_page(reader, program, &after, paging)?;
             let session_order: std::collections::BTreeMap<_, _> = rows
                 .iter()
                 .enumerate()
@@ -457,7 +531,7 @@ fn answer(
                 data,
                 read_at,
                 resolved,
-                count,
+                count: None,
                 next,
             })));
         }
@@ -493,7 +567,7 @@ fn answer(
             resolved,
         })));
     }
-    let (mut rows, count, next, without) = read_page(reader, program, &after, paging)?;
+    let (mut rows, next) = read_page(reader, program, &after, paging)?;
 
     polylogue_store::read::limit::ReadLimit::set_stage("attached rows");
     if program.shape == Shape::Rows {
@@ -503,19 +577,24 @@ fn answer(
     for row in &mut rows {
         present(program, row)?;
     }
-    let mut notes = program.notes.clone();
-    let mut unknown = std::collections::BTreeMap::new();
-    if program.counts_near {
-        if without > 0 {
-            notes.push(format!(
-                "{without} of {count} rows have no vector; their semantic similarity is unknown"
-            ));
-        }
-        unknown.insert("near".to_owned(), without);
-    }
+    let why = if why_asked {
+        polylogue_store::read::limit::ReadLimit::set_stage("explanation counts");
+        Some(why(reader, program, &params)?)
+    } else {
+        None
+    };
+    let rows: Vec<_> = rows
+        .into_iter()
+        .map(|row| match row {
+            Value::Object(fields) => Ok(fields),
+            _ => Err(Failure::new("store", "a query row is not a record")),
+        })
+        .collect::<Result<_, _>>()?;
+    let notes = program.notes.clone();
+    let unknown = std::collections::BTreeMap::new();
     let outcome = if !program.incomplete.is_empty() {
         Outcome::Incomplete
-    } else if count == 0 {
+    } else if rows.is_empty() && next.is_none() {
         Outcome::Empty
     } else {
         Outcome::Rows
@@ -527,19 +606,6 @@ fn answer(
             .iter()
             .map(|part| format!("incomplete: {part}")),
     );
-    let why = if why_asked {
-        polylogue_store::read::limit::ReadLimit::set_stage("explanation counts");
-        Some(why(reader, program, &params)?)
-    } else {
-        None
-    };
-    let rows = rows
-        .into_iter()
-        .map(|row| match row {
-            Value::Object(fields) => Ok(fields),
-            _ => Err(Failure::new("store", "a query row is not a record")),
-        })
-        .collect::<Result<_, _>>()?;
     Ok(QueryAnswer {
         value: Answer::Rows(Box::new(Rows {
             read_at,
@@ -551,7 +617,7 @@ fn answer(
             shape: program.shape,
             columns: program.columns.clone(),
             rows,
-            count,
+            count: None,
             next,
             ranked: program.ranked,
             notes,
@@ -586,13 +652,13 @@ fn read_page(
     program: &Program,
     after: &Option<Vec<Value>>,
     paging: &page::Paging<'_>,
-) -> Result<(Vec<Value>, u64, Option<String>, u64), Failure> {
+) -> Result<(Vec<Value>, Option<String>), Failure> {
     let page = reader.query_page(program, after.as_deref())?;
     let next = match page.rows.last() {
         Some(last) if page.more => Some(page::after_row(program, last, paging)?),
         _ => None,
     };
-    Ok((page.rows, page.count, next, page.without))
+    Ok((page.rows, next))
 }
 
 /// What one read transaction read: the index generation and the

@@ -714,8 +714,8 @@ pub(crate) fn within_limit(
             return super::execution::refusal(&error, stage, text, limit);
         }
         let response = work();
-        // A checked writer handoff ends the read phase. Its accepted result
-        // must not become a timeout after the write commits.
+        // A checked writer handoff or completed primary answer ends required
+        // reads. An optional count can then time out without discarding rows.
         if ReadLimit::current().is_some()
             && let Err(error) = limit.check()
         {
@@ -746,11 +746,9 @@ impl Drop for TableContext {
     }
 }
 
-/// Ends the read phase before a mutation is handed to its writer: the
-/// daemon's read limit stops applying, and the operation table no longer
-/// answers a timeout for this request. A read phase that has already run
-/// out refuses the handoff instead, so a write is never handed over and
-/// then reported as timed out.
+/// Ends required reads before an acknowledged mutation or after the primary
+/// answer is prepared. An already expired read refuses this boundary; optional
+/// aggregates retain their original limit without replacing completed rows.
 pub(crate) fn finish_read_phase(stage: &'static str) -> Result<(), Failure> {
     ReadLimit::finish_scope(stage).map_err(Failure::from)?;
     TABLE_CONTEXT.with(|current| match current.borrow().as_ref() {

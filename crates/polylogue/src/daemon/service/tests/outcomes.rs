@@ -21,7 +21,7 @@ fn query(outcome: Outcome, notes: &[&str]) -> QueryAnswer {
             shape: polylogue_query::Shape::Rows,
             columns: vec![],
             rows: vec![],
-            count: 0,
+            count: Some(0),
             next: None,
             ranked: false,
             notes: vec![],

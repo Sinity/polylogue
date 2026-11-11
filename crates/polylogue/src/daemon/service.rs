@@ -201,18 +201,6 @@ impl Daemon {
     }
 }
 
-/// A query answer's outcome comes from the query itself and the index currency.
-fn query_answer(
-    d: &Daemon,
-    reader: &polylogue_store::Reader<'_>,
-    answer: super::query::QueryAnswer,
-) -> Answer<Value> {
-    match d.currency(reader) {
-        Ok(currency) => query_outcome(answer, &currency),
-        Err(error) => store_error(&error),
-    }
-}
-
 /// A query's answer over an index of the given currency: degraded, with a
 /// note, when the index is not current or a part is incomplete; empty when
 /// it matched nothing; ok otherwise.

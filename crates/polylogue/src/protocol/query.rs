@@ -88,7 +88,7 @@ pub struct Rows {
     pub shape: polylogue_query::Shape,
     pub columns: Vec<polylogue_query::Column>,
     pub rows: Vec<Map<String, Value>>,
-    pub count: u64,
+    pub count: Option<u64>,
     pub next: Option<String>,
     pub ranked: bool,
     pub notes: Vec<String>,
@@ -109,7 +109,7 @@ pub struct PagedMeasure {
     pub data: Value,
     pub read_at: Position,
     pub resolved: Resolved,
-    pub count: u64,
+    pub count: Option<u64>,
     pub next: Option<String>,
 }
 

@@ -1683,3 +1683,57 @@ fn keep_retains_the_bound_logical_declarations_of_same_name_text_casts() {
         );
     }
 }
+
+#[test]
+fn optional_count_timeout_preserves_a_completed_query_answer() {
+    use polylogue_store::read::limit::{ReadCancellation, ReadLimit};
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    fixture
+        .session(SessionFacts {
+            id: "claude-code:only",
+            ..Default::default()
+        })
+        .unwrap();
+    let pool = fixture.reads().unwrap();
+    let limit = ReadLimit::new(
+        std::time::Duration::from_secs(1),
+        ReadCancellation::default(),
+    );
+    let response = crate::daemon::handler::within_limit(
+        &limit,
+        true,
+        false,
+        "query",
+        Some("sessions"),
+        || {
+            let reader = pool.reader().unwrap();
+            let mut prepared = super::prepare(&reader, ask("sessions")).unwrap();
+            let program = prepared.count.as_mut().unwrap();
+            match &mut program.statements {
+            polylogue_store::query::Statements::Keyed(rows) => rows.count = "WITH RECURSIVE slow(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM slow WHERE n<1000000000) SELECT count(*), 0 FROM slow".into(),
+            _ => panic!("native session selection"),
+        }
+            crate::daemon::handler::finish_read_phase("optional query count").unwrap();
+            let answer = prepared.complete().unwrap();
+            command_surface::Answer {
+                outcome: command_surface::Outcome::Ok(serde_json::to_value(answer.value).unwrap()),
+                envelope: Default::default(),
+            }
+        },
+    );
+    match response.outcome {
+        command_surface::Outcome::Ok(value) => {
+            assert!(value["count"].is_null(), "{value}");
+            assert_eq!(value["rows"].as_array().unwrap().len(), 1);
+            assert!(
+                value["notes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|note| note.as_str().unwrap().contains("count deferred"))
+            );
+        }
+        other => panic!("completed rows lost to optional count: {other:?}"),
+    }
+}

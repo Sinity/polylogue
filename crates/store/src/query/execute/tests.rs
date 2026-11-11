@@ -55,8 +55,7 @@ fn stored_pages_keep_total_count_and_format_only_declared_values() {
     let mut ids = vec![];
     loop {
         let mut page = reader.query_page(&program, after.as_deref()).unwrap();
-        assert_eq!(page.count, 3);
-        assert_eq!(page.without, 0);
+        assert_eq!(reader.query_count(&program).unwrap(), Some((3, 0)));
         assert_eq!(page.rows.len(), 1);
         let raw = page.rows.last().unwrap();
         after = Some(
@@ -136,7 +135,7 @@ fn native_time_predicates_accept_a_declared_fixture_event_instant() {
     let program =
         crate::query::compile("events where at = 1970-01-01T00:00:01Z", &options()).unwrap();
     let mut page = reader.query_page(&program, None).unwrap();
-    assert_eq!(page.count, 1);
+    assert_eq!(reader.query_count(&program).unwrap(), Some((1, 0)));
     assert_eq!(page.rows.len(), 1);
     present(&program, &mut page.rows[0]).unwrap();
     assert_eq!(page.rows[0]["at"], "1970-01-01T00:00:01Z");
@@ -171,8 +170,8 @@ fn native_time_missing_related_metadata_keeps_unknown_truth() {
     ] {
         let program = crate::query::compile(text, &options).unwrap();
         assert_eq!(
-            reader.query_page(&program, None).unwrap().count,
-            count,
+            reader.query_count(&program).unwrap().map(|counts| counts.0),
+            Some(count),
             "{text}"
         );
     }
@@ -231,9 +230,231 @@ fn delivery_filters_read_string_refs_and_structured_omissions_without_reparsing_
         let page = reader
             .query_page(&program, None)
             .unwrap_or_else(|error| panic!("{query}: {error:?}"));
-        assert_eq!(page.count, expected, "{query}");
+        assert_eq!(
+            reader.query_count(&program).unwrap().map(|counts| counts.0),
+            Some(expected),
+            "{query}"
+        );
         if expected == 1 {
             assert_eq!(page.rows[0]["id"], "advice-with-refs", "{query}");
         }
     }
+}
+
+#[cfg(feature = "faults")]
+#[test]
+fn a_cached_count_is_reused_by_the_next_reader_and_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    for id in ["test:a", "test:b"] {
+        fixture
+            .session(SessionFacts {
+                id,
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    let mut options = options();
+    options.fields = vec!["id".into()];
+    let program = crate::query::compile("sessions | sort by id", &options).unwrap();
+    let pool = fixture.reads().unwrap();
+    let first_reader = pool.reader().unwrap();
+    let first = first_reader.query_page(&program, None).unwrap();
+    assert_eq!(first_reader.query_count(&program).unwrap(), Some((2, 0)));
+    let after = program
+        .order
+        .iter()
+        .map(|key| first.rows[0][&key.column].clone())
+        .collect::<Vec<_>>();
+    drop(first_reader);
+    let count_sql = program.statements.count(false);
+    crate::fault::arm("read.query", &count_sql, crate::fault::Action::Panic, 0, 1);
+    let next_reader = pool.reader().unwrap();
+    let next = next_reader.query_page(&program, Some(&after)).unwrap();
+    assert_eq!(next_reader.query_count(&program).unwrap(), Some((2, 0)));
+    crate::fault::clear();
+    assert_eq!(next.rows.len(), 1);
+    assert_eq!(next.rows[0]["id"], "test:b");
+    drop(next_reader);
+    let new_pool = fixture.reads().unwrap();
+    assert_eq!(
+        new_pool.reader().unwrap().query_count(&program).unwrap(),
+        Some((2, 0))
+    );
+}
+
+#[test]
+fn cached_counts_follow_the_resolved_calendar() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(dir.path()).unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut options = options();
+    options.fields = vec!["id".into()];
+    let mut program = crate::query::compile("sessions", &options).unwrap();
+    let before: jiff::Timestamp = "2026-01-01T23:30:00Z".parse().unwrap();
+    let after: jiff::Timestamp = "2026-01-02T00:30:00Z".parse().unwrap();
+    match &mut program.statements {
+        crate::query::Statements::Keyed(rows) => {
+            rows.count = format!(
+                "SELECT count(DISTINCT pl_day(at)), 0 FROM (SELECT {} AS at UNION ALL SELECT {})",
+                before.as_millisecond(),
+                after.as_millisecond()
+            );
+        }
+        _ => panic!("native session selection"),
+    }
+    assert_eq!(reader.query_count(&program).unwrap(), Some((2, 0)));
+    program.clock.day = query_language::time::DaySetting::new(
+        jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(),
+        jiff::civil::time(0, 0, 0, 0),
+    )
+    .unwrap();
+    assert_eq!(reader.query_count(&program).unwrap(), Some((1, 0)));
+}
+
+#[test]
+fn slow_count_still_returns_rows() {
+    use crate::read::limit::{ReadCancellation, ReadLimit};
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    fixture
+        .session(SessionFacts {
+            id: "test:only",
+            ..Default::default()
+        })
+        .unwrap();
+    let mut options = options();
+    options.fields = vec!["id".into()];
+    let mut program = crate::query::compile("sessions", &options).unwrap();
+    match &mut program.statements {
+        crate::query::Statements::Keyed(rows) => rows.count = "WITH RECURSIVE slow(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM slow WHERE n<1000000000) SELECT count(*), 0 FROM slow".into(),
+        _ => panic!("native session selection"),
+    }
+    let pool = fixture.reads().unwrap();
+    let limit = ReadLimit::new(
+        std::time::Duration::from_secs(1),
+        ReadCancellation::default(),
+    );
+    limit.scope(|| {
+        let reader = pool.reader().unwrap();
+        let answer = reader.query_page(&program, None).unwrap();
+        assert_eq!(reader.query_count(&program).unwrap(), None);
+        assert_eq!(answer.rows.len(), 1);
+        assert_eq!(answer.rows[0]["id"], "test:only");
+        assert!(matches!(
+            limit.check(),
+            Err(crate::StoreError::ReadDeadlineExceeded)
+        ));
+    });
+}
+
+#[test]
+fn cancellation_is_not_a_deferred_count() {
+    use crate::read::limit::{ReadCancellation, ReadLimit};
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    fixture
+        .session(SessionFacts {
+            id: "test:only",
+            ..Default::default()
+        })
+        .unwrap();
+    let pool = fixture.reads().unwrap();
+    let cancellation = ReadCancellation::default();
+    let limit = ReadLimit::without_deadline(cancellation.clone());
+    limit.scope(|| {
+        let reader = pool.reader().unwrap();
+        let mut options = options();
+        options.fields = vec!["id".into()];
+        let program = crate::query::compile("sessions", &options).unwrap();
+        assert_eq!(reader.query_page(&program, None).unwrap().rows.len(), 1);
+        cancellation.cancel();
+        assert!(matches!(
+            reader.query_count(&program),
+            Err(SelectionError::Store(crate::StoreError::ReadCancelled))
+        ));
+    });
+}
+
+#[test]
+fn cached_counts_follow_the_actual_vector_snapshot() {
+    use std::sync::Arc;
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "test:only",
+            ..Default::default()
+        })
+        .unwrap();
+    fixture
+        .message(
+            session,
+            MessageFacts {
+                id: "test:message",
+                role: "user",
+                written_by: "human",
+                text: Some("synthetic retained text"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let pool = fixture.reads().unwrap();
+    let old_reader = pool.reader().unwrap();
+    let key = "local/count-test/2/document/unit";
+    let old = Arc::new(old_reader.vectors().unwrap().load(key).unwrap());
+    let old_similarity = Arc::new(old.similarity(&[1.0, 0.0]).unwrap());
+    let hash: Vec<u8> = old_reader
+        .conn()
+        .unwrap()
+        .query_row("SELECT hash FROM text", [], |row| row.get(0))
+        .unwrap();
+    old_reader
+        .vectors_writer()
+        .unwrap()
+        .put(
+            key,
+            &[crate::vectors::Vector {
+                text_hash: hash.clone(),
+                chunk: 0,
+                values: vec![1.0, 0.0],
+            }],
+        )
+        .unwrap();
+    let mut options = options();
+    options.fields = vec!["id".into()];
+    let mut program = crate::query::compile("messages", &options).unwrap();
+    program.near = Some(crate::query::compile::Near {
+        text: "synthetic seed".into(),
+    });
+    program.counts_near = true;
+    let hex = hash
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    match &mut program.statements {
+        crate::query::Statements::Keyed(rows) => {
+            rows.count = format!(
+                "SELECT count(*), count(*) FILTER (WHERE pl_similarity(hash) IS NULL) FROM text WHERE hash=x'{hex}'"
+            )
+        }
+        _ => panic!("native message selection"),
+    }
+    // Both counts run after the write notification, but their vectors differ.
+    assert_eq!(
+        old_reader
+            .with_similarity(old_similarity, || old_reader.query_count(&program))
+            .unwrap(),
+        Some((1, 1))
+    );
+    let new_reader = pool.reader().unwrap();
+    let loaded = Arc::new(new_reader.vectors().unwrap().load(key).unwrap());
+    let similarity = Arc::new(loaded.similarity(&[1.0, 0.0]).unwrap());
+    assert_eq!(
+        new_reader
+            .with_similarity(similarity, || new_reader.query_count(&program))
+            .unwrap(),
+        Some((1, 0))
+    );
 }
