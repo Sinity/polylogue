@@ -28,9 +28,12 @@ pub(super) struct DeriveThread {
 }
 
 impl DeriveThread {
-    pub(super) fn start(index_db: std::path::PathBuf, queue: WriterQueue) -> Result<Self> {
+    pub(super) fn start(
+        index_db: std::path::PathBuf,
+        queue: WriterQueue,
+        stopping: Arc<AtomicBool>,
+    ) -> Result<Self> {
         let (requests, rx) = channel::<Waiting>();
-        let stopping = Arc::new(AtomicBool::new(false));
         let interrupt = Arc::new(Mutex::new(None));
         let thread = Worker {
             index_db,
@@ -138,6 +141,8 @@ impl Worker {
         if self.conn.is_none() {
             let conn = crate::archive::open_read(&self.index_db)?;
             conn.pragma_update(None, "cache_size", -(crate::archive::cache::DERIVE * 1024))?;
+            let stopping = Arc::clone(&self.stopping);
+            conn.progress_handler(10_000, Some(move || stopping.load(Ordering::Acquire)))?;
             *self.interrupt.lock().map_err(|_| StoreError::WriterGone)? =
                 Some(conn.get_interrupt_handle());
             self.conn = Some(conn);

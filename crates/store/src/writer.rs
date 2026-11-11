@@ -512,7 +512,11 @@ impl Writer {
             deferred_indexes,
             users: users_rx,
             search: Search::start(archive.index_db(), !building)?,
-            derive: derive_thread::DeriveThread::start(archive.index_db(), queue.clone())?,
+            derive: derive_thread::DeriveThread::start(
+                archive.index_db(),
+                queue.clone(),
+                Arc::clone(&stop.0),
+            )?,
             location: archive.clone(),
             sinex,
             stream_error: None,
@@ -1735,12 +1739,18 @@ impl Inner {
     /// writer only marks what the pass must see: sessions whose derivation
     /// version moved, variants' text and the search entries waiting.
     fn request_derive(&mut self, waiting: derive_thread::Waiting) {
-        let prepared = self.project_variant_text().and_then(|()| {
-            if self.first_build.is_none() {
-                crate::text_rows::index_pending(&self.index, || ())?;
-            }
-            crate::derive::mark_moved_versions(&mut self.index)
-        });
+        let prepared = self
+            .until_stopped(|inner| {
+                if inner.stop.requested() {
+                    return Err(StoreError::WriterGone);
+                }
+                inner.project_variant_text()?;
+                if inner.first_build.is_none() {
+                    crate::text_rows::index_pending(&inner.index, || ())?;
+                }
+                crate::derive::mark_moved_versions(&mut inner.index)
+            })
+            .and_then(|prepared| prepared.ok_or(StoreError::WriterGone));
         match (prepared, waiting) {
             (Ok(()), waiting) => self.derive.request(waiting),
             (Err(e), derive_thread::Waiting::Derive(reply)) => {

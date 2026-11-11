@@ -1078,3 +1078,41 @@ fn a_value_computed_from_rows_that_changed_is_not_stored() {
     assert!(w.writer.derive().unwrap() > 0);
     assert_eq!(state(), (Some(3_000), 2, 0, 11));
 }
+
+#[test]
+fn a_stop_reaches_the_derive_worker_before_writer_teardown() {
+    let mut w = WriterArchive::new();
+    w.write_underived("a", prose("a", 1, 1_000, "the first session"));
+    let sender = w.writer.sender().unwrap();
+    let stop = w.writer.stop_handle();
+    let barrier = sender.pause_derive_for_test();
+    std::thread::scope(|scope| {
+        let deriving = scope.spawn(|| sender.derive());
+        barrier.wait().unwrap();
+        stop.request();
+        barrier.release();
+        assert!(deriving.join().unwrap().is_err());
+    });
+    // The pass remains due instead of being reported fully derived. Its
+    // already committed waves are valid and the next writer finishes it.
+    let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM derive_due", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    drop(index);
+    drop(w.writer);
+    let writer = crate::writer::Writer::start(&w.archive).unwrap();
+    assert!(writer.derive().unwrap() > 0);
+    let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM derive_due", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
