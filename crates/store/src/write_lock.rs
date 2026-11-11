@@ -5,9 +5,12 @@
 //! pair of states that never existed together; an index commit there is
 //! harmless, because the register then reads as it was when the index read
 //! started. So writers hold the lock exclusively only while the register
-//! commits ([`commit`]) and through schema setup. Index transactions take no lock, so a
-//! reader waits at most for one register commit. The file is stable while
-//! open, so readers need no writable directory or extra lock file.
+//! commit becomes visible ([`commit`]) and through schema setup. The writer's
+//! register connection commits without syncing, and [`commit`] syncs its log
+//! after releasing the lock, so a reader never waits for a disk sync. Index
+//! transactions take no lock, so a reader waits at most for one register
+//! commit's write into its log. The file is stable while open, so readers
+//! need no writable directory or extra lock file.
 use crate::{Archive, Result, StoreError};
 use rusqlite::Connection;
 use std::cell::Cell;
@@ -80,13 +83,33 @@ pub(crate) fn hold(conn: &Connection) -> Result<WriteLock> {
     })
 }
 
-/// Commits a register transaction under the lock.
+/// Commits a transaction under the lock. A register commit is then made
+/// durable by syncing the register's log, outside the lock: the writer's
+/// register connection commits with `synchronous=NORMAL`, and this sync
+/// returns before the commit is acknowledged or anything is written after
+/// it, so the register is as durable as with `FULL` while readers that start
+/// meanwhile read the commit instead of waiting for the disk.
 pub(crate) fn commit(tx: rusqlite::Transaction<'_>) -> Result<()> {
     let lock = hold(&tx)?;
+    let log = register_log(&tx);
     let committed = tx.commit();
     drop(lock);
     committed?;
+    if let Some(log) = log {
+        crate::fault::check("write.register_sync", "")?;
+        File::open(&log)?.sync_data()?;
+    }
     Ok(())
+}
+
+/// The write-ahead log of `conn`'s database when it is the register.
+fn register_log(conn: &Connection) -> Option<std::path::PathBuf> {
+    let path = Path::new(conn.path().filter(|path| !path.is_empty())?);
+    (path.file_name().and_then(|name| name.to_str()) == Some("archive.db")).then(|| {
+        let mut log = path.as_os_str().to_owned();
+        log.push("-wal");
+        log.into()
+    })
 }
 
 /// Takes the lock shared for a reader's first read; the caller drops the
