@@ -143,3 +143,15 @@ pool = "codex"
 result = "exit"
 timeout_seconds = 28800
 cache = "none"
+
+[operations.rebuild_archive]
+description = "Rebuild an archive using explicit prebuilt binary and deployment arguments"
+exec = ["env", "-u", "VOYAGE_API_KEY", "ionice", "-c", "2", "-n", "7", "nice", "-n", "10"]
+arguments = "required"
+pool = "measure"
+result = "exit"
+timeout_seconds = 0
+scratch = "none"
+cache = "none"
+admission = { memory_mib = 10240 }
+unit_properties = ["CPUWeight=20", "IOWeight=20", "MemoryHigh=10G", "MemoryMax=14G", "MemorySwapMax=2G"]
