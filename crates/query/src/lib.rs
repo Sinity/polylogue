@@ -5,6 +5,7 @@
 pub mod ast;
 pub mod catalog;
 pub mod compile;
+pub mod defaults;
 pub mod explain;
 pub mod fields;
 pub mod parse;

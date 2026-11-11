@@ -19,7 +19,7 @@ fn sessionless_units_keep_explicit_association_or_independence() {
     let documents = spec(Unit::Documents);
     assert!(!fields::has_session(Unit::Documents));
     assert!(documents.session_scope.is_none());
-    assert!(documents.defaults.is_empty());
+    assert!(polylogue_query::defaults::declared(Unit::Documents).is_empty());
     assert!(documents.relations.is_empty());
 }
 

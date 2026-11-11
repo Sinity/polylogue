@@ -15,7 +15,6 @@ pub use polylogue_query::{
     ChatPage, ColKind, Column, ColumnReference, Definition, Kept, Options, SavedQuery, Shape,
 };
 use serde::Serialize;
-use std::collections::HashSet;
 
 mod combine;
 mod conditions;
@@ -615,36 +614,6 @@ fn top_level(c: &Condition) -> Vec<Condition> {
     }
 }
 
-/// Field names the top-level conditions name, `session.` prefixes removed
-/// for row units.
-fn named_fields(top: &[Condition], unit: Unit) -> HashSet<String> {
-    let mut out = HashSet::new();
-    for c in top {
-        let f = match &c.kind {
-            ConditionKind::Match { field, .. } => field.as_str(),
-            ConditionKind::Reference { reference } => match reference.split_once(':') {
-                Some((field, _)) => field,
-                None => continue,
-            },
-            ConditionKind::Since { field, .. } | ConditionKind::Until { field, .. } => field,
-            ConditionKind::Compare { left, .. } | ConditionKind::Between { left, .. } => match left
-            {
-                Expression::Field { name } => name,
-                _ => continue,
-            },
-            _ => continue,
-        };
-        let f = f.to_ascii_lowercase();
-        let f = if unit != Unit::Sessions {
-            f.strip_prefix("session.").map(str::to_owned).unwrap_or(f)
-        } else {
-            f
-        };
-        out.insert(f);
-    }
-    out
-}
-
 /// Plain words search this unit.
 fn text_unit(unit: Unit) -> bool {
     match units::spec(unit).search {
@@ -652,14 +621,6 @@ fn text_unit(unit: Unit) -> bool {
         Search::Substring(_) => true,
         Search::None => false,
     }
-}
-
-/// At least 8 characters of hex digits and dashes, containing a digit or
-/// a dash: the shape of a pasted native ID.
-fn id_shaped(word: &str) -> bool {
-    word.len() >= 8
-        && word.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
-        && word.chars().any(|c| c.is_ascii_digit() || c == '-')
 }
 
 fn like_escape(s: &str) -> String {

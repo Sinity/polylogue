@@ -578,30 +578,12 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         top: &[Condition],
     ) -> Result<Vec<(String, String)>, QueryError> {
-        // OR and NOT keep the outer defaults: only top-level ANDs lift them.
-        if Self::saved_source(top) {
-            return Ok(vec![]);
-        }
-        let bound = top;
-        let named = named_fields(bound, scope.unit);
-        let row_reference = bound
-            .iter()
-            .any(|c| self.is_reference(c, scope.unit) && !self.names_a_session(c, scope.unit));
-        let session_reference = bound.iter().any(|c| self.names_a_session(c, scope.unit));
-        Ok(units::spec(scope.unit)
-            .defaults
-            .iter()
-            .filter(|d| !(d.unless_reference && row_reference))
-            .filter(|d| !(d.unless_reference && session_reference && d.unless.contains(&"hidden")))
-            .filter(|d| !d.unless.iter().any(|f| named.contains(*f)))
-            .filter(|d| !(self.measuring && d.unless.contains(&"hidden")))
-            .map(|d| {
-                (
-                    d.describe(),
-                    d.sql.render(&scope.a, self.opts.clock.now.as_millisecond()),
-                )
-            })
-            .collect())
+        Ok(
+            polylogue_query::defaults::bind(scope.unit, top, &self.opts.origins, self.measuring)
+                .into_iter()
+                .map(|id| (id.describe(), units::default_sql(id, &scope.a)))
+                .collect(),
+        )
     }
 
     /// How the rows rank, lower first: by full-text relevance, by

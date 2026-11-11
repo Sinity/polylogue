@@ -4,54 +4,8 @@
 use super::*;
 
 impl<'a> Compiler<'a> {
-    /// A reference that names a session rather than this unit's own rows:
-    /// `session:X`, `origin:native`, `last`, `latest`, `self`. Over another
-    /// unit it lifts only the session's visibility default; the unit's own
-    /// row defaults (duplicate copies, the active path) still apply, the
-    /// same as reading `X | unit`.
-    pub(super) fn names_a_session(&self, c: &Condition, unit: Unit) -> bool {
-        if unit == Unit::Sessions {
-            return false;
-        }
-        match &c.kind {
-            ConditionKind::Match { field, .. } => {
-                let f = field.to_ascii_lowercase();
-                f == "session" || self.opts.origins.contains(&f)
-            }
-            ConditionKind::Text {
-                text,
-                mode: TextMode::Word,
-            } => matches!(text.as_str(), "last" | "latest" | "self"),
-            _ => false,
-        }
-    }
-
     pub(super) fn is_reference(&self, c: &Condition, unit: Unit) -> bool {
-        match &c.kind {
-            ConditionKind::Reference { .. } => true,
-            ConditionKind::Match { field, .. } => {
-                let f = field.to_ascii_lowercase();
-                self.opts.origins.contains(&f)
-                    || (f == "event" && unit != Unit::Deliveries)
-                    || matches!(
-                        f.as_str(),
-                        "session"
-                            | "message"
-                            | "block"
-                            | "run"
-                            | "request"
-                            | "document"
-                            | "span"
-                            | "assertion"
-                            | "delivery"
-                    )
-            }
-            ConditionKind::Text {
-                text,
-                mode: TextMode::Word,
-            } => matches!(text.as_str(), "last" | "latest" | "self") || id_shaped(text),
-            _ => false,
-        }
+        polylogue_query::defaults::is_reference(c, unit, &self.opts.origins)
     }
 
     /// A condition. `top` is true for the query's own `where`, where a
