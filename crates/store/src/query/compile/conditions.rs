@@ -1243,7 +1243,7 @@ pub(super) fn unknown_field(text: &str, field: &str, unit: Unit, span: Span) -> 
 }
 
 /// `last` or `latest`: the newest session, resolved inside the query.
-fn newest_word(condition: &Condition) -> bool {
+pub(super) fn newest_word(condition: &Condition) -> bool {
     match &condition.kind {
         ConditionKind::Reference { reference } => matches!(reference.as_str(), "last" | "latest"),
         ConditionKind::Text {

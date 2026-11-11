@@ -563,10 +563,11 @@ proptest! {
         prop_assert_eq!(got, want, "{}", scoped);
     }
 
-    /// `U where A B`, `U where A | where B` and `U where A` filtered by B
-    /// row by row give the same rows in the same order. Words joined in one
-    /// `where` rank together, so with words on both sides only the rows
-    /// are compared.
+    /// `U where A B` and `U where A | where B` give the same rows in the
+    /// same order, ranking included: a `where` stage straight after the
+    /// source narrows its selection, and its words rank with the source's.
+    /// `U where A` filtered by B row by row gives the same rows, in the same
+    /// order unless B's words rank them.
     #[test]
     fn successive_filters_equal_their_conjunction(
         rows in rows(),
@@ -581,11 +582,7 @@ proptest! {
             .into_iter()
             .filter(|k| reference::truth(&rows, &b, by_key[k]) == Truth::Yes)
             .collect();
-        if a.ranks() && b.ranks() {
-            prop_assert_eq!(sorted(joined.clone()), sorted(staged), "{} | where {}", at, bt);
-        } else {
-            prop_assert_eq!(&joined, &staged, "{} | where {}", at, bt);
-        }
+        prop_assert_eq!(&joined, &staged, "{} | where {}", at, bt);
         if b.ranks() {
             prop_assert_eq!(sorted(joined), sorted(filtered), "{} then {}", at, bt);
         } else {

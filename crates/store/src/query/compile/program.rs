@@ -9,8 +9,12 @@ impl<'a> Compiler<'a> {
         q: &Query,
         preset: Option<MatchRel>,
     ) -> Result<Program, QueryError> {
+        let staged = std::mem::take(&mut self.staged_filters);
+        let stages = &q.transforms[staged.len()..];
+        // `similar:` ranks the whole query and stands only among the
+        // source's own conditions, so a folded stage still refuses it.
         self.transforms_start = q.transforms.first().map_or(usize::MAX, |s| s.span.start);
-        self.measuring = q.transforms.iter().any(|s| {
+        self.measuring = stages.iter().any(|s| {
             matches!(&s.kind, TransformKind::Extension { name, .. }
                 if name == polylogue_query::catalog::MEASURE)
         });
@@ -19,14 +23,29 @@ impl<'a> Compiler<'a> {
                 unit, condition, ..
             } => {
                 let top = condition.as_ref().map(top_level).unwrap_or_default();
-                (
-                    RowContext::plain(bind_unit(unit)?),
-                    condition.iter().cloned().collect::<Vec<_>>(),
-                    top,
-                )
+                // `A | where B` is the conjunction `(A) (B)`, the tree the
+                // parser builds for the joined text, so both select, rank
+                // and mark the same rows.
+                let mut conjunction: Vec<Condition> = condition.iter().cloned().collect();
+                conjunction.extend(staged.iter().cloned());
+                let wheres = match conjunction.len() {
+                    0 | 1 => conjunction,
+                    _ => vec![Condition {
+                        span: query_language::ast::Span {
+                            start: conjunction[0].span.start,
+                            end: conjunction[conjunction.len() - 1].span.end,
+                        },
+                        kind: ConditionKind::And {
+                            conditions: conjunction,
+                        },
+                    }],
+                };
+                (RowContext::plain(bind_unit(unit)?), wheres, top)
             }
             _ => return Err(not_built("this shared query source")),
         };
+        // Defaults are bound by the source's own conditions; a later filter
+        // only narrows.
         let applied = self.applied_defaults(&scope, &top)?;
         let mut where_sql: Vec<String> = applied.iter().map(|(_, sql)| sql.clone()).collect();
         let defaults_only = where_sql.clone();
@@ -45,7 +64,12 @@ impl<'a> Compiler<'a> {
                 self.snippet_terms.push(terms);
             }
         }
-        for c in &top {
+        let counted: Vec<Condition> = top
+            .iter()
+            .cloned()
+            .chain(staged.iter().flat_map(top_level))
+            .collect();
+        for c in &counted {
             if relations::contains_order(c) {
                 continue;
             }
@@ -88,7 +112,7 @@ impl<'a> Compiler<'a> {
         }
         let mut matched = preset;
         let mut measure: Option<Measure> = None;
-        for stage in &q.transforms {
+        for stage in stages {
             if measure.is_some() {
                 return Err(QueryError::Invalid {
                     message: "`| measure WHAT` is the last stage".into(),

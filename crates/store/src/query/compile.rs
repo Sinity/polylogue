@@ -493,6 +493,11 @@ pub(crate) struct Compiler<'a> {
     near_unavailable: bool,
     /// Conditions at or after this position belong to a stage.
     transforms_start: usize,
+    /// `| where` stages read straight off the unit's rows, which narrow the
+    /// source's selection as one conjunction with it: their words rank and
+    /// mark snippets together with the source's, and they never lift a
+    /// default the source bound.
+    staged_filters: Vec<Condition>,
     /// The query ends in `| measure`: a display preference such as hiding
     /// never changes a measured population.
     measuring: bool,
@@ -541,6 +546,7 @@ impl<'a> Compiler<'a> {
             source_near_allowed: true,
             near_unavailable: false,
             transforms_start: usize::MAX,
+            staged_filters: vec![],
             measuring: false,
             session_window: (None, None),
         }

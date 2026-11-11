@@ -296,10 +296,14 @@ impl<'a> Compiler<'a> {
             } if contains_order(c) => Some(c),
             _ => None,
         };
+        let folded = self.fold_filters(query, source_order.is_some());
         let first = if source_order.is_some() {
             Some(0)
         } else {
-            query.transforms.iter().position(|s| relational(&s.kind))
+            query.transforms[folded..]
+                .iter()
+                .position(|s| relational(&s.kind))
+                .map(|at| at + folded)
         };
         let Some(first) = first else {
             return self.native_program_with(query, preset);
@@ -318,6 +322,42 @@ impl<'a> Compiler<'a> {
         compiler.near = program.near.clone();
         let relation = Relation::new(program);
         compiler.finish_relations(query, first, relation, source_order)
+    }
+
+    /// Takes the `| where` stages that directly follow a unit's source into
+    /// its selection, so `A | where B` selects and ranks as `(A) (B)`, and
+    /// returns how many leading stages it took. A stage stays a stage when
+    /// the conjunction would mean something else: an order condition (whose
+    /// witness the stage replaces), `last`/`latest` (the newest session
+    /// meeting every condition beside it) and `| matches` (which reads its
+    /// pattern from the stage).
+    fn fold_filters(&mut self, query: &Query, source_order: bool) -> usize {
+        let Source::Unit { condition, .. } = &query.source else {
+            return 0;
+        };
+        let newest = |c: &Condition| top_level(c).iter().any(conditions::newest_word);
+        if source_order
+            || condition.as_ref().is_some_and(newest)
+            || query
+                .transforms
+                .iter()
+                .any(|stage| matches!(stage.kind, TransformKind::Matches))
+        {
+            return 0;
+        }
+        self.staged_filters = query
+            .transforms
+            .iter()
+            .map_while(|stage| match &stage.kind {
+                TransformKind::Where { condition }
+                    if !contains_order(condition) && !newest(condition) =>
+                {
+                    Some(condition.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        self.staged_filters.len()
     }
 
     pub(super) fn finish_relations(
