@@ -1287,6 +1287,57 @@ fn attached_rows_follow_each_session() {
     assert_eq!(v["rows"][1]["messages"][0]["id"], "claude-code:m2a0");
 }
 
+/// `[first:n, last:k]` keeps the last k of each parent's first n children,
+/// for every parent on the page at once; no field list attaches the child
+/// unit's own columns. The expectation reads each session's messages through
+/// an ordinary messages query (docs/query.md: Attached rows).
+#[test]
+fn attachment_windows_apply_per_parent_across_the_page() {
+    let w = morrow();
+    let v = q(&w, "origin:claude-code with messages(id)[first:2, last:1]");
+    let rows = v["rows"].as_array().unwrap();
+    assert!(rows.len() > 1, "{v}");
+    let mut windowed = 0;
+    for row in rows {
+        let session = row["id"].as_str().unwrap();
+        let own = q(&w, &format!("messages where session:{session}"));
+        let ids: Vec<&Value> = own["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| &message["id"])
+            .collect();
+        let want: Vec<Value> = ids[..ids.len().min(2)]
+            .iter()
+            .rev()
+            .take(1)
+            .map(|id| json!({ "id": id }))
+            .collect();
+        windowed += usize::from(ids.len() > 1);
+        assert_eq!(row["messages"].as_array().unwrap(), &want, "{session}");
+    }
+    assert!(windowed > 0, "no session has two messages: {v}");
+    let plain = q(&w, "messages | limit 1");
+    let columns: Vec<&str> = plain["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|column| column["name"].as_str().unwrap())
+        .collect();
+    let v = q(&w, "origin:claude-code with messages()[last:1]");
+    let child = &v["rows"][0]["messages"][0];
+    let mut keys: Vec<&str> = child
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let mut want = columns.clone();
+    keys.sort_unstable();
+    want.sort_unstable();
+    assert_eq!(keys, want, "{child}");
+}
+
 #[test]
 fn a_session_query_scopes_a_row_query() {
     let w = morrow();

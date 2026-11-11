@@ -321,7 +321,7 @@ impl<'a> Compiler<'a> {
             });
         }
         let session = if parent.unit == Unit::Sessions {
-            Ok("?PARENT".to_owned())
+            Ok("_parents.value".to_owned())
         } else {
             Err(not_built(&format!(
                 "attaching {} to {}",
@@ -329,34 +329,13 @@ impl<'a> Compiler<'a> {
                 parent.unit.name()
             )))
         };
-        let parent_link = self.under_parent(parent.unit, &sc, "?PARENT", session)?;
+        let parent_link = self.under_parent(parent.unit, &sc, "_parents.value", session)?;
         w.push(parent_link);
         let ctes = if self.ctes.is_empty() {
             String::new()
         } else {
             format!("WITH {} ", self.ctes.join(", "))
         };
-        let order = self.default_order(&sc);
-        let n = self.params.len() + 1;
-        let sql = format!(
-            "{ctes}SELECT {} FROM {} WHERE {} ORDER BY {}",
-            if select.is_empty() {
-                "*".into()
-            } else {
-                select.join(", ")
-            },
-            base_from(unit, &sc.a),
-            and_all(&w),
-            order.join(", ")
-        )
-        .replace("?PARENT", &format!("?{n}"));
-        let params = std::mem::replace(&mut self.params, saved);
-        self.ctes = saved_ctes;
-        self.shown = saved_shown;
-        self.rank = saved_rank;
-        self.near_rank = saved_near_rank;
-        self.near_join = saved_near_join;
-        self.fusion = saved_fusion;
         let (mut first, mut last) = (None, None);
         for w in &child.windows {
             match w {
@@ -365,13 +344,58 @@ impl<'a> Compiler<'a> {
                 Window::Where(..) => {}
             }
         }
+        // `[first:n]` keeps each parent's first n children and `[last:n]` the
+        // last n of those.
+        let kept = match (first, last) {
+            (None, None) => "1".to_owned(),
+            (Some(first), None) => format!("_place <= {first}"),
+            (None, Some(last)) => format!("_place > _of - {last}"),
+            (Some(first), Some(last)) => {
+                format!("_place <= {first} AND _place > min(_of, {first}) - {last}")
+            }
+        };
+        let order = self.default_order(&sc).join(", ");
+        let n = self.params.len() + 1;
+        if child.fields.is_empty() {
+            // No field list attaches the unit's own columns.
+            let (_, own) = row_columns(unit, &sc.a, self.opts.clock.now.as_millisecond());
+            for (name, expression, kind, reference) in own {
+                select.push(format!("{expression} AS {}", column_sql(&name)));
+                columns.push(Column {
+                    name,
+                    kind,
+                    reference,
+                });
+            }
+        }
+        let select = select.join(", ");
+        let shown = columns
+            .iter()
+            .map(|column| column_sql(&column.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        // The page's parents drive the join, so each parent's children are
+        // read through its key.
+        let sql = format!(
+            "{ctes}SELECT _parent, {shown} FROM (SELECT _parents.value AS _parent, {select}, \
+             row_number() OVER (PARTITION BY _parents.value ORDER BY {order}) AS _place, \
+             count(*) OVER (PARTITION BY _parents.value) AS _of \
+             FROM json_each(?{n}) _parents CROSS JOIN {} WHERE {}) WHERE {kept} ORDER BY _parent, _place",
+            base_from(unit, &sc.a),
+            and_all(&w),
+        );
+        let params = std::mem::replace(&mut self.params, saved);
+        self.ctes = saved_ctes;
+        self.shown = saved_shown;
+        self.rank = saved_rank;
+        self.near_rank = saved_near_rank;
+        self.near_join = saved_near_join;
+        self.fusion = saved_fusion;
         Ok(Attach {
             name: unit.name().to_owned(),
             sql,
             params,
             columns,
-            first,
-            last,
         })
     }
 }

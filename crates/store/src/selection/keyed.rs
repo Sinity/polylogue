@@ -70,7 +70,14 @@ impl Reader<'_> {
         params.extend(at.values.iter().map(sql_value));
         params.push(SqlValue::Int(1));
         let mut found = None;
-        self.query_each(&program.order_page_sql(true, true), &params, |row| {
+        let page = program.statements.page(
+            &program.order,
+            program.params.len(),
+            true,
+            true,
+            crate::query::compile::PageColumns::Order,
+        );
+        self.query_each(&page, &params, |row| {
             selection.scope.check()?;
             found = Some(OrderPosition {
                 values: program

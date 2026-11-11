@@ -387,7 +387,13 @@ fn no_sort_key_holds_bytes() {
                 .query(
                     &format!(
                         "SELECT count(*) AS n FROM ({}) WHERE {bytes}",
-                        program.page_sql(false, false)
+                        program.statements.page(
+                            &program.order,
+                            program.params.len(),
+                            false,
+                            false,
+                            polylogue_store::query::PageColumns::All,
+                        )
                     ),
                     &params,
                 )

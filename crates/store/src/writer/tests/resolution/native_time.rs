@@ -40,16 +40,10 @@ fn read_values(
     };
     let program =
         crate::query::compile(text, &options).unwrap_or_else(|error| panic!("{text}: {error}"));
-    let parameters = program
-        .params
-        .iter()
-        .map(|p| match p {
-            crate::query::Param::Int(n) => crate::SqlValue::Int(*n),
-            crate::query::Param::Real(n) => crate::SqlValue::Real(*n),
-            crate::query::Param::Text(s) => crate::SqlValue::Text(s.clone()),
-        })
-        .collect::<Vec<_>>();
-    let rows = reader.with_clock(&program.clock, || reader.query(&program.sql, &parameters))?;
+    let rows = reader.query_rows(&program).map_err(|error| match error {
+        crate::selection::SelectionError::Store(error) => error,
+        error => panic!("{text}: {error}"),
+    })?;
     let mut values = rows
         .iter()
         .map(|row| row[field].as_str().unwrap().to_owned())

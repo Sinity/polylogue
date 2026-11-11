@@ -258,12 +258,14 @@ impl Compiler<'_> {
             row_basis,
             unit,
             shape,
-            sql: format!(
-                "SELECT {} FROM source_kept_result k, json_each(k.rows_json, '$.{part}') j WHERE k.id={id_param} ORDER BY j.key",
-                select.join(", ")
-            ),
-            row_count_sql: None,
-            row_membership_sql: None,
+            statements: Statements::Derived(DerivedRows {
+                rows: format!(
+                    "SELECT {} FROM source_kept_result k, json_each(k.rows_json, '$.{part}') j WHERE k.id={id_param} ORDER BY j.key",
+                    select.join(", ")
+                ),
+                count: None,
+                members: None,
+            }),
             params: std::mem::take(&mut self.params),
             columns: columns.clone(),
             column_slots: slots,
@@ -290,7 +292,6 @@ impl Compiler<'_> {
             resolved_times: vec![],
             measure: None,
             order: vec![OrderKey::ascending("_pk")],
-            keyed: None,
         };
         self.program_over(query, program)
     }

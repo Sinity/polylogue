@@ -122,7 +122,7 @@ Stages apply in the order written:
 
 ### Attached rows
 
-`QUERY with messages(id, role, text)[role:assistant, last:2], tool_calls(…)` returns each parent row with one list per child spec. Inside the brackets, conditions filter first, then `first:` and `last:` take that many per parent in the child's order. Attaching never changes which parents are returned. There is no page-wide ceiling, and attached text is never cut.
+`QUERY with messages(id, role, text)[role:assistant, last:2], tool_calls(…)` returns each parent row with one list per child spec. Inside the brackets, conditions filter first, then `first:` and `last:` take that many per parent in the child's order. An empty field list, `with messages()`, attaches the child unit's own columns. A page's attached rows are read in one statement per child spec over that page's parents. Attaching never changes which parents are returned. There is no page-wide ceiling, and attached text is never cut.
 
 ### Combining queries
 

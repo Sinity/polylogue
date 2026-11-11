@@ -10,9 +10,9 @@ fn counting_ranked_rows_does_not_sort_or_project_the_answer() {
     let opts = options(&reader, &request, 1).unwrap();
     let program = polylogue_store::query::compile(request.text, &opts).unwrap();
     let params = values(&program.params);
-    let count_sql = program.count_sql();
+    let count_sql = program.statements.count(program.counts_near);
     let (count, without) = reader.query_counts(&count_sql, &params).unwrap();
-    let rows = reader.query(&program.sql, &params).unwrap();
+    let rows = reader.query_rows(&program).unwrap();
     assert!(!rows.is_empty());
     assert_eq!(count, rows.len() as u64);
     assert_eq!(without, 0);
@@ -38,9 +38,9 @@ fn counting_fused_rows_does_not_rank_or_sort_the_answer() {
         let opts = options(&reader, &request, 1).unwrap();
         let program = polylogue_store::query::compile(request.text, &opts).unwrap();
         let params = values(&program.params);
-        let count_sql = program.count_sql();
+        let count_sql = program.statements.count(program.counts_near);
         let (count, without) = reader.query_counts(&count_sql, &params).unwrap();
-        let rows = reader.query(&program.sql, &params).unwrap();
+        let rows = reader.query_rows(&program).unwrap();
         assert!(!rows.is_empty());
         assert_eq!(count, rows.len() as u64);
         assert_eq!(without, 0);
@@ -83,11 +83,13 @@ fn count_execution_plans_do_not_change_page_cursor_binding() {
     opts.random_seed = Some(cursor.context.random_seed);
     let mut program = polylogue_store::query::compile(request.text, &opts).unwrap();
     page::check(&cursor, &program, &opts, false).unwrap();
-    program.row_count_sql = None;
-    program.row_membership_sql = None;
-    page::check(&cursor, &program, &opts, false).unwrap();
     // Execution-plan spelling does not define semantic query identity.
-    program.sql = format!("SELECT * FROM ({}) WHERE 0", program.sql);
+    program.statements =
+        polylogue_store::query::Statements::Derived(polylogue_store::query::DerivedRows {
+            rows: "SELECT 1 AS _pk WHERE 0".into(),
+            count: None,
+            members: None,
+        });
     page::check(&cursor, &program, &opts, false).unwrap();
     let other = reader
         .prepare_query_plan("messages where parser | limit 1", &opts)
@@ -120,8 +122,10 @@ fn counts_preserve_selected_rows_across_limits_offsets_and_shapes() {
         let opts = options(&reader, &request, 1).unwrap();
         let program = polylogue_store::query::compile(query, &opts).unwrap();
         let params = values(&program.params);
-        let rows = reader.query(&program.sql, &params).unwrap();
-        let (count, without) = reader.query_counts(&program.count_sql(), &params).unwrap();
+        let rows = reader.query_rows(&program).unwrap();
+        let (count, without) = reader
+            .query_counts(&program.statements.count(program.counts_near), &params)
+            .unwrap();
         assert_eq!(count, rows.len() as u64, "{query}");
         assert_eq!(without, 0, "{query}");
     }

@@ -55,7 +55,7 @@ fn selected(reader: &crate::Reader<'_>, text: &str) -> Vec<String> {
     let selection = reader.prepare_selection(text, &options).unwrap();
     let program = selection.program();
     let mut ids: Vec<_> = reader
-        .query(&program.sql, &crate::selection::values(&program.params))
+        .query_rows(program)
         .unwrap()
         .into_iter()
         .map(|row| row["id"].as_str().unwrap().to_owned())

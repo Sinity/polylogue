@@ -484,11 +484,11 @@ pub(super) fn project_match_parent(result: &mut Program, parent: &Program) {
     }
     order.extend(result.order.iter().cloned());
     result.order = order;
-    result.sql = format!(
+    result.derived_mut().rows = format!(
         "SELECT {} FROM ({}) matched JOIN ({}) parent_values ON parent_values._pk = matched._match_parent_pk ORDER BY {}",
         projection.join(", "),
-        result.sql,
-        parent.sql,
+        result.rows(),
+        parent.rows(),
         order_by(&result.order)
     );
 }

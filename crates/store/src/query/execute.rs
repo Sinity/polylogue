@@ -1,4 +1,5 @@
 //! Executing the one compiled query and shaping declared public values.
+use super::compile::PageColumns;
 use super::{ColKind, Program};
 use crate::search::{SnippetIndex, SnippetQuery, Within};
 use crate::selection::{sql_value, values};
@@ -64,26 +65,12 @@ impl Reader<'_> {
         self.validate_selection(program).map_err(E::from)?;
         let scope = self.scope_token();
         self.with_query_context(program, near, || {
-            let result = self.query_each(&program.sql, &values(&program.params), |mut row| {
-                scope
-                    .check()
-                    .map_err(SelectionError::from)
-                    .map_err(StreamError::Selection)?;
-                present(program, &mut row).map_err(StreamError::Selection)?;
-                match visit(row).map_err(StreamError::Consumer)? {
-                    std::ops::ControlFlow::Continue(()) => Ok(()),
-                    std::ops::ControlFlow::Break(()) => Err(StreamError::Stop),
-                }
-            });
-            scope
-                .check()
-                .map_err(SelectionError::from)
-                .map_err(E::from)?;
-            match result {
-                Ok(()) | Err(StreamError::Stop) => Ok(()),
-                Err(StreamError::Consumer(e)) => Err(e),
-                Err(StreamError::Selection(e)) => Err(E::from(e)),
-            }
+            self.visit_page(program, None, false, -1, |mut row| {
+                scope.check().map_err(SelectionError::from)?;
+                present(program, &mut row)?;
+                visit(row)
+            })?;
+            scope.check().map_err(SelectionError::from).map_err(E::from)
         })
     }
 
@@ -101,8 +88,10 @@ impl Reader<'_> {
         }
         self.with_clock(&program.clock, || {
             crate::read::limit::ReadLimit::set_stage("count");
-            let (count, without) =
-                self.query_counts(&program.count_sql(), &values(&program.params))?;
+            let (count, without) = self.query_counts(
+                &program.statements.count(program.counts_near),
+                &values(&program.params),
+            )?;
             crate::read::limit::ReadLimit::set_stage("page");
             let mut rows = Vec::new();
             self.visit_page(
@@ -127,10 +116,11 @@ impl Reader<'_> {
     }
     /// Visit the rows of one page in order: at most `limit` rows (all for
     /// -1) after the row whose order values are `after`, or before it when
-    /// `reverse`. Native rows are read key first: the page's keys in order,
-    /// then the columns of those keys only, so no row off the page is read
-    /// beyond its key. A derived relation's page holds its rows; read in
-    /// reverse, it sorts only order values and reads each row at its own.
+    /// `reverse`. A unit's rows are read key first: the page's keys in
+    /// order, then the columns of those keys only, so no row off the page
+    /// is read beyond its key. A derived relation's page holds its rows;
+    /// read in reverse, it sorts only order values and reads each row at
+    /// its own.
     pub(crate) fn visit_page<E>(
         &self,
         program: &Program,
@@ -147,36 +137,39 @@ impl Reader<'_> {
             params.extend(after.iter().map(sql_value));
         }
         params.push(SqlValue::Int(limit));
-        let result = match program.hydrate_sql() {
+        let row_at = reverse
+            .then(|| {
+                program
+                    .statements
+                    .row_at(&program.order, program.params.len())
+            })
+            .flatten();
+        let page = program.statements.page(
+            &program.order,
+            program.params.len(),
+            after.is_some(),
+            reverse,
+            if row_at.is_some() {
+                PageColumns::Order
+            } else {
+                PageColumns::All
+            },
+        );
+        let result = match program.statements.hydrate(program.params.len()) {
             Some(hydrate) => {
                 let mut keys = Vec::new();
-                self.query_each(
-                    &program.page_sql(after.is_some(), reverse),
-                    &params,
-                    |key| {
-                        keys.push(key);
-                        if keys.len() < HYDRATE_BATCH {
-                            return Ok(());
-                        }
-                        self.visit_hydrated(
-                            program,
-                            &hydrate,
-                            std::mem::take(&mut keys),
-                            &mut visit,
-                        )
-                    },
-                )
+                self.query_each(&page, &params, |key| {
+                    keys.push(key);
+                    if keys.len() < HYDRATE_BATCH {
+                        return Ok(());
+                    }
+                    self.visit_hydrated(program, &hydrate, std::mem::take(&mut keys), &mut visit)
+                })
                 .and_then(|()| self.visit_hydrated(program, &hydrate, keys, &mut visit))
             }
-            None if !reverse => {
-                self.query_each(&program.page_sql(after.is_some(), false), &params, |row| {
-                    flow(visit(row))
-                })
-            }
-            None => self.query_each(
-                &program.order_page_sql(after.is_some(), true),
-                &params,
-                |order| {
+            None => match row_at {
+                None => self.query_each(&page, &params, |row| flow(visit(row))),
+                Some(row_at) => self.query_each(&page, &params, |order| {
                     let mut exact = values(&program.params);
                     exact.extend(
                         program
@@ -184,18 +177,15 @@ impl Reader<'_> {
                             .iter()
                             .map(|key| sql_value(&order[&key.column])),
                     );
-                    let row = self
-                        .query(&program.row_at_sql(), &exact)?
-                        .pop()
-                        .ok_or_else(|| {
-                            StreamError::Selection(SelectionError::Invalid {
-                                kind: "stale_cursor",
-                                message: "the selected row position is unavailable".into(),
-                            })
-                        })?;
+                    let row = self.query(&row_at, &exact)?.pop().ok_or_else(|| {
+                        StreamError::Selection(SelectionError::Invalid {
+                            kind: "stale_cursor",
+                            message: "the selected row position is unavailable".into(),
+                        })
+                    })?;
                     flow(visit(row))
-                },
-            ),
+                }),
+            },
         };
         match result {
             Ok(()) | Err(StreamError::Stop) => Ok(()),
@@ -256,11 +246,17 @@ impl Reader<'_> {
         Ok(())
     }
 
+    /// Every row of the answer in order, before presentation.
     pub fn query_rows(&self, program: &Program) -> Result<Vec<Value>, SelectionError> {
         self.validate_selection(program)?;
-        Ok(self.with_clock(&program.clock, || {
-            self.query(&program.sql, &values(&program.params))
-        })?)
+        let mut rows = Vec::new();
+        self.with_clock(&program.clock, || {
+            self.visit_page(program, None, false, -1, |row| {
+                rows.push(row);
+                Ok::<_, SelectionError>(std::ops::ControlFlow::Continue(()))
+            })
+        })?;
+        Ok(rows)
     }
     pub fn query_keys(
         &self,
@@ -269,7 +265,7 @@ impl Reader<'_> {
     ) -> Result<Vec<i64>, SelectionError> {
         self.validate_selection(program)?;
         let sql = match population {
-            QueryPopulation::Answer => format!("SELECT _pk FROM ({})", program.sql),
+            QueryPopulation::Answer => program.statements.members(program.counts_near),
             QueryPopulation::MeasureSelection => format!(
                 "SELECT _pk FROM ({})",
                 program
@@ -354,38 +350,45 @@ pub fn snippets(
     Ok(())
 }
 
+/// Each attachment's child rows, read for the whole page in one statement
+/// per attachment.
 pub fn attach(
     reader: &Reader<'_>,
     program: &Program,
     rows: &mut [Value],
 ) -> Result<(), SelectionError> {
+    if program.attach.is_empty() {
+        return Ok(());
+    }
+    let parents: Vec<i64> = rows.iter().filter_map(|row| row["_pk"].as_i64()).collect();
     reader.with_clock(&program.clock, || {
         for a in &program.attach {
+            let mut children: std::collections::HashMap<i64, Vec<Value>> =
+                std::collections::HashMap::with_capacity(parents.len());
+            let mut params = values(&a.params);
+            params.push(SqlValue::Text(Value::from(parents.clone()).to_string()));
+            reader.query_each(&a.sql, &params, |mut child| {
+                let parent = child["_parent"].as_i64();
+                if let Value::Object(fields) = &mut child {
+                    fields.remove("_parent");
+                }
+                for col in &a.columns {
+                    shape_value(
+                        col.kind,
+                        program.clock.day.zone(),
+                        &mut child[col.name.as_str()],
+                    )?;
+                }
+                if let Some(parent) = parent {
+                    children.entry(parent).or_default().push(child);
+                }
+                Ok::<_, SelectionError>(())
+            })?;
             for row in rows.iter_mut() {
                 let Some(pk) = row["_pk"].as_i64() else {
                     continue;
                 };
-                let mut params = values(&a.params);
-                params.push(SqlValue::Int(pk));
-                let mut children = reader.query(&a.sql, &params)?;
-                if let Some(n) = a.first {
-                    children.truncate(usize::try_from(n).unwrap_or(usize::MAX));
-                }
-                if let Some(n) = a.last {
-                    let n = usize::try_from(n).unwrap_or(usize::MAX);
-                    let skip = children.len().saturating_sub(n);
-                    children.drain(..skip);
-                }
-                for c in &mut children {
-                    for col in &a.columns {
-                        shape_value(
-                            col.kind,
-                            program.clock.day.zone(),
-                            &mut c[col.name.as_str()],
-                        )?;
-                    }
-                }
-                row[a.name.as_str()] = Value::Array(children);
+                row[a.name.as_str()] = Value::Array(children.remove(&pk).unwrap_or_default());
             }
         }
         Ok(())
@@ -609,20 +612,26 @@ pub fn prepare_measure(
     let Some(measure) = &program.measure else {
         return Ok(());
     };
+    // A measured selection is a derived relation: its sessions in order.
+    let super::compile::Statements::Derived(derived) = &mut program.statements else {
+        return Err(invalid("a measured query reads a derived relation"));
+    };
     match paging {
         Some(crate::measure::Paging::Sessions) => {
-            program.sql = crate::measure::comparison::page_query(&program.sql)
+            derived.rows = crate::measure::comparison::page_query(&derived.rows)
         }
         Some(crate::measure::Paging::Facets) => {
+            *derived = super::compile::DerivedRows {
+                rows: crate::measure::facets::query(
+                    &measure.selection_sql,
+                    &measure.population_sql,
+                    options,
+                )?,
+                count: None,
+                members: None,
+            };
             program.counts_near = false;
-            program.row_count_sql = None;
-            program.row_membership_sql = None;
             program.page_size = page_size.unwrap_or(100);
-            program.sql = crate::measure::facets::query(
-                &measure.selection_sql,
-                &measure.population_sql,
-                options,
-            )?;
             program.order = vec![
                 super::OrderKey {
                     column: "family".into(),

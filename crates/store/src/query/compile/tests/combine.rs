@@ -519,7 +519,7 @@ fn fused_count_and_membership_keep_rank_dependent_operand_selections() {
     let parameters = crate::selection::values(&program.params);
     assert_eq!(
         reader
-            .query_counts(&program.count_sql(), &parameters)
+            .query_counts(&program.statements.count(program.counts_near), &parameters)
             .unwrap(),
         (2, 0)
     );
@@ -527,7 +527,7 @@ fn fused_count_and_membership_keep_rank_dependent_operand_selections() {
         .query(
             &format!(
                 "SELECT s.id FROM ({}) k JOIN session s ON s.pk=k._pk ORDER BY s.id",
-                program.row_membership_sql.as_ref().unwrap()
+                program.statements.members(program.counts_near)
             ),
             &parameters,
         )

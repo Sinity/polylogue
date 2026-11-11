@@ -125,7 +125,7 @@ impl Compiler<'_> {
             column_sql(&unknown),
             column_sql(&truth)
         ));
-        outer.program.sql = format!(
+        outer.program.derived_mut().rows = format!(
             "WITH {ctes}{inner_name} AS MATERIALIZED (SELECT i.*, row_number() OVER (ORDER BY {}) AS {} FROM ({}) i), \
              {outer_name} AS MATERIALIZED (SELECT r.*, \
              (SELECT i.{} FROM {inner_name} i WHERE ({}) ORDER BY {witness_order} LIMIT 1) AS {}, \
@@ -133,21 +133,21 @@ impl Compiler<'_> {
              SELECT {} FROM {outer_name} r LEFT JOIN {inner_name} i ON i.{} = r.{} ORDER BY {}",
             qualified_order(&inner.program.order, "i"),
             column_sql(&index),
-            inner.program.sql,
+            inner.program.rows(),
             column_sql(&index),
             pair.predicate,
             column_sql(&chosen),
             pair.outer_unknown,
             pair.predicate,
             column_sql(&unknown),
-            outer.program.sql,
+            outer.program.rows(),
             projections.join(", "),
             column_sql(&index),
             column_sql(&chosen),
             qualified_order(&outer.program.order, "r")
         );
-        outer.program.row_count_sql = None;
-        outer.program.row_membership_sql = None;
+        outer.program.derived_mut().count = None;
+        outer.program.derived_mut().members = None;
         Ok(format!("r.{}", column_sql(&truth)))
     }
 
@@ -237,17 +237,17 @@ impl Compiler<'_> {
         } else {
             format!("WITH {} ", pair.ctes.join(", "))
         };
-        outer.program.sql = format!(
+        outer.program.derived_mut().rows = format!(
             "{ctes}SELECT {} FROM ({}) r JOIN ({}) i ON ({}) ORDER BY {}",
             projections.join(", "),
-            outer.program.sql,
-            inner.program.sql,
+            outer.program.rows(),
+            inner.program.rows(),
             pair.predicate,
             relation_order(&outer.program.order)
         );
         outer.program.row_basis = RowBasis::Distinct { columns: identity };
-        outer.program.row_count_sql = None;
-        outer.program.row_membership_sql = None;
+        outer.program.derived_mut().count = None;
+        outer.program.derived_mut().members = None;
         Ok(())
     }
 

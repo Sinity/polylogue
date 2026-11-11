@@ -179,7 +179,7 @@ impl<'a> Compiler<'a> {
         let key = column_sql(program.column_slot(&program.columns[0].name));
         Ok(format!(
             "CASE WHEN ({expr}) IS NULL THEN NULL ELSE ({expr}) IN (SELECT {key} FROM ({}) WHERE {key} IS NOT NULL) END",
-            program.sql
+            program.rows()
         ))
     }
 
@@ -214,8 +214,8 @@ impl<'a> Compiler<'a> {
         for program in members.iter_mut().chain(&mut fuses) {
             let name = relation.slot();
             self.ctes
-                .push(format!("{name} AS MATERIALIZED ({})", program.sql));
-            program.sql = format!("SELECT * FROM {name}");
+                .push(format!("{name} AS MATERIALIZED ({})", program.rows()));
+            program.derived_mut().rows = format!("SELECT * FROM {name}");
         }
         let source_list = relation.slot();
         let mut projections = Vec::new();
@@ -230,7 +230,7 @@ impl<'a> Compiler<'a> {
                     .map(|(slot, expression)| format!("{expression} AS {}", column_sql(slot)))
                     .collect::<Vec<_>>()
                     .join(", "),
-                program.sql
+                program.rows()
             ));
         }
         let values = relation.slot();
@@ -245,7 +245,7 @@ impl<'a> Compiler<'a> {
         let mut membership_inputs = Vec::new();
         for program in &members {
             let name = relation.slot();
-            let input = program.row_membership_sql.as_ref().unwrap_or(&program.sql);
+            let input = program.statements.members(program.counts_near);
             let near = if relation.program.counts_near && program.counts_near {
                 "_near"
             } else {
@@ -368,15 +368,15 @@ impl<'a> Compiler<'a> {
                 ],
             );
         }
-        relation.program.sql = format!(
+        relation.program.derived_mut().rows = format!(
             "SELECT {} FROM {values} d{join_rank} WHERE d.{precedence}=1 ORDER BY {}",
             projection.join(", "),
             order_by(&order)
         );
         relation.program.order = order;
         relation.program.ranked = ranked;
-        relation.program.row_count_sql = Some(count);
-        relation.program.row_membership_sql = Some(membership);
+        relation.program.derived_mut().count = Some(count);
+        relation.program.derived_mut().members = Some(membership);
         relation.program.time_text_columns.clear();
         Ok(())
     }
@@ -408,7 +408,7 @@ fn other_list(other: &Program, within: Option<&str>, list: usize) -> String {
     };
     let ranked = format!(
         "SELECT _pk AS k,row_number() OVER (ORDER BY {order}) AS place,{counts} AS counts,{list} AS list,_recency AS recency FROM ({})",
-        other.sql
+        other.rows()
     );
     match within {
         Some(rows) => format!("SELECT * FROM ({ranked}) WHERE k IN ({rows})"),
