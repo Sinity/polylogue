@@ -5,6 +5,7 @@
 
 use super::*;
 use polylogue_model::{CallOutcome, LINK_HOW_NAMES, LINK_KIND_NAMES};
+use polylogue_query::filter::{Comparison, Test, TimeTest, closed_set_message};
 
 /// A special field's compile rule.
 pub(crate) type Custom = fn(&mut Compiler<'_>, &Call<'_, '_>) -> Result<String, QueryError>;
@@ -13,7 +14,9 @@ pub(crate) type Custom = fn(&mut Compiler<'_>, &Call<'_, '_>) -> Result<String, 
 pub(crate) struct Call<'q, 's> {
     pub unit: Unit,
     pub name: &'static str,
-    pub op: FieldOp<'q>,
+    /// The value as written, or for `since:`, `until:` and
+    /// `evidence_until:` the time binding resolved.
+    pub test: &'q Test,
     pub scope: &'s RowContext,
     pub span: Span,
     /// The condition is at the top level of the query.
@@ -21,10 +24,26 @@ pub(crate) struct Call<'q, 's> {
 }
 
 impl Call<'_, '_> {
-    fn one(&self) -> Option<String> {
-        match self.op {
-            FieldOp::Match(Value::Scalar { text, .. }) => Some(text.clone()),
+    /// The condition's comparison as written.
+    fn comparison(&self) -> Option<&Comparison> {
+        match self.test {
+            Test::Written(comparison) => Some(comparison),
             _ => None,
+        }
+    }
+
+    fn one(&self) -> Option<String> {
+        match self.comparison() {
+            Some(Comparison::Match(Value::Scalar { text, .. })) => Some(text.clone()),
+            _ => None,
+        }
+    }
+
+    /// The time a `since:`, `until:` or `evidence_until:` condition names.
+    fn time(&self, c: &Compiler<'_>) -> Result<Time, QueryError> {
+        match self.test {
+            Test::Time(TimeTest::Within(at)) => Ok(c.resolved(at)),
+            _ => Err(self.need_value()),
         }
     }
 
@@ -41,15 +60,15 @@ impl Call<'_, '_> {
     }
 
     fn values(&self) -> Vec<String> {
-        match self.op {
-            FieldOp::Match(v) => alternatives(v),
+        match self.comparison() {
+            Some(Comparison::Match(v)) => alternatives(v),
             _ => vec![],
         }
     }
 
     /// The shared language's explicit unknown value.
     fn unknown(&self) -> bool {
-        matches!(self.op, FieldOp::Match(Value::Unknown))
+        matches!(self.comparison(), Some(Comparison::Match(Value::Unknown)))
     }
 
     fn bad(&self, value: String, message: String) -> QueryError {
@@ -160,12 +179,15 @@ pub(crate) fn thinking(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String,
 
 fn words_in(c: &mut Compiler<'_>, x: &Call<'_, '_>, index: Index) -> Result<String, QueryError> {
     let text = x.value()?;
-    let quoted = matches!(x.op, FieldOp::Match(Value::Scalar { quoted: true, .. }));
+    let quoted = matches!(
+        x.comparison(),
+        Some(Comparison::Match(Value::Scalar { quoted: true, .. }))
+    );
     c.text(&[(text, quoted, x.span)], x.scope, index, x.top)
 }
 
 pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let t = c.time(x.name, &x.value()?, x.span)?;
+    let t = x.time(c)?;
     if x.top && x.unit == Unit::Sessions {
         // Conditions joined by AND narrow: the latest start wins.
         let start = t.start_ms();
@@ -195,7 +217,7 @@ pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
 }
 
 pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let t = c.time(x.name, &x.value()?, x.span)?;
+    let t = x.time(c)?;
     if x.top && x.unit == Unit::Sessions {
         let bound = crate::calendar::boundary_ms(t.until_bound());
         c.session_window.1 = Some(c.session_window.1.map_or(bound, |u| u.min(bound)));
@@ -220,7 +242,7 @@ pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
 /// parsers and prices. Rows count when their bytes were first
 /// seen by then; notes as each family stood then.
 pub(crate) fn evidence_until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let end = c.time(x.name, &x.value()?, x.span)?.end_ms()?;
+    let end = x.time(c)?.end_ms()?;
     let a = &x.scope.a;
     let cutoff = match x.unit {
         Unit::Messages | Unit::Blocks | Unit::ToolCalls => {
@@ -412,9 +434,6 @@ pub(crate) fn model(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
             "NOT EXISTS (SELECT 1 FROM message x WHERE x.session_pk = {s}.pk AND x.model IS NOT NULL)"
         ));
     }
-    if matches!(x.op, FieldOp::Match(Value::Any)) {
-        return Ok("1".into());
-    }
     let vs: Vec<String> = x
         .values()
         .iter()
@@ -446,29 +465,20 @@ pub(crate) fn tool_call_outcome(
     let pending = a.expand(fields::OPEN_CALL);
     let unknown = format!("({t}.outcome = 'unknown' AND NOT {pending})");
     let def = fields::FieldId::ToolCallsOutcome.declaration();
-    let values = match x.op {
-        FieldOp::Match(Value::Unknown) => return Ok(unknown),
-        FieldOp::Match(Value::Known) => return Ok(format!("NOT {unknown}")),
-        FieldOp::Match(Value::Scalar {
-            text,
-            quoted: false,
-        }) if text.eq_ignore_ascii_case("unknown") => return Ok(unknown),
-        FieldOp::Match(v) => alternatives(v),
-        FieldOp::Compare(Op::Eq, value) => vec![value.to_owned()],
-        FieldOp::Compare(Op::Ne, value) => {
-            let equal = Call {
-                op: FieldOp::Compare(Op::Eq, value),
-                ..*x
-            };
+    let (values, mut with_unknown) = match x.test {
+        Test::Unknown => return Ok(unknown),
+        Test::Known => return Ok(format!("NOT {unknown}")),
+        Test::OneOf { values, unknown } => (values.clone(), *unknown),
+        Test::TextCompare(Op::Eq, value) => (vec![value.clone()], false),
+        Test::TextCompare(Op::Ne, value) => {
+            let equal = Test::TextCompare(Op::Eq, value.clone());
+            let equal = Call { test: &equal, ..*x };
             return Ok(format!("NOT {}", tool_call_outcome(c, &equal)?));
         }
-        op => {
-            let expr = fields::call_outcome(a);
-            return c.typed(def, &expr, op, x.span);
-        }
+        test => return c.typed(def, def.kind, &fields::call_outcome(a), test),
     };
     let mut listed = vec![];
-    let (mut with_unknown, mut with_pending) = (false, false);
+    let mut with_pending = false;
     for value in &values {
         match CallOutcome::NAMES
             .iter()
@@ -575,7 +585,10 @@ pub(crate) fn depth(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
     if x.top {
         c.show("depth", &expr, ColKind::Number, None);
     }
-    c.typed_as(def, &expr, x.op, x.span, Kind::Number)
+    let Some(comparison) = x.comparison() else {
+        return Err(x.need_value());
+    };
+    c.compare_as(def, Kind::Number, &expr, comparison, x.span)
 }
 
 pub(crate) fn link(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
@@ -643,7 +656,13 @@ pub(crate) fn session_tool_call(
             ..x.scope.a.clone()
         },
     };
-    let cond = c.field_cond(x.name, x.op, &inner, x.span, false)?;
+    let Some(comparison) = x.comparison() else {
+        return Err(x.need_value());
+    };
+    let filter = c
+        .binder()
+        .field(Unit::ToolCalls, x.name, comparison.clone(), x.span)?;
+    let cond = c.lower(&filter, &inner, false)?;
     Ok(format!(
         "EXISTS (SELECT 1 FROM tool_call tq WHERE tq.session_pk = {}.pk AND {cond})",
         x.s()

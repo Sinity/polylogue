@@ -287,8 +287,7 @@ impl<'a> Compiler<'a> {
             _ => None,
         };
         // The where stages folded into the source's selection are not stages.
-        let folded = Selection::of(query, &self.opts.origins, &self.opts.fields)?
-            .map_or(0, |selection| selection.stages_from);
+        let folded = polylogue_query::selection::stages_from(query);
         let first = if source_order.is_some() {
             Some(0)
         } else {

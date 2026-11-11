@@ -9,7 +9,7 @@ impl<'a> Compiler<'a> {
         q: &Query,
         preset: Option<MatchRel>,
     ) -> Result<Program, QueryError> {
-        let Some(selection) = Selection::of(q, &self.opts.origins, &self.opts.fields)? else {
+        let Some(selection) = Selection::of(q, &self.binder(), &self.opts.fields)? else {
             return Err(not_built("this shared query source"));
         };
         let stages = &q.transforms[selection.stages_from..];
@@ -30,21 +30,6 @@ impl<'a> Compiler<'a> {
             ));
         }
         let mut top = selection.top_level();
-        // `A | where B` is the conjunction `(A) (B)`, the tree the parser
-        // builds for the joined text, so both select, rank and mark the
-        // same rows.
-        let wheres = match selection.filter.len() {
-            0 | 1 => selection.filter.clone(),
-            _ => vec![Condition {
-                span: query_language::ast::Span {
-                    start: selection.filter[0].span.start,
-                    end: selection.filter[selection.filter.len() - 1].span.end,
-                },
-                kind: ConditionKind::And {
-                    conditions: selection.filter.clone(),
-                },
-            }],
-        };
         let applied: Vec<(String, String)> = selection
             .defaults
             .iter()
@@ -57,13 +42,13 @@ impl<'a> Compiler<'a> {
             where_sql.push(format!("{key} IN (SELECT _pk FROM ({input}))"));
         }
         let mut why = vec![];
-        for c in &wheres {
-            if contains_order(c) {
-                continue;
-            }
-            let sql = self.cond(c, &scope, true)?;
-            where_sql.push(sql);
-            if let Some(terms) = self.positive_terms(c, scope.unit) {
+        // An order condition makes the source a relation boundary, read by
+        // the relation that holds it.
+        if let Some(filter) = &selection.filter
+            && !selection.written.iter().any(contains_order)
+        {
+            where_sql.push(self.lower(filter, &scope, true)?);
+            if let Some(terms) = self.positive_terms(filter, scope.unit) {
                 self.snippet_terms.push(terms);
             }
         }
@@ -145,8 +130,9 @@ impl<'a> Compiler<'a> {
                     // Snippets look for the terms of the rows shown.
                     self.snippet_terms.clear();
                     if let Some(c) = cond {
-                        w.push(self.cond(c, &next, true)?);
-                        if let Some(terms) = self.positive_terms(c, unit) {
+                        let filter = self.binder().bind(c, unit)?;
+                        w.push(self.lower(&filter, &next, true)?);
+                        if let Some(terms) = self.positive_terms(&filter, unit) {
                             self.snippet_terms.push(terms);
                         }
                     }
@@ -178,7 +164,7 @@ impl<'a> Compiler<'a> {
                         what: value_text(what)?.into(),
                         population_sql: String::new(),
                         selection_sql: String::new(),
-                        everything: wheres.is_empty(),
+                        everything: selection.written.is_empty(),
                         since: None,
                         until: None,
                     });

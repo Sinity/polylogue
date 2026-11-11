@@ -9,6 +9,7 @@ use crate::{
     QueryError,
     ast::*,
     defaults::{self, DefaultId},
+    filter::{Binder, Filter},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -16,10 +17,13 @@ pub struct Selection {
     pub unit: Unit,
     /// The defaults the source's own top-level conditions leave in place.
     pub defaults: Vec<DefaultId>,
-    /// Conditions joined by AND: the source's condition without its
-    /// `similar:` term, then each `| where` stage that directly follows the
-    /// source and means the same as its conjunction.
-    pub filter: Vec<Condition>,
+    /// The conditions as written, joined by AND: the source's condition
+    /// without its `similar:` term, then each `| where` stage that directly
+    /// follows the source and means the same as its conjunction.
+    pub written: Vec<Condition>,
+    /// Those conditions bound to the unit's fields: what selects the rows,
+    /// or `None` for every row.
+    pub filter: Option<Filter>,
     /// The `similar:` text the rows rank by.
     pub semantic: Option<Semantic>,
     /// The index of the first transform that stays a stage; the filter
@@ -53,13 +57,14 @@ pub enum Projection {
 
 impl Selection {
     /// The selection of a query whose source is a unit, or `None` for a
-    /// saved query or kept result as the source. `origins` are the origin
-    /// names a reference may start with; `fields` the columns asked for.
+    /// saved query or kept result as the source; `fields` are the columns
+    /// asked for.
     pub fn of(
         query: &Query,
-        origins: &[String],
+        binder: &Binder<'_>,
         fields: &[String],
     ) -> Result<Option<Selection>, QueryError> {
+        let origins = binder.origins;
         let Source::Unit {
             unit, condition, ..
         } = &query.source
@@ -81,9 +86,9 @@ impl Selection {
                 if name == crate::catalog::MEASURE)
         });
         let defaults = defaults::bind(unit, &top, origins, measured);
-        let folded = folded_filters(query);
-        let mut filter: Vec<Condition> = condition.into_iter().collect();
-        filter.extend(
+        let folded = stages_from(query);
+        let mut written: Vec<Condition> = condition.into_iter().collect();
+        written.extend(
             query.transforms[..folded]
                 .iter()
                 .filter_map(|stage| match &stage.kind {
@@ -91,9 +96,21 @@ impl Selection {
                     _ => None,
                 }),
         );
+        // `A | where B` is the conjunction `(A) (B)`: each part keeps its
+        // own grouping of search words.
+        let filter = match written.as_slice() {
+            [] => None,
+            [one] => Some(binder.bind(one, unit)?),
+            all => Some(Filter::All(
+                all.iter()
+                    .map(|c| binder.bind(c, unit))
+                    .collect::<Result<_, _>>()?,
+            )),
+        };
         Ok(Some(Selection {
             unit,
             defaults,
+            written,
             filter,
             semantic,
             stages_from: folded,
@@ -107,18 +124,19 @@ impl Selection {
         }))
     }
 
-    /// The filter's own top-level conditions, parenthesized ANDs flattened.
+    /// The written conditions at the top level, parenthesized ANDs
+    /// flattened.
     pub fn top_level(&self) -> Vec<Condition> {
-        self.filter.iter().flat_map(top_level).collect()
+        self.written.iter().flat_map(top_level).collect()
     }
 }
 
 /// How many `| where` stages directly after a unit source join its
-/// selection. A stage stays a stage when the conjunction would mean
+/// selection: the index of the first transform that stays a stage. A stage stays a stage when the conjunction would mean
 /// something else: an order condition (whose witness the stage replaces),
 /// `last`/`latest` (the newest session meeting every condition beside it)
 /// and `| matches` (which reads its pattern from the stage).
-fn folded_filters(query: &Query) -> usize {
+pub fn stages_from(query: &Query) -> usize {
     let Source::Unit { condition, .. } = &query.source else {
         return 0;
     };

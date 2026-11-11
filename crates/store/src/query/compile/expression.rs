@@ -357,9 +357,7 @@ impl Compiler<'_> {
             return Ok((self.bind(Param::Int(number)), ColKind::Money));
         }
         if expected == Some(ColKind::Time) {
-            let value = self
-                .time("time", text, Span { start: at, end: at })?
-                .start_ms();
+            let value = self.time(text, Span { start: at, end: at })?.start_ms();
             return Ok((self.bind(Param::Int(value)), ColKind::Time));
         }
         if matches!(expected, Some(ColKind::Duration | ColKind::DurationSeconds)) {

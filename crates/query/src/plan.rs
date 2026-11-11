@@ -104,13 +104,19 @@ impl Plan {
     pub fn query_object(&self) -> Result<polylogue_model::query_objects::QueryObject, QueryError> {
         objects::from_plan(self)
     }
-    /// What the query selects, with `fields` as its columns; `None` when
-    /// its source is a kept result.
+    /// What the query selects, with `fields` as its columns and times
+    /// resolved against `clock`; `None` when its source is a kept result.
     pub fn selection(
         &self,
         fields: &[String],
+        clock: &crate::time::Clock,
     ) -> Result<Option<crate::selection::Selection>, QueryError> {
-        crate::selection::Selection::of(self.expanded.query(), &self.bindings.origins, fields)
+        let binder = crate::filter::Binder {
+            text: &self.text,
+            origins: &self.bindings.origins,
+            clock,
+        };
+        crate::selection::Selection::of(self.expanded.query(), &binder, fields)
     }
     pub fn expanded_query(&self) -> &BoundQuery {
         &self.expanded
