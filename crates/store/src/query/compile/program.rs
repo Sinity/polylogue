@@ -9,44 +9,47 @@ impl<'a> Compiler<'a> {
         q: &Query,
         preset: Option<MatchRel>,
     ) -> Result<Program, QueryError> {
-        let staged = std::mem::take(&mut self.staged_filters);
-        let stages = &q.transforms[staged.len()..];
-        // `similar:` ranks the whole query and stands only among the
-        // source's own conditions, so a folded stage still refuses it.
-        self.transforms_start = q.transforms.first().map_or(usize::MAX, |s| s.span.start);
-        self.measuring = stages.iter().any(|s| {
-            matches!(&s.kind, TransformKind::Extension { name, .. }
-                if name == polylogue_query::catalog::MEASURE)
-        });
-        let (mut scope, wheres, mut top) = match &q.source {
-            Source::Unit {
-                unit, condition, ..
-            } => {
-                let top = condition.as_ref().map(top_level).unwrap_or_default();
-                // `A | where B` is the conjunction `(A) (B)`, the tree the
-                // parser builds for the joined text, so both select, rank
-                // and mark the same rows.
-                let mut conjunction: Vec<Condition> = condition.iter().cloned().collect();
-                conjunction.extend(staged.iter().cloned());
-                let wheres = match conjunction.len() {
-                    0 | 1 => conjunction,
-                    _ => vec![Condition {
-                        span: query_language::ast::Span {
-                            start: conjunction[0].span.start,
-                            end: conjunction[conjunction.len() - 1].span.end,
-                        },
-                        kind: ConditionKind::And {
-                            conditions: conjunction,
-                        },
-                    }],
-                };
-                (RowContext::plain(bind_unit(unit)?), wheres, top)
-            }
-            _ => return Err(not_built("this shared query source")),
+        let Some(selection) = Selection::of(q, &self.opts.origins, &self.opts.fields)? else {
+            return Err(not_built("this shared query source"));
         };
-        // Defaults are bound by the source's own conditions; a later filter
-        // only narrows.
-        let applied = self.applied_defaults(&scope, &top)?;
+        let stages = &q.transforms[selection.stages_from..];
+        self.measuring = selection.measured;
+        let mut scope = RowContext::plain(selection.unit);
+        if let Some(semantic) = &selection.semantic {
+            if !self.source_near_allowed {
+                return Err(custom_fields::similar_misplaced(semantic.span));
+            }
+            self.near_request = Some((
+                Near {
+                    text: semantic.text.clone(),
+                },
+                RowContext {
+                    unit: semantic.unit,
+                    a: scope.a.clone(),
+                },
+            ));
+        }
+        let mut top = selection.top_level();
+        // `A | where B` is the conjunction `(A) (B)`, the tree the parser
+        // builds for the joined text, so both select, rank and mark the
+        // same rows.
+        let wheres = match selection.filter.len() {
+            0 | 1 => selection.filter.clone(),
+            _ => vec![Condition {
+                span: query_language::ast::Span {
+                    start: selection.filter[0].span.start,
+                    end: selection.filter[selection.filter.len() - 1].span.end,
+                },
+                kind: ConditionKind::And {
+                    conditions: selection.filter.clone(),
+                },
+            }],
+        };
+        let applied: Vec<(String, String)> = selection
+            .defaults
+            .iter()
+            .map(|&id| (id.describe(), units::default_sql(id, &scope.a)))
+            .collect();
         let mut where_sql: Vec<String> = applied.iter().map(|(_, sql)| sql.clone()).collect();
         let defaults_only = where_sql.clone();
         if let Some(input) = &self.input_rows {
@@ -55,7 +58,7 @@ impl<'a> Compiler<'a> {
         }
         let mut why = vec![];
         for c in &wheres {
-            if relations::contains_order(c) {
+            if contains_order(c) {
                 continue;
             }
             let sql = self.cond(c, &scope, true)?;
@@ -64,18 +67,8 @@ impl<'a> Compiler<'a> {
                 self.snippet_terms.push(terms);
             }
         }
-        let counted: Vec<Condition> = top
-            .iter()
-            .cloned()
-            .chain(staged.iter().flat_map(top_level))
-            .collect();
-        for c in &counted {
-            if relations::contains_order(c) {
-                continue;
-            }
-            // `similar:` ranks rather than filters: it keeps every row.
-            let ranking = matches!(&c.kind, ConditionKind::Rank { .. });
-            if ranking {
+        for c in &top {
+            if contains_order(c) {
                 continue;
             }
             let rank = self.rank.clone();
@@ -271,112 +264,152 @@ impl<'a> Compiler<'a> {
         let unit = scope.unit;
         let mut row_count = None;
         let mut row_membership = None;
-        let (sql, shape, columns, order) = if let Some(rel) = matched {
-            let columns = rel.columns;
-            (
-                format!("{ctes}{}", rel.sql),
-                Shape::Matches,
-                columns,
-                rel.order,
-            )
-        } else {
-            let order = self.default_order(&scope);
-            let (pk, mut cols) = row_columns(unit, &scope.a, self.opts.clock.now.as_millisecond());
-            if !self.opts.fields.is_empty() {
-                cols.clear();
-                let fields = self.opts.fields.clone();
-                for field in &fields {
-                    let (expression, kind) = self.expr(field, &scope, 0)?;
-                    cols.push((
-                        flat(field),
-                        Self::display_value(&expression, kind),
-                        kind,
-                        Self::field_reference(field, &scope),
+        let mut keyed = None;
+        let (sql, shape, columns, order) =
+            if let Some(rel) = matched {
+                let columns = rel.columns;
+                (
+                    format!("{ctes}{}", rel.sql),
+                    Shape::Matches,
+                    columns,
+                    rel.order,
+                )
+            } else {
+                let order = self.default_order(&scope);
+                let (pk, mut cols) =
+                    row_columns(unit, &scope.a, self.opts.clock.now.as_millisecond());
+                if let Projection::Fields(fields) = &selection.projection {
+                    cols.clear();
+                    for field in fields {
+                        let (expression, kind) = self.expr(field, &scope, 0)?;
+                        cols.push((
+                            flat(field),
+                            Self::display_value(&expression, kind),
+                            kind,
+                            Self::field_reference(field, &scope),
+                        ));
+                    }
+                    self.shown.clear();
+                }
+                let mut columns: Vec<Column> = cols
+                    .iter()
+                    .map(|(name, _, kind, reference)| Column {
+                        name: name.clone(),
+                        kind: *kind,
+                        reference: *reference,
+                    })
+                    .collect();
+                for (name, expression, kind, reference) in std::mem::take(&mut self.shown) {
+                    if !columns.iter().any(|c| c.name == name) {
+                        columns.push(Column {
+                            name: name.clone(),
+                            kind,
+                            reference,
+                        });
+                        cols.push((name, expression, kind, reference));
+                    }
+                }
+                // The page's rows read their own columns; the rank shown comes
+                // from the key, which holds it already.
+                let row_select: Vec<String> =
+                    [
+                        format!("{pk} AS _pk"),
+                        format!("{} AS _recency", scope.a.expand(units::spec(unit).time)),
+                    ]
+                    .into_iter()
+                    .chain(cols.iter().map(|(name, expression, _, _)| {
+                        format!("{expression} AS {}", column_sql(name))
+                    }))
+                    .chain(units::spec(unit).identity.iter().enumerate().map(
+                        |(index, expression)| {
+                            format!("{} AS _identity{index}", scope.a.expand(expression))
+                        },
+                    ))
+                    .collect();
+                if let Some(rank) = self.ranking() {
+                    cols.push(("rank".into(), rank, ColKind::Number, None));
+                    columns.push(Column {
+                        name: "rank".into(),
+                        kind: ColKind::Number,
+                        reference: None,
+                    });
+                }
+                let mut select = vec![
+                    format!("{pk} AS _pk"),
+                    format!("{} AS _recency", scope.a.expand(units::spec(unit).time)),
+                ];
+                if let Some(rank) = self.ranking() {
+                    select.push(format!("{rank} AS _rank"));
+                }
+                select.extend(cols.iter().map(|(name, expression, _, _)| {
+                    format!("{expression} AS {}", column_sql(name))
+                }));
+                select.push(format!(
+                    "{} AS _near",
+                    self.near_rank.as_deref().unwrap_or("1")
+                ));
+                for (index, expression) in units::spec(unit).identity.iter().enumerate() {
+                    select.push(format!(
+                        "{} AS _identity{index}",
+                        scope.a.expand(expression)
                     ));
                 }
-                self.shown.clear();
-            }
-            let mut columns: Vec<Column> = cols
-                .iter()
-                .map(|(name, _, kind, reference)| Column {
-                    name: name.clone(),
-                    kind: *kind,
-                    reference: *reference,
-                })
-                .collect();
-            for (name, expression, kind, reference) in std::mem::take(&mut self.shown) {
-                if !columns.iter().any(|c| c.name == name) {
-                    columns.push(Column {
-                        name: name.clone(),
-                        kind,
-                        reference,
-                    });
-                    cols.push((name, expression, kind, reference));
-                }
-            }
-            if let Some(rank) = self.ranking() {
-                cols.push(("rank".into(), rank, ColKind::Number, None));
-                columns.push(Column {
-                    name: "rank".into(),
-                    kind: ColKind::Number,
-                    reference: None,
-                });
-            }
-            let mut select = vec![
-                format!("{pk} AS _pk"),
-                format!("{} AS _recency", scope.a.expand(units::spec(unit).time)),
-            ];
-            if let Some(rank) = self.ranking() {
-                select.push(format!("{rank} AS _rank"));
-            }
-            select.extend(
-                cols.iter().map(|(name, expression, _, _)| {
-                    format!("{expression} AS {}", column_sql(name))
-                }),
-            );
-            select.push(format!(
-                "{} AS _near",
-                self.near_rank.as_deref().unwrap_or("1")
-            ));
-            for (index, expression) in units::spec(unit).identity.iter().enumerate() {
-                select.push(format!(
-                    "{} AS _identity{index}",
-                    scope.a.expand(expression)
+                let without = self.near_rank.as_ref().map_or_else(
+                    || "0".to_owned(),
+                    |near| format!("count(*) FILTER (WHERE ({near}) IS NULL)"),
+                );
+                let (count_from, count_where) = count_relation
+                    .as_ref()
+                    .map(|(from, wh)| (from.as_str(), wh.as_str()))
+                    .unwrap_or((&from, &wh));
+                row_count = Some(format!(
+                    "{ctes}SELECT count(*), {without} FROM {count_from} WHERE {count_where}"
                 ));
-            }
-            let without = self.near_rank.as_ref().map_or_else(
-                || "0".to_owned(),
-                |near| format!("count(*) FILTER (WHERE ({near}) IS NULL)"),
-            );
-            let (count_from, count_where) = count_relation
-                .as_ref()
-                .map(|(from, wh)| (from.as_str(), wh.as_str()))
-                .unwrap_or((&from, &wh));
-            row_count = Some(format!(
-                "{ctes}SELECT count(*), {without} FROM {count_from} WHERE {count_where}"
-            ));
-            row_membership = Some(format!(
-                "{ctes}SELECT {pk} AS _pk,{} AS _near FROM {count_from} WHERE {count_where}",
-                self.near_rank.as_deref().unwrap_or("1")
-            ));
-            let (hidden, keys) = hidden_order(&order, "_o");
-            select.extend(hidden);
-            let sql = format!(
-                "{ctes}SELECT {} FROM {from} WHERE {wh} ORDER BY {}",
-                select.join(", "),
-                order_by(&keys)
-            );
-            (sql, Shape::Rows, columns, keys)
-        };
+                row_membership = Some(format!(
+                    "{ctes}SELECT {pk} AS _pk,{} AS _near FROM {count_from} WHERE {count_where}",
+                    self.near_rank.as_deref().unwrap_or("1")
+                ));
+                let (hidden, keys) = hidden_order(&order, "_o");
+                if measure.is_none() {
+                    let mut key_select = vec![format!("{pk} AS _pk")];
+                    if let Some(rank) = self.ranking() {
+                        key_select.push(format!("{rank} AS _rank"));
+                    }
+                    key_select.push(format!(
+                        "{} AS _near",
+                        self.near_rank.as_deref().unwrap_or("1")
+                    ));
+                    key_select.extend(hidden.iter().cloned());
+                    keyed = Some(KeyedRows {
+                        keys: format!(
+                            "{ctes}SELECT {} FROM {from} WHERE {wh}",
+                            key_select.join(", ")
+                        ),
+                        rows: format!(
+                            "{ctes}SELECT {} FROM {}",
+                            row_select.join(", "),
+                            base_from(unit, &scope.a)
+                        ),
+                        key: pk.clone(),
+                    });
+                }
+                select.extend(hidden);
+                let sql = format!(
+                    "{ctes}SELECT {} FROM {from} WHERE {wh} ORDER BY {}",
+                    select.join(", "),
+                    order_by(&keys)
+                );
+                (sql, Shape::Rows, columns, keys)
+            };
         let mut attach = vec![];
-        if !q.attach.is_empty() {
+        if !selection.attach.is_empty() {
             if shape != Shape::Rows {
                 return Err(QueryError::Invalid {
                     message: "attached rows apply to rows, not to groups or summaries".into(),
-                    position: q.attach[0].span.start,
+                    position: selection.attach[0].span.start,
                 });
             }
-            for child in &q.attach {
+            for child in &selection.attach {
                 attach.push(self.attach(child, &scope)?);
             }
         }
@@ -497,6 +530,7 @@ impl<'a> Compiler<'a> {
             resolved_times: self.resolved_times.into_inner(),
             measure,
             order,
+            keyed,
         })
     }
 
@@ -564,24 +598,10 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         top: &[Condition],
     ) -> Result<Vec<String>, QueryError> {
-        Ok(self
-            .applied_defaults(scope, top)?
-            .into_iter()
-            .map(|(_, sql)| sql)
-            .collect())
-    }
-
-    /// The defaults a unit binds with what each says, dropped by a top-level
-    /// condition naming their field.
-    pub(super) fn applied_defaults(
-        &mut self,
-        scope: &RowContext,
-        top: &[Condition],
-    ) -> Result<Vec<(String, String)>, QueryError> {
         Ok(
             polylogue_query::defaults::bind(scope.unit, top, &self.opts.origins, self.measuring)
                 .into_iter()
-                .map(|id| (id.describe(), units::default_sql(id, &scope.a)))
+                .map(|id| units::default_sql(id, &scope.a))
                 .collect(),
         )
     }

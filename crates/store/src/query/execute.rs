@@ -100,18 +100,21 @@ impl Reader<'_> {
             });
         }
         self.with_clock(&program.clock, || {
-            let params = values(&program.params);
             crate::read::limit::ReadLimit::set_stage("count");
-            let (count, without) = self.query_counts(&program.count_sql(), &params)?;
-            let mut page_params = params;
-            if let Some(after) = after {
-                page_params.extend(after.iter().map(sql_value));
-            }
-            page_params.push(SqlValue::Int(
-                i64::try_from(program.page_size.saturating_add(1)).unwrap_or(i64::MAX),
-            ));
+            let (count, without) =
+                self.query_counts(&program.count_sql(), &values(&program.params))?;
             crate::read::limit::ReadLimit::set_stage("page");
-            let mut rows = self.query(&program.page_sql(after.is_some()), &page_params)?;
+            let mut rows = Vec::new();
+            self.visit_page(
+                program,
+                after,
+                false,
+                i64::try_from(program.page_size.saturating_add(1)).unwrap_or(i64::MAX),
+                |row| {
+                    rows.push(row);
+                    Ok::<_, SelectionError>(std::ops::ControlFlow::Continue(()))
+                },
+            )?;
             let more = rows.len() as u64 > program.page_size;
             rows.truncate(usize::try_from(program.page_size).unwrap_or(usize::MAX));
             Ok(QueryPage {
@@ -122,6 +125,137 @@ impl Reader<'_> {
             })
         })
     }
+    /// Visit the rows of one page in order: at most `limit` rows (all for
+    /// -1) after the row whose order values are `after`, or before it when
+    /// `reverse`. Native rows are read key first: the page's keys in order,
+    /// then the columns of those keys only, so no row off the page is read
+    /// beyond its key. A derived relation's page holds its rows; read in
+    /// reverse, it sorts only order values and reads each row at its own.
+    pub(crate) fn visit_page<E>(
+        &self,
+        program: &Program,
+        after: Option<&[Value]>,
+        reverse: bool,
+        limit: i64,
+        mut visit: impl FnMut(Value) -> Result<std::ops::ControlFlow<()>, E>,
+    ) -> Result<(), E>
+    where
+        E: From<SelectionError>,
+    {
+        let mut params = values(&program.params);
+        if let Some(after) = after {
+            params.extend(after.iter().map(sql_value));
+        }
+        params.push(SqlValue::Int(limit));
+        let result = match program.hydrate_sql() {
+            Some(hydrate) => {
+                let mut keys = Vec::new();
+                self.query_each(
+                    &program.page_sql(after.is_some(), reverse),
+                    &params,
+                    |key| {
+                        keys.push(key);
+                        if keys.len() < HYDRATE_BATCH {
+                            return Ok(());
+                        }
+                        self.visit_hydrated(
+                            program,
+                            &hydrate,
+                            std::mem::take(&mut keys),
+                            &mut visit,
+                        )
+                    },
+                )
+                .and_then(|()| self.visit_hydrated(program, &hydrate, keys, &mut visit))
+            }
+            None if !reverse => {
+                self.query_each(&program.page_sql(after.is_some(), false), &params, |row| {
+                    flow(visit(row))
+                })
+            }
+            None => self.query_each(
+                &program.order_page_sql(after.is_some(), true),
+                &params,
+                |order| {
+                    let mut exact = values(&program.params);
+                    exact.extend(
+                        program
+                            .order
+                            .iter()
+                            .map(|key| sql_value(&order[&key.column])),
+                    );
+                    let row = self
+                        .query(&program.row_at_sql(), &exact)?
+                        .pop()
+                        .ok_or_else(|| {
+                            StreamError::Selection(SelectionError::Invalid {
+                                kind: "stale_cursor",
+                                message: "the selected row position is unavailable".into(),
+                            })
+                        })?;
+                    flow(visit(row))
+                },
+            ),
+        };
+        match result {
+            Ok(()) | Err(StreamError::Stop) => Ok(()),
+            Err(StreamError::Consumer(e)) => Err(e),
+            Err(StreamError::Selection(e)) => Err(E::from(e)),
+        }
+    }
+
+    /// The rows of `keys`, in their order, each with its key's order
+    /// values, rank and similarity.
+    fn visit_hydrated<E>(
+        &self,
+        program: &Program,
+        hydrate: &str,
+        keys: Vec<Value>,
+        visit: &mut impl FnMut(Value) -> Result<std::ops::ControlFlow<()>, E>,
+    ) -> Result<(), StreamError<E>> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let missing = |what: &str| {
+            StreamError::Selection(SelectionError::Invalid {
+                kind: "store",
+                message: format!("a selected row has no {what}"),
+            })
+        };
+        // A unit's key is an integer or, for changes, text: both are JSON
+        // scalars, and json_each returns each with its SQL type.
+        let pks = keys
+            .iter()
+            .map(|key| match &key["_pk"] {
+                pk @ (Value::Number(_) | Value::String(_)) => Ok(pk.clone()),
+                _ => Err(missing("key")),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut params = values(&program.params);
+        params.push(SqlValue::Text(Value::Array(pks.clone()).to_string()));
+        let mut rows = std::collections::HashMap::with_capacity(pks.len());
+        self.query_each(hydrate, &params, |row| {
+            rows.insert(row["_pk"].to_string(), row);
+            Ok::<_, StreamError<E>>(())
+        })?;
+        for (key, pk) in keys.into_iter().zip(pks) {
+            let mut row = rows
+                .get(&pk.to_string())
+                .cloned()
+                .ok_or_else(|| missing("columns"))?;
+            if let Value::Object(key) = key {
+                for (name, value) in key {
+                    if name == "_rank" {
+                        row["rank"] = value.clone();
+                    }
+                    row[name.as_str()] = value;
+                }
+            }
+            flow(visit(row))?;
+        }
+        Ok(())
+    }
+
     pub fn query_rows(&self, program: &Program) -> Result<Vec<Value>, SelectionError> {
         self.validate_selection(program)?;
         Ok(self.with_clock(&program.clock, || {
@@ -396,6 +530,17 @@ pub fn why(
         });
         defaults.chain(clauses).collect()
     })
+}
+
+/// Rows read per statement while a key-first answer streams.
+const HYDRATE_BATCH: usize = 256;
+
+fn flow<E>(visited: Result<std::ops::ControlFlow<()>, E>) -> Result<(), StreamError<E>> {
+    match visited {
+        Ok(std::ops::ControlFlow::Continue(())) => Ok(()),
+        Ok(std::ops::ControlFlow::Break(())) => Err(StreamError::Stop),
+        Err(e) => Err(StreamError::Consumer(e)),
+    }
 }
 
 enum StreamError<E> {

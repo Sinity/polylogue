@@ -78,41 +78,19 @@ fn any_of(x: &Call<'_, '_>, parts: Vec<String>) -> Result<String, QueryError> {
     Ok(format!("({})", parts.join(" OR ")))
 }
 
-pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    if !x.top
-        || !c.source_near_allowed
-        || x.span.start >= c.transforms_start
-        || c.near_request.is_some()
-    {
-        return Err(QueryError::Invalid {
-            message:
-                "similar: ranks the whole query, so it appears once among the top-level conditions"
-                    .into(),
-            position: x.span.start,
-        });
+/// A `similar:` term the selection did not take as its ranking: under OR or
+/// NOT, in a stage, a second one, or in a nested selection.
+pub(crate) fn near(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    Err(similar_misplaced(x.span))
+}
+
+pub(super) fn similar_misplaced(span: Span) -> QueryError {
+    QueryError::Invalid {
+        message:
+            "similar: ranks the whole query, so it appears once among the top-level conditions"
+                .into(),
+        position: span.start,
     }
-    if !matches!(x.unit, Unit::Sessions | Unit::Messages | Unit::Blocks) {
-        return Err(QueryError::Invalid {
-            message: format!(
-                "similar: ranks sessions, messages and blocks, not {}",
-                x.unit.name()
-            ),
-            position: x.span.start,
-        });
-    }
-    let text = x.value()?;
-    // Ranking by a reference's own stored vectors is designed and not built;
-    // embedding the reference's spelling as text would be a wrong, paid answer.
-    let origin_reference = text.split_once(':').is_some_and(|(origin, rest)| {
-        !rest.is_empty() && c.opts.origins.iter().any(|known| known == origin)
-    });
-    if origin_reference || polylogue_model::Reference::parse(&text).is_ok() {
-        return Err(QueryError::NotBuilt {
-            what: "similar: by a reference".into(),
-        });
-    }
-    c.near_request = Some((Near { text }, x.scope.clone()));
-    Ok("1".into())
 }
 
 impl Compiler<'_> {
