@@ -340,7 +340,7 @@ fn failed_catalog_transaction_retries_the_same_committed_definition_delta() {
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap_err();
     assert!(
-        matches!(&error,polylogue_store::StoreError::Invalid(message) if message.starts_with("injected fault at completion.before_commit")),
+        matches!(&error,polylogue_store::StoreError::Io(io) if io.to_string().starts_with("injected fault at completion.before_commit")),
         "{error:?}"
     );
     assert_eq!(state.position, Some(before.clone()));

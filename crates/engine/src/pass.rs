@@ -1524,6 +1524,9 @@ impl Engine {
         // ranges of started ones wait in `done_rx`, and every large input of
         // a pass would end up started, each holding its state.
         let mut started: HashSet<PathBuf> = HashSet::new();
+        // Plans whose range the writer refused for its content; their
+        // failures are recorded once the pool's writes are flushed.
+        let mut refused: Vec<(Plan, String)> = Vec::new();
         let mut outstanding = 0usize;
         let mut checked = Instant::now();
         let room = self.config.workers.max(1) * IN_POOL_PER_WORKER;
@@ -1654,6 +1657,20 @@ impl Engine {
                 }
                 continue;
             }
+            if d.write_failed && d.content_refused {
+                // Reading this range again is refused again: the chain stops
+                // at its cursor, failed with the writer's reason, until the
+                // bytes or the reading change.
+                if let Some(chain) = d.chain {
+                    plan.parser_chain = Some(chain);
+                    if d.end > plan.stored_upto {
+                        plan.stored_upto = d.end;
+                        plan.storing_started = true;
+                    }
+                }
+                refused.push((plan, d.error.unwrap_or_default()));
+                continue;
+            }
             if d.write_failed {
                 if let Some(error) = d.error {
                     pass.errors.push(error);
@@ -1706,6 +1723,11 @@ impl Engine {
         pass.blobs_appended += report.blobs_appended;
         pass.blobs_deduplicated += report.blobs_deduplicated;
         pass.errors.extend(report.errors);
+        for (mut plan, error) in refused {
+            let error = format!("the writer refused {}: {error}", plan.path.display());
+            self.record_failure(&mut plan, error, pass);
+            self.finish_plan(plan);
+        }
         Ok(())
     }
 

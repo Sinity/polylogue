@@ -101,6 +101,10 @@ pub struct Done {
     pub stored: u64,
     pub error: Option<String>,
     pub write_failed: bool,
+    /// The writer refused the batch's content, so the same range is refused
+    /// again; any other failed write is retried. When the bytes were stored
+    /// before the rows were refused, `chain` names where they are.
+    pub content_refused: bool,
     /// The batch carries a step that records the parser's failure.
     pub failure_recorded: bool,
     pub continuation_missing: bool,
@@ -395,7 +399,13 @@ fn acknowledge_groups(pending: Receiver<PendingGroup>, done: Sender<Done>) {
                             Some(Err(error)) => {
                                 result.error = Some(error.to_string());
                                 result.write_failed = true;
+                                result.content_refused = error.refuses_content();
                                 result.stored = 0;
+                                if let polylogue_store::StoreError::RowsRefused { stored, .. } =
+                                    &error
+                                {
+                                    result.chain = Some(stored.chain);
+                                }
                             }
                             Some(Ok(stored)) => {
                                 result.chain = Some(stored.chain);
@@ -499,6 +509,7 @@ pub(crate) fn run(
         stored: 0,
         error: None,
         write_failed: false,
+        content_refused: false,
         failure_recorded: false,
         continuation_missing: false,
         pending: None,
