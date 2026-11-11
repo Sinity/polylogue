@@ -8,7 +8,10 @@ use polylogue_model::BlobHash;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
+/// A field this shape does not name is refused, so rows written in an
+/// earlier shape never read as rows missing that field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct InputRows {
     /// Receiver-owned evidence for the acquired body, independent of overlap trimming.
     #[serde(default, skip_serializing_if = "Option::is_none")]

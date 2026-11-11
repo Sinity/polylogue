@@ -448,9 +448,9 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                             "session" | "document" | "event" | "link" | "background"
                             | "repository" => 5,
                             "parse_progress" => 6,
-                            // An input step's bytes moved to a list of extents,
-                            // one per chunk of bytes stored as chunks.
-                            "input" => 5,
+                            // An input step's rows refuse fields they do not
+                            // name (version 5 moved `extent` to `extents`).
+                            "input" => 6,
                             "fragment" => 3,
                             "query_run" => 4,
                             "restored_history" | "restored_assertion" | "attachment_binding"

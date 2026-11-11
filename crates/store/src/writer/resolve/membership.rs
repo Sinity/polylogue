@@ -51,10 +51,9 @@ pub(crate) struct Choices {
     pub message_mains: Vec<bool>,
     /// Each message row's order time, for the rows the step keeps.
     pub message_order_times: Vec<Option<i64>>,
-    /// Order times this step raised in the chain's later readings: each
-    /// reading of the session after the place takes at least the time
-    /// (session, place, time).
-    pub raised_order_times: Vec<(i64, (i64, i64), i64)>,
+    /// Order times this step computed again for the chain's later
+    /// readings: (message, order time).
+    pub recomputed_order_times: Vec<(i64, Option<i64>)>,
     pub keep_messages: Vec<bool>,
     pub keep_documents: Vec<bool>,
     pub events: BTreeMap<i64, Option<EventChoice>>,
@@ -189,6 +188,8 @@ struct MessageMember {
     /// The latest source time of this reading and the readings before it in
     /// its chain and session.
     order_time: Option<i64>,
+    /// This reading's own source time.
+    at: Option<i64>,
     hash: Vec<u8>,
     /// The message is named by its content, not by the source.
     content: bool,
@@ -360,7 +361,7 @@ fn load_message(
         None => None,
     };
     let mut statement = index.prepare_cached(
-        "SELECT s.input_pk,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.completion,s.route,s.seq,s.record_position,s.version_hash,s.id_kind,p.layout,i.id,s.order_time
+        "SELECT s.input_pk,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.completion,s.route,s.seq,s.record_position,s.version_hash,s.id_kind,p.layout,i.id,s.order_time,s.at
          FROM message_source s JOIN input_ref i ON i.pk=s.input_pk
          LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE message_pk=?1",
     )?;
@@ -380,6 +381,7 @@ fn load_message(
                     seq: r.get(8)?,
                     position: r.get(9)?,
                     order_time: r.get(14)?,
+                    at: r.get(15)?,
                     hash: r.get(10)?,
                     content: r.get::<_, String>(11)? == IdKind::Content.as_str(),
                 },
@@ -887,6 +889,7 @@ impl<'a> Projection<'a> {
                     seq,
                     position,
                     order_time: None,
+                    at: row.message.at.map(Timestamp::unix_ms),
                     hash: prepared.hash.to_vec(),
                     content: row.id_kind == IdKind::Content,
                 },
@@ -935,7 +938,7 @@ impl<'a> Projection<'a> {
         {
             if current.is_none_or(|(read, _)| read != session) {
                 if let Some((read, last)) = current.filter(|_| !restates) {
-                    self.raise_later(input, chain, read, last, running, choices)?;
+                    self.recompute_later(input, chain, read, last, running, choices)?;
                 }
                 running = if restates {
                     None
@@ -964,17 +967,18 @@ impl<'a> Projection<'a> {
         }
         // A restated conversation's later readings start afresh too.
         if let Some((session, last)) = current.filter(|_| !restates) {
-            self.raise_later(input, chain, session, last, running, choices)?;
+            self.recompute_later(input, chain, session, last, running, choices)?;
         }
         Ok(())
     }
 
-    /// A step that reads an earlier message of the chain again with a later
-    /// time ends with a higher order time than its next reading was given.
-    /// The chain's later readings in the session, stored or read earlier in
-    /// this snapshot, take that time, as reading the chain in one step would
-    /// give them; their messages are placed again.
-    fn raise_later(
+    /// A step that reads an earlier message of the chain again with another
+    /// time ends with an order time its next reading was not computed from.
+    /// The order times of the chain's later readings in the session, stored
+    /// or read earlier in this snapshot, are computed again from that time
+    /// and each reading's own time, as reading the chain in one step would
+    /// give them; the messages whose times change are placed again.
+    fn recompute_later(
         &mut self,
         input: i64,
         chain: i64,
@@ -983,29 +987,26 @@ impl<'a> Projection<'a> {
         time: Option<i64>,
         choices: &mut Choices,
     ) -> Result<()> {
-        let Some(time) = time else {
-            return Ok(());
-        };
         let is_later = |m: &MessageMember| {
             m.input == input
                 && m.chain == chain
                 && m.session == session
                 && (m.seq, m.position) > after
         };
-        let mut later = BTreeSet::new();
+        // Each later reading by message: its place, own time and order time.
+        let mut later = BTreeMap::<i64, ((i64, i64), Option<i64>, Option<i64>)>::new();
         if !self.reset_inputs.contains(&(input, chain)) {
-            later.extend(
-                self.index
-                    .prepare_cached(
-                        "SELECT message_pk FROM message_source
-                         WHERE input_pk=?1 AND chain=?2 AND session_pk=?3 AND (seq,record_position)>(?4,?5)
-                           AND (order_time IS NULL OR order_time<?6)",
-                    )?
-                    .query_map(params![input, chain, session, after.0, after.1, time], |r| {
-                        r.get::<_, i64>(0)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?,
-            );
+            let stored = self
+                .index
+                .prepare_cached(
+                    "SELECT message_pk,seq,record_position,at,order_time FROM message_source
+                     WHERE input_pk=?1 AND chain=?2 AND session_pk=?3 AND (seq,record_position)>(?4,?5)",
+                )?
+                .query_map(params![input, chain, session, after.0, after.1], |r| {
+                    Ok((r.get::<_, i64>(0)?, ((r.get(1)?, r.get(2)?), r.get(3)?, r.get(4)?)))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            later.extend(stored);
         }
         let key = (input, chain, session);
         if self
@@ -1013,26 +1014,28 @@ impl<'a> Projection<'a> {
             .get(&key)
             .is_some_and(|(last, _)| *last > after)
         {
-            later.extend(self.messages.members.iter().filter_map(|(pk, members)| {
-                members
-                    .iter()
-                    .any(|m| is_later(m) && m.order_time < Some(time))
-                    .then_some(*pk)
-            }));
+            for (pk, members) in &self.messages.members {
+                if let Some(m) = members.iter().find(|m| is_later(m)) {
+                    later.insert(*pk, ((m.seq, m.position), m.at, m.order_time));
+                }
+            }
         }
         if later.is_empty() {
             return Ok(());
         }
-        // The next step continues from the chain's last reading, which the
-        // index still holds with its earlier time until this step is written.
-        if let Some((last, last_time)) =
-            self.reading_before(input, chain, session, (i64::MAX, i64::MAX))?
-            && last > after
-        {
-            self.last_readings
-                .insert(key, (last, last_time.max(Some(time))));
+        let mut readings: Vec<_> = later.into_iter().collect();
+        readings.sort_by_key(|(_, (place, ..))| *place);
+        let mut running = time;
+        let mut changed = Vec::new();
+        for (pk, (_, at, order_time)) in &readings {
+            running = running.max(*at);
+            if running != *order_time {
+                changed.push((*pk, running));
+            }
         }
-        for pk in later {
+        let (last, ..) = readings.last().expect("later readings").1;
+        self.last_readings.insert(key, (last, running));
+        for (pk, time) in changed {
             if !self.messages.members.contains_key(&pk) {
                 let (members, shown) = load_message(self.index, pk, &mut self.message_layouts)?;
                 self.shown_messages.insert(pk, shown);
@@ -1044,13 +1047,13 @@ impl<'a> Projection<'a> {
                 .get_mut(&pk)
                 .into_iter()
                 .flatten()
-                .filter(|m| is_later(m) && m.order_time < Some(time))
+                .filter(|m| is_later(m))
             {
-                member.order_time = Some(time);
+                member.order_time = time;
                 self.messages.touched.insert(pk);
             }
+            choices.recomputed_order_times.push((pk, time));
         }
-        choices.raised_order_times.push((session, after, time));
         Ok(())
     }
 

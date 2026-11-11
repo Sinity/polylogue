@@ -145,6 +145,8 @@ CREATE TABLE message_source (
   record_position   INTEGER NOT NULL DEFAULT 0,
   order_time        INTEGER,                -- the latest source time (ms) of this reading and the readings
                                             --   before it in its chain and session; NULL before any time
+  at                INTEGER,                -- this reading's own source time (ms), from which order times are
+                                            --   computed again when an earlier reading's time changes
   completion        TEXT NOT NULL CHECK (completion IN ('finished','unknown','in_progress')),
   version_hash      BLOB NOT NULL REFERENCES message_version(version_hash), -- BLAKE3 of the version's canonical JSON: the last tie-break
   PRIMARY KEY (message_pk, input_pk, chain)

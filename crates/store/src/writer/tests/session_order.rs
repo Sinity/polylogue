@@ -129,18 +129,17 @@ fn export_and_capture_turns_read_in_time_order() {
     }
 }
 
-#[test]
-fn an_earlier_message_read_again_with_a_later_time_moves_the_readings_after_it() {
-    // A live chain flushes its open first turn, then sends it again with a
-    // later time in its next step. Read in one step, the untimed turn after
-    // it takes that later time, so it stays after the other input's turn.
+/// A live chain flushes its open first turn, then sends it again with
+/// another time in its next step; `expected` is the order of reading the
+/// chain in one step with the second time.
+fn read_again(first_time: i64, again: i64, expected: [&str; 4]) {
     let other = step("b", Route::Capture, 0, &[("between", Some(1_500))]);
     let first = step(
         "a",
         Route::Live,
         0,
         &[
-            ("open", Some(1_000)),
+            ("open", Some(first_time)),
             ("untimed", None),
             ("last", Some(3_000)),
         ],
@@ -149,7 +148,7 @@ fn an_earlier_message_read_again_with_a_later_time_moves_the_readings_after_it()
         "a",
         Route::Live,
         100,
-        vec![row(0, turn("open", Some(2_000)))],
+        vec![row(0, turn("open", Some(again)))],
         &["s"],
     );
     let whole = step(
@@ -157,15 +156,14 @@ fn an_earlier_message_read_again_with_a_later_time_moves_the_readings_after_it()
         Route::Live,
         0,
         &[
-            ("open", Some(2_000)),
+            ("open", Some(again)),
             ("untimed", None),
             ("last", Some(3_000)),
         ],
     );
     // A later input's reading of the untimed turn places it again from the
-    // stored readings, so the raised order time must be stored too.
+    // stored readings, so the computed order time must be stored too.
     let third = step("c", Route::Capture, 0, &[("untimed", Some(2_500))]);
-    let expected = ["between", "open", "untimed", "last"];
     assert_eq!(order(&store(&[&whole, &other, &third])), expected);
     for steps in [
         vec![&first, &resent, &other, &third],
@@ -195,6 +193,20 @@ fn an_earlier_message_read_again_with_a_later_time_moves_the_readings_after_it()
         .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
     assert_eq!(order(&w), expected, "resolved together");
+}
+
+#[test]
+fn an_earlier_message_read_again_with_a_later_time_moves_the_readings_after_it() {
+    // Read in one step, the untimed turn takes the later time, so it stays
+    // after the other input's turn.
+    read_again(1_000, 2_000, ["between", "open", "untimed", "last"]);
+}
+
+#[test]
+fn an_earlier_message_read_again_with_an_earlier_time_moves_the_readings_after_it() {
+    // Read in one step, the untimed turn takes the earlier time, so it comes
+    // before the other input's turn.
+    read_again(2_000, 1_000, ["open", "untimed", "between", "last"]);
 }
 
 #[derive(Debug, Clone)]
