@@ -92,8 +92,8 @@
     "f290b2dc965bf30d63452dd1d965600c2481bb85136c5aad59019921f6075c95"
   ],
   "polylogue-bundle": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=1,crate::export::VERSION=2,crate::polylogue_bundle::VERSION=3,polylogue_model::bundle::VERSION=1",
-    "4fcb59d67ad2417a78c0e8419f36e03c5b8bac09d07d09b3a73dfd2408426706"
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=1,crate::export::VERSION=2,crate::polylogue_bundle::VERSION=3,polylogue_model::bundle::VERSION=2",
+    "cb494a3ec2288e3c5e24ece1203b0ff6a54dbcb9ee765f7ebba6c6868ea08ddf"
   ],
   "polylogue-repo-lookup": [
     "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=1,crate::repo_lookup::VERSION=2",
