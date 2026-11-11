@@ -94,8 +94,8 @@ fn public_shape_kind_uses_declarations_instead_of_wire_discriminator_values() {
         &FIELDS,
     );
     let got = records.finish().unwrap();
-    let shape = &got.wire_shapes[&serde_json::to_string(&("*", "/type")).unwrap()];
-    assert_eq!(shape.record_kind, "*");
+    let shape = &got.wire_shapes[&serde_json::to_string(&("unknown_kind", "/type")).unwrap()];
+    assert_eq!(shape.record_kind, "unknown_kind");
     assert_eq!(shape.unknown_kind_count, 1);
     assert!(
         !serde_json::to_string(&got.wire_shapes)

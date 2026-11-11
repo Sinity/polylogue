@@ -83,9 +83,11 @@ fn repeated(tx: &Transaction<'_>, session_pk: i64) -> Result<HashMap<i64, String
     let mut wanted = HashMap::new();
     // Through the inputs parsed into the session, not its messages: a
     // session without a capture input costs one look at its few inputs.
+    // CROSS JOIN keeps the session's inputs the outer loop; the planner
+    // would otherwise scan every input of the format.
     let has_capture: bool = tx
         .prepare_cached(
-            "SELECT EXISTS (SELECT 1 FROM parsed p JOIN input_ref r ON r.pk = p.input_pk
+            "SELECT EXISTS (SELECT 1 FROM parsed p CROSS JOIN input_ref r ON r.pk = p.input_pk
                             WHERE p.session_pk = ?1 AND r.format = ?2)",
         )?
         .query_row(params![session_pk, CAPTURE], |r| r.get(0))?;

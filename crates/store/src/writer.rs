@@ -1758,6 +1758,12 @@ impl Inner {
             crate::fault::check("index.deferred", &self.location.root.to_string_lossy())?;
         }
         self.deferred_indexes.clear();
+        // Without row counts the planner rates a lookup by a column of few
+        // values (a call's action) like one by a session. A sample of each
+        // index is enough to tell them apart and reads a bounded number of
+        // rows. Only `main`: the attached databases are read-only here.
+        self.index
+            .execute_batch("PRAGMA analysis_limit = 1000; ANALYZE main;")?;
         add(Stage::SecondaryIndexes, started.elapsed());
         Ok(())
     }
