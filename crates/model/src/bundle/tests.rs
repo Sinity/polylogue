@@ -12,8 +12,15 @@ fn manifest() -> Manifest {
             index: 2,
             archive: 3,
         },
-        caught_up: false,
-        currency: crate::currency::IndexCurrency::Standalone,
+        freshness: crate::currency::ReadFreshness {
+            local: crate::currency::ReadCompleteness {
+                search: crate::currency::CompletenessDimension::Incomplete(vec![
+                    crate::currency::CompletenessReason::SearchPending,
+                ]),
+                ..crate::currency::ReadCompleteness::empty()
+            },
+            owner: crate::currency::IndexCurrency::Standalone,
+        },
         counts: Counts::default(),
         flags: Flags {
             format: Format::Json,
@@ -293,15 +300,15 @@ fn injected_field_evidence_keeps_message_identity_and_imports_as_declarations() 
 fn declared_blob_records_require_actual_blob_transfer() {
     let mut value: Manifest = serde_json::from_str(
         r#"{
-        "format":"polylogue-bundle","version":1,
+        "format":"polylogue-bundle","version":2,
         "query":"query:0000000000000000000000000000000000000000000000000000000000000000",
         "query_text":"synthetic","ran_at":"2026-01-01T00:00:00Z",
-        "read_at":{"generation":"synthetic","index":0,"archive":0},"caught_up":true,
+        "read_at":{"generation":"synthetic","index":0,"archive":0},
         "counts":{"sessions":0,"messages":0,"documents":0,"events":0,"links":0,
                   "authored":0,"assertions":0,"text_fragments":0,"variants":0,"variant_parts":0,"blobs":1},
         "flags":{"format":"jsonl","with_blobs":false,
                  "read":{"view":"transcript","inherited":false,"assertions":false}},
-        "enabled_variants":[],"author":"script:fixture","currency":{"mode":"standalone"}
+        "enabled_variants":[],"author":"script:fixture","freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"projection":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"owner":{"mode":"standalone"}}
     }"#,
     )
     .unwrap();

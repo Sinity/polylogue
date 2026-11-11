@@ -669,7 +669,7 @@ fn read_at(reader: &Reader<'_>) -> Result<crate::protocol::query::Position, Fail
         u64::try_from(value).map_err(|_| Failure::new("store", "a change counter is negative"))
     };
     Ok(crate::protocol::query::Position {
-        currency: None,
+        freshness: None,
         cursor: position.to_string(),
         index: counter(position.index)?,
         archive: counter(position.archive)?,

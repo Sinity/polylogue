@@ -30,7 +30,7 @@ fn run_query(call: &Call<'_>, input: QueryInput<'_>) -> Result<Answer<Value>, Fa
     let reader = call.reader()?;
     let context = call.context()?;
     let d = call.daemon;
-    let currency = d.currency(&reader)?;
+    let freshness = d.freshness(&reader)?;
     Ok(super::super::query::with_ranking(
         &reader,
         &d.warm,
@@ -52,7 +52,7 @@ fn run_query(call: &Call<'_>, input: QueryInput<'_>) -> Result<Answer<Value>, Fa
                 super::super::handler::finish_read_phase("optional query count")?;
                 prepared.complete()
             }) {
-                Ok(answer) => super::query_outcome(answer, &currency),
+                Ok(answer) => super::query_outcome(answer, &freshness),
                 Err(failure) => failure.answer(),
             }
         },

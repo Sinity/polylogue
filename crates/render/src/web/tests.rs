@@ -44,8 +44,10 @@ fn page() -> ReadPage {
                 index: 4,
                 archive: 7,
             },
-            caught_up: false,
-            currency: IndexCurrency::primary(Some(4), Some(7), Some(1.), Some(true), None),
+            freshness: polylogue_model::currency::ReadFreshness {
+                local: polylogue_model::currency::ReadCompleteness::empty(),
+                owner: IndexCurrency::primary(Some(4), Some(7), Some(1.), Some(true), None),
+            },
         },
         records: vec![],
         document: ReadDocument {

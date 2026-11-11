@@ -136,7 +136,7 @@ pub(super) fn declared(
         file.rewind()?;
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "retired polylogue-export input requires explicit private conversion to polylogue-bundle v1",
+            "retired polylogue-export input requires explicit private conversion to polylogue-bundle v2",
         ));
     }
     file.rewind()?;

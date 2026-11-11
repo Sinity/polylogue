@@ -4,7 +4,7 @@ Search finds sessions, messages and assertions by their words, by fragments of t
 
 The language, units, defaults, paging and answers are in [query.md](query.md); `related:` rankings derived from sessions are in [measures.md](measures.md); the web search view is in [web.md](web.md).
 
-The search index has no legitimately incomplete state: it converges with the archive, and lag shows as `up_to_date: false` in the answer, never as a different answer.
+The search index has no legitimately incomplete state: it converges with the archive, and lag appears in the answer's `freshness` report with a degraded outcome, never as a different answer.
 
 ## Terms
 

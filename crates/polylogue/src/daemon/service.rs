@@ -159,31 +159,30 @@ impl Daemon {
         })
     }
 
-    /// Currency comes from the reader checkpoint and cached owner observations.
-    pub(crate) fn currency(
+    /// Freshness comes from this reader snapshot and cached owner observations.
+    pub(crate) fn freshness(
         &self,
         reader: &polylogue_store::Reader<'_>,
-    ) -> polylogue_store::Result<polylogue_model::currency::IndexCurrency> {
+    ) -> polylogue_store::Result<polylogue_model::currency::ReadFreshness> {
         use polylogue_model::currency::IndexCurrency;
-        let _ = reader;
-        match &self.mode {
-            ModeState::Standalone => Ok(IndexCurrency::Standalone),
+        let local = reader.completeness(&polylogue_engine::reading_contracts())?;
+        let owner = match &self.mode {
+            ModeState::Standalone => IndexCurrency::Standalone,
             #[cfg(feature = "sinex")]
             ModeState::Primary { connection } => connection
                 .currency(reader.confirmed_checkpoint()?, reader.confirmed_scope()?)
-                .map_err(StoreError::from),
-            ModeState::Blocked { .. } if !self.archive.is_primary() => {
-                Ok(IndexCurrency::Standalone)
-            }
-            ModeState::Blocked { error, .. } => Ok(IndexCurrency::primary(
+                .map_err(StoreError::from)?,
+            ModeState::Blocked { .. } if !self.archive.is_primary() => IndexCurrency::Standalone,
+            ModeState::Blocked { error, .. } => IndexCurrency::primary(
                 reader.confirmed_checkpoint()?,
                 None,
                 None,
                 Some(false),
                 Some(error.clone()),
             )
-            .with_scope(reader.confirmed_scope()?)),
-        }
+            .with_scope(reader.confirmed_scope()?),
+        };
+        Ok(polylogue_model::currency::ReadFreshness { local, owner })
     }
 }
 
@@ -202,23 +201,23 @@ impl Daemon {
     }
 }
 
-/// A query's answer over an index of the given currency: degraded, with a
+/// A query's answer over a snapshot of the given freshness: degraded, with a
 /// note, when the index is not current or a part is incomplete; empty when
 /// it matched nothing; ok otherwise.
 fn query_outcome(
     answer: super::query::QueryAnswer,
-    currency: &polylogue_model::currency::IndexCurrency,
+    freshness: &polylogue_model::currency::ReadFreshness,
 ) -> Answer<Value> {
     let super::query::QueryAnswer {
         mut value,
         outcome,
         notes,
     } = answer;
-    value.read_at_mut().currency = Some(currency.clone());
+    value.read_at_mut().freshness = Some(freshness.clone());
     let value = serde_json::to_value(value).expect("a query result serializes");
     let mut notes = notes;
-    notes.extend(crate::protocol::currency_note(currency).map(str::to_owned));
-    let degraded = currency.degraded() || outcome == super::query::Outcome::Incomplete;
+    notes.extend(freshness.notes().into_iter().map(str::to_owned));
+    let degraded = !freshness.up_to_date() || outcome == super::query::Outcome::Incomplete;
     if degraded {
         command_surface::Answer {
             outcome: command_surface::Outcome::Degraded {

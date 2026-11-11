@@ -147,8 +147,10 @@ fn read_stream() -> (Vec<u8>, polylogue_model::read::ReadDocument) {
                 index: 1,
                 archive: 1,
             },
-            caught_up: true,
-            currency: polylogue_model::currency::IndexCurrency::Standalone,
+            freshness: polylogue_model::currency::ReadFreshness {
+                local: polylogue_model::currency::ReadCompleteness::empty(),
+                owner: polylogue_model::currency::IndexCurrency::Standalone,
+            },
             enabled_variants: vec![],
             author: polylogue_model::Author::Operator,
             notes: vec![],

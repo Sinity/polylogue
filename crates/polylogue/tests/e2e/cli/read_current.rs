@@ -182,13 +182,12 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
     eprintln!(
         "bundle snapshot: positions={:?}, caught_up={}, currency={:?}, incomplete={:?}, coverage={:?}",
         manifest.read_at,
-        manifest.caught_up,
-        manifest.currency,
+        manifest.freshness.up_to_date(),
+        manifest.freshness.owner,
         manifest.incomplete,
         manifest.coverage
     );
-    let degraded = !manifest.caught_up
-        || manifest.currency.degraded()
+    let degraded = !manifest.freshness.up_to_date()
         || !manifest.incomplete.is_empty()
         || !manifest.coverage.is_empty();
     assert_eq!(delivered.status.code(), Some(if degraded { 5 } else { 0 }));

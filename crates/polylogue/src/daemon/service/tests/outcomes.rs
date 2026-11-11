@@ -5,13 +5,13 @@
 use super::*;
 use crate::daemon::query::{Outcome, QueryAnswer};
 use crate::test_answers;
-use polylogue_model::currency::IndexCurrency;
+use polylogue_model::currency::{IndexCurrency, ReadCompleteness, ReadFreshness};
 
 fn query(outcome: Outcome, notes: &[&str]) -> QueryAnswer {
     QueryAnswer {
         value: crate::protocol::query::Answer::Rows(Box::new(crate::protocol::query::Rows {
             read_at: crate::protocol::query::Position {
-                currency: None,
+                freshness: None,
                 generation: "synthetic".into(),
                 index: 1,
                 archive: 1,
@@ -57,13 +57,22 @@ fn synthetic_context() -> crate::operation::Context {
     )
 }
 
-fn behind() -> IndexCurrency {
-    IndexCurrency::primary(Some(5), Some(8), Some(0.5), Some(true), None)
+fn current() -> ReadFreshness {
+    ReadFreshness {
+        local: ReadCompleteness::empty(),
+        owner: IndexCurrency::Standalone,
+    }
+}
+fn behind() -> ReadFreshness {
+    ReadFreshness {
+        local: ReadCompleteness::empty(),
+        owner: IndexCurrency::primary(Some(5), Some(8), Some(0.5), Some(true), None),
+    }
 }
 
 #[test]
 fn a_query_that_matched_nothing_is_empty_with_exit_one() {
-    let answer = query_outcome(query(Outcome::Empty, &[]), &IndexCurrency::Standalone);
+    let answer = query_outcome(query(Outcome::Empty, &[]), &current());
     assert_eq!(answer.exit_code(), 1);
     assert_eq!(answer.http_status(), Some(200));
     let value = test_answers::empty(answer);
@@ -73,7 +82,7 @@ fn a_query_that_matched_nothing_is_empty_with_exit_one() {
 #[test]
 fn a_query_with_rows_or_a_measure_over_a_current_index_is_ok() {
     for outcome in [Outcome::Rows, Outcome::Measure] {
-        let answer = query_outcome(query(outcome, &[]), &IndexCurrency::Standalone);
+        let answer = query_outcome(query(outcome, &[]), &current());
         assert_eq!(answer.exit_code(), 0, "{outcome:?}");
         assert!(
             crate::protocol::notes(&answer)
@@ -89,7 +98,7 @@ fn a_query_with_rows_or_a_measure_over_a_current_index_is_ok() {
 fn an_incomplete_query_is_degraded_and_names_the_missing_part() {
     let answer = query_outcome(
         query(Outcome::Incomplete, &["semantic vectors unavailable"]),
-        &IndexCurrency::Standalone,
+        &current(),
     );
     assert_eq!(answer.exit_code(), 5);
     assert_eq!(answer.http_status(), Some(200));
@@ -103,13 +112,9 @@ fn a_query_over_an_index_that_is_behind_is_degraded_even_with_rows_or_none() {
         let answer = query_outcome(query(outcome, &[]), &behind());
         assert_eq!(answer.exit_code(), 5, "{outcome:?}");
         let (value, notes) = test_answers::degraded(answer);
+        assert_eq!(notes, behind().notes(), "{outcome:?}");
         assert_eq!(
-            notes,
-            [crate::protocol::currency_note(&behind()).unwrap()],
-            "{outcome:?}"
-        );
-        assert_eq!(
-            value["read_at"]["currency"],
+            value["read_at"]["freshness"],
             serde_json::to_value(behind()).unwrap()
         );
     }
@@ -139,4 +144,32 @@ fn an_import_with_pending_user_state_is_degraded_with_its_note() {
             .is_empty()
     );
     test_answers::ok(answer);
+}
+
+#[test]
+fn answer_reports_pending_search_text_and_parse_lag() {
+    use polylogue_model::currency::{CompletenessDimension, CompletenessReason};
+    let mut freshness = current();
+    freshness.local.search =
+        CompletenessDimension::Incomplete(vec![CompletenessReason::SearchPending]);
+    freshness.local.parsing =
+        CompletenessDimension::Incomplete(vec![CompletenessReason::ParserBehind]);
+    let answer = query_outcome(query(Outcome::Rows, &[]), &freshness);
+    assert_eq!(answer.exit_code(), 5);
+    let (value, notes) = test_answers::degraded(answer);
+    assert_eq!(
+        notes,
+        [
+            "parsing is behind the stored bytes",
+            "search text is pending"
+        ]
+    );
+    assert_eq!(
+        value["read_at"]["freshness"],
+        serde_json::to_value(&freshness).unwrap()
+    );
+    let answer = crate::protocol::read(value.clone(), &freshness);
+    let (same_value, same_notes) = test_answers::degraded(answer);
+    assert_eq!(same_value, value);
+    assert_eq!(same_notes, notes);
 }

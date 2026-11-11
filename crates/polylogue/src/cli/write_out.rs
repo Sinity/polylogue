@@ -386,10 +386,7 @@ fn consume(
                 }
                 let begin: ReadBegin = serde_json::from_str(&frame.data).map_err(invalid)?;
                 begin.options.validate().map_err(invalid)?;
-                if begin.snapshot.currency.degraded()
-                    || !begin.snapshot.caught_up
-                    || !begin.snapshot.incomplete.is_empty()
-                {
+                if !begin.snapshot.freshness.up_to_date() || !begin.snapshot.incomplete.is_empty() {
                     code = 5;
                 }
                 sink = Some(if directory {

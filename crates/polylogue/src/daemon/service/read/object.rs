@@ -110,15 +110,13 @@ fn execute<T>(
         || {
             reader.check()?;
             scope.check()?;
-            let caught_up = super::caught_up(reader)?;
             let run_reference = format!("run:{id}");
             let snapshot = ReadSnapshot {
                 query: run_reference.clone(),
                 query_text: reference.to_string(),
                 ran_at: operation.ran_at,
                 read_at: positions,
-                caught_up,
-                currency: d.currency(reader)?,
+                freshness: d.freshness(reader)?,
                 enabled_variants: vec![],
                 author: operation.authorship.author.clone(),
                 notes: vec![],
@@ -249,7 +247,7 @@ pub(super) fn page(
     );
     Some(match result {
         Ok(page) => match serde_json::to_value(&page) {
-            Ok(value) => crate::protocol::read(value, &page.snapshot.currency),
+            Ok(value) => crate::protocol::read(value, &page.snapshot.freshness),
             Err(problem) => error("internal", problem),
         },
         Err(failure) => failure.answer(),
