@@ -117,6 +117,7 @@ impl Engine {
                                         memory,
                                         &mut bytes_read,
                                         &stopped_attempt,
+                                        stop,
                                     )
                                 }))
                                 .unwrap_or_else(|_| {
@@ -248,6 +249,7 @@ impl Engine {
                 match reply {
                     Ok(Some(reply)) => commits.push_back((plan, reply)),
                     Ok(None) => self.release_reading(&mut busy, &plan.path),
+                    Err(EngineError::Stopped) => self.release_reading(&mut busy, &plan.path),
                     Err(error) => {
                         self.release_reading(&mut busy, &plan.path);
                         let message = format!("re-parse {}: {error}", plan.path.display());
@@ -422,6 +424,7 @@ fn release_path(busy: &mut HashMap<PathBuf, usize>, path: &Path) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare(
     plan: &mut Plan,
     archive: &Archive,
@@ -430,6 +433,7 @@ fn prepare(
     memory: &Memory,
     bytes_read: &mut u64,
     stopped_attempt: &StoppedAttempt,
+    stop: &StopRequest,
 ) -> Result<Option<ChainReading>, EngineError> {
     if let pool::Bytes::Unloaded {
         chain,
@@ -455,6 +459,10 @@ fn prepare(
     if let Some(polylogue_sources::Parse::Export(mut parser)) = (plan.origin.open)(&plan.path) {
         let _charge = memory.take(plan.size.min(plan.chunk));
         let read = crate::import::exports::parse_export(plan, &mut *parser, blobs, |mut item| {
+            // A reading commits whole, so a stop drops what was prepared.
+            if stop.requested() {
+                return Err(EngineError::Stopped);
+            }
             let mut decoded = Vec::new();
             let mut files = Vec::new();
             for blob in std::mem::take(&mut item.output.blobs) {
@@ -495,6 +503,9 @@ fn prepare(
             None
         };
         while !plan.finished() {
+            if stop.requested() {
+                return Err(EngineError::Stopped);
+            }
             let mut job = plan.next_job(stopped_attempt);
             job.parser_context = context.clone();
             let bytes = job.end - job.start;
