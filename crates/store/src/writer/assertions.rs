@@ -63,7 +63,8 @@ impl Inner {
         let counter = bump_counter(&tx)?;
         crate::assertions::apply(&tx, std::slice::from_ref(&restoration.fact), counter)?;
         crate::write_lock::commit(tx)?;
-        self.commits.committed();
+        self.commits
+            .committed(crate::completion::Committed::AUTHORED);
         Ok(outcome)
     }
 }

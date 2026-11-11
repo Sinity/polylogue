@@ -89,9 +89,9 @@ pub(super) async fn run(d: Arc<Daemon>, stop: CancellationToken) {
     let trace_daemon = Arc::clone(&d);
     let bridge = tokio::task::spawn_blocking(move || {
         while !stopped.load(std::sync::atomic::Ordering::Acquire) {
-            if commits.recv().is_err() {
+            let Ok(committed) = commits.recv() else {
                 break;
-            }
+            };
             #[cfg(test)]
             super::observations::emit(
                 &trace_daemon,
@@ -99,6 +99,16 @@ pub(super) async fn run(d: Arc<Daemon>, stop: CancellationToken) {
             );
             if stopped.load(std::sync::atomic::Ordering::Acquire) {
                 break;
+            }
+            // A tick reads the rule set, the attention settings and its own
+            // checkpoint, all authored records. A rule's query reads
+            // content, but every rule is held until its closure is proven
+            // (`rules::definition`), so while none runs, a commit of content
+            // or of a read's run record changes nothing a tick reads.
+            if !committed.authored {
+                #[cfg(test)]
+                super::observations::emit(&trace_daemon, super::observations::Phase::CueIgnored);
+                continue;
             }
             let forwarded = changed.try_send(());
             #[cfg(test)]

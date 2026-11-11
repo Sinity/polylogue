@@ -1,3 +1,4 @@
+use super::observations::Phase;
 use super::*;
 use polylogue_model::signal::Outbox;
 
@@ -191,51 +192,124 @@ fn restart_recovers_confirmed_outbox_and_preserves_unknown_attempt() {
     assert_eq!(receipts.len(), 1);
 }
 
+/// The signals worker on its own thread, stopped and joined on drop.
+struct Worker {
+    stop: Option<std::sync::mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl Drop for Worker {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
+}
+/// The worker's phases as they arrive, bounded by `deadline`.
+struct Observe<'a> {
+    events: std::sync::mpsc::Receiver<Phase>,
+    daemon: &'a Daemon,
+    deadline: std::time::Instant,
+    seen: Vec<Phase>,
+}
+impl Observe<'_> {
+    fn next(&mut self, stage: &str) -> Phase {
+        let result = self.events.recv_timeout(
+            self.deadline
+                .saturating_duration_since(std::time::Instant::now()),
+        );
+        let event = result.unwrap_or_else(|error| {
+            let phases = self.seen.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+            panic!("completion cue did not reach the signal controller before its 30s refresh; stage={stage}; receive={error}; status={}; phases:\n{phases}", self.daemon.signals.lock().unwrap());
+        });
+        self.seen.push(event.clone());
+        event
+    }
+    fn until(&mut self, stage: &str, mut matches: impl FnMut(&Phase) -> bool) -> Phase {
+        loop {
+            let event = self.next(stage);
+            if matches(&event) {
+                return event;
+            }
+        }
+    }
+}
+
+/// A read records its run, and content arrives, without waking the rules;
+/// the next authored commit wakes them.
+#[test]
+fn only_authored_commits_wake_the_rules() {
+    let mut fixture = crate::test_daemon::start("synthetic");
+    fixture.pause_signals();
+    // The bootstrap checkpoint is written first, so the worker starts read-only.
+    tick(&fixture.daemon).unwrap();
+    let (events, observed) = std::sync::mpsc::channel();
+    *fixture.daemon.signal_trace.lock().unwrap() = Some(events);
+    let (stop, stopped) = std::sync::mpsc::channel();
+    let daemon = Arc::clone(&fixture.daemon);
+    let _worker = Worker {
+        stop: Some(stop),
+        thread: Some(std::thread::spawn(move || run(daemon, stopped))),
+    };
+    let mut observe = Observe {
+        events: observed,
+        daemon: &fixture.daemon,
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(10),
+        seen: vec![],
+    };
+    observe.until("startup", |phase| matches!(phase, Phase::ControllerWaiting));
+    let writes = fixture.daemon.writes.as_ref().unwrap();
+    let committed = writes.completion_commits();
+    // A first-page read hands its question and run to the writer.
+    let read = crate::test_daemon::Call::new("read", json!({"target": "messages"}))
+        .answer(&fixture.daemon);
+    assert!(read.value().is_some(), "{read:?}");
+    let records = committed.recv().unwrap();
+    assert!(records.query_records && !records.authored, "{records:?}");
+    observe.until("run record", |phase| matches!(phase, Phase::CueIgnored));
+    // New content.
+    let source = fixture.home.join(".claude/projects/-p/s1.jsonl");
+    let mut bytes = std::fs::read(&source).unwrap();
+    bytes.extend_from_slice(polylogue_testkit::claude_user("u2", "s1", "later").as_bytes());
+    std::fs::write(&source, bytes).unwrap();
+    loop {
+        if committed.recv().unwrap().content {
+            break;
+        }
+    }
+    observe.until("content", |phase| matches!(phase, Phase::CueIgnored));
+    let write = UserWrite::Assert {
+        assertions: vec![polylogue_model::assertion::NewAssertion {
+            kind: polylogue_model::assertion::AssertionKind::Signal,
+            key: Some("authored-wake".into()),
+            value: Some(json!({"name":"authored-wake","query":"sessions"})),
+            valid_until: None,
+            links: vec![],
+        }],
+    };
+    let context = operation(&fixture.daemon).unwrap();
+    writes
+        .user(context.request("authored-wake".into(), write))
+        .unwrap();
+    observe.until("authored", |phase| {
+        matches!(phase, Phase::ControllerWake { refresh: false })
+    });
+    assert!(
+        !observe
+            .seen
+            .iter()
+            .take_while(|phase| !matches!(phase, Phase::ControllerWake { refresh: false }))
+            .skip_while(|phase| !matches!(phase, Phase::ControllerWaiting))
+            .any(|phase| matches!(phase, Phase::TickStarted { .. })),
+        "a read or content commit started a tick: {:?}",
+        observe.seen
+    );
+}
+
 #[test]
 fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
-    use super::observations::Phase;
-    struct Worker {
-        stop: Option<std::sync::mpsc::Sender<()>>,
-        thread: Option<std::thread::JoinHandle<()>>,
-    }
-    impl Drop for Worker {
-        fn drop(&mut self) {
-            if let Some(stop) = self.stop.take() {
-                let _ = stop.send(());
-            }
-            if let Some(thread) = self.thread.take() {
-                thread.join().unwrap();
-            }
-        }
-    }
-    struct Observe<'a> {
-        events: std::sync::mpsc::Receiver<Phase>,
-        daemon: &'a Daemon,
-        deadline: std::time::Instant,
-        seen: Vec<Phase>,
-    }
-    impl Observe<'_> {
-        fn next(&mut self, stage: &str) -> Phase {
-            let result = self.events.recv_timeout(
-                self.deadline
-                    .saturating_duration_since(std::time::Instant::now()),
-            );
-            let event = result.unwrap_or_else(|error| {
-                let phases = self.seen.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-                panic!("completion cue did not reach the signal controller before its 30s refresh; stage={stage}; receive={error}; status={}; phases:\n{phases}", self.daemon.signals.lock().unwrap());
-            });
-            self.seen.push(event.clone());
-            event
-        }
-        fn until(&mut self, stage: &str, mut matches: impl FnMut(&Phase) -> bool) -> Phase {
-            loop {
-                let event = self.next(stage);
-                if matches(&event) {
-                    return event;
-                }
-            }
-        }
-    }
     const FIXED: i64 = 1_792_332_000_000;
     let mut fixture = crate::test_daemon::start_with_clock(
         "synthetic",

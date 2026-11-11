@@ -34,7 +34,7 @@ pub fn writes() -> u64 {
 
 pub(crate) fn wrote() {
     WRITES.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    WRITE_EVENTS.committed();
+    WRITE_EVENTS.committed(crate::completion::Committed::CONTENT);
 }
 
 /// Cues after each commit that stored vectors in this process.

@@ -41,7 +41,8 @@ impl Inner {
         }
         tx.commit()?;
         if changed {
-            self.commits.committed();
+            self.commits
+                .committed(crate::completion::Committed::AUTHORED);
         }
         Ok(())
     }
@@ -76,7 +77,8 @@ impl Inner {
         let counter = bump_counter(&tx)?;
         let outcome = crate::primary::authored::restore(&tx, &restoration.prepared, counter)?;
         crate::write_lock::commit(tx)?;
-        self.commits.committed();
+        self.commits
+            .committed(crate::completion::Committed::AUTHORED);
         self.project_variant_text()?;
         Ok(outcome)
     }

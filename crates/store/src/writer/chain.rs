@@ -728,7 +728,8 @@ impl Inner {
         crate::fault::check("write.index_commit", "")?;
         crate::fault::check("reparse.commit", &batch.input.id)?;
         crate::timing::time(crate::timing::Stage::Commit, || tx.commit())?;
-        self.commits.committed();
+        self.commits
+            .committed(crate::completion::Committed::CONTENT);
         self.search.wake();
         self.report.transactions += 1;
         Ok(written)

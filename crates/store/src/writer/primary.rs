@@ -4,6 +4,29 @@ mod export;
 use crate::primary::{Product, ProductWrite, SourceLocation};
 use polylogue_model::authored::PreparedRequest;
 
+/// What a page of confirmed facts changes. A lifecycle change, a refusal or
+/// a control may concern any record, so it counts as every kind.
+fn confirmed_kinds(events: &[crate::primary::Confirmed]) -> crate::completion::Committed {
+    use crate::completion::Committed;
+    let mut kinds = Committed::default();
+    for event in events {
+        let kind = match &event.change {
+            crate::primary::ConfirmedChange::Live(product) => match product.as_ref() {
+                Product::Query { .. }
+                | Product::QueryRun { .. }
+                | Product::QueryRunOutcome { .. } => Committed::QUERY_RECORDS,
+                Product::Request(_)
+                | Product::RestoredRequest { .. }
+                | Product::RestoredAssertion { .. } => Committed::AUTHORED,
+                _ => Committed::CONTENT,
+            },
+            _ => Committed::EVERY,
+        };
+        kinds.merge(kind);
+    }
+    kinds
+}
+
 impl Inner {
     pub(super) fn primary_cache_ready(&self) -> Result<()> {
         self.location.read_scope.token()?;
@@ -43,7 +66,7 @@ impl Inner {
                 }
             };
             if changed {
-                self.commits.committed();
+                self.commits.committed(crate::completion::Committed::EVERY);
                 self.report.transactions += 1;
             }
             return Ok(0);
@@ -56,7 +79,7 @@ impl Inner {
             if let Err(error) = &result {
                 self.stream_followed(Some(error.to_string()));
             }
-            self.commits.committed();
+            self.commits.committed(confirmed_kinds(events));
             self.search.wake();
             self.report.transactions += 1;
         }

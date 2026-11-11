@@ -246,7 +246,8 @@ impl Inner {
         if tx.total_changes() != before {
             scoped::require_current(&self.location, scope)?;
             crate::write_lock::commit(tx)?;
-            self.commits.committed();
+            self.commits
+                .committed(crate::completion::Committed::QUERY_RECORDS);
             self.report.transactions += 1;
         } else {
             tx.rollback()?;
@@ -307,7 +308,8 @@ impl Inner {
         crate::query_objects::apply_run(&tx, run, sequence, 0)?;
         if tx.total_changes() != before {
             crate::write_lock::commit(tx)?;
-            self.commits.committed();
+            self.commits
+                .committed(crate::completion::Committed::QUERY_RECORDS);
             self.report.transactions += 1;
         } else {
             tx.rollback()?;
@@ -350,7 +352,8 @@ impl Inner {
         if tx.total_changes() != before {
             bump_counter(&tx)?;
             crate::write_lock::commit(tx)?;
-            self.commits.committed();
+            self.commits
+                .committed(crate::completion::Committed::QUERY_RECORDS);
             self.report.transactions += 1;
         } else {
             tx.rollback()?;

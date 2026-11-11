@@ -214,7 +214,7 @@ fn confirm_capture(
             remaining
         };
         match commits.recv_timeout(wait) {
-            Ok(()) => {}
+            Ok(_) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) if interrupted => {}
             Err(error) => panic!(
                 "native capture/replay wait: {error}; {}; {}",
