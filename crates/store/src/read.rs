@@ -100,7 +100,7 @@ pub struct ReadPool {
     max_readers: usize,
     cache_kib: i64,
     /// Wakes waiting checkouts when the access scope changes.
-    _scope_wake: scope::ScopeInvalidation,
+    _scope_wake: Arc<scope::ResetWake>,
     #[cfg(test)]
     changed: Condvar,
 }
@@ -237,16 +237,15 @@ impl ReadPool {
         Self::with_budget(archive, 4, 128 << 20)
     }
 
-    /// `memory_bytes` is the combined SQLite page-cache target of all pool
-    /// reader slots, the reserved one included, including index, attached archive and optional embeddings. Mmap is disabled
+    /// `memory_bytes` is the combined SQLite page-cache target of the
+    /// `max_readers` reader slots, including index, attached archive and
+    /// optional embeddings; the reserved connection takes one slot's share
+    /// on top. Mmap is disabled
     /// so mapped pages cannot multiply outside that allocation.
     /// This is not a process RSS limit: result values and SQLite work space vary.
     pub fn with_budget(archive: &Archive, max_readers: usize, memory_bytes: u64) -> Result<Self> {
-        // The reserved connection shares the budget.
         let divisor = u64::try_from(max_readers)
             .ok()
-            .and_then(|n| n.checked_add(1))
-            .filter(|_| max_readers > 0)
             .and_then(|n| n.checked_mul(3 * 1024))
             .filter(|n| *n != 0)
             .ok_or_else(|| {
@@ -262,13 +261,11 @@ impl ReadPool {
             })?;
         let state = Arc::new(Mutex::new(PoolState::default()));
         let available = Arc::new(Condvar::new());
-        let scope_wake = {
+        let scope_wake: Arc<scope::ResetWake> = {
             let (state, available) = (Arc::clone(&state), Arc::clone(&available));
-            archive.read_scope.register(move || {
-                wake_all(&state, &available);
-                Ok(())
-            })?
+            Arc::new(move || wake_all(&state, &available))
         };
+        archive.read_scope.on_reset(&scope_wake);
         Ok(Self {
             archive: archive.clone(),
             state,

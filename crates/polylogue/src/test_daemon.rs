@@ -294,24 +294,18 @@ impl TestDaemon {
         }
     }
 
-    pub(crate) fn assert_slot_freed(&self) -> Duration {
+    /// Waits until the observed read has given its reader slot back, which
+    /// it must within 2 s, and returns how long that took.
+    pub(crate) fn assert_read_released(&self, read: &ReadObservation) -> Duration {
         let start = std::time::Instant::now();
-        let reads = &self.daemon.reads;
-        std::thread::scope(|scope| {
-            scope
-                .spawn(|| {
-                    let limit = crate::daemon::execution::limit(
-                        Some(crate::daemon::execution::deadline(Duration::from_secs(2))),
-                        Default::default(),
-                    );
-                    limit.scope(|| reads.reader().map(drop)).unwrap();
-                })
-                .join()
-                .unwrap();
-        });
-        let elapsed = start.elapsed();
-        assert!(elapsed < Duration::from_secs(2));
-        elapsed
+        while self.daemon.reads.checked_out_by(read.owner) > 0 {
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "the read kept its reader slot"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        start.elapsed()
     }
 
     /// Sets an archive setting through the daemon.

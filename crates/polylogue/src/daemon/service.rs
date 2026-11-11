@@ -1220,7 +1220,7 @@ pub fn start(
     // One reader per ordinary executor place and one for the background
     // slot; the pool keeps one more for interactive answers.
     let readers = settings.workers + 1;
-    let reads = ReadPool::with_budget(&archive, readers, per_reader * (readers as u64 + 1))
+    let reads = ReadPool::with_budget(&archive, readers, per_reader * readers as u64)
         .map_err(|e| to_io(&e))?;
     let (tx, rx) = channel();
     // The loop's first pass starts as soon as it runs.

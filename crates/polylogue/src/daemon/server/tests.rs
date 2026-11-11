@@ -170,7 +170,6 @@ fn listener_quiescence_is_observable_before_joining_clients() {
 #[test]
 fn disconnect_interrupts_sql_and_releases_the_reader_slot() {
     let daemon = crate::test_daemon::start("socket cancellation");
-    let _held = daemon.daemon.reads.reader().unwrap();
     let reads = daemon.watch_reads();
     let mut stream = UnixStream::connect(daemon.daemon.archive.socket()).unwrap();
     let request = command_surface::Request {
@@ -188,7 +187,7 @@ fn disconnect_interrupts_sql_and_releases_the_reader_slot() {
     let limit = reads.recv_timeout(Duration::from_secs(5)).unwrap();
     crate::test_daemon::TestDaemon::wait_for_sql(&limit);
     drop(stream);
-    let elapsed = daemon.assert_slot_freed();
+    let elapsed = daemon.assert_read_released(&limit);
     assert!(limit.cancellation.is_cancelled());
     eprintln!("socket disconnect released reader in {elapsed:?}");
 }

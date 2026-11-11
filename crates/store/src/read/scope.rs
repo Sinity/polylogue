@@ -6,6 +6,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockWriteGuard, Weak};
 
 type Invalidator = dyn Fn() -> Result<()> + Send + Sync;
+/// Wakes a reader waiting for a pool connection, so a scope change ends
+/// its wait.
+pub(crate) type ResetWake = dyn Fn() + Send + Sync;
 
 #[derive(Default)]
 pub(crate) struct ReadScopeState {
@@ -14,6 +17,7 @@ pub(crate) struct ReadScopeState {
     /// Publications share the fence; registration and reset take it alone,
     /// so concurrent publications never wait for each other.
     fence: RwLock<Vec<Weak<Invalidator>>>,
+    wakes: Mutex<Vec<Weak<ResetWake>>>,
 }
 
 impl std::fmt::Debug for ReadScopeState {
@@ -118,8 +122,29 @@ impl ReadScopeState {
         token.check()?;
         Ok(token)
     }
+    /// Calls `wake` at the start of every reset for as long as the caller
+    /// keeps it.
+    pub(crate) fn on_reset(&self, wake: &Arc<ResetWake>) {
+        let mut wakes = self
+            .wakes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        wakes.retain(|wake| wake.strong_count() > 0);
+        wakes.push(Arc::downgrade(wake));
+    }
+
     pub(crate) fn begin_reset(&self) -> Result<ScopeReset<'_>> {
         self.resetting.store(true, Ordering::Release);
+        let wakes: Vec<_> = self
+            .wakes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect();
+        for wake in wakes {
+            wake();
+        }
         let callbacks = self.fence.write().map_err(|_| poisoned())?;
         self.epoch
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
