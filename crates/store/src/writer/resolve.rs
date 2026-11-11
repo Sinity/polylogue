@@ -570,6 +570,19 @@ impl Resolver {
                 keys.insert(Key::new(Kind::Event, new.as_bytes()));
             }
         }
+        // A joined copy these batches release: the rows its readings return to.
+        for released in identities.released() {
+            keys.insert(Key::new(Kind::Session, released.copy.as_bytes()));
+            keys.insert(Key::new(Kind::Session, released.session.as_bytes()));
+            for (old, new) in &released.messages {
+                keys.insert(Key::new(Kind::Message, old.as_bytes()));
+                keys.insert(Key::new(Kind::Message, new.as_bytes()));
+            }
+            for (old, new) in &released.events {
+                keys.insert(Key::new(Kind::Event, old.as_bytes()));
+                keys.insert(Key::new(Kind::Event, new.as_bytes()));
+            }
+        }
         let event_keys: Vec<_> = keys
             .iter()
             .filter(|key| key.kind == Kind::Event)

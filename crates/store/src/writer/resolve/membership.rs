@@ -70,11 +70,29 @@ pub(crate) struct Choices {
     /// A copy's event whose readings move to its event in the session:
     /// (copy event, event, the event's ID).
     pub moved_events: Vec<(i64, i64, String)>,
+    /// Joined copies this step releases.
+    pub released_sessions: Vec<ReleasedSession>,
+    /// A message whose copy readings return to the copy's message:
+    /// (message, copy's message).
+    pub released_messages: Vec<(i64, i64)>,
+    /// An event whose copy readings return to the copy's event: (event,
+    /// copy's event, the copy event's ID).
+    pub released_events: Vec<(i64, i64, String)>,
     pub event_values: Vec<PackedValue>,
     pub event_ids: Vec<String>,
     pub event_sources: Vec<(i64, EventChoice)>,
     pub link_values: Vec<PackedValue>,
     pub live_events: Vec<Event>,
+}
+/// A copy whose readings return from the session it was joined to.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ReleasedSession {
+    pub from: i64,
+    pub to: i64,
+    /// The copy's session ID.
+    pub copy: String,
+    /// The copy's chains: (input row, chain).
+    pub chains: Vec<(i64, i64)>,
 }
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct MessageVersion {
@@ -488,6 +506,8 @@ pub(in crate::writer) struct Projection<'a> {
     reset_inputs: BTreeSet<(i64, i64)>,
     /// Copies already joined to their session in this snapshot.
     absorbed: BTreeSet<String>,
+    /// Joined copies already released in this snapshot.
+    released: BTreeSet<String>,
     values: Option<&'a dyn ValueSource>,
 }
 impl<'a> Projection<'a> {
@@ -514,6 +534,7 @@ impl<'a> Projection<'a> {
             last_readings: BTreeMap::new(),
             reset_inputs: BTreeSet::new(),
             absorbed: BTreeSet::new(),
+            released: BTreeSet::new(),
             values,
         };
         for (key, row) in &keys.rows {
@@ -578,6 +599,7 @@ impl<'a> Projection<'a> {
         }
         self.sessions(input, chain, step, &mut choices)?;
         self.absorb(step, &mut choices)?;
+        self.release(step, &mut choices)?;
         self.message_readings(input_key, input, chain, step, &mut choices)?;
         self.document_readings(input_key, input, chain, step, &mut choices)?;
         if matches!(step.progress, polylogue_model::batch::StepProgress::AtEnd) {
@@ -689,6 +711,112 @@ impl<'a> Projection<'a> {
                     self.events.put(target, member);
                 }
                 choices.moved_events.push((source, target, new.clone()));
+            }
+        }
+        Ok(())
+    }
+
+    /// A session this step states that records the alias a stored copy was
+    /// joined to another session by makes the alias name neither: the copy's
+    /// chains' readings return to the copy's own session, messages and
+    /// events, as reading the copy with the alias ambiguous gives them
+    /// (docs/capture.md, AI Studio through Drive).
+    fn release(&mut self, step: &ParseStep, choices: &mut Choices) -> Result<()> {
+        for released in self.keys.identities.released() {
+            if self.released.contains(&released.copy)
+                || !step
+                    .output
+                    .sessions
+                    .iter()
+                    .any(|s| s.id.to_string() == released.by)
+            {
+                continue;
+            }
+            self.released.insert(released.copy.clone());
+            let from = self
+                .keys
+                .stored(&Key::new(Kind::Session, released.session.as_bytes()))?
+                .pk;
+            let to = self
+                .keys
+                .stored(&Key::new(Kind::Session, released.copy.as_bytes()))?
+                .pk;
+            let chains = &released.chains;
+            let of_copy = |input: i64, chain: i64| chains.contains(&(input, chain));
+            choices.released_sessions.push(ReleasedSession {
+                from,
+                to,
+                copy: released.copy.clone(),
+                chains: chains.clone(),
+            });
+            for &(input, chain) in chains {
+                if let Some(facts) = self.session_facts.remove(&(from, input, chain)) {
+                    self.session_facts.insert((to, input, chain), facts);
+                }
+            }
+            for (old, new) in &released.messages {
+                let source = self
+                    .keys
+                    .stored(&Key::new(Kind::Message, old.as_bytes()))?
+                    .pk;
+                let target = self
+                    .keys
+                    .stored(&Key::new(Kind::Message, new.as_bytes()))?
+                    .pk;
+                let members = self.messages.members.entry(source).or_default();
+                let (moved, kept): (Vec<_>, Vec<_>) = std::mem::take(members)
+                    .into_iter()
+                    .partition(|m| of_copy(m.input, m.chain));
+                *members = kept;
+                self.messages.touched.insert(source);
+                self.messages.members.entry(target).or_default();
+                for mut member in moved {
+                    if member.session == from {
+                        member.session = to;
+                    }
+                    self.messages.put(target, member);
+                }
+                choices.released_messages.push((source, target));
+            }
+            let mut packer = crate::encoding::RowPacker::new()?;
+            for (old, new) in &released.events {
+                let source = self.keys.stored(&Key::new(Kind::Event, old.as_bytes()))?.pk;
+                let target = self.keys.stored(&Key::new(Kind::Event, new.as_bytes()))?.pk;
+                let members = self.events.members.entry(source).or_default();
+                let (moved, kept): (Vec<_>, Vec<_>) = std::mem::take(members)
+                    .into_iter()
+                    .partition(|m| of_copy(m.input, m.chain));
+                *members = kept;
+                self.events.touched.insert(source);
+                self.events.members.entry(target).or_default();
+                for mut member in moved {
+                    let mut choice = member.event_source(self.index, source, self.values)?;
+                    let fields: Event = crate::encoding::unpack_json(&choice.fields)?;
+                    let (joined, copy) = (released.session.as_str(), released.copy.as_str());
+                    if let Some(fields) = crate::session_alias::in_session(
+                        &fields,
+                        |name| {
+                            if name == joined {
+                                copy.to_owned()
+                            } else {
+                                name.to_owned()
+                            }
+                        },
+                        |message| {
+                            crate::session_alias::renamed(message, joined, copy)
+                                .unwrap_or_else(|| message.to_owned())
+                        },
+                    )? {
+                        choice.fields = packer.pack_json(&fields)?;
+                        choice.after = fields.after.as_ref().map(ToString::to_string);
+                    }
+                    if choice.session == Some(from) {
+                        choice.session = Some(to);
+                    }
+                    member.event = Some(choice);
+                    self.events.put(target, member);
+                }
+                choices.released_events.push((source, target, new.clone()));
             }
         }
         Ok(())
