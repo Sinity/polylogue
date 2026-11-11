@@ -792,7 +792,7 @@ fn a_watched_input_no_parser_reads_is_refused_and_settles() {
     let odd_text = claude_user("o1", "odd", "refused");
     home.append("odd.jsonl", &odd_text);
     {
-        let (mut engine, _lock) = home.engine(64 << 10);
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 64 << 10);
         assert!(engine.run_pass().unwrap().errors.is_empty());
     }
     let odd = home.file("odd.jsonl");
@@ -808,10 +808,8 @@ fn a_watched_input_no_parser_reads_is_refused_and_settles() {
     drop(archive);
     polylogue_testkit::delete_index(&home.root);
 
-    let (archive, _lock) = Archive::open_or_create(&home.root).unwrap();
-    let mut config = home.config(64 << 10);
-    config.reads_sources = false;
-    let mut engine = Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap();
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 64 << 10);
+    engine.config.reads_sources = false;
     let pass = engine.run_pass().unwrap();
     assert_eq!(home.texts("kept"), ["still indexed"]);
     assert!(home.texts("odd").is_empty());
