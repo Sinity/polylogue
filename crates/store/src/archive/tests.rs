@@ -115,6 +115,48 @@ fn an_archive_newer_or_with_unknown_tables_is_refused_and_left_as_it_is() {
     }
 }
 
+/// `embeddings.db` holds paid vectors: the archive's open brings one from an
+/// earlier build to this build's schema in place rather than refusing it.
+#[test]
+fn an_archive_opens_with_an_embeddings_db_from_an_earlier_build() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+    drop(lock);
+    let path = archive.embeddings_db();
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(include_str!(
+        "../schema/tests/embeddings_before_revision.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(
+        "PRAGMA user_version = 1;
+         INSERT INTO embedded(text_hash,model,chunk,dims,vector,embedded_at)
+           VALUES (x'01','m-a',0,2,x'0000803f000000c0',100);",
+    )
+    .unwrap();
+    drop(conn);
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let conn = open_read(&archive.embeddings_db()).unwrap();
+    let stored: (Vec<u8>, String) = conn
+        .query_row(
+            "SELECT e.vector, group_concat(m.name) FROM embedded e,
+               (SELECT name FROM sqlite_master WHERE name IN ('embedding_revision','query_vector') ORDER BY name) m",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        stored,
+        (
+            vec![0, 0, 0x80, 0x3f, 0, 0, 0, 0xc0],
+            "embedding_revision,query_vector".to_owned()
+        )
+    );
+}
+
 #[test]
 fn an_exhausted_counter_refuses_instead_of_reusing_a_position() {
     let mut conn = Connection::open_in_memory().unwrap();
