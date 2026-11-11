@@ -10,6 +10,10 @@ generated page of the thing they belong to, or on the area page that owns them.
 
 - **archive**: `archive.db` and the segment log; what cannot be recomputed.
 - **index**: `index.db`; everything parsed and derived, built from the archive.
+- **schema identity**: a short hash of an index file's version, format identity,
+  tables, views and triggers.
+- **set-aside index**: an `index.db` from another schema, renamed beside the
+  new index under its schema identity until the new index's first build ends.
 - **embeddings store**: message vectors for semantic ranking, kept apart
   because vectors cost money or time to make.
 - **segment log**: append-only files of compressed frames holding every blob;

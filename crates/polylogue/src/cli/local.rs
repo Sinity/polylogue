@@ -47,7 +47,6 @@ pub fn daemon(_: &Command, v: &Values, startup: &crate::config::Startup, json: b
                         polylogue_store::StoreError::NewerSchema { .. }
                             | polylogue_store::StoreError::NoMigration { .. }
                             | polylogue_store::StoreError::OlderFormat { .. }
-                            | polylogue_store::StoreError::IndexVersion { .. }
                     )
                 });
             if refused {

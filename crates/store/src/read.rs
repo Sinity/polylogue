@@ -229,6 +229,9 @@ pub struct Status {
     pub search_pending: u64,
     /// The latest confirmed full discovery walk from each source machine.
     pub capture_coverage: Vec<polylogue_model::capture::Coverage>,
+    /// Set when this index replaced one written for another schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_rebuild: Option<crate::archive::index_rebuild::IndexRebuild>,
 }
 
 impl ReadPool {
@@ -1300,6 +1303,10 @@ impl Reader<'_> {
             unused,
             search_pending: count("SELECT n FROM main.row_count WHERE name = 'search_pending'")?,
             capture_coverage: self.all_capture_coverage()?,
+            index_rebuild: crate::archive::index_rebuild::status(
+                &c,
+                self.pool.archive.is_primary(),
+            )?,
         })
     }
 

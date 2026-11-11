@@ -37,7 +37,7 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 
 - **One baseline.** The segment format and the index schema reset once to version 1, with the earlier migrations collapsed; the live archive's inputs, authored state and vectors are kept across that reset. An archive written before the baseline is a declared older input format, imported once into a fresh archive with `polylogue import --from-archive PATH` ([capture.md](capture.md#an-archive-from-before-the-baseline)), never migrated in place.
 - **One current format.** Every database is created and opened only at version 1. A schema change edits the version-1 schema and regenerates test data; no migration step and no reader for an earlier version is kept. A reading-version change re-parses exactly the chains it affects ([Parsing](#parsing)).
-- **No code path deletes the index.** An index whose schema does not match is refused with an error that says how to rebuild it deliberately (moving `index.db` aside). A full rebuild from the archive is a rare, deliberate act of the user ([operations.md](operations.md)).
+- **An index from another schema is replaced, never migrated.** The daemon sets it aside under its schema identity, builds a new index from stored bytes, reports the rebuild in `status`, and removes the set-aside file once the first build ends ([operations.md](operations.md#replacing-an-index-from-another-schema)). `archive.db` in another format is refused and left as it was.
 
 ## Parsing
 

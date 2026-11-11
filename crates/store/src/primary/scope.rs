@@ -101,7 +101,7 @@ fn clear(
     tx.execute("UPDATE row_count SET n=0", [])?;
     tx.execute("UPDATE source_row_count SET n=0", [])?;
     tx.execute(
-        "DELETE FROM meta WHERE key NOT IN ('primary_cache','boot_id','generation','cursor_key')",
+        "DELETE FROM meta WHERE key NOT IN ('primary_cache','boot_id','generation','cursor_key','index_rebuild')",
         [],
     )?;
     crate::archive::generation::rotate(&tx)?;

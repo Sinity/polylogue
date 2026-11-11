@@ -1,6 +1,7 @@
 //! The archive directory, its single-writer lock and connection settings.
 
 pub(crate) mod generation;
+pub mod index_rebuild;
 
 use crate::{Result, StoreError, schema};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction};
@@ -323,27 +324,67 @@ impl Archive {
     }
 
     /// The caller holds the archive lock. Parse positions in the index
-    /// resume an interrupted build; incompatible indexes require an explicit
-    /// schema change rather than removing already indexed rows.
+    /// resume an interrupted build. An index from another schema is set
+    /// aside under its schema identity and a new one is built from the
+    /// archive's stored bytes; the set-aside file is removed once that first
+    /// build ends ([`index_rebuild`]).
     pub(crate) fn prepare_index(&self) -> Result<()> {
-        let index = open_write(&self.index_db(), cache::SETUP)?;
-        let fresh = schema::version(&index)? == 0;
-        if fresh {
-            let mut reset = self.read_scope.begin_reset()?;
-            reset.invalidate()?;
-        }
-        if self.is_primary() {
-            schema::ensure_primary_index(&index)?;
-        } else {
-            let archive = open_read(&self.archive_db())?;
-            let _write = crate::write_lock::hold(&archive)?;
-            schema::ensure_index(&index)?;
-        }
-        if fresh {
-            self.read_scope.finish_reset();
-        }
+        let path = self.index_db();
+        let index = open_write(&path, cache::SETUP)?;
+        let index = match self.ensure_index(index) {
+            Ok(index) => index,
+            Err((error, index)) => {
+                let Some(reason) = index_rebuild::reason(&error) else {
+                    return Err(error);
+                };
+                let previous = schema::index_identity(&index)?;
+                drop(index);
+                index_rebuild::set_aside(&path, &previous)?;
+                let index = self
+                    .ensure_index(open_write(&path, cache::SETUP)?)
+                    .map_err(|(error, _)| error)?;
+                index_rebuild::record(
+                    &index,
+                    reason,
+                    previous,
+                    schema::build_index_identity(self.is_primary())?,
+                )?;
+                index
+            }
+        };
+        index_rebuild::remove_when_built(&index, &path, self.is_primary())?;
         crate::fault::check("index.after_creation", "")?;
         Ok(())
+    }
+
+    /// Creates or opens the index schema, handing the connection back with
+    /// a refusal so the caller can read what it refused.
+    fn ensure_index(
+        &self,
+        index: Connection,
+    ) -> std::result::Result<Connection, (StoreError, Connection)> {
+        let ensured = (|| {
+            let fresh = schema::version(&index)? == 0;
+            if fresh {
+                let mut reset = self.read_scope.begin_reset()?;
+                reset.invalidate()?;
+            }
+            if self.is_primary() {
+                schema::ensure_primary_index(&index)?;
+            } else {
+                let archive = open_read(&self.archive_db())?;
+                let _write = crate::write_lock::hold(&archive)?;
+                schema::ensure_index(&index)?;
+            }
+            if fresh {
+                self.read_scope.finish_reset();
+            }
+            Ok(())
+        })();
+        match ensured {
+            Ok(()) => Ok(index),
+            Err(error) => Err((error, index)),
+        }
     }
 }
 

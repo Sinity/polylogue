@@ -1,7 +1,8 @@
 //! Table declarations. Each database has one baseline: an empty file is
 //! created at version 1 with exactly the tables declared here, and a file at
 //! version 1 with these tables opens. A newer file, or one whose tables differ
-//! (an archive in another format), is refused unchanged.
+//! (an archive in another format), is refused unchanged. An index refused
+//! this way is replaced by the archive's open, since it is derived.
 
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
@@ -124,7 +125,8 @@ fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
 
 /// Creates the index in an empty file, or opens one at this version with the
 /// declared tables, adding any read index it lacks. Any other index is
-/// refused without removing its rows; rebuilding it is a deliberate act.
+/// refused unchanged; the archive's open sets it aside and builds a new one
+/// ([`crate::archive::index_rebuild`]).
 pub fn ensure_index(conn: &Connection) -> Result<()> {
     ensure_index_in(conn, false)
 }
@@ -187,6 +189,38 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
     }
     tx.commit()?;
     Ok(())
+}
+
+/// The schema identity of an index file: a hash of its version, its format
+/// identity and the tables, views and triggers it holds, as statements
+/// without comments or spacing. Indexes are left out, because read indexes
+/// are added at open and a first build defers some, so a file keeps its
+/// identity through both.
+pub(crate) fn index_identity(conn: &Connection) -> Result<String> {
+    let mut hash = blake3::Hasher::new();
+    hash.update(format!("version {} format {}\n", version(conn)?, format_id(conn)?).as_bytes());
+    for (kind, name, sql) in shape(conn)? {
+        if kind != "index" {
+            for part in [kind, name, sql] {
+                hash.update(part.as_bytes());
+                hash.update(b"\0");
+            }
+        }
+    }
+    Ok(hash.finalize().to_hex()[..16].to_owned())
+}
+
+/// The schema identity of the index this build creates.
+pub(crate) fn build_index_identity(primary: bool) -> Result<String> {
+    let expected = Connection::open_in_memory()?;
+    crate::sql_functions::register(&expected)?;
+    base_index(&expected)?;
+    if primary {
+        add_primary(&expected)?;
+    }
+    set_version(&expected, INDEX_VERSION)?;
+    expected.pragma_update(None, "application_id", FORMAT_ID)?;
+    index_identity(&expected)
 }
 
 /// Whether the first build still has search and secondary indexes to finish.
