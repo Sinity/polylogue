@@ -981,10 +981,10 @@ fn a_held_derivation_does_not_hold_parse_commits() {
     // derivation would, before the writer is sent anything.
     let barrier = sender.pause_derive_for_test();
     let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
-    let activity = |id: &str| -> Option<i64> {
+    let title = |id: &str| -> Option<String> {
         index
             .query_row(
-                "SELECT last_activity_at FROM session WHERE id = ?1",
+                "SELECT derived_title FROM session WHERE id = ?1",
                 [format!("claude-code:{id}")],
                 |r| r.get(0),
             )
@@ -1020,15 +1020,15 @@ fn a_held_derivation_does_not_hold_parse_commits() {
             assert_eq!(rows, 1);
         }
         // Nothing of the held pass is stored yet.
-        assert_eq!(activity("a"), None);
+        assert_eq!(title("a"), None);
         barrier.release();
         assert!(deriving.join().unwrap() > 0);
     });
-    assert_eq!(activity("a"), Some(1_000));
+    assert_eq!(title("a").as_deref(), Some("the first session"));
     // The sessions written during the pass are derived by the next one.
-    assert_eq!(activity("b0"), None);
+    assert_eq!(title("b0"), None);
     assert!(w.writer.derive().unwrap() > 0);
-    assert_eq!(activity("b0"), Some(2_000));
+    assert_eq!(title("b0").as_deref(), Some("parsed meanwhile"));
 }
 
 #[test]
@@ -1041,7 +1041,8 @@ fn a_value_computed_from_rows_that_changed_is_not_stored() {
     let state = || -> (Option<i64>, i64, i64) {
         index
             .query_row(
-                "SELECT s.last_activity_at, s.message_count,
+                "SELECT (SELECT sp.last_at FROM session_span sp WHERE sp.session_pk = s.pk),
+                        s.message_count,
                         (SELECT count(*) FROM derive_due d WHERE d.session_pk = s.pk)
                  FROM session s WHERE s.id = 'claude-code:a'",
                 [],
