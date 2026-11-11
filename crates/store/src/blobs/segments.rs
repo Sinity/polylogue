@@ -161,13 +161,14 @@ pub(crate) fn load_extent(
         .transpose()
 }
 
-pub(crate) fn insert_extent(conn: &Connection, extent: &hashed_blobs::Extent) -> Result<()> {
+/// Catalogs a blob's extent; false when the blob was catalogued already.
+pub(crate) fn insert_extent(conn: &Connection, extent: &hashed_blobs::Extent) -> Result<bool> {
     let old = load_extent(conn, "", &extent.hash)?;
     if let Some(old) = old {
         if old.decoded_len != extent.decoded_len {
             return Err(StoreError::BlobCorrupt(BlobHash(extent.hash.0)));
         }
-        return Ok(());
+        return Ok(false);
     }
     conn.execute(
         "INSERT INTO blob(hash,size,stored_size,storage) VALUES (?1,?2,?3,?4)",
@@ -178,7 +179,7 @@ pub(crate) fn insert_extent(conn: &Connection, extent: &hashed_blobs::Extent) ->
             extent.encode()
         ],
     )?;
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) fn open_writer(conn: &Connection, root: &Path) -> Result<hashed_blobs::SegmentWriter> {

@@ -236,7 +236,8 @@ pub struct Pass {
     pub inputs_changed: u64,
     /// Bytes read from input files (new bytes plus any parsed again).
     pub bytes_read: u64,
-    /// New bytes stored.
+    /// Bytes the pass added to the archive: a blob or chunk it already
+    /// held counts nothing.
     pub bytes_stored: u64,
     pub segment_syncs: u64,
     pub segment_bytes_written: u64,

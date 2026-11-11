@@ -7,7 +7,7 @@ use crate::daemon::{
     service::{self, Daemon},
 };
 use polylogue_engine::Config;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -82,11 +82,30 @@ pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
         workers,
         polylogue_model::WallClock::new(jiff::Timestamp::now),
         None,
+        NO_SEED,
     )
 }
 
+/// Starts over a home where `seed` has also written sources holding
+/// `messages` more messages, so the daemon's first pass reads them all as
+/// one first build, as it reads an existing home.
+pub(crate) fn start_with_sources(text: &str, seed: &dyn Fn(&Path), messages: u64) -> TestDaemon {
+    start_with_clock_and_workers(
+        text,
+        2,
+        polylogue_model::WallClock::new(jiff::Timestamp::now),
+        None,
+        (seed, messages),
+    )
+}
+
+/// Writes sources into the home before the daemon starts, and how many
+/// messages they hold.
+type Seed<'a> = (&'a dyn Fn(&Path), u64);
+const NO_SEED: Seed<'static> = (&|_| {}, 0);
+
 pub(crate) fn start_with_clock(text: &str, clock: polylogue_model::WallClock) -> TestDaemon {
-    start_with_clock_and_workers(text, 2, clock, None)
+    start_with_clock_and_workers(text, 2, clock, None, NO_SEED)
 }
 
 pub(crate) fn start_with_clock_and_day(
@@ -94,7 +113,7 @@ pub(crate) fn start_with_clock_and_day(
     clock: polylogue_model::WallClock,
     day: query_language::time::DaySetting,
 ) -> TestDaemon {
-    start_with_clock_and_workers(text, 2, clock, Some(day))
+    start_with_clock_and_workers(text, 2, clock, Some(day), NO_SEED)
 }
 
 fn start_with_clock_and_workers(
@@ -102,6 +121,7 @@ fn start_with_clock_and_workers(
     workers: usize,
     clock: polylogue_model::WallClock,
     day: Option<query_language::time::DaySetting>,
+    seed: Seed<'_>,
 ) -> TestDaemon {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
@@ -112,6 +132,7 @@ fn start_with_clock_and_workers(
         polylogue_testkit::claude_user("u1", "s1", text),
     )
     .unwrap();
+    (seed.0)(&home);
     let mut config = engine_config(home.clone());
     config.home = home.clone();
     config.clock = clock;
@@ -142,7 +163,7 @@ fn start_with_clock_and_workers(
         runtime,
     };
     daemon.wait_for(|data| {
-        data["store"]["messages"].as_u64() == Some(1)
+        data["store"]["messages"].as_u64() == Some(1 + seed.1)
             && data["store"]["search_pending"].as_u64() == Some(0)
     });
     daemon.wait_for_signal_checkpoint();

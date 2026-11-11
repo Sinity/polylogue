@@ -97,6 +97,7 @@ pub struct Done {
     pub parser_state: Option<Json>,
     /// The last bytes read, kept to check the next growth.
     pub tail: Vec<u8>,
+    /// Bytes the job added to the archive, as the writer reports them.
     pub stored: u64,
     pub error: Option<String>,
     pub write_failed: bool,
@@ -398,6 +399,7 @@ fn acknowledge_groups(pending: Receiver<PendingGroup>, done: Sender<Done>) {
                             }
                             Some(Ok(stored)) => {
                                 result.chain = Some(stored.chain);
+                                result.stored = stored.bytes_written;
                             }
                             None => {
                                 result.error = Some("the writer returned no result".into());

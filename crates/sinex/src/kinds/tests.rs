@@ -40,7 +40,11 @@ fn source_copies_have_distinct_keys_and_chunk_boundaries_do_not_rename_a_record(
     );
     let payload = products::payload(&first, 0).unwrap();
     assert_eq!(
-        products::decode("polylogue.message", payload.clone()).unwrap(),
+        products::decode(
+            &crate::kinds::kind_reference("polylogue.message").unwrap(),
+            payload.clone()
+        )
+        .unwrap(),
         first
     );
     let declaration = declarations("polylogue")
@@ -90,7 +94,11 @@ fn richer_and_weaker_link_contributions_keep_their_own_retry_stable_keys() {
     );
     for product in [rich, weak] {
         assert_eq!(
-            products::decode("polylogue.link", products::payload(&product, 0).unwrap()).unwrap(),
+            products::decode(
+                &crate::kinds::kind_reference("polylogue.link").unwrap(),
+                products::payload(&product, 0).unwrap()
+            )
+            .unwrap(),
             product
         );
     }
@@ -219,7 +227,11 @@ fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
     assert_eq!(payload["record"]["facts"]["record"]["commit"], 9000);
     assert!(payload.get("message").is_none());
     assert_eq!(
-        products::decode("polylogue.fragment", payload).unwrap(),
+        products::decode(
+            &crate::kinds::kind_reference("polylogue.fragment").unwrap(),
+            payload
+        )
+        .unwrap(),
         product
     );
 }
@@ -242,10 +254,55 @@ fn message_hash_survives_sinex_round_trip() {
     };
     let wire = serde_json::to_vec(&products::payload(&product, 0).unwrap()).unwrap();
     let returned: serde_json::Value = serde_json::from_slice(&wire).unwrap();
-    let Product::Message { facts, .. } = products::decode("polylogue.message", returned).unwrap()
-    else {
+    let Product::Message { facts, .. } = products::decode(
+        &crate::kinds::kind_reference("polylogue.message").unwrap(),
+        returned,
+    )
+    .unwrap() else {
         panic!("a message product decodes as a message");
     };
     assert_eq!(facts.message.attrs["x"].to_string(), "1.50");
     assert_eq!(facts.message.content_hash().unwrap(), hash);
+}
+
+#[test]
+fn an_input_payload_at_an_earlier_kind_version_is_refused() {
+    let product = Product::Input {
+        rows: Box::new(polylogue_store::input_rows::InputRows {
+            acquisition: None,
+            input: "input-a".into(),
+            format: "codex".into(),
+            revision: None,
+            extents: vec![polylogue_store::input_rows::Extent {
+                chain: 1,
+                offset: 0,
+                length: 10,
+                blob: polylogue_model::BlobHash::of(b"0123456789"),
+                blob_offset: 0,
+            }],
+            observation: None,
+        }),
+        material: None,
+    };
+    let current = kind_reference(crate::kinds::INPUT_KIND).unwrap();
+    let payload = products::payload(&product, 0).unwrap();
+    assert_eq!(
+        products::decode(&current, payload.clone()).unwrap(),
+        product
+    );
+    // Version 4 named its one extent `extent`; read through the current
+    // shape it would have none.
+    let mut earlier = payload;
+    let rows = earlier["record"]["rows"].as_object_mut().unwrap();
+    let extent = rows.remove("extents").unwrap()[0].clone();
+    rows.insert("extent".into(), extent);
+    let kind = sinex_model::KindRef {
+        version: 4,
+        ..current
+    };
+    let error = products::decode(&kind, earlier).unwrap_err();
+    assert!(
+        matches!(&error, crate::Error::Invalid(reason) if reason == "unsupported Polylogue kind polylogue.input_observation@4"),
+        "{error}"
+    );
 }

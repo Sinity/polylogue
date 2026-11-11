@@ -51,6 +51,10 @@ pub(crate) struct Choices {
     pub message_mains: Vec<bool>,
     /// Each message row's order time, for the rows the step keeps.
     pub message_order_times: Vec<Option<i64>>,
+    /// Order times this step raised in the chain's later readings: each
+    /// reading of the session after the place takes at least the time
+    /// (session, place, time).
+    pub raised_order_times: Vec<(i64, (i64, i64), i64)>,
     pub keep_messages: Vec<bool>,
     pub keep_documents: Vec<bool>,
     pub events: BTreeMap<i64, Option<EventChoice>>,
@@ -887,7 +891,8 @@ impl<'a> Projection<'a> {
     ) -> Result<()> {
         read.sort_by_key(|r| (r.session, r.place));
         let mut running = None;
-        let mut current = None;
+        // The session being read and the place of its last reading so far.
+        let mut current: Option<(i64, (i64, i64))> = None;
         for StepReading {
             session,
             place,
@@ -896,14 +901,18 @@ impl<'a> Projection<'a> {
             at,
         } in read
         {
-            if current != Some(session) {
-                current = Some(session);
+            if current.is_none_or(|(read, _)| read != session) {
+                if let Some((read, last)) = current.filter(|_| !restates) {
+                    self.raise_later(input, chain, read, last, running, choices)?;
+                }
                 running = if restates {
                     None
                 } else {
-                    self.order_time_before(input, chain, session, place)?
+                    self.reading_before(input, chain, session, place)?
+                        .and_then(|(_, time)| time)
                 };
             }
+            current = Some((session, place));
             running = running.max(at.map(Timestamp::unix_ms));
             let last = self
                 .last_readings
@@ -921,18 +930,107 @@ impl<'a> Projection<'a> {
                 member.order_time = running;
             }
         }
+        // A restated conversation's later readings start afresh too.
+        if let Some((session, last)) = current.filter(|_| !restates) {
+            self.raise_later(input, chain, session, last, running, choices)?;
+        }
         Ok(())
     }
 
-    /// The order time of the chain's last reading in `session` before
-    /// `place`: read earlier in this snapshot, or stored.
-    fn order_time_before(
+    /// A step that reads an earlier message of the chain again with a later
+    /// time ends with a higher order time than its next reading was given.
+    /// The chain's later readings in the session, stored or read earlier in
+    /// this snapshot, take that time, as reading the chain in one step would
+    /// give them; their messages are placed again.
+    fn raise_later(
+        &mut self,
+        input: i64,
+        chain: i64,
+        session: i64,
+        after: (i64, i64),
+        time: Option<i64>,
+        choices: &mut Choices,
+    ) -> Result<()> {
+        let Some(time) = time else {
+            return Ok(());
+        };
+        let is_later = |m: &MessageMember| {
+            m.input == input
+                && m.chain == chain
+                && m.session == session
+                && (m.seq, m.position) > after
+        };
+        let mut later = BTreeSet::new();
+        if !self.reset_inputs.contains(&(input, chain)) {
+            later.extend(
+                self.index
+                    .prepare_cached(
+                        "SELECT message_pk FROM message_source
+                         WHERE input_pk=?1 AND chain=?2 AND session_pk=?3 AND (seq,record_position)>(?4,?5)
+                           AND (order_time IS NULL OR order_time<?6)",
+                    )?
+                    .query_map(params![input, chain, session, after.0, after.1, time], |r| {
+                        r.get::<_, i64>(0)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            );
+        }
+        let key = (input, chain, session);
+        if self
+            .last_readings
+            .get(&key)
+            .is_some_and(|(last, _)| *last > after)
+        {
+            later.extend(self.messages.members.iter().filter_map(|(pk, members)| {
+                members
+                    .iter()
+                    .any(|m| is_later(m) && m.order_time < Some(time))
+                    .then_some(*pk)
+            }));
+        }
+        if later.is_empty() {
+            return Ok(());
+        }
+        // The next step continues from the chain's last reading, which the
+        // index still holds with its earlier time until this step is written.
+        if let Some((last, last_time)) =
+            self.reading_before(input, chain, session, (i64::MAX, i64::MAX))?
+            && last > after
+        {
+            self.last_readings
+                .insert(key, (last, last_time.max(Some(time))));
+        }
+        for pk in later {
+            if !self.messages.members.contains_key(&pk) {
+                let (members, shown) = load_message(self.index, pk, &mut self.message_layouts)?;
+                self.shown_messages.insert(pk, shown);
+                self.messages.members.insert(pk, members);
+            }
+            for member in self
+                .messages
+                .members
+                .get_mut(&pk)
+                .into_iter()
+                .flatten()
+                .filter(|m| is_later(m) && m.order_time < Some(time))
+            {
+                member.order_time = Some(time);
+                self.messages.touched.insert(pk);
+            }
+        }
+        choices.raised_order_times.push((session, after, time));
+        Ok(())
+    }
+
+    /// The chain's last reading in `session` before `place` and its order
+    /// time: read earlier in this snapshot, or stored.
+    fn reading_before(
         &self,
         input: i64,
         chain: i64,
         session: i64,
         place: (i64, i64),
-    ) -> Result<Option<i64>> {
+    ) -> Result<Option<LastReading>> {
         let held = self
             .last_readings
             .get(&(input, chain, session))
@@ -955,8 +1053,7 @@ impl<'a> Projection<'a> {
         Ok(held
             .into_iter()
             .chain(stored)
-            .max_by_key(|(place, _)| *place)
-            .and_then(|(_, time)| time))
+            .max_by_key(|(place, _)| *place))
     }
 
     fn document_readings(

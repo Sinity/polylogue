@@ -274,6 +274,16 @@ fn apply_rows(
             *last = (*last).max(at);
         }
     }
+    // A message read again with a later time raises the order time of the
+    // chain's readings after it (membership `raise_later`).
+    for (session_pk, after, time) in &choices.raised_order_times {
+        tx.prepare_cached(
+            "UPDATE message_source SET order_time=?6
+             WHERE input_pk=?1 AND chain=?2 AND session_pk=?3 AND (seq,record_position)>(?4,?5)
+               AND (order_time IS NULL OR order_time<?6)",
+        )?
+        .execute(params![input_pk, chain, session_pk, after.0, after.1, time])?;
+    }
     if b.input.route.lists_every_conversation(&b.input.format) {
         let mut latest = HashMap::<&str, i64>::new();
         for row in &p.output.messages {

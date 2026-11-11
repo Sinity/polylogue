@@ -392,26 +392,32 @@ fn direct_anchors_keep_their_own_original_text_and_refuse_missing_sources() {
 
 #[test]
 fn hundred_thousand_message_pages_and_direct_jumps_keep_source_identity() {
-    let d = test_daemon::start("placeholder");
-    let path = d.home.join(".claude/projects/-p/s2.jsonl");
-    {
-        use std::io::Write;
-        let mut source = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
-        for n in 0..100_000 {
-            source
-                .write_all(
-                    polylogue_testkit::claude_user(
-                        &format!("large-{n}"),
-                        "s2",
-                        &format!("source {n} λ🙂"),
+    const MESSAGES: u64 = 100_000;
+    // The session is in the home when the daemon starts, so its first pass
+    // reads it as a first build; growing a live file to 100,000 messages
+    // would test the live path at a cost that tells nothing about paging.
+    let d = test_daemon::start_with_sources(
+        "placeholder",
+        &|home| {
+            use std::io::Write;
+            let path = home.join(".claude/projects/-p/s2.jsonl");
+            let mut source = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+            for n in 0..MESSAGES {
+                source
+                    .write_all(
+                        polylogue_testkit::claude_user(
+                            &format!("large-{n}"),
+                            "s2",
+                            &format!("source {n} λ🙂"),
+                        )
+                        .as_bytes(),
                     )
-                    .as_bytes(),
-                )
-                .unwrap();
-        }
-        source.flush().unwrap();
-    }
-    d.wait_for(|status| status["store"]["messages"] == 100_001);
+                    .unwrap();
+            }
+            source.flush().unwrap();
+        },
+        MESSAGES,
+    );
     let selected = d
         .daemon
         .reads
@@ -424,7 +430,7 @@ fn hundred_thousand_message_pages_and_direct_jumps_keep_source_identity() {
         .unwrap()
         .len()
         .unwrap();
-    assert_eq!(selected, 100_000);
+    assert_eq!(selected, MESSAGES as usize);
     let first = page(
         &d.daemon,
         "session:claude-code:s2",
@@ -435,7 +441,7 @@ fn hundred_thousand_message_pages_and_direct_jumps_keep_source_identity() {
     );
     assert!(next(&first).is_some());
     assert!(serde_json::to_vec(&first).unwrap().len() <= 25_000);
-    for n in [0, 50_000, 99_999] {
+    for n in [0, MESSAGES / 2, MESSAGES - 1] {
         assert_eq!(
             all(
                 &d.daemon,

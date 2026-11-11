@@ -88,6 +88,11 @@ fn a_rewritten_document_stores_only_its_changed_chunks_and_reads_back_whole() {
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(pass.blobs_appended, changed.len() as u64);
+    // The pass counts the bytes it added, not the whole document again.
+    let lengths: std::collections::BTreeMap<_, _> = new.iter().cloned().collect();
+    let changed_bytes: u64 = changed.iter().map(|hash| lengths[hash]).sum();
+    assert_eq!(pass.bytes_stored, changed_bytes);
+    assert!(changed_bytes < second.len() as u64 / 4);
     let after = stored_blobs(&w);
     assert_eq!(
         after.difference(&before).cloned().collect::<BTreeSet<_>>(),

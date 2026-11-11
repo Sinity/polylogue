@@ -217,8 +217,10 @@ later and no compatibility path between steps. Small related fixes share one
 pull request, since each pull request costs a full CI run. Master requires
 the `check` status on the pull request's head; branches need not be up to
 date with master, so rebase only to resolve a conflict, taking master's names
-and structure and reapplying your change. Merge with
-`gh pr merge --auto --squash --match-head-commit <sha>`. Development speed
+and structure and reapplying your change. Once `check` passes on the head you tested, merge
+it with `gh pr merge <n> --squash --match-head-commit <sha>` (waiting with
+`gh pr checks <n> --required --watch`); GitHub auto-merge is not used, since
+armed on a clean, green head it sometimes never fires. Development speed
 comes before a perfectly green master (operator, 2026-11-09): when two
 separately green changes combine into a failing master, whoever's change
 caused it fixes it next. Hooks stay enabled.
