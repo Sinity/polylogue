@@ -53,7 +53,7 @@ fn ready(
 }
 
 #[test]
-fn receiving_bytes_verify_without_rewriting_the_original_descriptor() {
+fn stored_attachment_metadata_keeps_the_original_descriptor() {
     for bytes in [Vec::new(), vec![b'Q'; 64 * 1024 + 17]] {
         let daemon = test_daemon::start("synthetic attachment evidence");
         let message = MessageId::parse(test_daemon::assets::seed_bytes(&daemon, &bytes)).unwrap();
@@ -83,11 +83,11 @@ fn receiving_bytes_verify_without_rewriting_the_original_descriptor() {
         assert_eq!(attachment, before);
         assert!(attachment.blob.is_none());
         assert_eq!(availability.value().map(String::as_str), Some("present"));
-        assert_eq!(*verified_hash, Some(BlobHash::of(&bytes)));
+        assert!(verified_hash.is_none());
         assert!(inline_bytes.is_none());
         let call = open
             .as_ref()
-            .expect("verified receiving bytes must be reachable");
+            .expect("stored attachment bytes must be reachable");
         let request: command_surface::RunnableRequest =
             serde_json::from_value(call.http.arguments.clone()).unwrap();
         assert_eq!(request.operation, "attachment");
@@ -104,7 +104,7 @@ fn receiving_bytes_verify_without_rewriting_the_original_descriptor() {
 }
 
 #[test]
-fn another_slot_or_descriptor_cannot_borrow_a_receiving_members_proof() {
+fn another_slot_or_descriptor_cannot_select_a_stored_file() {
     let daemon = test_daemon::start("synthetic exact attachment slot");
     let message = MessageId::parse(test_daemon::assets::seed(&daemon)).unwrap();
     let reader = daemon.daemon.reads.reader().unwrap();
@@ -115,7 +115,7 @@ fn another_slot_or_descriptor_cannot_borrow_a_receiving_members_proof() {
     }
     for (item, index) in [(original, 1), (changed, 0)] {
         let prepared = prepare(&reader, item, index, &|_, _, _, _| {
-            panic!("an unverified slot must not receive an open action")
+            panic!("an unrelated slot must not receive an open action")
         })
         .unwrap();
         let ItemKind::Attachment {
@@ -134,7 +134,7 @@ fn another_slot_or_descriptor_cannot_borrow_a_receiving_members_proof() {
 }
 
 #[test]
-fn an_available_descriptor_cannot_promote_a_corrupt_physical_body_to_present() {
+fn page_read_never_touches_blob_bodies() {
     let daemon = test_daemon::start("synthetic corrupt attachment evidence");
     let message = MessageId::parse(test_daemon::assets::seed(&daemon)).unwrap();
     let reader = daemon.daemon.reads.reader().unwrap();
@@ -157,36 +157,61 @@ fn an_available_descriptor_cannot_promote_a_corrupt_physical_body_to_present() {
     file.seek(SeekFrom::Start(offset)).unwrap();
     file.write_all(&[byte[0] ^ 1]).unwrap();
     file.sync_all().unwrap();
-    let prepared = prepare(&reader, original.clone(), 0, &|m, b, a, i| {
-        ready(&daemon, m, b, a, i)
-    });
+    let response = test_daemon::Call::new(
+        "read",
+        serde_json::json!({"target": format!("message:{message}")}),
+    )
+    .answer(&daemon.daemon);
+    let refused = crate::daemon::attachment::read(
+        crate::daemon::attachment::Range {
+            message: message.clone(),
+            block: 0,
+            attachment: 0,
+            input: None,
+            length: crate::daemon::attachment::PAGE_BYTES,
+            cursor: None,
+        },
+        &daemon.daemon,
+    );
     file.seek(SeekFrom::Start(offset)).unwrap();
     file.write_all(&byte).unwrap();
     file.sync_all().unwrap();
-    let prepared = prepared.unwrap();
-    let (
-        ItemKind::Attachment {
-            attachment,
-            availability,
-            verified_hash,
-            open,
-            ..
-        },
-        ItemKind::Attachment {
-            attachment: before, ..
-        },
-    ) = (&prepared.kind, &original.kind)
+    let page: ReadPage =
+        serde_json::from_value(response.value().expect("metadata page").clone()).unwrap();
+    let attachment = page
+        .document
+        .items
+        .iter()
+        .find(|item| matches!(item.kind, ItemKind::Attachment { .. }))
+        .expect("attachment in page");
+    let ItemKind::Attachment {
+        attachment: descriptor,
+        availability,
+        verified_hash,
+        open,
+        ..
+    } = &attachment.kind
     else {
         unreachable!()
     };
-    assert_eq!(attachment, before);
-    assert!(matches!(availability, ValueState::Unavailable { .. }));
+    let ItemKind::Attachment {
+        attachment: before, ..
+    } = &original.kind
+    else {
+        unreachable!()
+    };
+    assert_eq!(descriptor, before);
+    assert_eq!(availability.value().map(String::as_str), Some("present"));
     assert!(verified_hash.is_none());
-    assert!(open.is_none());
+    assert!(open.is_some());
+    assert!(
+        matches!(refused.outcome, command_surface::Outcome::Error(_)),
+        "{refused:?}"
+    );
 }
 
 #[test]
-fn physical_verification_preserves_parent_cancellation_before_byte_work() {
+fn attachment_metadata_preserves_parent_cancellation() {
     use polylogue_store::read::limit::{ReadCancellation, ReadLimit};
     let daemon = test_daemon::start("synthetic cancelled attachment evidence");
     let bytes = vec![b'X'; 64 * 1024 + 1];
