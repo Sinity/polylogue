@@ -17,6 +17,7 @@ use crate::Result;
 use polylogue_model::Json;
 use polylogue_model::live::{self, LiveFacts, LiveInterval};
 use rusqlite::{OptionalExtension, Transaction, params};
+use std::collections::BTreeSet;
 
 /// The kinds that are live evidence, as a SQL condition on `kind`.
 pub(crate) const EVIDENCE_KINDS: &str = "(kind LIKE 'hook~_%' ESCAPE '~' \
@@ -470,6 +471,26 @@ impl crate::Reader<'_> {
                 .unwrap_or_default(),
             processes,
         }))
+    }
+
+    /// The index write counter this read sees, and the sessions whose own
+    /// rows or live columns changed after write counter `after`: what a
+    /// follower that last looked at `after` needs to look at again.
+    pub fn sessions_changed_after(&self, after: i64) -> Result<(i64, BTreeSet<String>)> {
+        let conn = self.conn()?;
+        let now = conn.query_row(
+            "SELECT COALESCE((SELECT CAST(value AS INTEGER) FROM main.meta WHERE key='write_counter'),0)",
+            [],
+            |r| r.get(0),
+        )?;
+        let changed = conn
+            .prepare_cached(
+                "SELECT id FROM session WHERE changed > ?1
+                 UNION SELECT id FROM session WHERE live_changed > ?1",
+            )?
+            .query_map([after], |r| r.get(0))?
+            .collect::<rusqlite::Result<BTreeSet<String>>>()?;
+        Ok((now, changed))
     }
 
     /// What `follow` shows of one session at `now`: its live view, its open
