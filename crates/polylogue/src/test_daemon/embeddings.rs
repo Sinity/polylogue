@@ -42,6 +42,19 @@ pub(crate) fn response(
 impl TestDaemon {
     /// Serves one query vector; later reads reuse the daemon's warm vector.
     pub fn local_embeddings(&self) -> std::thread::JoinHandle<f64> {
+        let listener = self.embedding_endpoint();
+        std::thread::spawn(move || {
+            let (peer, _) = listener.accept().unwrap();
+            let started = std::time::Instant::now();
+            response(peer, 200, r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#);
+            started.elapsed().as_secs_f64() * 1000.0
+        })
+    }
+
+    /// Points the daemon's local embedding provider at the returned
+    /// listener and stores a vector for every text: high for
+    /// `claude-code:s1`'s texts, low for the rest.
+    pub(crate) fn embedding_endpoint(&self) -> std::net::TcpListener {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         self.set(
             "embed.endpoint",
@@ -49,12 +62,6 @@ impl TestDaemon {
         );
         self.set("embed.provider", "local");
         self.set("embed.model", "synthetic");
-        let provider = std::thread::spawn(move || {
-            let (peer, _) = listener.accept().unwrap();
-            let started = std::time::Instant::now();
-            response(peer, 200, r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#);
-            started.elapsed().as_secs_f64() * 1000.0
-        });
         {
             let reader = self.daemon.reads.reader().unwrap();
             let rows = reader.query("SELECT hex(t.hash) AS h, EXISTS(SELECT 1 FROM block b JOIN session s ON s.pk=b.session_pk WHERE b.text_id=t.id AND s.id='claude-code:s1') AS high FROM text t",&[]).unwrap();
@@ -82,6 +89,6 @@ impl TestDaemon {
                 .put("local/synthetic/2/document/unit", &vectors)
                 .unwrap();
         }
-        provider
+        listener
     }
 }
