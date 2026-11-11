@@ -17,8 +17,6 @@ use polylogue_model::SessionKind;
 pub use polylogue_query::units::Unit;
 
 pub struct UnitSpec {
-    pub unit: Unit,
-    pub name: &'static str,
     pub from: Expr,
     /// The row key, `_pk` in the output. It can change when the index is
     /// rebuilt.
@@ -39,9 +37,6 @@ pub struct UnitSpec {
     /// `since:` and `until:`: a condition on `{v}`, the resolved instant.
     pub since: Option<&'static str>,
     pub until: Option<&'static str>,
-    /// The row names one session through the `s` alias, so session fields
-    /// and `session.FIELD` apply to it.
-    pub in_session: bool,
     /// The expression naming the row's session key (`session.pk`).
     pub session_pk: &'static str,
     /// For a unit not in one session: its rows related to the sessions
@@ -266,11 +261,25 @@ pub fn expand_pair(template: &str, a: &Aliases, n: &Aliases) -> String {
     a.expand(&inner)
 }
 
+/// How the store reads each unit; exhaustive, so a declared unit fails the
+/// build until it has rows here.
 pub fn spec(unit: Unit) -> &'static UnitSpec {
-    UNITS
-        .iter()
-        .find(|u| u.unit == unit)
-        .expect("every unit is declared")
+    match unit {
+        Unit::Sessions => &SESSIONS,
+        Unit::Documents => &DOCUMENTS,
+        Unit::Messages => &MESSAGES,
+        Unit::Blocks => &BLOCKS,
+        Unit::ToolCalls => &TOOL_CALLS,
+        Unit::Files => &FILES,
+        Unit::Events => &EVENTS,
+        Unit::Assertions => &ASSERTIONS,
+        Unit::Links => &LINKS,
+        Unit::Turns => &TURNS,
+        Unit::Deliveries => &DELIVERIES,
+        Unit::LiveIntervals => &LIVE_INTERVALS,
+        Unit::Processes => &PROCESSES,
+        Unit::Changes => &CHANGES,
+    }
 }
 
 use ColKind::*;
@@ -389,573 +398,540 @@ pub fn call_position(a: &Aliases) -> String {
 
 const MESSAGE_RELATIONS: &[Relation] = &[rel("session", Unit::Sessions, Via::Same)];
 
-pub static UNITS: &[UnitSpec] = &[
-    UnitSpec {
-        unit: Unit::Sessions,
-        name: "sessions",
-        from: Expr::Template("session {s}"),
-        key: "{s}.pk",
-        identity: &["{s}.id"],
-        columns: &[
-            ("id", Expr::Template("{s}.id"), Text),
-            ("origin", T("{s}.origin"), Text),
-            ("kind", T("{s}.kind"), Text),
-            ("title", Expr::Fn(display_title), Text),
-            ("started", T("{s}.started_at"), Time),
-            ("last_active", T("{s}.last_activity_at"), Time),
-            ("cwd", T("{s}.cwd"), Text),
-            ("repo", T("{s}.repo"), Text),
-        ],
-        time: "{s}.last_activity_at",
-        newest_first: true,
-        session_order: false,
-        since: Some("{s}.last_activity_at >= {v}"),
-        until: Some("{s}.started_at < {v}"),
-        in_session: false,
-        session_pk: "{r}.session_pk",
-        session_scope: None,
-        search: Search::Hits {
-            words: true,
-            rows: sessions_hits,
-        },
-        defaults: &[
-            d(
-                Expr::Fn(main_sessions),
-                &["kind", "parent", "root", "depth", "connected", "link", "id"],
-                true,
-            ),
-            d(Expr::Template("{s}.stub = 0"), &["source"], false),
-            d(Expr::Fn(not_hidden), &["hidden", "id"], true),
-        ],
-        relations: &[],
-        parents: &[],
+static SESSIONS: UnitSpec = UnitSpec {
+    from: Expr::Template("session {s}"),
+    key: "{s}.pk",
+    identity: &["{s}.id"],
+    columns: &[
+        ("id", Expr::Template("{s}.id"), Text),
+        ("origin", T("{s}.origin"), Text),
+        ("kind", T("{s}.kind"), Text),
+        ("title", Expr::Fn(display_title), Text),
+        ("started", T("{s}.started_at"), Time),
+        ("last_active", T("{s}.last_activity_at"), Time),
+        ("cwd", T("{s}.cwd"), Text),
+        ("repo", T("{s}.repo"), Text),
+    ],
+    time: "{s}.last_activity_at",
+    newest_first: true,
+    session_order: false,
+    since: Some("{s}.last_activity_at >= {v}"),
+    until: Some("{s}.started_at < {v}"),
+    session_pk: "{r}.session_pk",
+    session_scope: None,
+    search: Search::Hits {
+        words: true,
+        rows: sessions_hits,
     },
-    UnitSpec {
-        unit: Unit::Documents,
-        name: "documents",
-        from: Expr::Template("document {r}"),
-        key: "{r}.pk",
-        identity: &["{r}.id"],
-        columns: &[
-            ("id", Expr::Template("{r}.id"), Text),
-            ("origin", T("{r}.origin"), Text),
-            ("purpose", T("{r}.purpose"), Text),
-            ("title", T("{r}.title"), Text),
-            ("source_time", T("{r}.source_time"), Time),
-            ("authorship", T("{r}.authorship"), Text),
-        ],
-        time: "{r}.source_time",
-        newest_first: true,
-        session_order: false,
-        since: Some("{r}.source_time >= {v}"),
-        until: Some("{r}.source_time < {v}"),
-        in_session: false,
-        session_pk: "",
-        session_scope: None,
-        search: Search::Hits {
-            words: true,
-            rows: documents_hits,
-        },
-        defaults: &[],
-        relations: &[],
-        parents: &[],
-    },
-    UnitSpec {
-        unit: Unit::Messages,
-        name: "messages",
-        from: Expr::Template("message {m} JOIN session {s} ON {s}.pk = {m}.session_pk"),
-        key: "{m}.pk",
-        identity: &["{m}.id"],
-        columns: &[
-            ("id", Expr::Template("{m}.id"), Text),
-            ("session", Expr::Template("{s}.id"), Text),
-            ("role", T("{m}.role"), Text),
-            ("written_by", T("{m}.written_by"), Text),
-            ("at", T("{m}.at"), Time),
-            ("model", T("{m}.model"), Text),
-        ],
-        time: "{m}.at",
-        newest_first: false,
-        session_order: true,
-        since: Some("{m}.at >= {v}"),
-        until: Some("{m}.at < {v}"),
-        in_session: true,
-        session_pk: "{m}.session_pk",
-        session_scope: None,
-        search: Search::Hits {
-            words: true,
-            rows: messages_hits,
-        },
-        defaults: MESSAGE_DEFAULTS,
-        relations: MESSAGE_RELATIONS,
-        parents: &[],
-    },
-    UnitSpec {
-        unit: Unit::Blocks,
-        name: "blocks",
-        from: Expr::Template(
-            "block {b} JOIN message {m} ON {m}.pk = {b}.message_pk JOIN session {s} ON {s}.pk = {b}.session_pk",
+    defaults: &[
+        d(
+            Expr::Fn(main_sessions),
+            &["kind", "parent", "root", "depth", "connected", "link", "id"],
+            true,
         ),
-        key: "{b}.pk",
-        identity: &["{m}.id", "{b}.idx"],
-        columns: &[
-            ("session", Expr::Template("{s}.id"), Text),
-            ("message", T("{m}.id"), Text),
-            ("kind", T("{b}.kind"), Text),
-            ("idx", T("{b}.idx"), Number),
-            ("at", T("{m}.at"), Time),
-        ],
-        time: "{m}.at",
-        newest_first: false,
-        session_order: true,
-        since: Some("{m}.at >= {v}"),
-        until: Some("{m}.at < {v}"),
-        in_session: true,
-        session_pk: "{b}.session_pk",
-        session_scope: None,
-        search: Search::Hits {
-            words: true,
-            rows: blocks_hits,
-        },
-        defaults: MESSAGE_DEFAULTS,
-        relations: &[
-            rel("session", Unit::Sessions, Via::Same),
-            rel("message", Unit::Messages, Via::Same),
-            rel(
-                "call",
-                Unit::ToolCalls,
-                Via::Exists {
-                    cond: "EXISTS (SELECT 1 FROM {from} WHERE ({nt}.call_block_pk = {b}.pk OR {nt}.result_block_pk = {b}.pk) AND {cond})",
-                    value: None,
-                },
-            ),
-        ],
-        parents: &[(Unit::Messages, "{b}.message_pk")],
+        d(Expr::Template("{s}.stub = 0"), &["source"], false),
+        d(Expr::Fn(not_hidden), &["hidden", "id"], true),
+    ],
+    relations: &[],
+    parents: &[],
+};
+
+static DOCUMENTS: UnitSpec = UnitSpec {
+    from: Expr::Template("document {r}"),
+    key: "{r}.pk",
+    identity: &["{r}.id"],
+    columns: &[
+        ("id", Expr::Template("{r}.id"), Text),
+        ("origin", T("{r}.origin"), Text),
+        ("purpose", T("{r}.purpose"), Text),
+        ("title", T("{r}.title"), Text),
+        ("source_time", T("{r}.source_time"), Time),
+        ("authorship", T("{r}.authorship"), Text),
+    ],
+    time: "{r}.source_time",
+    newest_first: true,
+    session_order: false,
+    since: Some("{r}.source_time >= {v}"),
+    until: Some("{r}.source_time < {v}"),
+    session_pk: "",
+    session_scope: None,
+    search: Search::Hits {
+        words: true,
+        rows: documents_hits,
     },
-    UnitSpec {
-        unit: Unit::ToolCalls,
-        name: "tool_calls",
-        from: Expr::Template(
-            "tool_call {t} JOIN block {cb} ON {cb}.pk = {t}.call_block_pk \
-             JOIN message {m} ON {m}.pk = {cb}.message_pk JOIN session {s} ON {s}.pk = {t}.session_pk",
+    defaults: &[],
+    relations: &[],
+    parents: &[],
+};
+
+static MESSAGES: UnitSpec = UnitSpec {
+    from: Expr::Template("message {m} JOIN session {s} ON {s}.pk = {m}.session_pk"),
+    key: "{m}.pk",
+    identity: &["{m}.id"],
+    columns: &[
+        ("id", Expr::Template("{m}.id"), Text),
+        ("session", Expr::Template("{s}.id"), Text),
+        ("role", T("{m}.role"), Text),
+        ("written_by", T("{m}.written_by"), Text),
+        ("at", T("{m}.at"), Time),
+        ("model", T("{m}.model"), Text),
+    ],
+    time: "{m}.at",
+    newest_first: false,
+    session_order: true,
+    since: Some("{m}.at >= {v}"),
+    until: Some("{m}.at < {v}"),
+    session_pk: "{m}.session_pk",
+    session_scope: None,
+    search: Search::Hits {
+        words: true,
+        rows: messages_hits,
+    },
+    defaults: MESSAGE_DEFAULTS,
+    relations: MESSAGE_RELATIONS,
+    parents: &[],
+};
+
+static BLOCKS: UnitSpec = UnitSpec {
+    from: Expr::Template(
+        "block {b} JOIN message {m} ON {m}.pk = {b}.message_pk JOIN session {s} ON {s}.pk = {b}.session_pk",
+    ),
+    key: "{b}.pk",
+    identity: &["{m}.id", "{b}.idx"],
+    columns: &[
+        ("session", Expr::Template("{s}.id"), Text),
+        ("message", T("{m}.id"), Text),
+        ("kind", T("{b}.kind"), Text),
+        ("idx", T("{b}.idx"), Number),
+        ("at", T("{m}.at"), Time),
+    ],
+    time: "{m}.at",
+    newest_first: false,
+    session_order: true,
+    since: Some("{m}.at >= {v}"),
+    until: Some("{m}.at < {v}"),
+    session_pk: "{b}.session_pk",
+    session_scope: None,
+    search: Search::Hits {
+        words: true,
+        rows: blocks_hits,
+    },
+    defaults: MESSAGE_DEFAULTS,
+    relations: &[
+        rel("session", Unit::Sessions, Via::Same),
+        rel("message", Unit::Messages, Via::Same),
+        rel(
+            "call",
+            Unit::ToolCalls,
+            Via::Exists {
+                cond: "EXISTS (SELECT 1 FROM {from} WHERE ({nt}.call_block_pk = {b}.pk OR {nt}.result_block_pk = {b}.pk) AND {cond})",
+                value: None,
+            },
         ),
-        key: "{t}.pk",
-        identity: &["{m}.id", "{cb}.idx"],
-        columns: &[
-            ("session", Expr::Template("{s}.id"), Text),
-            ("message", T("{m}.id"), Text),
-            ("tool", T("{t}.tool"), Text),
-            ("action", T("{t}.action"), Text),
-            ("command", T("{t}.command"), Text),
-            ("path", T("{t}.path"), Text),
-            ("outcome", T("{t}.outcome"), Text),
-            ("exit_code", T("{t}.exit_code"), Number),
-            ("at", T("{t}.at"), Time),
-        ],
-        time: "{t}.at",
-        newest_first: false,
-        session_order: false,
-        since: Some("({t}.at >= {v} OR {t}.result_block_pk IS NULL)"),
-        until: Some("{t}.at < {v}"),
-        in_session: true,
-        session_pk: "{t}.session_pk",
-        session_scope: None,
-        search: Search::Hits {
-            words: false,
-            rows: tool_call_hits,
-        },
-        defaults: &[
-            d(
-                Expr::Template("{m}.duplicate_of IS NULL"),
-                &["duplicate"],
-                true,
-            ),
-            d(
-                Expr::Template("COALESCE({m}.on_active_path, 1) = 1"),
-                &["active"],
-                true,
-            ),
-            d(Expr::Fn(counts_as_action), &["action"], false),
-            d(Expr::Fn(not_hidden), &["hidden"], true),
-        ],
-        relations: &[
-            rel("session", Unit::Sessions, Via::Same),
-            rel("message", Unit::Messages, Via::Same),
-            rel(
-                "child",
-                Unit::Sessions,
-                Via::Exists {
-                    cond: "EXISTS (SELECT 1 FROM link lc JOIN {from} ON {ns}.pk = lc.child_pk \
-                           WHERE lc.kind = 'subagent' AND lc.parent_id = {s}.id \
-                           AND lc.spawning_call = {t}.call_id AND {cond})",
-                    value: None,
-                },
-            ),
-            rel(
-                "next",
-                Unit::ToolCalls,
-                Via::Exists {
-                    cond: "EXISTS (SELECT 1 FROM {from} WHERE {nt}.pk = ({next}) AND {cond})",
-                    value: Some("(SELECT {e} FROM {from} WHERE {nt}.pk = ({next}))"),
-                },
-            ),
-            rel(
-                "previous",
-                Unit::ToolCalls,
-                Via::Exists {
-                    cond: "EXISTS (SELECT 1 FROM {from} WHERE {nt}.pk = ({previous}) AND {cond})",
-                    value: Some("(SELECT {e} FROM {from} WHERE {nt}.pk = ({previous}))"),
-                },
-            ),
-        ],
-        parents: &[(Unit::Messages, "{cb}.message_pk")],
+    ],
+    parents: &[(Unit::Messages, "{b}.message_pk")],
+};
+
+static TOOL_CALLS: UnitSpec = UnitSpec {
+    from: Expr::Template(
+        "tool_call {t} JOIN block {cb} ON {cb}.pk = {t}.call_block_pk \
+         JOIN message {m} ON {m}.pk = {cb}.message_pk JOIN session {s} ON {s}.pk = {t}.session_pk",
+    ),
+    key: "{t}.pk",
+    identity: &["{m}.id", "{cb}.idx"],
+    columns: &[
+        ("session", Expr::Template("{s}.id"), Text),
+        ("message", T("{m}.id"), Text),
+        ("tool", T("{t}.tool"), Text),
+        ("action", T("{t}.action"), Text),
+        ("command", T("{t}.command"), Text),
+        ("path", T("{t}.path"), Text),
+        ("outcome", T("{t}.outcome"), Text),
+        ("exit_code", T("{t}.exit_code"), Number),
+        ("at", T("{t}.at"), Time),
+    ],
+    time: "{t}.at",
+    newest_first: false,
+    session_order: false,
+    since: Some("({t}.at >= {v} OR {t}.result_block_pk IS NULL)"),
+    until: Some("{t}.at < {v}"),
+    session_pk: "{t}.session_pk",
+    session_scope: None,
+    search: Search::Hits {
+        words: false,
+        rows: tool_call_hits,
     },
-    UnitSpec {
-        unit: Unit::Files,
-        name: "files",
-        from: Expr::Template(
-            "(SELECT ft.session_pk AS session_pk, ft.path AS path, min(ft.pk) AS pk, \
-             sum(ft.action = 'file_read') AS reads, sum(ft.action = 'file_write') AS writes, \
-             sum(ft.action = 'file_edit') AS edits, min(ft.at) AS first_at, max(ft.at) AS last_at \
-             FROM tool_call ft WHERE ft.path IS NOT NULL \
-             AND ft.action IN ('file_read', 'file_write', 'file_edit') GROUP BY ft.session_pk, ft.path) {r} \
-             JOIN session {s} ON {s}.pk = {r}.session_pk",
+    defaults: &[
+        d(
+            Expr::Template("{m}.duplicate_of IS NULL"),
+            &["duplicate"],
+            true,
         ),
-        key: "{r}.pk",
-        identity: &["{s}.id", "{r}.path"],
-        columns: &[
-            ("session", Expr::Template("{s}.id"), Text),
-            ("path", T("{r}.path"), Text),
-            ("reads", T("{r}.reads"), Number),
-            ("writes", T("{r}.writes"), Number),
-            ("edits", T("{r}.edits"), Number),
-            ("first_at", T("{r}.first_at"), Time),
-            ("last_at", T("{r}.last_at"), Time),
-        ],
-        time: "{r}.first_at",
-        newest_first: false,
-        session_order: false,
-        since: None,
-        until: None,
-        in_session: true,
-        session_pk: "{r}.session_pk",
-        session_scope: None,
-        search: Search::None,
-        defaults: SESSION_VISIBLE,
-        relations: MESSAGE_RELATIONS,
-        parents: &[],
-    },
-    UnitSpec {
-        unit: Unit::Events,
-        name: "events",
-        from: Expr::Template(
-            "event {r} LEFT JOIN session {s} ON {s}.pk = {r}.session_pk JOIN input_ref {r}i ON {r}i.pk={r}.input_pk",
+        d(
+            Expr::Template("COALESCE({m}.on_active_path, 1) = 1"),
+            &["active"],
+            true,
         ),
-        key: "{r}.pk",
-        identity: &["{r}.id"],
-        columns: &[
-            ("id", T("{r}.id"), Text),
-            ("session", Expr::Template("{s}.id"), Text),
-            ("input", T("{r}i.id"), Text),
-            ("source", T("{r}i.format"), Text),
-            ("kind", T("{r}.kind"), Text),
-            ("at", T("{r}.at"), Time),
-            (
-                "data",
-                T("pl_block({r}.data)"),
-                crate::query::compile::ColKind::Json,
-            ),
-        ],
-        time: "{r}.at",
-        newest_first: false,
-        session_order: false,
-        since: Some("{r}.at >= {v}"),
-        until: Some("{r}.at < {v}"),
-        in_session: true,
-        session_pk: "{r}.session_pk",
-        session_scope: None,
-        search: Search::None,
-        defaults: SESSION_VISIBLE,
-        relations: MESSAGE_RELATIONS,
-        parents: &[],
-    },
-    UnitSpec {
-        unit: Unit::Assertions,
-        name: "assertions",
-        from: Expr::Template("source_assertion {r}"),
-        key: "{r}.rowid",
-        identity: &["{r}.id", "{r}.root"],
-        columns: &[
-            ("id", T("{r}.id"), Text),
-            (
-                "reference",
-                Expr::Template("pl_assertion_ref({r}.root,{r}.id)"),
-                Text,
-            ),
-            ("kind", T("{r}.kind"), Text),
-            ("key", T("{r}.key"), Text),
-            (
-                "value",
-                T("{r}.value"),
-                crate::query::compile::ColKind::Json,
-            ),
-            ("author", T("{r}.author"), Text),
-            ("created_at", T("{r}.created_at"), Time),
-            ("root", T("{r}.root"), Text),
-            (
-                "about",
-                T(
-                    "(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM source_link nt WHERE nt.record = {r}.id AND nt.role = 'about' ORDER BY nt.ref))",
-                ),
-                Text,
-            ),
-        ],
-        time: "{r}.created_at",
-        newest_first: true,
-        session_order: false,
-        since: Some("{r}.created_at >= {v}"),
-        until: Some("{r}.created_at < {v}"),
-        in_session: false,
-        session_pk: "{r}.session_pk",
-        session_scope: Some(
-            "EXISTS (SELECT 1 FROM source_link snt JOIN session ss ON 'session:' || ss.id = snt.ref \
-             WHERE snt.record = {r}.id AND snt.role = 'about' AND ss.pk IN ({sessions}))",
+        d(Expr::Fn(counts_as_action), &["action"], false),
+        d(Expr::Fn(not_hidden), &["hidden"], true),
+    ],
+    relations: &[
+        rel("session", Unit::Sessions, Via::Same),
+        rel("message", Unit::Messages, Via::Same),
+        rel(
+            "child",
+            Unit::Sessions,
+            Via::Exists {
+                cond: "EXISTS (SELECT 1 FROM link lc JOIN {from} ON {ns}.pk = lc.child_pk \
+                       WHERE lc.kind = 'subagent' AND lc.parent_id = {s}.id \
+                       AND lc.spawning_call = {t}.call_id AND {cond})",
+                value: None,
+            },
         ),
-        search: Search::Substring("{r}.value"),
-        defaults: &[
-            d(
-                Expr::Template("{r}.kind <> 'withdrawal'"),
-                &["kind", "note", "assertion"],
-                false,
-            ),
-            d(
-                Expr::Fn(current_assertion),
-                &[
-                    "current",
-                    "root",
-                    "withdrawn",
-                    "note",
-                    "assertion",
-                    "evidence_until",
-                ],
-                false,
-            ),
-            d(
-                Expr::Fn(not_withdrawn),
-                &["withdrawn", "note", "assertion", "evidence_until"],
-                false,
-            ),
-        ],
-        relations: &[],
-        parents: &[],
-    },
-    UnitSpec {
-        unit: Unit::Links,
-        name: "links",
-        from: Expr::Template(
-            "link {r} LEFT JOIN session {r}p ON {r}p.id = {r}.parent_id LEFT JOIN session {r}c ON {r}c.pk = {r}.child_pk",
+        rel(
+            "next",
+            Unit::ToolCalls,
+            Via::Exists {
+                cond: "EXISTS (SELECT 1 FROM {from} WHERE {nt}.pk = ({next}) AND {cond})",
+                value: Some("(SELECT {e} FROM {from} WHERE {nt}.pk = ({next}))"),
+            },
         ),
-        key: "{r}.pk",
-        identity: &["{r}.parent_id", "{r}.child_id", "{r}.kind", "{r}.how"],
-        columns: &[
-            ("parent", Expr::Template("{r}.parent_id"), Text),
-            ("child", Expr::Template("{r}.child_id"), Text),
-            ("kind", T("{r}.kind"), Text),
-            ("how", T("{r}.how"), Text),
-            ("evidence", T("{r}.evidence"), Text),
-            ("pending", T("({r}p.pk IS NULL)"), Bool),
-        ],
-        time: "{r}p.last_activity_at",
-        newest_first: false,
-        session_order: false,
-        since: None,
-        until: None,
-        in_session: false,
-        session_pk: "{r}.session_pk",
-        session_scope: Some("({r}.child_pk IN ({sessions}) OR {r}p.pk IN ({sessions}))"),
-        search: Search::None,
-        defaults: &[],
-        relations: &[
-            rel("parent", Unit::Sessions, Via::Session("{r}p")),
-            rel("child", Unit::Sessions, Via::Session("{r}c")),
-        ],
-        parents: &[],
-    },
-    UnitSpec {
-        unit: Unit::Turns,
-        name: "turns",
-        from: Expr::Fn(turns_from),
-        key: "{r}.pk",
-        identity: &["{r}.id"],
-        columns: &[
-            ("id", T("{r}.id"), Text),
-            ("session", Expr::Template("{s}.id"), Text),
-            ("start", T("{r}.start"), Time),
-            ("end", T("{r}.end"), Time),
-            ("burst", T("{r}.burst"), Number),
-            ("prompts", T("{r}.prompts"), Text),
-            ("slash_command", T("{r}.slash_command"), Bool),
-            ("answer", T("{r}.answer"), Text),
-            ("attempts", T("{r}.attempts"), Number),
-            ("path", T("{r}.path"), Text),
-            ("latency", T("{r}.latency"), Duration),
-            ("tool_calls", T("{r}.tool_calls"), Number),
-            ("errors", T("{r}.errors"), Number),
-            ("input_tokens", T("{r}.input_tokens"), Number),
-            ("output_tokens", T("{r}.output_tokens"), Number),
-            ("cost", T("{r}.cost_nusd"), Money),
-            ("abandoned", T("{r}.abandoned"), Bool),
-        ],
-        time: "{r}.start",
-        newest_first: false,
-        session_order: false,
-        since: None,
-        until: None,
-        in_session: true,
-        session_pk: "{r}.session_pk",
-        session_scope: None,
-        search: Search::None,
-        defaults: SESSION_VISIBLE,
-        relations: MESSAGE_RELATIONS,
-        parents: &[],
-    },
-    UnitSpec {
-        unit: Unit::Deliveries,
-        name: "deliveries",
-        from: Expr::Template(
-            "source_delivery {r} LEFT JOIN session {s} ON {s}.id = {r}.recipient_id",
+        rel(
+            "previous",
+            Unit::ToolCalls,
+            Via::Exists {
+                cond: "EXISTS (SELECT 1 FROM {from} WHERE {nt}.pk = ({previous}) AND {cond})",
+                value: Some("(SELECT {e} FROM {from} WHERE {nt}.pk = ({previous}))"),
+            },
         ),
-        key: "{r}.rowid",
-        identity: &["{r}.id"],
-        columns: &[
-            ("id", T("{r}.id"), Text),
-            ("recipient", T("{r}.recipient_id"), Text),
-            ("event", T("{r}.event"), Text),
-            (
-                "outcome",
-                Expr::Fn(crate::query::fields::deliveries_outcome),
-                Text,
+    ],
+    parents: &[(Unit::Messages, "{cb}.message_pk")],
+};
+
+static FILES: UnitSpec = UnitSpec {
+    from: Expr::Template(
+        "(SELECT ft.session_pk AS session_pk, ft.path AS path, min(ft.pk) AS pk, \
+         sum(ft.action = 'file_read') AS reads, sum(ft.action = 'file_write') AS writes, \
+         sum(ft.action = 'file_edit') AS edits, min(ft.at) AS first_at, max(ft.at) AS last_at \
+         FROM tool_call ft WHERE ft.path IS NOT NULL \
+         AND ft.action IN ('file_read', 'file_write', 'file_edit') GROUP BY ft.session_pk, ft.path) {r} \
+         JOIN session {s} ON {s}.pk = {r}.session_pk",
+    ),
+    key: "{r}.pk",
+    identity: &["{s}.id", "{r}.path"],
+    columns: &[
+        ("session", Expr::Template("{s}.id"), Text),
+        ("path", T("{r}.path"), Text),
+        ("reads", T("{r}.reads"), Number),
+        ("writes", T("{r}.writes"), Number),
+        ("edits", T("{r}.edits"), Number),
+        ("first_at", T("{r}.first_at"), Time),
+        ("last_at", T("{r}.last_at"), Time),
+    ],
+    time: "{r}.first_at",
+    newest_first: false,
+    session_order: false,
+    since: None,
+    until: None,
+    session_pk: "{r}.session_pk",
+    session_scope: None,
+    search: Search::None,
+    defaults: SESSION_VISIBLE,
+    relations: MESSAGE_RELATIONS,
+    parents: &[],
+};
+
+static EVENTS: UnitSpec = UnitSpec {
+    from: Expr::Template(
+        "event {r} LEFT JOIN session {s} ON {s}.pk = {r}.session_pk JOIN input_ref {r}i ON {r}i.pk={r}.input_pk",
+    ),
+    key: "{r}.pk",
+    identity: &["{r}.id"],
+    columns: &[
+        ("id", T("{r}.id"), Text),
+        ("session", Expr::Template("{s}.id"), Text),
+        ("input", T("{r}i.id"), Text),
+        ("source", T("{r}i.format"), Text),
+        ("kind", T("{r}.kind"), Text),
+        ("at", T("{r}.at"), Time),
+        (
+            "data",
+            T("pl_block({r}.data)"),
+            crate::query::compile::ColKind::Json,
+        ),
+    ],
+    time: "{r}.at",
+    newest_first: false,
+    session_order: false,
+    since: Some("{r}.at >= {v}"),
+    until: Some("{r}.at < {v}"),
+    session_pk: "{r}.session_pk",
+    session_scope: None,
+    search: Search::None,
+    defaults: SESSION_VISIBLE,
+    relations: MESSAGE_RELATIONS,
+    parents: &[],
+};
+
+static ASSERTIONS: UnitSpec = UnitSpec {
+    from: Expr::Template("source_assertion {r}"),
+    key: "{r}.rowid",
+    identity: &["{r}.id", "{r}.root"],
+    columns: &[
+        ("id", T("{r}.id"), Text),
+        (
+            "reference",
+            Expr::Template("pl_assertion_ref({r}.root,{r}.id)"),
+            Text,
+        ),
+        ("kind", T("{r}.kind"), Text),
+        ("key", T("{r}.key"), Text),
+        (
+            "value",
+            T("{r}.value"),
+            crate::query::compile::ColKind::Json,
+        ),
+        ("author", T("{r}.author"), Text),
+        ("created_at", T("{r}.created_at"), Time),
+        ("root", T("{r}.root"), Text),
+        (
+            "about",
+            T(
+                "(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM source_link nt WHERE nt.record = {r}.id AND nt.role = 'about' ORDER BY nt.ref))",
             ),
-            ("at", T("{r}.at"), Time),
-            ("bytes", T("{r}.bytes"), Number),
-        ],
-        time: "{r}.at",
-        newest_first: false,
-        session_order: false,
-        since: None,
-        until: None,
-        in_session: true,
-        session_pk: "{s}.pk",
-        session_scope: None,
-        search: Search::None,
-        defaults: &[d(Expr::Fn(maybe_session_visible), &[], false)],
-        relations: &[
-            rel("session", Unit::Sessions, Via::Same),
-            rel("recipient", Unit::Sessions, Via::Same),
-        ],
-        parents: &[],
-    },
-    UnitSpec {
-        unit: Unit::LiveIntervals,
-        name: "live_intervals",
-        from: Expr::Template("live_interval {r} JOIN session {s} ON {s}.pk = {r}.session_pk"),
-        key: "{r}.rowid",
-        identity: &["{s}.id", "{r}.aspect", "{r}.start_at"],
-        columns: &[
-            ("session", Expr::Template("{s}.id"), Text),
-            ("aspect", T("{r}.aspect"), Text),
-            ("value", T("{r}.value"), Text),
-            ("start", T("{r}.start_at"), Time),
-            ("end", T("{r}.end_at"), Time),
-            ("duration_ms", T("({r}.end_at - {r}.start_at)"), Number),
-            ("closed_by", T("{r}.closed_by"), Text),
-        ],
-        time: "{r}.start_at",
-        newest_first: false,
-        session_order: false,
-        since: Some("{r}.end_at >= {v}"),
-        until: Some("{r}.start_at < {v}"),
-        in_session: true,
-        session_pk: "{r}.session_pk",
-        session_scope: None,
-        search: Search::None,
-        defaults: SESSION_VISIBLE,
-        relations: MESSAGE_RELATIONS,
-        parents: &[],
-    },
-    UnitSpec {
-        unit: Unit::Processes,
-        name: "processes",
-        from: Expr::Template("process {r} JOIN session {s} ON {s}.pk = {r}.session_pk"),
-        key: "{r}.rowid",
-        identity: &["{s}.id", "{r}.boot_id", "{r}.pid", "{r}.start"],
-        columns: &[
-            ("session", Expr::Template("{s}.id"), Text),
-            ("boot_id", T("{r}.boot_id"), Text),
-            ("pid", T("{r}.pid"), Number),
-            ("start", T("{r}.start"), Number),
-            ("parent_pid", T("{r}.parent_pid"), Number),
-            ("comm", T("{r}.comm"), Text),
-            ("argv", T("{r}.argv"), Text),
-            ("cwd", T("{r}.cwd"), Text),
-            ("started_at", T("{r}.started_at"), Time),
-            ("ended_at", T("{r}.ended_at"), Time),
-            ("role", T("{r}.role"), Text),
-            (
-                "tool_call",
-                Expr::Fn(crate::query::fields::processes_tool_call),
-                Text,
-            ),
-        ],
-        time: "{r}.started_at",
-        newest_first: false,
-        session_order: false,
-        since: Some("{r}.started_at >= {v}"),
-        until: Some("{r}.started_at < {v}"),
-        in_session: true,
-        session_pk: "{r}.session_pk",
-        session_scope: None,
-        search: Search::None,
-        defaults: SESSION_VISIBLE,
-        relations: MESSAGE_RELATIONS,
-        parents: &[],
-    },
-    UnitSpec {
-        unit: Unit::Changes,
-        name: "changes",
-        from: Expr::Template(
-            "(SELECT 'session' AS kind, cs.id AS ref, cs.pk AS session_pk, \
-               MAX(cs.changed, COALESCE(cs.live_changed, 0), COALESCE(cs.derived_changed, 0)) AS seq, \
-               cs.changed AS changed, cs.live_changed AS live_changed, cs.derived_changed AS derived_changed, \
-               NULL AS assertion_kind FROM session cs \
-             UNION ALL SELECT 'removed', rs.session_id, NULL, rs.changed, rs.changed, NULL, NULL, NULL \
-               FROM removed_session rs \
-             UNION ALL SELECT 'assertion', cn.id, NULL, cn.commit_seq, NULL, NULL, NULL, cn.kind FROM source_assertion cn \
+            Text,
+        ),
+    ],
+    time: "{r}.created_at",
+    newest_first: true,
+    session_order: false,
+    since: Some("{r}.created_at >= {v}"),
+    until: Some("{r}.created_at < {v}"),
+    session_pk: "{r}.session_pk",
+    session_scope: Some(
+        "EXISTS (SELECT 1 FROM source_link snt JOIN session ss ON 'session:' || ss.id = snt.ref \
+         WHERE snt.record = {r}.id AND snt.role = 'about' AND ss.pk IN ({sessions}))",
+    ),
+    search: Search::Substring("{r}.value"),
+    defaults: &[
+        d(
+            Expr::Template("{r}.kind <> 'withdrawal'"),
+            &["kind", "note", "assertion"],
+            false,
+        ),
+        d(
+            Expr::Fn(current_assertion),
+            &[
+                "current",
+                "root",
+                "withdrawn",
+                "note",
+                "assertion",
+                "evidence_until",
+            ],
+            false,
+        ),
+        d(
+            Expr::Fn(not_withdrawn),
+            &["withdrawn", "note", "assertion", "evidence_until"],
+            false,
+        ),
+    ],
+    relations: &[],
+    parents: &[],
+};
+
+static LINKS: UnitSpec = UnitSpec {
+    from: Expr::Template(
+        "link {r} LEFT JOIN session {r}p ON {r}p.id = {r}.parent_id LEFT JOIN session {r}c ON {r}c.pk = {r}.child_pk",
+    ),
+    key: "{r}.pk",
+    identity: &["{r}.parent_id", "{r}.child_id", "{r}.kind", "{r}.how"],
+    columns: &[
+        ("parent", Expr::Template("{r}.parent_id"), Text),
+        ("child", Expr::Template("{r}.child_id"), Text),
+        ("kind", T("{r}.kind"), Text),
+        ("how", T("{r}.how"), Text),
+        ("evidence", T("{r}.evidence"), Text),
+        ("pending", T("({r}p.pk IS NULL)"), Bool),
+    ],
+    time: "{r}p.last_activity_at",
+    newest_first: false,
+    session_order: false,
+    since: None,
+    until: None,
+    session_pk: "{r}.session_pk",
+    session_scope: Some("({r}.child_pk IN ({sessions}) OR {r}p.pk IN ({sessions}))"),
+    search: Search::None,
+    defaults: &[],
+    relations: &[
+        rel("parent", Unit::Sessions, Via::Session("{r}p")),
+        rel("child", Unit::Sessions, Via::Session("{r}c")),
+    ],
+    parents: &[],
+};
+
+static TURNS: UnitSpec = UnitSpec {
+    from: Expr::Fn(turns_from),
+    key: "{r}.pk",
+    identity: &["{r}.id"],
+    columns: &[
+        ("id", T("{r}.id"), Text),
+        ("session", Expr::Template("{s}.id"), Text),
+        ("start", T("{r}.start"), Time),
+        ("end", T("{r}.end"), Time),
+        ("burst", T("{r}.burst"), Number),
+        ("prompts", T("{r}.prompts"), Text),
+        ("slash_command", T("{r}.slash_command"), Bool),
+        ("answer", T("{r}.answer"), Text),
+        ("attempts", T("{r}.attempts"), Number),
+        ("path", T("{r}.path"), Text),
+        ("latency", T("{r}.latency"), Duration),
+        ("tool_calls", T("{r}.tool_calls"), Number),
+        ("errors", T("{r}.errors"), Number),
+        ("input_tokens", T("{r}.input_tokens"), Number),
+        ("output_tokens", T("{r}.output_tokens"), Number),
+        ("cost", T("{r}.cost_nusd"), Money),
+        ("abandoned", T("{r}.abandoned"), Bool),
+    ],
+    time: "{r}.start",
+    newest_first: false,
+    session_order: false,
+    since: None,
+    until: None,
+    session_pk: "{r}.session_pk",
+    session_scope: None,
+    search: Search::None,
+    defaults: SESSION_VISIBLE,
+    relations: MESSAGE_RELATIONS,
+    parents: &[],
+};
+
+static DELIVERIES: UnitSpec = UnitSpec {
+    from: Expr::Template("source_delivery {r} LEFT JOIN session {s} ON {s}.id = {r}.recipient_id"),
+    key: "{r}.rowid",
+    identity: &["{r}.id"],
+    columns: &[
+        ("id", T("{r}.id"), Text),
+        ("recipient", T("{r}.recipient_id"), Text),
+        ("event", T("{r}.event"), Text),
+        (
+            "outcome",
+            Expr::Fn(crate::query::fields::deliveries_outcome),
+            Text,
+        ),
+        ("at", T("{r}.at"), Time),
+        ("bytes", T("{r}.bytes"), Number),
+    ],
+    time: "{r}.at",
+    newest_first: false,
+    session_order: false,
+    since: None,
+    until: None,
+    session_pk: "{s}.pk",
+    session_scope: None,
+    search: Search::None,
+    defaults: &[d(Expr::Fn(maybe_session_visible), &[], false)],
+    relations: &[
+        rel("session", Unit::Sessions, Via::Same),
+        rel("recipient", Unit::Sessions, Via::Same),
+    ],
+    parents: &[],
+};
+
+static LIVE_INTERVALS: UnitSpec = UnitSpec {
+    from: Expr::Template("live_interval {r} JOIN session {s} ON {s}.pk = {r}.session_pk"),
+    key: "{r}.rowid",
+    identity: &["{s}.id", "{r}.aspect", "{r}.start_at"],
+    columns: &[
+        ("session", Expr::Template("{s}.id"), Text),
+        ("aspect", T("{r}.aspect"), Text),
+        ("value", T("{r}.value"), Text),
+        ("start", T("{r}.start_at"), Time),
+        ("end", T("{r}.end_at"), Time),
+        ("duration_ms", T("({r}.end_at - {r}.start_at)"), Number),
+        ("closed_by", T("{r}.closed_by"), Text),
+    ],
+    time: "{r}.start_at",
+    newest_first: false,
+    session_order: false,
+    since: Some("{r}.end_at >= {v}"),
+    until: Some("{r}.start_at < {v}"),
+    session_pk: "{r}.session_pk",
+    session_scope: None,
+    search: Search::None,
+    defaults: SESSION_VISIBLE,
+    relations: MESSAGE_RELATIONS,
+    parents: &[],
+};
+
+static PROCESSES: UnitSpec = UnitSpec {
+    from: Expr::Template("process {r} JOIN session {s} ON {s}.pk = {r}.session_pk"),
+    key: "{r}.rowid",
+    identity: &["{s}.id", "{r}.boot_id", "{r}.pid", "{r}.start"],
+    columns: &[
+        ("session", Expr::Template("{s}.id"), Text),
+        ("boot_id", T("{r}.boot_id"), Text),
+        ("pid", T("{r}.pid"), Number),
+        ("start", T("{r}.start"), Number),
+        ("parent_pid", T("{r}.parent_pid"), Number),
+        ("comm", T("{r}.comm"), Text),
+        ("argv", T("{r}.argv"), Text),
+        ("cwd", T("{r}.cwd"), Text),
+        ("started_at", T("{r}.started_at"), Time),
+        ("ended_at", T("{r}.ended_at"), Time),
+        ("role", T("{r}.role"), Text),
+        (
+            "tool_call",
+            Expr::Fn(crate::query::fields::processes_tool_call),
+            Text,
+        ),
+    ],
+    time: "{r}.started_at",
+    newest_first: false,
+    session_order: false,
+    since: Some("{r}.started_at >= {v}"),
+    until: Some("{r}.started_at < {v}"),
+    session_pk: "{r}.session_pk",
+    session_scope: None,
+    search: Search::None,
+    defaults: SESSION_VISIBLE,
+    relations: MESSAGE_RELATIONS,
+    parents: &[],
+};
+
+static CHANGES: UnitSpec = UnitSpec {
+    from: Expr::Template(
+        "(SELECT 'session' AS kind, cs.id AS ref, cs.pk AS session_pk, \
+           MAX(cs.changed, COALESCE(cs.live_changed, 0), COALESCE(cs.derived_changed, 0)) AS seq, \
+           cs.changed AS changed, cs.live_changed AS live_changed, cs.derived_changed AS derived_changed, \
+           NULL AS assertion_kind FROM session cs \
+         UNION ALL SELECT 'removed', rs.session_id, NULL, rs.changed, rs.changed, NULL, NULL, NULL \
+           FROM removed_session rs \
+         UNION ALL SELECT 'assertion', cn.id, NULL, cn.commit_seq, NULL, NULL, NULL, cn.kind FROM source_assertion cn \
 ) {r}",
-        ),
-        key: "({r}.kind || ':' || {r}.ref)",
-        identity: &["{r}.kind", "{r}.ref"],
-        columns: &[
-            ("kind", T("{r}.kind"), Text),
-            ("ref", T("{r}.ref"), Text),
-            ("seq", T("{r}.seq"), Number),
-            ("live_changed", T("{r}.live_changed"), Number),
-            ("assertion_kind", T("{r}.assertion_kind"), Text),
-        ],
-        time: "{r}.seq",
-        newest_first: false,
-        session_order: false,
-        since: None,
-        until: None,
-        in_session: false,
-        session_pk: "{r}.session_pk",
-        session_scope: Some("({r}.kind = 'session' AND {r}.session_pk IN ({sessions}))"),
-        search: Search::None,
-        defaults: &[],
-        relations: &[],
-        parents: &[],
-    },
-];
+    ),
+    key: "({r}.kind || ':' || {r}.ref)",
+    identity: &["{r}.kind", "{r}.ref"],
+    columns: &[
+        ("kind", T("{r}.kind"), Text),
+        ("ref", T("{r}.ref"), Text),
+        ("seq", T("{r}.seq"), Number),
+        ("live_changed", T("{r}.live_changed"), Number),
+        ("assertion_kind", T("{r}.assertion_kind"), Text),
+    ],
+    time: "{r}.seq",
+    newest_first: false,
+    session_order: false,
+    since: None,
+    until: None,
+    session_pk: "{r}.session_pk",
+    session_scope: Some("({r}.kind = 'session' AND {r}.session_pk IN ({sessions}))"),
+    search: Search::None,
+    defaults: &[],
+    relations: &[],
+    parents: &[],
+};
 
 /// One row per turn: along the active path (or file
 /// order when it is unknown), a turn starts at a human prompt that does not

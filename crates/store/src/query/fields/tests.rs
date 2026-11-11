@@ -3,9 +3,9 @@ use super::*;
 #[test]
 fn every_non_special_field_has_sql() {
     let a = Aliases::plain();
-    for f in FIELDS {
-        if f.kind != Kind::Special {
-            assert!(f.expr(&a, 0).is_some(), "{:?}.{}", f.unit, f.name);
+    for &id in FieldId::ALL {
+        if id.declaration().kind != Kind::Special {
+            assert!(rule(id).expr(&a, 0).is_some(), "{id:?}");
         }
     }
 }
@@ -14,7 +14,12 @@ fn every_non_special_field_has_sql() {
 fn names_are_unique_per_unit() {
     let mut seen = std::collections::HashSet::new();
     for f in FIELDS {
-        assert!(seen.insert((f.unit, f.name)), "{:?}.{}", f.unit, f.name);
+        assert!(
+            seen.insert((f.unit, f.name.to_ascii_lowercase())),
+            "{:?}.{}",
+            f.unit,
+            f.name
+        );
     }
 }
 
@@ -24,40 +29,12 @@ fn names_are_unique_per_unit() {
 /// compares the stored column so the column's index serves the condition.
 #[test]
 fn special_fields_and_read_time_values_have_a_compile_rule() {
-    let read_time = [(Unit::ToolCalls, "outcome")];
-    for f in FIELDS {
+    let read_time = [FieldId::ToolCallsOutcome];
+    for &id in FieldId::ALL {
         assert_eq!(
-            f.kind == Kind::Special || read_time.contains(&(f.unit, f.name)),
-            f.compile.is_some(),
-            "{:?}.{}",
-            f.unit,
-            f.name
-        );
-    }
-}
-
-/// The catalog declares every field; the store gives each declared field one
-/// rule and has no rule for a field the catalog does not declare.
-#[test]
-fn the_store_has_a_rule_for_exactly_the_catalog_fields() {
-    for declared in polylogue_query::fields::FIELDS {
-        assert!(
-            FIELDS
-                .iter()
-                .any(|f| f.unit == declared.unit && f.name == declared.name),
-            "{:?}.{} has no store rule",
-            declared.unit,
-            declared.name
-        );
-    }
-    for f in FIELDS {
-        assert!(
-            polylogue_query::fields::FIELDS
-                .iter()
-                .any(|declared| declared.unit == f.unit && declared.name == f.name),
-            "{:?}.{} is not in the catalog",
-            f.unit,
-            f.name
+            id.declaration().kind == Kind::Special || read_time.contains(&id),
+            rule(id).compile.is_some(),
+            "{id:?}"
         );
     }
 }

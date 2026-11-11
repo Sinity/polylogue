@@ -146,7 +146,7 @@ fn branch(index: usize, key: &FacetKey, now: jiff::Timestamp) -> Result<String, 
     };
     let spec = units::spec(unit);
     let aliases = fields::Aliases::plain();
-    if unit != Unit::Sessions && !spec.in_session {
+    if unit != Unit::Sessions && !fields::has_session(unit) {
         return Err(invalid(format!(
             "{} has no per-session row domain",
             unit.name()

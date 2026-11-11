@@ -35,8 +35,8 @@ fn unit_schema(unit: &str, catalog: &Catalog) -> Result<OutputSchema, QueryError
                     kind: super::source::column_kind(column.kind),
                     ..Field::default()
                 });
-            if let Some(kind) =
-                crate::fields::lookup(product, column.name).and_then(|field| field.value_kind)
+            if let Some(kind) = crate::fields::lookup(product, column.name)
+                .and_then(|field| field.declaration().value_kind)
             {
                 field.kind = super::source::column_kind(kind);
             }

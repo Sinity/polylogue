@@ -511,7 +511,9 @@ fn reference_containers_and_unconstrained_ids_keep_their_physical_shapes() {
         let field = catalog.field("changes", name).unwrap();
         assert_eq!(field.kind, FieldKind::List(Box::new(FieldKind::Reference)));
         assert_eq!(field.unit.as_deref(), Some(target));
-        let declaration = polylogue_query::fields::lookup(Unit::Changes, name).unwrap();
+        let declaration = polylogue_query::fields::lookup(Unit::Changes, name)
+            .unwrap()
+            .declaration();
         assert_eq!(declaration.column_kind(), ColKind::Ids);
         assert_eq!(
             polylogue_query::fields::column_reference(Unit::Changes, name),

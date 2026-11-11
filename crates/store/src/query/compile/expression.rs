@@ -68,16 +68,17 @@ impl Expressions<'_> {
                 };
                 return self.expr(rest, &sub, at);
             }
-            let def = if let Some(d) = fields::lookup(scope.unit, &lower) {
-                d
+            let id = if let Some(id) = fields::lookup(scope.unit, &lower) {
+                id
             } else if fields::has_session(scope.unit)
-                && let Some(d) = fields::lookup(Unit::Sessions, &lower)
+                && let Some(id) = fields::lookup(Unit::Sessions, &lower)
             {
-                d
+                id
             } else {
                 return Err(self.unknown_field(field, scope.unit, span));
             };
-            let Some(expr) = def.expr(a, self.now) else {
+            let def = id.declaration();
+            let Some(expr) = fields::rule(id).expr(a, self.now) else {
                 scalar(def.column_kind(), def.name, at)?;
                 return Err(QueryError::Invalid {
                     message: format!("{} cannot be grouped or sorted by", def.name),
