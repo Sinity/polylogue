@@ -740,7 +740,6 @@ fn steps_to_derive_from_start(w: &WriterArchive, name: &str) -> usize {
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
     let inputs = super::Inputs {
         catalog: polylogue_model::Catalog::builtin(),
-        changes: &changes,
         from_start: true,
     };
     let steps = Arc::new(AtomicUsize::new(0));
@@ -754,7 +753,10 @@ fn steps_to_derive_from_start(w: &WriterArchive, name: &str) -> usize {
     )
     .unwrap();
     for derivation in super::ALL {
-        (derivation.run)(&tx, pk, &inputs).unwrap();
+        (derivation.compute)(&tx, pk, &inputs)
+            .unwrap()
+            .apply(&tx, pk, &changes)
+            .unwrap();
     }
     tx.progress_handler(0, None::<fn() -> bool>).unwrap();
     drop(changes);
