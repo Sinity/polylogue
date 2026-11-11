@@ -70,7 +70,7 @@ impl Reader<'_> {
         params.extend(at.values.iter().map(sql_value));
         params.push(SqlValue::Int(1));
         let mut found = None;
-        self.query_each(&program.metadata_page_sql(true, true), &params, |row| {
+        self.query_each(&program.order_page_sql(true, true), &params, |row| {
             selection.scope.check()?;
             found = Some(OrderPosition {
                 values: program

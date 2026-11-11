@@ -11,6 +11,7 @@ use crate::query::units::{self, Index, Search, Via};
 use combine::join;
 use polylogue_query::QueryError;
 use polylogue_query::compile::Parameters;
+use polylogue_query::selection::{Projection, Selection, contains_order, newest_word, top_level};
 pub use polylogue_query::{
     ChatPage, ColKind, Column, ColumnReference, Definition, Kept, Options, SavedQuery, Shape,
 };
@@ -202,6 +203,24 @@ pub struct Program {
     /// after the last row's values of these columns. Empty for a summary,
     /// which is one row.
     pub order: Vec<OrderKey>,
+    /// Native rows are paged key first; `None` for a derived relation.
+    pub keyed: Option<KeyedRows>,
+}
+
+/// An answer of native rows read in two statements: every selected row's
+/// key with its order values, of which a page takes its rows' keys, then
+/// the row columns of only those keys. Sorting and paging then touch keys,
+/// never the columns of rows off the page.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct KeyedRows {
+    /// `_pk`, `_rank` when ranked, `_near` and the order columns of every
+    /// selected row, unordered.
+    pub keys: String,
+    /// The row columns read from the unit's rows, without the condition
+    /// that names which: [`Program::hydrate_sql`] adds it.
+    pub rows: String,
+    /// The unit's key expression in `rows`.
+    pub key: String,
 }
 
 /// One term of an answer's order: a column of the answer and its
@@ -281,31 +300,28 @@ impl Program {
         self.column_slots.get(name).map_or(name, String::as_str)
     }
 
-    /// One page of the answer. With `after`, it holds the rows that sort
-    /// after a row whose order-key values are bound after `params`, one per
-    /// key; the page size is bound last.
-    pub fn page_sql(&self, after: bool) -> String {
-        self.page_sql_in_direction(after, false)
+    /// One page in order, `reverse`d or not. With `after`, it holds the rows
+    /// that sort after a row whose order-key values are bound after
+    /// `params`, one per key; the page size is bound last. Native rows page
+    /// their keys, which [`Program::hydrate_sql`] turns into rows; a derived
+    /// relation pages its rows.
+    pub fn page_sql(&self, after: bool, reverse: bool) -> String {
+        self.page_projected(after, reverse, "*")
     }
 
-    pub(crate) fn page_sql_in_direction(&self, after: bool, reverse: bool) -> String {
-        self.page_sql_projected(after, reverse, "*")
-    }
-
-    /// Ordering can sort eagerly. Keep answer-only body expressions outside
-    /// that work until the consumer actually requests the selected row.
-    pub(crate) fn metadata_page_sql(&self, after: bool, reverse: bool) -> String {
+    /// The order values of one page and nothing else, so ordering sorts no
+    /// row bodies.
+    pub(crate) fn order_page_sql(&self, after: bool, reverse: bool) -> String {
         let columns = self
             .order
             .iter()
             .map(|key| format!("\"{}\"", key.column))
             .collect::<Vec<_>>()
             .join(", ");
-        self.page_sql_projected(after, reverse, &columns)
+        self.page_projected(after, reverse, &columns)
     }
 
-    /// Project exactly one already-selected total-order key, without sorting
-    /// answer bodies for the other selected rows.
+    /// The one derived row at the order values bound after `params`.
     pub(crate) fn row_at_sql(&self) -> String {
         let predicate = self
             .order
@@ -317,9 +333,23 @@ impl Program {
         format!("SELECT * FROM ({}) WHERE {predicate} LIMIT 1", self.sql)
     }
 
-    fn page_sql_projected(&self, after: bool, reverse: bool, projection: &str) -> String {
+    /// The row columns of the native keys bound as one JSON array after
+    /// `params`; `None` for a derived relation, whose page holds its rows.
+    pub fn hydrate_sql(&self) -> Option<String> {
+        self.keyed.as_ref().map(|keyed| {
+            format!(
+                "{} WHERE {} IN (SELECT value FROM json_each(?{}))",
+                keyed.rows,
+                keyed.key,
+                self.params.len() + 1
+            )
+        })
+    }
+
+    fn page_projected(&self, after: bool, reverse: bool, projection: &str) -> String {
         let n = self.params.len();
-        let mut sql = format!("SELECT {projection} FROM ({})", self.sql);
+        let source = self.keyed.as_ref().map_or(&self.sql, |keyed| &keyed.keys);
+        let mut sql = format!("SELECT {projection} FROM ({source})");
         if after && !self.order.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&self.after_condition(n, reverse));
@@ -490,13 +520,6 @@ pub(crate) struct Compiler<'a> {
     source_near_allowed: bool,
     /// An unavailable semantic order affects the answer or an earlier selection.
     near_unavailable: bool,
-    /// Conditions at or after this position belong to a stage.
-    transforms_start: usize,
-    /// `| where` stages read straight off the unit's rows, which narrow the
-    /// source's selection as one conjunction with it: their words rank and
-    /// mark snippets together with the source's, and they never lift a
-    /// default the source bound.
-    staged_filters: Vec<Condition>,
     /// The query ends in `| measure`: a display preference such as hiding
     /// never changes a measured population.
     measuring: bool,
@@ -544,8 +567,6 @@ impl<'a> Compiler<'a> {
             near_needed: true,
             source_near_allowed: true,
             near_unavailable: false,
-            transforms_start: usize::MAX,
-            staged_filters: vec![],
             measuring: false,
             session_window: (None, None),
         }
@@ -602,15 +623,6 @@ fn and_all(parts: &[String]) -> String {
         "1".into()
     } else {
         parts.join(" AND ")
-    }
-}
-
-/// The conditions joined to the rest of the `where` by AND, with
-/// parenthesized ANDs flattened.
-fn top_level(c: &Condition) -> Vec<Condition> {
-    match &c.kind {
-        ConditionKind::And { conditions: all } => all.iter().flat_map(top_level).collect(),
-        _ => vec![c.clone()],
     }
 }
 

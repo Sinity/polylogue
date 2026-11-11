@@ -10,6 +10,7 @@ pub mod explain;
 pub mod fields;
 pub mod parse;
 pub mod plan;
+pub mod selection;
 pub mod time;
 pub mod units;
 

@@ -465,79 +465,58 @@ impl Reader<'_> {
                 "selection order position has the wrong arity",
             )));
         }
-        let mut params = values(&program.params);
-        if let Some(after) = after {
-            params.extend(after.values.iter().map(sql_value));
-        }
-        params.push(SqlValue::Int(-1));
-        let sql = if reverse {
-            program.metadata_page_sql(after.is_some(), true)
-        } else {
-            program.page_sql(after.is_some())
-        };
-        let result = self.query_each(&sql, &params, |mut row| {
-            selection
-                .scope
-                .check()
-                .map_err(SelectionError::from)
-                .map_err(VisitError::Selection)?;
-            if reverse {
-                let mut exact_params = values(&program.params);
-                exact_params.extend(program.order.iter().map(|key| sql_value(&row[&key.column])));
-                let mut projected = self
-                    .query(&program.row_at_sql(), &exact_params)
+        self.visit_page(
+            program,
+            after.map(|after| after.values.as_slice()),
+            reverse,
+            -1,
+            |mut row| {
+                selection
+                    .scope
+                    .check()
                     .map_err(SelectionError::from)
-                    .map_err(VisitError::Selection)?;
-                row = projected.pop().ok_or_else(|| {
-                    VisitError::Selection(invalid(
-                        "stale_cursor",
-                        "the selected row position is unavailable",
-                    ))
+                    .map_err(E::from)?;
+                let order = program
+                    .order
+                    .iter()
+                    .map(|key| row[&key.column].clone())
+                    .collect::<Vec<_>>();
+                let target = selection
+                    .direct
+                    .clone()
+                    .or_else(|| row_target(program, &row));
+                let identity = RowIdentity::from_row(program, &row);
+                let aggregates = aggregate_values(program, &row);
+                let row_identity = target
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .or_else(|| {
+                        identity
+                            .as_ref()
+                            .map(|key| serde_json::to_string(key).expect("row identity is JSON"))
+                    })
+                    .unwrap_or_else(|| {
+                        serde_json::to_string(&order).expect("order position is JSON")
+                    });
+                crate::query::execute::present(program, &mut row).map_err(E::from)?;
+                let flow = visit(SelectionRow {
+                    target,
+                    values: row,
+                    identity,
+                    aggregates,
+                    position: OrderPosition {
+                        values: order,
+                        row_identity,
+                    },
                 })?;
-            }
-            let order = program
-                .order
-                .iter()
-                .map(|key| row[&key.column].clone())
-                .collect::<Vec<_>>();
-            let target = selection
-                .direct
-                .clone()
-                .or_else(|| row_target(program, &row));
-            let identity = RowIdentity::from_row(program, &row);
-            let aggregates = aggregate_values(program, &row);
-            let row_identity = target
-                .as_ref()
-                .map(ToString::to_string)
-                .or_else(|| {
-                    identity
-                        .as_ref()
-                        .map(|key| serde_json::to_string(key).expect("row identity is JSON"))
+                // A direct reference selects its one row.
+                Ok(if selection.direct.is_some() {
+                    ControlFlow::Break(())
+                } else {
+                    flow
                 })
-                .unwrap_or_else(|| serde_json::to_string(&order).expect("order position is JSON"));
-            crate::query::execute::present(program, &mut row).map_err(VisitError::Selection)?;
-            match visit(SelectionRow {
-                target,
-                values: row,
-                identity,
-                aggregates,
-                position: OrderPosition {
-                    values: order,
-                    row_identity,
-                },
-            })
-            .map_err(VisitError::Consumer)?
-            {
-                ControlFlow::Break(()) => Err(VisitError::Stop),
-                ControlFlow::Continue(()) if selection.direct.is_some() => Err(VisitError::Stop),
-                ControlFlow::Continue(()) => Ok(()),
-            }
-        });
-        match result {
-            Ok(()) | Err(VisitError::Stop) => Ok(()),
-            Err(VisitError::Consumer(e)) => Err(e),
-            Err(VisitError::Selection(e)) => Err(E::from(e)),
-        }
+            },
+        )
     }
 
     fn in_selection_context<T, E>(

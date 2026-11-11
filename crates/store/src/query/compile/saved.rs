@@ -290,6 +290,7 @@ impl Compiler<'_> {
             resolved_times: vec![],
             measure: None,
             order: vec![OrderKey::ascending("_pk")],
+            keyed: None,
         };
         self.program_over(query, program)
     }

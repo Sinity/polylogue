@@ -18,7 +18,7 @@ fn page_plan(f: &Fixture, text: &str) -> Vec<String> {
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
     let program = crate::query::compile(text, &options()).unwrap();
-    plan(&reader, &program.page_sql(false))
+    plan(&reader, &program.page_sql(false, false))
 }
 
 fn ids(f: &Fixture, text: &str, field: &str) -> Vec<String> {

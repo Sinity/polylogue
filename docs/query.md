@@ -213,7 +213,8 @@ A run or kept result is **pre-registered** when a `saved_query` assertion naming
 ## Paging
 
 - **Four bounds stay apart.** Selection (`limit`, `[last:k]`) is in the question. `page_size` is how much travels now (default 20 sessions or 50 other rows, the same on every surface). A presentation budget cuts display, never a figure's population. The deadline bounds execution.
-- **Default order.** A unit's default order puts rows without a time after the dated ones. An index carries that order's leading terms for messages, tool calls and events, so their first page reads only its own rows.
+- **Default order.** A unit's default order puts rows without a time after the dated ones. An index carries that order's leading terms for sessions, messages, tool calls and events, so their first page reads only its own rows.
+- **Key first.** A page of a unit's rows is read in two steps: the selection's keys and order values are ordered and paged, then only the page's rows are read. Sorting and paging touch keys, never the columns of rows off the page.
 - **Cursors** hold the last row's order-key values with row identity as the final key, the resolved `now`, the random seed, the index generation, the first page's read position, and a hash of the resolved question (normal form, fields, caller, zone, day start, ranking options, vector write counter). They are sealed: opaque and integrity-checked.
 - **Continuation is by key,** never by offset, and no read transaction is held between pages. When the archive changes between pages, no row whose key did not change is skipped or repeated, and `notes` say "the archive changed since the first page", listing rows that moved before the anchor.
 - **Refusals:** a cursor from another question is `invalid_query`; one from an earlier index generation, or a ranked cursor after a vector write, is `stale_cursor`, never restarted silently. Only the page size may change between pages.
