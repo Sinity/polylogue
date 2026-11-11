@@ -1276,13 +1276,16 @@ impl Inner {
     /// successful one, prepare the facts of captures Sinex confirmed and derive.
     fn stream_followed(&mut self, error: Option<String>) {
         let result = match error {
-            Some(error) => Err(StoreError::Sinex(error)),
-            None => self.complete_ready_captures().map(|()| {
-                // A first build derives every session once, when it ends.
-                if self.first_build.is_none() {
-                    self.request_derive(derive_thread::Waiting::Nobody);
-                }
-            }),
+            Some(error) => Err(error),
+            None => self
+                .complete_ready_captures()
+                .map(|()| {
+                    // A first build derives every session once, when it ends.
+                    if self.first_build.is_none() {
+                        self.request_derive(derive_thread::Waiting::Nobody);
+                    }
+                })
+                .map_err(|error| error.to_string()),
         };
         match result {
             Ok(()) => self.stream_error = None,
