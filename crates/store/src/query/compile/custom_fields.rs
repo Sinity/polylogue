@@ -467,7 +467,7 @@ pub(crate) fn tool_call_outcome(
     let t = &a.t;
     let pending = a.expand(fields::OPEN_CALL);
     let unknown = format!("({t}.outcome = 'unknown' AND NOT {pending})");
-    let def = fields::lookup(x.unit, x.name).expect("outcome is declared");
+    let def = fields::FieldId::ToolCallsOutcome.declaration();
     let values = match x.op {
         FieldOp::Match(Value::Unknown) => return Ok(unknown),
         FieldOp::Match(Value::Known) => return Ok(format!("NOT {unknown}")),
@@ -485,9 +485,7 @@ pub(crate) fn tool_call_outcome(
             return Ok(format!("NOT {}", tool_call_outcome(c, &equal)?));
         }
         op => {
-            let expr = def
-                .expr(a, c.opts.clock.now.as_millisecond())
-                .expect("outcome has SQL");
+            let expr = fields::call_outcome(a);
             return c.typed(def, &expr, op, x.span);
         }
     };
@@ -595,7 +593,7 @@ pub(crate) fn depth(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
          WHERE up.d < 1000) SELECT max(d) FROM up)",
         x.s()
     );
-    let def = fields::lookup(Unit::Sessions, "depth").expect("declared depth");
+    let def = fields::FieldId::SessionsDepth.declaration();
     if x.top {
         c.show("depth", &expr, ColKind::Number, None);
     }

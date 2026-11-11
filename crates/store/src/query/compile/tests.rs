@@ -260,6 +260,7 @@ fn every_stored_value_can_be_queried() {
         let unit = crate::query::ast::Unit::from_name(unit).unwrap();
         let offered = crate::query::fields::lookup(unit, field)
             .unwrap()
+            .declaration()
             .values
             .unwrap();
         assert_eq!(offered, *names, "{query}");

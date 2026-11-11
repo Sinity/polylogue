@@ -284,7 +284,7 @@ impl<'a> Compiler<'a> {
                             })
                             .is_some_and(|field| {
                                 matches!(
-                                    field.kind,
+                                    field.declaration().kind,
                                     Kind::Number | Kind::Money | Kind::Duration | Kind::Time
                                 )
                             })
@@ -597,7 +597,7 @@ impl<'a> Compiler<'a> {
             return Ok(format!("{} = {key}", child.a.expand(column)));
         }
         let s = session?;
-        if spec.in_session {
+        if fields::has_session(child.unit) {
             Ok(format!(
                 "{} = {s}",
                 child_session_column(child.unit, &child.a)
@@ -730,12 +730,14 @@ impl<'a> Compiler<'a> {
         } else {
             return Err(self.unknown_field(field, scope.unit, span));
         };
-        let def = fields::lookup(unit, &lower).expect("checked");
+        let id = fields::lookup(unit, &lower).expect("checked");
+        let def = id.declaration();
+        let rule = fields::rule(id);
         // `F:*` names a field without restricting it, whatever its rule.
         if matches!(op, FieldOp::Match(Value::Any)) {
             return Ok("1".into());
         }
-        if let Some(compile) = def.compile {
+        if let Some(compile) = rule.compile {
             let call = custom_fields::Call {
                 unit,
                 name: def.name,
@@ -746,11 +748,11 @@ impl<'a> Compiler<'a> {
             };
             return compile(self, &call);
         }
-        let expr = def
+        let expr = rule
             .expr(&a, self.opts.clock.now.as_millisecond())
             .expect("non-special fields have SQL");
         if top && matches!(op, FieldOp::Compare(..) | FieldOp::Between(..)) {
-            self.show(def.name, &expr, def.column_kind(), def.reference());
+            self.show(def.name, &expr, def.column_kind(), def.column_reference());
         }
         if def.kind == Kind::Time
             && let Some(native) = fields::native_time(def.unit, def.name, &a)
@@ -1034,7 +1036,7 @@ impl<'a> Compiler<'a> {
                 let values = alternatives(v);
                 let mut parts = vec![];
                 for x in values {
-                    if def.reference() == Some(ColumnReference::Session) {
+                    if def.column_reference() == Some(ColumnReference::Session) {
                         parts.push(self.session_reference(expr, "id", &x));
                         continue;
                     }

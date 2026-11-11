@@ -38,8 +38,8 @@ impl<'a> Compiler<'a> {
                     .then(|| fields::lookup(Unit::Sessions, &lower))
                     .flatten()
             })
-            .filter(|def| def.sql.is_some())
-            .and_then(|def| def.reference())
+            .filter(|id| fields::rule(*id).sql.is_some())
+            .and_then(|id| id.declaration().column_reference())
     }
 
     /// The same typed selector supplies query lowering and native facets.
