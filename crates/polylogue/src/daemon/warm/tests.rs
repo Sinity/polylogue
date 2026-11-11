@@ -415,3 +415,61 @@ fn slow_provider_calls_cannot_fill_the_read_pool() {
         crate::test_answers::ok(answer);
     }
 }
+
+#[test]
+fn only_an_executed_ranking_asks_the_provider() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    let daemon = crate::test_daemon::start("parser text");
+    let listener = daemon.embedding_endpoint();
+    listener.set_nonblocking(true).unwrap();
+    let calls = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let d = &daemon.daemon;
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !stop.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((peer, _)) => {
+                        peer.set_nonblocking(false).unwrap();
+                        calls.fetch_add(1, Ordering::AcqRel);
+                        crate::test_daemon::embeddings::response(
+                            peer,
+                            200,
+                            r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#,
+                        );
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            }
+        });
+        // Explaining a ranking runs nothing.
+        crate::test_answers::ok(crate::test_daemon::call(
+            d,
+            "explain",
+            json!({"subject": "query", "expression": "messages where similar:\"explained\""}),
+        ));
+        assert_eq!(calls.load(Ordering::Acquire), 0, "explain");
+        // A query that parses but is refused runs nothing.
+        let refused = crate::test_daemon::call(
+            d,
+            "query",
+            json!({"query": "messages where no_such_field:1 similar:\"refused\""}),
+        );
+        assert!(
+            matches!(refused.outcome, command_surface::Outcome::Error(_)),
+            "{refused:?}"
+        );
+        assert_eq!(calls.load(Ordering::Acquire), 0, "refused query");
+        // An executed ranking asks once: the run uses the vector asked for.
+        crate::test_answers::ok(crate::test_daemon::call(
+            d,
+            "query",
+            json!({"query": "messages where similar:\"executed\""}),
+        ));
+        assert_eq!(calls.load(Ordering::Acquire), 1, "executed query");
+        stop.store(true, Ordering::Release);
+    });
+}
