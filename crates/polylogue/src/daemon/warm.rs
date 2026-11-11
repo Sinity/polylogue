@@ -2,7 +2,8 @@
 //! come without reloading or recomputing.
 //!
 //! - **Vectors**: every vector of the embedding key `similar:` ranks by, in
-//!   memory, keyed by the model revision of the requesting read snapshot.
+//!   memory, keyed by the model revision of the requesting read snapshot. A
+//!   newer revision reads only the vectors stored since the held one.
 //! - **Query vectors**: the provider's vector for each recent `similar:` text,
 //!   so a repeated or paged query neither pays nor waits for the provider
 //!   again, and ranks by the same values. Concurrent reads of one text share
@@ -115,38 +116,57 @@ impl Warm {
         provider: &Provider,
     ) -> Result<Option<Arc<Loaded>>, String> {
         let prefix = provider.key_prefix();
-        let store = reader.vectors().map_err(|e| e.to_string())?;
-        let Some(key) = store.key_with_prefix(&prefix).map_err(|e| e.to_string())? else {
-            return Ok(None);
-        };
-        let revision = store.revision(&key).map_err(|e| e.to_string())?;
-        self.cached_vectors(reader, &key, revision, || {
-            store.load(&key).map_err(|e| e.to_string())
-        })
-        .map(Some)
+        let key = reader
+            .vectors()
+            .and_then(|store| store.key_with_prefix(&prefix))
+            .map_err(|e| e.to_string())?;
+        key.map(|key| self.vectors_of(reader, &key)).transpose()
     }
 
+    /// The vectors of one embedding key in the reader's snapshot.
+    fn vectors_of(&self, reader: &Reader<'_>, key: &str) -> Result<Arc<Loaded>, String> {
+        let store = reader.vectors().map_err(|e| e.to_string())?;
+        let revision = store.revision(key).map_err(|e| e.to_string())?;
+        self.cached_vectors(reader, key, revision, |held| {
+            match held {
+                Some(held) => store.append(held),
+                None => store.load(key),
+            }
+            .map_err(|e| e.to_string())
+        })
+    }
+
+    /// The vectors of `key` at `revision`: the held set when it is that
+    /// revision, else `load` given the held set of the same key when it is
+    /// older (to extend it), or nothing (to read every vector).
     fn cached_vectors(
         &self,
         reader: &Reader<'_>,
         key: &str,
         revision: i64,
-        load: impl FnOnce() -> Result<Loaded, String>,
+        load: impl FnOnce(Option<&Loaded>) -> Result<Loaded, String>,
     ) -> Result<Arc<Loaded>, String> {
-        let invalidation = {
+        let (invalidation, older) = {
             let held = cache_lock(&self.vectors)?;
-            if let Some(loaded) = &held.loaded
-                && loaded.key == key
+            let same_key = held.loaded.as_ref().filter(|loaded| loaded.key == key);
+            if let Some(loaded) = same_key
                 && loaded.revision == revision
             {
                 return Ok(Arc::clone(loaded));
             }
-            Arc::clone(&held.invalidation)
+            (
+                Arc::clone(&held.invalidation),
+                same_key
+                    .filter(|loaded| loaded.revision < revision)
+                    .cloned(),
+            )
         };
         // SQL and quantization never hold the shared cache lock. The reader's
         // snapshot, rather than a process counter, identifies these values.
-        let loaded = Arc::new(load()?);
-        self.counts.vector_loads.fetch_add(1, Ordering::Relaxed);
+        let loaded = Arc::new(load(older.as_deref())?);
+        if older.is_none() {
+            self.counts.vector_loads.fetch_add(1, Ordering::Relaxed);
+        }
         reader.check().map_err(|e| e.to_string())?;
         let mut held = cache_lock(&self.vectors)?;
         if Arc::ptr_eq(&invalidation, &held.invalidation) {
@@ -338,7 +358,7 @@ impl Warm {
         started: std::sync::mpsc::Sender<()>,
         release: std::sync::mpsc::Receiver<()>,
     ) {
-        let _ = self.cached_vectors(reader, "synthetic/empty", 0, || {
+        let _ = self.cached_vectors(reader, "synthetic/empty", 0, |_| {
             started.send(()).unwrap();
             let _ = release.recv();
             reader

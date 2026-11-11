@@ -142,7 +142,7 @@ fn vector_loading_leaves_the_cache_unlocked_and_clear_prevents_publication() {
         let daemon = &daemon;
         let worker = scope.spawn(move || {
             let reader = daemon.daemon.reads.reader().unwrap();
-            warm.cached_vectors(&reader, "synthetic/empty", 0, || {
+            warm.cached_vectors(&reader, "synthetic/empty", 0, |_| {
                 started.send(()).unwrap();
                 released.recv().unwrap();
                 reader
@@ -211,7 +211,7 @@ fn older_vector_snapshot_does_not_replace_newer_cached_values() {
         let daemon = &daemon;
         let worker = scope.spawn(move || {
             let reader = daemon.daemon.reads.reader().unwrap();
-            warm.cached_vectors(&reader, key, older, || {
+            warm.cached_vectors(&reader, key, older, |_| {
                 started.send(()).unwrap();
                 released.recv().unwrap();
                 Ok(first)
@@ -221,7 +221,7 @@ fn older_vector_snapshot_does_not_replace_newer_cached_values() {
         entered.recv_timeout(Duration::from_secs(10)).unwrap();
         let reader = daemon.daemon.reads.reader().unwrap();
         let current = warm
-            .cached_vectors(&reader, key, newer, || Ok(second))
+            .cached_vectors(&reader, key, newer, |_| Ok(second))
             .unwrap();
         release.send(()).unwrap();
         let old = worker.join().unwrap();
@@ -238,13 +238,13 @@ fn older_vector_snapshot_does_not_replace_newer_cached_values() {
             newer
         );
         let reused = warm
-            .cached_vectors(&reader, key, newer, || {
+            .cached_vectors(&reader, key, newer, |_| {
                 panic!("current snapshot should reuse the cache")
             })
             .unwrap();
         assert!(Arc::ptr_eq(&current, &reused));
         assert!(
-            warm.cached_vectors(&reader, "synthetic/failure", 0, || Err(
+            warm.cached_vectors(&reader, "synthetic/failure", 0, |_| Err(
                 "cancelled load".into()
             ))
             .is_err()
@@ -260,6 +260,85 @@ fn older_vector_snapshot_does_not_replace_newer_cached_values() {
             newer
         );
     });
+}
+
+#[test]
+fn vector_write_appends_without_reload() {
+    use polylogue_store::vectors::Vector;
+    let daemon = crate::test_daemon::start("vector appends");
+    let warm = Warm::default();
+    let key = "synthetic/model/2/document/unit";
+    let put = |hash: u8, values: [f32; 2]| {
+        let reader = daemon.daemon.reads.reader().unwrap();
+        reader
+            .vectors_writer()
+            .unwrap()
+            .put(
+                key,
+                &[Vector {
+                    text_hash: vec![hash],
+                    chunk: 0,
+                    values: values.to_vec(),
+                }],
+            )
+            .unwrap();
+    };
+    put(1, [1., 0.]);
+    let read = || {
+        let reader = daemon.daemon.reads.reader().unwrap();
+        warm.vectors_of(&reader, key).unwrap()
+    };
+    // What a full load of the same snapshot ranks: the appended set must
+    // rank every text the same.
+    let agree = |current: Loaded, texts: u8| {
+        let reader = daemon.daemon.reads.reader().unwrap();
+        let whole = Arc::new(reader.vectors().unwrap().load(key).unwrap());
+        assert_eq!(current.vectors(), whole.vectors());
+        let appended = Arc::new(current).similarity(&[0.6, 0.8]).unwrap();
+        let loaded = whole.similarity(&[0.6, 0.8]).unwrap();
+        for hash in 1..=texts {
+            assert!(appended.of(&[hash]).is_some(), "text {hash}");
+            assert_eq!(appended.of(&[hash]), loaded.of(&[hash]), "text {hash}");
+        }
+        assert_eq!(appended.of(&[texts + 1]), None);
+    };
+    let first = read();
+    assert_eq!(first.vectors(), 1);
+    // Enough appends to merge runs: every read sees each vector once.
+    for hash in 2..=9 {
+        put(hash, [0., 1.]);
+        let current = read();
+        assert_eq!(current.vectors(), usize::from(hash));
+        agree((*current).clone(), hash);
+    }
+    // A text's second chunk, stored later, ranks it by its best chunk.
+    {
+        let reader = daemon.daemon.reads.reader().unwrap();
+        reader
+            .vectors_writer()
+            .unwrap()
+            .put(
+                key,
+                &[Vector {
+                    text_hash: vec![1],
+                    chunk: 1,
+                    values: vec![0., 1.],
+                }],
+            )
+            .unwrap();
+    }
+    let current = read();
+    assert_eq!(current.vectors(), 10);
+    let similarity = Arc::new((*current).clone()).similarity(&[0., 1.]).unwrap();
+    assert_eq!(similarity.of(&[1]), similarity.of(&[2]));
+    agree((*current).clone(), 9);
+    assert_eq!(
+        warm.counts.vector_loads.load(Ordering::Relaxed),
+        1,
+        "every later revision extended the held vectors"
+    );
+    // The first read's vectors are as they were.
+    assert_eq!(first.vectors(), 1);
 }
 
 #[test]
