@@ -72,8 +72,8 @@ A host may queue these commands through its own job runner.
 The `package` workflow builds `.#default` for every master commit and pushes
 its runtime closure to `sinity.cachix.org`. Sinnix deploys a revision only
 after fetching that package, so its switches never compile Polylogue. To
-deploy a branch other than master, build its head first with
-`gh workflow run package --ref <branch>`.
+deploy a revision master does not contain, such as a deployment branch's head, build
+it first with `gh workflow run package -f rev=<commit>`.
 
 ## Deployment modules
 
