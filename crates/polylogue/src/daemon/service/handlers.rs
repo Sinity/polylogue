@@ -3,8 +3,8 @@
 //! on live sessions live in `acts`, the browser extension's in `browser`,
 //! and reads in `read`.
 use super::{
-    Failure, advisory_silence, context, delivery_event, error, listed, ok, query_answer,
-    query_targets, query_targets_in, repeated_request, status, store_error, write, write_from_read,
+    Failure, advisory_silence, context, delivery_event, error, listed, ok, query_targets,
+    query_targets_in, repeated_request, status, store_error, write, write_from_read,
 };
 use crate::briefing::Ask;
 use crate::cli::print;
@@ -30,6 +30,7 @@ fn run_query(call: &Call<'_>, input: QueryInput<'_>) -> Result<Answer<Value>, Fa
     let reader = call.reader()?;
     let context = call.context()?;
     let d = call.daemon;
+    let currency = d.currency(&reader)?;
     Ok(super::super::query::with_ranking(
         &reader,
         &d.warm,
@@ -47,8 +48,11 @@ fn run_query(call: &Call<'_>, input: QueryInput<'_>) -> Result<Answer<Value>, Fa
                 near: Some(near),
                 fields: input.fields,
             };
-            match super::super::query::run(&reader, ask) {
-                Ok(answer) => query_answer(d, &reader, answer),
+            match super::super::query::prepare(&reader, ask).and_then(|prepared| {
+                super::super::handler::finish_read_phase("optional query count")?;
+                prepared.complete()
+            }) {
+                Ok(answer) => super::query_outcome(answer, &currency),
                 Err(failure) => failure.answer(),
             }
         },

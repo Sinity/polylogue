@@ -611,7 +611,7 @@ fn rows_document(
         shape: polylogue_query::Shape::Rows,
         columns: serde_json::from_value(columns).unwrap(),
         rows: serde_json::from_value(rows).unwrap(),
-        count,
+        count: Some(count),
         next: None,
         ranked: false,
         notes: vec![],

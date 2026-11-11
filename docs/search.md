@@ -34,7 +34,7 @@ All three return the same rows in the same order. Rows are joined to blocks, mes
 
 ## Counts
 
-`count` is the exact number of matching rows, computed by a separate count plan in the same read transaction and cached by question hash and read position. When counting would pass the deadline, `count` is `null` and `notes` give the query that counts with the deadline lifted; the rest of the answer is unaffected. A count is never estimated.
+`count` is the exact number of matching rows, computed after the page, snippets, attachments and requested explanations by a separate count plan in the same read transaction, and cached by the bound question and read position. Continuations reuse a count from that position. A cache miss or a changed read position runs the exact count again within the remaining deadline. If that deadline stops the count, `count` is `null` and `notes` give a runnable query with the deadline lifted; the prepared answer is unaffected. A count is never estimated.
 
 Counting ordinary rows applies the query's filters and stage selections without evaluating presentation fields or the final order. Fusion counts the union of selected keys; a list that only changes order adds no members. Ranking still runs when a selection such as `limit` depends on it, and missing semantic similarities are counted over the same selected rows. The answer reports missing similarities when its own rows have semantic ranking; a `similar:` used only in a union or fuse operand does not enable that diagnostic. Overlapping operands count each selected identity once, and a later operand cannot fill the first supplying operand’s unknown similarity.
 

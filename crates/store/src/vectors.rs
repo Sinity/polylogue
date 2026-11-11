@@ -815,6 +815,20 @@ pub struct Similarity {
 }
 
 impl Similarity {
+    /// Exact model snapshot and seed supplying this query's scores.
+    pub(crate) fn count_basis(&self) -> (&str, i64, usize, blake3::Hash) {
+        let mut query = blake3::Hasher::new();
+        for component in &self.query {
+            query.update(&component.to_bits().to_le_bytes());
+        }
+        (
+            &self.loaded.key,
+            self.loaded.revision,
+            self.loaded.dims,
+            query.finalize(),
+        )
+    }
+
     /// No text's similarity is known: a `similar:` ranking whose query
     /// vector could not be had keeps every row, unranked.
     pub fn unknown() -> Self {

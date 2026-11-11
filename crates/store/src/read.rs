@@ -99,6 +99,7 @@ pub struct ReadPool {
     available: Arc<Condvar>,
     max_readers: usize,
     cache_kib: i64,
+    counts: Mutex<crate::query::execute::CountCache>,
     /// Wakes waiting checkouts when the access scope changes.
     _scope_wake: Arc<scope::ResetWake>,
     #[cfg(test)]
@@ -275,6 +276,7 @@ impl ReadPool {
             available,
             max_readers,
             cache_kib,
+            counts: Mutex::default(),
             _scope_wake: scope_wake,
             #[cfg(test)]
             changed: Condvar::new(),
@@ -658,6 +660,14 @@ impl Reader<'_> {
         Ok(std::cell::RefMut::map(vectors, |v| {
             v.as_mut().expect("initialized vectors")
         }))
+    }
+
+    pub(crate) fn count_cache(&self) -> &Mutex<crate::query::execute::CountCache> {
+        &self.pool.counts
+    }
+
+    pub(crate) fn read_limit(&self) -> Option<&limit::ReadLimit> {
+        self.limit.as_ref()
     }
 
     pub(crate) fn conn(&self) -> Result<&Connection> {

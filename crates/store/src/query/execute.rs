@@ -6,13 +6,18 @@ use crate::selection::{sql_value, values};
 use crate::{Reader, SqlValue, selection::SelectionError};
 use serde_json::Value;
 
-/// A transfer page; cardinality describes the complete selected answer.
+/// One transfer page, prepared independently of its population count.
 pub struct QueryPage {
     pub rows: Vec<Value>,
-    pub count: u64,
-    pub without: u64,
     pub more: bool,
 }
+/// Exact counts are reused only within the read position that produced them.
+#[derive(Default)]
+pub(crate) struct CountCache {
+    position: Option<polylogue_model::ChangePosition>,
+    entries: std::collections::VecDeque<(blake3::Hash, (u64, u64))>,
+}
+
 #[derive(Clone, Copy)]
 pub enum QueryPopulation {
     Answer,
@@ -94,11 +99,6 @@ impl Reader<'_> {
             });
         }
         self.with_clock(&program.clock, || {
-            crate::read::limit::ReadLimit::set_stage("count");
-            let (count, without) = self.query_counts(
-                &program.statements.count(program.counts_near),
-                &values(&program.params),
-            )?;
             crate::read::limit::ReadLimit::set_stage("page");
             let mut rows = Vec::new();
             self.visit_page(
@@ -113,14 +113,84 @@ impl Reader<'_> {
             )?;
             let more = rows.len() as u64 > program.page_size;
             rows.truncate(usize::try_from(program.page_size).unwrap_or(usize::MAX));
-            Ok(QueryPage {
-                rows,
-                count,
-                without,
-                more,
-            })
+            Ok(QueryPage { rows, more })
         })
     }
+    /// Reuse the exact count only for the same bound question and read position.
+    /// Called after all page presentation, under the request's original bound.
+    pub fn query_count(&self, program: &Program) -> Result<Option<(u64, u64)>, SelectionError> {
+        let count = || self.count_at_position(program);
+        let result = match self.read_limit() {
+            Some(limit) => limit.scope(count),
+            None => count(),
+        };
+        match result {
+            Err(SelectionError::Store(crate::StoreError::ReadDeadlineExceeded)) => {
+                self.scope_token().check()?;
+                if self
+                    .read_limit()
+                    .is_some_and(|limit| limit.cancellation.is_cancelled())
+                {
+                    return Err(crate::StoreError::ReadCancelled.into());
+                }
+                Ok(None)
+            }
+            Ok(counts) => {
+                self.scope_token().check()?;
+                Ok(Some(counts))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn count_at_position(&self, program: &Program) -> Result<(u64, u64), SelectionError> {
+        let position = self.change_position()?;
+        let sql = program.statements.count(program.counts_near);
+        let key = blake3::hash(
+            &serde_json::to_vec(&(
+                &sql,
+                &program.params,
+                &program.clock,
+                &program.near,
+                &program.incomplete,
+                crate::sql_functions::similarity_count_basis(),
+                self.index_identity()?,
+                self.query_scope_fingerprint()?,
+            ))
+            .map_err(crate::StoreError::from)?,
+        );
+        {
+            let mut cache = self
+                .count_cache()
+                .lock()
+                .map_err(|_| crate::StoreError::Invalid("count cache lock poisoned".into()))?;
+            if cache.position.as_ref() == Some(&position) {
+                if let Some((_, count)) = cache.entries.iter().find(|(entry, _)| *entry == key) {
+                    return Ok(*count);
+                }
+            } else {
+                cache.position = Some(position.clone());
+                cache.entries.clear();
+            }
+        }
+        crate::read::limit::ReadLimit::set_stage("count");
+        let counted = self.with_clock(&program.clock, || {
+            self.query_counts(&sql, &values(&program.params))
+        })?;
+        let mut cache = self
+            .count_cache()
+            .lock()
+            .map_err(|_| crate::StoreError::Invalid("count cache lock poisoned".into()))?;
+        if cache.position.as_ref() == Some(&position) {
+            // This bounded cache evicts reusable answers, never query rows.
+            if cache.entries.len() == 64 {
+                cache.entries.pop_front();
+            }
+            cache.entries.push_back((key, counted));
+        }
+        Ok(counted)
+    }
+
     /// Visit the rows of one page in order: at most `limit` rows (all for
     /// -1) after the row whose order values are `after`, or before it when
     /// `reverse`. A unit's rows are read key first: the page's keys in

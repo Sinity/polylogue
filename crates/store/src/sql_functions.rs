@@ -163,6 +163,16 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
+/// Count caches bind the exact active vector snapshot and query vector.
+pub(crate) fn similarity_count_basis() -> Option<(String, i64, usize, [u8; 32])> {
+    SIMILARITY.with(|similarity| {
+        similarity.borrow().as_ref().map(|similarity| {
+            let (key, revision, dims, query) = similarity.count_basis();
+            (key.to_owned(), revision, dims, *query.as_bytes())
+        })
+    })
+}
+
 /// Runs `f` with `pl_similarity` answering from `similarity`; the previous
 /// answer source comes back afterwards, also when `f` panics.
 pub(crate) fn with_similarity<T>(

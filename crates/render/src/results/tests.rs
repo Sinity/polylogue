@@ -104,3 +104,17 @@ fn row_markup_stays_data_and_link_schemes_are_checked() {
     linked_html(&data, &mut out, &|_, _| Some("javascript:stored()".into())).unwrap();
     assert!(!String::from_utf8(out).unwrap().contains("href="));
 }
+
+#[test]
+fn a_deferred_count_does_not_hide_returned_rows() {
+    let mut answer = answer();
+    answer["count"] = Value::Null;
+    let mut out = Vec::new();
+    render(&answer, Format::Markdown, &mut out).unwrap();
+    let rendered = String::from_utf8(out).unwrap();
+    assert!(
+        rendered.contains("2 rows shown; count deferred"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("no rows"), "{rendered}");
+}
