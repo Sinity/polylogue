@@ -129,6 +129,74 @@ fn export_and_capture_turns_read_in_time_order() {
     }
 }
 
+#[test]
+fn an_earlier_message_read_again_with_a_later_time_moves_the_readings_after_it() {
+    // A live chain flushes its open first turn, then sends it again with a
+    // later time in its next step. Read in one step, the untimed turn after
+    // it takes that later time, so it stays after the other input's turn.
+    let other = step("b", Route::Capture, 0, &[("between", Some(1_500))]);
+    let first = step(
+        "a",
+        Route::Live,
+        0,
+        &[
+            ("open", Some(1_000)),
+            ("untimed", None),
+            ("last", Some(3_000)),
+        ],
+    );
+    let resent = batch(
+        "a",
+        Route::Live,
+        100,
+        vec![row(0, turn("open", Some(2_000)))],
+        &["s"],
+    );
+    let whole = step(
+        "a",
+        Route::Live,
+        0,
+        &[
+            ("open", Some(2_000)),
+            ("untimed", None),
+            ("last", Some(3_000)),
+        ],
+    );
+    // A later input's reading of the untimed turn places it again from the
+    // stored readings, so the raised order time must be stored too.
+    let third = step("c", Route::Capture, 0, &[("untimed", Some(2_500))]);
+    let expected = ["between", "open", "untimed", "last"];
+    assert_eq!(order(&store(&[&whole, &other, &third])), expected);
+    for steps in [
+        vec![&first, &resent, &other, &third],
+        vec![&first, &other, &resent, &third],
+        vec![&other, &first, &resent, &third],
+    ] {
+        assert_eq!(order(&store(&steps)), expected, "flushed after each step");
+    }
+    // The same steps resolved together, without a flush between them.
+    let w = test_archive();
+    for batch in [&other, &first, &resent] {
+        let start = match batch.change {
+            Change::Appended { from } => from,
+            _ => 0,
+        };
+        let input = batch
+            .observation
+            .as_ref()
+            .unwrap()
+            .path
+            .trim_start_matches("/p/");
+        w.store_reading(batch.clone(), Some(&bytes(input, start)))
+            .unwrap();
+    }
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    w.store_reading(third.clone(), Some(&bytes("c", 0)))
+        .unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    assert_eq!(order(&w), expected, "resolved together");
+}
+
 #[derive(Debug, Clone)]
 struct Timeline {
     /// Each turn's time when it has one, and whether input A and input B

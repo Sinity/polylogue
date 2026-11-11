@@ -2,7 +2,7 @@
 //! the rows that cite them commit. The index then saves its parsed position.
 use super::*;
 use crate::staging::{PreparedBatch, PreparedBytes, StoredInput};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A parse-pool group waiting for the writer, with the store its files go
 /// to and where its results are answered.
@@ -273,9 +273,13 @@ impl Inner {
         let tx = self.archive.transaction()?;
         tx.execute_batch("PRAGMA defer_foreign_keys=ON")?;
         let seq = bump_counter(&tx)?;
+        // The blobs this group added, by hash, until a step claims them.
+        let mut added = BTreeMap::new();
         if let Some(synced) = synced {
             for extent in &synced.extents {
-                crate::blobs::insert_extent(&tx, extent)?;
+                if crate::blobs::insert_extent(&tx, extent)? {
+                    added.insert(BlobHash(extent.hash.0), extent.decoded_len);
+                }
             }
             tx.execute("INSERT INTO segment(name,committed_end) VALUES (?1,?2) ON CONFLICT(name) DO UPDATE SET committed_end=excluded.committed_end",
                 params!["segments/current.hb",synced.end as i64])?;
@@ -284,6 +288,13 @@ impl Inner {
         let mut seen = BTreeSet::new();
         for item in group.iter_mut() {
             let PreparedBatch { batch: b, files: _ } = item;
+            let bytes_written = b
+                .new_blob
+                .iter()
+                .chain(&b.blobs)
+                .flat_map(crate::NewBlob::parts)
+                .filter_map(|part| added.remove(&part.hash))
+                .sum();
             // An immutable import named by its bytes may be stored already, or
             // appear twice in a group (equal container members).
             let known: Option<(i64, i64)> = tx
@@ -323,6 +334,7 @@ impl Inner {
                 chain,
                 length: b.length,
                 already_stored,
+                bytes_written,
             });
         }
         crate::fault::check("write.archive_commit", "")?;
@@ -373,6 +385,7 @@ impl Inner {
                 chain,
                 length: length as u64,
                 already_stored: true,
+                bytes_written: 0,
             });
         }
         Ok(Some(stored))

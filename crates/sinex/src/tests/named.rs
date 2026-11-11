@@ -167,7 +167,10 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
             .unwrap()
             .validate(&payload)
             .unwrap();
-        assert_eq!(crate::products::decode(kind, payload).unwrap(), *product);
+        assert_eq!(
+            crate::products::decode(&crate::kinds::kind_reference(kind).unwrap(), payload).unwrap(),
+            *product
+        );
     }
     assert_ne!(
         crate::products::key(&expected[1].1, 0).unwrap(),

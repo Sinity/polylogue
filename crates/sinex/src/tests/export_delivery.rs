@@ -186,7 +186,11 @@ fn export_source_length_and_callback_coordinate_distinguish_native_keys() {
         crate::products::key(&other[0].product, 0).unwrap()
     );
     let payload = crate::products::payload(&header[0].product, 0).unwrap();
-    let decoded = crate::products::decode("polylogue.parse_progress", payload).unwrap();
+    let decoded = crate::products::decode(
+        &crate::kinds::kind_reference("polylogue.parse_progress").unwrap(),
+        payload,
+    )
+    .unwrap();
     assert_eq!(decoded, header[0].product);
     assert_eq!(
         crate::kinds::kind_reference("polylogue.parse_progress")

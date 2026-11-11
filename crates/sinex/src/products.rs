@@ -13,7 +13,7 @@ pub(crate) fn decode_source(
     payload: Value,
 ) -> Result<Product> {
     match crate::kinds::declared_definition(kind) {
-        Some(current) if current == definition_hash => decode(&kind.name, payload),
+        Some(current) if current == definition_hash => decode(kind, payload),
         Some(_) => Err(Error::Invalid(
             "a confirmed event's kind definition differs from Polylogue's".into(),
         )),
@@ -295,7 +295,16 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
     Ok(payload)
 }
 
-pub(crate) fn decode(event_type: &str, payload: Value) -> Result<Product> {
+/// Reads a product payload of `kind`; a kind version Polylogue does not
+/// declare is refused, never read through the current shape.
+pub(crate) fn decode(event_kind: &sinex_model::KindRef, payload: Value) -> Result<Product> {
+    if crate::kinds::kind_reference(&event_kind.name)?.version != event_kind.version {
+        return Err(Error::Invalid(format!(
+            "unsupported Polylogue kind {}@{}",
+            event_kind.name, event_kind.version
+        )));
+    }
+    let event_type = event_kind.name.as_str();
     let product: Product =
         serde_json::from_value(payload.get("record").cloned().ok_or_else(|| {
             Error::Invalid(format!("confirmed {event_type} has no complete facts"))

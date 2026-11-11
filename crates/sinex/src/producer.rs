@@ -826,7 +826,7 @@ impl Sinex {
                     return Err(Error::Invalid("named product has no event facts".into()));
                 };
                 for event in events {
-                    let product = crate::products::decode(&event.kind.name, event.payload)?;
+                    let product = crate::products::decode(&event.kind, event.payload)?;
                     visit(&product).map_err(Error::Store)?;
                 }
             }

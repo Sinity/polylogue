@@ -161,6 +161,10 @@ pub struct StoredInput {
     pub chain: i64,
     pub length: u64,
     pub already_stored: bool,
+    /// Bytes of this step's blobs that the write added to the archive:
+    /// blobs it already held, or another step of the group added, count
+    /// nothing.
+    pub bytes_written: u64,
 }
 
 /// All catalogued extents are durable. Missing source ranges are detected

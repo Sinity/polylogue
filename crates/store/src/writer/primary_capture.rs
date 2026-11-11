@@ -339,6 +339,7 @@ impl Inner {
                             chain,
                             length: item.batch.length,
                             already_stored: true,
+                            bytes_written: 0,
                         })
                     })();
                     outcomes.push(result);
@@ -540,6 +541,9 @@ impl Inner {
                     item.batch.length,
                     None::<InputRows>,
                     item.batch.new_blob.is_none(),
+                    // The spool takes the whole new body; Sinex keeps one
+                    // copy of each chunk.
+                    item.batch.new_blob.as_ref().map_or(0, |blob| blob.size),
                 )
             })
             .collect();
@@ -662,7 +666,7 @@ impl Inner {
             Err(error) => return Err(error),
         }
         let mut outcomes = Vec::new();
-        for (input, length, rows, already_stored) in accepted {
+        for (input, length, rows, already_stored, bytes_written) in accepted {
             let pending = prepared.identity.clone();
             // An idempotent SDK retry can return its frozen group without
             // calling the visitor. Its original metadata is not replaced by
@@ -684,6 +688,7 @@ impl Inner {
                     chain,
                     length,
                     already_stored,
+                    bytes_written,
                 }),
                 None => Err(StoreError::PrimaryPending { identity: pending }),
             });
