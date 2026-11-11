@@ -11,12 +11,12 @@ Polylogue runs as one resident daemon per archive. The daemon is the only proces
 **Start.** `polylogue daemon` runs in the foreground under a service manager (a systemd user unit on Linux). In order, it:
 1. raises the open-file limit;
 2. takes the archive lock, an exclusive `flock` on `<archive>/lock` opened through the resolved directory path, and writes its pid into it; a second daemon on the same archive, by any path, exits 1 naming the holder's pid;
-3. opens `archive.db` and `embeddings.db` at the current format, or refuses with exit 78 when either is in another format; the refused file is left exactly as it was ([archive.md#evolution](archive.md#evolution));
+3. opens `archive.db` and `embeddings.db` at the current format, adding to an `embeddings.db` from an earlier build the tables added since, or refuses with exit 78 when either is in another format; the refused file is left exactly as it was ([archive.md#evolution](archive.md#evolution));
 4. opens `index.db` at its saved positions; an index written for another schema is set aside and a new one is built ([Replacing an index from another schema](#replacing-an-index-from-another-schema));
 5. opens the segment log at its last committed extent;
 6. binds the socket, serves requests, then starts its work.
 
-No step changes `archive.db`, the segment log or the embeddings store to get past a format difference.
+No step rewrites `archive.db`, the segment log or the embeddings store to get past a format difference; the only change at open is adding new tables to the embeddings store.
 
 **Readiness.** With `Type=notify` the daemon signals readiness once the socket answers a `ping`, before catching up. The connection's thread answers `ping` without a reader or any cache, so a vector load or a full reader pool never delays readiness or the watchdog. Catching up is shown as work in `status`, never as unavailability.
 
@@ -218,6 +218,7 @@ An upgrade is a version change in `status` and, when a parser changed, a while i
 | no storage change | restart, resume from committed positions | down for the restart |
 | a parser module's reading version | chains read with the old version are re-parsed one at a time, live inputs first, then newest first | every read answers; results touching a chain not yet re-parsed carry `up_to_date: false`; `status` shows progress |
 | a change to the index schema | the old index is set aside and a new one built from stored bytes ([below](#replacing-an-index-from-another-schema)) | every read answers; reads report the index as building until the first build ends |
+| a table added to `embeddings.db` | added in place at start; stored vectors are untouched | down for the restart |
 | `archive.db` or `embeddings.db` in another format than the binary's | refused, exit 78, not restarted | down |
 
 **Spools across a rollback.** Hooks and the browser host keep writing their spools while the daemon is replaced, and the spools are never deleted, so the build a deployment rolls back to reads what the newer build wrote. A spool line's shape is therefore part of the deployed format: the hook's line shapes are pinned by a fixture that the previous build's reader is checked against, and a change to them is checked against the deployed reader before it ships.
@@ -228,7 +229,7 @@ An upgrade is a version change in `status` and, when a parser changed, a while i
 
 The new index records why it replaced the old one, and `status` reports it under `store.index_rebuild`: the reason (`schema_differs`, `format_version` with the version found and wanted, or `older_format`), the previous and current schema identities, whether the first build is still running, and the set-aside file's name while it remains. Progress is the rest of the same answer: chains by parse state against the stored inputs, and the read completeness, which reports the first build until it ends. The set-aside file is removed when the first build ends (standalone: its search and deferred indexes are built; primary: the confirmed stream is applied to its head); a file left by a stop at the wrong moment is removed at the next open of a built index. The record stays with the index it describes.
 
-The archive is never handled this way: `archive.db`, the segment log and the embeddings store in another format are refused (exit 78) and left as they were, because they hold what cannot be recomputed.
+The archive is never handled this way: `archive.db`, the segment log and the embeddings store in another format are refused (exit 78) and left as they were, because they hold what cannot be recomputed. The embeddings store from an earlier build only gains the tables added since ([archive.md#evolution](archive.md#evolution)).
 
 The first build reads every input's newest revision chain first and answers reads with `index building` and progress until it can answer. Once those are read (or refused) the first build ends: its read indexes and search are built and the sessions derived, and the older chains, which hold earlier readings of the same inputs, are read afterwards as ordinary work, with reads reporting parsing as incomplete until they are. Moving `index.db` aside by hand and starting the daemon builds a new index the same way. Moving a whole archive aside and starting fresh is a deliberate act, never something code does to get past a change.
 

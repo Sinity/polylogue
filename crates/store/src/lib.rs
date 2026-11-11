@@ -125,6 +125,13 @@ pub enum StoreError {
         "{database}.db at version {found} has tables this Polylogue build has no migration from"
     )]
     NoMigration { database: &'static str, found: u32 },
+    /// `embeddings.db` holds paid vectors, so it is never set aside: a schema
+    /// that adding tables cannot bring to this build's is refused.
+    #[error(
+        "embeddings.db has a schema this Polylogue build cannot reach by adding tables \
+         ({difference}); it holds paid vectors and is left as it was"
+    )]
+    EmbeddingsSchemaDiffers { difference: String },
     /// A database written before the baseline (no Polylogue format identity).
     /// The importer lane matches this wording.
     #[error("older format: import with `polylogue import --from-archive PATH`")]

@@ -3,6 +3,8 @@
 //! version 1 with these tables opens. A newer file, or one whose tables differ
 //! (an archive in another format), is refused unchanged. An index refused
 //! this way is replaced by the archive's open, since it is derived.
+//! `embeddings.db` holds paid vectors and is never replaced: a file written by
+//! an earlier build gains the tables added since ([`ensure_embeddings`]).
 
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
@@ -47,7 +49,19 @@ pub(crate) const QUERY_OBJECTS: &str = concat!(
     include_str!("schema/query_runs.sql")
 );
 pub(crate) const READ_INDEXES: &str = include_str!("schema/index_reads.sql");
-pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
+/// The vectors and failures tables of `embeddings.db`, as the first build at
+/// the baseline created them.
+const EMBEDDINGS_BASE: &str = include_str!("schema/embeddings.sql");
+/// Each table `embeddings.db` gained after its first build, in the order they
+/// were added. A released addition is never edited, since a file is matched
+/// against the base and each prefix of this list to find what it lacks; a
+/// schema change appends one. Only new tables, indexes and triggers can be
+/// added: the vectors table is never rewritten, so a change to an existing
+/// table is not an addition and needs its own plan.
+const EMBEDDINGS_ADDITIONS: &[&str] = &[
+    include_str!("schema/embedding_revision.sql"),
+    include_str!("schema/query_vector.sql"),
+];
 
 /// The version every baseline database is created at.
 pub const ARCHIVE_VERSION: u32 = 1;
@@ -247,9 +261,88 @@ pub fn ensure_archive(conn: &Connection) -> Result<()> {
     ensure(conn, "archive", &[ARCHIVE])
 }
 
-/// Creates `embeddings.db`, or opens one at the baseline.
+/// Creates `embeddings.db` in an empty file, or opens one at the baseline.
+/// A file whose schema is the base and an earlier prefix of
+/// [`EMBEDDINGS_ADDITIONS`] gains the remaining additions in place, in one
+/// transaction; its rows are not rewritten. Any other schema is refused
+/// unchanged, naming how it differs from the nearest schema a build created.
 pub(crate) fn ensure_embeddings(conn: &Connection) -> Result<()> {
-    ensure(conn, "embeddings", &[EMBEDDINGS])
+    let current = 1;
+    let found = version(conn)?;
+    if found > current {
+        return Err(StoreError::NewerSchema {
+            database: "embeddings",
+            found,
+            current,
+        });
+    }
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    if found == 0 {
+        tx.execute_batch(EMBEDDINGS_BASE)?;
+        for addition in EMBEDDINGS_ADDITIONS {
+            tx.execute_batch(addition)?;
+        }
+        set_version(&tx, current)?;
+    } else {
+        let stored = shape(&tx)?;
+        let earlier = embeddings_schemas()?;
+        let Some(added) = earlier.iter().position(|schema| *schema == stored) else {
+            return Err(StoreError::EmbeddingsSchemaDiffers {
+                difference: nearest_difference(&stored, &earlier),
+            });
+        };
+        for addition in &EMBEDDINGS_ADDITIONS[added..] {
+            tx.execute_batch(addition)?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// The schema of `embeddings.db` after the base and each prefix of
+/// [`EMBEDDINGS_ADDITIONS`], the last being the current one.
+fn embeddings_schemas() -> Result<Vec<Vec<(String, String, String)>>> {
+    let expected = Connection::open_in_memory()?;
+    expected.execute_batch(EMBEDDINGS_BASE)?;
+    let mut schemas = vec![shape(&expected)?];
+    for addition in EMBEDDINGS_ADDITIONS {
+        expected.execute_batch(addition)?;
+        schemas.push(shape(&expected)?);
+    }
+    Ok(schemas)
+}
+
+/// How `stored` differs from the schema in `schemas` it is closest to, as
+/// "table embedded differs; trigger t is missing; table x is not declared".
+fn nearest_difference(
+    stored: &[(String, String, String)],
+    schemas: &[Vec<(String, String, String)>],
+) -> String {
+    let differences = |schema: &Vec<(String, String, String)>| {
+        let mut out = Vec::new();
+        for (kind, name, sql) in schema {
+            match stored
+                .iter()
+                .find(|item| item.0 == *kind && item.1 == *name)
+            {
+                None => out.push(format!("{kind} {name} is missing")),
+                Some(item) if item.2 != *sql => out.push(format!("{kind} {name} differs")),
+                Some(_) => {}
+            }
+        }
+        for (kind, name, _) in stored {
+            if !schema.iter().any(|item| item.0 == *kind && item.1 == *name) {
+                out.push(format!("{kind} {name} is not declared"));
+            }
+        }
+        out
+    };
+    schemas
+        .iter()
+        .map(differences)
+        .min_by_key(Vec::len)
+        .unwrap_or_default()
+        .join("; ")
 }
 
 /// Creates the database from `sql` in an empty file, or opens one at the
