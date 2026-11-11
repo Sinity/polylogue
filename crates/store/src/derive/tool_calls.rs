@@ -15,11 +15,15 @@ pub(super) const DERIVATION: Derivation = Derivation {
     finish: None,
 };
 
+/// A session's shell calls. The unary `+` keeps the planner off
+/// `tool_call_action`: one action can hold most of the archive's calls, and
+/// a lookup by it would visit them all for every session.
+pub(super) const SHELL_CALLS: &str =
+    "SELECT pk, command FROM tool_call WHERE session_pk = ?1 AND +action = 'shell'";
+
 fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     let calls: Vec<(i64, Option<String>)> = tx
-        .prepare_cached(
-            "SELECT pk, command FROM tool_call WHERE session_pk = ?1 AND action = 'shell'",
-        )?
+        .prepare_cached(SHELL_CALLS)?
         .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let mut set = tx.prepare_cached(

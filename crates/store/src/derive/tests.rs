@@ -605,3 +605,127 @@ fn fork_with_parents_shows_inherited_count() {
     let keys = reader.message_keys_with_parents(&child).unwrap();
     assert_eq!(keys.len(), 2, "{keys:?}");
 }
+
+/// Writes sessions `from..to` from one input of their own, each a prompt and
+/// 20 shell calls, so shell calls are most of the archive's calls, as in a
+/// real one.
+fn write_shell_sessions(w: &mut WriterArchive, from: u32, to: u32) {
+    let mut sessions = Vec::new();
+    let mut messages = Vec::new();
+    for n in from..to {
+        let name = format!("bulk{n}");
+        sessions.push(Session::new(sid(&name), SessionKind::Main));
+        messages.extend(prose(&name, 0, 1_000, "run the tests"));
+        for call in 1..=20 {
+            messages.extend(bash(
+                &name,
+                call,
+                1_000 + i64::from(call) * 10,
+                "cargo test",
+                true,
+                "ok",
+            ));
+        }
+    }
+    let records = messages.len() as u64;
+    let output = polylogue_model::Output {
+        sessions,
+        messages: messages
+            .into_iter()
+            .enumerate()
+            .map(|(i, message)| polylogue_model::MessageRow {
+                id_kind: polylogue_model::IdKind::Native,
+                offset: i as u64,
+                end: i as u64 + 1,
+                message,
+            })
+            .collect(),
+        ..polylogue_model::Output::default()
+    };
+    w.write_output(
+        &format!("input-bulk-{from}"),
+        "claude-code",
+        &format!("/p/bulk-{from}"),
+        output,
+        records,
+    );
+}
+
+/// SQLite steps of running every derivation on the session `name`, as a
+/// first build does, on an index without planner statistics, as it is
+/// until its first build ends.
+fn steps_to_derive_from_start(w: &WriterArchive, name: &str) -> usize {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let mut index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    crate::sql_functions::register(&index).unwrap();
+    index
+        .execute_batch("DROP TABLE IF EXISTS sqlite_stat1")
+        .unwrap();
+    let pk: i64 = index
+        .query_row(
+            "SELECT pk FROM session WHERE id = ?1",
+            [format!("claude-code:{name}")],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let catalog = polylogue_model::Catalog::builtin();
+    let tx = index.transaction().unwrap();
+    let steps = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&steps);
+    tx.progress_handler(
+        1,
+        Some(move || {
+            counted.fetch_add(1, Ordering::Relaxed);
+            false
+        }),
+    )
+    .unwrap();
+    for derivation in super::ALL {
+        (derivation.run)(&tx, pk, catalog).unwrap();
+    }
+    tx.progress_handler(0, None::<fn() -> bool>).unwrap();
+    tx.rollback().unwrap();
+    steps.load(Ordering::Relaxed)
+}
+
+/// Each derivation reads its session's rows through an index led by the
+/// session (docs/measures.md: derived data is computed at session grain), so
+/// its cost does not grow with the calls other sessions hold, even where
+/// one action is most of the archive's calls and the planner has no
+/// statistics.
+#[test]
+fn deriving_a_session_costs_the_same_however_many_calls_other_sessions_hold() {
+    let mut w = WriterArchive::new();
+    write_shell_sessions(&mut w, 0, 10);
+    let mut target = prose("target", 0, 1_000, "fix the build");
+    target.extend(bash("target", 1, 1_010, "cargo build", false, "error"));
+    target.extend(bash("target", 2, 1_020, "cargo build", true, "ok"));
+    w.write("target", target);
+    // Rows of other sessions on both sides of the target's in every index,
+    // so a range read ends at a neighbour's row in both measurements.
+    write_shell_sessions(&mut w, 10, 20);
+    let before = steps_to_derive_from_start(&w, "target");
+    for from in (20..60).step_by(10) {
+        write_shell_sessions(&mut w, from, from + 10);
+    }
+    assert_eq!(steps_to_derive_from_start(&w, "target"), before);
+
+    let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    let plan: Vec<String> = index
+        .prepare(&format!(
+            "EXPLAIN QUERY PLAN {}",
+            super::tool_calls::SHELL_CALLS
+        ))
+        .unwrap()
+        .query_map([1], |r| r.get(3))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(plan.len(), 1, "{plan:?}");
+    assert!(
+        plan[0].starts_with("SEARCH tool_call USING INDEX tool_call_")
+            && plan[0].contains("(session_pk=?"),
+        "{plan:?}"
+    );
+}
