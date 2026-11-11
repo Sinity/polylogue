@@ -21,14 +21,6 @@ pub(super) fn stage(
     archive: &Archive,
     format: Option<&str>,
 ) -> std::io::Result<Vec<Member>> {
-    if format == Some(super::predecessor::ARCHIVE) {
-        return super::legacy::stage(path, archive)?.ok_or_else(|| {
-            std::io::Error::other(format!(
-                "{} is not the predecessor's archive: it needs source.db and blob/",
-                path.display()
-            ))
-        });
-    }
     let mut members = Vec::new();
     let mut seen = Expansion::default();
     if path.is_dir() {

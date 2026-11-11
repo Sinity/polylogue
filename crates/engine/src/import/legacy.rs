@@ -9,65 +9,29 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
-pub(super) fn stage(
+/// Stages and delivers one member at a time. The consumer commits and parses
+/// it before another member is prepared, so a stopped import keeps its progress.
+pub(super) fn visit(
     root: &Path,
     archive: &Archive,
-) -> std::io::Result<Option<Vec<package::Member>>> {
+    mut accept: impl FnMut(package::Member) -> std::io::Result<()>,
+) -> std::io::Result<bool> {
     let Some(catalog) = polylogue_store::legacy_import::Catalog::open(root, &archive.staging_dir())
         .map_err(std::io::Error::other)?
     else {
-        return Ok(None);
+        return Ok(false);
     };
     let (rows, _) = archive
         .prepare_write(|out| catalog.write_rows(out))
         .map_err(std::io::Error::other)?;
     let inputs = catalog.inputs().map_err(std::io::Error::other)?;
     let mut declared = BTreeMap::new();
-    let mut blobs = BTreeMap::new();
     for input in &inputs {
         if declared.insert(input.raw_id.clone(), input).is_some() {
             return Err(std::io::Error::other(
                 "predecessor catalog repeats a raw_id",
             ));
         }
-        let hash = input
-            .blob_hash
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
-        let path = root.join("blob").join(&hash[..2]).join(&hash[2..]);
-        if !std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
-            return Err(std::io::Error::other(format!(
-                "missing or non-regular predecessor blob {hash}"
-            )));
-        }
-        let mut source = std::fs::File::open(&path).map_err(|error| {
-            std::io::Error::other(format!("missing predecessor blob {hash}: {error}"))
-        })?;
-        let (copy, ()) = archive
-            .prepare_write(|output| {
-                let mut actual = Sha256::new();
-                let mut length = 0;
-                let mut buffer = [0; 64 * 1024];
-                loop {
-                    let n = source.read(&mut buffer)?;
-                    if n == 0 {
-                        break;
-                    }
-                    actual.update(&buffer[..n]);
-                    output.write_all(&buffer[..n])?;
-                    length += n as u64;
-                }
-                let actual: [u8; 32] = actual.finalize().into();
-                if length != input.blob_size || actual != input.blob_hash {
-                    return Err(polylogue_store::StoreError::Invalid(format!(
-                        "predecessor blob {hash} differs from its catalog hash or size"
-                    )));
-                }
-                Ok(())
-            })
-            .map_err(std::io::Error::other)?;
-        blobs.insert(input.raw_id.clone(), copy);
     }
     // Revision names given to exactly one raw session.
     let mut by_revision: BTreeMap<&str, Option<&Input>> = BTreeMap::new();
@@ -79,8 +43,7 @@ pub(super) fn stage(
                 .or_insert(Some(input));
         }
     }
-    let mut members = Vec::new();
-    members.push(package::Member {
+    accept(package::Member {
         path: PathBuf::from(format!("{}!/source.db/rows.jsonl", root.display())),
         bytes: rows,
         container: false,
@@ -89,25 +52,22 @@ pub(super) fn stage(
         container_kind: None,
         member_path_bytes: None,
         refusal: None,
-    });
+    })?;
     for input in &inputs {
         let name = Path::new(&input.source_path)
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("input");
         if input.revision_kind == "append" {
-            members.push(package::Member {
+            accept(package::Member {
                 path: PathBuf::from(format!(
                     "{}!/raw_sessions/{}/fragment",
                     root.display(),
                     input.raw_id
                 )),
                 bytes: archive
-                    .prepare_bytes(
-                        blobs[&input.raw_id]
-                            .reader()
-                            .map_err(std::io::Error::other)?,
-                    )
+                    .prepare_write(|out| copy_blob(root, input, out))
+                    .map(|(bytes, ())| bytes)
                     .map_err(std::io::Error::other)?,
                 container: false,
                 origin: polylogue_sources::origin::by_name(KEPT),
@@ -115,7 +75,7 @@ pub(super) fn stage(
                 container_kind: None,
                 member_path_bytes: None,
                 refusal: None,
-            });
+            })?;
         }
         let at = PathBuf::from(format!(
             "{}!/raw_sessions/{}/{name}",
@@ -127,7 +87,7 @@ pub(super) fn stage(
             Err(reason) => {
                 // The fragment above keeps the bytes; only the joined
                 // reading is refused.
-                members.push(package::Member {
+                accept(package::Member {
                     path: at,
                     bytes: archive
                         .prepare_bytes(std::io::empty())
@@ -138,14 +98,14 @@ pub(super) fn stage(
                     container_kind: None,
                     member_path_bytes: None,
                     refusal: Some(reason),
-                });
+                })?;
                 continue;
             }
         };
         let (combined, ()) = archive
             .prepare_write(|output| {
                 for part in &chain {
-                    std::io::copy(&mut blobs[&part.raw_id].reader()?, output)?;
+                    copy_blob(root, part, output)?;
                 }
                 Ok(())
             })
@@ -164,7 +124,7 @@ pub(super) fn stage(
             super::recognition::declared(&at, &mut bytes, None)?
         }
         .or_else(|| polylogue_sources::origin::by_name(KEPT));
-        members.push(package::Member {
+        accept(package::Member {
             path: at,
             bytes: combined,
             container: false,
@@ -173,7 +133,7 @@ pub(super) fn stage(
             container_kind: None,
             member_path_bytes: None,
             refusal: None,
-        });
+        })?;
     }
     // Every blob no raw session cites, checked against its name.
     let cited: BTreeSet<String> = inputs
@@ -222,7 +182,7 @@ pub(super) fn stage(
                     Ok(())
                 })
                 .map_err(std::io::Error::other)?;
-            members.push(package::Member {
+            accept(package::Member {
                 path: PathBuf::from(format!("{}!/blob/{name}", root.display())),
                 bytes,
                 container: false,
@@ -231,11 +191,57 @@ pub(super) fn stage(
                 container_kind: None,
                 member_path_bytes: None,
                 refusal: None,
-            });
+            })?;
         }
     }
-    Ok(Some(members))
+    Ok(true)
 }
+/// Validate the exact source bytes while producing this member. No staged
+/// copy of every source blob is retained alongside the joined readings.
+fn copy_blob(
+    root: &Path,
+    input: &Input,
+    output: &mut dyn std::io::Write,
+) -> polylogue_store::Result<()> {
+    let hash: String = input.blob_hash.iter().map(|b| format!("{b:02x}")).collect();
+    let path = root.join("blob").join(&hash[..2]).join(&hash[2..]);
+    if !std::fs::symlink_metadata(&path)?.is_file() {
+        return Err(polylogue_store::StoreError::Invalid(format!(
+            "non-regular predecessor blob {hash}"
+        )));
+    }
+    let mut source = std::fs::File::open(path)?;
+    let mut actual = Sha256::new();
+    let mut length = 0;
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let n = source.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        actual.update(&buffer[..n]);
+        output.write_all(&buffer[..n])?;
+        length += n as u64;
+    }
+    let actual: [u8; 32] = actual.finalize().into();
+    if length != input.blob_size || actual != input.blob_hash {
+        return Err(polylogue_store::StoreError::Invalid(format!(
+            "predecessor blob {hash} differs from its catalog hash or size"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn stage(root: &Path, archive: &Archive) -> std::io::Result<Option<Vec<package::Member>>> {
+    let mut members = Vec::new();
+    let found = visit(root, archive, |member| {
+        members.push(member);
+        Ok(())
+    })?;
+    Ok(found.then_some(members))
+}
+
 type Input = polylogue_store::legacy_import::Input;
 
 /// The raw sessions whose bytes, in order, make `input`'s source revision:

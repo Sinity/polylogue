@@ -138,7 +138,7 @@ fn an_append_naming_its_base_by_revision_joins_it_and_an_unknown_base_is_refused
     assert_eq!(decoded(&members[1]), FULL);
 }
 #[test]
-fn missing_or_changed_legacy_blob_refuses_the_whole_import_without_archive_rows() {
+fn a_later_missing_or_changed_blob_stops_the_import_after_committed_members() {
     for missing in [false, true] {
         let w = polylogue_testkit::ClaudeHome::new();
         let old = w.dir.path().join("predecessor");
@@ -151,11 +151,23 @@ fn missing_or_changed_legacy_blob_refuses_the_whole_import_without_archive_rows(
             std::fs::write(path, vec![b'x'; APPEND.len()]).unwrap();
         }
         let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
+        let error = engine
+            .import_with_options(std::slice::from_ref(&old), &archive_format())
+            .unwrap_err();
+        assert!(!error.to_string().is_empty());
+        // The earlier full revision has already committed and parsed. Failure
+        // in a later member never discards that progress.
+        assert_eq!(w.texts("legacy"), ["one"]);
+        std::fs::write(old.join("blob").join(&hash[..2]).join(&hash[2..]), APPEND).unwrap();
         let report = engine
+            .import_with_options(std::slice::from_ref(&old), &archive_format())
+            .unwrap();
+        assert!(report.pass.errors.is_empty(), "{report:?}");
+        assert_eq!(w.texts("legacy"), ["one", "two"]);
+        let repeat = engine
             .import_with_options(&[old], &archive_format())
             .unwrap();
-        assert_eq!(report.refused.len(), 1);
-        assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.input"), 0);
+        assert!(repeat.imported.is_empty(), "{repeat:?}");
     }
 }
 
