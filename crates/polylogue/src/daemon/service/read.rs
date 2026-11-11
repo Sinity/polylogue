@@ -104,7 +104,7 @@ impl crate::daemon::handler::Handler for Read {
     const PAGES: bool = true;
     fn ranking_query(
         arguments: &Self::Arguments,
-        _row: &crate::daemon::handler::Command,
+        _row: &crate::commands::Command,
     ) -> Option<String> {
         Some(arguments.target.clone())
     }
