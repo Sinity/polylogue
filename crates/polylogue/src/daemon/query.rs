@@ -61,63 +61,51 @@ pub(crate) fn with_ranking<T>(
     run(identity.is_some(), identity, &near)
 }
 
-/// Asks the provider for the vector of each `similar:"text"` in `query`
-/// before the request takes its reader, so the provider wait holds neither
-/// a reader slot nor an executor place; the ranking then finds the vectors
-/// kept. Only quoted texts are asked for: an unquoted value may be a
-/// reference, whose stored vector needs no call. Failures are left to the
-/// ranking, which reports them.
-pub(crate) fn prefetch_query_vectors(d: &super::service::Daemon, query: &str) {
-    let texts = similar_texts(query);
-    if texts.is_empty() {
-        return;
-    }
-    let settings = {
-        let Ok(reader) = d.reads.reader() else {
-            return;
+/// Asks the provider for the query vector the validated `query` ranks by,
+/// before the request holds a reader for its run, so the provider wait
+/// holds neither a reader slot nor the request's reader; the ranking then
+/// finds the vector kept. The query is prepared and validated first, as its
+/// run prepares it, so a query that is refused, or that ranks by nothing,
+/// asks for nothing. Failures are left to the run, which reports them.
+pub(crate) fn prefetch_ranking(call: &super::handler::Call<'_>, query: &str) {
+    let d = call.daemon;
+    let wanted = (|| {
+        let reader = call.reader().ok()?;
+        let context = call.context().ok()?;
+        let settings = reader.settings_snapshot(d.config.requests.machine()).ok()?;
+        let provider =
+            crate::embeddings::Provider::from_settings(&settings, &d.config.embedding_credentials)
+                .ok()
+                .flatten()?;
+        let ranking_identity = crate::embeddings::ranking_key(&reader, Some(&provider));
+        let ask = Ask {
+            text: query,
+            cursor: None,
+            page_size: None,
+            why: false,
+            session: None,
+            context,
+            embeddings: ranking_identity.is_some(),
+            ranking_identity,
+            near: None,
+            fields: &[],
         };
-        reader.settings_snapshot(d.config.requests.machine()).ok()
-    };
-    let Some(provider) = settings.as_ref().and_then(|settings| {
-        crate::embeddings::Provider::from_settings(settings, &d.config.embedding_credentials)
-            .ok()
-            .flatten()
-    }) else {
-        return;
-    };
-    for text in texts {
+        let text = ranking_text(&reader, &ask).ok().flatten()?;
+        Some((provider, text))
+    })();
+    if let Some((provider, text)) = wanted {
         let _ = d.warm.query_vector(&provider, &text);
     }
 }
 
-/// The quoted texts `query` ranks by with `similar:`.
-fn similar_texts(query: &str) -> Vec<String> {
-    fn visit(value: &Value, texts: &mut Vec<String>) {
-        match value {
-            Value::Object(object) => {
-                if object.get("kind").and_then(Value::as_str) == Some("rank")
-                    && object.get("list").and_then(Value::as_str) == Some("similar")
-                    && let Some(Value::Object(scalar)) = object.get("value")
-                    && scalar.get("quoted") == Some(&Value::Bool(true))
-                    && let Some(text) = scalar.get("text").and_then(Value::as_str)
-                    && !texts.iter().any(|known| known == text)
-                {
-                    texts.push(text.to_owned());
-                }
-                object.values().for_each(|value| visit(value, texts));
-            }
-            Value::Array(values) => values.iter().for_each(|value| visit(value, texts)),
-            _ => {}
-        }
-    }
-    let mut texts = Vec::new();
-    if let Some(parsed) = polylogue_query::parse(query)
-        .ok()
-        .and_then(|parsed| serde_json::to_value(parsed).ok())
-    {
-        visit(&parsed, &mut texts);
-    }
-    texts
+/// The text a query's semantic ranking asks a vector for, once the query
+/// is prepared and validated as its run prepares it.
+fn ranking_text(reader: &Reader<'_>, ask: &Ask<'_>) -> Result<Option<String>, Failure> {
+    let opts = options(reader, ask, 0)?;
+    let plan = reader.prepare_query_plan(ask.text, &opts)?;
+    let program = reader.lower_plan(&plan, &opts)?;
+    validate(reader, &program)?;
+    Ok(program.near.map(|near| near.text))
 }
 
 fn with_similarity<T>(

@@ -64,6 +64,9 @@ impl Handler for Query {
         Some(&arguments.query)
     }
     const PRINT: fn(&Value, bool) -> String = print::query;
+    fn ranking_query(arguments: &Self::Arguments, _row: &Command) -> Option<String> {
+        Some(arguments.query.clone())
+    }
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
         run_query(
             call,
@@ -88,6 +91,16 @@ impl Handler for List {
         arguments.query.as_deref()
     }
     const PRINT: fn(&Value, bool) -> String = print::query;
+    fn ranking_query(arguments: &Self::Arguments, _row: &Command) -> Option<String> {
+        Some(
+            arguments
+                .query
+                .as_deref()
+                .filter(|query| !query.trim().is_empty())
+                .unwrap_or("sessions")
+                .to_owned(),
+        )
+    }
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
         let text = arguments
             .query
@@ -180,6 +193,9 @@ impl Handler for Measure {
         arguments.query.as_deref()
     }
     const PRINT: fn(&Value, bool) -> String = print::query;
+    fn ranking_query(arguments: &Self::Arguments, row: &Command) -> Option<String> {
+        Some(measure_query(row.name, arguments))
+    }
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
         let text = measure_query(call.row.name, &arguments);
         run_query(
@@ -387,6 +403,9 @@ impl Handler for Cost {
     const PAGES: bool = true;
     fn query_text(arguments: &Self::Arguments) -> Option<&str> {
         arguments.query.as_deref()
+    }
+    fn ranking_query(arguments: &Self::Arguments, _row: &Command) -> Option<String> {
+        Some(arguments.query.clone().unwrap_or_else(|| "sessions".into()))
     }
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
         let reader = call.reader()?;
@@ -887,6 +906,9 @@ impl Handler for Keep {
     type Answer = polylogue_model::user::UserOutcome;
     fn query_text(arguments: &Self::Arguments) -> Option<&str> {
         Some(&arguments.query)
+    }
+    fn ranking_query(arguments: &Self::Arguments, _row: &Command) -> Option<String> {
+        Some(arguments.query.clone())
     }
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
         let protocol::saved::Keep { name, query } = arguments;

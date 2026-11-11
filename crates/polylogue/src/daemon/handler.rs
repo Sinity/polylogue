@@ -148,10 +148,11 @@ pub(crate) trait Handler: Send + Sync + 'static {
     fn query_text(_arguments: &Self::Arguments) -> Option<&str> {
         None
     }
-    /// The query whose `similar:"text"` vectors are asked for before the
-    /// request takes a reader.
-    fn ranking_text(arguments: &Self::Arguments) -> Option<&str> {
-        Self::query_text(arguments)
+    /// The query this request executes with its ranking, whose query
+    /// vector is asked for before the request holds a reader. Only requests
+    /// that run a ranking name one.
+    fn ranking_query(_arguments: &Self::Arguments, _row: &Command) -> Option<String> {
+        None
     }
     /// A tighter bound than the request's own, such as an advisory's cap.
     fn read_cap() -> Option<std::time::Duration> {
@@ -667,8 +668,8 @@ fn answer<H: Handler>(
             #[cfg(test)]
             reader_acquired: &reader_acquired,
         };
-        if let Some(text) = H::ranking_text(&arguments) {
-            super::query::prefetch_query_vectors(daemon, text);
+        if let Some(text) = H::ranking_query(&arguments, row) {
+            super::query::prefetch_ranking(&call, &text);
         }
         H::run(arguments, &call).unwrap_or_else(Failure::answer)
     };
