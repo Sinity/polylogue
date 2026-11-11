@@ -11,7 +11,9 @@ impl<'a> Compiler<'a> {
     ) -> Result<Program, QueryError> {
         let staged = std::mem::take(&mut self.staged_filters);
         let stages = &q.transforms[staged.len()..];
-        self.transforms_start = stages.first().map_or(usize::MAX, |s| s.span.start);
+        // `similar:` ranks the whole query and stands only among the
+        // source's own conditions, so a folded stage still refuses it.
+        self.transforms_start = q.transforms.first().map_or(usize::MAX, |s| s.span.start);
         self.measuring = stages.iter().any(|s| {
             matches!(&s.kind, TransformKind::Extension { name, .. }
                 if name == polylogue_query::catalog::MEASURE)
