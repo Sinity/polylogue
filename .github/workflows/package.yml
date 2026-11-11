@@ -39,7 +39,7 @@ jobs:
           skipPush: true
       - name: Build the package
         run: |
-          out=$(nix build --no-link --print-out-paths "github:${GITHUB_REPOSITORY}/${REV}#default")
+          out=$(nix build --no-link --print-build-logs --print-out-paths "github:${GITHUB_REPOSITORY}/${REV}#default")
           echo "built $out"
           echo "out=$out" >> "$GITHUB_ENV"
       - name: Publish its closure to sinity.cachix.org
