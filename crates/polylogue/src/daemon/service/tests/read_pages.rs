@@ -761,3 +761,110 @@ fn continuation_pages_write_nothing() {
     let after = d.daemon.reads.reader().unwrap().change_position().unwrap();
     assert_eq!(before, after);
 }
+
+/// Shown entries a page lays out in a transcript of plain prompts: one
+/// header and one text each.
+fn entries_on(page: &ReadPage) -> u64 {
+    page.document
+        .items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.kind,
+                ItemKind::MessageHeader { .. } | ItemKind::Text { .. }
+            )
+        })
+        .count() as u64
+}
+
+#[test]
+fn anchored_middle_page_does_not_visit_prefix() {
+    const MESSAGES: u64 = 400;
+    let d = test_daemon::start("placeholder");
+    let path = d.home.join(".claude/projects/-p/s2.jsonl");
+    let write = |range: std::ops::Range<u64>| {
+        use std::io::Write;
+        let mut source = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        for n in range {
+            source
+                .write_all(
+                    polylogue_testkit::claude_user(&format!("m{n}"), "s2", &format!("prompt {n}"))
+                        .as_bytes(),
+                )
+                .unwrap();
+        }
+    };
+    write(0..MESSAGES);
+    d.wait_for(|status| status["store"]["messages"] == MESSAGES + 1);
+    let target = "session:claude-code:s2";
+    // Every page from the start, with where each begins.
+    let mut pages = Vec::new();
+    let mut cursor = None;
+    let mut before = 0;
+    loop {
+        let page = page(
+            &d.daemon,
+            target,
+            false,
+            View::Transcript,
+            60,
+            cursor.as_ref(),
+        );
+        assert_eq!(page.document.footer.position, Some(before));
+        assert_eq!(
+            page.document.footer.count,
+            polylogue_model::read::ValueState::known(2 * MESSAGES)
+        );
+        before += entries_on(&page);
+        let continued = next(&page);
+        pages.push((cursor, page));
+        cursor = continued;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(before, 2 * MESSAGES, "the pages tile the reading");
+    assert!(pages.len() > 20);
+    // A page anchored in the middle reads its own entries and the unit it
+    // starts in, not the entries before it.
+    let (anchor, expected) = &pages[pages.len() * 3 / 4];
+    let position = expected.document.footer.position.unwrap();
+    assert!(position > MESSAGES);
+    let decoded = polylogue_store::items::entries_decoded();
+    let again = page(
+        &d.daemon,
+        target,
+        false,
+        View::Transcript,
+        60,
+        anchor.as_ref(),
+    );
+    let visited = polylogue_store::items::entries_decoded() - decoded;
+    assert_eq!(again.document.items, expected.document.items);
+    assert_eq!(again.document.footer.position, Some(position));
+    assert!(
+        visited <= 4 * entries_on(&again) + 32,
+        "{visited} entries read for a page of {} at {position}",
+        entries_on(&again)
+    );
+    // Appended messages extend the counts the reading reports.
+    write(MESSAGES..MESSAGES + 10);
+    d.wait_for(|status| status["store"]["messages"] == MESSAGES + 11);
+    let last = page(
+        &d.daemon,
+        target,
+        false,
+        View::Transcript,
+        60,
+        anchor.as_ref(),
+    );
+    assert_eq!(last.document.footer.position, Some(position));
+    assert_eq!(
+        last.document.footer.count,
+        polylogue_model::read::ValueState::known(2 * (MESSAGES + 10))
+    );
+}

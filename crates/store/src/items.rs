@@ -23,7 +23,10 @@ use crate::encoding::{Columns, restore_text, unpack_block, unpack_text};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
     Message, MessageId, PromptKind, Role, SessionId, Usage,
-    read::{IndexEntry, MessagePlace, event_entry, message_entries, microcompacted_calls},
+    read::{
+        EntryClass, IndexEntry, ItemCounts, MessagePlace, entry_classes, event_entry,
+        message_entries, microcompacted_calls,
+    },
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -37,7 +40,44 @@ pub struct StoredItems {
     pub entries: Vec<IndexEntry>,
 }
 
-/// The counters alone, read in O(1) to validate a cached index.
+/// What a session reading needs of a session before reading its entries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemState {
+    pub session_pk: i64,
+    pub versions: ItemVersions,
+    /// How many entries the session has.
+    pub entries: u64,
+    /// The counts over every entry.
+    pub counts: ItemCounts,
+}
+
+/// One stored entry, with its place and class.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredEntry {
+    pub seq: u64,
+    pub class: EntryClass,
+    pub entry: IndexEntry,
+}
+
+/// The kinds of entry a reading finds through their own index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemLookup {
+    Prompt,
+    Compaction,
+    Microcompaction,
+}
+
+/// Entries decoded by session item reads in this process: what a test
+/// counts to show a reading reads only near its page.
+#[cfg(any(test, feature = "fixture"))]
+static ENTRIES_DECODED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(any(test, feature = "fixture"))]
+pub fn entries_decoded() -> u64 {
+    ENTRIES_DECODED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The counters alone, read in O(1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemVersions {
     pub append_seq: u64,
@@ -372,6 +412,40 @@ pub(crate) fn computed_entries(conn: &Connection, session_pk: i64) -> Result<Vec
     Ok(out)
 }
 
+/// What the writer stores beside each entry: its class, call ID and, on a
+/// unit's first entry, the counts before it; then the entry count and the
+/// counts over every entry.
+#[cfg(test)]
+pub(crate) type StoredColumns = (
+    Vec<(EntryClass, Option<String>, Option<ItemCounts>)>,
+    u64,
+    ItemCounts,
+);
+
+#[cfg(test)]
+pub(crate) fn stored_columns(conn: &Connection, session_pk: i64) -> Result<StoredColumns> {
+    let mut statement = conn.prepare(
+        "SELECT class, call_id, counts FROM session_item WHERE session_pk = ?1 ORDER BY seq",
+    )?;
+    let mut rows = statement.query([session_pk])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push((
+            class_of(row.get(0)?)?,
+            row.get(1)?,
+            row.get::<_, Option<Vec<u8>>>(2)?
+                .map(|counts| decode_counts(&counts))
+                .transpose()?,
+        ));
+    }
+    let (entries, counts): (i64, Vec<u8>) = conn.query_row(
+        "SELECT entries, counts FROM session_item_state WHERE session_pk = ?1",
+        [session_pk],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok((out, counter(entries)?, decode_counts(&counts)?))
+}
+
 /// Brings every session a transaction changed up to date from its change
 /// summary; returns the number of units read to do so.
 pub(crate) fn refresh(conn: &Connection, changes: &ChangeSummary) -> Result<u64> {
@@ -619,11 +693,14 @@ fn rebuild(
             Ok((row.get(0)?, row.get(1)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    let state: Option<(i64, i64, Vec<u8>)> = conn
+    let state: Option<(i64, i64, Vec<u8>, Vec<u8>)> = conn
         .prepare_cached(
-            "SELECT append_seq, rewrite_version, links FROM session_item_state WHERE session_pk = ?1",
+            "SELECT append_seq, rewrite_version, links, counts FROM session_item_state
+             WHERE session_pk = ?1",
         )?
-        .query_row([session_pk], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .query_row([session_pk], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
         .optional()?;
     let links = links_identity(conn, session_pk)?;
     let mut same = indexed
@@ -633,11 +710,21 @@ fn rebuild(
         .count();
     let links_moved = state
         .as_ref()
-        .is_some_and(|(_, _, stored)| stored.as_slice() != links.as_slice());
+        .is_some_and(|(_, _, stored, _)| stored.as_slice() != links.as_slice());
     let mut insert = conn.prepare_cached(
-        "INSERT INTO session_item(session_pk, seq, unit, message_pk, event_pk, time_bound, entry)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO session_item(session_pk, seq, unit, message_pk, event_pk, time_bound, entry,
+                                  class, call_id, counts)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
+    // The counts before the first unit written below: those stored on the
+    // first unit replaced, or after every entry when units are only added.
+    let mut running = match indexed.get(same) {
+        Some((seq, _)) => unit_counts(conn, session_pk, *seq)?,
+        None => match &state {
+            Some((_, _, _, counts)) => decode_counts(counts)?,
+            None => ItemCounts::default(),
+        },
+    };
     let mut next: i64 = conn
         .prepare_cached("SELECT coalesce(max(seq) + 1, 0) FROM session_item WHERE session_pk = ?1")?
         .query_row([session_pk], |row| row.get(0))?;
@@ -652,8 +739,10 @@ fn rebuild(
         let current = unit_entries(conn, &units[same])?;
         if extends(&stored, &current) {
             let (_, _, time_bound) = units[same].columns();
+            let classes = entry_classes(&current);
+            // A new block can change what its header's class says.
             conn.prepare_cached(
-                "UPDATE session_item SET unit = ?3, time_bound = ?4, entry = ?5
+                "UPDATE session_item SET unit = ?3, time_bound = ?4, entry = ?5, class = ?6
                  WHERE session_pk = ?1 AND seq = ?2",
             )?
             .execute(params![
@@ -661,9 +750,10 @@ fn rebuild(
                 first_seq,
                 identities[same],
                 time_bound,
-                serde_json::to_vec(&current[0])?
+                serde_json::to_vec(&current[0])?,
+                classes[0].bits()
             ])?;
-            for entry in &current[stored.len()..] {
+            for (entry, class) in current.iter().zip(&classes).skip(stored.len()) {
                 insert.execute(params![
                     session_pk,
                     next,
@@ -671,9 +761,16 @@ fn rebuild(
                     None::<i64>,
                     None::<i64>,
                     None::<i64>,
-                    serde_json::to_vec(entry)?
+                    serde_json::to_vec(entry)?,
+                    class.bits(),
+                    entry.call_id,
+                    None::<Vec<u8>>
                 ])?;
                 next += 1;
+            }
+            running = unit_counts(conn, session_pk, first_seq)?;
+            for (entry, class) in current.iter().zip(&classes) {
+                running.add(entry, *class);
             }
             grown = current.len() > stored.len();
             header_moved = current[0] != stored[0];
@@ -690,7 +787,9 @@ fn rebuild(
     }
     for (unit, identity) in units.iter().zip(&identities).skip(same) {
         let (message_pk, event_pk, time_bound) = unit.columns();
-        for (offset, entry) in unit_entries(conn, unit)?.into_iter().enumerate() {
+        let entries = unit_entries(conn, unit)?;
+        let before = encode_counts(&running);
+        for (offset, (entry, class)) in entries.iter().zip(entry_classes(&entries)).enumerate() {
             let first = offset == 0;
             insert.execute(params![
                 session_pk,
@@ -699,8 +798,12 @@ fn rebuild(
                 message_pk.filter(|_| first),
                 event_pk.filter(|_| first),
                 time_bound.filter(|_| first),
-                serde_json::to_vec(&entry)?
+                serde_json::to_vec(entry)?,
+                class.bits(),
+                entry.call_id,
+                first.then_some(before.as_slice())
             ])?;
+            running.add(entry, class);
             next += 1;
         }
     }
@@ -709,7 +812,7 @@ fn rebuild(
     // an earlier cursor saw.
     let (append_seq, rewrite_version) = match state {
         None => (i64::from(appended), changed.max(1)),
-        Some((append_seq, rewrite_version, _)) => (
+        Some((append_seq, rewrite_version, _, _)) => (
             append_seq + i64::from(appended && !rewritten),
             if rewritten {
                 (rewrite_version + 1).max(changed)
@@ -719,13 +822,23 @@ fn rebuild(
         ),
     };
     conn.prepare_cached(
-        "INSERT INTO session_item_state(session_pk, append_seq, rewrite_version, links, indexed_changed)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO session_item_state(session_pk, append_seq, rewrite_version, links, entries,
+                                        counts, indexed_changed)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(session_pk) DO UPDATE SET append_seq = excluded.append_seq,
            rewrite_version = excluded.rewrite_version, links = excluded.links,
+           entries = excluded.entries, counts = excluded.counts,
            indexed_changed = excluded.indexed_changed",
     )?
-    .execute(params![session_pk, append_seq, rewrite_version, links, changed])?;
+    .execute(params![
+        session_pk,
+        append_seq,
+        rewrite_version,
+        links,
+        next,
+        encode_counts(&running),
+        changed
+    ])?;
     Ok(units.len() as u64)
 }
 
@@ -876,6 +989,95 @@ fn extends(stored: &[IndexEntry], current: &[IndexEntry]) -> bool {
 
 fn decode(bytes: &[u8]) -> Result<IndexEntry> {
     Ok(serde_json::from_slice(bytes)?)
+}
+
+/// The counts stored on the unit whose first entry is at `seq`.
+fn unit_counts(conn: &Connection, session_pk: i64, seq: i64) -> Result<ItemCounts> {
+    let counts: Option<Vec<u8>> = conn
+        .prepare_cached("SELECT counts FROM session_item WHERE session_pk = ?1 AND seq = ?2")?
+        .query_row(params![session_pk, seq], |row| row.get(0))
+        .optional()?
+        .flatten();
+    match counts {
+        Some(counts) => decode_counts(&counts),
+        None => Err(StoreError::Invalid(format!(
+            "session item {seq} is not the first entry of a unit"
+        ))),
+    }
+}
+
+/// Counts as stored: unsigned LEB128 numbers, the running full-form tokens
+/// first, then each class with a count above zero and its count, by class.
+fn encode_counts(counts: &ItemCounts) -> Vec<u8> {
+    fn number(out: &mut Vec<u8>, mut value: u64) {
+        loop {
+            let byte = (value & 0x7F) as u8;
+            value >>= 7;
+            if value == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+    let mut out = Vec::with_capacity(4 + counts.classes.len() * 4);
+    number(&mut out, counts.tokens_full);
+    for (class, count) in &counts.classes {
+        number(&mut out, u64::from(class.bits()));
+        number(&mut out, *count);
+    }
+    out
+}
+
+fn decode_counts(bytes: &[u8]) -> Result<ItemCounts> {
+    let invalid = || StoreError::Invalid("malformed session item counts".into());
+    let number = |at: &mut usize| -> Result<u64> {
+        let mut value = 0u64;
+        for shift in (0..64).step_by(7) {
+            let byte = *bytes.get(*at).ok_or_else(invalid)?;
+            *at += 1;
+            value |= u64::from(byte & 0x7F) << shift;
+            if byte & 0x80 == 0 {
+                return Ok(value);
+            }
+        }
+        Err(invalid())
+    };
+    let mut at = 0;
+    let mut counts = ItemCounts {
+        tokens_full: number(&mut at)?,
+        ..ItemCounts::default()
+    };
+    while at < bytes.len() {
+        let class = u16::try_from(number(&mut at)?)
+            .ok()
+            .and_then(EntryClass::from_bits)
+            .ok_or_else(invalid)?;
+        counts.classes.insert(class, number(&mut at)?);
+    }
+    Ok(counts)
+}
+
+/// The partial index and condition that find one kind of entry.
+fn lookup_filter(kind: ItemLookup) -> &'static str {
+    match kind {
+        ItemLookup::Prompt => "INDEXED BY session_item_prompt WHERE class & 63 = 32",
+        ItemLookup::Compaction => "INDEXED BY session_item_compaction WHERE class & 15 = 9",
+        ItemLookup::Microcompaction => {
+            "INDEXED BY session_item_microcompaction WHERE class & 15 = 11"
+        }
+    }
+}
+
+fn class_of(bits: i64) -> Result<EntryClass> {
+    u16::try_from(bits)
+        .ok()
+        .and_then(EntryClass::from_bits)
+        .ok_or_else(|| StoreError::Invalid(format!("unknown session item class {bits}")))
+}
+
+fn position(seq: u64) -> Result<i64> {
+    i64::try_from(seq).map_err(|_| StoreError::Invalid("item index position out of range".into()))
 }
 
 fn counter(value: i64) -> Result<u64> {
@@ -1140,15 +1342,269 @@ impl Reader<'_> {
             session_pk: pk,
             append_seq: versions.append_seq,
             rewrite_version: versions.rewrite_version,
-            entries: self.item_entries_from(pk, 0)?,
+            entries: stored_entries(self.conn()?, pk, 0)?,
         }))
     }
 
-    /// The entries from `seq` on: what an append added to a cached index.
-    pub fn item_entries_from(&self, session_pk: i64, seq: u64) -> Result<Vec<IndexEntry>> {
-        let seq = i64::try_from(seq)
-            .map_err(|_| StoreError::Invalid("item index position out of range".into()))?;
-        stored_entries(self.conn()?, session_pk, seq)
+    /// What a session reading needs of a session before reading any of its
+    /// entries, or `None` when the session is not stored.
+    pub fn item_state(&self, id: &SessionId) -> Result<Option<ItemState>> {
+        let Some(pk) = self.session_pk(id)? else {
+            return Ok(None);
+        };
+        let state: Option<(i64, i64, i64, Vec<u8>)> = self
+            .conn()?
+            .prepare_cached(
+                "SELECT append_seq, rewrite_version, entries, counts FROM session_item_state
+                 WHERE session_pk = ?1",
+            )?
+            .query_row([pk], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .optional()?;
+        let Some((append_seq, rewrite_version, entries, counts)) = state else {
+            return Err(StoreError::Invalid(format!(
+                "session {id} has no item index"
+            )));
+        };
+        Ok(Some(ItemState {
+            session_pk: pk,
+            versions: ItemVersions {
+                append_seq: counter(append_seq)?,
+                rewrite_version: counter(rewrite_version)?,
+            },
+            entries: counter(entries)?,
+            counts: decode_counts(&counts)?,
+        }))
+    }
+
+    /// Entries in `from..until`, forward from `from` or backward from
+    /// `until`, at most `limit` of those whose class `wanted` accepts. Rows
+    /// it does not accept are passed over without being decoded.
+    pub fn item_window(
+        &self,
+        session_pk: i64,
+        range: std::ops::Range<u64>,
+        forward: bool,
+        limit: usize,
+        wanted: impl Fn(EntryClass) -> bool,
+    ) -> Result<Vec<StoredEntry>> {
+        let conn = self.conn()?;
+        let mut statement = conn.prepare_cached(if forward {
+            "SELECT seq, class, entry FROM session_item
+             WHERE session_pk = ?1 AND seq >= ?2 AND seq < ?3 ORDER BY seq"
+        } else {
+            "SELECT seq, class, entry FROM session_item
+             WHERE session_pk = ?1 AND seq >= ?2 AND seq < ?3 ORDER BY seq DESC"
+        })?;
+        let mut rows = statement.query(params![
+            session_pk,
+            position(range.start)?,
+            position(range.end)?
+        ])?;
+        let mut out = Vec::new();
+        while out.len() < limit
+            && let Some(row) = rows.next()?
+        {
+            let class = class_of(row.get(1)?)?;
+            if !wanted(class) {
+                continue;
+            }
+            #[cfg(any(test, feature = "fixture"))]
+            ENTRIES_DECODED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out.push(StoredEntry {
+                seq: counter(row.get(0)?)?,
+                class,
+                entry: decode(&row.get::<_, Vec<u8>>(2)?)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// The counts of the entries before `seq`: those stored on its unit's
+    /// first entry and the unit's entries before it.
+    pub fn item_counts_before(&self, session_pk: i64, seq: u64) -> Result<ItemCounts> {
+        let conn = self.conn()?;
+        let unit: Option<(i64, Vec<u8>)> = conn
+            .prepare_cached(
+                "SELECT seq, counts FROM session_item
+                 WHERE session_pk = ?1 AND seq <= ?2 AND counts IS NOT NULL
+                 ORDER BY seq DESC LIMIT 1",
+            )?
+            .query_row(params![session_pk, position(seq)?], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .optional()?;
+        let Some((first, counts)) = unit else {
+            return Ok(ItemCounts::default());
+        };
+        let mut counts = decode_counts(&counts)?;
+        let first = counter(first)?;
+        for stored in self.item_window(session_pk, first..seq, true, usize::MAX, |_| true)? {
+            counts.add(&stored.entry, stored.class);
+        }
+        Ok(counts)
+    }
+
+    /// Where an entry sits in a session's index.
+    pub fn item_place(
+        &self,
+        session_pk: i64,
+        key: &polylogue_model::read::EntryKey,
+    ) -> Result<Option<u64>> {
+        use polylogue_model::read::EntryKey;
+        let conn = self.conn()?;
+        match key {
+            EntryKey::Event { event } => Ok(conn
+                .prepare_cached(
+                    "SELECT i.seq FROM event e JOIN session_item i
+                       ON i.event_pk = e.pk AND i.session_pk = e.session_pk
+                     WHERE e.id = ?1 AND e.session_pk = ?2",
+                )?
+                .query_row(params![event, session_pk], |row| row.get::<_, i64>(0))
+                .optional()?
+                .map(counter)
+                .transpose()?),
+            EntryKey::Message { message, block } => {
+                let Some(header) = self.item_header(session_pk, message)? else {
+                    return Ok(None);
+                };
+                if block.is_none() {
+                    return Ok(Some(header));
+                }
+                let end = self.item_unit_end(session_pk, header)?;
+                Ok(self
+                    .item_window(session_pk, header..end, true, usize::MAX, |_| true)?
+                    .into_iter()
+                    .find(|stored| &stored.entry.key == key)
+                    .map(|stored| stored.seq))
+            }
+        }
+    }
+
+    /// The header entry of a message in a session's index.
+    fn item_header(&self, session_pk: i64, message: &MessageId) -> Result<Option<u64>> {
+        self.conn()?
+            .prepare_cached(
+                "SELECT i.seq FROM message m JOIN session_item i
+                   ON i.message_pk = m.pk AND i.session_pk = m.session_pk
+                 WHERE m.id = ?1 AND m.session_pk = ?2",
+            )?
+            .query_row(params![message.to_string(), session_pk], |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()?
+            .map(counter)
+            .transpose()
+    }
+
+    /// The end of the message whose header is at `header`: the next header,
+    /// or the end of the session. Events after the message come before it.
+    pub fn item_unit_end(&self, session_pk: i64, header: u64) -> Result<u64> {
+        let conn = self.conn()?;
+        let next: Option<i64> = conn
+            .prepare_cached(
+                "SELECT seq FROM session_item
+                 WHERE session_pk = ?1 AND seq > ?2 AND message_pk IS NOT NULL
+                 ORDER BY seq LIMIT 1",
+            )?
+            .query_row(params![session_pk, position(header)?], |row| row.get(0))
+            .optional()?;
+        match next {
+            Some(next) => counter(next),
+            None => Ok(self.item_entry_count(session_pk)?),
+        }
+    }
+
+    fn item_entry_count(&self, session_pk: i64) -> Result<u64> {
+        let entries: Option<i64> = self
+            .conn()?
+            .prepare_cached("SELECT entries FROM session_item_state WHERE session_pk = ?1")?
+            .query_row([session_pk], |row| row.get(0))
+            .optional()?;
+        counter(entries.unwrap_or(0))
+    }
+
+    /// A message's header entry and the end of the message: after its last
+    /// entry and the events that follow it, before the next message.
+    pub fn item_message_span(
+        &self,
+        session_pk: i64,
+        message: &MessageId,
+    ) -> Result<Option<(u64, u64)>> {
+        match self.item_header(session_pk, message)? {
+            Some(header) => Ok(Some((header, self.item_unit_end(session_pk, header)?))),
+            None => Ok(None),
+        }
+    }
+
+    /// The first (or with `forward` false, the last) entry in `range` of
+    /// one kind a reading looks up: a person's prompt, a compaction or a
+    /// microcompaction.
+    pub fn item_find(
+        &self,
+        session_pk: i64,
+        kind: ItemLookup,
+        range: std::ops::Range<u64>,
+        forward: bool,
+    ) -> Result<Option<u64>> {
+        let filter = lookup_filter(kind);
+        let order = if forward { "" } else { " DESC" };
+        let found: Option<i64> = self
+            .conn()?
+            .prepare_cached(&format!(
+                "SELECT seq FROM session_item {filter}
+                   AND session_pk = ?1 AND seq >= ?2 AND seq < ?3 ORDER BY seq{order} LIMIT 1"
+            ))?
+            .query_row(
+                params![session_pk, position(range.start)?, position(range.end)?],
+                |row| row.get(0),
+            )
+            .optional()?;
+        found.map(counter).transpose()
+    }
+
+    /// Every entry in `range` of one kind a reading looks up, in order.
+    pub fn item_find_all(
+        &self,
+        session_pk: i64,
+        kind: ItemLookup,
+        range: std::ops::Range<u64>,
+    ) -> Result<Vec<u64>> {
+        let filter = lookup_filter(kind);
+        self.conn()?
+            .prepare_cached(&format!(
+                "SELECT seq FROM session_item {filter}
+                   AND session_pk = ?1 AND seq >= ?2 AND seq < ?3 ORDER BY seq"
+            ))?
+            .query_map(
+                params![session_pk, position(range.start)?, position(range.end)?],
+                |row| row.get::<_, i64>(0),
+            )?
+            .map(|seq| counter(seq?))
+            .collect()
+    }
+
+    /// The entries of a session with a provider call ID: its call and the
+    /// call's results.
+    pub fn item_calls(&self, session_pk: i64, call_id: &str) -> Result<Vec<StoredEntry>> {
+        let conn = self.conn()?;
+        let mut statement = conn.prepare_cached(
+            "SELECT seq, class, entry FROM session_item
+             WHERE session_pk = ?1 AND call_id = ?2 ORDER BY seq",
+        )?;
+        let mut rows = statement.query(params![session_pk, call_id])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            #[cfg(any(test, feature = "fixture"))]
+            ENTRIES_DECODED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out.push(StoredEntry {
+                seq: counter(row.get(0)?)?,
+                class: class_of(row.get(1)?)?,
+                entry: decode(&row.get::<_, Vec<u8>>(2)?)?,
+            });
+        }
+        Ok(out)
     }
 
     pub fn item_versions_of(&self, session_pk: i64) -> Result<Option<ItemVersions>> {

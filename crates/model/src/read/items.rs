@@ -518,7 +518,12 @@ pub struct ReadFooter {
     pub follow: Option<ReadyCall>,
     /// Layout items emitted on this page. Selection counts belong in header figures.
     pub shown: u64,
-    /// Total layout items, only when known without scanning the selection.
+    /// For a session reading: the shown index entries before this page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<u64>,
+    /// The reading's total in the unit `position` counts (a session
+    /// reading's shown index entries), only when known without scanning the
+    /// selection.
     pub count: ValueState<u64>,
 }
 

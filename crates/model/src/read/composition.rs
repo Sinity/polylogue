@@ -5,7 +5,7 @@
 //! reported, never replaced by an older one. Tool results a later
 //! microcompaction names are then removed.
 use super::{Boundary, EntryKey, EntryKind, IndexEntry};
-use crate::{MessageId, SessionId};
+use crate::SessionId;
 
 /// A run of one session's entries, `start..end`, in a composed reading.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,20 +17,6 @@ pub struct Part {
     pub inherited: bool,
     /// For a logical reading, the link that brought this session in.
     pub joined_by: Option<String>,
-}
-
-/// The end (exclusive) of a parent's prefix through its branch point: after
-/// the branch point message's last entry, before the next message.
-pub fn prefix_through(entries: &[IndexEntry], branch_point: &MessageId) -> Option<usize> {
-    let at = entries.iter().position(|entry| {
-        entry.kind == EntryKind::Header && entry.key.message() == Some(branch_point)
-    })?;
-    Some(
-        entries[at + 1..]
-            .iter()
-            .position(|entry| entry.kind == EntryKind::Header)
-            .map_or(entries.len(), |offset| at + 1 + offset),
-    )
 }
 
 /// A place in a composed reading: the part and the entry index in that
@@ -159,34 +145,12 @@ pub fn context_difference(earlier: &ContextReading, later: &ContextReading) -> C
 }
 
 /// The context meter of a model message: the provider-reported input of the
-/// response, or else the running estimate since the last boundary.
+/// response, or else the estimate of what was in context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextMeter {
     Reported(u64),
     Estimated(u64),
     Unknown,
-}
-
-pub fn context_meter<'a>(
-    parts: &[Part],
-    entries: impl Fn(usize) -> &'a [IndexEntry] + Copy,
-    at: Place,
-) -> ContextMeter {
-    let entry = &entries(at.part)[at.entry];
-    if let Some(tokens) = entry.context_tokens {
-        return ContextMeter::Reported(tokens);
-    }
-    let context = context_at(parts, entries, at);
-    let estimate: u64 = context
-        .members
-        .iter()
-        .map(|place| entries(place.part)[place.entry].tokens_full)
-        .sum();
-    if estimate == 0 {
-        ContextMeter::Unknown
-    } else {
-        ContextMeter::Estimated(estimate)
-    }
 }
 
 /// Where a key sits in a composed reading.

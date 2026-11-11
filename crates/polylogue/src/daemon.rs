@@ -11,7 +11,6 @@ pub(crate) mod executor;
 mod failure;
 pub(crate) mod handler;
 pub(crate) mod hangup;
-pub(crate) mod items;
 pub(crate) mod lifecycle;
 pub mod measure;
 pub mod query;

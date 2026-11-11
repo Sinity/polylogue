@@ -65,38 +65,6 @@ fn entries_of(messages: &[Message]) -> Vec<IndexEntry> {
         .collect()
 }
 
-fn session(messages: usize) -> Vec<Message> {
-    (0..messages)
-        .map(|n| {
-            let n = n as u32;
-            if n.is_multiple_of(2) {
-                message(
-                    n,
-                    Role::User,
-                    Some(PromptKind::Prose),
-                    vec![text(&"word ".repeat(1 + (n as usize * 7) % 40))],
-                )
-            } else {
-                message(
-                    n,
-                    Role::Assistant,
-                    None,
-                    vec![
-                        Block::Thinking {
-                            text: Some("considering".into()),
-                            signature: None,
-                            redacted: false,
-                        },
-                        text(&"answer ".repeat(1 + (n as usize * 13) % 90)),
-                        call(&format!("c{n}"), "cargo test"),
-                        result(&format!("c{n}"), (n as usize * 31) % 400),
-                    ],
-                )
-            }
-        })
-        .collect()
-}
-
 #[test]
 fn a_message_gives_a_header_then_one_entry_per_block() {
     let message = message(
@@ -212,100 +180,171 @@ fn branches_and_harness_follow_the_options() {
     assert_eq!(shown.len(), 2);
 }
 
-#[test]
-fn page_boundaries_from_running_sums_equal_greedy_layout() {
-    for size in [0, 1, 2, 7, 40, 301] {
-        let entries = entries_of(&session(size));
-        let segment = [Segment {
-            entries: &entries,
-            inherited: false,
-        }];
-        for options in [
-            ReadOptions::default(),
-            ReadOptions {
-                tools: Some(Expansion::Full),
-                thinking: Some(Expansion::Full),
-                ..ReadOptions::default()
+/// Every kind of entry a reading can show or hide: prompts, model replies
+/// with thinking, calls that change files and calls that do not, results,
+/// attachments, harness messages, messages off the active path, a message
+/// with no blocks, and events of every boundary.
+fn varied_entries() -> Vec<IndexEntry> {
+    let attachment = Block::Image(crate::Attachment {
+        name: Some("a.png".into()),
+        ..Default::default()
+    });
+    let lookup = Block::ToolCall {
+        call_id: Some("c2".into()),
+        tool: Some("Read".into()),
+        action: ToolAction::Other,
+        input: serde_json::json!({ "path": "/home/op/a" }),
+        command: None,
+        path: Some("/home/op/a".into()),
+        run_by_script: false,
+    };
+    let thinking = Block::Thinking {
+        text: Some("synthetic thought".into()),
+        signature: None,
+        redacted: false,
+    };
+    let encrypted = Block::Thinking {
+        text: None,
+        signature: Some("sig".into()),
+        redacted: false,
+    };
+    let messages = [
+        (
+            message(0, Role::User, Some(PromptKind::Prose), vec![text("prompt")]),
+            None,
+        ),
+        (
+            message(
+                1,
+                Role::Assistant,
+                None,
+                vec![thinking, text("reply"), call("c1", "ls")],
+            ),
+            None,
+        ),
+        (message(2, Role::User, None, vec![result("c1", 30)]), None),
+        (
+            message(3, Role::Assistant, None, vec![lookup, encrypted]),
+            None,
+        ),
+        (
+            message(4, Role::User, None, vec![result("c2", 2), attachment]),
+            None,
+        ),
+        (
+            message(
+                5,
+                Role::User,
+                Some(PromptKind::Harness),
+                vec![text("injected")],
+            ),
+            None,
+        ),
+        (
+            message(6, Role::Assistant, None, vec![text("abandoned")]),
+            Some(false),
+        ),
+        (message(7, Role::Assistant, None, vec![]), None),
+        (
+            message(
+                8,
+                Role::Assistant,
+                None,
+                vec![Block::Other {
+                    type_name: "custom".into(),
+                    data: serde_json::json!({ "k": 1 }),
+                }],
+            ),
+            None,
+        ),
+    ];
+    let mut out = Vec::new();
+    for (index, (message, active_path)) in messages.iter().enumerate() {
+        let ordinals: Vec<u64> = (0..message.blocks.len() as u64).collect();
+        out.extend(message_entries(
+            message,
+            &ordinals,
+            MessagePlace {
+                active_path: *active_path,
+                branch_point: false,
             },
-            ReadOptions {
-                view: View::Dialogue,
-                ..ReadOptions::default()
-            },
-            ReadOptions {
-                tools: Some(Expansion::Full),
-                output_lines: 0,
-                ..ReadOptions::default()
-            },
-        ] {
-            let profile = FoldProfile::of(&options);
-            let sums = visible_entries(&segment, &profile);
-            for (tokens, items) in [(50, 50), (500, 50), (4000, 50), (4000, 3), (1, 1)] {
-                // Greedy layout: add whole entries in order while they fit.
-                let costs: Vec<u64> = sums.shown.iter().map(|shown| shown.cost).collect();
-                let mut start = 0;
-                let mut index_start = 0;
-                while start < costs.len() {
-                    let mut used = 0u64;
-                    let mut end = start;
-                    while end < costs.len()
-                        && end - start < items
-                        && (end == start || used + costs[end] <= tokens)
-                    {
-                        used += costs[end];
-                        end += 1;
+        ));
+        let event = match index {
+            2 => Some("compaction"),
+            4 => Some("compaction_summary"),
+            5 => Some("microcompaction"),
+            6 => Some("hook"),
+            _ => None,
+        };
+        if let Some(kind) = event {
+            out.push(event_entry(&format!("e{index}"), kind, None, 40, vec![]));
+        }
+    }
+    out
+}
+
+/// Every combination of the options that decide what a reading shows.
+fn every_profile() -> Vec<FoldProfile> {
+    let levels = [
+        None,
+        Some(Expansion::None),
+        Some(Expansion::Collapsed),
+        Some(Expansion::Full),
+    ];
+    let mut out = Vec::new();
+    for view in View::ALL {
+        for tools in levels {
+            for thinking in levels {
+                for harness in levels {
+                    for branches in [false, true] {
+                        out.push(FoldProfile::of(&ReadOptions {
+                            view,
+                            tools,
+                            thinking,
+                            harness,
+                            branches,
+                            ..ReadOptions::default()
+                        }));
                     }
-                    let from_index = sums.page_after(index_start, tokens, items);
-                    assert_eq!(
-                        from_index, end,
-                        "size {size} budget {tokens}/{items} at {start}"
-                    );
-                    start = end;
-                    index_start = from_index;
                 }
-                assert_eq!(index_start, costs.len());
             }
         }
     }
+    out
 }
 
 #[test]
-fn backward_pages_tile_the_reading_with_no_gap_or_overlap() {
-    let entries = entries_of(&session(120));
+fn entry_classes_show_exactly_what_visible_entries_shows() {
+    let entries = varied_entries();
+    let classes = entry_classes(&entries);
+    assert_eq!(classes.len(), entries.len());
     let segment = [Segment {
         entries: &entries,
         inherited: false,
     }];
-    let sums = visible_entries(&segment, &FoldProfile::of(&ReadOptions::default()));
-    for (tokens, items) in [(50, 50), (500, 7), (4000, 50)] {
-        let mut end = sums.len();
-        let mut seen = 0;
-        while end > 0 {
-            let start = sums.page_before(end, tokens, items);
-            assert!(start < end, "a backward page always makes progress");
-            assert!(end - start <= items);
-            seen += end - start;
-            end = start;
+    let mut shown_somewhere = vec![false; entries.len()];
+    for profile in every_profile() {
+        let expected: Vec<usize> = visible_entries(&segment, &profile)
+            .shown
+            .iter()
+            .map(|shown| shown.entry)
+            .collect();
+        let by_class: Vec<usize> = (0..entries.len())
+            .filter(|at| profile.shows(classes[*at]))
+            .collect();
+        assert_eq!(by_class, expected, "{profile:?}");
+        for at in expected {
+            shown_somewhere[at] = true;
         }
-        assert_eq!(seen, sums.len());
+        let mut counts = ItemCounts::default();
+        for (entry, class) in entries.iter().zip(&classes) {
+            counts.add(entry, *class);
+        }
+        assert_eq!(counts.shown(&profile), by_class.len() as u64);
     }
-}
-
-#[test]
-fn an_oversized_entry_still_makes_progress() {
-    let messages = vec![message(
-        0,
-        Role::User,
-        Some(PromptKind::Prose),
-        vec![text(&"long ".repeat(5000))],
-    )];
-    let entries = entries_of(&messages);
-    let sums = visible_entries(
-        &[Segment {
-            entries: &entries,
-            inherited: false,
-        }],
-        &FoldProfile::of(&ReadOptions::default()),
-    );
-    assert_eq!(sums.page_after(0, 10, 50), 1);
-    assert_eq!(sums.page_after(1, 10, 50), 2);
+    // Every entry is shown by some reading (the raw view shows them all).
+    assert!(shown_somewhere.iter().all(|shown| *shown));
+    for class in &classes {
+        assert_eq!(EntryClass::from_bits(class.bits()), Some(*class));
+    }
 }

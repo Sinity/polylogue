@@ -1,4 +1,5 @@
 use super::*;
+use crate::MessageId;
 use crate::{
     Block, Message, PromptKind, Role, Usage,
     read::{MessagePlace, event_entry, message_entries},
@@ -51,17 +52,6 @@ fn whole(session: &str, entries: &[IndexEntry]) -> Part {
     }
 }
 
-#[test]
-fn a_prefix_ends_after_the_branch_point_message() {
-    let parent = entries("parent", 5);
-    let branch = MessageId::parse("test:parent:m2").unwrap();
-    assert_eq!(prefix_through(&parent, &branch), Some(6));
-    let missing = MessageId::parse("test:parent:m9").unwrap();
-    assert_eq!(prefix_through(&parent, &missing), None);
-}
-
-/// Six messages, a compaction after the third, then its summary event and
-/// three more messages.
 fn compacted() -> Vec<IndexEntry> {
     let mut out = entries("one", 3);
     out.push(event_entry("boundary", "compaction", None, 10, Vec::new()));
@@ -153,33 +143,6 @@ fn context_at_a_minus_left_plus_entered_is_context_at_b() {
             assert_eq!(rebuilt, expected, "{a}..{b}");
         }
     }
-}
-
-#[test]
-fn the_meter_is_reported_then_estimated_never_zero_for_unknown() {
-    let mut reported = message("one", 1, Role::Assistant);
-    reported.usage.input = Some(1234);
-    let mut entries = message_entries(&reported, &[0], MessagePlace::default());
-    entries.extend(message_entries(
-        &message("one", 2, Role::Assistant),
-        &[0],
-        MessagePlace::default(),
-    ));
-    let parts = [whole("one", &entries)];
-    assert_eq!(
-        context_meter(&parts, |_| &entries, Place { part: 0, entry: 0 }),
-        ContextMeter::Reported(1234)
-    );
-    assert!(matches!(
-        context_meter(&parts, |_| &entries, Place { part: 0, entry: 2 }),
-        ContextMeter::Estimated(tokens) if tokens > 0
-    ));
-    let empty = [event_entry("e", "compaction", None, 0, Vec::new())];
-    let parts = [whole("one", &empty)];
-    assert_eq!(
-        context_meter(&parts, |_| &empty, Place { part: 0, entry: 0 }),
-        ContextMeter::Unknown
-    );
 }
 
 #[test]

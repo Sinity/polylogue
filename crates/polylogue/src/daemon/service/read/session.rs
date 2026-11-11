@@ -1,22 +1,25 @@
 //! Paged session reads over the session item index. A page is a run of
-//! shown entries chosen by running token sums; only the bodies of that
-//! page's messages and events are read. A continuation names its first
-//! entry by key and binds the rewrite version of every composed session,
-//! so appends never stale it and rewrites always do. Nothing is written.
+//! shown entries read in windows from its anchor; where it sits among the
+//! shown entries, and the counts a reading shows, come from the counts the
+//! writer stores per entry class, so a page reads its own entries and the
+//! bodies of its messages and events, not the entries before it. A
+//! continuation names its first entry by key and binds the rewrite version
+//! of every composed session, so appends never stale it and rewrites always
+//! do. Nothing is written.
 use super::super::{Daemon, Failure};
 use super::ReadRequest;
 use super::records::{SelectedRecord, message_record};
 use super::{evidence, output};
-use crate::daemon::items::CachedIndex;
 use polylogue_model::{MessageId, Reference, SessionId, bundle::Record, read::*};
 use polylogue_store::Reader;
+use polylogue_store::items::{ItemLookup, ItemVersions};
 use polylogue_store::read::limit::ReadLimit;
 use std::collections::HashSet;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
 mod entries;
-use entries::ShownEntries;
+use entries::{PageEntry, ShownEntries};
 
 /// What a session read covers.
 pub(super) struct Scope {
@@ -82,17 +85,47 @@ pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, 
     })
 }
 
-/// One composed session reading: its parts, each with the cached index of
-/// its session, and the link problems found while composing.
+/// What a reading needs of one composed session before reading its
+/// entries: where its index is, its counters, and its counts.
+pub(super) struct SessionIndex {
+    pub pk: i64,
+    pub versions: ItemVersions,
+    pub entries: u64,
+    pub counts: ItemCounts,
+}
+
+/// A session's index, or `None` when the session is not stored.
+fn session_index(
+    reader: &Reader<'_>,
+    session: &SessionId,
+) -> Result<Option<Arc<SessionIndex>>, Failure> {
+    Ok(reader.item_state(session)?.map(|state| {
+        Arc::new(SessionIndex {
+            pk: state.session_pk,
+            versions: state.versions,
+            entries: state.entries,
+            counts: state.counts,
+        })
+    }))
+}
+
+/// Cards shown after one entry: a fork at its branch point, a spawned
+/// session at its call.
+struct Anchored {
+    session: SessionId,
+    seq: usize,
+    cards: Vec<ReadItem>,
+}
+
+/// One composed session reading: its parts, each with the index of its
+/// session, and the link problems found while composing.
 struct Composed {
     parts: Vec<Part>,
-    indexes: Vec<Arc<CachedIndex>>,
+    indexes: Vec<Arc<SessionIndex>>,
     issues: Vec<ParentIssue>,
     /// Lines shown before an entry (a `continues` line at a continuation).
     before: std::collections::HashMap<EntryKey, Vec<ReadItem>>,
-    /// Cards shown after an entry (a fork at its branch point, a spawned
-    /// session at its call).
-    after: std::collections::HashMap<EntryKey, Vec<ReadItem>>,
+    after: Vec<Anchored>,
 }
 /// A part that reads a spawned session inline.
 fn spawned(part: &Part) -> bool {
@@ -102,8 +135,49 @@ fn spawned(part: &Part) -> bool {
 }
 
 impl Composed {
-    fn entries(&self, part: usize) -> &[IndexEntry] {
-        &self.indexes[part].entries
+    /// The counts of a part's session before `seq`.
+    fn counts_at(
+        &self,
+        reader: &Reader<'_>,
+        part: usize,
+        seq: usize,
+    ) -> Result<ItemCounts, Failure> {
+        entries::counts_before(reader, &self.indexes[part], seq)
+    }
+    /// The entries of a part's session in `start..end` whose class `which`
+    /// accepts.
+    fn count(
+        &self,
+        reader: &Reader<'_>,
+        part: usize,
+        (start, end): (usize, usize),
+        which: impl Fn(EntryClass) -> bool,
+    ) -> Result<u64, Failure> {
+        if start >= end {
+            return Ok(0);
+        }
+        Ok(self
+            .counts_at(reader, part, end)?
+            .since(&self.counts_at(reader, part, start)?)
+            .count(which))
+    }
+    /// The entry of a part's session at `seq`.
+    fn entry(
+        &self,
+        reader: &Reader<'_>,
+        part: usize,
+        seq: usize,
+    ) -> Result<Option<IndexEntry>, Failure> {
+        Ok(reader
+            .item_window(
+                self.indexes[part].pk,
+                seq as u64..seq as u64 + 1,
+                true,
+                1,
+                |_| true,
+            )?
+            .pop()
+            .map(|stored| stored.entry))
     }
     /// Which parts share a context with `part`: an inline spawned session
     /// has its own; the reading's other parts share one.
@@ -152,12 +226,24 @@ impl Composed {
     }
 }
 
+/// A session's call entry with a provider call ID, and where it sits.
+fn spawning_call(
+    reader: &Reader<'_>,
+    index: &SessionIndex,
+    call: &str,
+) -> Result<Option<(usize, IndexEntry)>, Failure> {
+    Ok(reader
+        .item_calls(index.pk, call)?
+        .into_iter()
+        .find(|stored| stored.entry.kind == EntryKind::Call)
+        .map(|stored| (stored.seq as usize, stored.entry)))
+}
+
 /// The parent prefix of `session` through its branch point, as parts of
 /// parent sessions, all marked inherited. The walk is iterative over
 /// sessions already on the path; problems are reported, never resolved by
 /// choosing one link.
 fn prefix(
-    d: &Daemon,
     reader: &Reader<'_>,
     session: &SessionId,
     composed: &mut Composed,
@@ -238,14 +324,14 @@ fn prefix(
     }
     // Compose from the oldest ancestor down, cutting each at the branch
     // point its child continues from.
-    let mut parts: Vec<(Part, Arc<CachedIndex>)> = Vec::new();
+    let mut parts: Vec<(Part, Arc<SessionIndex>)> = Vec::new();
     for (at, (parent, branch_point)) in chain.iter().enumerate().rev() {
         let child = if at == 0 {
             session.clone()
         } else {
             chain[at - 1].0.clone()
         };
-        let Some(index) = d.warm.items.get(reader, parent)? else {
+        let Some(index) = session_index(reader, parent)? else {
             composed.issues.push(ParentIssue::MissingParent {
                 child,
                 parent: parent.clone(),
@@ -257,23 +343,24 @@ fn prefix(
             Part {
                 session: parent.clone(),
                 start: 0,
-                end: index.entries.len(),
+                end: index.entries as usize,
                 inherited: true,
                 joined_by: None,
             },
             index,
         ));
         if let Some(anchor) = branch_point {
-            let cut = MessageId::parse(anchor).ok().and_then(|anchor| {
-                parts
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find_map(|(which, (part, index))| {
-                        prefix_through(&index.entries[part.start..part.end], &anchor)
-                            .map(|end| (which, part.start + end))
-                    })
-            });
+            let mut cut = None;
+            if let Ok(anchor) = MessageId::parse(anchor) {
+                for (which, (part, index)) in parts.iter().enumerate().rev() {
+                    if let Some((header, end)) = reader.item_message_span(index.pk, &anchor)?
+                        && (part.start..part.end).contains(&(header as usize))
+                    {
+                        cut = Some((which, (end as usize).min(part.end)));
+                        break;
+                    }
+                }
+            }
             match cut {
                 Some((which, end)) => {
                     parts.truncate(which + 1);
@@ -304,76 +391,60 @@ fn compose(
     options: &ReadOptions,
     target: &str,
 ) -> Result<Composed, Failure> {
-    let around = options.around.unwrap_or(0);
-    let own = d
-        .warm
-        .items
-        .get(reader, &scope.session)?
+    let around = options.around.unwrap_or(0) as usize;
+    let own = session_index(reader, &scope.session)?
         .ok_or_else(|| Failure::new("not_found", format!("no session {}", scope.session)))?;
     let mut composed = Composed {
         parts: Vec::new(),
         indexes: Vec::new(),
         issues: Vec::new(),
         before: Default::default(),
-        after: Default::default(),
+        after: Vec::new(),
     };
     // The prefix is composed always: hidden, it is one `continues` line.
     if scope.range.is_none() {
-        prefix(d, reader, &scope.session, &mut composed)?;
+        prefix(reader, &scope.session, &mut composed)?;
     }
-    let headers: Vec<usize> = if around > 0 && scope.range.is_some() {
-        own.entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| entry.kind == EntryKind::Header)
-            .map(|(at, _)| at)
-            .collect()
-    } else {
-        Vec::new()
-    };
     let (start, end) = match &scope.range {
-        None => (0, own.entries.len()),
+        None => (0, own.entries as usize),
         Some((first, last)) => {
-            let start = own
-                .places
-                .get(&EntryKey::header(first))
-                .copied()
-                .ok_or_else(|| {
-                    Failure::new(
-                        "not_found",
-                        format!("message {first} is not in the reading"),
-                    )
-                })?;
-            let last_at = own
-                .places
-                .get(&EntryKey::header(last))
-                .copied()
-                .ok_or_else(|| {
-                    Failure::new("not_found", format!("message {last} is not in the reading"))
-                })?;
+            let header = |message: &MessageId| -> Result<usize, Failure> {
+                reader
+                    .item_place(own.pk, &EntryKey::header(message))?
+                    .map(|seq| seq as usize)
+                    .ok_or_else(|| {
+                        Failure::new(
+                            "not_found",
+                            format!("message {message} is not in the reading"),
+                        )
+                    })
+            };
+            let start = header(first)?;
+            let last_at = header(last)?;
             if last_at < start {
                 return Err(Failure::new(
                     "bad_request",
                     "a message range ends before it starts",
                 ));
             }
-            // `--around N`: N messages either side.
+            // `--around N`: N messages either side, as far as there are.
             let (start, last_at) = if around > 0 {
-                let first = headers.partition_point(|at| *at < start);
-                let last = headers.partition_point(|at| *at <= last_at);
-                let widened = around as usize;
+                let headers = |range: std::ops::Range<u64>, forward: bool| {
+                    reader.item_window(own.pk, range, forward, around, EntryClass::is_header)
+                };
+                let earlier = headers(0..start as u64, false)?;
+                let later = headers(last_at as u64 + 1..own.entries, true)?;
                 (
-                    headers[first.saturating_sub(widened)],
-                    headers[(last + widened).min(headers.len()) - 1],
+                    earlier.last().map_or(start, |stored| stored.seq as usize),
+                    later.last().map_or(last_at, |stored| stored.seq as usize),
                 )
             } else {
                 (start, last_at)
             };
-            let end = own.entries[last_at + 1..]
-                .iter()
-                .position(|entry| entry.kind == EntryKind::Header)
-                .map_or(own.entries.len(), |offset| last_at + 1 + offset);
-            (start, end)
+            (
+                start,
+                reader.item_unit_end(own.pk, last_at as u64)? as usize,
+            )
         }
     };
     composed.parts.push(Part {
@@ -423,17 +494,20 @@ fn children(
                     composed.issues.push(ParentIssue::Cycle { session: child });
                     continue;
                 }
-                let Some(child_index) = d.warm.items.get(reader, &child)? else {
+                let Some(child_index) = session_index(reader, &child)? else {
                     composed.issues.push(ParentIssue::MissingParent {
                         child,
                         parent: session.clone(),
                     });
                     continue;
                 };
-                if let Some(first) = child_index.entries.first() {
+                let first = reader
+                    .item_window(child_index.pk, 0..child_index.entries, true, 1, |_| true)?
+                    .pop();
+                if let Some(first) = first {
                     composed
                         .before
-                        .entry(first.key.clone())
+                        .entry(first.entry.key)
                         .or_default()
                         .push(ReadItem {
                             source: Source::record(format!("session:{child}")),
@@ -447,7 +521,7 @@ fn children(
                 composed.parts.push(Part {
                     session: child,
                     start: 0,
-                    end: child_index.entries.len(),
+                    end: child_index.entries as usize,
                     inherited: false,
                     joined_by: Some(format!("{}:{}", link.kind, link.how)),
                 });
@@ -458,31 +532,37 @@ fn children(
                 continue;
             }
             // A card at the branch point or the spawning call.
-            let anchor = match link.kind.as_str() {
-                "subagent" => link.spawning_call.as_ref().and_then(|call| {
-                    index
-                        .entries
-                        .iter()
-                        .find(|entry| {
-                            entry.kind == EntryKind::Call && entry.call_id.as_deref() == Some(call)
-                        })
-                        .map(|entry| entry.key.clone())
-                }),
-                _ => link
-                    .branch_point
-                    .as_deref()
-                    .and_then(|point| MessageId::parse(point).ok())
-                    .and_then(|point| {
-                        let end = prefix_through(&index.entries, &point)?;
-                        index
-                            .entries
-                            .get(end.checked_sub(1)?)
-                            .map(|entry| entry.key.clone())
-                    }),
+            let (anchor, call) = match link.kind.as_str() {
+                "subagent" => match link.spawning_call.as_deref() {
+                    Some(call) => match spawning_call(reader, &index, call)? {
+                        Some((seq, entry)) => (Some(seq), Some(entry)),
+                        None => (None, None),
+                    },
+                    None => (None, None),
+                },
+                _ => {
+                    let point = link
+                        .branch_point
+                        .as_deref()
+                        .and_then(|point| MessageId::parse(point).ok());
+                    let end = match point {
+                        Some(point) => reader.item_message_span(index.pk, &point)?,
+                        None => None,
+                    };
+                    (
+                        end.and_then(|(_, end)| end.checked_sub(1))
+                            .map(|seq| seq as usize),
+                        None,
+                    )
+                }
             };
             let Some(anchor) = anchor else { continue };
-            let card = card(d, reader, &link, &child, &index, view, target)?;
-            composed.after.entry(anchor).or_default().push(card);
+            let card = card(d, reader, &link, &child, call.as_ref(), view, target)?;
+            composed.after.push(Anchored {
+                session: session.clone(),
+                seq: anchor,
+                cards: vec![card],
+            });
         }
     }
     Ok(())
@@ -528,38 +608,36 @@ fn inline_spawns(
             let Ok(child) = SessionId::parse(&link.child) else {
                 continue;
             };
-            let Some(entry) = link.spawning_call.as_deref().and_then(|call| {
-                index.entries[part.start..part.end]
-                    .iter()
-                    .position(|entry| {
-                        entry.kind == EntryKind::Call && entry.call_id.as_deref() == Some(call)
-                    })
-                    .map(|offset| part.start + offset)
-            }) else {
+            let call = match link.spawning_call.as_deref() {
+                Some(call) => spawning_call(reader, &index, call)?,
+                None => None,
+            };
+            let Some((entry, call)) = call.filter(|(seq, _)| (part.start..part.end).contains(seq))
+            else {
                 continue;
             };
-            spawned.push((entry, child, link));
+            spawned.push((entry, call, child, link));
         }
-        spawned.sort_by_key(|(entry, _, _)| *entry);
+        spawned.sort_by_key(|(entry, _, _, _)| *entry);
         // (part, its index, its spawn level, whether its spawns are placed)
-        let mut pieces: Vec<(Part, Arc<CachedIndex>, u32, bool)> = Vec::new();
+        let mut pieces: Vec<(Part, Arc<SessionIndex>, u32, bool)> = Vec::new();
         let mut cut = part.start;
-        for (entry, child, link) in spawned {
+        for (entry, call, child, link) in spawned {
             still_wanted()?;
             // The first level's cards come from composition; deeper levels
             // place their own.
             if level > 0 {
-                let card = card(d, reader, &link, &child, &index, view, target)?;
-                composed
-                    .after
-                    .entry(index.entries[entry].key.clone())
-                    .or_default()
-                    .push(card);
+                let card = card(d, reader, &link, &child, Some(&call), view, target)?;
+                composed.after.push(Anchored {
+                    session: part.session.clone(),
+                    seq: entry,
+                    cards: vec![card],
+                });
             }
             if level >= deepest || !seen.insert(child.clone()) {
                 continue;
             }
-            let Some(child_index) = d.warm.items.get(reader, &child)? else {
+            let Some(child_index) = session_index(reader, &child)? else {
                 continue;
             };
             pieces.push((
@@ -572,7 +650,7 @@ fn inline_spawns(
                 level,
                 true,
             ));
-            let end = child_index.entries.len();
+            let end = child_index.entries as usize;
             pieces.push((
                 Part {
                     session: child,
@@ -625,20 +703,20 @@ fn inline_spawns(
 /// The logical header of `root:REF`: the root, the physical sessions the
 /// reading joins in order, and its own and inherited messages. Spawned
 /// sessions read inline are not members.
-fn logical_header(root: &SessionId, composed: &Composed) -> HeaderKind {
-    let messages = |inherited: bool| -> u64 {
-        composed
-            .parts
-            .iter()
-            .enumerate()
-            .filter(|(_, part)| part.inherited == inherited && !spawned(part))
-            .map(|(at, part)| {
-                composed.entries(at)[part.start..part.end]
-                    .iter()
-                    .filter(|entry| entry.kind == EntryKind::Header)
-                    .count() as u64
-            })
-            .sum()
+fn logical_header(
+    reader: &Reader<'_>,
+    root: &SessionId,
+    composed: &Composed,
+) -> Result<HeaderKind, Failure> {
+    let messages = |inherited: bool| -> Result<u64, Failure> {
+        let mut total = 0;
+        for (at, part) in composed.parts.iter().enumerate() {
+            if part.inherited == inherited && !spawned(part) {
+                total +=
+                    composed.count(reader, at, (part.start, part.end), EntryClass::is_header)?;
+            }
+        }
+        Ok(total)
     };
     let mut physical: Vec<SessionId> = Vec::new();
     for part in &composed.parts {
@@ -646,12 +724,12 @@ fn logical_header(root: &SessionId, composed: &Composed) -> HeaderKind {
             physical.push(part.session.clone());
         }
     }
-    HeaderKind::Logical {
+    Ok(HeaderKind::Logical {
         root: root.clone(),
         physical_sessions: physical,
-        own_messages: ValueState::known(messages(false)),
-        inherited_messages: ValueState::known(messages(true)),
-    }
+        own_messages: ValueState::known(messages(false)?),
+        inherited_messages: ValueState::known(messages(true)?),
+    })
 }
 
 /// The card for a fork or a spawned session: a delegation card for a
@@ -662,7 +740,7 @@ fn card(
     reader: &Reader<'_>,
     link: &polylogue_store::items::SessionLink,
     child: &SessionId,
-    parent: &CachedIndex,
+    call: Option<&IndexEntry>,
     view: View,
     target: &str,
 ) -> Result<ReadItem, Failure> {
@@ -683,14 +761,7 @@ fn card(
         })
         .map_err(Failure::from)?;
     let kind = if link.kind == "subagent" {
-        let objective = link
-            .spawning_call
-            .as_deref()
-            .and_then(|call| {
-                parent.entries.iter().find(|entry| {
-                    entry.kind == EntryKind::Call && entry.call_id.as_deref() == Some(call)
-                })
-            })
+        let objective = call
             .and_then(|entry| entry.target.clone())
             .map_or(ValueState::NotRecorded, ValueState::known);
         Card::Delegation {
@@ -732,14 +803,14 @@ fn card(
 struct Runs {
     /// (part, first entry, end entry) for each segment.
     spans: Vec<(usize, usize, usize)>,
-    evicted: Vec<Place>,
+    evicted: Vec<EntryKey>,
     context: Option<(bool, Option<String>)>,
     /// A context difference: `evicted` is what left between the two places
     /// and the spans are what entered.
     left: bool,
 }
 
-fn runs(composed: &Composed, options: &ReadOptions) -> Result<Runs, Failure> {
+fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Result<Runs, Failure> {
     if options.view != View::Context || composed.parts.is_empty() {
         return Ok(Runs {
             spans: composed
@@ -754,7 +825,27 @@ fn runs(composed: &Composed, options: &ReadOptions) -> Result<Runs, Failure> {
             left: false,
         });
     }
-    let entries = |part: usize| composed.entries(part);
+    // The context view shows what the model had up to its place: it reads
+    // the composed entries up to there.
+    let loaded: Vec<Vec<IndexEntry>> = composed
+        .parts
+        .iter()
+        .zip(&composed.indexes)
+        .map(|(part, index)| {
+            Ok(reader
+                .item_window(index.pk, 0..part.end as u64, true, usize::MAX, |_| true)?
+                .into_iter()
+                .map(|stored| stored.entry)
+                .collect())
+        })
+        .collect::<Result<_, Failure>>()?;
+    let entries = |part: usize| loaded[part].as_slice();
+    let keys = |places: &[Place]| -> Vec<EntryKey> {
+        places
+            .iter()
+            .map(|place| loaded[place.part][place.entry].key.clone())
+            .collect()
+    };
     let last = composed.parts.len() - 1;
     let latest = Place {
         part: last,
@@ -776,7 +867,7 @@ fn runs(composed: &Composed, options: &ReadOptions) -> Result<Runs, Failure> {
     let Some(diff) = &options.diff else {
         return Ok(Runs {
             spans: spans(&context.members),
-            evicted: context.evicted,
+            evicted: keys(&context.evicted),
             context: Some((context.complete, context.reason)),
             left: false,
         });
@@ -833,7 +924,7 @@ fn runs(composed: &Composed, options: &ReadOptions) -> Result<Runs, Failure> {
     let difference = context_difference(&earlier, &later);
     Ok(Runs {
         spans: spans(&difference.entered),
-        evicted: difference.left,
+        evicted: keys(&difference.left),
         context: Some((later.complete, later.reason)),
         left: true,
     })
@@ -858,12 +949,6 @@ fn still_wanted() -> Result<(), Failure> {
         limit.check()?;
     }
     Ok(())
-}
-
-/// A run of shown entries from one session, with their keys.
-struct PageEntries {
-    part: usize,
-    entries: Vec<usize>,
 }
 
 pub(super) fn page(
@@ -925,48 +1010,60 @@ pub(super) fn page(
         ));
     }
     still_wanted()?;
-    let runs = runs(&composed, options)?;
+    let runs = runs(reader, &composed, options)?;
     still_wanted()?;
-    let shown = ShownEntries::new(d, &composed, &runs, FoldProfile::of(options));
+    let shown = ShownEntries::new(reader, &composed, &runs, FoldProfile::of(options))?;
     still_wanted()?;
-    // The first shown entry at or after a key, and whether it is the key.
-    let locate = |key: &EntryKey| -> Option<(usize, bool)> {
-        let (part, entry) = composed
-            .parts
-            .iter()
-            .zip(&composed.indexes)
-            .enumerate()
-            .find_map(|(at, (part, index))| {
-                index
-                    .places
-                    .get(key)
-                    .filter(|entry| (part.start..part.end).contains(*entry))
-                    .map(|entry| (at, *entry))
-            })?;
-        let at = shown.partition_point(|place| place < (part, entry));
-        Some((at, shown.get(at) == Some((part, entry))))
+    // Where a key sits in the reading: the first part that holds it.
+    let locate = |key: &EntryKey| -> Result<Option<(usize, usize)>, Failure> {
+        for (at, (part, index)) in composed.parts.iter().zip(&composed.indexes).enumerate() {
+            if let Some(seq) = reader.item_place(index.pk, key)?
+                && (part.start..part.end).contains(&(seq as usize))
+            {
+                return Ok(Some((at, seq as usize)));
+            }
+        }
+        Ok(None)
     };
+    let inherited_messages = if !options.inherited && options.view != View::Context {
+        let mut total = 0;
+        for (at, part) in composed.parts.iter().enumerate() {
+            if part.inherited {
+                total +=
+                    composed.count(reader, at, (part.start, part.end), EntryClass::is_header)?;
+            }
+        }
+        total
+    } else {
+        0
+    };
+    let lead = lead_items(
+        &composed,
+        &runs,
+        options,
+        target,
+        &read_session,
+        inherited_messages,
+    );
     let tokens = limits.tokens.get();
     let items = limits.items.get();
-    let (start, end) = match &opened {
-        None if options.latest => (shown.page_before(shown.len(), tokens, items), shown.len()),
+    let (page_entries, next_entry): (Vec<PageEntry>, Option<PageEntry>) = match &opened {
+        None if options.latest => (shown.page_before(shown.end(), tokens, items)?, None),
         // The first page's lead lines spend its budget first; when they
         // use all of it, the page is those lines alone.
         None => {
-            let lead = lead_items(&composed, &runs, options, target, &read_session);
             let lead_tokens: u64 = lead
                 .iter()
                 .map(|item| {
                     serde_json::to_string(item).map_or(0, |text| estimate_tokens(&text) as u64)
                 })
                 .sum();
-            if !lead.is_empty() && (lead_tokens >= tokens || lead.len() >= items) {
-                (0, 0)
+            if lead_tokens >= tokens || lead.len() >= items {
+                (Vec::new(), shown.first_at(shown.start())?)
             } else {
-                (
-                    0,
-                    shown.page_after(0, tokens - lead_tokens, items - lead.len()),
-                )
+                let page =
+                    shown.page_after(shown.start(), tokens - lead_tokens, items - lead.len())?;
+                (page.entries, page.next)
             }
         }
         Some(opened) => {
@@ -976,37 +1073,48 @@ pub(super) fn page(
                     "the cursor names a row position, not a session entry",
                 ));
             };
-            let (at, exact) = locate(key).ok_or_else(|| {
+            let place = locate(key)?.ok_or_else(|| {
                 Failure::new(
                     "stale_cursor",
                     "the cursor's entry is no longer in the reading",
                 )
             })?;
+            let after = (place.0, place.1 + 1);
             match opened.direction {
                 // The rest of an entry too large for one page is a page of
                 // its own.
                 ReadDirection::After if inside.is_some() => {
-                    if !exact {
-                        return Err(Failure::new(
-                            "stale_cursor",
-                            "the cursor's entry is no longer shown",
-                        ));
-                    }
-                    (at, at + 1)
+                    let entry = shown
+                        .first_at(place)?
+                        .filter(|entry| entry.place() == place)
+                        .ok_or_else(|| {
+                            Failure::new("stale_cursor", "the cursor's entry is no longer shown")
+                        })?;
+                    (vec![entry], shown.first_at(after)?)
                 }
-                ReadDirection::After => (at, shown.page_after(at, tokens, items)),
-                ReadDirection::Before => (shown.page_before(at, tokens, items), at),
+                ReadDirection::After => {
+                    let page = shown.page_after(place, tokens, items)?;
+                    (page.entries, page.next)
+                }
+                ReadDirection::Before => (
+                    shown.page_before(place, tokens, items)?,
+                    shown.first_at(place)?,
+                ),
                 ReadDirection::Past => {
-                    let at = at + usize::from(exact);
-                    (at, shown.page_after(at, tokens, items))
+                    let page = shown.page_after(after, tokens, items)?;
+                    (page.entries, page.next)
                 }
             }
         }
     };
+    still_wanted()?;
+    let start = match page_entries.first().or(next_entry.as_ref()) {
+        Some(first) => shown.position(first.place())?,
+        None => shown.len(),
+    };
     let mut header = header(reader, &scope.session, target, options)?;
-    header.zone = Some(operation.clock.day.zone_name().to_owned());
     if scope.logical {
-        header.kind = logical_header(&scope.session, &composed);
+        header.kind = logical_header(reader, &scope.session, &composed)?;
     }
     let mut items_out: Vec<ReadItem> = Vec::new();
     // Lead lines open the reading: on its first page, and on a backward
@@ -1016,15 +1124,14 @@ pub(super) fn page(
     });
     // A forward page at the start that left out the lead lines has them
     // on the page before it.
-    let lead_before = start == 0
-        && continues_forward
-        && !lead_items(&composed, &runs, options, target, &read_session).is_empty();
+    let lead_before = start == 0 && continues_forward;
     if start == 0 && !continues_forward {
-        items_out.extend(lead_items(&composed, &runs, options, target, &read_session));
+        items_out.extend(lead);
     }
-    let selected = shown.range(start..end);
-    let mut laid = lay_out(reader, d, &composed, &runs, &selected, options)?;
-    decorate(reader, &composed, &shown, start, &mut laid, options)?;
+    let mut laid = lay_out(reader, d, &composed, &runs, &page_entries, options)?;
+    still_wanted()?;
+    decorate(reader, &composed, &shown, &page_entries, &mut laid, options)?;
+    still_wanted()?;
     // Whole entries up to the transfer size; an entry too large to travel
     // alone is replaced by the ready call that reads its block in pages.
     let room = limits.bytes.get();
@@ -1071,7 +1178,7 @@ pub(super) fn page(
     } else {
         0..count
     };
-    let (start, end) = (start + keep.start, start + keep.end);
+    let start = start + keep.start as u64;
     // An entry continued inside, or too large for the page alone, is sent
     // as fragments of its items' encodings; the page ends where they stop.
     let inside = opened.as_ref().and_then(|opened| match &opened.position {
@@ -1084,10 +1191,8 @@ pub(super) fn page(
             continue;
         }
         if inside.is_some() || (keep.len() == 1 && sizes[offset] > room) {
-            let (part, entry) = shown
-                .get(start - keep.start + offset)
-                .expect("selected entry");
-            let kind = match composed.entries(part)[entry].key {
+            let entry = &page_entries[offset];
+            let kind = match entry.entry.key {
                 EntryKey::Message { .. } => ReadRecordKind::Message,
                 EntryKey::Event { .. } => ReadRecordKind::Event,
             };
@@ -1102,35 +1207,39 @@ pub(super) fn page(
                 tokens,
                 &mut items_out,
             )?
-            .map(|place| (part, entry, place));
+            .map(|place| (entry.entry.key.clone(), place));
         } else {
             items_out.extend(entry_items);
         }
     }
-    let call = |position: usize, direction: ReadDirection| -> Result<ReadyCall, Failure> {
-        let (part, entry) = shown.get(position).expect("cursor entry");
+    let kept = &page_entries[keep.clone()];
+    // The entry after the page: the first one left out, or the one after
+    // every entry read.
+    let after_page = page_entries.get(keep.end).or(next_entry.as_ref());
+    let call = |entry: &PageEntry, direction: ReadDirection| -> Result<ReadyCall, Failure> {
         let next = PageCursor {
             target: target.clone(),
             options: digest.clone(),
             variants: request.options.variants.clone(),
             versions,
             position: PagePosition::Entry {
-                key: composed.entries(part)[entry].key.clone(),
+                key: entry.entry.key.clone(),
                 inside: None,
             },
             direction,
         };
         super::next_call(d, request, next.seal(&key), super::deadline(operation))
     };
+    let finished = unfinished.is_none();
     let next = match unfinished {
-        Some((part, entry, place)) => {
+        Some((entry_key, place)) => {
             let cursor = PageCursor {
                 target: target.clone(),
                 options: digest.clone(),
                 variants: request.options.variants.clone(),
                 versions,
                 position: PagePosition::Entry {
-                    key: composed.entries(part)[entry].key.clone(),
+                    key: entry_key,
                     inside: Some(place),
                 },
                 direction: ReadDirection::After,
@@ -1142,21 +1251,25 @@ pub(super) fn page(
                 super::deadline(operation),
             )?)
         }
-        None => (end < shown.len())
-            .then(|| call(end, ReadDirection::After))
+        None => after_page
+            .map(|entry| call(entry, ReadDirection::After))
             .transpose()?,
     };
+    let first = kept.first().or(after_page);
     let footer = ReadFooter {
         estimator: Some(TOKEN_ESTIMATOR.into()),
-        follow: (unfinished.is_none() && end == shown.len() && end > 0)
-            .then(|| call(end - 1, ReadDirection::Past))
-            .transpose()?,
+        follow: match (finished && after_page.is_none(), kept.last()) {
+            (true, Some(last)) => Some(call(last, ReadDirection::Past)?),
+            _ => None,
+        },
         next,
-        previous: ((start > 0 || lead_before) && start < shown.len())
-            .then(|| call(start, ReadDirection::Before))
-            .transpose()?,
+        previous: match first {
+            Some(first) if start > 0 || lead_before => Some(call(first, ReadDirection::Before)?),
+            _ => None,
+        },
         shown: items_out.len() as u64,
-        count: ValueState::Unknown { reason: None },
+        position: Some(start),
+        count: ValueState::known(shown.len()),
         ..ReadFooter::default()
     };
     let positions = reader.change_position()?;
@@ -1215,6 +1328,7 @@ fn lead_items(
     options: &ReadOptions,
     target: &str,
     session: &polylogue_model::Session,
+    inherited: u64,
 ) -> Vec<ReadItem> {
     // The read session's card opens the reading, with whether its lineage
     // composed without a problem.
@@ -1243,32 +1357,21 @@ fn lead_items(
             },
         });
     }
-    if !options.inherited && options.view != View::Context {
-        let inherited: u64 = composed
-            .parts
-            .iter()
-            .enumerate()
-            .filter(|(_, part)| part.inherited)
-            .map(|(at, part)| {
-                composed.entries(at)[part.start..part.end]
-                    .iter()
-                    .filter(|entry| entry.kind == EntryKind::Header)
-                    .count() as u64
-            })
-            .sum();
-        if let Some(parent) = composed.parts.iter().rev().find(|part| part.inherited) {
-            out.push(ReadItem {
-                source: source.clone(),
-                kind: ItemKind::Indicator {
-                    indicator: IndicatorKind::Continues,
-                    text: format!(
-                        "continues {} ({inherited} earlier messages; --show inherited to show)",
-                        parent.session
-                    ),
-                    expand: None,
-                },
-            });
-        }
+    if !options.inherited
+        && options.view != View::Context
+        && let Some(parent) = composed.parts.iter().rev().find(|part| part.inherited)
+    {
+        out.push(ReadItem {
+            source: source.clone(),
+            kind: ItemKind::Indicator {
+                indicator: IndicatorKind::Continues,
+                text: format!(
+                    "continues {} ({inherited} earlier messages; --show inherited to show)",
+                    parent.session
+                ),
+                expand: None,
+            },
+        });
     }
     if let Some((complete, reason)) = &runs.context {
         out.push(ReadItem {
@@ -1280,9 +1383,9 @@ fn lead_items(
                 continue_call: None,
             },
         });
-        for place in &runs.evicted {
+        for key in &runs.evicted {
             out.push(ReadItem {
-                source: Source::record(composed.entries(place.part)[place.entry].key.reference()),
+                source: Source::record(key.reference()),
                 kind: ItemKind::Omission {
                     count: ValueState::known(1),
                     unit: "message".into(),
@@ -1453,7 +1556,7 @@ fn lay_out(
     d: &Daemon,
     composed: &Composed,
     reading: &Runs,
-    page: &[(usize, usize)],
+    page: &[PageEntry],
     options: &ReadOptions,
 ) -> Result<Vec<Vec<ReadItem>>, Failure> {
     // A raw reading is the stored records, which `decorate` adds.
@@ -1462,18 +1565,15 @@ fn lay_out(
     }
     let mut slots: Vec<Vec<ReadItem>> = vec![Vec::new(); page.len()];
     let mut wanted: std::collections::HashMap<EntryKey, usize> = std::collections::HashMap::new();
-    for (slot, (part, entry)) in page.iter().enumerate() {
-        wanted.insert(composed.entries(*part)[*entry].key.clone(), slot);
+    for (slot, entry) in page.iter().enumerate() {
+        wanted.insert(entry.entry.key.clone(), slot);
     }
-    // The page's entries grouped into runs of one session.
-    let mut runs: Vec<PageEntries> = Vec::new();
-    for (part, entry) in page {
+    // The page's entries grouped into runs of one part.
+    let mut runs: Vec<(usize, Vec<&IndexEntry>)> = Vec::new();
+    for entry in page {
         match runs.last_mut() {
-            Some(run) if run.part == *part => run.entries.push(*entry),
-            _ => runs.push(PageEntries {
-                part: *part,
-                entries: vec![*entry],
-            }),
+            Some((part, entries)) if *part == entry.part => entries.push(&entry.entry),
+            _ => runs.push((entry.part, vec![&entry.entry])),
         }
     }
     let selected = |source: &Source| -> Result<bool, Failure> {
@@ -1484,12 +1584,18 @@ fn lay_out(
             message: message.clone(),
             block: source.block,
         };
-        Ok(reading.spans.iter().any(|(part, start, end)| {
-            composed.indexes[*part]
-                .places
-                .get(&key)
-                .is_some_and(|entry| *entry >= *start && *entry < *end)
-        }))
+        if wanted.contains_key(&key) {
+            return Ok(true);
+        }
+        for (part, start, end) in &reading.spans {
+            if reader
+                .item_place(composed.indexes[*part].pk, &key)?
+                .is_some_and(|entry| (*start..*end).contains(&(entry as usize)))
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     };
     let ready_attachment = |message: &MessageId, block, index, input: Option<&str>| {
         let arguments = serde_json::to_value(crate::protocol::attachment::Arguments {
@@ -1525,13 +1631,11 @@ fn lay_out(
     // A message split across pieces (a spawning call inside it) is laid
     // out once: its items go to every slot of the page that holds them.
     let mut laid_messages: HashSet<MessageId> = HashSet::new();
-    for run in runs {
-        let part = &composed.parts[run.part];
-        let entries = composed.entries(run.part);
+    for (run_part, run_entries) in runs {
+        let part = &composed.parts[run_part];
         let inherited = part.inherited;
         let mut messages: Vec<MessageId> = Vec::new();
-        for at in &run.entries {
-            let entry = &entries[*at];
+        for entry in run_entries {
             match &entry.key {
                 EntryKey::Message { message, .. } => {
                     if messages.last() != Some(message) {
@@ -1622,7 +1726,7 @@ fn decorate(
     reader: &Reader<'_>,
     composed: &Composed,
     shown: &ShownEntries,
-    start: usize,
+    page: &[PageEntry],
     laid: &mut [Vec<ReadItem>],
     options: &ReadOptions,
 ) -> Result<(), Failure> {
@@ -1631,52 +1735,18 @@ fn decorate(
             && entry.written_by == polylogue_model::WrittenBy::Human
             && entry.prompt_kind == Some(polylogue_model::PromptKind::Prose)
     };
-    let mut placed = place_cards(composed, shown, start, laid.len(), options);
+    let mut placed = place_cards(composed, shown, page, options)?;
     for (offset, items) in laid.iter_mut().enumerate() {
-        let (part, at) = shown.get(start + offset).expect("decorated entry");
-        let entries = composed.entries(part);
-        let entry = &entries[at];
+        let PageEntry {
+            part,
+            seq: at,
+            entry,
+        } = &page[offset];
+        let (part, at) = (*part, *at);
         let mut before: Vec<ReadItem> =
             composed.before.get(&entry.key).cloned().unwrap_or_default();
         if options.turns && human_prompt(entry) {
-            // The turn's number and its calls, up to the next prompt.
-            // Counted over the composed reading, within each part's bounds.
-            // An inline spawned session numbers its own turns.
-            let bounds = &composed.parts[part];
-            let same = composed.same_context(part);
-            let earlier: usize = composed.parts[..part]
-                .iter()
-                .enumerate()
-                .filter(|(_, other)| same(other))
-                .map(|(index, other)| {
-                    composed.entries(index)[other.start..other.end]
-                        .iter()
-                        .filter(|entry| human_prompt(entry))
-                        .count()
-                })
-                .sum();
-            let number = earlier
-                + entries[bounds.start..at]
-                    .iter()
-                    .filter(|entry| human_prompt(entry))
-                    .count()
-                + 1;
-            // Up to the next prompt, across the pieces of a part split at a
-            // spawning call.
-            let calls = entries[at + 1..bounds.end]
-                .iter()
-                .chain(
-                    composed.parts[part + 1..]
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, other)| other.session == bounds.session)
-                        .flat_map(|(offset, other)| {
-                            composed.entries(part + 1 + offset)[other.start..other.end].iter()
-                        }),
-                )
-                .take_while(|entry| !human_prompt(entry))
-                .filter(|entry| entry.kind == EntryKind::Call)
-                .count();
+            let (number, calls) = turn(reader, composed, part, at)?;
             before.push(ReadItem {
                 source: Source::record(entry.key.reference()),
                 kind: ItemKind::Indicator {
@@ -1687,11 +1757,7 @@ fn decorate(
             });
         }
         if options.context_meter && entry.written_by == polylogue_model::WrittenBy::Model {
-            let meter = context_meter(
-                &composed.context_parts(part),
-                |part| composed.entries(part),
-                Place { part, entry: at },
-            );
+            let meter = context_meter(reader, composed, part, at, entry)?;
             for item in items.iter_mut() {
                 if let ItemKind::MessageHeader { header } = &mut item.kind {
                     header.context = Some(match meter {
@@ -1753,49 +1819,194 @@ fn decorate(
     Ok(())
 }
 
+/// The number of the turn a prompt opens, and the calls up to the next
+/// prompt. Turns are counted over the composed reading within each part's
+/// bounds; an inline spawned session numbers its own turns. The calls run
+/// across the pieces of a part split at a spawning call.
+fn turn(
+    reader: &Reader<'_>,
+    composed: &Composed,
+    part: usize,
+    at: usize,
+) -> Result<(u64, u64), Failure> {
+    let bounds = &composed.parts[part];
+    let same = composed.same_context(part);
+    let mut earlier = 0;
+    for (index, other) in composed.parts[..part].iter().enumerate() {
+        if same(other) {
+            earlier += composed.count(
+                reader,
+                index,
+                (other.start, other.end),
+                EntryClass::is_prompt,
+            )?;
+        }
+    }
+    let number =
+        earlier + composed.count(reader, part, (bounds.start, at), EntryClass::is_prompt)? + 1;
+    let mut ranges = vec![(part, at + 1, bounds.end)];
+    for (offset, other) in composed.parts[part + 1..].iter().enumerate() {
+        if other.session == bounds.session {
+            ranges.push((part + 1 + offset, other.start, other.end));
+        }
+    }
+    let mut calls = 0;
+    for (index, start, end) in ranges {
+        if start >= end {
+            continue;
+        }
+        let next = reader.item_find(
+            composed.indexes[index].pk,
+            ItemLookup::Prompt,
+            start as u64..end as u64,
+            true,
+        )?;
+        let end = next.map_or(end, |next| next as usize);
+        calls += composed.count(reader, index, (start, end), EntryClass::is_call)?;
+        if next.is_some() {
+            break;
+        }
+    }
+    Ok((number, calls))
+}
+
+/// The context meter of a model message: the provider-reported input of its
+/// response, or else the estimate of every entry in context at it (since
+/// the newest compaction, less the results a later microcompaction
+/// removed), from the stored running sums.
+fn context_meter(
+    reader: &Reader<'_>,
+    composed: &Composed,
+    part: usize,
+    at: usize,
+    entry: &IndexEntry,
+) -> Result<ContextMeter, Failure> {
+    if let Some(tokens) = entry.context_tokens {
+        return Ok(ContextMeter::Reported(tokens));
+    }
+    let parts = composed.context_parts(part);
+    let mut ranges: Vec<(usize, usize, usize)> = parts
+        .iter()
+        .enumerate()
+        .take(part + 1)
+        .map(|(index, other)| {
+            let end = if index == part {
+                (at + 1).min(other.end)
+            } else {
+                other.end
+            };
+            (index, other.start, end)
+        })
+        .filter(|(_, start, end)| start < end)
+        .collect();
+    for which in (0..ranges.len()).rev() {
+        let (index, start, end) = ranges[which];
+        if let Some(boundary) = reader.item_find(
+            composed.indexes[index].pk,
+            ItemLookup::Compaction,
+            start as u64..end as u64,
+            false,
+        )? {
+            ranges.drain(..which);
+            ranges[0].1 = boundary as usize + 1;
+            break;
+        }
+    }
+    let mut estimate: u64 = 0;
+    for &(index, start, end) in &ranges {
+        if start < end {
+            estimate += composed
+                .counts_at(reader, index, end)?
+                .since(&composed.counts_at(reader, index, start)?)
+                .tokens_full;
+        }
+    }
+    // A microcompaction removes the results it names that came before it.
+    let mut removed: HashSet<(usize, u64)> = HashSet::new();
+    for &(index, start, end) in &ranges {
+        if start >= end {
+            continue;
+        }
+        let pk = composed.indexes[index].pk;
+        for micro in
+            reader.item_find_all(pk, ItemLookup::Microcompaction, start as u64..end as u64)?
+        {
+            let Some(cleared) = composed.entry(reader, index, micro as usize)? else {
+                continue;
+            };
+            for call in &cleared.cleared {
+                for &(other, other_start, other_end) in &ranges {
+                    for stored in reader.item_calls(composed.indexes[other].pk, call)? {
+                        let place = (other, stored.seq as usize);
+                        if stored.entry.kind == EntryKind::Result
+                            && (other_start..other_end).contains(&place.1)
+                            && place < (index, micro as usize)
+                            && removed.insert((other, stored.seq))
+                        {
+                            estimate = estimate.saturating_sub(stored.entry.tokens_full);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(if estimate == 0 {
+        ContextMeter::Unknown
+    } else {
+        ContextMeter::Estimated(estimate)
+    })
+}
+
+/// Per page slot, the cards placed before its entry and after it.
+type PlacedCards = std::collections::HashMap<usize, (Vec<ReadItem>, Vec<ReadItem>)>;
+
 /// Cards for each page slot, placed after their anchor entry when it is
 /// shown, or before the next shown entry when the reading hides the anchor
-/// (a spawning call in the dialogue view), so a card is never lost.
+/// (a spawning call in the dialogue view), so a card is never lost. A card
+/// belongs to this page when its anchor comes after the shown entry before
+/// the page and no later than the page's last entry.
 fn place_cards(
     composed: &Composed,
     shown: &ShownEntries,
-    start: usize,
-    slots: usize,
+    page: &[PageEntry],
     options: &ReadOptions,
-) -> std::collections::HashMap<usize, (Vec<ReadItem>, Vec<ReadItem>)> {
-    let mut placed: std::collections::HashMap<usize, (Vec<ReadItem>, Vec<ReadItem>)> =
-        std::collections::HashMap::new();
-    for (key, cards) in &composed.after {
+) -> Result<PlacedCards, Failure> {
+    let mut placed = PlacedCards::new();
+    let (Some(first), Some(last)) = (page.first(), page.last()) else {
+        return Ok(placed);
+    };
+    if composed.after.is_empty() {
+        return Ok(placed);
+    }
+    let previous = shown.last_before(first.place())?.map(|entry| entry.place());
+    for anchored in &composed.after {
         let Some(place) = composed
             .parts
             .iter()
-            .enumerate()
-            .find_map(|(part, bounds)| {
-                composed.indexes[part]
-                    .places
-                    .get(key)
-                    .filter(|entry| (bounds.start..bounds.end).contains(*entry))
-                    .map(|entry| (part, *entry))
+            .position(|bounds| {
+                bounds.session == anchored.session
+                    && (bounds.start..bounds.end).contains(&anchored.seq)
             })
+            .map(|part| (part, anchored.seq))
         else {
             continue;
         };
-        let at = shown.partition_point(|shown| shown < place);
-        if at < start || at >= start + slots {
+        if place > last.place() || previous.is_some_and(|previous| place <= previous) {
             continue;
         }
-        let cards = cards.iter().filter(|item| {
+        let slot = page.partition_point(|entry| entry.place() < place);
+        let cards = anchored.cards.iter().filter(|item| {
             options.spawns != SpawnFold::Hidden
                 || !matches!(&item.kind, ItemKind::Card { card } if matches!(**card, Card::Delegation { .. }))
         });
-        let slot = placed.entry(at - start).or_default();
-        if shown.get(at) == Some(place) {
-            slot.1.extend(cards.cloned());
+        let held = placed.entry(slot).or_default();
+        if page[slot].place() == place {
+            held.1.extend(cards.cloned());
         } else {
-            slot.0.extend(cards.cloned());
+            held.0.extend(cards.cloned());
         }
     }
-    placed
+    Ok(placed)
 }
 
 #[allow(clippy::too_many_arguments)]

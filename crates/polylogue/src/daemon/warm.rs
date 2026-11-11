@@ -85,8 +85,6 @@ pub struct Warm {
     query_vectors: Mutex<Recent<Arc<Vec<f32>>>>,
     in_flight: Mutex<std::collections::HashMap<String, Arc<Flight>>>,
     counts: Counts,
-    /// Session item indexes read by recent reads.
-    pub(crate) items: super::items::ItemCache,
 }
 
 impl Default for Warm {
@@ -96,7 +94,6 @@ impl Default for Warm {
             query_vectors: Mutex::new(Recent::new(QUERY_VECTORS)),
             in_flight: Mutex::default(),
             counts: Counts::default(),
-            items: super::items::ItemCache::default(),
         }
     }
 }

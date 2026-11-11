@@ -555,3 +555,113 @@ fn a_microcompaction_removes_its_results_from_the_context_view() {
     assert!(context.contains("after microcompaction"), "{context}");
     assert!(context.contains("before microcompaction"), "{context}");
 }
+
+/// Model replies without reported usage before and after a microcompaction
+/// and a compaction: each one's context meter estimate must equal the sum
+/// over what `context_at` finds in context there, computed from the whole
+/// index.
+#[test]
+fn the_context_meter_estimates_from_stored_sums_what_context_at_computes() {
+    let d = test_daemon::start("placeholder");
+    let reply = |uuid: &str, parent: &str, at: &str, content: serde_json::Value| {
+        line(json!({
+            "type": "assistant", "uuid": uuid, "parentUuid": parent, "sessionId": "meter",
+            "timestamp": at,
+            "message": {"id": format!("msg_{uuid}"), "role": "assistant", "content": content}
+        }))
+    };
+    let session = [
+        user("p1", "meter", "2026-03-02T10:00:00Z", "first prompt"),
+        reply(
+            "a1",
+            "p1",
+            "2026-03-02T10:00:01Z",
+            json!([{"type": "tool_use", "id": "call-x", "name": "Bash", "input": {"command": "ls"}}]),
+        ),
+        line(json!({
+            "type": "user", "uuid": "r1", "parentUuid": "a1", "sessionId": "meter",
+            "timestamp": "2026-03-02T10:00:02Z",
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call-x", "content": "a long listing ".repeat(40)}]}
+        })),
+        reply("a2", "r1", "2026-03-02T10:00:03Z", json!([{"type": "text", "text": "seen the listing"}])),
+        line(json!({
+            "type": "system", "subtype": "microcompact_boundary", "uuid": "c1", "parentUuid": "a2",
+            "sessionId": "meter", "timestamp": "2026-03-02T10:00:04Z",
+            "content": "Context microcompacted",
+            "microcompactMetadata": {"trigger": "auto", "preTokens": 100, "tokensSaved": 50,
+                "compactedToolIds": ["call-x"], "clearedAttachmentUUIDs": []}
+        })),
+        reply("a3", "c1", "2026-03-02T10:00:05Z", json!([{"type": "text", "text": "after the clearing"}])),
+        line(json!({
+            "type": "system", "subtype": "compact_boundary", "uuid": "b1", "sessionId": "meter",
+            "logicalParentUuid": "a3", "timestamp": "2026-03-02T10:00:06Z",
+            "compactMetadata": {"trigger": "auto", "preTokens": 9000}
+        })),
+        line(json!({
+            "type": "user", "uuid": "s1", "sessionId": "meter", "isCompactSummary": true,
+            "timestamp": "2026-03-02T10:00:07Z",
+            "message": {"role": "user", "content": "summary of the work so far"}
+        })),
+        reply("a4", "s1", "2026-03-02T10:00:08Z", json!([{"type": "text", "text": "after compaction"}])),
+    ]
+    .concat();
+    std::fs::write(d.home.join(".claude/projects/-p/meter.jsonl"), session).unwrap();
+    d.wait_for(|status| status["store"]["sessions"] == 2 && status["store"]["search_pending"] == 0);
+    let page = read(
+        &d,
+        "session:claude-code:meter",
+        ReadOptions {
+            context_meter: true,
+            ..ReadOptions::default()
+        },
+    );
+    // The oracle: the whole index and the model's context function.
+    let reader = d.daemon.reads.reader().unwrap();
+    let session = polylogue_model::SessionId::parse("claude-code:meter").unwrap();
+    let index = reader.item_index(&session).unwrap().unwrap();
+    let parts = [polylogue_model::read::Part {
+        session,
+        start: 0,
+        end: index.entries.len(),
+        inherited: false,
+        joined_by: None,
+    }];
+    let mut meters = Vec::new();
+    for item in &page.document.items {
+        let ItemKind::MessageHeader { header } = &item.kind else {
+            continue;
+        };
+        let Some(context) = &header.context else {
+            continue;
+        };
+        let message = polylogue_model::MessageId::parse(
+            item.source.reference.strip_prefix("message:").unwrap(),
+        )
+        .unwrap();
+        let at = index
+            .entries
+            .iter()
+            .position(|entry| entry.key == polylogue_model::read::EntryKey::header(&message))
+            .unwrap();
+        let members = polylogue_model::read::context_at(
+            &parts,
+            |_| &index.entries,
+            polylogue_model::read::Place { part: 0, entry: at },
+        )
+        .members;
+        let expected: u64 = members
+            .iter()
+            .map(|place| index.entries[place.entry].tokens_full)
+            .sum();
+        assert_eq!(
+            context,
+            &polylogue_model::read::ValueState::Inferred { value: expected },
+            "{message}"
+        );
+        meters.push(expected);
+    }
+    // Four replies; the clearing and the compaction each lower the estimate.
+    assert_eq!(meters.len(), 4, "{meters:?}");
+    assert!(meters[2] < meters[1] && meters[3] < meters[2], "{meters:?}");
+}
