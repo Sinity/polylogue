@@ -194,6 +194,7 @@ fn raw(input: &str, namespace: Option<&str>, member: &str, change: Change, lengt
                 format: None,
             }),
             container: None,
+            database: None,
         }),
         continues: false,
         new_blob: None,

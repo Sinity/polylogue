@@ -36,6 +36,7 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
             seen_at_ms: 1,
             import: None,
             container: None,
+            database: None,
         },
     };
     let mut databases = Databases::default();
@@ -130,6 +131,7 @@ fn native_capture_continues_the_input_at_the_observed_byte_path() {
                         seen_at_ms: 1,
                         import: None,
                         container: None,
+                        database: None,
                     }),
                     continues: false,
                     new_blob: None,

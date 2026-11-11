@@ -72,6 +72,14 @@ impl Databases {
                     if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
                         break;
                     }
+                    if let Err(error) =
+                        reader.recall(&source.path, &archive, &source.input, &source.observation)
+                    {
+                        completed
+                            .errors
+                            .push(format!("read database {}: {error}", source.path.display()));
+                        continue;
+                    }
                     let Some(due) = reader.observe(&source.path) else {
                         continue;
                     };
@@ -99,7 +107,7 @@ impl Databases {
                             &source.input,
                             &source.observation,
                             due,
-                            |bytes| queue.append(bytes),
+                            |bytes, observation| queue.append(bytes, observation),
                         )
                     }));
                     match outcome {
@@ -259,7 +267,7 @@ impl<'a> InputWriter<'a> {
         };
         Ok(out)
     }
-    fn append(&mut self, bytes: Vec<u8>) -> Result<(), DatabaseError> {
+    fn append(&mut self, bytes: Vec<u8>, observation: &Observation) -> Result<(), DatabaseError> {
         let size = bytes.len() as u64;
         self.length += size;
         let (new_blob, files) = if bytes.is_empty() {
@@ -292,7 +300,7 @@ impl<'a> InputWriter<'a> {
             } else {
                 Change::Unchanged
             },
-            observation: Some(self.source.observation.clone()),
+            observation: Some(observation.clone()),
             continues: !self.staged.is_empty(),
             new_blob,
             blobs: vec![],

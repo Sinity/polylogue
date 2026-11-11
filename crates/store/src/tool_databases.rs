@@ -1,6 +1,8 @@
 //! Tool databases read in one SQLite transaction and emitted as row-dump
 //! records. The writer stores these bytes as an ordinary input. Comparison
-//! hashes live in the index, beside the parsed rows.
+//! hashes live in the index, beside the parsed rows. Every completed read
+//! records an observation with the database's and its log's file facts, so
+//! a database left as it was when the process restarts is not read again.
 use crate::{Archive, FileFacts, InputKey, Observation};
 use base64::Engine as _;
 use rusqlite::types::ValueRef;
@@ -38,6 +40,16 @@ struct DbFacts {
     wal: Option<FileFacts>,
 }
 impl DbFacts {
+    /// The same database: both files unchanged, and the log present in both
+    /// or in neither.
+    fn unchanged_as(&self, other: &Self) -> bool {
+        let same = |a: &Option<FileFacts>, b: &Option<FileFacts>| match (a, b) {
+            (Some(a), Some(b)) => a.unchanged_as(b),
+            (None, None) => true,
+            _ => false,
+        };
+        same(&self.db, &other.db) && same(&self.wal, &other.wal)
+    }
     fn of(db: &Path) -> Self {
         let facts = |p: &Path| fs::metadata(p).ok().map(|m| FileFacts::of(&m));
         let mut wal = db.as_os_str().to_owned();
@@ -85,10 +97,47 @@ impl DatabaseReader {
         }
         let quiet = st.last_seen == Some(facts);
         st.last_seen = Some(facts);
+        let read = st.read.is_some_and(|read| read.unchanged_as(&facts));
         let due = st.read.is_none()
-            || (st.read != Some(facts)
-                && (quiet || st.read_at.is_some_and(|at| at.elapsed() >= BUSY_READ)));
+            || (!read && (quiet || st.read_at.is_some_and(|at| at.elapsed() >= BUSY_READ)));
         due.then_some(DatabaseRead { facts })
+    }
+
+    /// Takes, for a database this reader has not read, the facts of the
+    /// last read whose observation the archive holds for this input at this
+    /// machine and exact path. An unchanged database is then not read again
+    /// after a restart; any other evidence leaves it to be read.
+    pub fn recall(
+        &mut self,
+        db: &Path,
+        archive: &Archive,
+        input: &InputKey,
+        observation: &Observation,
+    ) -> Result<(), DatabaseError> {
+        if self
+            .stop
+            .as_deref()
+            .is_some_and(|stop| stop.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            return Err(DatabaseError::Stopped);
+        }
+        if self.dbs.get(db).is_some_and(|st| st.read.is_some()) || DbFacts::of(db).db.is_none() {
+            return Ok(());
+        }
+        let Some(facts) = recorded(archive, input, observation)? else {
+            return Ok(());
+        };
+        // A header this build states differently is written by a full read.
+        if !header_current(db, archive, input)? {
+            return Ok(());
+        }
+        let st = self.dbs.entry(db.to_owned()).or_default();
+        st.read = Some(facts);
+        st.read_at = Some(Instant::now());
+        // A database changed since that read is read at once, as by a
+        // reader that never read it, not after it settles.
+        st.last_seen = Some(DbFacts::of(db));
+        Ok(())
     }
 
     pub fn capture(
@@ -97,8 +146,9 @@ impl DatabaseReader {
         archive: &Archive,
         input: &InputKey,
         observation: &Observation,
-        send: impl FnMut(Vec<u8>) -> Result<(), DatabaseError>,
+        send: impl FnMut(Vec<u8>, &Observation) -> Result<(), DatabaseError>,
     ) -> Result<Option<ReadReport>, DatabaseError> {
+        self.recall(db, archive, input, observation)?;
         let Some(due) = self.observe(db) else {
             return Ok(None);
         };
@@ -106,7 +156,10 @@ impl DatabaseReader {
             .map(Some)
     }
     /// Queue complete groups while their predecessors commit. The caller
-    /// waits for acknowledgment before reading the same input again.
+    /// waits for acknowledgment before reading the same input again. Each
+    /// group is sent with the observation it records: `observation` with
+    /// the file facts this read was decided on. A read that finds no changed
+    /// row sends one empty group, so its observation is recorded too.
     pub fn read(
         &mut self,
         db: &Path,
@@ -114,16 +167,28 @@ impl DatabaseReader {
         input: &InputKey,
         observation: &Observation,
         due: DatabaseRead,
-        mut send: impl FnMut(Vec<u8>) -> Result<(), DatabaseError>,
+        mut send: impl FnMut(Vec<u8>, &Observation) -> Result<(), DatabaseError>,
     ) -> Result<ReadReport, DatabaseError> {
+        let observation = Observation {
+            facts: due.facts.db,
+            database: Some(crate::DatabaseLog { wal: due.facts.wal }),
+            ..observation.clone()
+        };
+        let mut sent = false;
         let done = read_rows(
             db,
             archive,
             input,
-            observation,
+            &observation,
             self.stop.as_deref(),
-            &mut send,
+            &mut |bytes| {
+                sent = true;
+                send(bytes, &observation)
+            },
         )?;
+        if !sent {
+            send(Vec::new(), &observation)?;
+        }
         let st = self.dbs.entry(db.to_owned()).or_default();
         st.read = Some(due.facts);
         st.read_at = Some(Instant::now());
@@ -133,6 +198,83 @@ impl DatabaseReader {
 
 pub struct DatabaseRead {
     facts: DbFacts,
+}
+
+/// File facts as an observation's details record them.
+pub(crate) fn facts_json(facts: FileFacts) -> Value {
+    json!({
+        "device": facts.device,
+        "inode": facts.inode,
+        "size": facts.size,
+        "mtime_ns": i64::try_from(facts.mtime_ns).ok(),
+        "ctime_ns": i64::try_from(facts.ctime_ns).ok(),
+    })
+}
+
+fn facts_of(value: &Value) -> Option<FileFacts> {
+    Some(FileFacts {
+        device: value.get("device")?.as_u64()?,
+        inode: value.get("inode")?.as_u64()?,
+        size: value.get("size")?.as_u64()?,
+        mtime_ns: value.get("mtime_ns")?.as_i64()?.into(),
+        ctime_ns: value.get("ctime_ns")?.as_i64()?.into(),
+    })
+}
+
+/// The database and log facts of the last completed read of `input` at this
+/// observation's machine and exact path: the newest such observation the
+/// archive holds, committed with that read's rows. Primary mode holds it
+/// once Sinex confirmed it.
+fn recorded(
+    archive: &Archive,
+    input: &InputKey,
+    observation: &Observation,
+) -> crate::Result<Option<DbFacts>> {
+    let conn = crate::archive::open_read(&archive.index_db())?;
+    if !archive.is_primary() {
+        let uri = format!("file:{}?mode=ro", archive.archive_db().display());
+        conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
+        crate::source::views(&conn)?;
+    }
+    let row = conn
+        .query_row(
+            "SELECT device,inode,size,mtime_ns,ctime_ns,details_json FROM source_observation
+             WHERE input=?1 AND machine=?2 AND path_bytes=?3
+             ORDER BY commit_seq DESC, id DESC LIMIT 1",
+            params![input.id, observation.machine, observation.path_bytes],
+            |r| {
+                let column = |n| r.get::<_, Option<i64>>(n);
+                let facts = match (column(0)?, column(1)?, column(2)?, column(3)?, column(4)?) {
+                    (Some(device), Some(inode), Some(size), Some(mtime), Some(ctime)) => {
+                        Some(FileFacts {
+                            device: device as u64,
+                            inode: inode as u64,
+                            size: size as u64,
+                            mtime_ns: mtime.into(),
+                            ctime_ns: ctime.into(),
+                        })
+                    }
+                    _ => None,
+                };
+                Ok((facts, r.get::<_, Option<String>>(5)?))
+            },
+        )
+        .optional()?;
+    let Some((Some(db), Some(details))) = row else {
+        return Ok(None);
+    };
+    let details: Value = serde_json::from_str(&details)?;
+    let Some(wal) = details.get("database_wal") else {
+        return Ok(None);
+    };
+    let wal = match wal {
+        Value::Null => None,
+        wal => match facts_of(wal) {
+            Some(facts) => Some(facts),
+            None => return Ok(None),
+        },
+    };
+    Ok(Some(DbFacts { db: Some(db), wal }))
 }
 
 fn row_hash(row: &Value) -> blake3::Hash {
@@ -240,6 +382,39 @@ fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
     Ok(out)
 }
 
+/// The tables' SQL and native metadata, as a row-dump header states them.
+/// Comparison includes native metadata so a pre-metadata capture emits the
+/// additive header even when its SQL declaration has not changed.
+fn signature(tables: &[Table]) -> Value {
+    let schema: Map<String, Value> = tables
+        .iter()
+        .map(|t| (t.name.clone(), t.sql.clone().into()))
+        .collect();
+    let table_metadata: Map<String, Value> = tables
+        .iter()
+        .map(|table| (table.name.clone(), table.metadata.clone()))
+        .collect();
+    json!({"schema":schema,"table_metadata":table_metadata})
+}
+
+/// Whether the archive's comparison state holds the header this database's
+/// tables give now; reading only its schema, no rows.
+fn header_current(db: &Path, archive: &Archive, input: &InputKey) -> Result<bool, DatabaseError> {
+    let sql_err = |e| DatabaseError::Sqlite(db.to_owned(), e);
+    let source = Connection::open_with_flags(
+        db,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(sql_err)?;
+    source
+        .busy_timeout(Duration::from_secs(10))
+        .map_err(sql_err)?;
+    source.execute_batch("BEGIN").map_err(sql_err)?;
+    let tables = tables(&source).map_err(sql_err)?;
+    let catalog = catalog::Catalog::open(archive, &input.id)?;
+    Ok(catalog.schema.as_ref() == Some(&signature(&tables)))
+}
+
 fn read_rows(
     db: &Path,
     archive: &Archive,
@@ -269,19 +444,8 @@ fn read_rows(
     source.execute_batch("BEGIN").map_err(sql_err)?;
     let tables = tables(&source).map_err(sql_err)?;
     let catalog = catalog::Catalog::open(archive, &input.id)?;
-    let schema: Map<String, Value> = tables
-        .iter()
-        .map(|t| (t.name.clone(), t.sql.clone().into()))
-        .collect();
-    let schema = Value::Object(schema);
-    let table_metadata: Map<String, Value> = tables
-        .iter()
-        .map(|table| (table.name.clone(), table.metadata.clone()))
-        .collect();
-    let table_metadata = Value::Object(table_metadata);
-    // Comparison includes native metadata so a pre-metadata capture emits the
-    // additive header even when its SQL declaration has not changed.
-    let signature = json!({"schema":schema,"table_metadata":table_metadata});
+    let signature = signature(&tables);
+    let (schema, table_metadata) = (&signature["schema"], &signature["table_metadata"]);
     let changed_schema = catalog.schema.as_ref() != Some(&signature);
     // The accepting engine supplied this observation from its injected clock.
     let at_ms = observation.seen_at_ms;

@@ -19,6 +19,7 @@ fn batch(id: &str, length: u64) -> Batch {
             seen_at_ms: 1,
             import: None,
             container: None,
+            database: None,
         }),
         continues: false,
         new_blob: None,

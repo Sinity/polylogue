@@ -47,6 +47,7 @@ impl Stored {
                 seen_at_ms: 1,
                 import: None,
                 container: None,
+                database: None,
             }),
             continues: false,
             new_blob: Some(blob),

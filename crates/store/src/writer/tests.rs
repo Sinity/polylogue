@@ -175,6 +175,7 @@ fn batch(input: &str, route: Route, start: u64, rows: Vec<MessageRow>, sessions:
             seen_at_ms: 1,
             import: None,
             container: None,
+            database: None,
         }),
         continues: false,
         new_blob: None,

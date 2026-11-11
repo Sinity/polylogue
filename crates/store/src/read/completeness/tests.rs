@@ -318,6 +318,7 @@ fn import(stored: &WriterArchive, body: &[u8], format: &str) -> crate::staging::
             facts: None,
             seen_at_ms: 1,
             container: None,
+            database: None,
             import: Some(crate::ImportMember {
                 version: 1,
                 import_id: format!("import-{format}"),

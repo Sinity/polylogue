@@ -332,15 +332,15 @@ fn observation_known(
         ctime_ns: f.map(|f| f.ctime_ns as i64),
         polylogue_version: env!("CARGO_PKG_VERSION").to_owned(),
         seen_at: o.seen_at_ms,
-        details_json: o
-            .import
-            .as_ref()
-            .map(|member| {
-                serde_json::to_string(
-                    &serde_json::json!({"import": member, "import_format": member.format}),
-                )
-            })
-            .transpose()?,
+        details_json: match (&o.import, &o.database) {
+            (Some(member), _) => Some(serde_json::to_string(
+                &serde_json::json!({"import": member, "import_format": member.format}),
+            )?),
+            (None, Some(log)) => Some(serde_json::to_string(
+                &serde_json::json!({"database_wal": log.wal.map(crate::tool_databases::facts_json)}),
+            )?),
+            (None, None) => None,
+        },
         container,
     }))
 }
