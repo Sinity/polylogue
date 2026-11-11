@@ -11,13 +11,23 @@ use std::sync::{
 /// SQLite virtual machine steps for the first page of `text` over an
 /// archive of `sessions` sessions of three messages each.
 fn first_page_steps(text: &str, sessions: usize) -> u64 {
+    let (rows, steps, page_size) = page_steps(text, sessions, false);
+    assert_eq!(rows, page_size + 1, "{text}");
+    steps
+}
+
+/// The rows and SQLite virtual machine steps of the first page of `text`
+/// over `sessions` sessions of three messages each, every session's answer
+/// with a text when `embeddings` (so `similar:` has texts to score), and
+/// the page size.
+fn page_steps(text: &str, sessions: usize, embeddings: bool) -> (u64, u64, u64) {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     f.many_sessions(ManySessions {
         prefix: "/home/op/work",
         sessions,
         messages: 3,
-        answered: 0,
+        answered: if embeddings { sessions } else { 0 },
         last: 1_800_000_000_000,
     })
     .unwrap();
@@ -25,7 +35,9 @@ fn first_page_steps(text: &str, sessions: usize) -> u64 {
     let reader = pool.reader().unwrap();
     let mut opts = options();
     opts.page_size = None;
+    opts.embeddings = embeddings;
     let program = crate::query::compile(text, &opts).unwrap();
+    assert_eq!(program.near.is_some(), embeddings, "{text}");
     let steps = Arc::new(AtomicU64::new(0));
     let counted = Arc::clone(&steps);
     let conn = reader.conn().unwrap();
@@ -51,8 +63,7 @@ fn first_page_steps(text: &str, sessions: usize) -> u64 {
         )
         .unwrap();
     conn.progress_handler(0, None::<fn() -> bool>).unwrap();
-    assert_eq!(rows, program.page_size + 1, "{text}");
-    steps.load(Ordering::Relaxed)
+    (rows, steps.load(Ordering::Relaxed), program.page_size)
 }
 
 #[test]
@@ -65,6 +76,32 @@ fn page_steps_flat_as_observations_grow() {
         assert!(
             large <= small + small / 10,
             "{text}: {small} steps over 100 sessions, {large} over 2000"
+        );
+    }
+}
+
+#[test]
+fn similar_steps_scale_with_selected_rows() {
+    // Session 3 alone works in d3/w3 below 1261 sessions.
+    for (text, selected) in [
+        (
+            "sessions where cwd:/home/op/work/d3/w3 similar:\"finished work\"",
+            1,
+        ),
+        (
+            "messages where session.cwd:/home/op/work/d3/w3 similar:\"finished work\"",
+            3,
+        ),
+    ] {
+        let (rows, small, _) = page_steps(text, 100, true);
+        assert_eq!(rows, selected, "{text}");
+        let (rows, large, _) = page_steps(text, 1_200, true);
+        assert_eq!(rows, selected, "{text}");
+        // Twelve times the texts may deepen an index by a level; the
+        // similarities scored are the selected rows' alone.
+        assert!(
+            large <= small + small / 5,
+            "{text}: {small} steps over 100 sessions, {large} over 1200"
         );
     }
 }

@@ -222,7 +222,7 @@ impl<'a> Compiler<'a> {
 
         let rows_answer = matched.is_none() && measure.is_none();
         if rows_answer {
-            self.setup_near(true);
+            self.setup_near(true, &scope, &where_sql);
         }
         let count_relation = if rows_answer {
             Some((self.from(&scope)?, and_all(&where_sql)))
