@@ -460,12 +460,9 @@ fn errors(group: &[PreparedBatch], error: StoreError) -> Vec<Result<StoredInput>
 
 /// The answer for a batch whose bytes are `stored` and whose rows `error`
 /// lost: a refusal of the rows' content keeps where the bytes are.
-fn rows_refused(
-    stored: Result<&StoredInput, &StoreError>,
-    error: StoreError,
-) -> Result<StoredInput> {
+fn rows_refused(stored: Option<&StoredInput>, error: StoreError) -> Result<StoredInput> {
     match stored {
-        Ok(stored) if error.refuses_content() => Err(StoreError::RowsRefused {
+        Some(stored) if error.refuses_content() => Err(StoreError::RowsRefused {
             stored: stored.clone(),
             reason: error.to_string(),
         }),
